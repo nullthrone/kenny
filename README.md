@@ -3,11 +3,25 @@
 Self-hosted remote administration **and fleet monitoring** for Windows PCs in a family
 setting, operated through **Claude** (MCP) and a web **dashboard**.
 
-```
-Operator ─> Claude ─MCP(HTTPS)─> kenny-server (cloud) ─WSS tunnel─> kenny-agent (Windows PC)
-                                      │                                 ├─ PowerShell / Win32 / winget
-Operator ─HTTPS dashboard ────────────┘                                 ├─ filesystem, screenshot
-                                                                        └─ telemetry collectors
+```mermaid
+flowchart LR
+  Operator(("Operator"))
+  Claude["Claude<br/>(local client, optional)"]
+  subgraph Server["kenny-server (cloud)"]
+    UI["Dashboard + Chat"]
+    MCP["MCP endpoint /mcp"]
+    Tunnel["Agent tunnel /agent/ws"]
+    Store[("Telemetry store<br/>SQLite")]
+  end
+  Agent["kenny-agent (Windows PC)<br/>PowerShell · Win32 · winget<br/>filesystem · screenshot · collectors"]
+
+  Operator -->|https dashboard + chat| UI
+  Operator --> Claude -->|MCP, Bearer token| MCP
+  UI --> Tunnel
+  MCP --> Tunnel
+  Tunnel <-->|WSS, agent dials out| Agent
+  Agent -->|telemetry push| Store
+  Store --> UI
 ```
 
 - **kenny-server** (Python / FastMCP): stable MCP endpoint for Claude, the agent tunnel,
@@ -15,6 +29,13 @@ Operator ─HTTPS dashboard ────────────┘             
 - **kenny-agent** (Rust, single binary): runs on each Windows PC, dials **out** to the
   server (NAT/firewall friendly), executes tool calls in the user's session, and pushes
   periodic health snapshots.
+
+## Documentation
+
+- **[User guide](docs/user-guide.md)** — operator workflows: dashboard, chat, running tools,
+  adding/updating agents (with diagrams).
+- **[Setup & operations](docs/setup.md)** — hosting, environment variables, TLS, building &
+  distributing the agent, releases.
 
 ## How it fits together
 
@@ -37,7 +58,7 @@ cd kenny-agent && cargo test && cargo build
 ```
 
 Helper commands inside Claude Code: `/new-adr`, `/add-tool`, `/add-collector`,
-`/contract-check`, `/e2e`.
+`/contract-check`, `/e2e`, `/security-review`.
 
 ## Authentication
 
@@ -51,7 +72,10 @@ Helper commands inside Claude Code: `/new-adr`, `/add-tool`, `/add-collector`,
 
 ## Status
 
-Early bootstrap. The wire contract and project skeleton exist; the two components are
-implemented against the contract. Operator and agent auth are in place (single-token,
-dev-grade); per-identity auth, rotation, TLS hardening, and packaging come later
-(see `docs/adr/`).
+Both components are implemented against the contract: capability tools, telemetry collectors +
+health rules, the fleet dashboard, a server-hosted Claude chat (with a confirm-gate for
+state-changing tools), operator + agent auth (token store with rotation), the Windows service +
+server-triggered self-update, agent installer download, Docker/Compose, and a GHCR release
+workflow. Runtime-only Windows behaviors (service control, live self-update swap) are
+compile-verified via cross-build and the Windows CI job; real-hardware verification, TLS hardening,
+and code-signing are operational follow-ups (see `docs/adr/`).
