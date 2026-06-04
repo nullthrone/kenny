@@ -1,14 +1,14 @@
 ---
-description: Audit kenny's security weak points ("Sollbruchstellen") and file deduplicated English GitHub issues for new findings
+description: Review kenny's security weak points and file deduplicated English GitHub issues for new findings
 argument-hint: "[area or severity filter, e.g. 'auth' or 'high+'] (optional)"
 ---
 
-Run a **targeted** security audit of kenny and document genuine findings as English-language
+Run a **targeted** security review of kenny and document genuine findings as English-language
 GitHub issues — without ever filing a duplicate. This is a read-only code investigation; the
-only side effect is creating issues. If `$ARGUMENTS` is set, restrict the audit to that area or
+only side effect is creating issues. If `$ARGUMENTS` is set, restrict the review to that area or
 minimum severity.
 
-## 1. Investigate kenny's weak points (the "Sollbruchstellen")
+## 1. Investigate kenny's weak points
 
 Go surface by surface. For each, read the cited code and look for concrete, exploitable issues
 (assign a CWE where it fits). Do not invent generic advice — tie every finding to a file:line.
@@ -67,7 +67,7 @@ For each genuinely new finding, create an issue with `mcp__github__issue_write`:
 - Body (English):
   - **Summary** — one sentence.
   - **Severity** — Critical/High/Medium/Low + CWE.
-  - **Affected surface** — which Sollbruchstelle.
+  - **Affected surface** — which weak point.
   - **Location** — `file:line` (and the relevant snippet).
   - **Impact / attack scenario** — concrete, who can do what.
   - **Recommendation** — the smallest sound fix; reference the relevant ADR if any.
