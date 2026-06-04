@@ -159,6 +159,15 @@ implements a handler with the same name. Argument keys are exact.
 | `net.adapter_reset`  | `{name}`                      | `{ok}`                                       |
 | `screen.capture`     | `{}`                          | `{image_b64, format:"png"}`                  |
 | `telemetry.collect`  | `{sections?}`                 | snapshot map (see `telemetry` frame)         |
+| `agent.update`       | `{version, url, sha256}`      | `{ok, staged_version}`                       |
+
+`agent.update` is a **server-triggered self-update** (state-changing): the agent
+downloads the new binary from `url` (served by the server's download endpoint),
+verifies it against `sha256`, stages it, and restarts itself (as a Windows service)
+into the new version. The agent answers `{ok, staged_version}` *before* restarting, so
+the connection drops and the agent reconnects on the new version (compare
+`register.meta.version`). On a non-Windows/dev build the agent returns
+`error.code = "unsupported"`.
 
 ### Server-only MCP tools (not forwarded to a single agent)
 
@@ -191,6 +200,9 @@ for fleet aggregation. These thresholds are illustrative of the data-driven rule
 
 ## Versioning
 
-`PROTOCOL_VERSION = "0.1"`. Both implementations expose this constant and include it
+`PROTOCOL_VERSION = "0.2"`. Both implementations expose this constant and include it
 nowhere on the wire yet (reserved for a future `register.meta.protocol`). Bump on any
 breaking change to a frame or tool schema.
+
+- `0.2` — added the `agent.update` tool (server-triggered self-update); no frame changes.
+- `0.1` — initial contract.
