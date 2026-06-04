@@ -39,12 +39,30 @@
     td, th { text-align: left; padding: 4px 6px; border-bottom: 1px solid #2a3441; }
     .trend { display: flex; gap: 3px; align-items: flex-end; height: 40px; }
     .trend span { width: 10px; border-radius: 2px; }
+    .tabs { margin-left: auto; display: flex; gap: 6px; }
+    .tab { padding: 5px 12px; border-radius: 8px; cursor: pointer; color: var(--muted); border: 1px solid transparent; }
+    .tab.active { color: var(--fg); background: var(--panel); border-color: #2a3441; }
+    .chat { display: flex; flex-direction: column; height: calc(100vh - 130px); }
+    .transcript { flex: 1; overflow: auto; display: flex; flex-direction: column; gap: 10px; padding-bottom: 10px; }
+    .msg { max-width: 80%; padding: 9px 12px; border-radius: 10px; white-space: pre-wrap; }
+    .msg.user { align-self: flex-end; background: #2563eb; color: #fff; }
+    .msg.assistant { align-self: flex-start; background: var(--panel); border: 1px solid #2a3441; }
+    .msg.tool { align-self: flex-start; background: #11202e; border: 1px solid #2a3441; color: var(--muted); font-size: 12px; font-family: ui-monospace, monospace; }
+    .confirm { align-self: flex-start; background: #2a1f12; border: 1px solid #d99100; border-radius: 10px; padding: 12px; }
+    .confirm .acts { margin-top: 8px; display: flex; gap: 8px; }
+    .confirm button.deny { background: #5b2630; }
+    .composer { display: flex; gap: 8px; margin-top: 10px; }
+    .composer input { flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #2a3441; background: #0b0f14; color: var(--fg); font-size: 14px; }
   </style>
 </head>
 <body>
   <header>
     <h1>kenny</h1>
     <span class="crumb" id="crumb" onclick="showFleet()">fleet</span>
+    <div class="tabs">
+      <span class="tab active" id="tab-fleet" onclick="selectTab('fleet')">fleet</span>
+      <span class="tab" id="tab-chat" onclick="selectTab('chat')">chat</span>
+    </div>
   </header>
   <main id="app">loading…</main>
 

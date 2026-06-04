@@ -24,11 +24,12 @@ from starlette.middleware import Middleware
 from starlette.routing import Mount, WebSocketRoute
 
 from .auth import OperatorAuthMiddleware, build_auth_routes, load_operator_token
+from .chat import ChatSessions
 from .registry import AgentRegistry
 from .store import TelemetryStore
 from .tools import CallLog, register_tools
 from .tunnel import AgentTunnel
-from .webui import build_api_routes
+from .webui import build_api_routes, build_chat_routes
 
 
 def build_app(db_path: str | None = None) -> Starlette:
@@ -40,6 +41,7 @@ def build_app(db_path: str | None = None) -> Starlette:
     store = TelemetryStore(db_path)
     tunnel = AgentTunnel(registry, store)
     call_log = CallLog()
+    chat_sessions = ChatSessions()
 
     mcp = FastMCP("kenny")
     register_tools(mcp, registry=registry, store=store, tunnel=tunnel, call_log=call_log)
@@ -57,6 +59,13 @@ def build_app(db_path: str | None = None) -> Starlette:
     api_routes = build_api_routes(
         registry=registry, store=store, tunnel=tunnel, call_log=call_log
     )
+    chat_routes = build_chat_routes(
+        registry=registry,
+        store=store,
+        tunnel=tunnel,
+        call_log=call_log,
+        sessions=chat_sessions,
+    )
 
     operator_token = load_operator_token()
 
@@ -64,6 +73,7 @@ def build_app(db_path: str | None = None) -> Starlette:
         WebSocketRoute("/agent/ws", tunnel.endpoint),
         Mount("/mcp", app=mcp_app),
         *build_auth_routes(operator_token),
+        *chat_routes,
         *api_routes,
     ]
 
@@ -76,6 +86,7 @@ def build_app(db_path: str | None = None) -> Starlette:
     app.state.store = store
     app.state.tunnel = tunnel
     app.state.call_log = call_log
+    app.state.chat_sessions = chat_sessions
     app.state.mcp = mcp
     app.state.operator_token = operator_token
     return app

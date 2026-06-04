@@ -3,6 +3,8 @@
 //! Real data from `Get-Printer` / `Get-PrintJob` on Windows.
 
 use serde_json::json;
+#[cfg(windows)]
+use serde_json::Value;
 
 use crate::protocol::Status;
 use crate::telemetry::Section;
