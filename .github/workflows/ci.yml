@@ -48,6 +48,24 @@ jobs:
       - name: Build
         run: cargo build
 
+  agent-windows:
+    name: kenny-agent (Windows)
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: kenny-agent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Clippy
+        run: cargo clippy --bin kenny-agent -- -D warnings
+      - name: Test
+        run: cargo test
+      - name: Build
+        run: cargo build
+
   e2e:
     name: real agent <-> server (Linux)
     runs-on: ubuntu-latest
