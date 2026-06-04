@@ -31,6 +31,10 @@ pub mod uptime;
 pub mod wifi_quality;
 pub mod win_update;
 
+/// Shared PowerShell/JSON helper used by the Windows collector bodies.
+#[cfg(windows)]
+pub mod winps;
+
 use serde_json::{Map, Value};
 
 use super::Section;

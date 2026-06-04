@@ -13,6 +13,7 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse
 from starlette.routing import Route
 
+from ..chat import ChatExecutor, ChatSessions, confirm_pending, run_turn
 from ..registry import AgentRegistry
 from ..store import TelemetryStore
 from ..tools import CallLog, build_health
