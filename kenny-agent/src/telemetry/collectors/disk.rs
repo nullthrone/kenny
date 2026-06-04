@@ -47,7 +47,10 @@ pub fn collect() -> Section {
     } else {
         Status::Ok
     };
-    let summary = match vols.iter().max_by_key(|v| v["percent_used"].as_u64().unwrap_or(0)) {
+    let summary = match vols
+        .iter()
+        .max_by_key(|v| v["percent_used"].as_u64().unwrap_or(0))
+    {
         Some(v) => format!(
             "{} {}% full",
             v["mount"].as_str().unwrap_or("?"),

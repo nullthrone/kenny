@@ -27,15 +27,6 @@ pub struct Section {
 }
 
 impl Section {
-    /// Build a section with no extra fields.
-    pub fn new(status: Status, summary: impl Into<String>) -> Self {
-        Self {
-            status,
-            summary: summary.into(),
-            fields: Map::new(),
-        }
-    }
-
     /// Build a section from an arbitrary JSON object of raw fields.
     pub fn with_fields(status: Status, summary: impl Into<String>, fields: Value) -> Self {
         let fields = match fields {
@@ -49,15 +40,13 @@ impl Section {
         }
     }
 
-    /// Stub section used by Windows-only collectors on non-Windows builds.
-    pub fn unsupported(summary: impl Into<String>) -> Self {
-        Self::new(Status::Ok, summary)
-    }
-
     /// Flatten into the `{status, summary, ...rawfields}` JSON object.
     pub fn into_value(self) -> Value {
         let mut obj = self.fields;
-        obj.insert("status".to_string(), Value::String(self.status.as_str().to_string()));
+        obj.insert(
+            "status".to_string(),
+            Value::String(self.status.as_str().to_string()),
+        );
         obj.insert("summary".to_string(), Value::String(self.summary));
         Value::Object(obj)
     }

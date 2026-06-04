@@ -83,7 +83,11 @@ pub fn read(args: Value) -> Result<Value, (ErrorCode, String)> {
         .map_err(|e| (ErrorCode::BadArgs, format!("invalid fs.read args: {e}")))?;
     let bytes = std::fs::read(&args.path).map_err(map_io)?;
     let truncated = bytes.len() > READ_CAP;
-    let slice = if truncated { &bytes[..READ_CAP] } else { &bytes[..] };
+    let slice = if truncated {
+        &bytes[..READ_CAP]
+    } else {
+        &bytes[..]
+    };
     Ok(json!({
         "content": String::from_utf8_lossy(slice),
         "truncated": truncated,

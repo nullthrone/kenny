@@ -21,12 +21,15 @@ pub async fn list(_args: Value) -> Result<Value, (ErrorCode, String)> {
 
 #[derive(serde::Deserialize)]
 struct IdArg {
+    // Read only on Windows; constructed in the non-Windows stub for arg validation.
+    #[allow(dead_code)]
     id: String,
 }
 
 #[derive(serde::Deserialize)]
 struct OptIdArg {
     #[serde(default)]
+    #[allow(dead_code)]
     id: Option<String>,
 }
 
@@ -34,9 +37,17 @@ struct OptIdArg {
 pub async fn install(_args: Value) -> Result<Value, (ErrorCode, String)> {
     #[cfg(windows)]
     {
-        let a: IdArg = serde_json::from_value(_args)
-            .map_err(|e| (ErrorCode::BadArgs, e.to_string()))?;
-        windows_impl::run_change(&["install", "--id", &a.id, "--silent", "--accept-package-agreements", "--accept-source-agreements"]).await
+        let a: IdArg =
+            serde_json::from_value(_args).map_err(|e| (ErrorCode::BadArgs, e.to_string()))?;
+        windows_impl::run_change(&[
+            "install",
+            "--id",
+            &a.id,
+            "--silent",
+            "--accept-package-agreements",
+            "--accept-source-agreements",
+        ])
+        .await
     }
     #[cfg(not(windows))]
     {
@@ -50,8 +61,8 @@ pub async fn install(_args: Value) -> Result<Value, (ErrorCode, String)> {
 pub async fn uninstall(_args: Value) -> Result<Value, (ErrorCode, String)> {
     #[cfg(windows)]
     {
-        let a: IdArg = serde_json::from_value(_args)
-            .map_err(|e| (ErrorCode::BadArgs, e.to_string()))?;
+        let a: IdArg =
+            serde_json::from_value(_args).map_err(|e| (ErrorCode::BadArgs, e.to_string()))?;
         windows_impl::run_change(&["uninstall", "--id", &a.id, "--silent"]).await
     }
     #[cfg(not(windows))]
@@ -65,9 +76,14 @@ pub async fn uninstall(_args: Value) -> Result<Value, (ErrorCode, String)> {
 pub async fn update(_args: Value) -> Result<Value, (ErrorCode, String)> {
     #[cfg(windows)]
     {
-        let a: OptIdArg = serde_json::from_value(_args)
-            .map_err(|e| (ErrorCode::BadArgs, e.to_string()))?;
-        let mut args = vec!["upgrade", "--silent", "--accept-package-agreements", "--accept-source-agreements"];
+        let a: OptIdArg =
+            serde_json::from_value(_args).map_err(|e| (ErrorCode::BadArgs, e.to_string()))?;
+        let mut args = vec![
+            "upgrade",
+            "--silent",
+            "--accept-package-agreements",
+            "--accept-source-agreements",
+        ];
         if let Some(id) = a.id.as_deref() {
             args.push("--id");
             args.push(id);

@@ -54,13 +54,15 @@ struct AdapterArgs {
 pub async fn adapter_reset(_args: Value) -> Result<Value, (ErrorCode, String)> {
     #[cfg(windows)]
     {
-        let a: AdapterArgs = serde_json::from_value(_args)
-            .map_err(|e| (ErrorCode::BadArgs, e.to_string()))?;
+        let a: AdapterArgs =
+            serde_json::from_value(_args).map_err(|e| (ErrorCode::BadArgs, e.to_string()))?;
         windows_impl::adapter_reset(&a.name).await
     }
     #[cfg(not(windows))]
     {
-        let _ = AdapterArgs { name: String::new() };
+        let _ = AdapterArgs {
+            name: String::new(),
+        };
         Err(unsupported("net.adapter_reset"))
     }
 }
@@ -97,7 +99,12 @@ mod windows_impl {
             .args(["-NoProfile", "-NonInteractive", "-Command", &script])
             .output()
             .await
-            .map_err(|e| (ErrorCode::ExecFailed, format!("powershell spawn failed: {e}")))?;
+            .map_err(|e| {
+                (
+                    ErrorCode::ExecFailed,
+                    format!("powershell spawn failed: {e}"),
+                )
+            })?;
         Ok(json!({ "ok": out.status.success() }))
     }
 }

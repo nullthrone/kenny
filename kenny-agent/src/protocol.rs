@@ -180,7 +180,10 @@ mod tests {
             );
             checked += 1;
         }
-        assert!(checked >= 7, "expected to check the golden fixtures, got {checked}");
+        assert!(
+            checked >= 7,
+            "expected to check the golden fixtures, got {checked}"
+        );
     }
 
     #[test]

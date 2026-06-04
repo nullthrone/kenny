@@ -19,7 +19,11 @@ pub struct Config {
     pub token: String,
 
     /// Telemetry push interval in seconds (default 900 per ADR-0007).
-    #[arg(long = "telemetry-interval-secs", env = "KENNY_TELEMETRY_INTERVAL_SECS", default_value_t = 900)]
+    #[arg(
+        long = "telemetry-interval-secs",
+        env = "KENNY_TELEMETRY_INTERVAL_SECS",
+        default_value_t = 900
+    )]
     pub telemetry_interval_secs: u64,
 }
 

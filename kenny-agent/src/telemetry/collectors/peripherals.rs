@@ -16,11 +16,7 @@ pub fn collect() -> Section {
     }
     #[cfg(not(windows))]
     {
-        Section::with_fields(
-            Status::Ok,
-            "n/a on this platform",
-            json!({ "devices": [] }),
-        )
+        Section::with_fields(Status::Ok, "n/a on this platform", json!({ "devices": [] }))
     }
 }
 

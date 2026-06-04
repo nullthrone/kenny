@@ -19,8 +19,12 @@ struct Args {
 
 /// Execute the requested script, honouring `timeout_s` if present.
 pub async fn exec(args: Value) -> Result<Value, (ErrorCode, String)> {
-    let args: Args = serde_json::from_value(args)
-        .map_err(|e| (ErrorCode::BadArgs, format!("invalid powershell.exec args: {e}")))?;
+    let args: Args = serde_json::from_value(args).map_err(|e| {
+        (
+            ErrorCode::BadArgs,
+            format!("invalid powershell.exec args: {e}"),
+        )
+    })?;
 
     let mut cmd = build_command(&args.script);
     let fut = cmd.output();
@@ -28,12 +32,7 @@ pub async fn exec(args: Value) -> Result<Value, (ErrorCode, String)> {
     let output = match args.timeout_s {
         Some(secs) => match tokio::time::timeout(Duration::from_secs(secs), fut).await {
             Ok(res) => res,
-            Err(_) => {
-                return Err((
-                    ErrorCode::Timeout,
-                    format!("tool exceeded {secs}s"),
-                ))
-            }
+            Err(_) => return Err((ErrorCode::Timeout, format!("tool exceeded {secs}s"))),
         },
         None => fut.await,
     }

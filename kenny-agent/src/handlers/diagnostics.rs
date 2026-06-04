@@ -40,8 +40,8 @@ struct ServicesArgs {
 pub fn services(_args: Value) -> Result<Value, (ErrorCode, String)> {
     #[cfg(windows)]
     {
-        let _a: ServicesArgs = serde_json::from_value(_args)
-            .map_err(|e| (ErrorCode::BadArgs, e.to_string()))?;
+        let _a: ServicesArgs =
+            serde_json::from_value(_args).map_err(|e| (ErrorCode::BadArgs, e.to_string()))?;
         windows_impl::services(_a.filter.as_deref())
     }
     #[cfg(not(windows))]
@@ -63,13 +63,16 @@ struct EventLogArgs {
 pub fn eventlog(_args: Value) -> Result<Value, (ErrorCode, String)> {
     #[cfg(windows)]
     {
-        let a: EventLogArgs = serde_json::from_value(_args)
-            .map_err(|e| (ErrorCode::BadArgs, e.to_string()))?;
+        let a: EventLogArgs =
+            serde_json::from_value(_args).map_err(|e| (ErrorCode::BadArgs, e.to_string()))?;
         windows_impl::eventlog(&a.log, a.count)
     }
     #[cfg(not(windows))]
     {
-        let _ = EventLogArgs { log: String::new(), count: 0 };
+        let _ = EventLogArgs {
+            log: String::new(),
+            count: 0,
+        };
         Err(unsupported("diag.eventlog"))
     }
 }
@@ -125,7 +128,10 @@ mod tests {
     #[test]
     fn processes_lists_self() {
         let v = processes(json!({})).unwrap();
-        assert!(v["processes"].as_array().map(|a| !a.is_empty()).unwrap_or(false));
+        assert!(v["processes"]
+            .as_array()
+            .map(|a| !a.is_empty())
+            .unwrap_or(false));
     }
 
     #[cfg(not(windows))]

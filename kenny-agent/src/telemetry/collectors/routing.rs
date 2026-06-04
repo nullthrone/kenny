@@ -20,11 +20,7 @@ pub fn collect() -> Section {
     }
     #[cfg(not(any(windows, target_os = "linux")))]
     {
-        Section::with_fields(
-            Status::Ok,
-            "n/a on this platform",
-            json!({ "routes": [] }),
-        )
+        Section::with_fields(Status::Ok, "n/a on this platform", json!({ "routes": [] }))
     }
 }
 
@@ -35,7 +31,11 @@ mod windows_impl {
     /// Real impl: parse `Get-NetRoute` into `{destination, next_hop, interface, metric}`.
     pub fn collect() -> Section {
         // TODO(windows): query Get-NetRoute / GetIpForwardTable2.
-        Section::with_fields(Status::Ok, "routes via Get-NetRoute", json!({ "routes": [] }))
+        Section::with_fields(
+            Status::Ok,
+            "routes via Get-NetRoute",
+            json!({ "routes": [] }),
+        )
     }
 }
 

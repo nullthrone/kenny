@@ -31,7 +31,11 @@ mod windows_impl {
     /// `warn` when upgrades are pending.
     pub fn collect() -> Section {
         // TODO(windows): reuse handlers::winget list parsing.
-        Section::with_fields(Status::Ok, "0 updates available", json!({ "available": 0, "packages": [] }))
+        Section::with_fields(
+            Status::Ok,
+            "0 updates available",
+            json!({ "available": 0, "packages": [] }),
+        )
     }
 }
 

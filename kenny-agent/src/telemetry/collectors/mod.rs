@@ -87,6 +87,7 @@ pub fn collect_all(wanted: &[String]) -> Map<String, Value> {
 }
 
 /// Names of all sections this agent knows how to collect.
+#[allow(dead_code)] // introspection helper; exercised by tests.
 pub fn section_names() -> Vec<&'static str> {
     registry().into_iter().map(|(n, _)| n).collect()
 }

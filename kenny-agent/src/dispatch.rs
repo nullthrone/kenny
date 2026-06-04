@@ -47,10 +47,7 @@ async fn run(tool: &str, args: Value) -> Result<Value, (ErrorCode, String)> {
 
         "telemetry.collect" => telemetry_collect(args),
 
-        other => Err((
-            ErrorCode::Unsupported,
-            format!("unknown tool: {other}"),
-        )),
+        other => Err((ErrorCode::Unsupported, format!("unknown tool: {other}"))),
     }
 }
 
@@ -59,7 +56,11 @@ fn telemetry_collect(args: Value) -> Result<Value, (ErrorCode, String)> {
     let sections: Vec<String> = args
         .get("sections")
         .and_then(|s| s.as_array())
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
     let snapshot = crate::telemetry::collectors::collect_all(&sections);
     Ok(json!(snapshot))
