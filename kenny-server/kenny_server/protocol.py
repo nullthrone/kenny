@@ -1,0 +1,144 @@
+"""Pydantic models for every wire frame.
+
+The wire contract is ``../docs/protocol.md`` and the golden frames in
+``../docs/fixtures/``. These models validate against those fixtures (see
+``tests/test_fixtures.py``); change a frame shape only when the contract changes.
+
+A discriminated union on ``type`` covers all six frame kinds. Use
+:func:`parse_frame` to turn an inbound JSON object into a model and
+:func:`dump_frame` to turn a model back into a JSON-ready dict.
+"""
+
+from __future__ import annotations
+
+from typing import Annotated, Any, Literal, Union
+
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+
+# ---------------------------------------------------------------------------
+# Shared / leaf types
+# ---------------------------------------------------------------------------
+
+Status = Literal["ok", "warn", "crit"]
+OS = Literal["windows", "linux", "macos"]
+ErrorCode = Literal[
+    "timeout",
+    "not_found",
+    "exec_failed",
+    "unsupported",
+    "bad_args",
+    "internal",
+]
+
+
+class Section(BaseModel):
+    """Base for every telemetry section payload.
+
+    Each section carries a required ``status``/``summary`` plus arbitrary
+    section-specific fields (allowed via ``extra='allow'``), so the server can
+    aggregate fleet health without per-section domain logic.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    status: Status
+    summary: str
+
+
+class ResponseError(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    code: ErrorCode
+    message: str
+
+
+class RegisterMeta(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    hostname: str
+    os: OS
+    version: str
+
+
+# ---------------------------------------------------------------------------
+# Frames
+# ---------------------------------------------------------------------------
+
+
+class Register(BaseModel):
+    """``register`` frame: agent -> server, right after connect."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["register"] = "register"
+    agent_id: str
+    token: str
+    meta: RegisterMeta
+
+
+class Request(BaseModel):
+    """``request`` frame: server -> agent, invoke one capability tool."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["request"] = "request"
+    id: str
+    tool: str
+    args: dict[str, Any] = Field(default_factory=dict)
+
+
+class Response(BaseModel):
+    """``response`` frame: agent -> server, result/error for a ``request``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["response"] = "response"
+    id: str
+    ok: bool
+    result: dict[str, Any] | None = None
+    error: ResponseError | None = None
+
+
+class Telemetry(BaseModel):
+    """``telemetry`` frame: agent -> server, pushed snapshot."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["telemetry"] = "telemetry"
+    agent_id: str
+    collected_at: str
+    snapshot: dict[str, Section]
+
+
+class Ping(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["ping"] = "ping"
+
+
+class Pong(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["pong"] = "pong"
+
+
+Frame = Annotated[
+    Union[Register, Request, Response, Telemetry, Ping, Pong],
+    Field(discriminator="type"),
+]
+
+_FRAME_ADAPTER: TypeAdapter[Frame] = TypeAdapter(Frame)
+
+
+def parse_frame(data: dict[str, Any] | str | bytes) -> Frame:
+    """Parse a JSON object (dict, str, or bytes) into the matching frame model."""
+
+    if isinstance(data, (str, bytes, bytearray)):
+        return _FRAME_ADAPTER.validate_json(data)
+    return _FRAME_ADAPTER.validate_python(data)
+
+
+def dump_frame(model: BaseModel) -> dict[str, Any]:
+    """Serialize a frame model into a JSON-ready dict (omitting unset/None)."""
+
+    return model.model_dump(mode="json", exclude_none=True)
