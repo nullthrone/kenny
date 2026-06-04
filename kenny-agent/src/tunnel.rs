@@ -1,0 +1,182 @@
+//! WebSocket tunnel client.
+//!
+//! Opens one outbound connection to `kenny-server`, sends `register`, then runs
+//! three concurrent concerns over the single socket:
+//!
+//! * **read loop** — decode inbound frames; dispatch `request` → `response`, reply
+//!   to `ping` with `pong`.
+//! * **telemetry scheduler** — push `telemetry` frames on a timer.
+//! * **heartbeat** — send periodic `ping` so the server's missed-interval logic
+//!   keeps us online.
+//!
+//! All outbound frames funnel through an mpsc channel into a single writer task, so
+//! dispatch, telemetry, and heartbeat never contend on the sink. On disconnect the
+//! whole stack tears down and [`run`] reconnects with exponential backoff. See
+//! ADR-0003 (self-built tunnel) and ADR-0004 (agent dials out).
+
+use std::time::Duration;
+
+use futures_util::{SinkExt, StreamExt};
+use tokio::sync::mpsc;
+use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::Message;
+use tracing::{debug, error, info, warn};
+
+use crate::config::Config;
+use crate::dispatch;
+use crate::protocol::{Frame, Register, RegisterMeta};
+use crate::telemetry::scheduler;
+
+/// Initial reconnect backoff.
+const BACKOFF_MIN: Duration = Duration::from_secs(1);
+/// Maximum reconnect backoff.
+const BACKOFF_MAX: Duration = Duration::from_secs(60);
+/// Heartbeat ping interval.
+const HEARTBEAT: Duration = Duration::from_secs(30);
+/// Bound on the outbound frame channel.
+const OUTBOX_CAP: usize = 64;
+
+/// Connect-and-serve forever, reconnecting with exponential backoff.
+pub async fn run(config: Config) -> ! {
+    let mut backoff = BACKOFF_MIN;
+    loop {
+        match serve_once(&config).await {
+            Ok(()) => {
+                info!("tunnel closed cleanly; reconnecting");
+                backoff = BACKOFF_MIN;
+            }
+            Err(e) => {
+                warn!(error = %e, backoff_secs = backoff.as_secs(), "tunnel error; backing off");
+            }
+        }
+        tokio::time::sleep(backoff).await;
+        backoff = (backoff * 2).min(BACKOFF_MAX);
+    }
+}
+
+/// One full session: connect, register, serve until the socket drops.
+async fn serve_once(config: &Config) -> anyhow::Result<()> {
+    info!(server = %config.server, "connecting");
+    let (ws, _resp) = connect_async(&config.server).await?;
+    let (mut sink, mut stream) = ws.split();
+
+    // Single outbound channel; one writer task owns the sink.
+    let (tx, mut rx) = mpsc::channel::<Frame>(OUTBOX_CAP);
+
+    // Register immediately.
+    tx.send(Frame::Register(Register {
+        agent_id: config.agent_id.clone(),
+        token: config.token.clone(),
+        meta: RegisterMeta {
+            hostname: crate::util::hostname(),
+            os: crate::util::os_family().to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+        },
+    }))
+    .await
+    .ok();
+
+    // Writer task: serialize frames and push them onto the socket.
+    let writer = tokio::spawn(async move {
+        while let Some(frame) = rx.recv().await {
+            let text = match serde_json::to_string(&frame) {
+                Ok(t) => t,
+                Err(e) => {
+                    error!(error = %e, "failed to serialize outbound frame");
+                    continue;
+                }
+            };
+            if let Err(e) = sink.send(Message::Text(text)).await {
+                warn!(error = %e, "write failed; closing session");
+                break;
+            }
+        }
+    });
+
+    // Telemetry scheduler.
+    let telemetry_tx = tx.clone();
+    let agent_id = config.agent_id.clone();
+    let interval = Duration::from_secs(config.telemetry_interval_secs);
+    let telemetry = tokio::spawn(scheduler::run(agent_id, interval, telemetry_tx));
+
+    // Heartbeat.
+    let heartbeat_tx = tx.clone();
+    let heartbeat = tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(HEARTBEAT);
+        ticker.tick().await; // consume immediate tick
+        loop {
+            ticker.tick().await;
+            if heartbeat_tx.send(Frame::Ping).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    // Read loop: dispatch requests, answer pings. Runs until the socket closes.
+    let read_result = read_loop(&mut stream, &tx).await;
+
+    // Tear down the session's tasks.
+    drop(tx);
+    telemetry.abort();
+    heartbeat.abort();
+    let _ = writer.await;
+
+    read_result
+}
+
+/// Process inbound messages until the stream ends.
+async fn read_loop<S>(stream: &mut S, tx: &mpsc::Sender<Frame>) -> anyhow::Result<()>
+where
+    S: StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
+{
+    while let Some(msg) = stream.next().await {
+        match msg? {
+            Message::Text(text) => {
+                handle_text(&text, tx).await;
+            }
+            Message::Binary(_) => {
+                debug!("ignoring unexpected binary message");
+            }
+            Message::Ping(payload) => {
+                // Reply at the WS-protocol level via a pong frame in our protocol;
+                // tungstenite also auto-pongs control frames, but the wire contract
+                // models ping/pong as JSON frames too.
+                debug!(bytes = payload.len(), "ws ping");
+            }
+            Message::Pong(_) => {}
+            Message::Close(_) => {
+                info!("server closed the connection");
+                break;
+            }
+            Message::Frame(_) => {}
+        }
+    }
+    Ok(())
+}
+
+/// Decode one JSON text frame and act on it.
+async fn handle_text(text: &str, tx: &mpsc::Sender<Frame>) {
+    let frame: Frame = match serde_json::from_str(text) {
+        Ok(f) => f,
+        Err(e) => {
+            warn!(error = %e, "dropping undecodable frame");
+            return;
+        }
+    };
+    match frame {
+        Frame::Request(req) => {
+            let response = dispatch::handle(req).await;
+            if tx.send(Frame::Response(response)).await.is_err() {
+                warn!("outbound channel closed while sending response");
+            }
+        }
+        Frame::Ping => {
+            let _ = tx.send(Frame::Pong).await;
+        }
+        Frame::Pong => {}
+        // The agent never expects to receive these; ignore defensively.
+        Frame::Register(_) | Frame::Response(_) | Frame::Telemetry(_) => {
+            debug!("ignoring frame not addressed to the agent");
+        }
+    }
+}
