@@ -14,6 +14,11 @@
 - Claude talks to `kenny-server` over MCP (Streamable HTTP). That MCP layer is
   separate from this agent⇄server wire protocol; MCP tool calls are translated by
   the server into `request` frames on the tunnel.
+- Authentication is asymmetric and out of scope of this wire protocol except for the
+  agent's `register.token`: agents authenticate to the server with a per-agent token
+  (below); the **operator** authenticates to the server (MCP endpoint + web UI) with a
+  separate operator token (see ADR-0008). The server authenticates to the agent via TLS
+  (the agent dials a known `wss://` URL).
 
 ## Frame envelope
 
@@ -177,10 +182,12 @@ Each section payload **must** include `status` ∈ {`ok`, `warn`, `crit`} and a 
 **Update & stability:** `reboot_pending`, `os_support`, `reliability`, `app_updates`.
 **Operations & daily:** `uptime`, `time_sync`, `printers`, `wifi_quality`, `autostart`.
 
-Health thresholds (e.g. disk > 90% ⇒ `crit`, Defender scan older than 14 days ⇒
-`warn`) are evaluated **server-side** in `kenny-server/kenny_server/health_rules.py`.
-The agent SHOULD set a reasonable `status` per section, but the server's rules are
-authoritative for fleet aggregation.
+Health thresholds (e.g. disk used > 80% ⇒ `warn` and ≥ 95% ⇒ `crit`; Defender
+real-time protection off ⇒ `crit`; Defender scan older than 14 days ⇒ `warn`) are
+evaluated **server-side** in `kenny-server/kenny_server/health_rules.py`. The agent
+SHOULD set a reasonable `status` per section, but the server's rules are authoritative
+for fleet aggregation. These thresholds are illustrative of the data-driven rules in
+`health_rules.py`, which is the source of truth for exact boundaries.
 
 ## Versioning
 

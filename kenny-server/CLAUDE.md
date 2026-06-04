@@ -13,6 +13,9 @@ read it there, do not restate schemas here.
   the catalog in the contract.
 - Telemetry read-paths (`fleet_overview`, `agent_health`, `agent_snapshot`) read from
   `store.py`; health thresholds live only in `health_rules.py`.
+- Operator auth (MCP + `/api` + UI) is one bearer token in `auth.py`
+  (`OperatorAuthMiddleware`); `/agent/ws` is exempt (agents use their own token). See
+  ADR-0008. Don't open these surfaces without going through that middleware.
 - Type-hint everything; keep I/O async. Format/lint with `ruff`.
 
 ## Testing without the real agent
