@@ -30,6 +30,7 @@ from .auth import (
     load_operator_tokens,
 )
 from .chat import ChatSessions
+from .distribution import ShareLinks, build_download_routes
 from .registry import AgentRegistry
 from .store import TelemetryStore
 from .tokenstore import AgentTokenStore
@@ -49,6 +50,7 @@ def build_app(db_path: str | None = None) -> Starlette:
     tunnel = AgentTunnel(registry, store)
     call_log = CallLog()
     chat_sessions = ChatSessions()
+    share_links = ShareLinks()
 
     mcp = FastMCP("kenny")
     register_tools(mcp, registry=registry, store=store, tunnel=tunnel, call_log=call_log)
@@ -79,6 +81,12 @@ def build_app(db_path: str | None = None) -> Starlette:
         call_log=call_log,
         sessions=chat_sessions,
     )
+    download_routes = build_download_routes(
+        registry=registry,
+        token_store=token_store,
+        tunnel=tunnel,
+        share_links=share_links,
+    )
 
     # `operator_token` is the canonical single token (cookie value, tests);
     # `operator_tokens` is the full accepted set (supports KENNY_OPERATOR_TOKENS).
@@ -90,6 +98,7 @@ def build_app(db_path: str | None = None) -> Starlette:
         Mount("/mcp", app=mcp_app),
         *build_auth_routes(operator_tokens),
         *chat_routes,
+        *download_routes,
         *api_routes,
     ]
 
@@ -104,6 +113,7 @@ def build_app(db_path: str | None = None) -> Starlette:
     app.state.tunnel = tunnel
     app.state.call_log = call_log
     app.state.chat_sessions = chat_sessions
+    app.state.share_links = share_links
     app.state.mcp = mcp
     app.state.operator_token = operator_token
     app.state.operator_tokens = operator_tokens

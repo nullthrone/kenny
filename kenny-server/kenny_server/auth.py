@@ -117,9 +117,13 @@ def _credential(scope: dict, cookie_name: str) -> str | None:
 
 
 def _is_public(path: str) -> bool:
-    """Paths reachable without an operator token."""
+    """Paths reachable without an operator token.
 
-    return path in ("/login", "/logout")
+    ``/d/*`` are nonce-gated agent-distribution downloads (the nonce in the URL is the
+    credential), so a target user / the agent self-updater can fetch without a login.
+    """
+
+    return path in ("/login", "/logout") or path.startswith("/d/")
 
 
 def _is_api_or_mcp(path: str) -> bool:

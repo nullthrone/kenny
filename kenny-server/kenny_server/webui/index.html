@@ -127,7 +127,12 @@
             <div class="muted">${data.online ? "online" : "offline"} ·
               ${(data.meta || {}).hostname || ""} · ${data.collected_at || "no telemetry"}</div>
           </div>
-          <button onclick="refreshNow('${id}')">refresh now</button>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button onclick="refreshNow('${id}')">refresh now</button>
+            <button onclick="downloadInstaller('${id}')">download installer</button>
+            <button onclick="shareInstaller('${id}')">share link</button>
+            <button onclick="updateAgent('${id}')">update agent</button>
+          </div>
         </div>
         <div class="row">
           <div class="col">
@@ -149,6 +154,25 @@
         await getJSON("/api/agent/" + encodeURIComponent(id) + "/refresh", { method: "POST" });
       } catch (e) { alert("refresh failed: " + e.message); }
       showAgent(id);
+    }
+
+    // -- agent distribution (installer download / share link / update) ----
+    function downloadInstaller(id) {
+      // operator cookie authorizes this GET; the browser downloads the ZIP.
+      window.location = "/api/agents/" + encodeURIComponent(id) + "/installer";
+    }
+    async function shareInstaller(id) {
+      try {
+        const r = await getJSON("/api/agents/" + encodeURIComponent(id) + "/share-link", { method: "POST" });
+        prompt("One-time installer link (expires in " + r.expires_in + "s):", r.url);
+      } catch (e) { alert("share failed: " + e.message); }
+    }
+    async function updateAgent(id) {
+      if (!confirm("Push a self-update to '" + id + "' now?")) return;
+      try {
+        const r = await getJSON("/api/agents/" + encodeURIComponent(id) + "/update", { method: "POST" });
+        alert("update triggered: v" + r.version);
+      } catch (e) { alert("update failed: " + e.message); }
     }
 
     // -- tabs -----------------------------------------------------------
