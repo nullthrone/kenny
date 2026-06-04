@@ -28,11 +28,19 @@ _DEV_OPERATOR_TOKEN = "dev-operator-token"
 
 
 def load_operator_token() -> str:
-    """Operator token from ``KENNY_OPERATOR_TOKEN``, or an insecure dev fallback."""
+    """Primary operator token (``KENNY_OPERATOR_TOKEN``) or insecure dev fallback.
+
+    Kept for callers that want a single canonical token (e.g. the login cookie
+    value and tests). Additional accepted tokens live in
+    :func:`load_operator_tokens`.
+    """
 
     token = os.environ.get("KENNY_OPERATOR_TOKEN", "").strip()
     if token:
         return token
+    if os.environ.get("KENNY_OPERATOR_TOKENS", "").strip():
+        # Only the comma-separated set is configured; use its first member.
+        return load_operator_tokens()[0]
     logger.warning(
         "KENNY_OPERATOR_TOKEN is not set; using an INSECURE dev operator token. "
         "Set KENNY_OPERATOR_TOKEN (and serve over wss/https) before any non-local use."
@@ -40,8 +48,48 @@ def load_operator_token() -> str:
     return _DEV_OPERATOR_TOKEN
 
 
-def _token_valid(provided: str | None, expected: str) -> bool:
-    return bool(provided) and hmac.compare_digest(provided, expected)
+def load_operator_tokens() -> list[str]:
+    """All accepted operator tokens.
+
+    Combines ``KENNY_OPERATOR_TOKEN`` (single) with the optional
+    ``KENNY_OPERATOR_TOKENS`` comma-separated list. Falls back to the insecure
+    dev token (with a warning) when neither is set.
+    """
+
+    tokens: list[str] = []
+    single = os.environ.get("KENNY_OPERATOR_TOKEN", "").strip()
+    if single:
+        tokens.append(single)
+    raw = os.environ.get("KENNY_OPERATOR_TOKENS", "").strip()
+    for part in raw.split(","):
+        part = part.strip()
+        if part and part not in tokens:
+            tokens.append(part)
+    if tokens:
+        return tokens
+    logger.warning(
+        "No operator token configured (KENNY_OPERATOR_TOKEN/KENNY_OPERATOR_TOKENS); "
+        "using an INSECURE dev operator token. Set one (and serve over wss/https) "
+        "before any non-local use."
+    )
+    return [_DEV_OPERATOR_TOKEN]
+
+
+def _token_valid(provided: str | None, expected: str | list[str]) -> bool:
+    """Constant-time check of ``provided`` against one or many accepted tokens.
+
+    Always compares against every candidate (no short-circuit) so timing does
+    not leak which token, if any, matched.
+    """
+
+    if not provided:
+        return False
+    candidates = [expected] if isinstance(expected, str) else expected
+    matched = False
+    for candidate in candidates:
+        if hmac.compare_digest(provided, candidate):
+            matched = True
+    return matched
 
 
 def _bearer_from_headers(scope: dict) -> str | None:
@@ -88,8 +136,15 @@ class OperatorAuthMiddleware:
     through unbuffered, so MCP streaming/SSE is preserved.
     """
 
-    def __init__(self, app, *, token: str, cookie_name: str = COOKIE_NAME) -> None:
+    def __init__(
+        self,
+        app,
+        *,
+        token: str | list[str],
+        cookie_name: str = COOKIE_NAME,
+    ) -> None:
         self.app = app
+        # Accept a single token or a list; both flow through `_token_valid`.
         self.token = token
         self.cookie_name = cookie_name
 
@@ -145,8 +200,21 @@ _LOGIN_HTML = """<!DOCTYPE html>
 </body></html>"""
 
 
-def build_auth_routes(token: str, *, cookie_name: str = COOKIE_NAME) -> list[Route]:
+def _tls_enabled() -> bool:
+    """Whether the deployment is behind TLS (set the ``secure`` cookie flag)."""
+
+    return os.environ.get("KENNY_TLS", "").strip() in ("1", "true", "True", "yes")
+
+
+def build_auth_routes(
+    token: str | list[str], *, cookie_name: str = COOKIE_NAME
+) -> list[Route]:
     """Login/logout routes (public; the middleware exempts them)."""
+
+    # The cookie carries one canonical token (the first accepted one); any
+    # configured token is accepted at login.
+    cookie_value = token[0] if isinstance(token, list) else token
+    secure_cookie = _tls_enabled()
 
     async def login(request: Request) -> Response:
         if request.method == "POST":
@@ -155,9 +223,14 @@ def build_auth_routes(token: str, *, cookie_name: str = COOKIE_NAME) -> list[Rou
             if _token_valid(provided, token):
                 resp = RedirectResponse(url="/", status_code=303)
                 # Cookie carries the shared token; HttpOnly so page JS can't read it.
-                # `secure` is left off so it works over local http; set it behind TLS.
+                # `secure` is set behind TLS (KENNY_TLS=1) so it isn't sent over http.
                 resp.set_cookie(
-                    cookie_name, token, httponly=True, samesite="lax", path="/"
+                    cookie_name,
+                    cookie_value,
+                    httponly=True,
+                    samesite="lax",
+                    secure=secure_cookie,
+                    path="/",
                 )
                 return resp
             return HTMLResponse(

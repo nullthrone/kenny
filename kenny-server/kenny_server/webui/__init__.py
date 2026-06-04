@@ -16,6 +16,7 @@ from starlette.routing import Route
 from ..chat import ChatExecutor, ChatSessions, confirm_pending, run_turn
 from ..registry import AgentRegistry
 from ..store import TelemetryStore
+from ..tokenstore import AgentTokenStore
 from ..tools import CallLog, build_health
 from ..tunnel import AgentTunnel, ToolError
 
@@ -28,6 +29,7 @@ def build_api_routes(
     store: TelemetryStore,
     tunnel: AgentTunnel,
     call_log: CallLog,
+    token_store: AgentTokenStore | None = None,
 ) -> list[Route]:
     """Build the dashboard's static + JSON routes."""
 
@@ -83,11 +85,28 @@ def build_api_routes(
             await store.insert(agent_id, datetime.now(timezone.utc).isoformat(), result)
         return JSONResponse({"ok": True})
 
+    async def api_rotate_token(request: Request) -> JSONResponse:
+        """Mint (or rotate) a per-agent token. Inherits /api operator auth.
+
+        Returns ``{token: <plaintext once>}``; the plaintext is not stored and
+        cannot be retrieved again. This is the entry point the installer-download
+        workstream calls to provision an agent.
+        """
+
+        if token_store is None:
+            return JSONResponse(
+                {"error": "token store not configured"}, status_code=503
+            )
+        agent_id = request.path_params["id"]
+        token = await token_store.create_or_rotate(agent_id)
+        return JSONResponse({"agent_id": agent_id, "token": token})
+
     return [
         Route("/", index),
         Route("/api/fleet", api_fleet),
         Route("/api/agent/{id}", api_agent),
         Route("/api/agent/{id}/refresh", api_refresh, methods=["POST"]),
+        Route("/api/agents/{id}/token", api_rotate_token, methods=["POST"]),
     ]
 
 

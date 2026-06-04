@@ -124,7 +124,7 @@ class AgentTunnel:
             await websocket.send_json(payload)
 
         try:
-            self.registry.register(
+            await self.registry.register_async(
                 frame.agent_id, frame.token, frame.meta.model_dump(), send_fn
             )
         except AuthError:

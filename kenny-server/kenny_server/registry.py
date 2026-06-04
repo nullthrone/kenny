@@ -14,7 +14,10 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
+
+if TYPE_CHECKING:
+    from .tokenstore import AgentTokenStore
 
 SendFn = Callable[[dict[str, Any]], Awaitable[None]]
 
@@ -66,17 +69,58 @@ class AuthError(Exception):
 class AgentRegistry:
     """Tracks agents, their connections, and the active-agent selection."""
 
-    def __init__(self, tokens: dict[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        tokens: dict[str, str] | None = None,
+        token_store: "AgentTokenStore | None" = None,
+    ) -> None:
         self._tokens = tokens if tokens is not None else load_tokens()
+        self._token_store = token_store
         self._agents: dict[str, Agent] = {}
         self._active_agent: str | None = None
+
+    @property
+    def token_store(self) -> "AgentTokenStore | None":
+        return self._token_store
+
+    @token_store.setter
+    def token_store(self, store: "AgentTokenStore | None") -> None:
+        self._token_store = store
 
     # -- auth & connection lifecycle ---------------------------------------
 
     def authenticate(self, agent_id: str, token: str) -> None:
+        """Synchronous dev/env-map auth (fallback when no token store is wired)."""
+
         expected = self._tokens.get(agent_id)
         if expected is None or token != expected:
             raise AuthError(f"authentication failed for agent {agent_id!r}")
+
+    async def authenticate_async(self, agent_id: str, token: str) -> None:
+        """Authenticate against the SQLite token store, else the dev/env map.
+
+        The async WebSocket handshake calls this so the hashed per-agent token
+        store is consulted; the in-memory dev/env map remains the bootstrap when
+        no store is wired (e.g. unit tests that build a bare registry).
+        """
+
+        if self._token_store is not None:
+            if await self._token_store.verify(agent_id, token):
+                return
+            raise AuthError(f"authentication failed for agent {agent_id!r}")
+        self.authenticate(agent_id, token)
+
+    async def register_async(
+        self,
+        agent_id: str,
+        token: str,
+        meta: dict[str, Any],
+        send_fn: SendFn,
+    ) -> Agent:
+        """Authenticate via the token store (async) and mark the agent online."""
+
+        await self.authenticate_async(agent_id, token)
+        return self._mark_online(agent_id, meta, send_fn)
 
     def register(
         self,
@@ -88,6 +132,11 @@ class AgentRegistry:
         """Authenticate and mark an agent online with its send function."""
 
         self.authenticate(agent_id, token)
+        return self._mark_online(agent_id, meta, send_fn)
+
+    def _mark_online(
+        self, agent_id: str, meta: dict[str, Any], send_fn: SendFn
+    ) -> Agent:
         now = datetime.now(timezone.utc)
         agent = self._agents.get(agent_id) or Agent(agent_id=agent_id)
         agent.meta = meta

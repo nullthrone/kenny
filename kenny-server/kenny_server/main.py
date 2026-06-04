@@ -23,10 +23,16 @@ from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.routing import Mount, WebSocketRoute
 
-from .auth import OperatorAuthMiddleware, build_auth_routes, load_operator_token
+from .auth import (
+    OperatorAuthMiddleware,
+    build_auth_routes,
+    load_operator_token,
+    load_operator_tokens,
+)
 from .chat import ChatSessions
 from .registry import AgentRegistry
 from .store import TelemetryStore
+from .tokenstore import AgentTokenStore
 from .tools import CallLog, register_tools
 from .tunnel import AgentTunnel
 from .webui import build_api_routes, build_chat_routes
@@ -37,7 +43,8 @@ def build_app(db_path: str | None = None) -> Starlette:
 
     db_path = db_path or os.environ.get("KENNY_DB_PATH", "kenny.sqlite")
 
-    registry = AgentRegistry()
+    token_store = AgentTokenStore(db_path)
+    registry = AgentRegistry(token_store=token_store)
     store = TelemetryStore(db_path)
     tunnel = AgentTunnel(registry, store)
     call_log = CallLog()
@@ -50,14 +57,20 @@ def build_app(db_path: str | None = None) -> Starlette:
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette) -> AsyncIterator[None]:
         await store.connect()
+        await token_store.connect()
         await store.prune()
         # Chain the MCP app's own lifespan (session manager, etc.).
         async with mcp_app.router.lifespan_context(app):
             yield
+        await token_store.close()
         await store.close()
 
     api_routes = build_api_routes(
-        registry=registry, store=store, tunnel=tunnel, call_log=call_log
+        registry=registry,
+        store=store,
+        tunnel=tunnel,
+        call_log=call_log,
+        token_store=token_store,
     )
     chat_routes = build_chat_routes(
         registry=registry,
@@ -67,28 +80,33 @@ def build_app(db_path: str | None = None) -> Starlette:
         sessions=chat_sessions,
     )
 
+    # `operator_token` is the canonical single token (cookie value, tests);
+    # `operator_tokens` is the full accepted set (supports KENNY_OPERATOR_TOKENS).
     operator_token = load_operator_token()
+    operator_tokens = load_operator_tokens()
 
     routes = [
         WebSocketRoute("/agent/ws", tunnel.endpoint),
         Mount("/mcp", app=mcp_app),
-        *build_auth_routes(operator_token),
+        *build_auth_routes(operator_tokens),
         *chat_routes,
         *api_routes,
     ]
 
     # Operator auth gates /mcp, /api, and the UI; /agent/ws (agent token) is exempt.
-    middleware = [Middleware(OperatorAuthMiddleware, token=operator_token)]
+    middleware = [Middleware(OperatorAuthMiddleware, token=operator_tokens)]
 
     app = Starlette(routes=routes, middleware=middleware, lifespan=lifespan)
     # Expose singletons for tests / introspection.
     app.state.registry = registry
     app.state.store = store
+    app.state.token_store = token_store
     app.state.tunnel = tunnel
     app.state.call_log = call_log
     app.state.chat_sessions = chat_sessions
     app.state.mcp = mcp
     app.state.operator_token = operator_token
+    app.state.operator_tokens = operator_tokens
     return app
 
 
