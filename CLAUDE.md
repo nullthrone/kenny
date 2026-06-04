@@ -39,5 +39,5 @@ not duplicated here. Start with `docs/adr/0001-use-madr-and-record-decisions.md`
 
 ## Skills & commands
 
-`/new-adr`, `/add-tool`, `/add-collector`, `/contract-check`, `/e2e`. Skills:
+`/new-adr`, `/add-tool`, `/add-collector`, `/contract-check`, `/e2e`, `/security-audit`. Skills:
 `kenny-protocol`, `kenny-add-capability`, `kenny-telemetry`.

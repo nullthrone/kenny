@@ -1,0 +1,41 @@
+version: 2
+
+updates:
+  # Python server (pyproject.toml)
+  - package-ecosystem: pip
+    directory: /kenny-server
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "python"]
+    groups:
+      python-minor-patch:
+        update-types: ["minor", "patch"]
+
+  # Rust agent (Cargo.toml / Cargo.lock)
+  - package-ecosystem: cargo
+    directory: /kenny-agent
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "rust"]
+    groups:
+      cargo-minor-patch:
+        update-types: ["minor", "patch"]
+
+  # GitHub Actions used by CI + release workflows
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    labels: ["dependencies", "ci"]
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # Server container base image
+  - package-ecosystem: docker
+    directory: /kenny-server
+    schedule:
+      interval: weekly
+    labels: ["dependencies", "docker"]
