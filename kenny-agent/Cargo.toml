@@ -27,6 +27,12 @@ windows = { version = "0.58", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_System_Threading",
 ] }
+# Windows service lifecycle (install/uninstall/run-service + SCM control handler).
+windows-service = "0.7"
+# Self-update (download + verify + stage). Windows-only because `agent.update`
+# returns `unsupported` off Windows.
+sha2 = "0.10"
+ureq = { version = "2", default-features = false, features = ["tls"] }
 
 [profile.release]
 strip = true

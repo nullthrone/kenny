@@ -36,26 +36,78 @@ const HEARTBEAT: Duration = Duration::from_secs(30);
 /// Bound on the outbound frame channel.
 const OUTBOX_CAP: usize = 64;
 
-/// Connect-and-serve forever, reconnecting with exponential backoff.
+/// Connect-and-serve forever, reconnecting with exponential backoff. Never returns.
+///
+/// This is the foreground (`run`) path. For the Windows service path that must stop
+/// gracefully on an SCM control event, use [`run_until`] with a shutdown signal.
 pub async fn run(config: Config) -> ! {
+    // A receiver that never fires: the foreground agent reconnects forever.
+    let (_tx, never) = tokio::sync::watch::channel(false);
+    run_until(config, never).await;
+    // `run_until` only returns when `shutdown` fires, which `never` never does.
+    unreachable!("foreground tunnel run returned without a shutdown signal")
+}
+
+/// Connect-and-serve with exponential backoff until `shutdown` flips to `true`.
+///
+/// The foreground [`run`] path passes a receiver that never fires (so it loops
+/// forever); the Windows service passes a [`watch::Receiver`](tokio::sync::watch)
+/// driven by the SCM stop handler so the loop ends and the process exits cleanly.
+pub async fn run_until(config: Config, mut shutdown: tokio::sync::watch::Receiver<bool>) {
+    // Honor a shutdown that was requested before we ever connected.
+    if *shutdown.borrow() {
+        return;
+    }
     let mut backoff = BACKOFF_MIN;
     loop {
-        match serve_once(&config).await {
-            Ok(()) => {
-                info!("tunnel closed cleanly; reconnecting");
-                backoff = BACKOFF_MIN;
+        // Use a separate watcher clone for the select arm so `serve_once` can hold
+        // its own mutable borrow of `shutdown` concurrently.
+        let mut watcher = shutdown.clone();
+        tokio::select! {
+            biased;
+            _ = watcher.changed() => {
+                if *watcher.borrow() {
+                    info!("shutdown signalled; stopping tunnel");
+                    return;
+                }
             }
-            Err(e) => {
-                warn!(error = %e, backoff_secs = backoff.as_secs(), "tunnel error; backing off");
+            outcome = serve_once(&config, &mut shutdown) => {
+                match outcome {
+                    Ok(()) => {
+                        // A clean close may be a graceful shutdown; check before reconnecting.
+                        if *shutdown.borrow() {
+                            return;
+                        }
+                        info!("tunnel closed cleanly; reconnecting");
+                        backoff = BACKOFF_MIN;
+                    }
+                    Err(e) => {
+                        warn!(error = %e, backoff_secs = backoff.as_secs(), "tunnel error; backing off");
+                    }
+                }
             }
         }
-        tokio::time::sleep(backoff).await;
+        // Back off, but wake immediately if asked to shut down.
+        let mut watcher = shutdown.clone();
+        tokio::select! {
+            biased;
+            _ = watcher.changed() => {
+                if *watcher.borrow() {
+                    info!("shutdown signalled during backoff; stopping tunnel");
+                    return;
+                }
+            }
+            _ = tokio::time::sleep(backoff) => {}
+        }
         backoff = (backoff * 2).min(BACKOFF_MAX);
     }
 }
 
-/// One full session: connect, register, serve until the socket drops.
-async fn serve_once(config: &Config) -> anyhow::Result<()> {
+/// One full session: connect, register, serve until the socket drops or shutdown.
+async fn serve_once(
+    config: &Config,
+    shutdown: &mut tokio::sync::watch::Receiver<bool>,
+) -> anyhow::Result<()> {
     info!(server = %config.server, "connecting");
     let (ws, _resp) = connect_async(&config.server).await?;
     let (mut sink, mut stream) = ws.split();
@@ -112,8 +164,18 @@ async fn serve_once(config: &Config) -> anyhow::Result<()> {
         }
     });
 
-    // Read loop: dispatch requests, answer pings. Runs until the socket closes.
-    let read_result = read_loop(&mut stream, &tx).await;
+    // Read loop: dispatch requests, answer pings. Runs until the socket closes or a
+    // shutdown is requested (service stop).
+    let read_result = tokio::select! {
+        biased;
+        _ = shutdown.changed() => {
+            if *shutdown.borrow() {
+                info!("shutdown signalled; ending session");
+            }
+            Ok(())
+        }
+        r = read_loop(&mut stream, &tx) => r,
+    };
 
     // Tear down the session's tasks.
     drop(tx);
