@@ -20,7 +20,7 @@ from typing import AsyncIterator
 
 from fastmcp import FastMCP
 from starlette.applications import Starlette
-from starlette.routing import Mount, Route, WebSocketRoute
+from starlette.routing import Mount, WebSocketRoute
 
 from .registry import AgentRegistry
 from .store import TelemetryStore
