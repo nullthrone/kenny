@@ -82,11 +82,7 @@ mod windows_impl {
         let (status, summary) = match signal {
             Some(s) if s < 50 => (
                 Status::Warn,
-                format!(
-                    "weak wifi {}% ({})",
-                    s,
-                    ssid.as_deref().unwrap_or("?")
-                ),
+                format!("weak wifi {}% ({})", s, ssid.as_deref().unwrap_or("?")),
             ),
             Some(s) => (
                 Status::Ok,

@@ -62,15 +62,11 @@ Get-BitLockerVolume | ForEach-Object {
                 .unwrap_or("")
                 .trim_end_matches('\\')
                 .to_uppercase();
-            mount == sys_norm
-                && vol.get("protection_status").and_then(Value::as_i64) != Some(1)
+            mount == sys_norm && vol.get("protection_status").and_then(Value::as_i64) != Some(1)
         });
 
         let (status, summary) = if system_unprotected {
-            (
-                Status::Warn,
-                format!("{sys_norm} not BitLocker-protected"),
-            )
+            (Status::Warn, format!("{sys_norm} not BitLocker-protected"))
         } else {
             (Status::Ok, "system drive encrypted".to_string())
         };

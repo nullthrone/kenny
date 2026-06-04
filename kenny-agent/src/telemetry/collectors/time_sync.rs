@@ -51,11 +51,7 @@ mod windows_impl {
                 "source" => source = Some(val.to_string()),
                 // e.g. "Last Successful Sync Time" or "Phase Offset: 0.0123456s"
                 "phase offset" => {
-                    offset_secs = val
-                        .trim_end_matches('s')
-                        .trim()
-                        .parse::<f64>()
-                        .ok();
+                    offset_secs = val.trim_end_matches('s').trim().parse::<f64>().ok();
                 }
                 _ => {}
             }

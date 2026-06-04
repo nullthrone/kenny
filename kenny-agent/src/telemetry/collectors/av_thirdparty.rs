@@ -68,9 +68,9 @@ Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntiVirusProduct -Err
             })
             .collect();
 
-        let stale = third_party.iter().any(|p| {
-            p.get("up_to_date").and_then(Value::as_bool) == Some(false)
-        });
+        let stale = third_party
+            .iter()
+            .any(|p| p.get("up_to_date").and_then(Value::as_bool) == Some(false));
 
         let (status, summary) = if third_party.is_empty() {
             (Status::Ok, "no third-party AV".to_string())

@@ -33,11 +33,7 @@ mod windows_impl {
     /// when upgrades are pending.
     pub fn collect() -> Section {
         let output = Command::new("winget")
-            .args([
-                "upgrade",
-                "--include-unknown",
-                "--accept-source-agreements",
-            ])
+            .args(["upgrade", "--include-unknown", "--accept-source-agreements"])
             .output();
 
         let raw = match output {
@@ -104,7 +100,12 @@ mod windows_impl {
             let version = slice_cols(line, ver_col, avail_col).trim().to_string();
             let available = match src_col {
                 Some(s) => slice_cols(line, avail_col, s).trim().to_string(),
-                None => line.chars().skip(avail_col).collect::<String>().trim().to_string(),
+                None => line
+                    .chars()
+                    .skip(avail_col)
+                    .collect::<String>()
+                    .trim()
+                    .to_string(),
             };
             if id.is_empty() || name.is_empty() {
                 continue;
@@ -122,7 +123,10 @@ mod windows_impl {
     /// Slice a line by character offsets `[start, end)`, tolerating short lines and
     /// multibyte characters (winget pads with Unicode where locales vary).
     fn slice_cols(line: &str, start: usize, end: usize) -> String {
-        line.chars().skip(start).take(end.saturating_sub(start)).collect()
+        line.chars()
+            .skip(start)
+            .take(end.saturating_sub(start))
+            .collect()
     }
 }
 

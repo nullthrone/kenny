@@ -57,9 +57,7 @@ Get-NetRoute -ErrorAction SilentlyContinue | ForEach-Object {
 
         let default_iface = routes
             .iter()
-            .find(|r| {
-                r.get("destination").and_then(Value::as_str) == Some("0.0.0.0/0")
-            })
+            .find(|r| r.get("destination").and_then(Value::as_str) == Some("0.0.0.0/0"))
             .and_then(|r| r.get("interface").and_then(Value::as_str))
             .map(str::to_string);
 

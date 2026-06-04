@@ -58,10 +58,7 @@ try {
             );
         };
 
-        let crashes = v
-            .get("recent_crashes")
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
+        let crashes = v.get("recent_crashes").and_then(Value::as_u64).unwrap_or(0);
         let index = v.get("stability_index").cloned().unwrap_or(Value::Null);
 
         let (status, summary) = if crashes >= 20 {

@@ -46,11 +46,7 @@ Get-PhysicalDisk | ForEach-Object {
 "#;
 
         let Some(v) = winps::run_json(script) else {
-            return Section::with_fields(
-                Status::Ok,
-                "SMART unavailable",
-                json!({ "disks": [] }),
-            );
+            return Section::with_fields(Status::Ok, "SMART unavailable", json!({ "disks": [] }));
         };
         let disks = winps::as_array(v);
 

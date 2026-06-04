@@ -87,7 +87,9 @@ try {
         let failed = recent
             .iter()
             .filter(|u| {
-                u.get("result").and_then(Value::as_str).map(str::to_lowercase)
+                u.get("result")
+                    .and_then(Value::as_str)
+                    .map(str::to_lowercase)
                     == Some("failed".to_string())
             })
             .count();

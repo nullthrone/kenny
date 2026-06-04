@@ -62,8 +62,7 @@ Get-CimInstance -ClassName Win32_Service | ForEach-Object {
             .filter(|s| {
                 let start = s.get("start").and_then(Value::as_str).unwrap_or("");
                 let state = s.get("status").and_then(Value::as_str).unwrap_or("");
-                start.eq_ignore_ascii_case("Auto")
-                    && !state.eq_ignore_ascii_case("Running")
+                start.eq_ignore_ascii_case("Auto") && !state.eq_ignore_ascii_case("Running")
             })
             .filter_map(|s| s.get("name").and_then(Value::as_str))
             .collect();
