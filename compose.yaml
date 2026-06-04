@@ -1,0 +1,48 @@
+# kenny server stack.
+#
+#   KENNY_OPERATOR_TOKEN=... docker compose up --build
+#
+# The server listens on :8000 (HTTP). For real (non-local) use, terminate TLS in
+# front of it so agents can dial wss:// and operators use https:// — enable the
+# bundled Caddy reverse proxy with `--profile tls` and set KENNY_DOMAIN (see ADR-0010,
+# ADR-0008). The SQLite telemetry store is persisted on the `kenny-data` volume.
+
+services:
+  server:
+    build:
+      context: .
+      dockerfile: kenny-server/Dockerfile
+    image: ghcr.io/t11z/kenny-server:dev
+    environment:
+      # Required: the operator bearer token (MCP + dashboard + chat).
+      KENNY_OPERATOR_TOKEN: ${KENNY_OPERATOR_TOKEN:?set KENNY_OPERATOR_TOKEN}
+      # Optional: per-agent tokens "id=token,id2=token2"; Anthropic key for the chat.
+      KENNY_AGENT_TOKENS: ${KENNY_AGENT_TOKENS:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      KENNY_DB_PATH: /data/kenny.sqlite
+    ports:
+      - "8000:8000"
+    volumes:
+      - kenny-data:/data
+    restart: unless-stopped
+
+  # Optional TLS terminator (wss/https). Enable with: docker compose --profile tls up
+  caddy:
+    image: caddy:2
+    profiles: ["tls"]
+    depends_on: [server]
+    environment:
+      KENNY_DOMAIN: ${KENNY_DOMAIN:-}
+    command: caddy reverse-proxy --from ${KENNY_DOMAIN:-localhost} --to server:8000
+    ports:
+      - "443:443"
+      - "80:80"
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+    restart: unless-stopped
+
+volumes:
+  kenny-data:
+  caddy-data:
+  caddy-config:

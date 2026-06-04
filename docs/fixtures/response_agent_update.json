@@ -1,0 +1,6 @@
+{
+  "type": "response",
+  "id": "b7e2c1a0-4f5e-4a6b-9c2d-1122334455aa",
+  "ok": true,
+  "result": { "ok": true, "staged_version": "0.2.0" }
+}

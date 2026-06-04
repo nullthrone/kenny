@@ -15,3 +15,5 @@ Adding/altering a fixture is a contract change — see `docs/protocol.md` § Ver
 | `response_error_timeout.json`   | error `response` frame                           |
 | `ping.json` / `pong.json`       | heartbeat frames                                 |
 | `telemetry_snapshot.json`       | `telemetry` frame with a representative snapshot |
+| `request_agent_update.json`     | `request` frame (`agent.update`)                 |
+| `response_agent_update.json`    | successful `response` frame (`agent.update`)     |

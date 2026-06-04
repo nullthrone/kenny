@@ -4,6 +4,8 @@
 //! report a portable `n/a` stub; the section still carries `status`/`summary`.
 
 use serde_json::json;
+#[cfg(windows)]
+use serde_json::Value;
 
 use crate::protocol::Status;
 use crate::telemetry::Section;
@@ -23,12 +25,51 @@ pub fn collect() -> Section {
 #[cfg(windows)]
 mod windows_impl {
     use super::*;
+    use crate::telemetry::collectors::winps;
 
-    /// Real impl: enumerate `Win32_PnPEntity` via CIM/WMI into
-    /// `{name, class, status}` device entries.
+    /// Enumerate `Win32_PnPEntity` into `{name, class, status}`; `warn` when devices
+    /// report an error status.
     pub fn collect() -> Section {
-        // TODO(windows): query Win32_PnPEntity through PowerShell/CIM.
-        Section::with_fields(Status::Ok, "0 devices", json!({ "devices": [] }))
+        // Limit to devices with a present name to avoid hundreds of phantom rows.
+        let script = r#"
+Get-CimInstance -ClassName Win32_PnPEntity | Where-Object { $_.Name } | ForEach-Object {
+  [pscustomobject]@{
+    name   = [string]$_.Name
+    class  = [string]$_.PNPClass
+    status = [string]$_.Status
+  }
+} | ConvertTo-Json -Compress
+"#;
+
+        let Some(v) = winps::run_json(script) else {
+            return Section::with_fields(
+                Status::Ok,
+                "devices unavailable",
+                json!({ "devices": [] }),
+            );
+        };
+        let devices = winps::as_array(v);
+
+        let errored = devices
+            .iter()
+            .filter(|d| {
+                d.get("status")
+                    .and_then(Value::as_str)
+                    .map(|s| !s.eq_ignore_ascii_case("OK") && !s.is_empty())
+                    .unwrap_or(false)
+            })
+            .count();
+
+        let total = devices.len();
+        let (status, summary) = if errored > 0 {
+            (
+                Status::Warn,
+                format!("{errored} of {total} devices with errors"),
+            )
+        } else {
+            (Status::Ok, format!("{total} devices OK"))
+        };
+        Section::with_fields(status, summary, json!({ "devices": devices }))
     }
 }
 

@@ -47,6 +47,8 @@ async fn run(tool: &str, args: Value) -> Result<Value, (ErrorCode, String)> {
 
         "telemetry.collect" => telemetry_collect(args),
 
+        "agent.update" => handlers::agent_update::update(args).await,
+
         other => Err((ErrorCode::Unsupported, format!("unknown tool: {other}"))),
     }
 }

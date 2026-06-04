@@ -10,6 +10,7 @@ dependencies = [
     "pydantic>=2.6",
     "websockets>=12.0",
     "aiosqlite>=0.20",
+    "anthropic>=0.40",
 ]
 
 [project.optional-dependencies]
@@ -29,6 +30,9 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["kenny_server*"]
+
+[tool.setuptools.package-data]
+"kenny_server.webui" = ["*.html", "*.css", "*.js"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

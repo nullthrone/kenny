@@ -39,12 +39,30 @@
     td, th { text-align: left; padding: 4px 6px; border-bottom: 1px solid #2a3441; }
     .trend { display: flex; gap: 3px; align-items: flex-end; height: 40px; }
     .trend span { width: 10px; border-radius: 2px; }
+    .tabs { margin-left: auto; display: flex; gap: 6px; }
+    .tab { padding: 5px 12px; border-radius: 8px; cursor: pointer; color: var(--muted); border: 1px solid transparent; }
+    .tab.active { color: var(--fg); background: var(--panel); border-color: #2a3441; }
+    .chat { display: flex; flex-direction: column; height: calc(100vh - 130px); }
+    .transcript { flex: 1; overflow: auto; display: flex; flex-direction: column; gap: 10px; padding-bottom: 10px; }
+    .msg { max-width: 80%; padding: 9px 12px; border-radius: 10px; white-space: pre-wrap; }
+    .msg.user { align-self: flex-end; background: #2563eb; color: #fff; }
+    .msg.assistant { align-self: flex-start; background: var(--panel); border: 1px solid #2a3441; }
+    .msg.tool { align-self: flex-start; background: #11202e; border: 1px solid #2a3441; color: var(--muted); font-size: 12px; font-family: ui-monospace, monospace; }
+    .confirm { align-self: flex-start; background: #2a1f12; border: 1px solid #d99100; border-radius: 10px; padding: 12px; }
+    .confirm .acts { margin-top: 8px; display: flex; gap: 8px; }
+    .confirm button.deny { background: #5b2630; }
+    .composer { display: flex; gap: 8px; margin-top: 10px; }
+    .composer input { flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #2a3441; background: #0b0f14; color: var(--fg); font-size: 14px; }
   </style>
 </head>
 <body>
   <header>
     <h1>kenny</h1>
     <span class="crumb" id="crumb" onclick="showFleet()">fleet</span>
+    <div class="tabs">
+      <span class="tab active" id="tab-fleet" onclick="selectTab('fleet')">fleet</span>
+      <span class="tab" id="tab-chat" onclick="selectTab('chat')">chat</span>
+    </div>
   </header>
   <main id="app">loading…</main>
 
@@ -109,7 +127,12 @@
             <div class="muted">${data.online ? "online" : "offline"} ·
               ${(data.meta || {}).hostname || ""} · ${data.collected_at || "no telemetry"}</div>
           </div>
-          <button onclick="refreshNow('${id}')">refresh now</button>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button onclick="refreshNow('${id}')">refresh now</button>
+            <button onclick="downloadInstaller('${id}')">download installer</button>
+            <button onclick="shareInstaller('${id}')">share link</button>
+            <button onclick="updateAgent('${id}')">update agent</button>
+          </div>
         </div>
         <div class="row">
           <div class="col">
@@ -131,6 +154,117 @@
         await getJSON("/api/agent/" + encodeURIComponent(id) + "/refresh", { method: "POST" });
       } catch (e) { alert("refresh failed: " + e.message); }
       showAgent(id);
+    }
+
+    // -- agent distribution (installer download / share link / update) ----
+    function downloadInstaller(id) {
+      // operator cookie authorizes this GET; the browser downloads the ZIP.
+      window.location = "/api/agents/" + encodeURIComponent(id) + "/installer";
+    }
+    async function shareInstaller(id) {
+      try {
+        const r = await getJSON("/api/agents/" + encodeURIComponent(id) + "/share-link", { method: "POST" });
+        prompt("One-time installer link (expires in " + r.expires_in + "s):", r.url);
+      } catch (e) { alert("share failed: " + e.message); }
+    }
+    async function updateAgent(id) {
+      if (!confirm("Push a self-update to '" + id + "' now?")) return;
+      try {
+        const r = await getJSON("/api/agents/" + encodeURIComponent(id) + "/update", { method: "POST" });
+        alert("update triggered: v" + r.version);
+      } catch (e) { alert("update failed: " + e.message); }
+    }
+
+    // -- tabs -----------------------------------------------------------
+    function selectTab(name) {
+      document.getElementById("tab-fleet").classList.toggle("active", name === "fleet");
+      document.getElementById("tab-chat").classList.toggle("active", name === "chat");
+      crumb.style.display = name === "fleet" ? "" : "none";
+      if (name === "fleet") showFleet();
+      else showChat();
+    }
+
+    // -- chat -----------------------------------------------------------
+    let chatSessionId = null;
+
+    function showChat() {
+      app.innerHTML = `
+        <div class="chat">
+          <div class="transcript" id="transcript"></div>
+          <div class="composer">
+            <input id="chat-input" placeholder="Ask kenny to inspect or fix an agent…" autofocus />
+            <button id="chat-send" onclick="sendChat()">send</button>
+          </div>
+        </div>`;
+      const input = document.getElementById("chat-input");
+      input.addEventListener("keydown", e => { if (e.key === "Enter") sendChat(); });
+      input.focus();
+    }
+
+    function bubble(cls, text) {
+      const t = document.getElementById("transcript");
+      const div = document.createElement("div");
+      div.className = "msg " + cls;
+      div.textContent = text;
+      t.appendChild(div);
+      t.scrollTop = t.scrollHeight;
+      return div;
+    }
+
+    function renderTurn(result) {
+      (result.tool_events || []).forEach(ev => {
+        if (ev.type === "tool_result")
+          bubble("tool", (ev.ok ? "✓ " : "✗ ") + ev.tool);
+        else if (ev.type === "denied")
+          bubble("tool", "✗ denied " + ev.tool);
+      });
+      if (result.assistant_text) bubble("assistant", result.assistant_text);
+      if (result.pending) renderPending(result.pending);
+    }
+
+    function renderPending(p) {
+      const t = document.getElementById("transcript");
+      const div = document.createElement("div");
+      div.className = "confirm";
+      div.innerHTML = `
+        <div><strong>Confirm action</strong></div>
+        <div class="muted">${p.tool} on ${p.agent_id || "(no agent)"}</div>
+        <pre>${JSON.stringify(p.args, null, 2)}</pre>
+        <div class="acts">
+          <button onclick="confirmChat(true, this)">approve</button>
+          <button class="deny" onclick="confirmChat(false, this)">deny</button>
+        </div>`;
+      t.appendChild(div);
+      t.scrollTop = t.scrollHeight;
+    }
+
+    async function sendChat() {
+      const input = document.getElementById("chat-input");
+      const message = input.value.trim();
+      if (!message) return;
+      input.value = "";
+      bubble("user", message);
+      try {
+        const result = await getJSON("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: chatSessionId, message }),
+        });
+        chatSessionId = result.session_id;
+        renderTurn(result);
+      } catch (e) { bubble("tool", "error: " + e.message); }
+    }
+
+    async function confirmChat(approve, btn) {
+      btn.closest(".confirm").remove();
+      try {
+        const result = await getJSON("/api/chat/confirm", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: chatSessionId, approve }),
+        });
+        renderTurn(result);
+      } catch (e) { bubble("tool", "error: " + e.message); }
     }
 
     showFleet().catch(e => app.textContent = "error: " + e.message);

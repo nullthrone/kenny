@@ -13,8 +13,10 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse
 from starlette.routing import Route
 
+from ..chat import ChatExecutor, ChatSessions, confirm_pending, run_turn
 from ..registry import AgentRegistry
 from ..store import TelemetryStore
+from ..tokenstore import AgentTokenStore
 from ..tools import CallLog, build_health
 from ..tunnel import AgentTunnel, ToolError
 
@@ -27,6 +29,7 @@ def build_api_routes(
     store: TelemetryStore,
     tunnel: AgentTunnel,
     call_log: CallLog,
+    token_store: AgentTokenStore | None = None,
 ) -> list[Route]:
     """Build the dashboard's static + JSON routes."""
 
@@ -82,11 +85,108 @@ def build_api_routes(
             await store.insert(agent_id, datetime.now(timezone.utc).isoformat(), result)
         return JSONResponse({"ok": True})
 
+    async def api_rotate_token(request: Request) -> JSONResponse:
+        """Mint (or rotate) a per-agent token. Inherits /api operator auth.
+
+        Returns ``{token: <plaintext once>}``; the plaintext is not stored and
+        cannot be retrieved again. This is the entry point the installer-download
+        workstream calls to provision an agent.
+        """
+
+        if token_store is None:
+            return JSONResponse(
+                {"error": "token store not configured"}, status_code=503
+            )
+        agent_id = request.path_params["id"]
+        token = await token_store.create_or_rotate(agent_id)
+        return JSONResponse({"agent_id": agent_id, "token": token})
+
     return [
         Route("/", index),
         Route("/api/fleet", api_fleet),
         Route("/api/agent/{id}", api_agent),
         Route("/api/agent/{id}/refresh", api_refresh, methods=["POST"]),
+        Route("/api/agents/{id}/token", api_rotate_token, methods=["POST"]),
+    ]
+
+
+def _anthropic_client() -> Any:
+    """Construct the real Anthropic client (lazy import; needs ANTHROPIC_API_KEY)."""
+
+    import anthropic
+
+    return anthropic.Anthropic()
+
+
+def build_chat_routes(
+    *,
+    registry: AgentRegistry,
+    store: TelemetryStore,
+    tunnel: AgentTunnel,
+    call_log: CallLog,
+    sessions: ChatSessions,
+    client_factory: Any = _anthropic_client,
+) -> list[Route]:
+    """Build the server-hosted Claude chat routes.
+
+    * ``POST /api/chat`` — send a user message; returns a structured turn result
+      (assistant text, tool events, and any pending state-changing call).
+    * ``POST /api/chat/confirm`` — approve/deny a pending state-changing call,
+      then resume the turn.
+
+    Both inherit operator auth from ``OperatorAuthMiddleware`` (``/api/*``).
+    ``client_factory`` is injected so tests pass a fake Anthropic client.
+    """
+
+    executor = ChatExecutor(
+        registry=registry, store=store, tunnel=tunnel, call_log=call_log
+    )
+
+    async def api_chat(request: Request) -> JSONResponse:
+        body = await request.json()
+        message = str(body.get("message", "")).strip()
+        if not message:
+            return JSONResponse({"error": "message is required"}, status_code=400)
+        session = sessions.get_or_create(body.get("session_id"))
+        if session.pending is not None:
+            return JSONResponse(
+                {"error": "a confirmation is pending; resolve it first",
+                 "pending": session.pending.to_public(),
+                 "session_id": session.id},
+                status_code=409,
+            )
+        try:
+            result = await run_turn(
+                session, message, executor=executor, client=client_factory()
+            )
+        except Exception as exc:  # noqa: BLE001 - surface to the UI
+            return JSONResponse(
+                {"error": str(exc), "session_id": session.id}, status_code=502
+            )
+        return JSONResponse(result.to_public())
+
+    async def api_chat_confirm(request: Request) -> JSONResponse:
+        body = await request.json()
+        session_id = body.get("session_id")
+        session = sessions.get(session_id) if session_id else None
+        if session is None:
+            return JSONResponse({"error": "unknown session"}, status_code=404)
+        if session.pending is None:
+            return JSONResponse({"error": "no pending confirmation"}, status_code=409)
+        approve = bool(body.get("approve", False))
+        try:
+            result = await confirm_pending(
+                session, approve=approve, executor=executor, client=client_factory()
+            )
+        except Exception as exc:  # noqa: BLE001 - surface to the UI
+            return JSONResponse(
+                {"error": str(exc), "session_id": session.id}, status_code=502
+            )
+        return JSONResponse(result.to_public())
+
+    return [
+        Route("/api/chat", api_chat, methods=["POST"]),
+        Route("/api/chat/confirm", api_chat_confirm, methods=["POST"]),
     ]
 
 

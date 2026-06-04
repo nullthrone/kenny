@@ -23,11 +23,38 @@ pub fn collect() -> Section {
 #[cfg(windows)]
 mod windows_impl {
     use super::*;
+    use crate::telemetry::collectors::winps;
 
-    /// Real impl: `Win32_StartupCommand` + Run keys into `{name, command, location}`.
+    /// `Win32_StartupCommand` plus the HKLM/HKCU `Run` keys into
+    /// `{name, command, location}`.
     pub fn collect() -> Section {
-        // TODO(windows): Win32_StartupCommand / HKLM+HKCU Run keys.
-        Section::with_fields(Status::Ok, "0 startup entries", json!({ "entries": [] }))
+        let script = r#"
+$out = @()
+Get-CimInstance -ClassName Win32_StartupCommand -ErrorAction SilentlyContinue | ForEach-Object {
+  $out += [pscustomobject]@{ name = [string]$_.Name; command = [string]$_.Command; location = [string]$_.Location }
+}
+foreach ($root in 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run','HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run') {
+  try {
+    $props = Get-ItemProperty -Path $root -ErrorAction Stop
+    foreach ($p in $props.PSObject.Properties) {
+      if ($p.Name -like 'PS*') { continue }
+      $out += [pscustomobject]@{ name = [string]$p.Name; command = [string]$p.Value; location = $root }
+    }
+  } catch {}
+}
+ConvertTo-Json -Compress @($out)
+"#;
+
+        let entries = winps::run_json(script)
+            .map(winps::as_array)
+            .unwrap_or_default();
+
+        let count = entries.len();
+        Section::with_fields(
+            Status::Ok,
+            format!("{count} startup entries"),
+            json!({ "entries": entries }),
+        )
     }
 }
 

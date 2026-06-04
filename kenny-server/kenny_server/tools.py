@@ -45,6 +45,7 @@ CAPABILITY_TOOLS: dict[str, list[str]] = {
     "net.adapter_reset": ["name"],
     "screen.capture": [],
     "telemetry.collect": ["sections?"],
+    "agent.update": ["version", "url", "sha256"],
 }
 
 
