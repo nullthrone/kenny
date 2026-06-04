@@ -151,6 +151,98 @@
       showAgent(id);
     }
 
+    // -- tabs -----------------------------------------------------------
+    function selectTab(name) {
+      document.getElementById("tab-fleet").classList.toggle("active", name === "fleet");
+      document.getElementById("tab-chat").classList.toggle("active", name === "chat");
+      crumb.style.display = name === "fleet" ? "" : "none";
+      if (name === "fleet") showFleet();
+      else showChat();
+    }
+
+    // -- chat -----------------------------------------------------------
+    let chatSessionId = null;
+
+    function showChat() {
+      app.innerHTML = `
+        <div class="chat">
+          <div class="transcript" id="transcript"></div>
+          <div class="composer">
+            <input id="chat-input" placeholder="Ask kenny to inspect or fix an agent…" autofocus />
+            <button id="chat-send" onclick="sendChat()">send</button>
+          </div>
+        </div>`;
+      const input = document.getElementById("chat-input");
+      input.addEventListener("keydown", e => { if (e.key === "Enter") sendChat(); });
+      input.focus();
+    }
+
+    function bubble(cls, text) {
+      const t = document.getElementById("transcript");
+      const div = document.createElement("div");
+      div.className = "msg " + cls;
+      div.textContent = text;
+      t.appendChild(div);
+      t.scrollTop = t.scrollHeight;
+      return div;
+    }
+
+    function renderTurn(result) {
+      (result.tool_events || []).forEach(ev => {
+        if (ev.type === "tool_result")
+          bubble("tool", (ev.ok ? "✓ " : "✗ ") + ev.tool);
+        else if (ev.type === "denied")
+          bubble("tool", "✗ denied " + ev.tool);
+      });
+      if (result.assistant_text) bubble("assistant", result.assistant_text);
+      if (result.pending) renderPending(result.pending);
+    }
+
+    function renderPending(p) {
+      const t = document.getElementById("transcript");
+      const div = document.createElement("div");
+      div.className = "confirm";
+      div.innerHTML = `
+        <div><strong>Confirm action</strong></div>
+        <div class="muted">${p.tool} on ${p.agent_id || "(no agent)"}</div>
+        <pre>${JSON.stringify(p.args, null, 2)}</pre>
+        <div class="acts">
+          <button onclick="confirmChat(true, this)">approve</button>
+          <button class="deny" onclick="confirmChat(false, this)">deny</button>
+        </div>`;
+      t.appendChild(div);
+      t.scrollTop = t.scrollHeight;
+    }
+
+    async function sendChat() {
+      const input = document.getElementById("chat-input");
+      const message = input.value.trim();
+      if (!message) return;
+      input.value = "";
+      bubble("user", message);
+      try {
+        const result = await getJSON("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: chatSessionId, message }),
+        });
+        chatSessionId = result.session_id;
+        renderTurn(result);
+      } catch (e) { bubble("tool", "error: " + e.message); }
+    }
+
+    async function confirmChat(approve, btn) {
+      btn.closest(".confirm").remove();
+      try {
+        const result = await getJSON("/api/chat/confirm", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: chatSessionId, approve }),
+        });
+        renderTurn(result);
+      } catch (e) { bubble("tool", "error: " + e.message); }
+    }
+
     showFleet().catch(e => app.textContent = "error: " + e.message);
   </script>
 </body>

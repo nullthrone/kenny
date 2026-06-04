@@ -27,15 +27,54 @@ pub fn collect() -> Section {
 #[cfg(windows)]
 mod windows_impl {
     use super::*;
+    use crate::telemetry::collectors::winps;
+    use serde_json::Value;
 
-    /// Real impl: parse `Get-NetRoute` into `{destination, next_hop, interface, metric}`.
+    /// Parse `Get-NetRoute` into `{destination, next_hop, interface, metric}` and
+    /// surface the default-route interface; `warn` when no default route exists.
     pub fn collect() -> Section {
-        // TODO(windows): query Get-NetRoute / GetIpForwardTable2.
-        Section::with_fields(
-            Status::Ok,
-            "routes via Get-NetRoute",
-            json!({ "routes": [] }),
-        )
+        let script = r#"
+Get-NetRoute -ErrorAction SilentlyContinue | ForEach-Object {
+  $alias = $null
+  try { $alias = (Get-NetAdapter -InterfaceIndex $_.InterfaceIndex -ErrorAction Stop).Name } catch {}
+  [pscustomobject]@{
+    destination = [string]$_.DestinationPrefix
+    next_hop    = [string]$_.NextHop
+    interface   = if ($alias) { $alias } else { [string]$_.InterfaceIndex }
+    metric      = [int]$_.RouteMetric
+  }
+} | ConvertTo-Json -Compress
+"#;
+
+        let Some(v) = winps::run_json(script) else {
+            return Section::with_fields(
+                Status::Warn,
+                "routes unavailable",
+                json!({ "routes": [], "default_interface": null }),
+            );
+        };
+        let routes = winps::as_array(v);
+
+        let default_iface = routes
+            .iter()
+            .find(|r| {
+                r.get("destination").and_then(Value::as_str) == Some("0.0.0.0/0")
+            })
+            .and_then(|r| r.get("interface").and_then(Value::as_str))
+            .map(str::to_string);
+
+        match default_iface {
+            Some(iface) => Section::with_fields(
+                Status::Ok,
+                format!("default via {iface}"),
+                json!({ "routes": routes, "default_interface": iface }),
+            ),
+            None => Section::with_fields(
+                Status::Warn,
+                "no default route",
+                json!({ "routes": routes, "default_interface": null }),
+            ),
+        }
     }
 }
 
