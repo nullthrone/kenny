@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>kenny fleet</title>
+  <style>
+    :root {
+      --ok: #2e9e44; --warn: #d99100; --crit: #c0392b; --unknown: #888;
+      --bg: #0f1419; --panel: #1b2330; --fg: #e6edf3; --muted: #8b98a5;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font: 14px/1.5 system-ui, sans-serif; background: var(--bg); color: var(--fg); }
+    header { padding: 14px 20px; border-bottom: 1px solid #2a3441; display: flex; align-items: center; gap: 12px; }
+    header h1 { font-size: 18px; margin: 0; }
+    header .crumb { color: var(--muted); cursor: pointer; }
+    main { padding: 20px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }
+    .tile { background: var(--panel); border-radius: 10px; padding: 14px; cursor: pointer; border: 1px solid #2a3441; }
+    .tile:hover { border-color: #3d4d5e; }
+    .tile h3 { margin: 0 0 6px; display: flex; align-items: center; gap: 8px; }
+    .dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
+    .ok { background: var(--ok); } .warn { background: var(--warn); }
+    .crit { background: var(--crit); } .unknown { background: var(--unknown); }
+    .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; color: #fff; }
+    .pill.ok { background: var(--ok); } .pill.warn { background: var(--warn); }
+    .pill.crit { background: var(--crit); } .pill.unknown { background: var(--unknown); }
+    .muted { color: var(--muted); font-size: 12px; }
+    .flags { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; }
+    .flags .tag { background: #2a3441; padding: 1px 8px; border-radius: 6px; font-size: 12px; }
+    .section { background: var(--panel); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; border: 1px solid #2a3441; }
+    .section h4 { margin: 0 0 4px; display: flex; align-items: center; gap: 8px; }
+    pre { background: #0b0f14; padding: 10px; border-radius: 8px; overflow: auto; max-height: 240px; font-size: 12px; }
+    button { background: #2563eb; color: #fff; border: 0; padding: 8px 14px; border-radius: 8px; cursor: pointer; font-size: 13px; }
+    button:hover { background: #1d4ed8; }
+    .row { display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap; }
+    .col { flex: 1; min-width: 320px; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    td, th { text-align: left; padding: 4px 6px; border-bottom: 1px solid #2a3441; }
+    .trend { display: flex; gap: 3px; align-items: flex-end; height: 40px; }
+    .trend span { width: 10px; border-radius: 2px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>kenny</h1>
+    <span class="crumb" id="crumb" onclick="showFleet()">fleet</span>
+  </header>
+  <main id="app">loading…</main>
+
+  <script>
+    const app = document.getElementById("app");
+    const crumb = document.getElementById("crumb");
+
+    async function getJSON(url, opts) {
+      const r = await fetch(url, opts);
+      if (!r.ok) throw new Error(url + " -> " + r.status);
+      return r.json();
+    }
+    const sev = s => ["ok", "warn", "crit"].includes(s) ? s : "unknown";
+
+    async function showFleet() {
+      crumb.textContent = "fleet";
+      crumb.onclick = showFleet;
+      const data = await getJSON("/api/fleet");
+      const tiles = (data.agents || []).map(a => `
+        <div class="tile" onclick="showAgent('${a.agent_id}')">
+          <h3><span class="dot ${sev(a.overall)}"></span>${a.agent_id}</h3>
+          <div class="muted">${a.online ? "online" : "offline"} · ${a.meta.hostname || ""}</div>
+          <div class="flags">
+            ${(a.flagged_sections || []).map(f => `<span class="tag">${f}</span>`).join("") || '<span class="muted">no flags</span>'}
+          </div>
+          <div class="muted" style="margin-top:6px">${a.collected_at || "no telemetry"}</div>
+        </div>`).join("");
+      app.innerHTML = `<div class="muted" style="margin-bottom:10px">fleet health:
+        <span class="pill ${sev(data.overall)}">${data.overall}</span></div>
+        <div class="grid">${tiles || '<div class="muted">no agents</div>'}</div>`;
+    }
+
+    async function showAgent(id) {
+      crumb.innerHTML = `<span onclick="showFleet()">fleet</span> / ${id}`;
+      const data = await getJSON("/api/agent/" + encodeURIComponent(id));
+      const h = data.health || { overall: "unknown", sections: {} };
+      const sections = Object.entries(h.sections || {}).map(([name, s]) => `
+        <div class="section">
+          <h4><span class="dot ${sev(s.status)}"></span>${name}
+            <span class="pill ${sev(s.status)}">${s.status}</span></h4>
+          <div>${(data.snapshot && data.snapshot[name] && data.snapshot[name].summary) || ""}</div>
+          ${s.reason ? `<div class="muted">rule: ${s.reason}</div>` : ""}
+          <pre>${JSON.stringify((data.snapshot || {})[name] || {}, null, 2)}</pre>
+        </div>`).join("");
+
+      const hist = (data.history || []).slice().reverse();
+      const trend = hist.map(p => {
+        const ov = sev(p.overall);
+        const col = getComputedStyle(document.documentElement).getPropertyValue("--" + ov);
+        const ht = ov === "crit" ? 40 : ov === "warn" ? 26 : ov === "unknown" ? 8 : 14;
+        return `<span title="${p.collected_at}: ${p.overall}" style="height:${ht}px;background:${col.trim()}"></span>`;
+      }).join("");
+
+      const log = (data.call_log || []).map(c => `
+        <tr><td>${c.at}</td><td>${c.tool}</td><td>${c.ok ? "ok" : "ERR: " + (c.error || "")}</td></tr>`).join("");
+
+      app.innerHTML = `
+        <div class="row" style="margin-bottom:14px">
+          <div><h2 style="margin:0">${id}
+            <span class="pill ${sev(h.overall)}">${h.overall}</span></h2>
+            <div class="muted">${data.online ? "online" : "offline"} ·
+              ${(data.meta || {}).hostname || ""} · ${data.collected_at || "no telemetry"}</div>
+          </div>
+          <button onclick="refreshNow('${id}')">refresh now</button>
+        </div>
+        <div class="row">
+          <div class="col">
+            <h3>sections</h3>
+            ${sections || '<div class="muted">no telemetry yet</div>'}
+          </div>
+          <div class="col">
+            <h3>health trend</h3>
+            <div class="trend">${trend || '<span class="muted">no history</span>'}</div>
+            <h3 style="margin-top:18px">tool-call log</h3>
+            <table><thead><tr><th>at</th><th>tool</th><th>result</th></tr></thead>
+              <tbody>${log || '<tr><td colspan=3 class="muted">no calls</td></tr>'}</tbody></table>
+          </div>
+        </div>`;
+    }
+
+    async function refreshNow(id) {
+      try {
+        await getJSON("/api/agent/" + encodeURIComponent(id) + "/refresh", { method: "POST" });
+      } catch (e) { alert("refresh failed: " + e.message); }
+      showAgent(id);
+    }
+
+    showFleet().catch(e => app.textContent = "error: " + e.message);
+  </script>
+</body>
+</html>

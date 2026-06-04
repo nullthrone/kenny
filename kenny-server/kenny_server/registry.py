@@ -1,0 +1,144 @@
+"""In-memory agent registry.
+
+Tracks which agents are connected, authenticates their tokens, exposes a
+per-agent ``send_fn`` for the tunnel to push frames, and holds the operator's
+"active agent" selection for forwarded tool calls.
+
+Tokens come from the ``KENNY_AGENT_TOKENS`` env var (``id=token`` pairs,
+comma-separated) or fall back to a hardcoded dev map. This is a deliberately
+simple dev auth store; hardening is a later phase.
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Any, Awaitable, Callable
+
+SendFn = Callable[[dict[str, Any]], Awaitable[None]]
+
+_DEV_TOKENS: dict[str, str] = {
+    "dev": "dev-token",
+    "papa-pc": "dev-token-papa",
+}
+
+
+def load_tokens() -> dict[str, str]:
+    """Load the per-agent token map from env, falling back to the dev map."""
+
+    raw = os.environ.get("KENNY_AGENT_TOKENS", "").strip()
+    if not raw:
+        return dict(_DEV_TOKENS)
+    tokens: dict[str, str] = {}
+    for pair in raw.split(","):
+        pair = pair.strip()
+        if not pair or "=" not in pair:
+            continue
+        agent_id, token = pair.split("=", 1)
+        tokens[agent_id.strip()] = token.strip()
+    return tokens or dict(_DEV_TOKENS)
+
+
+@dataclass
+class Agent:
+    agent_id: str
+    meta: dict[str, Any] = field(default_factory=dict)
+    online: bool = False
+    send_fn: SendFn | None = None
+    connected_at: datetime | None = None
+    last_seen: datetime | None = None
+
+    def to_public(self) -> dict[str, Any]:
+        return {
+            "agent_id": self.agent_id,
+            "online": self.online,
+            "meta": self.meta,
+            "connected_at": self.connected_at.isoformat() if self.connected_at else None,
+            "last_seen": self.last_seen.isoformat() if self.last_seen else None,
+        }
+
+
+class AuthError(Exception):
+    """Raised when an agent presents an unknown id or bad token."""
+
+
+class AgentRegistry:
+    """Tracks agents, their connections, and the active-agent selection."""
+
+    def __init__(self, tokens: dict[str, str] | None = None) -> None:
+        self._tokens = tokens if tokens is not None else load_tokens()
+        self._agents: dict[str, Agent] = {}
+        self._active_agent: str | None = None
+
+    # -- auth & connection lifecycle ---------------------------------------
+
+    def authenticate(self, agent_id: str, token: str) -> None:
+        expected = self._tokens.get(agent_id)
+        if expected is None or token != expected:
+            raise AuthError(f"authentication failed for agent {agent_id!r}")
+
+    def register(
+        self,
+        agent_id: str,
+        token: str,
+        meta: dict[str, Any],
+        send_fn: SendFn,
+    ) -> Agent:
+        """Authenticate and mark an agent online with its send function."""
+
+        self.authenticate(agent_id, token)
+        now = datetime.now(timezone.utc)
+        agent = self._agents.get(agent_id) or Agent(agent_id=agent_id)
+        agent.meta = meta
+        agent.online = True
+        agent.send_fn = send_fn
+        agent.connected_at = now
+        agent.last_seen = now
+        self._agents[agent_id] = agent
+        if self._active_agent is None:
+            self._active_agent = agent_id
+        return agent
+
+    def mark_seen(self, agent_id: str) -> None:
+        agent = self._agents.get(agent_id)
+        if agent is not None:
+            agent.last_seen = datetime.now(timezone.utc)
+
+    def mark_offline(self, agent_id: str) -> None:
+        agent = self._agents.get(agent_id)
+        if agent is not None:
+            agent.online = False
+            agent.send_fn = None
+
+    # -- lookups -----------------------------------------------------------
+
+    def get(self, agent_id: str) -> Agent | None:
+        return self._agents.get(agent_id)
+
+    def list(self) -> list[Agent]:
+        return list(self._agents.values())
+
+    def send_fn_for(self, agent_id: str) -> SendFn:
+        agent = self._agents.get(agent_id)
+        if agent is None or not agent.online or agent.send_fn is None:
+            raise AuthError(f"agent {agent_id!r} is not online")
+        return agent.send_fn
+
+    # -- active-agent selection -------------------------------------------
+
+    @property
+    def active_agent(self) -> str | None:
+        return self._active_agent
+
+    def select(self, agent_id: str) -> Agent:
+        agent = self._agents.get(agent_id)
+        if agent is None:
+            raise KeyError(f"unknown agent {agent_id!r}")
+        self._active_agent = agent_id
+        return agent
+
+    def require_active(self) -> str:
+        if self._active_agent is None:
+            raise RuntimeError("no active agent selected; call select_agent first")
+        return self._active_agent

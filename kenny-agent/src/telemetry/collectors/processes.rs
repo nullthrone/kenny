@@ -1,7 +1,7 @@
 //! `processes` section — top processes by memory. Portable via `sysinfo`.
 
 use serde_json::json;
-use sysinfo::System;
+use sysinfo::{ProcessesToUpdate, System};
 
 use crate::protocol::Status;
 use crate::telemetry::Section;
@@ -12,7 +12,7 @@ const TOP_N: usize = 15;
 /// Collect the `processes` section.
 pub fn collect() -> Section {
     let mut sys = System::new();
-    sys.refresh_processes();
+    sys.refresh_processes(ProcessesToUpdate::All);
     let mut procs: Vec<_> = sys.processes().values().collect();
     procs.sort_by_key(|p| std::cmp::Reverse(p.memory()));
     let count = procs.len();
