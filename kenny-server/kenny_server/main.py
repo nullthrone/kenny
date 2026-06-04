@@ -20,8 +20,10 @@ from typing import AsyncIterator
 
 from fastmcp import FastMCP
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
 from starlette.routing import Mount, WebSocketRoute
 
+from .auth import OperatorAuthMiddleware, build_auth_routes, load_operator_token
 from .registry import AgentRegistry
 from .store import TelemetryStore
 from .tools import CallLog, register_tools
@@ -56,19 +58,26 @@ def build_app(db_path: str | None = None) -> Starlette:
         registry=registry, store=store, tunnel=tunnel, call_log=call_log
     )
 
+    operator_token = load_operator_token()
+
     routes = [
         WebSocketRoute("/agent/ws", tunnel.endpoint),
         Mount("/mcp", app=mcp_app),
+        *build_auth_routes(operator_token),
         *api_routes,
     ]
 
-    app = Starlette(routes=routes, lifespan=lifespan)
+    # Operator auth gates /mcp, /api, and the UI; /agent/ws (agent token) is exempt.
+    middleware = [Middleware(OperatorAuthMiddleware, token=operator_token)]
+
+    app = Starlette(routes=routes, middleware=middleware, lifespan=lifespan)
     # Expose singletons for tests / introspection.
     app.state.registry = registry
     app.state.store = store
     app.state.tunnel = tunnel
     app.state.call_log = call_log
     app.state.mcp = mcp
+    app.state.operator_token = operator_token
     return app
 
 

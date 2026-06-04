@@ -39,8 +39,19 @@ cd kenny-agent && cargo test && cargo build
 Helper commands inside Claude Code: `/new-adr`, `/add-tool`, `/add-collector`,
 `/contract-check`, `/e2e`.
 
+## Authentication
+
+- **Agent → server:** per-agent token in the `register` frame (`KENNY_AGENT_TOKENS`).
+- **Operator → server:** one operator bearer token (`KENNY_OPERATOR_TOKEN`) gates the
+  MCP endpoint, the `/api` routes, and the web UI (browser logs in at `/login`). Claude
+  sends `Authorization: Bearer <token>`. See `docs/adr/0008-operator-authentication.md`.
+- **Server → agent:** TLS — run the server behind **`wss`/`https`** in production; the
+  agent dials a known `wss://…/agent/ws` URL. `ws://` and the dev token fallbacks are
+  for local use only.
+
 ## Status
 
 Early bootstrap. The wire contract and project skeleton exist; the two components are
-implemented against the contract. Auth/TLS hardening and packaging come later
+implemented against the contract. Operator and agent auth are in place (single-token,
+dev-grade); per-identity auth, rotation, TLS hardening, and packaging come later
 (see `docs/adr/`).

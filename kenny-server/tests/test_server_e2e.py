@@ -20,6 +20,7 @@ import pytest
 import uvicorn
 import websockets
 from fastmcp import Client
+from fastmcp.client.transports import StreamableHttpTransport
 
 from kenny_server.main import build_app
 
@@ -136,7 +137,12 @@ async def test_e2e_forward_and_telemetry(tmp_path) -> None:
         # Give the server a moment to process registration.
         await asyncio.sleep(0.1)
 
-        async with Client(f"http://127.0.0.1:{port}/mcp/mcp") as client:
+        # The MCP endpoint now requires the operator bearer token.
+        transport = StreamableHttpTransport(
+            f"http://127.0.0.1:{port}/mcp/mcp",
+            headers={"Authorization": f"Bearer {app.state.operator_token}"},
+        )
+        async with Client(transport) as client:
             tools = {t.name for t in await client.list_tools()}
             assert "powershell.exec" in tools
             assert "select_agent" in tools

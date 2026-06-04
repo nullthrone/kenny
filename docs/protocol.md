@@ -14,6 +14,11 @@
 - Claude talks to `kenny-server` over MCP (Streamable HTTP). That MCP layer is
   separate from this agent⇄server wire protocol; MCP tool calls are translated by
   the server into `request` frames on the tunnel.
+- Authentication is asymmetric and out of scope of this wire protocol except for the
+  agent's `register.token`: agents authenticate to the server with a per-agent token
+  (below); the **operator** authenticates to the server (MCP endpoint + web UI) with a
+  separate operator token (see ADR-0008). The server authenticates to the agent via TLS
+  (the agent dials a known `wss://` URL).
 
 ## Frame envelope
 
