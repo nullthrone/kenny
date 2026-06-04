@@ -1,0 +1,6 @@
+{
+  "type": "response",
+  "id": "9f1c0e2a-2b3c-4d5e-8f90-1234567890ab",
+  "ok": false,
+  "error": { "code": "timeout", "message": "tool exceeded 30s" }
+}

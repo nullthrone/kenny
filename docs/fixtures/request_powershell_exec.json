@@ -1,0 +1,6 @@
+{
+  "type": "request",
+  "id": "9f1c0e2a-2b3c-4d5e-8f90-1234567890ab",
+  "tool": "powershell.exec",
+  "args": { "script": "Get-Process | Select-Object -First 5", "timeout_s": 30 }
+}

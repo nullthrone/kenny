@@ -1,0 +1,6 @@
+{
+  "type": "register",
+  "agent_id": "papa-pc",
+  "token": "dev-token-papa",
+  "meta": { "hostname": "PAPA-PC", "os": "windows", "version": "0.1.0" }
+}

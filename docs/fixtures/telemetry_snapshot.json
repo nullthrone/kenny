@@ -1,0 +1,43 @@
+{
+  "type": "telemetry",
+  "agent_id": "papa-pc",
+  "collected_at": "2026-06-04T18:00:00Z",
+  "snapshot": {
+    "disk": {
+      "status": "warn",
+      "summary": "C: 91% full",
+      "volumes": [
+        { "mount": "C:", "total_bytes": 511000000000, "free_bytes": 46000000000, "percent_used": 91 }
+      ],
+      "top_dirs": [
+        { "path": "C:\\Users\\papa\\Videos", "bytes": 120000000000 }
+      ]
+    },
+    "defender": {
+      "status": "crit",
+      "summary": "Real-time protection OFF",
+      "enabled": false,
+      "realtime_protection": false,
+      "last_scan": "2026-05-01T03:00:00Z",
+      "last_scan_type": "quick",
+      "last_signature_update": "2026-05-20T06:00:00Z",
+      "threats_found": 0,
+      "action_needed": true
+    },
+    "win_update": {
+      "status": "warn",
+      "summary": "1 update failed in last 30 days",
+      "last_check": "2026-06-03T09:00:00Z",
+      "recent": [
+        { "kb": "KB5037853", "title": "2026-05 Cumulative Update", "result": "succeeded", "installed_at": "2026-05-15T04:00:00Z" },
+        { "kb": "KB5039211", "title": "2026-06 Cumulative Update", "result": "failed", "installed_at": "2026-06-02T04:00:00Z" }
+      ]
+    },
+    "reboot_pending": {
+      "status": "warn",
+      "summary": "Reboot required (Windows Update)",
+      "pending": true,
+      "reasons": ["WindowsUpdate"]
+    }
+  }
+}
