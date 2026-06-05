@@ -54,10 +54,6 @@ def agent_binary_path() -> str | None:
     return cache if os.path.exists(cache) else None
 
 
-def _agent_version() -> str:
-    return os.environ.get("KENNY_AGENT_VERSION", "0.2.0").strip() or "0.2.0"
-
-
 def _public_url() -> str:
     """Externally reachable base URL of this server (for links the agent/user open)."""
 
@@ -194,7 +190,7 @@ def build_download_routes(
         if binary is None:
             return JSONResponse({"error": "agent binary not configured"}, status_code=503)
         agent_id = request.path_params["id"]
-        version = _agent_version()
+        version = agent_release.resolve_agent_version(binary)
         sha256 = _sha256_file(binary)
         nonce = share_links.create(agent_id, "binary", BINARY_TTL_S)
         url = f"{_public_url()}/d/binary/{nonce}"

@@ -28,6 +28,10 @@ use tracing_subscriber::EnvFilter;
 use config::{Cli, Command};
 pub use protocol::PROTOCOL_VERSION;
 
+/// Agent version, **led by the GitHub release tag** at build time (see `build.rs`);
+/// falls back to the Cargo package version for dev/CI builds.
+pub const BUILD_VERSION: &str = env!("KENNY_BUILD_VERSION");
+
 fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -101,7 +105,7 @@ fn run_tunnel(config: config::Config) {
         agent_id = %config.agent_id,
         server = %config.server,
         protocol = PROTOCOL_VERSION,
-        version = env!("CARGO_PKG_VERSION"),
+        version = BUILD_VERSION,
         "kenny-agent starting"
     );
 

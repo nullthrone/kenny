@@ -41,7 +41,7 @@ so the first installer can be downloaded without a pre-existing agent tile.
 - Good: graceful degradation — a clear manual path remains when fetch is unavailable.
 - Bad: adds a runtime `httpx` dependency and outbound HTTP to GitHub from the server.
 - Bad: relies on the release asset naming convention (`kenny-agent-*-x86_64-pc-windows-msvc.exe` + `.sha256`); a workflow rename would break auto-fetch (mitigated by the manual fallback).
-- Note: the asset version is the **git tag** (e.g. `v0.2.4`) surfaced as the release `tag_name`, which can differ from `KENNY_AGENT_VERSION` (the label sent with `agent.update`).
+- The **git release tag is the leading source of the agent version** end-to-end: `build.rs` stamps it into the binary (reported as `meta.version`), and on fetch the server persists it to a `<binary>.version` sidecar that `resolve_agent_version()` uses for `agent.update` and the dashboard. `KENNY_AGENT_VERSION` is only a fallback when no tag is known.
 
 ## More Information
 

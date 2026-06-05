@@ -48,7 +48,7 @@ pub const SERVICE_NAME: &str = "kenny-agent";
 /// Top-level CLI. The run flags live here (top level) so the no-subcommand form
 /// keeps working; `command` is optional and defaults to running the tunnel.
 #[derive(Debug, Parser)]
-#[command(name = "kenny-agent", version, about)]
+#[command(name = "kenny-agent", version = env!("KENNY_BUILD_VERSION"), about)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Command>,

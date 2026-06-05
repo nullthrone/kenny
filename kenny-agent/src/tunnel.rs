@@ -122,7 +122,7 @@ async fn serve_once(
         meta: RegisterMeta {
             hostname: crate::util::hostname(),
             os: crate::util::os_family().to_string(),
-            version: env!("CARGO_PKG_VERSION").to_string(),
+            version: crate::BUILD_VERSION.to_string(),
         },
     }))
     .await
