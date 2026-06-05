@@ -63,11 +63,15 @@ The header shows the **worst-of** health across the whole fleet. Click a tile to
 
 ## The agent drill-down
 
-- **Sections** — each telemetry section with its status, a one-line summary, the server's health
-  rule reason, and the raw fields.
+- **Sections** — each telemetry section with its status, a one-line summary, and the server's health
+  rule reason. Click a section tile to open a popup with its details rendered as readable tables and
+  fields (no raw JSON).
 - **Health trend** — recent snapshots as colored bars.
-- **Tool-call log** — every tool run against this agent (ok / error), for audit.
-- Action buttons: **refresh now**, **download installer**, **share link**, **update agent**.
+- **Tool-call log** — every tool run against this agent (ok / error), for audit. The fleet-wide log
+  below the cards is searchable (by time, PC, or tool) and paged.
+- Action buttons: **refresh now**, **reinstall**, **re-share**, **update agent**. Onboarding a *new*
+  PC uses the **Add a PC** panel (**installer** / **share link**); from a PC's drill-down,
+  **reinstall** / **re-share** re-provision that existing PC (rotating its token).
 
 Telemetry sections cover: disk & SMART, memory, CPU/thermals, uptime, network & routing, Wi‑Fi,
 Defender (+ quarantine), third-party AV, firewall, BitLocker, Windows Update & app updates,
@@ -139,10 +143,11 @@ with a red slash = off). To re-enable, open the menu and toggle it back on. See
 
 ## Adding a PC to the fleet
 
-From an agent's drill-down, **download installer** gives you a ZIP (the agent binary + an
-`install.bat` pre-filled with the server URL, this agent's id, and a freshly minted token). Or use
+From the **Add a PC** panel (left of the console), **installer** gives you a ZIP (the agent binary +
+an `install.bat` pre-filled with the server URL, the agent's id, and a freshly minted token). Or use
 **share link** to send the target user a one-time, expiring download link they can open without your
-login.
+login. For a PC that already exists, the drill-down's **reinstall** / **re-share** buttons do the
+same for that agent id (rotating its token, so the old install stops reporting).
 
 ```mermaid
 sequenceDiagram
