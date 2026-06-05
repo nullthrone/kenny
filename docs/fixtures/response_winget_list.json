@@ -1,0 +1,11 @@
+{
+  "type": "response",
+  "id": "b2d4f6a8-1c3e-4a5b-9d7f-abcdef012345",
+  "ok": true,
+  "result": {
+    "packages": [
+      { "id": "Mozilla.Firefox", "name": "Mozilla Firefox", "version": "118.0.1", "available": "119.0" },
+      { "id": "7zip.7zip", "name": "7-Zip", "version": "22.01", "available": "" }
+    ]
+  }
+}
