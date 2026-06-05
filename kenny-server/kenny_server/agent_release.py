@@ -63,8 +63,45 @@ def cache_path() -> str:
     return os.path.join(os.path.dirname(os.path.abspath(db)) or ".", "kenny-agent.exe")
 
 
-def _agent_version() -> str:
-    return os.environ.get("KENNY_AGENT_VERSION", "0.2.0").strip() or "0.2.0"
+DEFAULT_VERSION = "0.2.0"
+
+
+def _normalize_version(v: str) -> str:
+    """Strip a leading ``v`` so a git tag (``v0.3.0``) and a plain version align."""
+
+    v = (v or "").strip()
+    if v[:1] in ("v", "V"):
+        v = v[1:]
+    return v
+
+
+def version_sidecar(binary_path: str) -> str:
+    """Path of the version marker written next to a binary (holds the release tag)."""
+
+    return binary_path + ".version"
+
+
+def _read_sidecar(binary_path: str) -> str | None:
+    try:
+        with open(version_sidecar(binary_path), "r", encoding="utf-8") as fh:
+            return _normalize_version(fh.read()) or None
+    except OSError:
+        return None
+
+
+def resolve_agent_version(manual_path: str | None = None) -> str:
+    """Agent version, **led by the GitHub release tag** (ADR-0014).
+
+    The tag of the served binary wins: it is written to a ``.version`` sidecar on
+    fetch (and may be dropped next to a manually-placed binary). ``KENNY_AGENT_VERSION``
+    is only a fallback when no tag is known, then a built-in default.
+    """
+
+    if manual_path:
+        tag = _read_sidecar(manual_path)
+        if tag:
+            return tag
+    return _normalize_version(os.environ.get("KENNY_AGENT_VERSION", "")) or DEFAULT_VERSION
 
 
 def _sha256_file(path: str) -> str:
@@ -218,13 +255,22 @@ def fetch_latest_agent_binary(
                 if tmp is not None and os.path.exists(tmp):
                     os.unlink(tmp)
 
+        # Persist the release tag next to the binary: it is the leading source
+        # of the agent version (read back by resolve_agent_version).
+        norm = _normalize_version(tag) if tag else None
+        try:
+            with open(version_sidecar(dest), "w", encoding="utf-8") as fh:
+                fh.write(norm or "")
+        except OSError:
+            pass
+
         return FetchResult(
             ok=True,
             source="github",
             message=f"fetched {asset_name}{warning}",
             asset_name=asset_name,
             sha256=digest,
-            version=tag,
+            version=norm,
         )
     except Exception as exc:  # noqa: BLE001 - best-effort, surface as a result
         return FetchResult(ok=False, source="none", message=f"fetch failed: {exc}")
@@ -238,7 +284,7 @@ def binary_status(*, manual_path: str | None) -> FetchResult:
     binary from the GitHub cache.
     """
 
-    version = _agent_version()
+    version = resolve_agent_version(manual_path)
     explicit = os.environ.get("KENNY_AGENT_BINARY", "").strip()
     if manual_path:
         source = "manual" if explicit and os.path.exists(explicit) else "cache"

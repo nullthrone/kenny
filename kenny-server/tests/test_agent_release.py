@@ -61,10 +61,13 @@ def test_fetch_success_verifies_and_caches(tmp_path, token):
     )
     assert res.ok
     assert res.source == "github"
-    assert res.version == "v0.2.4"
+    assert res.version == "0.2.4"  # leading "v" stripped from the tag
     assert res.asset_name == ASSET_NAME
     assert (tmp_path / "kenny-agent.exe").read_bytes() == EXE_BYTES
     assert res.sha256 == hashlib.sha256(EXE_BYTES).hexdigest()
+    # the release tag is persisted next to the binary and leads the agent version
+    assert (tmp_path / "kenny-agent.exe.version").read_text() == "0.2.4"
+    assert agent_release.resolve_agent_version(dest) == "0.2.4"
 
 
 def test_fetch_sha256_mismatch_fails(tmp_path, token):
@@ -133,6 +136,31 @@ def test_fetch_missing_sha_proceeds_with_warning(tmp_path, token):
     assert res.ok
     assert "no .sha256" in res.message
     assert (tmp_path / "kenny-agent.exe").read_bytes() == EXE_BYTES
+
+
+def test_resolve_version_tag_leads_over_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("KENNY_AGENT_VERSION", "9.9.9")
+    binary = tmp_path / "kenny-agent.exe"
+    binary.write_bytes(EXE_BYTES)
+    # no sidecar -> falls back to the env override (normalized)
+    assert agent_release.resolve_agent_version(str(binary)) == "9.9.9"
+    # a sidecar (the release tag) leads over the env override
+    (tmp_path / "kenny-agent.exe.version").write_text("v0.3.0\n")
+    assert agent_release.resolve_agent_version(str(binary)) == "0.3.0"
+
+
+def test_resolve_version_env_fallback_and_default(monkeypatch):
+    monkeypatch.delenv("KENNY_AGENT_VERSION", raising=False)
+    assert agent_release.resolve_agent_version(None) == agent_release.DEFAULT_VERSION
+    monkeypatch.setenv("KENNY_AGENT_VERSION", "v1.2.3")
+    assert agent_release.resolve_agent_version(None) == "1.2.3"
+
+
+def test_normalize_version():
+    assert agent_release._normalize_version("v0.3.0") == "0.3.0"
+    assert agent_release._normalize_version("0.3.0") == "0.3.0"
+    assert agent_release._normalize_version("  V2.0 ") == "2.0"
+    assert agent_release._normalize_version("") == ""
 
 
 def test_parse_sha256_format():
