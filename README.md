@@ -44,9 +44,10 @@ flowchart LR
 
 ### Operator dashboard (web UI)
 - Fleet view with a **traffic-light** per PC and the fleet's worst-of health.
-- Per-agent **drill-down**: each telemetry section with status + rule reason + raw fields,
-  a **health trend**, and a **tool-call audit log**.
-- Action buttons: refresh now, download installer, share link, update agent.
+- Per-agent **drill-down**: each telemetry section with status + rule reason (click a section for a
+  structured detail popup), a **health trend**, and a searchable, paged **tool-call audit log**.
+- Action buttons: refresh now, reinstall, re-share, update agent; onboard a new PC from **Add a PC**
+  (installer / share link).
 - Single-page, dependency-light; cookie login at `/login`.
 
 ### Remote administration — capability tools
