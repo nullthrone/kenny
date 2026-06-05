@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from starlette.requests import Request
-from starlette.responses import FileResponse, JSONResponse
+from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Route
 
 from ..chat import ChatExecutor, ChatSessions, confirm_pending, run_turn
@@ -21,6 +21,10 @@ from ..tools import CallLog, build_health
 from ..tunnel import AgentTunnel, ToolError
 
 _INDEX = Path(__file__).parent / "index.html"
+_ASSETS = Path(__file__).parent / "assets"
+# Whitelist of static brand assets the dashboard inlines via <link>/<img>.
+# Kept explicit (no directory walk) so the route can't serve anything else.
+_ASSET_TYPES = {".png": "image/png", ".ico": "image/x-icon", ".svg": "image/svg+xml"}
 
 
 def build_api_routes(
@@ -35,6 +39,19 @@ def build_api_routes(
 
     async def index(_request: Request) -> FileResponse:
         return FileResponse(_INDEX)
+
+    async def asset(request: Request) -> Response:
+        """Serve a whitelisted brand asset (logo, favicon) for the dashboard.
+
+        Resolved by basename only — no path traversal, no directory listing.
+        """
+
+        name = request.path_params["name"]
+        path = (_ASSETS / name).resolve()
+        media = _ASSET_TYPES.get(path.suffix.lower())
+        if media is None or path.parent != _ASSETS.resolve() or not path.is_file():
+            return Response(status_code=404)
+        return FileResponse(path, media_type=media)
 
     async def api_fleet(_request: Request) -> JSONResponse:
         ids = await _known_ids(registry, store)
@@ -125,6 +142,7 @@ def build_api_routes(
 
     return [
         Route("/", index),
+        Route("/assets/{name}", asset),
         Route("/api/fleet", api_fleet),
         Route("/api/audit", api_audit),
         Route("/api/agent/{id}", api_agent),
