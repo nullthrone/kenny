@@ -116,7 +116,7 @@ mod windows_impl {
             service_type: SERVICE_TYPE,
             start_type: ServiceStartType::AutoStart,
             error_control: ServiceErrorControl::Normal,
-            executable_path: exe,
+            executable_path: exe.clone(),
             launch_arguments: launch_args,
             dependencies: vec![],
             account_name: None, // LocalSystem
@@ -160,7 +160,61 @@ mod windows_impl {
         // Start it now.
         svc2.start::<&str>(&[])?;
         info!(service = %args.service_name, "service installed and started");
+
+        // Set up the local remote-control kill switch: a shared control file the user's
+        // tray can write and the LocalSystem service can read, plus a logon autostart for
+        // the tray itself. Best-effort: the service + gating work even if this fails (the
+        // tray can be started manually), so don't abort the install. See ADR-0010.
+        if let Err(e) = setup_tray_kill_switch(&exe) {
+            tracing::warn!(error = %e, "could not set up tray kill switch; configure it manually");
+        }
+
         Ok(())
+    }
+
+    /// Registry key holding per-machine logon autostart entries.
+    const RUN_KEY: &str = r"HKLM\Software\Microsoft\Windows\CurrentVersion\Run";
+    /// Value name for the tray autostart entry.
+    const TRAY_RUN_VALUE: &str = "kenny-agent-tray";
+
+    /// Prepare the shared control file's directory (writable by the interactive user,
+    /// readable by the service) and register the tray to auto-start at logon.
+    fn setup_tray_kill_switch(exe: &std::path::Path) -> anyhow::Result<()> {
+        // The control file lives in a shared, cross-session location (ProgramData).
+        // Create its directory and grant Authenticated Users *modify* so a standard
+        // user's tray can flip the switch while the LocalSystem service reads it.
+        if let Some(dir) = crate::control::control_path().parent() {
+            std::fs::create_dir_all(dir)?;
+            let status = std::process::Command::new("icacls")
+                .arg(dir)
+                .arg("/grant")
+                // S-1-5-11 = Authenticated Users; (OI)(CI)M = inherit + modify.
+                .arg("*S-1-5-11:(OI)(CI)M")
+                .status()?;
+            if !status.success() {
+                anyhow::bail!("icacls grant on {} failed", dir.display());
+            }
+        }
+
+        // Auto-start the tray helper in the interactive user session at logon.
+        let command = format!("\"{}\" tray", exe.display());
+        let status = std::process::Command::new("reg")
+            .args(["add", RUN_KEY, "/v", TRAY_RUN_VALUE, "/t", "REG_SZ", "/d"])
+            .arg(&command)
+            .arg("/f")
+            .status()?;
+        if !status.success() {
+            anyhow::bail!("registering tray autostart failed");
+        }
+        info!("registered tray autostart and control-file permissions");
+        Ok(())
+    }
+
+    /// Remove the tray's logon autostart entry (best effort).
+    fn remove_tray_autostart() {
+        let _ = std::process::Command::new("reg")
+            .args(["delete", RUN_KEY, "/v", TRAY_RUN_VALUE, "/f"])
+            .status();
     }
 
     /// `uninstall` — stop (best effort) and delete the service.
@@ -186,6 +240,9 @@ mod windows_impl {
             }
         }
         service.delete()?;
+        // Stop auto-starting the tray. The control file is left in place so the user's
+        // on/off choice survives a reinstall; remove it manually to reset to default-on.
+        remove_tray_autostart();
         info!(service = %args.service_name, "service removed");
         Ok(())
     }

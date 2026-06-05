@@ -126,6 +126,17 @@ same tools are available; `select_agent` chooses the target PC.
 | Agent mgmt | `agent.update` | ✅ |
 | Server-only | `list_agents` · `select_agent` · `fleet_overview` · `agent_health` · `agent_snapshot` | read-only |
 
+### The local kill switch (endpoint user)
+
+The person sitting at a managed PC can switch remote control **off** at any time from
+the kenny tray icon (notification area) → **Fernsteuerung aktiv**. While off, the agent
+refuses every state-changing tool above (the ✅ rows) and a forwarded call comes back
+with `error.code = "disabled"`; **telemetry and all read-only tools keep working**, so
+the fleet view stays live. Remote control is **on by default** and the choice persists
+across restarts. The tray icon shows the state at a glance (normal Kenny = on, greyed
+with a red slash = off). To re-enable, open the menu and toggle it back on. See
+[ADR-0010](adr/0010-local-remote-control-kill-switch.md).
+
 ## Adding a PC to the fleet
 
 From an agent's drill-down, **download installer** gives you a ZIP (the agent binary + an

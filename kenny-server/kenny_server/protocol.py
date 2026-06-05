@@ -28,6 +28,7 @@ ErrorCode = Literal[
     "unsupported",
     "bad_args",
     "internal",
+    "disabled",
 ]
 
 

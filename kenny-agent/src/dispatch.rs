@@ -6,6 +6,7 @@
 use serde_json::{json, Value};
 use tracing::debug;
 
+use crate::control;
 use crate::handlers;
 use crate::protocol::{ErrorCode, Request, Response};
 
@@ -21,6 +22,15 @@ pub async fn handle(req: Request) -> Response {
 
 /// Route a tool name to its handler.
 async fn run(tool: &str, args: Value) -> Result<Value, (ErrorCode, String)> {
+    // Local kill switch: if the person at the endpoint switched remote control off,
+    // refuse every mutating tool. Telemetry and read-only diagnostics are unaffected.
+    if control::is_mutating(tool) && !control::remote_control_enabled() {
+        return Err((
+            ErrorCode::Disabled,
+            "remote control is disabled at the endpoint".to_string(),
+        ));
+    }
+
     match tool {
         "powershell.exec" => handlers::powershell::exec(args).await,
 
@@ -72,6 +82,24 @@ fn telemetry_collect(args: Value) -> Result<Value, (ErrorCode, String)> {
 mod tests {
     use super::*;
 
+    /// Point the control file at a temp path in the given state for the closure's
+    /// duration, then restore the environment. Serialized via the crate-wide
+    /// `control::TEST_ENV_LOCK` so it never races other `KENNY_CONTROL_FILE` tests.
+    #[allow(clippy::await_holding_lock)] // single-threaded test runtime; lock guards env
+    async fn with_remote_control<F>(enabled: bool, name: &str, f: F) -> Response
+    where
+        F: std::future::Future<Output = Response>,
+    {
+        let _guard = crate::control::TEST_ENV_LOCK.lock().unwrap();
+        let path = std::env::temp_dir().join(name);
+        std::env::set_var(crate::control::CONTROL_FILE_ENV, &path);
+        crate::control::set_remote_control_enabled(enabled).unwrap();
+        let resp = f.await;
+        std::env::remove_var(crate::control::CONTROL_FILE_ENV);
+        let _ = std::fs::remove_file(&path);
+        resp
+    }
+
     #[tokio::test]
     async fn unknown_tool_is_unsupported() {
         let req = Request {
@@ -86,12 +114,16 @@ mod tests {
 
     #[tokio::test]
     async fn powershell_echo_round_trips() {
-        let req = Request {
-            id: "2".to_string(),
-            tool: "powershell.exec".to_string(),
-            args: json!({"script": "printf hi"}),
-        };
-        let resp = handle(req).await;
+        // powershell.exec is mutating, so this also exercises the "enabled" gate path.
+        let resp = with_remote_control(true, "kenny-dispatch-ps-on.control.json", async {
+            handle(Request {
+                id: "2".to_string(),
+                tool: "powershell.exec".to_string(),
+                args: json!({"script": "printf hi"}),
+            })
+            .await
+        })
+        .await;
         assert!(resp.ok, "expected ok, got {:?}", resp.error);
         assert_eq!(resp.result.unwrap()["stdout"], "hi");
     }
@@ -108,5 +140,36 @@ mod tests {
         let result = resp.result.unwrap();
         assert!(result["disk"]["status"].is_string());
         assert!(result.get("memory").is_none());
+    }
+
+    #[tokio::test]
+    async fn mutating_tool_blocked_when_disabled() {
+        let resp = with_remote_control(false, "kenny-dispatch-ps-off.control.json", async {
+            handle(Request {
+                id: "4".to_string(),
+                tool: "powershell.exec".to_string(),
+                args: json!({"script": "printf hi"}),
+            })
+            .await
+        })
+        .await;
+        assert!(!resp.ok, "mutating tool must be refused while disabled");
+        assert_eq!(resp.error.unwrap().code, ErrorCode::Disabled);
+    }
+
+    #[tokio::test]
+    async fn telemetry_allowed_when_disabled() {
+        // Read-only/telemetry paths keep working even with remote control off.
+        let resp = with_remote_control(false, "kenny-dispatch-tel-off.control.json", async {
+            handle(Request {
+                id: "5".to_string(),
+                tool: "telemetry.collect".to_string(),
+                args: json!({"sections": ["disk"]}),
+            })
+            .await
+        })
+        .await;
+        assert!(resp.ok, "telemetry must keep working while disabled");
+        assert!(resp.result.unwrap()["disk"]["status"].is_string());
     }
 }
