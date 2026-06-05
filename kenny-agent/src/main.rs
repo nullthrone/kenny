@@ -17,6 +17,7 @@ mod control;
 mod dispatch;
 mod handlers;
 mod protocol;
+mod screencap_ipc;
 mod service;
 mod telemetry;
 mod tray;

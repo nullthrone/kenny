@@ -2,6 +2,14 @@
 //!
 //! Windows-only via GDI (BitBlt to a DIB, then PNG-encode). Off Windows this
 //! returns `unsupported` per the platform rule.
+//!
+//! **Session 0 routing.** A GDI `BitBlt` only sees the desktop of the *calling*
+//! session. The agent normally runs as a LocalSystem service in **session 0**,
+//! which has no visible desktop, so a direct grab there returns a black frame.
+//! When we detect session 0 we therefore delegate to the tray helper (which runs
+//! in the interactive user session) over a local named pipe; see
+//! [`crate::screencap_ipc`] and ADR-0017. A foreground/dev run (session ≠ 0) grabs
+//! directly.
 
 use serde_json::Value;
 
@@ -21,6 +29,19 @@ pub fn capture(_args: Value) -> Result<Value, (ErrorCode, String)> {
         ))
     }
 }
+
+/// Wrap raw PNG bytes in the `{image_b64, format:"png"}` response shape.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn png_to_response(png: &[u8]) -> Value {
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(png);
+    serde_json::json!({ "image_b64": b64, "format": "png" })
+}
+
+/// Grab the primary display as raw PNG bytes (Windows, interactive session only).
+/// Used by the tray's screen-capture responder ([`crate::screencap_ipc`]).
+#[cfg(windows)]
+pub(crate) use windows_impl::grab_primary_png;
 
 /// Encode a GDI top-down 32-bit BGRA buffer as an RGBA PNG.
 ///
@@ -75,9 +96,7 @@ fn encode_png(width: u32, height: u32, bgra: &[u8]) -> Result<Vec<u8>, String> {
 #[cfg(windows)]
 mod windows_impl {
     use super::*;
-    use base64::Engine as _;
     use core::ffi::c_void;
-    use serde_json::json;
 
     use windows::Win32::Foundation::HWND;
     use windows::Win32::Graphics::Gdi::{
@@ -85,44 +104,66 @@ mod windows_impl {
         GetDIBits, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, CAPTUREBLT,
         DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ, SRCCOPY,
     };
+    use windows::Win32::System::RemoteDesktop::ProcessIdToSessionId;
+    use windows::Win32::System::Threading::GetCurrentProcessId;
     use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
 
-    /// Real impl: `GetDC(NULL)` → `CreateCompatibleDC`/`CreateCompatibleBitmap` →
-    /// `BitBlt` the primary screen → `GetDIBits` into a buffer → PNG-encode →
-    /// base64. Uses the `windows` crate (`Win32_Graphics_Gdi`).
+    /// True if this process runs in **session 0** (the non-interactive services
+    /// session). Such a process cannot grab the user's desktop directly.
+    fn in_session_zero() -> bool {
+        let mut session: u32 = 0;
+        // SAFETY: writes a single u32 we own; GetCurrentProcessId is infallible.
+        let ok = unsafe { ProcessIdToSessionId(GetCurrentProcessId(), &mut session) };
+        // If the lookup fails, assume interactive (direct grab) rather than block.
+        ok.is_ok() && session == 0
+    }
+
+    /// `screen_capture`: grab directly when interactive, else delegate to the tray.
+    pub fn capture() -> Result<Value, (ErrorCode, String)> {
+        if in_session_zero() {
+            // Running as the session-0 service: the desktop lives in the user's
+            // session, so ask the tray helper to capture it (ADR-0017).
+            return crate::screencap_ipc::capture_via_tray();
+        }
+        let png = grab_primary_png().map_err(|e| (ErrorCode::Internal, e))?;
+        Ok(png_to_response(&png))
+    }
+
+    /// Grab the primary display via GDI and return raw PNG bytes.
+    ///
+    /// `GetDC(NULL)` → `CreateCompatibleDC`/`CreateCompatibleBitmap` → `BitBlt` →
+    /// `GetDIBits` into a BGRA buffer → `encode_png`. Only meaningful when called
+    /// from a session with a visible desktop (the tray, or a foreground run).
     ///
     /// virtual-screen (all monitors) via SM_*VIRTUALSCREEN is a future option.
-    pub fn capture() -> Result<Value, (ErrorCode, String)> {
+    pub(crate) fn grab_primary_png() -> Result<Vec<u8>, String> {
         // SAFETY: All pointers below are validated for null before use, and every
         // GDI object created is released in `cleanup` on every return path.
         unsafe {
             let width = GetSystemMetrics(SM_CXSCREEN);
             let height = GetSystemMetrics(SM_CYSCREEN);
             if width <= 0 || height <= 0 {
-                return Err((
-                    ErrorCode::Internal,
-                    format!("invalid screen metrics: {width}x{height}"),
-                ));
+                return Err(format!("invalid screen metrics: {width}x{height}"));
             }
 
             // `GetDC(None)` returns the DC for the entire screen.
             let screen_dc: HDC = GetDC(HWND(std::ptr::null_mut()));
             if screen_dc.is_invalid() {
-                return Err((ErrorCode::Internal, "GetDC(screen) returned null".into()));
+                return Err("GetDC(screen) returned null".into());
             }
 
             // From here on, ensure cleanup on every error path.
             let mem_dc: HDC = CreateCompatibleDC(screen_dc);
             if mem_dc.is_invalid() {
                 ReleaseDC(HWND(std::ptr::null_mut()), screen_dc);
-                return Err((ErrorCode::Internal, "CreateCompatibleDC failed".into()));
+                return Err("CreateCompatibleDC failed".into());
             }
 
             let hbmp: HBITMAP = CreateCompatibleBitmap(screen_dc, width, height);
             if hbmp.is_invalid() {
                 let _ = DeleteDC(mem_dc);
                 ReleaseDC(HWND(std::ptr::null_mut()), screen_dc);
-                return Err((ErrorCode::Internal, "CreateCompatibleBitmap failed".into()));
+                return Err("CreateCompatibleBitmap failed".into());
             }
 
             // Helper that frees everything; called before each fallible return below.
@@ -135,7 +176,7 @@ mod windows_impl {
             let old = SelectObject(mem_dc, HGDIOBJ(hbmp.0));
             if old.is_invalid() {
                 cleanup(hbmp, mem_dc, screen_dc);
-                return Err((ErrorCode::Internal, "SelectObject failed".into()));
+                return Err("SelectObject failed".into());
             }
 
             // CAPTUREBLT includes layered/transparent windows in the grab.
@@ -151,7 +192,7 @@ mod windows_impl {
                 SRCCOPY | CAPTUREBLT,
             ) {
                 cleanup(hbmp, mem_dc, screen_dc);
-                return Err((ErrorCode::Internal, format!("BitBlt failed: {e}")));
+                return Err(format!("BitBlt failed: {e}"));
             }
 
             // Negative height => top-down rows; 32 bpp, uncompressed BGRA.
@@ -182,16 +223,13 @@ mod windows_impl {
             );
             if scanned == 0 {
                 cleanup(hbmp, mem_dc, screen_dc);
-                return Err((ErrorCode::Internal, "GetDIBits returned 0".into()));
+                return Err("GetDIBits returned 0".into());
             }
 
             // Pixels are copied out; release GDI resources before encoding.
             cleanup(hbmp, mem_dc, screen_dc);
 
-            let png_bytes = super::encode_png(width as u32, height as u32, &buf)
-                .map_err(|e| (ErrorCode::Internal, e))?;
-            let b64 = base64::engine::general_purpose::STANDARD.encode(png_bytes);
-            Ok(json!({ "image_b64": b64, "format": "png" }))
+            super::encode_png(width as u32, height as u32, &buf)
         }
     }
 }

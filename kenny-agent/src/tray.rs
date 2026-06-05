@@ -32,8 +32,12 @@ mod windows_impl {
 
     use anyhow::Context;
     use windows::core::{w, PCWSTR};
-    use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, TRUE, WPARAM};
+    use windows::Win32::Foundation::{
+        GetLastError, ERROR_ALREADY_EXISTS, HINSTANCE, HWND, LPARAM, LRESULT, POINT, TRUE, WPARAM,
+    };
+    use windows::Win32::System::Console::FreeConsole;
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows::Win32::System::Threading::CreateMutexW;
     use windows::Win32::UI::Shell::{
         Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
         NOTIFYICONDATAW,
@@ -78,6 +82,25 @@ mod windows_impl {
 
     pub fn run() -> anyhow::Result<()> {
         unsafe {
+            // Detach the inherited console (the binary is a console subsystem app) so
+            // the tray runs silently — no flashing console window. Harmless if there
+            // is no console attached. Does NOT affect `run`/CLI, which keep their console.
+            let _ = FreeConsole();
+
+            // Single-instance guard, scoped to this session (fast-user-switching safe).
+            // `install` starts the tray immediately *and* registers a logon autostart,
+            // so a second copy can race; the first one to create the named mutex wins.
+            let _singleton =
+                CreateMutexW(None, false, w!("Local\\kenny-agent-tray")).context("CreateMutexW")?;
+            if GetLastError() == ERROR_ALREADY_EXISTS {
+                // Another tray already owns the notification icon in this session.
+                return Ok(());
+            }
+
+            // Host the screen-capture responder for the session-0 service. Runs for
+            // the life of the process; the OS reclaims the thread on exit (ADR-0017).
+            std::thread::spawn(crate::screencap_ipc::serve);
+
             let hmodule = GetModuleHandleW(None).context("GetModuleHandleW")?;
             let hinstance = HINSTANCE(hmodule.0);
 
