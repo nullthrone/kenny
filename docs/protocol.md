@@ -79,8 +79,14 @@ Error:
 ```
 
 `error.code` ∈ {`timeout`, `not_found`, `exec_failed`, `unsupported`, `bad_args`,
-`internal`}. `unsupported` is returned by an agent that lacks the capability on its
-platform (e.g. `winget.list` on a Linux dev build).
+`internal`, `disabled`}. `unsupported` is returned by an agent that lacks the
+capability on its platform (e.g. `winget.list` on a Linux dev build). `disabled` is
+returned when the agent is online but the person at the endpoint has switched remote
+control **off** locally (via the agent's tray menu): the agent then refuses every
+**mutating** tool (`powershell.exec`, `winget.install|uninstall|update`,
+`net.dns_flush`, `net.adapter_reset`, `agent.update`) while telemetry and read-only
+diagnostics keep working. Remote control is **on** by default and the choice persists
+across restarts. See ADR-0010.
 
 ### `telemetry` (agent → server, pushed)
 

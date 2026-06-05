@@ -114,6 +114,9 @@ pub enum ErrorCode {
     Unsupported,
     BadArgs,
     Internal,
+    /// The agent is online but remote control was switched off locally at the
+    /// endpoint (via the tray menu); mutating tools are refused. See ADR-0010.
+    Disabled,
 }
 
 /// `telemetry` frame body (also the shape returned by `telemetry.collect`).

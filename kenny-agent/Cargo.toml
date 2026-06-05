@@ -25,7 +25,9 @@ windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
     "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Shell",
     "Win32_System_Threading",
+    "Win32_System_LibraryLoader",
 ] }
 # Windows service lifecycle (install/uninstall/run-service + SCM control handler).
 windows-service = "0.7"

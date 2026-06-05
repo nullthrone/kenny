@@ -113,6 +113,11 @@ pub enum Command {
     #[command(name = "run-service")]
     RunService(RunServiceArgs),
 
+    /// Run the system-tray helper that lets the person at the endpoint switch remote
+    /// control on/off (Windows only; a no-op stub elsewhere). Runs in the interactive
+    /// user session and is auto-started at logon by `install`.
+    Tray,
+
     /// Hidden helper: wait for the service to stop, swap binaries, restart it.
     /// Spawned detached by the `agent.update` handler (Windows only).
     #[command(name = "finish-update", hide = true)]

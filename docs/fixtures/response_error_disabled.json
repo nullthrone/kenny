@@ -1,0 +1,6 @@
+{
+  "type": "response",
+  "id": "7c1b9e3d-4f5a-6b7c-8d9e-0123456789ab",
+  "ok": false,
+  "error": { "code": "disabled", "message": "remote control is disabled at the endpoint" }
+}

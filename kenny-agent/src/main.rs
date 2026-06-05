@@ -13,11 +13,13 @@
 //! * `finish-update` — hidden updater helper that swaps the binary (Windows only).
 
 mod config;
+mod control;
 mod dispatch;
 mod handlers;
 mod protocol;
 mod service;
 mod telemetry;
+mod tray;
 mod tunnel;
 mod util;
 
@@ -72,6 +74,14 @@ fn main() {
         Some(Command::RunService(args)) => {
             if let Err(e) = service::run_service(args) {
                 error!(error = %e, "run-service failed");
+                std::process::exit(1);
+            }
+        }
+
+        // Tray helper (Windows; no-op stub elsewhere).
+        Some(Command::Tray) => {
+            if let Err(e) = tray::run() {
+                error!(error = %e, "tray failed");
                 std::process::exit(1);
             }
         }
