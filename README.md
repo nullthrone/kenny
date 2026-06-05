@@ -30,6 +30,79 @@ flowchart LR
   server (NAT/firewall friendly), executes tool calls in the user's session, and pushes
   periodic health snapshots.
 
+## Features
+
+### Fleet monitoring
+- **Push telemetry** from each PC (default every 15 min, plus an immediate first push),
+  persisted in SQLite with ~30-day retention and a per-agent history.
+- **~25 telemetry sections**: disk + SMART, memory, processes, CPU/thermals, uptime,
+  network + routing, Wi‑Fi quality, Defender (+ quarantine), third-party AV, firewall,
+  BitLocker encryption, Windows Update + app updates, reboot-pending, OS support/EOL,
+  services, autostart, peripherals, printers, battery, reliability, time sync.
+- **Server-side health rules** (authoritative): e.g. disk > 80 % ⇒ warn / ≥ 95 % ⇒ crit,
+  Defender real-time off ⇒ crit, with worst-of roll-up per agent and across the fleet.
+
+### Operator dashboard (web UI)
+- Fleet view with a **traffic-light** per PC and the fleet's worst-of health.
+- Per-agent **drill-down**: each telemetry section with status + rule reason + raw fields,
+  a **health trend**, and a **tool-call audit log**.
+- Action buttons: refresh now, download installer, share link, update agent.
+- Single-page, dependency-light; cookie login at `/login`.
+
+### Remote administration — capability tools
+- **Shell**: `powershell.exec`
+- **Packages**: `winget.list` · `winget.install` · `winget.uninstall` · `winget.update`
+- **Files**: `fs.list` · `fs.search` · `fs.read` · `fs.disk_usage`
+- **Diagnostics**: `diag.processes` · `diag.services` · `diag.eventlog` · `diag.autostart`
+- **Network**: `net.config` · `net.dns_flush` · `net.adapter_reset`
+- **Screen**: `screen.capture` · **Telemetry**: `telemetry.collect` · **Agent mgmt**: `agent.update`
+- **Server-only orchestration**: `list_agents` · `select_agent` · `fleet_overview` ·
+  `agent_health` · `agent_snapshot`
+- Windows-only tools have **portable Linux fallbacks**, so the agent builds and runs in CI/dev.
+
+### Two ways to drive it with Claude
+- **Local MCP client** → `/mcp` (FastMCP Streamable HTTP), operator token as bearer.
+- **Server-hosted chat** in the dashboard (no local client): a Claude tool-use loop bridged to the
+  same tools, with prompt-cached system + tool schemas; model configurable (default
+  `claude-sonnet-4-6`).
+- **Confirm-gate**: read-only tools auto-run; state-changing tools (`powershell.exec`, `winget`
+  writes, `net.dns_flush`/`adapter_reset`, `agent.update`) require explicit operator confirmation.
+
+### Agent distribution & lifecycle
+- **One-click installer download** from the GUI: a prebuilt binary + a generated `install.bat`
+  carrying the server URL, agent id, and a freshly minted token.
+- **Expiring, one-time shareable link** (`/d/…`) for the target user — no operator login needed.
+- **Windows service**: self-install (`install` / `uninstall` / `run-service`) via the
+  `windows-service` crate, auto-start with restart-on-failure recovery.
+- **Server-triggered self-update** (`agent.update`): download → SHA‑256 verify → staged swap with
+  rollback → service restart; the agent reconnects on the new version.
+
+### Transport & connectivity
+- Agent **dials out** over WSS (NAT/firewall friendly) and never listens.
+- **Frozen, versioned JSON wire contract** (`PROTOCOL_VERSION 0.2`) with golden fixtures
+  round-tripped by both sides; request/response correlation, ping/pong heartbeat, and
+  exponential-backoff reconnect.
+
+### Security & auth
+- **Operator bearer token** for MCP + API + UI (multiple operator tokens supported); cookie login
+  with the `Secure` flag under TLS.
+- **Per-agent tokens** in a SQLite token store with a **rotation endpoint**; the agent authenticates
+  on `register`.
+- TLS server identity (`wss`), confirm-gate for destructive actions, and a tool-call audit log.
+
+### Deployment & ops
+- **Docker image + Compose** (persistent data volume, optional Caddy TLS profile for `wss`/`https`).
+- **GHCR release workflow** on tag `v*`: server image + Windows agent binary (SHA‑256, optional
+  Authenticode signing).
+- **Dependabot** for pip, cargo, GitHub Actions, and the Docker base image.
+- **CI**: server tests + lint, agent `fmt`/`clippy`/`test`/`build`, a Windows job for
+  `#[cfg(windows)]` code, and a **real agent↔server e2e** job.
+- **`/security-review`** command files deduplicated security issues for kenny's weak points.
+
+### Engineering
+- **Contract-first** (`docs/protocol.md` + `docs/fixtures/`), **ADRs** (MADR) for every significant
+  decision, and Claude Code **skills/commands + subagents** for repeatable changes.
+
 ## Documentation
 
 - **[User guide](docs/user-guide.md)** — operator workflows: dashboard, chat, running tools,
