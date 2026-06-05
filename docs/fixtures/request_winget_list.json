@@ -1,0 +1,6 @@
+{
+  "type": "request",
+  "id": "b2d4f6a8-1c3e-4a5b-9d7f-abcdef012345",
+  "tool": "winget_list",
+  "args": {}
+}
