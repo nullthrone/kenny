@@ -7,7 +7,7 @@ description: How kenny telemetry works end-to-end — agent collectors, the push
 
 Telemetry is a **pushed** snapshot: the agent collects sections on a timer and sends one
 `telemetry` frame; the server stores it and evaluates fleet health. On-demand refresh is
-the `telemetry.collect` tool. See `docs/adr/0007-telemetry-push-model-and-sqlite-storage.md`.
+the `telemetry_collect` tool. See `docs/adr/0007-telemetry-push-model-and-sqlite-storage.md`.
 
 ## The pieces
 

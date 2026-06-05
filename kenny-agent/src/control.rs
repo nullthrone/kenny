@@ -100,19 +100,19 @@ pub fn set_remote_control_enabled(enabled: bool) -> std::io::Result<()> {
 
 /// Whether a tool *writes to the device* and is therefore gated by the kill switch.
 ///
-/// Read-only diagnostics (`fs.*`, `diag.*`, `net.config`, `screen.capture`) and
-/// `telemetry.collect` are **not** mutating and keep working while remote control is
+/// Read-only diagnostics (`fs_*`, `diag_*`, `net_config`, `screen_capture`) and
+/// `telemetry_collect` are **not** mutating and keep working while remote control is
 /// off. Keep this list in lockstep with the tool catalog in `docs/protocol.md`.
 pub fn is_mutating(tool: &str) -> bool {
     matches!(
         tool,
-        "powershell.exec"
-            | "winget.install"
-            | "winget.uninstall"
-            | "winget.update"
-            | "net.dns_flush"
-            | "net.adapter_reset"
-            | "agent.update"
+        "powershell_exec"
+            | "winget_install"
+            | "winget_uninstall"
+            | "winget_update"
+            | "net_dns_flush"
+            | "net_adapter_reset"
+            | "agent_update"
     )
 }
 
@@ -167,13 +167,13 @@ mod tests {
 
     #[test]
     fn classifies_mutating_vs_readonly() {
-        assert!(is_mutating("powershell.exec"));
-        assert!(is_mutating("winget.install"));
-        assert!(is_mutating("agent.update"));
-        assert!(!is_mutating("telemetry.collect"));
-        assert!(!is_mutating("fs.list"));
-        assert!(!is_mutating("diag.processes"));
-        assert!(!is_mutating("net.config"));
-        assert!(!is_mutating("screen.capture"));
+        assert!(is_mutating("powershell_exec"));
+        assert!(is_mutating("winget_install"));
+        assert!(is_mutating("agent_update"));
+        assert!(!is_mutating("telemetry_collect"));
+        assert!(!is_mutating("fs_list"));
+        assert!(!is_mutating("diag_processes"));
+        assert!(!is_mutating("net_config"));
+        assert!(!is_mutating("screen_capture"));
     }
 }

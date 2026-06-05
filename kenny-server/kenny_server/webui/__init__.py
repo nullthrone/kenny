@@ -89,11 +89,11 @@ def build_api_routes(
     async def api_refresh(request: Request) -> JSONResponse:
         agent_id = request.path_params["id"]
         try:
-            result = await tunnel.send_request(agent_id, "telemetry.collect", {}, 60)
-            call_log.record(agent_id, "telemetry.collect", {}, ok=True)
+            result = await tunnel.send_request(agent_id, "telemetry_collect", {}, 60)
+            call_log.record(agent_id, "telemetry_collect", {}, ok=True)
         except (ToolError, Exception) as exc:  # noqa: BLE001 - surface to UI
             message = exc.message if isinstance(exc, ToolError) else str(exc)
-            call_log.record(agent_id, "telemetry.collect", {}, ok=False, error=message)
+            call_log.record(agent_id, "telemetry_collect", {}, ok=False, error=message)
             return JSONResponse({"ok": False, "error": message}, status_code=502)
         # Store the freshly collected snapshot so the drill-down updates.
         if result:

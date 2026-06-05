@@ -1,4 +1,4 @@
-//! `screen.capture` — capture the primary display to a base64 PNG.
+//! `screen_capture` — capture the primary display to a base64 PNG.
 //!
 //! Windows-only via GDI (BitBlt to a DIB, then PNG-encode). Off Windows this
 //! returns `unsupported` per the platform rule.
@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use crate::protocol::ErrorCode;
 
-/// `screen.capture` — `{image_b64, format:"png"}`.
+/// `screen_capture` — `{image_b64, format:"png"}`.
 pub fn capture(_args: Value) -> Result<Value, (ErrorCode, String)> {
     #[cfg(windows)]
     {
@@ -17,7 +17,7 @@ pub fn capture(_args: Value) -> Result<Value, (ErrorCode, String)> {
     {
         Err((
             ErrorCode::Unsupported,
-            "screen.capture is only available on Windows".to_string(),
+            "screen_capture is only available on Windows".to_string(),
         ))
     }
 }

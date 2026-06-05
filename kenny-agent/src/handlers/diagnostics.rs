@@ -1,7 +1,7 @@
-//! Diagnostic tools: `diag.processes`, `diag.services`, `diag.eventlog`,
-//! `diag.autostart`.
+//! Diagnostic tools: `diag_processes`, `diag_services`, `diag_eventlog`,
+//! `diag_autostart`.
 //!
-//! `diag.processes` is portable via `sysinfo`. Services/eventlog/autostart are
+//! `diag_processes` is portable via `sysinfo`. Services/eventlog/autostart are
 //! Windows-only; off Windows they return `unsupported`.
 
 use serde::Deserialize;
@@ -10,7 +10,7 @@ use sysinfo::{ProcessesToUpdate, System};
 
 use crate::protocol::ErrorCode;
 
-/// `diag.processes` — running processes with cpu and memory.
+/// `diag_processes` — running processes with cpu and memory.
 pub fn processes(_args: Value) -> Result<Value, (ErrorCode, String)> {
     let mut sys = System::new();
     sys.refresh_processes(ProcessesToUpdate::All);
@@ -36,7 +36,7 @@ struct ServicesArgs {
     filter: Option<String>,
 }
 
-/// `diag.services` — Windows service inventory.
+/// `diag_services` — Windows service inventory.
 pub fn services(_args: Value) -> Result<Value, (ErrorCode, String)> {
     #[cfg(windows)]
     {
@@ -47,7 +47,7 @@ pub fn services(_args: Value) -> Result<Value, (ErrorCode, String)> {
     #[cfg(not(windows))]
     {
         let _ = ServicesArgs { filter: None };
-        Err(unsupported("diag.services"))
+        Err(unsupported("diag_services"))
     }
 }
 
@@ -59,7 +59,7 @@ struct EventLogArgs {
     count: u32,
 }
 
-/// `diag.eventlog` — recent Windows Event Log entries.
+/// `diag_eventlog` — recent Windows Event Log entries.
 pub fn eventlog(_args: Value) -> Result<Value, (ErrorCode, String)> {
     #[cfg(windows)]
     {
@@ -73,11 +73,11 @@ pub fn eventlog(_args: Value) -> Result<Value, (ErrorCode, String)> {
             log: String::new(),
             count: 0,
         };
-        Err(unsupported("diag.eventlog"))
+        Err(unsupported("diag_eventlog"))
     }
 }
 
-/// `diag.autostart` — startup programs.
+/// `diag_autostart` — startup programs.
 pub fn autostart(_args: Value) -> Result<Value, (ErrorCode, String)> {
     #[cfg(windows)]
     {
@@ -85,7 +85,7 @@ pub fn autostart(_args: Value) -> Result<Value, (ErrorCode, String)> {
     }
     #[cfg(not(windows))]
     {
-        Err(unsupported("diag.autostart"))
+        Err(unsupported("diag_autostart"))
     }
 }
 

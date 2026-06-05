@@ -47,15 +47,15 @@ def test_fleet_summary_no_telemetry():
 def test_audit_endpoint_shape_and_classification(tmp_path):
     app = build_app(db_path=str(tmp_path / "audit.sqlite"))
     with TestClient(app) as c:
-        app.state.call_log.record("papa-pc", "telemetry.collect", {}, ok=True)
-        app.state.call_log.record("papa-pc", "winget.update", {"id": "VLC"}, ok=True)
+        app.state.call_log.record("papa-pc", "telemetry_collect", {}, ok=True)
+        app.state.call_log.record("papa-pc", "winget_update", {"id": "VLC"}, ok=True)
         r = c.get("/api/audit", headers=_bearer(app))
         assert r.status_code == 200
         entries = r.json()["entries"]
         assert len(entries) == 2
         by_tool = {e["tool"]: e for e in entries}
-        assert by_tool["telemetry.collect"]["state_changing"] is False
-        assert by_tool["winget.update"]["state_changing"] is True
+        assert by_tool["telemetry_collect"]["state_changing"] is False
+        assert by_tool["winget_update"]["state_changing"] is True
         assert set(entries[0]) == {"at", "agent_id", "tool", "ok", "error", "state_changing"}
 
 

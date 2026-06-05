@@ -8,7 +8,7 @@ Run kenny end-to-end on this machine (Linux dev fallbacks are fine):
 2. Start `kenny-agent` against `ws://localhost:<port>/agent/ws` with a dev agent id/token,
    in the background.
 3. Drive the MCP endpoint (MCP client or HTTP): `list_agents` → `select_agent("dev")` →
-   `powershell.exec {script:"echo hi"}`; assert the result contains `hi`.
-4. Trigger `telemetry.collect` and confirm a snapshot is stored and `fleet_overview()`
+   `powershell_exec {script:"echo hi"}`; assert the result contains `hi`.
+4. Trigger `telemetry_collect` and confirm a snapshot is stored and `fleet_overview()`
    shows the agent with a health status.
 5. Tear down both background processes. Report pass/fail with the captured output.

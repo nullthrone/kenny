@@ -2,7 +2,7 @@
 
 Runs the composed server on uvicorn and spawns the **actual** compiled
 `kenny-agent` binary, which dials `/agent/ws`, registers, serves a forwarded
-`powershell.exec` (the agent's `sh` fallback on Linux), and pushes a telemetry
+`powershell_exec` (the agent's `sh` fallback on Linux), and pushes a telemetry
 snapshot. Asserts the round-trip through the real wire protocol on both sides.
 
 Skipped unless the agent binary is available: set ``KENNY_AGENT_BIN`` to its path,
@@ -106,7 +106,7 @@ async def test_real_agent_end_to_end(tmp_path) -> None:
             async with Client(transport) as client:
                 await client.call_tool("select_agent", {"id": "dev"})
                 res = await client.call_tool(
-                    "powershell.exec",
+                    "powershell_exec",
                     {"args": {"script": "echo hi", "timeout_s": 20}},
                 )
                 # The Linux fallback runs `sh -c "echo hi"`.

@@ -1,7 +1,7 @@
 {
   "type": "request",
   "id": "b7e2c1a0-4f5e-4a6b-9c2d-1122334455aa",
-  "tool": "agent.update",
+  "tool": "agent_update",
   "args": {
     "version": "0.2.0",
     "url": "https://kenny.example.com/d/agent/kenny-agent-v0.2.0-x86_64-pc-windows-msvc.exe",

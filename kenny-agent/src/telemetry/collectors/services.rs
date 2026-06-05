@@ -2,7 +2,7 @@
 //!
 //! Real data comes from `Get-Service`/CIM on Windows. Off Windows we stub to
 //! `n/a`; the section shape (`services: [{name, display, status, start}]`) matches
-//! the `diag.services` tool result.
+//! the `diag_services` tool result.
 
 use serde_json::json;
 #[cfg(windows)]

@@ -20,7 +20,7 @@ Go surface by surface. For each, read the cited code and look for concrete, expl
 - **Agent auth** (`registry.py`, `tokenstore.py`): token-at-rest (hashed vs plaintext), rotation,
   dev fallback tokens, comparison timing, replay across reconnects.
 - **Self-update** (`kenny-agent/src/handlers/agent_update.rs`, server `distribution.py`): the agent
-  fetches and executes a binary from a server-supplied `url` — who can trigger `agent.update`, is
+  fetches and executes a binary from a server-supplied `url` — who can trigger `agent_update`, is
   the `sha256` an *authenticated* integrity check (or MITM-forgeable, i.e. no code signature?), is
   TLS enforced on the download, and is the swap/rollback safe? (supply-chain / RCE, CWE-494/CWE-829).
 - **Distribution links** (`distribution.py`): `/d/installer|binary/{nonce}` public endpoints —
@@ -29,8 +29,8 @@ Go surface by surface. For each, read the cited code and look for concrete, expl
 - **Command-exec handlers** (`kenny-agent/src/handlers/` powershell/winget/fs/network): RCE/admin by
   design — check argument injection and **path traversal / arbitrary read** in `fs.*`, and timeouts.
 - **Server-side chat** (`kenny-server/kenny_server/chat.py`): can the confirm-gate for state-changing
-  tools be bypassed; **prompt injection** from agent-controlled telemetry / `fs.read` content / tool
-  output steering Claude into read-only-but-sensitive calls (e.g. `screen.capture`, reading secrets);
+  tools be bypassed; **prompt injection** from agent-controlled telemetry / `fs_read` content / tool
+  output steering Claude into read-only-but-sensitive calls (e.g. `screen_capture`, reading secrets);
   session isolation; API-key handling (CWE-77/CWE-94 adjacent).
 - **Web UI XSS** (`kenny-server/kenny_server/webui/index.html`): agent-controlled telemetry fields
   (e.g. section `summary`, hostnames) rendered into `innerHTML` without escaping → stored XSS in the

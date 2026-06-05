@@ -4,7 +4,7 @@ Covers the two behaviours the confirm-gate hinges on:
 
 * a read-only tool (``fleet_overview``) auto-executes and the assistant gets a
   ``tool_result`` fed back, ending the turn with text;
-* a state-changing tool (``winget.install``) does NOT execute — a pending
+* a state-changing tool (``winget_install``) does NOT execute — a pending
   confirmation is surfaced — and only runs after ``confirm_pending(approve=True)``.
 
 The fake client scripts ``messages.create`` responses; the capability path stubs
@@ -14,6 +14,7 @@ The fake client scripts ``messages.create`` responses; the capability path stubs
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 import pytest
@@ -104,13 +105,24 @@ def test_tool_schemas_cover_all_tools() -> None:
     assert set(CAPABILITY_TOOLS) <= names
 
 
+def test_tool_names_match_anthropic_constraint() -> None:
+    """Regression for issue #12: the Anthropic Messages API rejects tool names
+    that do not match ``^[a-zA-Z0-9_-]{1,128}$`` (notably, no dots)."""
+
+    pattern = re.compile(r"^[a-zA-Z0-9_-]{1,128}$")
+    for schema in build_tool_schemas():
+        name = schema["name"]
+        assert "." not in name, f"tool name contains a dot: {name!r}"
+        assert pattern.match(name), f"tool name violates Anthropic constraint: {name!r}"
+
+
 def test_classification() -> None:
     assert not is_state_changing("fleet_overview")
-    assert not is_state_changing("diag.processes")
-    assert not is_state_changing("fs.read")
-    assert is_state_changing("winget.install")
-    assert is_state_changing("powershell.exec")
-    assert is_state_changing("net.dns_flush")
+    assert not is_state_changing("diag_processes")
+    assert not is_state_changing("fs_read")
+    assert is_state_changing("winget_install")
+    assert is_state_changing("powershell_exec")
+    assert is_state_changing("net_dns_flush")
 
 
 async def test_read_only_tool_auto_executes(store: TelemetryStore) -> None:
@@ -170,7 +182,7 @@ async def test_state_changing_tool_requires_confirmation(store: TelemetryStore) 
     client = FakeAnthropic(
         [
             _Response(
-                [tool_use_block("tu2", "winget.install", {"id": "Git.Git"})],
+                [tool_use_block("tu2", "winget_install", {"id": "Git.Git"})],
                 "tool_use",
             ),
             _Response([text_block("Git is installed.")], "end_turn"),
@@ -184,7 +196,7 @@ async def test_state_changing_tool_requires_confirmation(store: TelemetryStore) 
     # It paused: pending surfaced, NOT executed, turn not done.
     assert result.done is False
     assert result.pending is not None
-    assert result.pending["tool"] == "winget.install"
+    assert result.pending["tool"] == "winget_install"
     assert result.pending["args"] == {"id": "Git.Git"}
     assert result.pending["agent_id"] == "dev"
     assert sent == []  # the tunnel was never called — nothing executed
@@ -199,7 +211,7 @@ async def test_state_changing_tool_requires_confirmation(store: TelemetryStore) 
     assert result2.done is True
     assert result2.pending is None
     assert result2.assistant_text == "Git is installed."
-    assert len(sent) == 1 and sent[0]["tool"] == "winget.install"
+    assert len(sent) == 1 and sent[0]["tool"] == "winget_install"
     assert session.pending is None
 
 
@@ -219,7 +231,7 @@ async def test_state_changing_tool_denied(store: TelemetryStore) -> None:
     client = FakeAnthropic(
         [
             _Response(
-                [tool_use_block("tu3", "powershell.exec", {"script": "rm -rf /"})],
+                [tool_use_block("tu3", "powershell_exec", {"script": "rm -rf /"})],
                 "tool_use",
             ),
             _Response([text_block("Understood, I won't run that.")], "end_turn"),

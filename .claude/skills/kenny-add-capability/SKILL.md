@@ -1,6 +1,6 @@
 ---
 name: kenny-add-capability
-description: Step-by-step recipe to add a new remote-admin capability tool to kenny across contract, server, and agent. Use whenever adding or changing a tool like powershell.exec, fs.*, winget.*, diag.*, net.*.
+description: Step-by-step recipe to add a new remote-admin capability tool to kenny across contract, server, and agent. Use whenever adding or changing a tool like powershell_exec, fs_*, winget_*, diag_*, net_*.
 ---
 
 # Add a capability tool
@@ -23,7 +23,8 @@ The `/add-tool <name>` command automates the sequence; this skill explains the p
 
 ## Conventions
 
-- Tool names are dotted and identical everywhere (`winget.install`, not `wingetInstall`).
+- Tool names use single underscores (`family_verb`) and are identical everywhere
+  (`winget_install`, not `winget.install` or `wingetInstall`).
 - Long-running actions respect a `timeout_s` arg and return `error.code = "timeout"`.
 - Keep results structured (objects), not pre-formatted strings, so the UI/Claude can render.
 

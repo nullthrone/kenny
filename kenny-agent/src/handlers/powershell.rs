@@ -1,4 +1,4 @@
-//! `powershell.exec` — run a script and return stdout/stderr/exit_code.
+//! `powershell_exec` — run a script and return stdout/stderr/exit_code.
 //!
 //! On Windows this shells out to `powershell.exe -NoProfile -Command <script>`.
 //! Off Windows (dev/CI) it falls back to `sh -c <script>` so e2e flows work.
@@ -22,7 +22,7 @@ pub async fn exec(args: Value) -> Result<Value, (ErrorCode, String)> {
     let args: Args = serde_json::from_value(args).map_err(|e| {
         (
             ErrorCode::BadArgs,
-            format!("invalid powershell.exec args: {e}"),
+            format!("invalid powershell_exec args: {e}"),
         )
     })?;
 

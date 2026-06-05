@@ -8,7 +8,7 @@ use crate::telemetry::Section;
 
 /// Per-volume `{mount, total_bytes, free_bytes, percent_used}` list.
 ///
-/// Shared with the `fs.disk_usage` handler.
+/// Shared with the `fs_disk_usage` handler.
 pub fn volumes() -> Vec<Value> {
     let disks = Disks::new_with_refreshed_list();
     disks

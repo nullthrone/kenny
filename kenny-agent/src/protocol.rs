@@ -11,7 +11,7 @@ use serde_json::{Map, Value};
 /// Wire-protocol version implemented by this binary (see protocol.md § Versioning).
 ///
 /// Not currently placed on the wire (reserved for `register.meta.protocol`).
-pub const PROTOCOL_VERSION: &str = "0.2";
+pub const PROTOCOL_VERSION: &str = "0.3";
 
 /// One WebSocket text message. Tagged by the `type` field.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -53,7 +53,7 @@ pub struct RegisterMeta {
 pub struct Request {
     /// Server-generated UUID.
     pub id: String,
-    /// Tool name from the catalog (e.g. `powershell.exec`).
+    /// Tool name from the catalog (e.g. `powershell_exec`).
     pub tool: String,
     /// Per-tool argument object. Absent in the fixture is treated as `{}`.
     #[serde(default)]
@@ -119,7 +119,7 @@ pub enum ErrorCode {
     Disabled,
 }
 
-/// `telemetry` frame body (also the shape returned by `telemetry.collect`).
+/// `telemetry` frame body (also the shape returned by `telemetry_collect`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Telemetry {
     pub agent_id: String,

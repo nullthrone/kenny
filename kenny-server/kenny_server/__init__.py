@@ -3,5 +3,5 @@
 See ../docs/protocol.md for the wire contract and ../docs/adr/ for architecture decisions.
 """
 
-PROTOCOL_VERSION = "0.2"
+PROTOCOL_VERSION = "0.3"
 __version__ = "0.1.0"

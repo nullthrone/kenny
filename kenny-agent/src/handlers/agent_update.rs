@@ -1,4 +1,4 @@
-//! `agent.update` — server-triggered self-update (Windows only).
+//! `agent_update` — server-triggered self-update (Windows only).
 //!
 //! Flow (Windows):
 //! 1. Download `url` to a temp file.
@@ -17,7 +17,7 @@ use serde_json::Value;
 
 use crate::protocol::ErrorCode;
 
-/// Arguments for `agent.update` (`{version, url, sha256}`).
+/// Arguments for `agent_update` (`{version, url, sha256}`).
 #[derive(serde::Deserialize)]
 struct UpdateArgs {
     #[allow(dead_code)]
@@ -29,7 +29,7 @@ struct UpdateArgs {
     sha256: String,
 }
 
-/// `agent.update` entry point.
+/// `agent_update` entry point.
 pub async fn update(_args: Value) -> Result<Value, (ErrorCode, String)> {
     #[cfg(windows)]
     {
@@ -43,7 +43,7 @@ pub async fn update(_args: Value) -> Result<Value, (ErrorCode, String)> {
         let _ = std::mem::size_of::<UpdateArgs>();
         Err((
             ErrorCode::Unsupported,
-            "agent.update is only available on the Windows service build".to_string(),
+            "agent_update is only available on the Windows service build".to_string(),
         ))
     }
 }
@@ -97,7 +97,7 @@ mod windows_impl {
         // service to stop, so the response still reaches the server first.
         spawn_finish_update(&exe, &staged)?;
 
-        info!(version = %a.version, "agent.update staged; restart helper launched");
+        info!(version = %a.version, "agent_update staged; restart helper launched");
         Ok(json!({ "ok": true, "staged_version": a.version }))
     }
 

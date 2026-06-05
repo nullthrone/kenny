@@ -1,7 +1,7 @@
 //! `autostart` section — startup programs.
 //!
 //! Real data from Run keys / Startup folders / `Get-CimInstance Win32_StartupCommand`
-//! on Windows. Shares the `{name, command, location}` shape with `diag.autostart`.
+//! on Windows. Shares the `{name, command, location}` shape with `diag_autostart`.
 
 use serde_json::json;
 
