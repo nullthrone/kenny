@@ -65,6 +65,56 @@ def test_audit_requires_auth(tmp_path):
         assert c.get("/api/audit").status_code == 401
 
 
+_TINY_PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+
+
+def test_screenshot_get_404_then_200(tmp_path):
+    """GET /api/agent/{id}/screenshot is 404 until a screenshot is stored, then
+    returns the decoded PNG bytes."""
+
+    import base64
+
+    app = build_app(db_path=str(tmp_path / "shot.sqlite"))
+    with TestClient(app) as c:
+        r = c.get("/api/agent/papa-pc/screenshot", headers=_bearer(app))
+        assert r.status_code == 404
+
+        app.state.screenshots.put("papa-pc", _TINY_PNG_B64, "png")
+        r = c.get("/api/agent/papa-pc/screenshot", headers=_bearer(app))
+        assert r.status_code == 200
+        assert r.headers["content-type"] == "image/png"
+        assert r.content == base64.b64decode(_TINY_PNG_B64)
+
+
+def test_screenshot_post_triggers_capture(tmp_path):
+    """POST /api/agent/{id}/screenshot forwards a screen_capture via the tunnel
+    and stores the result for later GET."""
+
+    app = build_app(db_path=str(tmp_path / "shot2.sqlite"))
+
+    async def fake_send_request(agent_id, tool, args, timeout_s):  # noqa: ANN001, ANN202
+        assert tool == "screen_capture"
+        return {"image_b64": _TINY_PNG_B64, "format": "png"}
+
+    app.state.tunnel.send_request = fake_send_request
+    with TestClient(app) as c:
+        r = c.post("/api/agent/papa-pc/screenshot", headers=_bearer(app))
+        assert r.status_code == 200
+        assert r.json() == {"ok": True}
+        # The capture was stored and is now retrievable.
+        assert app.state.screenshots.get("papa-pc") is not None
+        r = c.get("/api/agent/papa-pc/screenshot", headers=_bearer(app))
+        assert r.status_code == 200
+        assert r.headers["content-type"] == "image/png"
+
+
+def test_screenshot_requires_auth(tmp_path):
+    app = build_app(db_path=str(tmp_path / "shot3.sqlite"))
+    with TestClient(app) as c:
+        assert c.get("/api/agent/papa-pc/screenshot").status_code == 401
+        assert c.post("/api/agent/papa-pc/screenshot").status_code == 401
+
+
 def test_brand_asset_served_and_public(tmp_path):
     """The dashboard's brand assets (logo/favicon) are served and reachable
     without an operator token (the login page itself loads them)."""

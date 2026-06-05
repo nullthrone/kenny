@@ -30,7 +30,7 @@ from kenny_server.chat import (
 )
 from kenny_server.registry import AgentRegistry
 from kenny_server.store import TelemetryStore
-from kenny_server.tools import CallLog
+from kenny_server.tools import CallLog, ScreenshotStore
 from kenny_server.tunnel import AgentTunnel
 
 
@@ -87,7 +87,11 @@ def _executor(store: TelemetryStore) -> tuple[ChatExecutor, AgentRegistry, Agent
     tunnel = AgentTunnel(registry, store)
     call_log = CallLog()
     executor = ChatExecutor(
-        registry=registry, store=store, tunnel=tunnel, call_log=call_log
+        registry=registry,
+        store=store,
+        tunnel=tunnel,
+        call_log=call_log,
+        screenshots=ScreenshotStore(),
     )
     return executor, registry, tunnel
 
@@ -99,8 +103,13 @@ def test_tool_schemas_cover_all_tools() -> None:
     from kenny_server.tools import CAPABILITY_TOOLS
 
     names = {t["name"] for t in build_tool_schemas()}
-    for server_tool in ("list_agents", "select_agent", "fleet_overview",
-                        "agent_health", "agent_snapshot"):
+    for server_tool in (
+        "list_agents",
+        "select_agent",
+        "fleet_overview",
+        "agent_health",
+        "agent_snapshot",
+    ):
         assert server_tool in names
     assert set(CAPABILITY_TOOLS) <= names
 
@@ -137,16 +146,15 @@ async def test_read_only_tool_auto_executes(store: TelemetryStore) -> None:
         ]
     )
 
-    result = await run_turn(
-        session, "How is the fleet?", executor=executor, client=client
-    )
+    result = await run_turn(session, "How is the fleet?", executor=executor, client=client)
 
     assert result.done is True
     assert result.pending is None
     assert result.assistant_text == "The fleet is healthy."
     # The read-only tool ran and produced a tool_result event.
-    assert any(e["type"] == "tool_result" and e["tool"] == "fleet_overview"
-               for e in result.tool_events)
+    assert any(
+        e["type"] == "tool_result" and e["tool"] == "fleet_overview" for e in result.tool_events
+    )
 
     # A tool_result was fed back to the model (user message with tool_result block).
     second_call_messages = client.messages.calls[1]["messages"]
@@ -189,9 +197,7 @@ async def test_state_changing_tool_requires_confirmation(store: TelemetryStore) 
         ]
     )
 
-    result = await run_turn(
-        session, "Install git on dev", executor=executor, client=client
-    )
+    result = await run_turn(session, "Install git on dev", executor=executor, client=client)
 
     # It paused: pending surfaced, NOT executed, turn not done.
     assert result.done is False
@@ -205,9 +211,7 @@ async def test_state_changing_tool_requires_confirmation(store: TelemetryStore) 
     assert len(client.messages.calls) == 1
 
     # Now the operator confirms. The tool executes and the turn resumes.
-    result2 = await confirm_pending(
-        session, approve=True, executor=executor, client=client
-    )
+    result2 = await confirm_pending(session, approve=True, executor=executor, client=client)
     assert result2.done is True
     assert result2.pending is None
     assert result2.assistant_text == "Git is installed."
@@ -242,9 +246,7 @@ async def test_state_changing_tool_denied(store: TelemetryStore) -> None:
     assert result.pending is not None
     assert sent == []
 
-    result2 = await confirm_pending(
-        session, approve=False, executor=executor, client=client
-    )
+    result2 = await confirm_pending(session, approve=False, executor=executor, client=client)
     # Denied: the tunnel was never called, but the model still got a result and
     # produced a final reply.
     assert sent == []
@@ -260,6 +262,66 @@ async def test_state_changing_tool_denied(store: TelemetryStore) -> None:
         if isinstance(b, dict) and b.get("type") == "tool_result"
     ]
     assert denied and denied[0].get("is_error") is True
+
+
+async def test_screen_capture_fed_back_as_image(store: TelemetryStore) -> None:
+    """A screen_capture result is fed to Claude as an image content block (not a
+    base64 JSON string) and the tool_event carries the image for the UI."""
+
+    executor, registry, tunnel = _executor(store)
+    session = ChatSession(id="s4")
+
+    tiny_b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="  # noqa: E501
+
+    async def fake_send_request(agent_id, tool, args, timeout_s):  # type: ignore[no-untyped-def]
+        return {"image_b64": tiny_b64, "format": "png"}
+
+    tunnel.send_request = fake_send_request  # type: ignore[assignment]
+    registry._active_agent = "dev"  # noqa: SLF001
+
+    client = FakeAnthropic(
+        [
+            _Response([tool_use_block("tu4", "screen_capture", {})], "tool_use"),
+            _Response([text_block("Here is the screen.")], "end_turn"),
+        ]
+    )
+
+    result = await run_turn(session, "Show me the screen", executor=executor, client=client)
+
+    assert result.done is True
+    # The tool_event carries the image so the UI can render it inline.
+    shot_events = [
+        e
+        for e in result.tool_events
+        if e["type"] == "tool_result" and e["tool"] == "screen_capture"
+    ]
+    assert shot_events and shot_events[0]["image_b64"] == tiny_b64
+    assert shot_events[0]["format"] == "png"
+
+    # The message fed back to the model carries an image content block, not a
+    # JSON text string.
+    second_call_messages = client.messages.calls[1]["messages"]
+    tool_results = [
+        b
+        for m in second_call_messages
+        if isinstance(m.get("content"), list)
+        for b in m["content"]
+        if isinstance(b, dict) and b.get("type") == "tool_result"
+    ]
+    assert tool_results
+    content = tool_results[0]["content"]
+    assert isinstance(content, list)
+    image_blocks = [b for b in content if b.get("type") == "image"]
+    assert image_blocks
+    src = image_blocks[0]["source"]
+    assert src["type"] == "base64"
+    assert src["media_type"] == "image/png"
+    assert src["data"] == tiny_b64
+
+    # And the store recorded the latest screenshot for the agent.
+    rec = executor.screenshots.get("dev")
+    assert rec is not None and rec["image_b64"] == tiny_b64
+    assert rec["format"] == "png" and "captured_at" in rec
 
 
 def test_sessions_registry_round_trips() -> None:

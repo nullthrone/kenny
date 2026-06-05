@@ -6,6 +6,7 @@ The dashboard is a single vanilla-JS page (``index.html``) that calls the
 
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 from typing import Any
 
@@ -17,7 +18,7 @@ from ..chat import ChatExecutor, ChatSessions, confirm_pending, run_turn
 from ..registry import AgentRegistry
 from ..store import TelemetryStore
 from ..tokenstore import AgentTokenStore
-from ..tools import CallLog, build_health
+from ..tools import CallLog, ScreenshotStore, build_health
 from ..tunnel import AgentTunnel, ToolError
 
 _INDEX = Path(__file__).parent / "index.html"
@@ -33,6 +34,7 @@ def build_api_routes(
     store: TelemetryStore,
     tunnel: AgentTunnel,
     call_log: CallLog,
+    screenshots: ScreenshotStore,
     token_store: AgentTokenStore | None = None,
 ) -> list[Route]:
     """Build the dashboard's static + JSON routes."""
@@ -58,9 +60,7 @@ def build_api_routes(
         agents = [await _overview(i, registry, store) for i in ids]
         from .. import health_rules
 
-        overall = health_rules.worst(
-            *(a["overall"] for a in agents if a["overall"] != "unknown")
-        )
+        overall = health_rules.worst(*(a["overall"] for a in agents if a["overall"] != "unknown"))
         return JSONResponse({"overall": overall or "unknown", "agents": agents})
 
     async def api_agent(request: Request) -> JSONResponse:
@@ -102,6 +102,30 @@ def build_api_routes(
             await store.insert(agent_id, datetime.now(timezone.utc).isoformat(), result)
         return JSONResponse({"ok": True})
 
+    async def api_screenshot(request: Request) -> Response:
+        """Return the latest stored screenshot for an agent as a PNG (or 404)."""
+
+        agent_id = request.path_params["id"]
+        rec = screenshots.get(agent_id)
+        if rec is None:
+            return Response(status_code=404)
+        return Response(content=base64.b64decode(rec["image_b64"]), media_type="image/png")
+
+    async def api_capture(request: Request) -> JSONResponse:
+        """Trigger a fresh screen capture via the tunnel and store the result."""
+
+        agent_id = request.path_params["id"]
+        try:
+            result = await tunnel.send_request(agent_id, "screen_capture", {}, 30)
+            call_log.record(agent_id, "screen_capture", {}, ok=True)
+        except (ToolError, Exception) as exc:  # noqa: BLE001 - surface to UI
+            message = exc.message if isinstance(exc, ToolError) else str(exc)
+            call_log.record(agent_id, "screen_capture", {}, ok=False, error=message)
+            return JSONResponse({"ok": False, "error": message}, status_code=502)
+        if isinstance(result, dict) and "image_b64" in result:
+            screenshots.put(agent_id, result["image_b64"], result.get("format", "png"))
+        return JSONResponse({"ok": True})
+
     async def api_audit(_request: Request) -> JSONResponse:
         """Recent tool-call audit log across the whole fleet (for the dashboard).
 
@@ -133,9 +157,7 @@ def build_api_routes(
         """
 
         if token_store is None:
-            return JSONResponse(
-                {"error": "token store not configured"}, status_code=503
-            )
+            return JSONResponse({"error": "token store not configured"}, status_code=503)
         agent_id = request.path_params["id"]
         token = await token_store.create_or_rotate(agent_id)
         return JSONResponse({"agent_id": agent_id, "token": token})
@@ -147,6 +169,8 @@ def build_api_routes(
         Route("/api/audit", api_audit),
         Route("/api/agent/{id}", api_agent),
         Route("/api/agent/{id}/refresh", api_refresh, methods=["POST"]),
+        Route("/api/agent/{id}/screenshot", api_screenshot),
+        Route("/api/agent/{id}/screenshot", api_capture, methods=["POST"]),
         Route("/api/agents/{id}/token", api_rotate_token, methods=["POST"]),
     ]
 
@@ -166,6 +190,7 @@ def build_chat_routes(
     tunnel: AgentTunnel,
     call_log: CallLog,
     sessions: ChatSessions,
+    screenshots: ScreenshotStore,
     client_factory: Any = _anthropic_client,
 ) -> list[Route]:
     """Build the server-hosted Claude chat routes.
@@ -180,7 +205,11 @@ def build_chat_routes(
     """
 
     executor = ChatExecutor(
-        registry=registry, store=store, tunnel=tunnel, call_log=call_log
+        registry=registry,
+        store=store,
+        tunnel=tunnel,
+        call_log=call_log,
+        screenshots=screenshots,
     )
 
     async def api_chat(request: Request) -> JSONResponse:
@@ -191,9 +220,11 @@ def build_chat_routes(
         session = sessions.get_or_create(body.get("session_id"))
         if session.pending is not None:
             return JSONResponse(
-                {"error": "a confirmation is pending; resolve it first",
-                 "pending": session.pending.to_public(),
-                 "session_id": session.id},
+                {
+                    "error": "a confirmation is pending; resolve it first",
+                    "pending": session.pending.to_public(),
+                    "session_id": session.id,
+                },
                 status_code=409,
             )
         # Context-aware chat: if the dashboard has an agent selected, scope the
@@ -206,13 +237,9 @@ def build_chat_routes(
                 if agent_id in await store.known_agents():
                     registry._active_agent = agent_id  # noqa: SLF001 (matches chat.py dev path)
         try:
-            result = await run_turn(
-                session, message, executor=executor, client=client_factory()
-            )
+            result = await run_turn(session, message, executor=executor, client=client_factory())
         except Exception as exc:  # noqa: BLE001 - surface to the UI
-            return JSONResponse(
-                {"error": str(exc), "session_id": session.id}, status_code=502
-            )
+            return JSONResponse({"error": str(exc), "session_id": session.id}, status_code=502)
         return JSONResponse(result.to_public())
 
     async def api_chat_confirm(request: Request) -> JSONResponse:
@@ -229,9 +256,7 @@ def build_chat_routes(
                 session, approve=approve, executor=executor, client=client_factory()
             )
         except Exception as exc:  # noqa: BLE001 - surface to the UI
-            return JSONResponse(
-                {"error": str(exc), "session_id": session.id}, status_code=502
-            )
+            return JSONResponse({"error": str(exc), "session_id": session.id}, status_code=502)
         return JSONResponse(result.to_public())
 
     return [

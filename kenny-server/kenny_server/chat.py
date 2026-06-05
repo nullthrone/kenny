@@ -34,6 +34,7 @@ from .store import TelemetryStore
 from .tools import (
     CAPABILITY_TOOLS,
     CallLog,
+    ScreenshotStore,
     build_health,
 )
 from .tunnel import AgentTunnel, ToolError
@@ -101,7 +102,7 @@ def is_state_changing(tool: str) -> bool:
 _SYSTEM_PROMPT = (
     "You are kenny, an assistant embedded in a remote-admin server. You help a "
     "trusted operator inspect and maintain a small fleet of Windows machines "
-    "(\"agents\") by calling tools.\n\n"
+    '("agents") by calling tools.\n\n'
     "How to work:\n"
     "- Use the server-only tools (list_agents, fleet_overview, agent_health, "
     "agent_snapshot) to understand fleet state.\n"
@@ -150,7 +151,9 @@ def build_tool_schemas() -> list[dict[str, Any]]:
 
     schemas: list[dict[str, Any]] = []
     for name, spec in SERVER_TOOLS.items():
-        gated = " (state-changing — requires operator confirmation)" if is_state_changing(name) else ""
+        gated = (
+            " (state-changing — requires operator confirmation)" if is_state_changing(name) else ""
+        )
         schemas.append(
             {
                 "name": name,
@@ -164,9 +167,7 @@ def build_tool_schemas() -> list[dict[str, Any]]:
         )
     for name, arg_keys in CAPABILITY_TOOLS.items():
         gated = (
-            " (state-changing — requires operator confirmation)"
-            if is_state_changing(name)
-            else ""
+            " (state-changing — requires operator confirmation)" if is_state_changing(name) else ""
         )
         arg_note = f" (args: {', '.join(arg_keys)})" if arg_keys else ""
         schemas.append(
@@ -311,11 +312,13 @@ class ChatExecutor:
         store: TelemetryStore,
         tunnel: AgentTunnel,
         call_log: CallLog,
+        screenshots: ScreenshotStore,
     ) -> None:
         self.registry = registry
         self.store = store
         self.tunnel = tunnel
         self.call_log = call_log
+        self.screenshots = screenshots
 
     async def run_server_tool(self, tool: str, args: dict[str, Any]) -> dict[str, Any]:
         if tool == "list_agents":
@@ -338,6 +341,8 @@ class ChatExecutor:
         try:
             result = await self.tunnel.send_request(agent_id, tool, args, timeout_s)
             self.call_log.record(agent_id, tool, args, ok=True)
+            if tool == "screen_capture" and isinstance(result, dict) and "image_b64" in result:
+                self.screenshots.put(agent_id, result["image_b64"], result.get("format", "png"))
             return result
         except ToolError as exc:
             self.call_log.record(agent_id, tool, args, ok=False, error=exc.message)
@@ -417,12 +422,37 @@ class ChatExecutor:
         }
 
 
+def _image_of(payload: Any) -> tuple[str, str] | None:
+    """Return ``(image_b64, format)`` if ``payload`` is a screenshot result, else None."""
+
+    if isinstance(payload, dict) and "image_b64" in payload:
+        return payload["image_b64"], payload.get("format", "png")
+    return None
+
+
 def _tool_result_block(tool_use_id: str, payload: Any, *, is_error: bool = False) -> dict[str, Any]:
     block: dict[str, Any] = {
         "type": "tool_result",
         "tool_use_id": tool_use_id,
-        "content": json.dumps(payload, default=str),
     }
+    image = None if is_error else _image_of(payload)
+    if image is not None:
+        image_b64, fmt = image
+        # Feed the screenshot to Claude as an image content block so the model
+        # actually sees the pixels (not a base64 text blob it can't decode).
+        block["content"] = [
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": f"image/{fmt}",
+                    "data": image_b64,
+                },
+            },
+            {"type": "text", "text": "screen_capture (png)"},
+        ]
+    else:
+        block["content"] = json.dumps(payload, default=str)
     if is_error:
         block["is_error"] = True
     return block
@@ -485,9 +515,11 @@ async def _drive(
                 )
 
             payload, is_error = await _execute_one(executor, tool, args)
-            tool_events.append(
-                {"type": "tool_result", "tool": tool, "args": args, "ok": not is_error}
-            )
+            event = {"type": "tool_result", "tool": tool, "args": args, "ok": not is_error}
+            image = None if is_error else _image_of(payload)
+            if image is not None:
+                event["image_b64"], event["format"] = image
+            tool_events.append(event)
             session._staged_results.append(
                 _tool_result_block(block["id"], payload, is_error=is_error)
             )
@@ -603,6 +635,9 @@ async def confirm_pending(
             "args": pending.args,
             "ok": not is_error,
         }
+        image = None if is_error else _image_of(payload)
+        if image is not None:
+            resume_event["image_b64"], resume_event["format"] = image
     else:
         payload = {"error": {"code": "denied", "message": "operator denied this action"}}
         session._staged_results.append(

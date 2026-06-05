@@ -79,6 +79,23 @@ class CallLog:
         return list(self._entries)[:limit]
 
 
+class ScreenshotStore:
+    """In-memory store of the latest screenshot per agent (for the dashboard)."""
+
+    def __init__(self) -> None:
+        self._latest: dict[str, dict[str, Any]] = {}
+
+    def put(self, agent_id: str, image_b64: str, fmt: str = "png") -> None:
+        self._latest[agent_id] = {
+            "image_b64": image_b64,
+            "format": fmt,
+            "captured_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    def get(self, agent_id: str) -> dict[str, Any] | None:
+        return self._latest.get(agent_id)
+
+
 def build_health(snapshot: dict[str, Any] | None) -> dict[str, Any]:
     """Run health rules over a stored snapshot (or empty when none)."""
 
@@ -94,11 +111,7 @@ async def _agent_overview(
     latest = await store.latest(agent_id)
     snapshot = latest["snapshot"] if latest else None
     health = build_health(snapshot)
-    flagged = [
-        name
-        for name, s in health["sections"].items()
-        if s["status"] in ("warn", "crit")
-    ]
+    flagged = [name for name, s in health["sections"].items() if s["status"] in ("warn", "crit")]
     return {
         "agent_id": agent_id,
         "online": bool(agent and agent.online),
