@@ -100,24 +100,118 @@ fn unsupported(tool: &str) -> (ErrorCode, String) {
 #[cfg(windows)]
 mod windows_impl {
     use super::*;
+    use crate::telemetry::collectors::winps;
+
+    /// Largest number of events we'll pull in one `diag_eventlog` call.
+    const MAX_EVENTS: u32 = 1000;
+
+    /// Escape a value for embedding inside a single-quoted PowerShell string
+    /// literal: a literal `'` is written as `''`. Prevents a crafted `log`/`filter`
+    /// from breaking out of the quoted argument and injecting script.
+    fn ps_single_quote(s: &str) -> String {
+        s.replace('\'', "''")
+    }
+
+    /// Run `script` (which must emit a `{ok, ...}` JSON envelope) and return the
+    /// parsed value, mapping an `ok:false` envelope or empty/invalid output to a
+    /// proper `ExecFailed` error instead of a silently empty result.
+    fn run_envelope(script: &str, what: &str) -> Result<Value, (ErrorCode, String)> {
+        let Some(v) = winps::run_json(script) else {
+            return Err((
+                ErrorCode::ExecFailed,
+                format!("{what} query produced no output"),
+            ));
+        };
+        if v.get("ok").and_then(Value::as_bool) != Some(true) {
+            let msg = v
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("query failed")
+                .to_string();
+            return Err((ErrorCode::ExecFailed, msg));
+        }
+        Ok(v)
+    }
 
     /// Real impl: `Get-CimInstance Win32_Service` into `{name, display, status, start}`.
-    pub fn services(_filter: Option<&str>) -> Result<Value, (ErrorCode, String)> {
-        // TODO(windows): Win32_Service via CIM, applying `filter` on name/display.
-        Ok(json!({ "services": [] }))
+    pub fn services(filter: Option<&str>) -> Result<Value, (ErrorCode, String)> {
+        // Optional case-insensitive name/display filter, applied server-side in PS.
+        let where_clause = match filter {
+            Some(f) if !f.is_empty() => format!(
+                "| Where-Object {{ $_.Name -like '*{0}*' -or $_.DisplayName -like '*{0}*' }} ",
+                ps_single_quote(f)
+            ),
+            _ => String::new(),
+        };
+        let script = format!(
+            r#"try {{
+  $services = @(Get-CimInstance -ClassName Win32_Service -ErrorAction Stop {where_clause}|
+    ForEach-Object {{
+      [pscustomobject]@{{
+        name    = [string]$_.Name
+        display = [string]$_.DisplayName
+        status  = [string]$_.State
+        start   = [string]$_.StartMode
+      }}
+    }})
+  [pscustomobject]@{{ ok = $true; services = $services }} | ConvertTo-Json -Depth 4 -Compress
+}} catch {{
+  [pscustomobject]@{{ ok = $false; error = [string]$_.Exception.Message }} | ConvertTo-Json -Compress
+}}"#
+        );
+        let v = run_envelope(&script, "services")?;
+        let services = winps::as_array(v.get("services").cloned().unwrap_or(Value::Null));
+        Ok(json!({ "services": services }))
     }
 
     /// Real impl: `Get-WinEvent -LogName <log> -MaxEvents <count>` into
     /// `{time, level, source, message}`.
-    pub fn eventlog(_log: &str, _count: u32) -> Result<Value, (ErrorCode, String)> {
-        // TODO(windows): Get-WinEvent.
-        Ok(json!({ "events": [] }))
+    pub fn eventlog(log: &str, count: u32) -> Result<Value, (ErrorCode, String)> {
+        if count == 0 {
+            return Err((ErrorCode::BadArgs, "count must be >= 1".to_string()));
+        }
+        let count = count.min(MAX_EVENTS);
+        let script = format!(
+            r#"try {{
+  $events = @(Get-WinEvent -LogName '{log}' -MaxEvents {count} -ErrorAction Stop |
+    ForEach-Object {{
+      [pscustomobject]@{{
+        time    = $_.TimeCreated.ToString('o')
+        level   = [string]$_.LevelDisplayName
+        source  = [string]$_.ProviderName
+        message = [string]$_.Message
+      }}
+    }})
+  [pscustomobject]@{{ ok = $true; events = $events }} | ConvertTo-Json -Depth 4 -Compress
+}} catch {{
+  [pscustomobject]@{{ ok = $false; error = [string]$_.Exception.Message }} | ConvertTo-Json -Compress
+}}"#,
+            log = ps_single_quote(log)
+        );
+        let v = run_envelope(&script, "eventlog")?;
+        let events = winps::as_array(v.get("events").cloned().unwrap_or(Value::Null));
+        Ok(json!({ "events": events }))
     }
 
-    /// Real impl: `Win32_StartupCommand` + Run keys into `{name, command, location}`.
+    /// Real impl: `Win32_StartupCommand` into `{name, command, location}`.
+    /// Covers HKLM/HKCU Run keys and the Startup folders in a single CIM call.
     pub fn autostart() -> Result<Value, (ErrorCode, String)> {
-        // TODO(windows): Win32_StartupCommand / Run keys.
-        Ok(json!({ "entries": [] }))
+        let script = r#"try {
+  $entries = @(Get-CimInstance -ClassName Win32_StartupCommand -ErrorAction Stop |
+    ForEach-Object {
+      [pscustomobject]@{
+        name     = [string]$_.Name
+        command  = [string]$_.Command
+        location = [string]$_.Location
+      }
+    })
+  [pscustomobject]@{ ok = $true; entries = $entries } | ConvertTo-Json -Depth 4 -Compress
+} catch {
+  [pscustomobject]@{ ok = $false; error = [string]$_.Exception.Message } | ConvertTo-Json -Compress
+}"#;
+        let v = run_envelope(script, "autostart")?;
+        let entries = winps::as_array(v.get("entries").cloned().unwrap_or(Value::Null));
+        Ok(json!({ "entries": entries }))
     }
 }
 
@@ -138,6 +232,20 @@ mod tests {
     #[test]
     fn services_unsupported_off_windows() {
         let err = services(json!({})).unwrap_err();
+        assert_eq!(err.0, ErrorCode::Unsupported);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn eventlog_unsupported_off_windows() {
+        let err = eventlog(json!({"log": "System", "count": 5})).unwrap_err();
+        assert_eq!(err.0, ErrorCode::Unsupported);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn autostart_unsupported_off_windows() {
+        let err = autostart(json!({})).unwrap_err();
         assert_eq!(err.0, ErrorCode::Unsupported);
     }
 }
