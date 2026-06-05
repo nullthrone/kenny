@@ -57,7 +57,10 @@ KENNY_DOMAIN=kenny.example.com KENNY_OPERATOR_TOKEN=... docker compose --profile
 | `KENNY_CHAT_MODEL` | server | `claude-sonnet-4-6` | Model for the chat loop. |
 | `KENNY_TLS` | server | unset | Set `1` behind TLS so the login cookie gets the `Secure` flag. |
 | `KENNY_PUBLIC_URL` | server | `http://localhost:<port>` | External base URL; used to build installer/update links and the agent `--server` `wss://…/agent/ws`. |
-| `KENNY_AGENT_BINARY` | server | — | Path to the prebuilt `kenny-agent.exe` the server serves for installer download + self-update. |
+| `KENNY_AGENT_BINARY` | server | — | Path to the prebuilt `kenny-agent.exe` the server serves for installer download + self-update. Overrides the GitHub auto-fetch when set. |
+| `KENNY_GITHUB_TOKEN` | server | — | GitHub token enabling auto-fetch of the agent binary from Releases (ADR-0014). When set (and `KENNY_AGENT_BINARY` is not), the server fetches `kenny-agent.exe` on startup. |
+| `KENNY_GITHUB_REPO` | server | `t11z/kenny` | Repo to fetch the agent binary release from. |
+| `KENNY_AGENT_BINARY_CACHE` | server | `<dir of KENNY_DB_PATH>/kenny-agent.exe` | Where the auto-fetched binary is cached (the `/data` volume in the container). |
 | `KENNY_AGENT_VERSION` | server | `0.2.0` | Version label sent with `agent.update`. |
 | `KENNY_HOST` / `KENNY_PORT` | server | `127.0.0.1` / `8000` | Bind address (container sets `0.0.0.0`). |
 | `KENNY_DB_PATH` | server | `kenny.sqlite` | SQLite telemetry store (container: `/data/kenny.sqlite`). |
@@ -100,6 +103,25 @@ environment:
 Then the dashboard's **download installer** / **share link** / **update agent** buttons work. The
 installer bundles `install.bat`, which runs `kenny-agent.exe install` with `--server`, `--agent-id`,
 and a minted `--token`.
+
+### Auto-fetch from GitHub (no manual binary placement)
+
+To avoid the first-agent chicken-and-egg (hand-placing the `.exe` into the volume before any
+installer can be downloaded), the server can fetch the binary itself when a GitHub token is
+configured (ADR-0014):
+
+```yaml
+environment:
+  KENNY_GITHUB_TOKEN: ${KENNY_GITHUB_TOKEN}   # a token with read access to releases
+  KENNY_GITHUB_REPO: t11z/kenny               # default
+```
+
+On startup (and via the dashboard's **retry GitHub fetch** button) the server downloads the latest
+release's `kenny-agent-<tag>-x86_64-pc-windows-msvc.exe`, verifies it against the published
+`.sha256`, and caches it at `/data/kenny-agent.exe`. The fetch is **best-effort** — if the repo is
+unreachable or no token is set, the dashboard shows a banner with manual instructions instead. An
+operator-placed `KENNY_AGENT_BINARY` always wins over the fetched cache. The dashboard's **Add a
+PC** control lets you download an installer for the very first machine without a pre-existing agent.
 
 ## Installing the agent on Windows
 

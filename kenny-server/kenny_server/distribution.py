@@ -18,7 +18,7 @@ per-install config — it does not build per download. Endpoints:
 
 from __future__ import annotations
 
-import hashlib
+import asyncio
 import io
 import os
 import secrets
@@ -30,6 +30,8 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Route
 
+from . import agent_release
+from .agent_release import _sha256_file as _sha256_file  # re-export (used by tests)
 from .registry import AgentRegistry
 from .tokenstore import AgentTokenStore
 from .tunnel import AgentTunnel, ToolError
@@ -39,10 +41,17 @@ BINARY_TTL_S = 600      # ten minutes for a self-update binary fetch
 
 
 def agent_binary_path() -> str | None:
-    """Path to the prebuilt agent binary, or None if not configured."""
+    """Path to the prebuilt agent binary, or None if unavailable.
+
+    Operator-placed ``KENNY_AGENT_BINARY`` wins; otherwise the GitHub-fetched
+    cache (``agent_release.cache_path()``) is used if present (ADR-0014).
+    """
 
     path = os.environ.get("KENNY_AGENT_BINARY", "").strip()
-    return path if path and os.path.exists(path) else None
+    if path and os.path.exists(path):
+        return path
+    cache = agent_release.cache_path()
+    return cache if os.path.exists(cache) else None
 
 
 def _agent_version() -> str:
@@ -68,14 +77,6 @@ def _wss_url() -> str:
     elif base.startswith("http://"):
         base = "ws://" + base[len("http://"):]
     return base.rstrip("/") + "/agent/ws"
-
-
-def _sha256_file(path: str) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as fh:
-        for chunk in iter(lambda: fh.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 @dataclass
@@ -218,10 +219,36 @@ def build_download_routes(
             return JSONResponse({"error": "link invalid or expired"}, status_code=404)
         return FileResponse(binary, filename="kenny-agent.exe", media_type="application/octet-stream")
 
+    async def agent_binary_status(request: Request) -> Response:
+        """Report binary availability + GitHub-fetch config for the dashboard (no network)."""
+
+        status = agent_release.binary_status(manual_path=agent_binary_path())
+        body = status.to_public()
+        body["available"] = agent_binary_path() is not None
+        body["github_configured"] = agent_release.github_configured()
+        body["repo"] = agent_release.github_repo()
+        last = getattr(request.app.state, "last_fetch", None)
+        body["last_fetch"] = last.to_public() if last is not None else None
+        return JSONResponse(body)
+
+    async def agent_binary_fetch(request: Request) -> Response:
+        """Manually (re)trigger the GitHub fetch so no restart is needed."""
+
+        if not agent_release.github_configured():
+            return JSONResponse(
+                {"ok": False, "error": "GitHub fetch not configured (set KENNY_GITHUB_TOKEN)"},
+                status_code=400,
+            )
+        result = await asyncio.to_thread(agent_release.fetch_latest_agent_binary)
+        request.app.state.last_fetch = result
+        return JSONResponse(result.to_public(), status_code=200 if result.ok else 502)
+
     return [
         Route("/api/agents/{id}/installer", installer),
         Route("/api/agents/{id}/share-link", share_link, methods=["POST"]),
         Route("/api/agents/{id}/update", trigger_update, methods=["POST"]),
+        Route("/api/agent-binary", agent_binary_status),
+        Route("/api/agent-binary/fetch", agent_binary_fetch, methods=["POST"]),
         Route("/d/installer/{nonce}", public_installer),
         Route("/d/binary/{nonce}", public_binary),
     ]

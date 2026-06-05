@@ -85,6 +85,28 @@ def build_api_routes(
             await store.insert(agent_id, datetime.now(timezone.utc).isoformat(), result)
         return JSONResponse({"ok": True})
 
+    async def api_audit(_request: Request) -> JSONResponse:
+        """Recent tool-call audit log across the whole fleet (for the dashboard).
+
+        Each entry is annotated ``state_changing`` (vs read-only) so the UI can
+        label confirm-gated calls without re-deriving the classification.
+        """
+
+        from ..chat import is_state_changing
+
+        entries = [
+            {
+                "at": c["at"],
+                "agent_id": c["agent_id"],
+                "tool": c["tool"],
+                "ok": c["ok"],
+                "error": c.get("error"),
+                "state_changing": is_state_changing(c["tool"]),
+            }
+            for c in call_log.list()
+        ]
+        return JSONResponse({"entries": entries})
+
     async def api_rotate_token(request: Request) -> JSONResponse:
         """Mint (or rotate) a per-agent token. Inherits /api operator auth.
 
@@ -104,6 +126,7 @@ def build_api_routes(
     return [
         Route("/", index),
         Route("/api/fleet", api_fleet),
+        Route("/api/audit", api_audit),
         Route("/api/agent/{id}", api_agent),
         Route("/api/agent/{id}/refresh", api_refresh, methods=["POST"]),
         Route("/api/agents/{id}/token", api_rotate_token, methods=["POST"]),
@@ -155,6 +178,15 @@ def build_chat_routes(
                  "session_id": session.id},
                 status_code=409,
             )
+        # Context-aware chat: if the dashboard has an agent selected, scope the
+        # active agent to it so forwarded capability tools target that machine.
+        agent_id = str(body.get("agent_id", "")).strip()
+        if agent_id:
+            try:
+                registry.select(agent_id)
+            except KeyError:
+                if agent_id in await store.known_agents():
+                    registry._active_agent = agent_id  # noqa: SLF001 (matches chat.py dev path)
         try:
             result = await run_turn(
                 session, message, executor=executor, client=client_factory()
@@ -210,5 +242,22 @@ async def _overview(
         "meta": agent.meta if agent else {},
         "overall": health["overall"],
         "flagged_sections": flagged,
+        "summary": _fleet_summary(health, snapshot),
         "collected_at": latest["collected_at"] if latest else None,
     }
+
+
+def _fleet_summary(health: dict[str, Any], snapshot: dict[str, Any] | None) -> str:
+    """A short one-line summary for the fleet list: the worst flagged section, else 'all green'."""
+
+    if not snapshot:
+        return "no telemetry yet"
+    sections = health.get("sections", {})
+    for want in ("crit", "warn"):
+        worst = [(n, s) for n, s in sections.items() if s["status"] == want]
+        if worst:
+            name, s = worst[0]
+            text = s.get("reason") or s.get("summary") or name
+            extra = f" +{len(worst) - 1} more" if len(worst) > 1 else ""
+            return f"{text}{extra}"
+    return "all green"

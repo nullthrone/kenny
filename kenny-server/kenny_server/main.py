@@ -14,7 +14,9 @@ chains the MCP app's lifespan with the telemetry store's connect/prune lifecycle
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import logging
 import os
 from typing import AsyncIterator
 
@@ -23,6 +25,7 @@ from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.routing import Mount, WebSocketRoute
 
+from . import agent_release
 from .auth import (
     OperatorAuthMiddleware,
     build_auth_routes,
@@ -61,6 +64,21 @@ def build_app(db_path: str | None = None) -> Starlette:
         await store.connect()
         await token_store.connect()
         await store.prune()
+        # Best-effort: fetch the prebuilt agent binary from GitHub when configured
+        # and not overridden by an operator-placed binary (ADR-0014). Non-fatal.
+        if agent_release.github_configured() and not os.environ.get(
+            "KENNY_AGENT_BINARY", ""
+        ).strip():
+            try:
+                result = await asyncio.to_thread(agent_release.fetch_latest_agent_binary)
+                app.state.last_fetch = result
+                logging.getLogger("kenny.release").info(
+                    "agent binary fetch: %s", result.message
+                )
+            except Exception as exc:  # noqa: BLE001 - never break startup
+                logging.getLogger("kenny.release").warning(
+                    "agent binary fetch failed: %s", exc
+                )
         # Chain the MCP app's own lifespan (session manager, etc.).
         async with mcp_app.router.lifespan_context(app):
             yield
@@ -117,6 +135,7 @@ def build_app(db_path: str | None = None) -> Starlette:
     app.state.mcp = mcp
     app.state.operator_token = operator_token
     app.state.operator_tokens = operator_tokens
+    app.state.last_fetch = None
     return app
 
 
