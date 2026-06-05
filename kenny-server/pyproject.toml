@@ -32,7 +32,7 @@ build-backend = "setuptools.build_meta"
 include = ["kenny_server*"]
 
 [tool.setuptools.package-data]
-"kenny_server.webui" = ["*.html", "*.css", "*.js"]
+"kenny_server.webui" = ["*.html", "*.css", "*.js", "assets/*.png", "assets/*.ico", "assets/*.svg"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

@@ -63,3 +63,25 @@ def test_audit_requires_auth(tmp_path):
     app = build_app(db_path=str(tmp_path / "audit2.sqlite"))
     with TestClient(app) as c:
         assert c.get("/api/audit").status_code == 401
+
+
+def test_brand_asset_served_and_public(tmp_path):
+    """The dashboard's brand assets (logo/favicon) are served and reachable
+    without an operator token (the login page itself loads them)."""
+
+    app = build_app(db_path=str(tmp_path / "assets.sqlite"))
+    with TestClient(app) as c:
+        r = c.get("/assets/kenny-mark-64.png")  # no auth header
+        assert r.status_code == 200
+        assert r.headers["content-type"] == "image/png"
+        assert len(r.content) > 0
+
+
+def test_asset_route_rejects_unknown_and_traversal(tmp_path):
+    app = build_app(db_path=str(tmp_path / "assets2.sqlite"))
+    with TestClient(app) as c:
+        assert c.get("/assets/nope.png").status_code == 404
+        # a non-whitelisted extension is refused
+        assert c.get("/assets/secret.txt").status_code == 404
+        # path traversal cannot escape the assets dir
+        assert c.get("/assets/..%2f..%2f__init__.py").status_code in (404, 400)

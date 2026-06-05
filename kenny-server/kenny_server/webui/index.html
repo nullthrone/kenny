@@ -1,150 +1,434 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>kenny fleet console</title>
+  <title>kenny · fleet console</title>
+  <link rel="icon" href="/assets/kenny-favicon.png" />
+  <!-- Set the theme before first paint so there is no dark→light flash or
+       stale-transition freeze (see VISUAL FOUNDATIONS / handoff note). -->
+  <script>try { document.documentElement.setAttribute('data-theme', localStorage.getItem('kenny-theme') || 'dark'); } catch (e) {}</script>
   <style>
+    /* Hanken Grotesk (UI) + JetBrains Mono (telemetry). Loaded from Google
+       Fonts; if offline, the system stacks below take over gracefully. */
+    @import url('https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;600&family=JetBrains+Mono:wght@400;600&display=swap');
+
+    /* ====================================================================
+       1. TOKENS — primitives (warm border-collie palette; amber = the eyes)
+       ==================================================================== */
     :root {
-      --ok: #2e9e44; --warn: #d99100; --crit: #c0392b; --unknown: #888;
-      --bg: #0f1419; --panel: #1b2330; --card: #0b0f14; --fg: #e6edf3; --muted: #8b98a5;
-      --border: #2a3441; --maxw: 1200px;
+      --warm-950: #141311; --warm-900: #1A1917; --warm-850: #201E1B;
+      --warm-800: #23211E; --warm-750: #2B2924; --warm-700: #34312C;
+      --warm-600: #4A463F; --warm-500: #756B5C; --warm-400: #A89F8E;
+      --warm-300: #C9C1B2; --warm-200: #D9D2C4; --warm-100: #ECE6DA;
+      --warm-50:  #F3EEE3; --warm-0:   #FBF7EF; --pure-white: #FFFFFF;
+
+      --amber-bright: #F0B65C; --amber: #E8A33D; --amber-deep: #C9852A;
+      --amber-text: #92610F;
+      --amber-wash-d: rgba(232,163,61,0.12); --amber-wash-l: rgba(232,163,61,0.16);
+
+      --ok: #5FA88A; --ok-text-d: #79BFA1; --ok-fill: #36715B; --ok-text-l: #2E7355;
+      --ok-wash-d: rgba(95,168,138,0.12); --ok-wash-l: rgba(46,115,85,0.10);
+
+      --crit: #C65B43; --crit-text-d: #DD7A62; --crit-fill: #B0432E; --crit-text-l: #A23A24;
+      --crit-wash-d: rgba(198,91,67,0.14); --crit-wash-l: rgba(162,58,36,0.10);
+
+      --unknown: #756B5C; --unknown-text-d: #A89F8E;
+
+      --font-sans: 'Hanken Grotesk', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+      --font-mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+      --weight-normal: 400; --weight-bold: 600;
+
+      --text-xs: 12px; --text-sm: 13px; --text-base: 15px; --text-md: 17px;
+      --text-lg: 21px; --text-xl: 27px; --text-2xl: 34px; --text-3xl: 44px;
+      --leading-tight: 1.2; --leading-snug: 1.35; --leading-normal: 1.55;
+      --tracking-tight: -0.01em; --tracking-label: 0.04em;
+
+      --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px;
+      --space-5: 24px; --space-6: 32px; --space-7: 48px; --space-8: 64px;
+
+      --radius-xs: 3px; --radius-sm: 5px; --radius-md: 7px; --radius-lg: 10px; --radius-pill: 999px;
+      --border-width: 1px; --border-width-emphasis: 2px;
+      --focus-ring: 0 0 0 2px var(--amber);
+
+      --ease: cubic-bezier(0.2, 0, 0, 1);
+      --dur-fast: 90ms; --dur: 160ms; --dur-slow: 240ms;
     }
+
+    /* 2. SEMANTIC TOKENS — DARK (primary) */
+    :root, [data-theme="dark"] {
+      --bg: var(--warm-900); --bg-sunken: var(--warm-950); --surface: var(--warm-800);
+      --surface-raised: var(--warm-750); --border: var(--warm-700); --border-strong: var(--warm-600);
+      --fg: var(--warm-100); --fg-muted: var(--warm-400); --fg-faint: var(--warm-500); --fg-inverse: var(--warm-900);
+      --accent: var(--amber); --accent-hover: var(--amber-bright); --accent-press: var(--amber-deep);
+      --accent-fg: var(--warm-900); --accent-wash: var(--amber-wash-d); --link: var(--amber);
+      --ok-dot: var(--ok);      --ok-fg: var(--ok-text-d);     --ok-solid: var(--ok-fill);     --ok-on: var(--warm-100); --ok-bg: var(--ok-wash-d);
+      --warn-dot: var(--amber); --warn-fg: var(--amber);       --warn-solid: var(--amber);     --warn-on: var(--warm-900); --warn-bg: var(--amber-wash-d);
+      --crit-dot: var(--crit);  --crit-fg: var(--crit-text-d); --crit-solid: var(--crit-fill); --crit-on: var(--warm-100); --crit-bg: var(--crit-wash-d);
+      --unk-dot: var(--unknown);--unk-fg: var(--unknown-text-d);
+    }
+
+    /* 3. SEMANTIC TOKENS — LIGHT (clean inversion) */
+    [data-theme="light"] {
+      --bg: var(--warm-50); --bg-sunken: var(--warm-100); --surface: var(--warm-0);
+      --surface-raised: var(--pure-white); --border: #E2DACB; --border-strong: #CFC6B4;
+      --fg: #211F1B; --fg-muted: #6B6354; --fg-faint: #938A79; --fg-inverse: var(--warm-50);
+      --accent: var(--amber); --accent-hover: var(--amber-deep); --accent-press: var(--amber-deep);
+      --accent-fg: var(--warm-900); --accent-wash: var(--amber-wash-l); --link: var(--amber-text);
+      --ok-dot: var(--ok-text-l);  --ok-fg: var(--ok-text-l);     --ok-solid: var(--ok-fill);     --ok-on: var(--warm-50);  --ok-bg: var(--ok-wash-l);
+      --warn-dot: var(--amber-deep);--warn-fg: var(--amber-text); --warn-solid: var(--amber);     --warn-on: var(--warm-900); --warn-bg: var(--amber-wash-l);
+      --crit-dot: var(--crit-fill);--crit-fg: var(--crit-text-l); --crit-solid: var(--crit-fill); --crit-on: var(--warm-50);  --crit-bg: var(--crit-wash-l);
+      --unk-dot: var(--unknown);   --unk-fg: var(--fg-muted);
+    }
+
+    /* 4. BASE TYPOGRAPHY */
     * { box-sizing: border-box; }
-    body { margin: 0; font: 14px/1.5 system-ui, sans-serif; background: var(--bg); color: var(--fg); }
-    a { color: #4aa3ff; }
-    .wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 20px; }
-    header { border-bottom: 1px solid var(--border); }
-    header .wrap { display: flex; align-items: center; justify-content: space-between; padding: 12px 20px; }
-    .brand { display: flex; align-items: center; gap: 10px; }
-    .logo { width: 30px; height: 30px; border-radius: 8px; background: var(--fg); color: var(--bg);
-      display: flex; align-items: center; justify-content: center; }
-    .brand h1 { font-size: 16px; margin: 0; font-weight: 500; }
-    main { padding: 16px 0 40px; display: flex; flex-direction: column; gap: 14px; }
+    body {
+      margin: 0; font-family: var(--font-sans); font-size: var(--text-base);
+      line-height: var(--leading-normal); font-weight: var(--weight-normal);
+      color: var(--fg); background: var(--bg);
+      -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
+    }
+    a, .link { color: var(--link); text-decoration: none; }
+    a:hover, .link:hover { text-decoration: underline; text-underline-offset: 2px; }
+    :focus-visible { outline: none; box-shadow: var(--focus-ring); border-radius: var(--radius-sm); }
+    .k-mono { font-family: var(--font-mono); }
+    .k-muted { color: var(--fg-muted); }
+    .k-row { display: flex; align-items: center; gap: var(--space-2); }
+    svg { stroke-width: 1.75; }
 
-    .panel { background: var(--panel); border-radius: 12px; padding: 14px 16px; }
-    .card { background: var(--card); border: 1px solid var(--border); border-radius: 9px; padding: 10px 12px; }
-    .lbl { font-size: 11px; color: var(--muted); }
-    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
-    .row { display: flex; align-items: center; gap: 8px; }
-    .muted { color: var(--muted); font-size: 12px; }
+    /* ====================================================================
+       COMPONENT LAYER (.k-*) — flat surfaces, hairline borders, no shadows.
+       Status never relies on colour alone: shape + icon + label.
+       ==================================================================== */
+    .k-panel { background: var(--surface); border: var(--border-width) solid var(--border);
+      border-radius: var(--radius-lg); padding: var(--space-4); }
+    .k-card { background: var(--surface); border: var(--border-width) solid var(--border);
+      border-radius: var(--radius-md); padding: var(--space-3) var(--space-4); }
+    .k-card--sunken { background: var(--bg-sunken); }
 
-    .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex: none; }
-    .ok { background: var(--ok); } .warn { background: var(--warn); }
-    .crit { background: var(--crit); } .unknown { background: var(--unknown); }
-    .pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 11px; font-weight: 500; color: #fff; }
-    .pill.ok { background: var(--ok); } .pill.warn { background: var(--warn); }
-    .pill.crit { background: var(--crit); } .pill.unknown { background: var(--unknown); }
+    /* status dots — distinct silhouettes */
+    .k-dot { width: 10px; height: 10px; flex: none; display: inline-block; }
+    .k-dot--ok { background: var(--ok-dot); border-radius: 50%; }
+    .k-dot--warn { background: var(--warn-dot); border-radius: 50%;
+      box-shadow: inset 0 0 0 2px var(--surface), 0 0 0 1.5px var(--warn-dot); }
+    .k-dot--crit { background: var(--crit-dot); border-radius: 2px; }
+    .k-dot--unknown { background: var(--unk-dot); border-radius: 50%; opacity: .8;
+      -webkit-mask: repeating-linear-gradient(45deg,#000 0 2px,transparent 2px 4px);
+              mask: repeating-linear-gradient(45deg,#000 0 2px,transparent 2px 4px); }
 
-    button { background: #2563eb; color: #fff; border: 0; padding: 7px 12px; border-radius: 8px;
-      cursor: pointer; font-size: 13px; }
-    button:hover { background: #1d4ed8; }
-    button.ghost { background: transparent; border: 1px solid var(--border); color: var(--fg); }
-    button.ghost:hover { background: #222c3a; }
-    button:disabled { opacity: .45; cursor: not-allowed; }
-    button.small { font-size: 11px; padding: 4px 9px; }
-    input { padding: 7px 10px; border-radius: 8px; border: 1px solid var(--border);
-      background: var(--card); color: var(--fg); font-size: 13px; }
+    /* status pills */
+    .k-pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px 3px 8px;
+      border-radius: var(--radius-pill); font-size: var(--text-xs); font-weight: var(--weight-bold);
+      line-height: 1.4; letter-spacing: .01em; white-space: nowrap;
+      border: var(--border-width) solid transparent; }
+    .k-pill svg { width: 13px; height: 13px; }
+    .k-pill--ok { background: var(--ok-bg); color: var(--ok-fg); border-color: color-mix(in oklab, var(--ok-dot) 35%, transparent); }
+    .k-pill--warn { background: var(--warn-bg); color: var(--warn-fg); border-color: color-mix(in oklab, var(--warn-dot) 40%, transparent); }
+    .k-pill--crit { background: var(--crit-solid); color: var(--crit-on); border-color: var(--crit-solid); }
+    .k-pill--unknown { background: transparent; color: var(--unk-fg); border-color: var(--border-strong); }
 
-    .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
-    .stat .n { font-size: 22px; font-weight: 500; }
+    /* fleet worst-of roll-up */
+    .k-rollup { display: inline-flex; align-items: center; gap: 10px; padding: 8px 14px 8px 12px;
+      border-radius: var(--radius-md); border: var(--border-width) solid var(--border);
+      background: var(--surface); font-weight: var(--weight-bold); }
+    .k-rollup__label { font-size: var(--text-xs); color: var(--fg-muted); letter-spacing: var(--tracking-label);
+      text-transform: uppercase; font-weight: var(--weight-normal); }
+    .k-rollup__value { display: inline-flex; align-items: center; gap: 7px; font-size: var(--text-md); }
+    .k-rollup__value svg { width: 16px; height: 16px; }
+    .k-rollup--ok { border-color: color-mix(in oklab, var(--ok-dot) 30%, var(--border)); }
+    .k-rollup--warn { border-color: color-mix(in oklab, var(--warn-dot) 45%, var(--border)); }
+    .k-rollup--crit { border-color: var(--crit-solid); border-width: var(--border-width-emphasis); background: var(--crit-bg); }
+    .k-rollup--ok .k-rollup__value { color: var(--ok-fg); }
+    .k-rollup--warn .k-rollup__value { color: var(--warn-fg); }
+    .k-rollup--crit .k-rollup__value { color: var(--crit-fg); }
+    .k-rollup--unknown .k-rollup__value { color: var(--unk-fg); }
 
-    .console { display: grid; grid-template-columns: 230px minmax(0, 1fr); gap: 12px; align-items: start; }
-    @media (max-width: 760px) { .console { grid-template-columns: 1fr; } }
-    .fleet-list { display: flex; flex-direction: column; gap: 8px; }
-    .agent { display: flex; align-items: center; gap: 10px; cursor: pointer; }
-    .agent:hover { border-color: #3d4d5e; }
-    .agent.active { border-color: #3d4d5e; background: #16202c; }
-    .agent.sel-crit { border: 2px solid var(--crit); background: rgba(192,57,43,.12); }
-    .agent .name { font-size: 13px; font-weight: 500; }
+    /* rule-reason chip */
+    .k-reason { display: inline-flex; align-items: center; gap: 8px; font-family: var(--font-mono);
+      font-size: var(--text-xs); padding: 4px 9px; border-radius: var(--radius-sm);
+      background: var(--bg-sunken); border: var(--border-width) solid var(--border); color: var(--fg-muted); }
+    .k-reason b { color: var(--fg); font-weight: var(--weight-bold); }
+    .k-reason__arrow { color: var(--fg-faint); }
+    .k-reason__out { font-weight: var(--weight-bold); }
+    .k-reason--ok .k-reason__out { color: var(--ok-fg); }
+    .k-reason--warn .k-reason__out { color: var(--warn-fg); }
+    .k-reason--crit .k-reason__out { color: var(--crit-fg); }
 
-    .sections { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
-    .sec h5 { margin: 0; font-size: 12px; font-weight: 500; }
-    .sec .sum { font-size: 12px; margin-top: 3px; }
-    .sec details { margin-top: 6px; }
-    .sec summary { cursor: pointer; font-size: 11px; color: var(--muted); }
-    pre { background: #060a0e; padding: 10px; border-radius: 8px; overflow: auto; max-height: 220px;
-      font-size: 11px; margin: 6px 0 0; }
-    svg.spark { width: 100%; height: 44px; display: block; }
+    /* telemetry tile */
+    .k-tile { background: var(--surface); border: var(--border-width) solid var(--border);
+      border-radius: var(--radius-md); padding: var(--space-3); border-left: 3px solid var(--border);
+      display: flex; flex-direction: column; gap: 7px; }
+    .k-tile--ok { border-left-color: var(--ok-dot); }
+    .k-tile--warn { border-left-color: var(--warn-dot); }
+    .k-tile--crit { border-left-color: var(--crit-solid); border-left-width: 4px;
+      background: linear-gradient(90deg, var(--crit-bg), transparent 60%); }
+    .k-tile__head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .k-tile__name { display: inline-flex; align-items: center; gap: 7px; min-width: 0;
+      font-size: var(--text-sm); font-weight: var(--weight-bold); color: var(--fg); }
+    .k-tile__name svg { width: 15px; height: 15px; color: var(--fg-muted); flex: none; }
+    .k-tile__name span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .k-tile__sum { font-size: var(--text-sm); color: var(--fg-muted); }
+    .k-tile__raw { margin-top: 1px; }
+    .k-tile__raw summary { cursor: pointer; font-size: 11px; color: var(--fg-faint);
+      letter-spacing: var(--tracking-label); text-transform: uppercase; list-style: none; }
+    .k-tile__raw summary::-webkit-details-marker { display: none; }
+    .k-tile__raw pre { font-family: var(--font-mono); font-size: 11px; margin: 6px 0 0;
+      background: var(--bg-sunken); border: var(--border-width) solid var(--border);
+      border-radius: var(--radius-sm); padding: 9px; overflow: auto; max-height: 200px; color: var(--fg-muted); }
 
-    .banner { border: 1px solid var(--warn); }
-    .banner .msg { white-space: pre-wrap; margin: 4px 0 8px; }
+    /* buttons */
+    .k-btn { display: inline-flex; align-items: center; gap: 7px; cursor: pointer;
+      font-family: var(--font-sans); font-size: var(--text-sm); font-weight: var(--weight-bold);
+      padding: 8px 14px; border-radius: var(--radius-sm); border: var(--border-width) solid transparent;
+      transition: background var(--dur) var(--ease), transform var(--dur-fast) var(--ease),
+        border-color var(--dur) var(--ease), color var(--dur) var(--ease); }
+    .k-btn svg { width: 15px; height: 15px; }
+    .k-btn:active { transform: scale(.985); }
+    .k-btn:disabled { opacity: .4; cursor: not-allowed; transform: none; }
+    .k-btn--primary { background: var(--accent); color: var(--accent-fg); }
+    .k-btn--primary:hover { background: var(--accent-hover); }
+    .k-btn--primary:active { background: var(--accent-press); }
+    .k-btn--ghost { background: transparent; color: var(--fg); border-color: var(--border-strong); }
+    .k-btn--ghost:hover { background: var(--surface-raised); border-color: var(--border-strong); }
+    .k-btn--quiet { background: transparent; color: var(--fg-muted); }
+    .k-btn--quiet:hover { background: var(--surface-raised); color: var(--fg); }
+    .k-btn--danger { background: transparent; color: var(--crit-fg);
+      border-color: color-mix(in oklab, var(--crit-solid) 60%, transparent); }
+    .k-btn--danger:hover { background: var(--crit-bg); border-color: var(--crit-solid); }
+    .k-btn--sm { padding: 5px 10px; font-size: var(--text-xs); }
+    .k-btn--sm svg { width: 13px; height: 13px; }
 
-    .chat { display: flex; flex-direction: column; }
-    .transcript { display: flex; flex-direction: column; gap: 9px; min-height: 80px;
-      max-height: 46vh; overflow: auto; padding: 4px 0 8px; }
-    .msg { max-width: 80%; padding: 8px 11px; border-radius: 10px; white-space: pre-wrap; font-size: 13px; }
-    .msg.user { align-self: flex-end; background: #2563eb; color: #fff; }
-    .msg.assistant { align-self: flex-start; background: var(--card); border: 1px solid var(--border); }
-    .msg.tool { align-self: flex-start; background: var(--card); border: 1px solid var(--border);
-      color: var(--muted); font-size: 12px; font-family: ui-monospace, monospace; }
-    .confirm { align-self: flex-start; max-width: 88%; background: #2a1f12;
-      border: 1px solid var(--warn); border-radius: 10px; padding: 12px; }
-    .confirm .acts { margin-top: 9px; display: flex; gap: 8px; }
-    .confirm button.deny { background: #5b2630; }
-    .composer { display: flex; gap: 8px; margin-top: 8px; }
-    .composer input { flex: 1; }
+    /* inputs */
+    .k-input { font-family: var(--font-sans); font-size: var(--text-sm); color: var(--fg);
+      background: var(--bg-sunken); border: var(--border-width) solid var(--border);
+      border-radius: var(--radius-sm); padding: 8px 11px; width: 100%;
+      transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease); }
+    .k-input::placeholder { color: var(--fg-faint); }
+    .k-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-wash); }
 
-    .audit { display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
-    .audit .at { color: var(--muted); flex: none; }
+    /* chat bubbles */
+    .k-bubble { max-width: 80%; padding: 9px 12px; border-radius: var(--radius-md);
+      font-size: var(--text-sm); line-height: var(--leading-snug); white-space: pre-wrap; }
+    .k-bubble--user { align-self: flex-end; background: var(--surface-raised);
+      border: var(--border-width) solid var(--border); color: var(--fg); border-bottom-right-radius: var(--radius-xs); }
+    .k-bubble--assistant { align-self: flex-start; background: var(--surface);
+      border: var(--border-width) solid var(--border); color: var(--fg); border-bottom-left-radius: var(--radius-xs); }
+    .k-toolrun { align-self: flex-start; display: inline-flex; align-items: center; gap: 8px;
+      font-family: var(--font-mono); font-size: var(--text-xs); color: var(--fg-muted);
+      background: var(--bg-sunken); border: var(--border-width) solid var(--border);
+      border-radius: var(--radius-sm); padding: 5px 10px; }
+    .k-toolrun svg { width: 13px; height: 13px; }
+    .k-toolrun__tick { color: var(--ok-fg); display: inline-flex; }
+    .k-toolrun--err .k-toolrun__tick { color: var(--crit-fg); }
+    .k-toolrun--auto::after { content: 'auto-run'; margin-left: 2px; color: var(--fg-faint);
+      font-size: 10px; letter-spacing: var(--tracking-label); text-transform: uppercase; }
+
+    /* confirm-gate — deliberate, amber-framed safety moment */
+    .k-gate { align-self: flex-start; max-width: 92%; background: var(--surface);
+      border: var(--border-width-emphasis) solid var(--accent); border-radius: var(--radius-md);
+      padding: 0; overflow: hidden; }
+    .k-gate__head { display: flex; align-items: center; gap: 8px; padding: 9px 12px;
+      background: var(--accent-wash); border-bottom: var(--border-width) solid color-mix(in oklab, var(--accent) 30%, transparent); }
+    .k-gate__head svg { width: 15px; height: 15px; color: var(--accent); }
+    .k-gate__title { font-size: var(--text-xs); font-weight: var(--weight-bold); color: var(--accent);
+      letter-spacing: var(--tracking-label); text-transform: uppercase; white-space: nowrap; }
+    .k-gate__body { padding: 11px 12px 12px; }
+    .k-gate__desc { font-size: var(--text-sm); color: var(--fg-muted); margin-bottom: 8px; }
+    .k-gate__desc b { color: var(--fg); font-weight: var(--weight-bold); }
+    .k-gate__call { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--fg);
+      background: var(--bg-sunken); border: var(--border-width) solid var(--border);
+      border-radius: var(--radius-sm); padding: 8px 10px; margin-bottom: 11px;
+      white-space: pre-wrap; overflow-x: auto; }
+    .k-gate__call .tok-key { color: var(--fg-faint); }
+    .k-gate__call .tok-tool { color: var(--accent); font-weight: var(--weight-bold); }
+    .k-gate__acts { display: flex; gap: 8px; }
+
+    /* audit log */
+    .k-audit { display: flex; flex-direction: column; }
+    .k-audit__row { display: grid; grid-template-columns: 56px 64px 1fr auto auto;
+      align-items: center; gap: 12px; padding: 7px 4px;
+      border-bottom: var(--border-width) solid var(--border); font-size: var(--text-xs); }
+    .k-audit__row:last-child { border-bottom: 0; }
+    .k-audit__time { font-family: var(--font-mono); color: var(--fg-faint); }
+    .k-audit__tool { font-family: var(--font-mono); color: var(--fg); white-space: nowrap;
+      overflow: hidden; text-overflow: ellipsis; }
+    .k-audit__kind { font-size: 11px; letter-spacing: var(--tracking-label); text-transform: uppercase; white-space: nowrap; }
+    .k-audit__kind--ro { color: var(--fg-faint); }
+    .k-audit__kind--sc { color: var(--accent); }
+    .k-audit__agent { font-family: var(--font-mono); color: var(--fg-muted); white-space: nowrap; }
+    .k-audit__res { font-size: 11px; font-weight: var(--weight-bold); letter-spacing: var(--tracking-label); text-transform: uppercase; }
+    .k-audit__res--ok { color: var(--ok-fg); }
+    .k-audit__res--err { color: var(--crit-fg); }
+
+    /* ====================================================================
+       CONSOLE LAYOUT (.kc-*)
+       ==================================================================== */
+    .kc-app { max-width: 1180px; margin: 0 auto; padding: 0 22px 48px; }
+    .kc-header { display: flex; align-items: center; justify-content: space-between;
+      padding: 16px 22px; max-width: 1180px; margin: 0 auto; border-bottom: 1px solid var(--border);
+      flex-wrap: wrap; gap: 12px; }
+    .kc-brand { display: flex; align-items: center; gap: 12px; }
+    .kc-logo { width: 38px; height: 38px; border-radius: 50%; display: block; }
+    .kc-brand__name { font-size: 19px; font-weight: 600; letter-spacing: -0.01em; line-height: 1; }
+    .kc-brand__sub { font-size: 11px; color: var(--fg-muted); letter-spacing: .04em; text-transform: uppercase; margin-top: 3px; }
+    .kc-header__right { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+    .kc-tunnel { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; color: var(--fg-muted); }
+    .kc-operator { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--fg-muted); }
+    .kc-operator svg { width: 15px; height: 15px; }
+    .kc-icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px;
+      border-radius: var(--radius-sm); border: 1px solid var(--border); background: transparent; color: var(--fg-muted);
+      cursor: pointer; transition: background var(--dur) var(--ease), color var(--dur) var(--ease); }
+    .kc-icon-btn:hover { background: var(--surface-raised); color: var(--fg); }
+    .kc-icon-btn svg { width: 16px; height: 16px; }
+
+    .kc-main { display: flex; flex-direction: column; gap: 14px; padding-top: 16px; }
+
+    .kc-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+    @media (max-width: 560px) { .kc-stats { grid-template-columns: repeat(2, 1fr); } }
+    .kc-stat { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 12px 14px; }
+    .kc-stat__lbl { font-size: 11px; color: var(--fg-muted); letter-spacing: .04em; text-transform: uppercase; }
+    .kc-stat__n { font-size: 27px; font-weight: 600; margin-top: 4px; line-height: 1; }
+    .kc-stat__sub { font-size: 14px; color: var(--fg-muted); font-weight: 400; }
+
+    .kc-console { display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 14px; align-items: start; }
+    @media (max-width: 820px) { .kc-console { grid-template-columns: 1fr; } }
+    .kc-section-lbl { font-size: 11px; color: var(--fg-muted); letter-spacing: .04em; text-transform: uppercase; }
+
+    .kc-fleet { display: flex; flex-direction: column; gap: 10px; }
+    .kc-fleet__list { display: flex; flex-direction: column; gap: 8px; }
+    .kc-agent { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; cursor: pointer;
+      background: var(--bg-sunken); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 10px 12px;
+      transition: border-color var(--dur) var(--ease); font-family: var(--font-sans); color: var(--fg); }
+    .kc-agent:hover { border-color: var(--border-strong); }
+    .kc-agent.is-selected { background: var(--surface-raised); border-color: var(--border-strong); }
+    .kc-agent.is-crit { border: 2px solid var(--crit-solid); background: var(--crit-bg); padding: 9px 11px; }
+    .kc-agent__body { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+    .kc-agent__name { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .kc-agent__sum { font-size: 12px; color: var(--fg-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .kc-agent__off { font-size: 10px; color: var(--fg-faint); letter-spacing: .04em; text-transform: uppercase; flex: none; }
+
+    .kc-addpc { margin-top: 4px; padding: 12px; background: var(--bg-sunken);
+      border: 1px dashed var(--border-strong); border-radius: var(--radius-md); }
+    .kc-addpc__head { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; margin-bottom: 8px; }
+    .kc-addpc__head svg { width: 14px; height: 14px; }
+
+    .kc-detail { display: flex; flex-direction: column; gap: 12px; }
+    .kc-detail__head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
+    .kc-detail__name { font-size: 17px; font-weight: 600; overflow-wrap: anywhere; }
+    .kc-detail__meta { font-size: 12px; color: var(--fg-muted); }
+    .kc-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; }
+    .kc-trend { display: flex; flex-direction: column; gap: 8px; }
+    .kc-spark { width: 100%; height: 44px; display: block; }
+
+    .kc-chat { display: flex; flex-direction: column; gap: 10px; }
+    .kc-chat__head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+    .kc-chat__title { font-size: 13px; font-weight: 600; }
+    .kc-chat__title svg { width: 16px; height: 16px; }
+    .kc-ctx { font-family: var(--font-mono); font-size: 11px; color: var(--fg-muted);
+      background: var(--bg-sunken); border: 1px solid var(--border); border-radius: var(--radius-pill); padding: 3px 10px; }
+    .kc-transcript { display: flex; flex-direction: column; gap: 9px; max-height: 46vh; overflow-y: auto;
+      padding: 4px; min-height: 96px; }
+    .kc-composer { display: flex; gap: 8px; }
+    .kc-composer .k-input { flex: 1; }
+    .kc-suggest { display: flex; gap: 8px; flex-wrap: wrap; }
+    .kc-chip { font-family: var(--font-sans); font-size: 12px; color: var(--fg-muted); cursor: pointer;
+      background: transparent; border: 1px solid var(--border); border-radius: var(--radius-pill); padding: 4px 11px;
+      transition: border-color var(--dur) var(--ease), color var(--dur) var(--ease); }
+    .kc-chip:hover { border-color: var(--accent); color: var(--fg); }
+
+    .kc-banner { border-color: color-mix(in oklab, var(--warn-dot) 45%, var(--border)); }
+    .kc-banner__msg { white-space: pre-wrap; margin: 6px 0 8px; }
   </style>
 </head>
 <body>
-  <header>
-    <div class="wrap">
-      <div class="brand">
-        <span class="logo" id="logo"></span>
-        <div>
-          <h1>kenny</h1>
-          <div class="lbl">fleet console</div>
-        </div>
+  <header class="kc-header">
+    <div class="kc-brand">
+      <img class="kc-logo" src="/assets/kenny-mark-64.png" alt="kenny" width="38" height="38" />
+      <div>
+        <div class="kc-brand__name">kenny</div>
+        <div class="kc-brand__sub">fleet console</div>
       </div>
-      <div class="row" id="status" style="gap:12px"></div>
     </div>
+    <div class="kc-header__right" id="header-right"></div>
   </header>
-  <main class="wrap" id="app">loading…</main>
+  <main class="kc-app kc-main" id="app">loading…</main>
 
   <script>
-    // -- tiny inline-SVG icon set (dependency-light, offline) -------------
+    // -- inline-SVG icon set (Lucide idiom: outline, 1.75 stroke, round caps;
+    //    dependency-light + offline, no CDN). ----------------------------------
     const ICONS = {
-      shield: '<path d="M12 3l7 3v5c0 4-3 7-7 9-4-2-7-5-7-9V6z"/>',
-      refresh: '<path d="M4 12a8 8 0 0 1 14-5"/><path d="M20 5v4h-4"/><path d="M20 12a8 8 0 0 1-14 5"/><path d="M4 19v-4h4"/>',
-      download: '<path d="M12 4v10"/><path d="M8 11l4 4 4-4"/><path d="M5 20h14"/>',
-      disk: '<rect x="4" y="4" width="16" height="16" rx="2"/><circle cx="12" cy="12" r="3"/>',
-      reboot: '<path d="M4 12a8 8 0 1 1 2.3 5.6"/><path d="M4 18v-4h4"/>',
-      shieldcheck: '<path d="M12 3l7 3v5c0 4-3 7-7 9-4-2-7-5-7-9V6z"/><path d="M9 12l2 2 4-4"/>',
-      lock: '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
+      // status
+      check: '<path d="M20 6 9 17l-5-5"/>',
+      'triangle-alert': '<path d="m21.73 18-8-14a2 2 0 0 0-3.46 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
+      'octagon-alert': '<path d="M12 16h.01"/><path d="M12 8v4"/><path d="M15.31 2a2 2 0 0 1 1.41.59l4.69 4.69A2 2 0 0 1 22 8.69v6.62a2 2 0 0 1-.59 1.41l-4.69 4.69a2 2 0 0 1-1.41.59H8.69a2 2 0 0 1-1.41-.59l-4.69-4.69A2 2 0 0 1 2 15.31V8.69a2 2 0 0 1 .59-1.41l4.69-4.69A2 2 0 0 1 8.69 2z"/>',
+      'circle-help': '<circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/>',
+      'shield-alert': '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="M12 8v4"/><path d="M12 16h.01"/>',
+      // telemetry sections
+      'hard-drive': '<line x1="22" x2="2" y1="12" y2="12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><line x1="6" x2="6.01" y1="16" y2="16"/><line x1="10" x2="10.01" y1="16" y2="16"/>',
+      'memory-stick': '<rect x="4" y="7" width="16" height="10" rx="1"/><path d="M8 17v2M12 17v2M16 17v2M8 5v2M16 5v2"/>',
       cpu: '<rect x="7" y="7" width="10" height="10" rx="1"/><path d="M10 2v3M14 2v3M10 19v3M14 19v3M2 10h3M2 14h3M19 10h3M19 14h3"/>',
-      alert: '<path d="M12 4l9 16H3z"/><path d="M12 10v4M12 17v.5"/>',
-      chat: '<path d="M4 5h16v10H9l-4 4z"/>',
-      net: '<circle cx="12" cy="5" r="2"/><circle cx="5" cy="19" r="2"/><circle cx="19" cy="19" r="2"/><path d="M12 7v4M12 11l-6 6M12 11l6 6"/>',
-      battery: '<rect x="3" y="8" width="16" height="8" rx="1"/><path d="M21 11v2"/>',
-      memory: '<rect x="4" y="7" width="16" height="10" rx="1"/><path d="M8 17v2M12 17v2M16 17v2"/>',
+      thermometer: '<path d="M14 4v10.54a4 4 0 1 1-4 0V4a2 2 0 0 1 4 0Z"/>',
+      'shield-check': '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/>',
+      lock: '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
+      flame: '<path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.07-2.14-.22-4.05 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.15.43-2.29 1-3a2.5 2.5 0 0 0 2.5 2.5z"/>',
+      network: '<rect x="16" y="16" width="6" height="6" rx="1"/><rect x="2" y="16" width="6" height="6" rx="1"/><rect x="9" y="2" width="6" height="6" rx="1"/><path d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3"/><path d="M12 12V8"/>',
+      wifi: '<path d="M12 20h.01"/><path d="M2 8.82a15 15 0 0 1 20 0"/><path d="M5 12.86a10 10 0 0 1 14 0"/><path d="M8.5 16.43a5 5 0 0 1 7 0"/>',
+      download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/>',
+      'battery-medium': '<rect x="2" y="7" width="16" height="10" rx="2"/><line x1="22" x2="22" y1="11" y2="13"/><line x1="6" x2="6" y1="11" y2="13"/><line x1="10" x2="10" y1="11" y2="13"/>',
+      printer: '<path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><path d="M6 9V3a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v6"/><rect x="6" y="14" width="12" height="8" rx="1"/>',
+      'rotate-ccw': '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>',
+      clock: '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
+      activity: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
+      usb: '<circle cx="10" cy="7" r="1"/><circle cx="4" cy="20" r="1"/><path d="M4.7 19.3 19 5"/><path d="m21 3-3 1 2 2 1-3z"/><path d="M9.26 7.68 5 12l2 5"/><path d="m10 14 5 2 3.5-3.5"/><path d="m18 12 1-1 1 1-1 1z"/>',
+      'calendar-clock': '<path d="M21 7.5V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h3.5"/><path d="M16 2v4"/><path d="M8 2v4"/><path d="M3 10h5"/><path d="M17.5 17.5 16 16.3V14"/><circle cx="16" cy="16" r="6"/>',
+      // ui
+      'message-square': '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
+      'refresh-cw': '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>',
+      plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
+      link: '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
+      'send-horizontal': '<path d="M3.71 3.05a.5.5 0 0 0-.68.63l2.84 7.62a2 2 0 0 1 0 1.4l-2.84 7.63a.5.5 0 0 0 .68.62l18-8.5a.5.5 0 0 0 0-.9z"/><path d="M6 12h16"/>',
+      'circle-arrow-up': '<circle cx="12" cy="12" r="10"/><path d="m16 12-4-4-4 4"/><path d="M12 16V8"/>',
+      'user-round': '<circle cx="12" cy="8" r="5"/><path d="M20 21a8 8 0 0 0-16 0"/>',
+      sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>',
+      moon: '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>',
       box: '<rect x="4" y="4" width="16" height="16" rx="2"/>',
     };
     function icon(name, size) {
       const p = ICONS[name] || ICONS.box;
-      return `<svg width="${size||14}" height="${size||14}" viewBox="0 0 24 24" fill="none"
-        stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"
-        aria-hidden="true" style="vertical-align:-2px">${p}</svg>`;
+      const s = size || 16;
+      return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+        stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"
+        style="vertical-align:-2px;flex:none">${p}</svg>`;
     }
-    document.getElementById('logo').innerHTML = icon('shield', 18);
-    // pick an icon for a telemetry section by name
+
+    const STATUS_ICON = { ok: "check", warn: "triangle-alert", crit: "octagon-alert", unknown: "circle-help" };
+
+    // map a telemetry section name to its Lucide-idiom icon
     function secIcon(name) {
-      if (name.startsWith('disk')) return 'disk';
-      if (name.includes('reboot')) return 'reboot';
-      if (name.includes('defender') || name.includes('firewall') || name.includes('av_')) return 'shieldcheck';
-      if (name.includes('encryption') || name === 'bitlocker') return 'lock';
-      if (name.includes('cpu') || name.includes('thermal')) return 'cpu';
-      if (name.includes('update')) return 'download';
-      if (name.includes('network') || name.includes('wifi') || name.includes('routing')) return 'net';
-      if (name.includes('memory')) return 'memory';
-      if (name.includes('battery')) return 'battery';
-      return 'box';
+      const n = name.toLowerCase();
+      if (n.startsWith("disk") || n.includes("storage")) return "hard-drive";
+      if (n.includes("memory") || n === "ram") return "memory-stick";
+      if (n.includes("thermal") || n.includes("temp")) return "thermometer";
+      if (n.includes("cpu")) return "cpu";
+      if (n.includes("defender") || n.includes("av_") || n.includes("antivirus")) return "shield-check";
+      if (n.includes("bitlocker") || n.includes("encryption")) return "lock";
+      if (n.includes("firewall")) return "flame";
+      if (n.includes("wifi") || n.includes("wlan")) return "wifi";
+      if (n.includes("network") || n.includes("routing") || n.includes("net")) return "network";
+      if (n.includes("update")) return "download";
+      if (n.includes("battery")) return "battery-medium";
+      if (n.includes("printer")) return "printer";
+      if (n.includes("reboot")) return "rotate-ccw";
+      if (n.includes("uptime")) return "clock";
+      if (n.includes("reliab")) return "activity";
+      if (n.includes("peripher") || n.includes("usb")) return "usb";
+      if (n.includes("os_support") || n.includes("support")) return "calendar-clock";
+      return "box";
     }
 
     const app = document.getElementById("app");
-    const statusBar = document.getElementById("status");
+    const headerRight = document.getElementById("header-right");
     const sev = s => ["ok", "warn", "crit"].includes(s) ? s : "unknown";
     const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g,
       c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -154,6 +438,16 @@
       if (r.status === 401) { location = "/login"; throw new Error("unauthorized"); }
       if (!r.ok) throw new Error(url + " -> " + r.status);
       return r.json();
+    }
+
+    // -- theme toggle ------------------------------------------------------
+    function currentTheme() { return document.documentElement.getAttribute("data-theme") || "dark"; }
+    function toggleTheme() {
+      const next = currentTheme() === "dark" ? "light" : "dark";
+      document.documentElement.setAttribute("data-theme", next);
+      try { localStorage.setItem("kenny-theme", next); } catch (e) {}
+      const btn = document.getElementById("theme-btn");
+      if (btn) btn.innerHTML = icon(next === "dark" ? "sun" : "moon", 16);
     }
 
     // -- console state -----------------------------------------------------
@@ -171,20 +465,20 @@
       if (!state.selected || !agents.find(a => a.agent_id === state.selected)) {
         state.selected = worstOf(agents);
       }
-      renderStatusBar(fleet, agents);
+      renderHeaderRight(fleet, agents);
       app.innerHTML =
         bannerHtml(bin) +
         statsHtml(agents) +
-        `<div class="console">
-           <div class="panel">${fleetListHtml(agents)}${addPcHtml(bin)}</div>
-           <div class="panel" id="detail"><div class="muted">loading…</div></div>
+        `<div class="kc-console">
+           <div class="k-panel kc-fleet">${fleetListHtml(agents)}${addPcHtml(bin)}</div>
+           <div class="k-panel kc-detail" id="detail"><div class="k-muted">loading…</div></div>
          </div>` +
         chatHtml() +
         auditHtml(audit.entries || []);
       mountChat();
       if (state.selected) selectAgent(state.selected);
       else document.getElementById("detail").innerHTML =
-        `<div class="muted">No PC selected. Use “Add a PC” to onboard the first machine.</div>`;
+        `<div class="k-muted">No PC selected. Use “Add a PC” to onboard the first machine.</div>`;
     }
 
     function worstOf(agents) {
@@ -197,15 +491,22 @@
       return best;
     }
 
-    function renderStatusBar(fleet, agents) {
+    // -- header right: worst-of roll-up + tunnel + theme + operator --------
+    function renderHeaderRight(fleet, agents) {
       const online = agents.filter(a => a.online).length;
-      const tunnel = online > 0
-        ? `<span class="row lbl" style="gap:5px"><span class="dot ok"></span>tunnel connected</span>`
-        : `<span class="row lbl" style="gap:5px"><span class="dot unknown"></span>no agent connected</span>`;
-      statusBar.innerHTML =
-        `<span class="pill ${sev(fleet.overall)}">fleet: ${esc(fleet.overall)}</span>
+      const roll = sev(fleet.overall);
+      const rollText = { ok: "all healthy", warn: "needs attention", crit: "critical", unknown: "degraded" }[roll];
+      const tunnel = `<span class="kc-tunnel">
+          <span class="k-dot k-dot--${online ? "ok" : "unknown"}"></span>${online ? "tunnel connected" : "no agent"}
+        </span>`;
+      headerRight.innerHTML =
+        `<div class="k-rollup k-rollup--${roll}">
+           <span class="k-rollup__label">fleet</span>
+           <span class="k-rollup__value">${icon(STATUS_ICON[roll], 16)}${esc(rollText)}</span>
+         </div>
          ${tunnel}
-         <span class="row muted" style="gap:5px">${icon('shield', 14)} operator</span>`;
+         <button class="kc-icon-btn" id="theme-btn" onclick="toggleTheme()" title="toggle theme">${icon(currentTheme() === "dark" ? "sun" : "moon", 16)}</button>
+         <span class="kc-operator">${icon('user-round', 15)}operator</span>`;
     }
 
     function statsHtml(agents) {
@@ -214,21 +515,21 @@
       const crit = agents.filter(a => sev(a.overall) === "crit").length;
       const last = lastPush(agents);
       const card = (lbl, n, color) =>
-        `<div class="card stat"><div class="lbl">${lbl}</div>
-          <div class="n" ${color ? `style="color:${color}"` : ""}>${n}</div></div>`;
-      return `<div class="stats">
-        ${card("PCs online", `${online}<span class="muted" style="font-size:13px"> / ${agents.length}</span>`)}
-        ${card("warnings", warn, warn ? "var(--warn)" : "")}
-        ${card("critical", crit, crit ? "var(--crit)" : "")}
+        `<div class="kc-stat"><div class="kc-stat__lbl">${lbl}</div>
+          <div class="kc-stat__n" ${color ? `style="color:${color}"` : ""}>${n}</div></div>`;
+      return `<div class="kc-stats">
+        ${card("PCs online", `${online}<span class="kc-stat__sub"> / ${agents.length}</span>`)}
+        ${card("warnings", warn, warn ? "var(--warn-fg)" : "")}
+        ${card("critical", crit, crit ? "var(--crit-fg)" : "")}
         ${card("last push", last)}
       </div>`;
     }
 
     function lastPush(agents) {
       const times = agents.map(a => a.collected_at).filter(Boolean).map(t => Date.parse(t)).filter(n => !isNaN(n));
-      if (!times.length) return `<span class="muted" style="font-size:14px">—</span>`;
+      if (!times.length) return `<span class="kc-stat__sub">—</span>`;
       const mins = Math.max(0, Math.round((Date.now() - Math.max(...times)) / 60000));
-      return `${mins}<span class="muted" style="font-size:13px"> min</span>`;
+      return `${mins}<span class="kc-stat__sub"> min</span>`;
     }
 
     // -- fleet list (master) ----------------------------------------------
@@ -239,28 +540,29 @@
       });
       const items = sorted.map(a => {
         const name = (a.meta && a.meta.hostname) || a.agent_id;
-        const cls = a.agent_id === state.selected
-          ? (sev(a.overall) === "crit" ? "sel-crit" : "active") : "";
-        return `<div class="card agent ${cls}" onclick="selectAgent('${esc(a.agent_id)}')">
-          <span class="dot ${sev(a.overall)}"></span>
-          <div style="flex:1;min-width:0">
-            <div class="name">${esc(name)}</div>
-            <div class="lbl" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(a.summary || "")}</div>
-          </div></div>`;
+        const selected = a.agent_id === state.selected;
+        const crit = sev(a.overall) === "crit";
+        const cls = (selected ? " is-selected" : "") + (selected && crit ? " is-crit" : "");
+        const off = a.online ? "" : `<span class="kc-agent__off">offline</span>`;
+        return `<button class="kc-agent${cls}" onclick="selectAgent('${esc(a.agent_id)}')">
+          <span class="k-dot k-dot--${sev(a.overall)}"></span>
+          <span class="kc-agent__body">
+            <span class="kc-agent__name">${esc(name)}</span>
+            <span class="kc-agent__sum">${esc(a.summary || "")}</span>
+          </span>${off}</button>`;
       }).join("");
-      return `<div class="lbl" style="margin-bottom:8px">fleet · worst-of</div>
-        <div class="fleet-list">${items || '<div class="muted">No agents yet.</div>'}</div>`;
+      return `<div class="kc-section-lbl">fleet · worst-of</div>
+        <div class="kc-fleet__list">${items || '<div class="k-muted">No agents yet.</div>'}</div>`;
     }
 
     function addPcHtml(bin) {
       const dis = bin && !bin.available ? "disabled" : "";
-      return `<div class="card" style="margin-top:10px">
-        <div class="row" style="gap:6px;margin-bottom:6px">${icon('download', 14)}<span style="font-size:12px;font-weight:500">Add a PC</span></div>
-        <div class="lbl" style="margin-bottom:7px">Enter an agent id, then download its installer.</div>
-        <input id="new-agent-id" placeholder="agent id (e.g. papa-pc)" style="width:100%;margin-bottom:7px" />
-        <div class="row" style="gap:6px">
-          <button class="small" onclick="downloadNewInstaller()" ${dis}>download installer</button>
-          <button class="small ghost" onclick="shareNewInstaller()" ${dis}>share link</button>
+      return `<div class="kc-addpc">
+        <div class="kc-addpc__head">${icon('plus', 14)}Add a PC</div>
+        <input class="k-input" id="new-agent-id" placeholder="agent id (e.g. study-pc)" autocomplete="off" />
+        <div class="k-row" style="margin-top:8px">
+          <button class="k-btn k-btn--primary k-btn--sm" onclick="downloadNewInstaller()" ${dis}>${icon('download', 13)}installer</button>
+          <button class="k-btn k-btn--ghost k-btn--sm" onclick="shareNewInstaller()" ${dis}>${icon('link', 13)}share link</button>
         </div>
       </div>`;
     }
@@ -268,87 +570,101 @@
     // -- agent detail ------------------------------------------------------
     async function selectAgent(id) {
       state.selected = id;
-      // reflect selection in the fleet list + chat context without a full re-render
-      document.querySelectorAll(".agent").forEach(el => el.classList.remove("active", "sel-crit"));
       const det = document.getElementById("detail");
-      if (det) det.innerHTML = `<div class="muted">loading ${esc(id)}…</div>`;
+      if (det) det.innerHTML = `<div class="k-muted">loading ${esc(id)}…</div>`;
       setChatContext(id);
+      renderConsoleListSelection();
       let data;
       try { data = await getJSON("/api/agent/" + encodeURIComponent(id)); }
-      catch (e) { if (det) det.innerHTML = `<div class="muted">error: ${esc(e.message)}</div>`; return; }
+      catch (e) { if (det) det.innerHTML = `<div class="k-muted">error: ${esc(e.message)}</div>`; return; }
       if (state.selected !== id) return; // selection changed while loading
       renderDetail(data);
-      // re-apply the active marker in the (still-present) fleet list
       renderConsoleListSelection();
     }
 
     function renderConsoleListSelection() {
       const agents = (state.fleet && state.fleet.agents) || [];
       const a = agents.find(x => x.agent_id === state.selected);
-      document.querySelectorAll(".agent").forEach(el => {
+      const crit = a && sev(a.overall) === "crit";
+      document.querySelectorAll(".kc-agent").forEach(el => {
+        el.classList.remove("is-selected", "is-crit");
         const sel = el.getAttribute("onclick") || "";
         if (sel.includes("'" + state.selected + "'")) {
-          el.classList.add(a && sev(a.overall) === "crit" ? "sel-crit" : "active");
+          el.classList.add("is-selected");
+          if (crit) el.classList.add("is-crit");
         }
       });
+    }
+
+    function reasonHtml(reason, status) {
+      if (!reason || sev(status) === "ok") return "";
+      return `<span class="k-reason k-reason--${sev(status)}">
+        <span>${esc(reason)}</span>
+        <span class="k-reason__arrow">&rArr;</span>
+        <span class="k-reason__out">${esc(status)}</span>
+      </span>`;
     }
 
     function renderDetail(data) {
       const det = document.getElementById("detail");
       if (!det) return;
       const h = data.health || { overall: "unknown", sections: {} };
-      const name = (data.meta || {}).hostname || data.agent_id;
-      const ver = (data.meta || {}).version ? " · v" + (data.meta || {}).version : "";
+      const meta = data.meta || {};
+      const name = meta.hostname || data.agent_id;
+      const ver = meta.version ? " · v" + meta.version : "";
+      const os = meta.os || meta.os_name || "";
 
       const secs = Object.entries(h.sections || {}).map(([n, s]) => {
         const raw = (data.snapshot || {})[n] || {};
-        const reason = s.reason
-          ? `<div class="sum" style="color:var(--${sev(s.status)})">rule: ${esc(s.reason)}</div>` : "";
-        return `<div class="card sec">
-          <div class="row" style="justify-content:space-between">
-            <span class="row lbl" style="gap:5px">${icon(secIcon(n))}${esc(n)}</span>
-            <span class="dot ${sev(s.status)}"></span>
+        return `<div class="k-tile k-tile--${sev(s.status)}">
+          <div class="k-tile__head">
+            <span class="k-tile__name">${icon(secIcon(n), 15)}<span>${esc(n)}</span></span>
+            <span class="k-dot k-dot--${sev(s.status)}"></span>
           </div>
-          <div class="sum">${esc(s.summary || "")}</div>
-          ${reason}
-          <details><summary>raw</summary><pre>${esc(JSON.stringify(raw, null, 2))}</pre></details>
+          <div class="k-tile__sum">${esc(s.summary || "")}</div>
+          ${reasonHtml(s.reason, s.status)}
+          <details class="k-tile__raw"><summary>raw</summary><pre>${esc(JSON.stringify(raw, null, 2))}</pre></details>
         </div>`;
       }).join("");
 
       det.innerHTML = `
-        <div class="row" style="justify-content:space-between;flex-wrap:wrap;gap:8px">
-          <div class="row" style="gap:8px">
-            <span class="dot ${sev(h.overall)}"></span>
-            <span style="font-size:14px;font-weight:500">${esc(name)}</span>
-            <span class="mono" style="color:var(--muted)">${esc(data.agent_id)}${esc(ver)}</span>
-            <span class="muted">${data.online ? "online" : "offline"}</span>
+        <div class="kc-detail__head">
+          <div class="k-row" style="gap:10px;flex-wrap:wrap">
+            <span class="k-dot k-dot--${sev(h.overall)}"></span>
+            <span class="kc-detail__name">${esc(name)}</span>
+            <span class="k-mono kc-detail__meta">${esc(data.agent_id)}${esc(ver)}</span>
+            <span class="kc-detail__meta">${data.online ? "online" : "offline"}${os ? " · " + esc(os) : ""}</span>
           </div>
-          <div class="row" style="gap:6px;flex-wrap:wrap">
-            <button class="small ghost" onclick="refreshNow('${esc(data.agent_id)}')">${icon('refresh', 13)} refresh</button>
-            <button class="small ghost" onclick="downloadInstaller('${esc(data.agent_id)}')">installer</button>
-            <button class="small ghost" onclick="shareInstaller('${esc(data.agent_id)}')">share</button>
-            <button class="small ghost" onclick="updateAgent('${esc(data.agent_id)}')">update</button>
+          <div class="k-row" style="gap:6px;flex-wrap:wrap">
+            <button class="k-btn k-btn--ghost k-btn--sm" onclick="refreshNow('${esc(data.agent_id)}')">${icon('refresh-cw', 13)}refresh</button>
+            <button class="k-btn k-btn--ghost k-btn--sm" onclick="downloadInstaller('${esc(data.agent_id)}')">${icon('download', 13)}installer</button>
+            <button class="k-btn k-btn--ghost k-btn--sm" onclick="shareInstaller('${esc(data.agent_id)}')">${icon('link', 13)}share</button>
+            <button class="k-btn k-btn--danger k-btn--sm" onclick="updateAgent('${esc(data.agent_id)}')">${icon('circle-arrow-up', 13)}update</button>
           </div>
         </div>
-        <div class="sections" style="margin-top:10px">${secs || '<div class="muted">no telemetry yet</div>'}</div>
-        <div class="card" style="margin-top:10px">
-          <div class="row" style="justify-content:space-between"><span class="lbl">health trend · 30 d</span></div>
+        <div class="kc-tiles">${secs || '<div class="k-muted">no telemetry yet</div>'}</div>
+        <div class="k-card k-card--sunken kc-trend">
+          <div class="k-row" style="justify-content:space-between">
+            <span class="kc-section-lbl">health trend · 30 d</span>
+            <span class="k-mono" style="font-size:11px;color:var(--fg-faint)">worst-of / snapshot</span>
+          </div>
           ${sparkline(data.history || [])}
         </div>`;
     }
 
     function sparkline(history) {
       const pts = history.slice();
-      if (!pts.length) return `<div class="muted">no history</div>`;
-      const yOf = ov => ({ crit: 4, warn: 16, ok: 30, unknown: 38 }[sev(ov)] ?? 38);
-      const colOf = ov => `var(--${sev(ov)})`;
+      if (!pts.length) return `<div class="k-muted" style="font-size:12px">no history</div>`;
+      const yOf = ov => ({ crit: 5, warn: 18, ok: 32, unknown: 38 }[sev(ov)] ?? 38);
+      const colOf = ov => ({ ok: "var(--ok-dot)", warn: "var(--warn-dot)", crit: "var(--crit-solid)", unknown: "var(--unk-dot)" }[sev(ov)]);
       const n = pts.length;
       const x = i => n === 1 ? 0 : (i / (n - 1)) * 400;
       const line = pts.map((p, i) => `${x(i).toFixed(1)},${yOf(p.overall)}`).join(" ");
       const last = pts[pts.length - 1];
-      return `<svg class="spark" viewBox="0 0 400 44" preserveAspectRatio="none" role="img">
+      return `<svg class="kc-spark" viewBox="0 0 400 44" preserveAspectRatio="none" role="img">
         <title>overall health over the last ${n} snapshots</title>
-        <polyline points="${line}" fill="none" stroke="${colOf(last.overall)}" stroke-width="2"/>
+        <polyline points="${line}" fill="none" stroke="${colOf(last.overall)}" stroke-width="2"
+          stroke-linejoin="round" stroke-linecap="round"/>
       </svg>`;
     }
 
@@ -388,10 +704,10 @@
     function bannerHtml(bin) {
       if (!bin || bin.available) return "";
       const retry = bin.github_configured
-        ? `<button class="small" onclick="retryFetch(this)">retry GitHub fetch</button>` : "";
-      return `<div class="panel banner">
-        <div class="row" style="gap:8px">${icon('alert', 16)}<span style="font-size:13px;font-weight:500">No agent installer available</span></div>
-        <div class="msg muted">${esc(bin.message)}</div>${retry}
+        ? `<button class="k-btn k-btn--ghost k-btn--sm" onclick="retryFetch(this)">retry GitHub fetch</button>` : "";
+      return `<div class="k-panel kc-banner">
+        <div class="k-row" style="gap:8px">${icon('triangle-alert', 16)}<span style="font-size:13px;font-weight:600">No agent installer available</span></div>
+        <div class="kc-banner__msg k-muted">${esc(bin.message)}</div>${retry}
       </div>`;
     }
     async function retryFetch(btn) {
@@ -403,20 +719,25 @@
       renderConsole();
     }
 
-    // -- chat (prominent, central, context-aware) -------------------------
+    // -- chat (server-hosted Claude; read-only auto-run vs confirm-gate) ---
     let chatSessionId = null;
     let chatContext = null; // selected agent id, or null for fleet-wide
 
     function chatHtml() {
-      return `<div class="panel chat">
-        <div class="row" style="gap:8px;margin-bottom:8px">
-          ${icon('chat', 16)}<span style="font-size:13px;font-weight:500">chat · server-hosted</span>
-          <span class="pill unknown" id="chat-ctx" style="background:var(--card);color:var(--muted);border:1px solid var(--border)">context: fleet</span>
+      return `<div class="k-panel kc-chat">
+        <div class="kc-chat__head">
+          <span class="k-row kc-chat__title" style="gap:8px">${icon('message-square', 16)}chat · server-hosted</span>
+          <span class="kc-ctx" id="chat-ctx">context: fleet</span>
         </div>
-        <div class="transcript" id="transcript"></div>
-        <div class="composer">
-          <input id="chat-input" placeholder="Ask kenny to inspect or fix a PC…" autocomplete="off" />
-          <button onclick="sendChat()">send</button>
+        <div class="kc-transcript" id="transcript"></div>
+        <div class="kc-composer">
+          <input class="k-input" id="chat-input" placeholder="Ask kenny to inspect or fix a PC…" autocomplete="off" />
+          <button class="k-btn k-btn--primary" id="chat-send" onclick="sendChat()">${icon('send-horizontal', 15)}send</button>
+        </div>
+        <div class="kc-suggest">
+          <button class="kc-chip" onclick="suggest(this)">Why is this PC flagged?</button>
+          <button class="kc-chip" onclick="suggest(this)">Free up disk space</button>
+          <button class="kc-chip" onclick="suggest(this)">Update all packages</button>
         </div>
       </div>`;
     }
@@ -425,44 +746,72 @@
       if (input) input.addEventListener("keydown", e => { if (e.key === "Enter") sendChat(); });
       setChatContext(state.selected);
     }
+    function suggest(btn) {
+      const input = document.getElementById("chat-input");
+      if (input) { input.value = btn.textContent; input.focus(); }
+    }
     function setChatContext(id) {
       chatContext = id || null;
       const chip = document.getElementById("chat-ctx");
       if (chip) chip.textContent = "context: " + (id || "fleet");
     }
+    function setComposerEnabled(on) {
+      const input = document.getElementById("chat-input");
+      const send = document.getElementById("chat-send");
+      if (input) input.disabled = !on;
+      if (send) send.disabled = !on;
+    }
 
     function bubble(cls, text) {
       const t = document.getElementById("transcript");
       const div = document.createElement("div");
-      div.className = "msg " + cls;
+      div.className = "k-bubble k-bubble--" + cls;
       div.textContent = text;
       t.appendChild(div);
       t.scrollTop = t.scrollHeight;
       return div;
     }
+    function toolRun(tool, ok) {
+      const t = document.getElementById("transcript");
+      const div = document.createElement("div");
+      div.className = "k-toolrun" + (ok ? " k-toolrun--auto" : " k-toolrun--err");
+      div.innerHTML = `<span class="k-toolrun__tick">${icon(ok ? 'check' : 'octagon-alert', 13)}</span>${esc(tool)}`;
+      t.appendChild(div);
+      t.scrollTop = t.scrollHeight;
+    }
     function renderTurn(result) {
       (result.tool_events || []).forEach(ev => {
-        if (ev.type === "tool_result") bubble("tool", (ev.ok ? "✓ auto-run " : "✗ ") + ev.tool);
-        else if (ev.type === "denied") bubble("tool", "✗ denied " + ev.tool);
+        if (ev.type === "tool_result") toolRun(ev.tool, ev.ok !== false);
+        else if (ev.type === "denied") toolRun("denied " + ev.tool, false);
       });
       if (result.assistant_text) bubble("assistant", result.assistant_text);
       if (result.pending) renderPending(result.pending);
     }
+    function gateCall(tool, args) {
+      const entries = Object.entries(args || {});
+      if (!entries.length) return `<span class="tok-tool">${esc(tool)}</span> {}`;
+      const lines = entries.map(([k, v], i) =>
+        `  <span class="tok-key">${esc(k)}</span>: ${esc(JSON.stringify(v))}${i < entries.length - 1 ? "," : ""}`
+      ).join("\n");
+      return `<span class="tok-tool">${esc(tool)}</span> {\n${lines}\n}`;
+    }
     function renderPending(p) {
       const t = document.getElementById("transcript");
       const div = document.createElement("div");
-      div.className = "confirm";
+      div.className = "k-gate";
       div.innerHTML = `
-        <div class="row" style="gap:6px;margin-bottom:6px">${icon('alert', 14)}
-          <strong style="font-size:12px;color:var(--warn)">confirm-gate</strong></div>
-        <div class="muted">${esc(p.tool)} on ${esc(p.agent_id || "(no agent)")}</div>
-        <pre>${esc(JSON.stringify(p.args, null, 2))}</pre>
-        <div class="acts">
-          <button onclick="confirmChat(true, this)">confirm</button>
-          <button class="deny" onclick="confirmChat(false, this)">cancel</button>
+        <div class="k-gate__head">${icon('shield-alert', 15)}<span class="k-gate__title">confirm-gate · awaiting operator</span></div>
+        <div class="k-gate__body">
+          <div class="k-gate__desc">This will <b>change state</b> on <b>${esc(p.agent_id || "the active PC")}</b>. Review before it runs.</div>
+          <div class="k-gate__call">${gateCall(p.tool, p.args)}</div>
+          <div class="k-gate__acts">
+            <button class="k-btn k-btn--primary" onclick="confirmChat(true, this)">${icon('check', 15)}confirm &amp; run</button>
+            <button class="k-btn k-btn--ghost" onclick="confirmChat(false, this)">cancel</button>
+          </div>
         </div>`;
       t.appendChild(div);
       t.scrollTop = t.scrollHeight;
+      setComposerEnabled(false); // lock the composer until the gate is resolved
     }
     async function sendChat() {
       const input = document.getElementById("chat-input");
@@ -478,35 +827,39 @@
         });
         chatSessionId = result.session_id;
         renderTurn(result);
-      } catch (e) { bubble("tool", "error: " + e.message); }
+      } catch (e) { toolRun("error: " + e.message, false); }
     }
     async function confirmChat(approve, btn) {
-      btn.closest(".confirm").remove();
+      btn.closest(".k-gate").remove();
+      setComposerEnabled(true);
       try {
         const result = await getJSON("/api/chat/confirm", {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ session_id: chatSessionId, approve }),
         });
         renderTurn(result);
-      } catch (e) { bubble("tool", "error: " + e.message); }
+      } catch (e) { toolRun("error: " + e.message, false); }
     }
 
     // -- global audit log --------------------------------------------------
     function auditHtml(entries) {
       const rows = entries.map(e => {
         const t = (e.at || "").slice(11, 16);
-        const pill = e.ok ? `<span class="pill ok">ok</span>` : `<span class="pill crit">err</span>`;
-        const kind = e.state_changing ? "state-changing" : "read-only";
-        return `<div class="row" style="gap:10px">
-          <span class="mono at" style="flex:none">${esc(t)}</span>${pill}
-          <span class="mono" style="flex:1;min-width:0">${esc(e.tool)}</span>
-          <span class="lbl" style="flex:none">${kind}</span>
-          <span class="lbl" style="flex:none">${esc(e.agent_id)}</span>
+        const res = e.ok
+          ? `<span class="k-audit__res k-audit__res--ok">ok</span>`
+          : `<span class="k-audit__res k-audit__res--err">err</span>`;
+        const sc = e.state_changing;
+        return `<div class="k-audit__row">
+          <span class="k-audit__time">${esc(t)}</span>
+          ${res}
+          <span class="k-audit__tool">${esc(e.tool)}</span>
+          <span class="k-audit__kind k-audit__kind--${sc ? "sc" : "ro"}">${sc ? "state-changing" : "read-only"}</span>
+          <span class="k-audit__agent">${esc(e.agent_id)}</span>
         </div>`;
       }).join("");
-      return `<div class="panel">
-        <div class="lbl" style="margin-bottom:8px">tool-call audit log</div>
-        <div class="audit">${rows || '<div class="muted">no calls yet</div>'}</div>
+      return `<div class="k-panel">
+        <div class="kc-section-lbl" style="margin-bottom:8px">tool-call audit log</div>
+        <div class="k-audit">${rows || '<div class="k-muted" style="font-size:13px">no calls yet</div>'}</div>
       </div>`;
     }
 

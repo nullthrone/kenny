@@ -121,9 +121,15 @@ def _is_public(path: str) -> bool:
 
     ``/d/*`` are nonce-gated agent-distribution downloads (the nonce in the URL is the
     credential), so a target user / the agent self-updater can fetch without a login.
+    ``/assets/*`` are non-sensitive brand assets (logo, favicon) needed by the login
+    page itself, so they are served without a token.
     """
 
-    return path in ("/login", "/logout") or path.startswith("/d/")
+    return (
+        path in ("/login", "/logout")
+        or path.startswith("/d/")
+        or path.startswith("/assets/")
+    )
 
 
 def _is_api_or_mcp(path: str) -> bool:
@@ -179,24 +185,49 @@ _LOGIN_HTML = """<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>kenny — sign in</title>
+<link rel="icon" href="/assets/kenny-favicon.png" />
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;600&display=swap" rel="stylesheet" />
 <style>
-  body {{ margin:0; height:100vh; display:flex; align-items:center; justify-content:center;
-    font:14px/1.5 system-ui, sans-serif; background:#0f1419; color:#e6edf3; }}
-  form {{ background:#1b2330; border:1px solid #2a3441; border-radius:12px; padding:28px;
-    width:320px; }}
-  h1 {{ font-size:18px; margin:0 0 16px; }}
-  input {{ width:100%; padding:9px 10px; border-radius:8px; border:1px solid #2a3441;
-    background:#0b0f14; color:#e6edf3; font-size:14px; box-sizing:border-box; }}
-  button {{ margin-top:14px; width:100%; background:#2563eb; color:#fff; border:0;
-    padding:10px; border-radius:8px; font-size:14px; cursor:pointer; }}
-  button:hover {{ background:#1d4ed8; }}
-  .err {{ color:#c0392b; margin:10px 0 0; font-size:13px; }}
-  .muted {{ color:#8b98a5; font-size:12px; margin-top:12px; }}
+  /* Warm border-collie palette (see kenny design system). Flat, hairline
+     borders, amber accent. Inline hex (no shared token file on this page). */
+  :root {{ --bg:#1A1917; --surface:#23211E; --sunken:#141311; --border:#34312C;
+    --fg:#ECE6DA; --muted:#A89F8E; --faint:#756B5C; --amber:#E8A33D; --amber-deep:#C9852A;
+    --crit:#DD7A62; }}
+  * {{ box-sizing:border-box; }}
+  body {{ margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
+    font-family:'Hanken Grotesk', ui-sans-serif, system-ui, 'Segoe UI', sans-serif;
+    font-size:15px; line-height:1.55; background:var(--bg); color:var(--fg);
+    -webkit-font-smoothing:antialiased; }}
+  form {{ background:var(--surface); border:1px solid var(--border); border-radius:10px;
+    padding:28px; width:340px; }}
+  .brand {{ display:flex; align-items:center; gap:12px; margin-bottom:20px; }}
+  .brand img {{ width:40px; height:40px; border-radius:50%; display:block; }}
+  .brand .name {{ font-size:19px; font-weight:600; letter-spacing:-0.01em; line-height:1; }}
+  .brand .sub {{ font-size:11px; color:var(--muted); letter-spacing:.04em;
+    text-transform:uppercase; margin-top:3px; }}
+  label {{ font-size:11px; color:var(--muted); letter-spacing:.04em; text-transform:uppercase;
+    display:block; margin-bottom:6px; }}
+  input {{ width:100%; padding:9px 11px; border-radius:5px; border:1px solid var(--border);
+    background:var(--sunken); color:var(--fg); font-size:14px; font-family:inherit;
+    transition:border-color .16s cubic-bezier(.2,0,0,1), box-shadow .16s cubic-bezier(.2,0,0,1); }}
+  input::placeholder {{ color:var(--faint); }}
+  input:focus {{ outline:none; border-color:var(--amber); box-shadow:0 0 0 2px rgba(232,163,61,.12); }}
+  button {{ margin-top:16px; width:100%; background:var(--amber); color:#1A1917; border:0;
+    padding:10px; border-radius:5px; font-size:14px; font-weight:600; font-family:inherit;
+    cursor:pointer; transition:background .16s cubic-bezier(.2,0,0,1); }}
+  button:hover {{ background:#F0B65C; }}
+  button:active {{ background:var(--amber-deep); }}
+  .err {{ color:var(--crit); margin:12px 0 0; font-size:13px; }}
+  .muted {{ color:var(--muted); font-size:12px; margin-top:14px; }}
 </style></head>
 <body>
   <form method="post" action="/login">
-    <h1>kenny — operator sign in</h1>
-    <input type="password" name="token" placeholder="operator token" autofocus />
+    <div class="brand">
+      <img src="/assets/kenny-mark-64.png" alt="kenny" width="40" height="40" />
+      <div><div class="name">kenny</div><div class="sub">operator sign in</div></div>
+    </div>
+    <label for="token">operator token</label>
+    <input id="token" type="password" name="token" placeholder="operator token" autofocus />
     <button type="submit">Sign in</button>
     {msg}
     <div class="muted">Token is set via KENNY_OPERATOR_TOKEN on the server.</div>
