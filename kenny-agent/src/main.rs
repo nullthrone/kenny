@@ -41,6 +41,12 @@ fn main() {
         )
         .init();
 
+    // Declare per-monitor DPI awareness before any window/screen work so
+    // `screen_capture` grabs the full native resolution on HiDPI displays
+    // instead of a virtualized (scaled/cropped) view. Best-effort: harmless if
+    // the awareness context is already set.
+    set_dpi_awareness();
+
     let cli = Cli::parse();
 
     match cli.command {
@@ -108,6 +114,28 @@ fn main() {
         }
     }
 }
+
+/// Declare per-monitor-v2 DPI awareness for the process (Windows only).
+///
+/// Without this, GDI screen captures on HiDPI monitors are scaled down to the
+/// virtualized resolution. Failure is non-fatal (e.g. the context is already
+/// set via manifest), so we only log it.
+#[cfg(windows)]
+fn set_dpi_awareness() {
+    use windows::Win32::UI::HiDpi::{
+        SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+    };
+    // SAFETY: no pointers involved; the call is self-contained.
+    let result =
+        unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
+    if let Err(e) = result {
+        info!(error = %e, "SetProcessDpiAwarenessContext failed (likely already set)");
+    }
+}
+
+/// No-op DPI awareness setup off Windows.
+#[cfg(not(windows))]
+fn set_dpi_awareness() {}
 
 /// Run the foreground reconnecting tunnel (never returns under normal operation).
 fn run_tunnel(config: config::Config) {

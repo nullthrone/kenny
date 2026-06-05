@@ -391,6 +391,8 @@
     .kc-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
     .kc-trend { display: flex; flex-direction: column; gap: 8px; }
     .kc-spark { width: 100%; height: 44px; display: block; }
+    .kc-shotcard { display: flex; flex-direction: column; gap: 8px; }
+    .kc-shot { max-width: 100%; border-radius: 8px; cursor: zoom-in; display: block; }
 
     .kc-chat { display: flex; flex-direction: column; gap: 10px; }
     .kc-chat__head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
@@ -466,6 +468,7 @@
       box: '<rect x="4" y="4" width="16" height="16" rx="2"/>',
       x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
       search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
+      camera: '<path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/>',
       'chevron-left': '<path d="m15 18-6-6 6-6"/>',
       'chevron-right': '<path d="m9 18 6-6-6-6"/>',
       lightbulb: '<path d="M15 14c.2-1 .7-1.7 1.5-2.5C17.7 10.2 18 9 18 7.5a6 6 0 0 0-12 0c0 1.5.3 2.7 1.5 4 .8.8 1.3 1.5 1.5 2.5"/><path d="M9 18h6"/><path d="M10 22h4"/>',
@@ -784,6 +787,17 @@
             <span class="k-mono" style="font-size:11px;color:var(--fg-faint)">worst-of / snapshot</span>
           </div>
           ${sparkline(data.history || [])}
+        </div>
+        <div class="k-card k-card--sunken kc-shotcard">
+          <div class="k-row" style="justify-content:space-between">
+            <span class="kc-section-lbl">letzter Screenshot</span>
+            <button class="k-btn k-btn--ghost k-btn--sm" onclick="captureScreenshot('${esc(data.agent_id)}')">${icon('camera', 13)}neu aufnehmen</button>
+          </div>
+          <img class="kc-shot" id="kc-shot-${esc(data.agent_id)}"
+            src="/api/agent/${encodeURIComponent(data.agent_id)}/screenshot?t=${Date.now()}"
+            onclick="openModal('${icon('camera', 18)}<span>Screenshot</span>', '<img class=&quot;kc-shot&quot; src=&quot;' + this.src + '&quot;>')"
+            onerror="this.style.display='none';this.nextElementSibling.style.display='block'">
+          <div class="k-muted" style="display:none;font-size:12px">noch keiner</div>
         </div>`;
     }
 
@@ -898,6 +912,21 @@
       selectAgent(id);
     }
 
+    async function captureScreenshot(id) {
+      try {
+        await getJSON("/api/agent/" + encodeURIComponent(id) + "/screenshot", { method: "POST" });
+      } catch (e) {
+        alert("screenshot failed: " + e.message);
+        return;
+      }
+      const img = document.getElementById("kc-shot-" + id);
+      if (img) {
+        img.style.display = "";
+        if (img.nextElementSibling) img.nextElementSibling.style.display = "none";
+        img.src = "/api/agent/" + encodeURIComponent(id) + "/screenshot?t=" + Date.now();
+      }
+    }
+
     // -- agent distribution (installer / share / update) ------------------
     function downloadInstaller(id) { window.location = "/api/agents/" + encodeURIComponent(id) + "/installer"; }
     function downloadNewInstaller() {
@@ -1003,9 +1032,26 @@
       t.appendChild(div);
       t.scrollTop = t.scrollHeight;
     }
+    function chatShot(imageB64, format) {
+      const t = document.getElementById("transcript");
+      const card = document.createElement("div");
+      card.className = "k-card k-card--sunken kc-shotcard";
+      const src = `data:image/${format};base64,${imageB64}`;
+      const img = document.createElement("img");
+      img.className = "kc-shot";
+      img.src = src;
+      img.onclick = () => openModal(`${icon('camera', 18)}<span>Screenshot</span>`,
+        `<img class="kc-shot" src="${src}">`);
+      card.appendChild(img);
+      t.appendChild(card);
+      t.scrollTop = t.scrollHeight;
+    }
     function renderTurn(result) {
       (result.tool_events || []).forEach(ev => {
-        if (ev.type === "tool_result") toolRun(ev.tool, ev.ok !== false);
+        if (ev.type === "tool_result") {
+          toolRun(ev.tool, ev.ok !== false);
+          if (ev.image_b64) chatShot(ev.image_b64, ev.format || "png");
+        }
         else if (ev.type === "denied") toolRun("denied " + ev.tool, false);
       });
       if (result.assistant_text) bubble("assistant", result.assistant_text);

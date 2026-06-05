@@ -37,7 +37,7 @@ from .distribution import ShareLinks, build_download_routes
 from .registry import AgentRegistry
 from .store import TelemetryStore
 from .tokenstore import AgentTokenStore
-from .tools import CallLog, register_tools
+from .tools import CallLog, ScreenshotStore, register_tools
 from .tunnel import AgentTunnel
 from .webui import build_api_routes, build_chat_routes
 
@@ -52,6 +52,7 @@ def build_app(db_path: str | None = None) -> Starlette:
     store = TelemetryStore(db_path)
     tunnel = AgentTunnel(registry, store)
     call_log = CallLog()
+    screenshots = ScreenshotStore()
     chat_sessions = ChatSessions()
     share_links = ShareLinks()
 
@@ -66,19 +67,16 @@ def build_app(db_path: str | None = None) -> Starlette:
         await store.prune()
         # Best-effort: fetch the prebuilt agent binary from GitHub when configured
         # and not overridden by an operator-placed binary (ADR-0014). Non-fatal.
-        if agent_release.github_configured() and not os.environ.get(
-            "KENNY_AGENT_BINARY", ""
-        ).strip():
+        if (
+            agent_release.github_configured()
+            and not os.environ.get("KENNY_AGENT_BINARY", "").strip()
+        ):
             try:
                 result = await asyncio.to_thread(agent_release.fetch_latest_agent_binary)
                 app.state.last_fetch = result
-                logging.getLogger("kenny.release").info(
-                    "agent binary fetch: %s", result.message
-                )
+                logging.getLogger("kenny.release").info("agent binary fetch: %s", result.message)
             except Exception as exc:  # noqa: BLE001 - never break startup
-                logging.getLogger("kenny.release").warning(
-                    "agent binary fetch failed: %s", exc
-                )
+                logging.getLogger("kenny.release").warning("agent binary fetch failed: %s", exc)
         # Chain the MCP app's own lifespan (session manager, etc.).
         async with mcp_app.router.lifespan_context(app):
             yield
@@ -90,6 +88,7 @@ def build_app(db_path: str | None = None) -> Starlette:
         store=store,
         tunnel=tunnel,
         call_log=call_log,
+        screenshots=screenshots,
         token_store=token_store,
     )
     chat_routes = build_chat_routes(
@@ -98,6 +97,7 @@ def build_app(db_path: str | None = None) -> Starlette:
         tunnel=tunnel,
         call_log=call_log,
         sessions=chat_sessions,
+        screenshots=screenshots,
     )
     download_routes = build_download_routes(
         registry=registry,
@@ -130,6 +130,7 @@ def build_app(db_path: str | None = None) -> Starlette:
     app.state.token_store = token_store
     app.state.tunnel = tunnel
     app.state.call_log = call_log
+    app.state.screenshots = screenshots
     app.state.chat_sessions = chat_sessions
     app.state.share_links = share_links
     app.state.mcp = mcp
