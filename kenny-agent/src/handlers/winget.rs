@@ -1,11 +1,11 @@
-//! `winget.*` tools. Real implementation is Windows-only; off Windows these return
+//! `winget_*` tools. Real implementation is Windows-only; off Windows these return
 //! `unsupported` per the platform rule.
 
 use serde_json::Value;
 
 use crate::protocol::ErrorCode;
 
-/// `winget.list` — installed packages with available upgrades.
+/// `winget_list` — installed packages with available upgrades.
 pub async fn list(_args: Value) -> Result<Value, (ErrorCode, String)> {
     #[cfg(windows)]
     {
@@ -15,7 +15,7 @@ pub async fn list(_args: Value) -> Result<Value, (ErrorCode, String)> {
     }
     #[cfg(not(windows))]
     {
-        Err(unsupported("winget.list"))
+        Err(unsupported("winget_list"))
     }
 }
 
@@ -33,7 +33,7 @@ struct OptIdArg {
     id: Option<String>,
 }
 
-/// `winget.install` — install a package by id.
+/// `winget_install` — install a package by id.
 pub async fn install(_args: Value) -> Result<Value, (ErrorCode, String)> {
     #[cfg(windows)]
     {
@@ -53,11 +53,11 @@ pub async fn install(_args: Value) -> Result<Value, (ErrorCode, String)> {
     {
         // Validate args even on the stub so bad calls are caught early.
         let _ = IdArg { id: String::new() };
-        Err(unsupported("winget.install"))
+        Err(unsupported("winget_install"))
     }
 }
 
-/// `winget.uninstall` — uninstall a package by id.
+/// `winget_uninstall` — uninstall a package by id.
 pub async fn uninstall(_args: Value) -> Result<Value, (ErrorCode, String)> {
     #[cfg(windows)]
     {
@@ -68,11 +68,11 @@ pub async fn uninstall(_args: Value) -> Result<Value, (ErrorCode, String)> {
     #[cfg(not(windows))]
     {
         let _ = IdArg { id: String::new() };
-        Err(unsupported("winget.uninstall"))
+        Err(unsupported("winget_uninstall"))
     }
 }
 
-/// `winget.update` — upgrade one package (`id`) or all packages when omitted.
+/// `winget_update` — upgrade one package (`id`) or all packages when omitted.
 pub async fn update(_args: Value) -> Result<Value, (ErrorCode, String)> {
     #[cfg(windows)]
     {
@@ -95,7 +95,7 @@ pub async fn update(_args: Value) -> Result<Value, (ErrorCode, String)> {
     #[cfg(not(windows))]
     {
         let _ = OptIdArg { id: None };
-        Err(unsupported("winget.update"))
+        Err(unsupported("winget_update"))
     }
 }
 
@@ -125,7 +125,7 @@ mod windows_impl {
         Ok(json!({ "ok": output.status.success(), "log": log }))
     }
 
-    /// `winget.list` real implementation. Parsing of winget's table output is
+    /// `winget_list` real implementation. Parsing of winget's table output is
     /// left as a follow-up; returns an empty package set for now.
     pub async fn list() -> Result<Value, (ErrorCode, String)> {
         let output = Command::new("winget")

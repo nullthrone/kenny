@@ -119,7 +119,7 @@ pub enum Command {
     Tray,
 
     /// Hidden helper: wait for the service to stop, swap binaries, restart it.
-    /// Spawned detached by the `agent.update` handler (Windows only).
+    /// Spawned detached by the `agent_update` handler (Windows only).
     #[command(name = "finish-update", hide = true)]
     FinishUpdate(FinishUpdateArgs),
 }

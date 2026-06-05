@@ -1,4 +1,4 @@
-//! Filesystem tools: `fs.list`, `fs.search`, `fs.read`, `fs.disk_usage`.
+//! Filesystem tools: `fs_list`, `fs_search`, `fs_read`, `fs_disk_usage`.
 //!
 //! All portable via `std` + `sysinfo`; no Windows-only code here.
 
@@ -8,9 +8,9 @@ use std::path::{Path, PathBuf};
 
 use crate::protocol::ErrorCode;
 
-/// Cap on bytes returned by `fs.read` before truncation.
+/// Cap on bytes returned by `fs_read` before truncation.
 const READ_CAP: usize = 256 * 1024;
-/// Cap on results returned by `fs.search`.
+/// Cap on results returned by `fs_search`.
 const SEARCH_CAP: usize = 1000;
 
 #[derive(Debug, Deserialize)]
@@ -18,10 +18,10 @@ struct PathArg {
     path: String,
 }
 
-/// `fs.list` — directory entries with size and is_dir.
+/// `fs_list` — directory entries with size and is_dir.
 pub fn list(args: Value) -> Result<Value, (ErrorCode, String)> {
     let args: PathArg = serde_json::from_value(args)
-        .map_err(|e| (ErrorCode::BadArgs, format!("invalid fs.list args: {e}")))?;
+        .map_err(|e| (ErrorCode::BadArgs, format!("invalid fs_list args: {e}")))?;
     let dir = Path::new(&args.path);
     let read = std::fs::read_dir(dir).map_err(map_io)?;
 
@@ -45,10 +45,10 @@ struct SearchArgs {
     pattern: String,
 }
 
-/// `fs.search` — recursive case-insensitive substring match on filenames.
+/// `fs_search` — recursive case-insensitive substring match on filenames.
 pub fn search(args: Value) -> Result<Value, (ErrorCode, String)> {
     let args: SearchArgs = serde_json::from_value(args)
-        .map_err(|e| (ErrorCode::BadArgs, format!("invalid fs.search args: {e}")))?;
+        .map_err(|e| (ErrorCode::BadArgs, format!("invalid fs_search args: {e}")))?;
     let needle = args.pattern.to_lowercase();
     let mut matches = Vec::new();
     let mut stack: Vec<PathBuf> = vec![PathBuf::from(&args.root)];
@@ -77,10 +77,10 @@ pub fn search(args: Value) -> Result<Value, (ErrorCode, String)> {
     Ok(json!({ "matches": matches }))
 }
 
-/// `fs.read` — read a file, truncating at [`READ_CAP`] bytes.
+/// `fs_read` — read a file, truncating at [`READ_CAP`] bytes.
 pub fn read(args: Value) -> Result<Value, (ErrorCode, String)> {
     let args: PathArg = serde_json::from_value(args)
-        .map_err(|e| (ErrorCode::BadArgs, format!("invalid fs.read args: {e}")))?;
+        .map_err(|e| (ErrorCode::BadArgs, format!("invalid fs_read args: {e}")))?;
     let bytes = std::fs::read(&args.path).map_err(map_io)?;
     let truncated = bytes.len() > READ_CAP;
     let slice = if truncated {
@@ -94,7 +94,7 @@ pub fn read(args: Value) -> Result<Value, (ErrorCode, String)> {
     }))
 }
 
-/// `fs.disk_usage` — per-volume capacity, shared with the `disk` collector.
+/// `fs_disk_usage` — per-volume capacity, shared with the `disk` collector.
 pub fn disk_usage(_args: Value) -> Result<Value, (ErrorCode, String)> {
     Ok(json!({ "volumes": crate::telemetry::collectors::disk::volumes() }))
 }

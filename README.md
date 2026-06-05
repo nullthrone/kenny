@@ -51,12 +51,12 @@ flowchart LR
 - Single-page, dependency-light; cookie login at `/login`.
 
 ### Remote administration — capability tools
-- **Shell**: `powershell.exec`
-- **Packages**: `winget.list` · `winget.install` · `winget.uninstall` · `winget.update`
-- **Files**: `fs.list` · `fs.search` · `fs.read` · `fs.disk_usage`
-- **Diagnostics**: `diag.processes` · `diag.services` · `diag.eventlog` · `diag.autostart`
-- **Network**: `net.config` · `net.dns_flush` · `net.adapter_reset`
-- **Screen**: `screen.capture` · **Telemetry**: `telemetry.collect` · **Agent mgmt**: `agent.update`
+- **Shell**: `powershell_exec`
+- **Packages**: `winget_list` · `winget_install` · `winget_uninstall` · `winget_update`
+- **Files**: `fs_list` · `fs_search` · `fs_read` · `fs_disk_usage`
+- **Diagnostics**: `diag_processes` · `diag_services` · `diag_eventlog` · `diag_autostart`
+- **Network**: `net_config` · `net_dns_flush` · `net_adapter_reset`
+- **Screen**: `screen_capture` · **Telemetry**: `telemetry_collect` · **Agent mgmt**: `agent_update`
 - **Server-only orchestration**: `list_agents` · `select_agent` · `fleet_overview` ·
   `agent_health` · `agent_snapshot`
 - Windows-only tools have **portable Linux fallbacks**, so the agent builds and runs in CI/dev.
@@ -66,8 +66,8 @@ flowchart LR
 - **Server-hosted chat** in the dashboard (no local client): a Claude tool-use loop bridged to the
   same tools, with prompt-cached system + tool schemas; model configurable (default
   `claude-sonnet-4-6`).
-- **Confirm-gate**: read-only tools auto-run; state-changing tools (`powershell.exec`, `winget`
-  writes, `net.dns_flush`/`adapter_reset`, `agent.update`) require explicit operator confirmation.
+- **Confirm-gate**: read-only tools auto-run; state-changing tools (`powershell_exec`, `winget`
+  writes, `net_dns_flush`/`adapter_reset`, `agent_update`) require explicit operator confirmation.
 
 ### Agent distribution & lifecycle
 - **One-click installer download** from the GUI: a prebuilt binary + a generated `install.bat`
@@ -75,7 +75,7 @@ flowchart LR
 - **Expiring, one-time shareable link** (`/d/…`) for the target user — no operator login needed.
 - **Windows service**: self-install (`install` / `uninstall` / `run-service`) via the
   `windows-service` crate, auto-start with restart-on-failure recovery.
-- **Server-triggered self-update** (`agent.update`): download → SHA‑256 verify → staged swap with
+- **Server-triggered self-update** (`agent_update`): download → SHA‑256 verify → staged swap with
   rollback → service restart; the agent reconnects on the new version.
 
 ### Transport & connectivity

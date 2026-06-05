@@ -97,18 +97,18 @@ sequenceDiagram
   Claude-->>Chat: read-only tool calls (diag/telemetry)
   Chat->>Agent: forwarded (auto-run)
   Agent-->>Chat: results
-  Claude-->>Chat: wants winget.install (state-changing)
+  Claude-->>Chat: wants winget_install (state-changing)
   Chat-->>Op: ⚠ confirmation required (tool + args)
   Op->>Chat: confirm
-  Chat->>Agent: winget.install
+  Chat->>Agent: winget_install
   Agent-->>Chat: result
   Claude-->>Op: summary
 ```
 
-**Confirm-gate:** read-only tools (diagnostics, `fs.read`/`list`/`search`, `telemetry.collect`,
-`*.list`, `screen.capture`) run automatically. Anything **state-changing** —
-`powershell.exec`, `winget.install/uninstall/update`, `net.dns_flush`, `net.adapter_reset`,
-`agent.update` — pauses for your explicit confirmation before it runs. Every call is recorded in the
+**Confirm-gate:** read-only tools (diagnostics, `fs_read`/`list`/`search`, `telemetry_collect`,
+`*_list`, `screen_capture`) run automatically. Anything **state-changing** —
+`powershell_exec`, `winget_install/uninstall/update`, `net_dns_flush`, `net_adapter_reset`,
+`agent_update` — pauses for your explicit confirmation before it runs. Every call is recorded in the
 tool-call log.
 
 ### Option B — a local Claude client over MCP
@@ -120,14 +120,14 @@ same tools are available; `select_agent` chooses the target PC.
 
 | Family | Tools | Changes state? |
 |--------|-------|----------------|
-| Shell | `powershell.exec` | ✅ |
-| Packages | `winget.list` · `winget.install` · `winget.uninstall` · `winget.update` | install/uninstall/update ✅ |
-| Files | `fs.list` · `fs.search` · `fs.read` · `fs.disk_usage` | read-only |
-| Diagnostics | `diag.processes` · `diag.services` · `diag.eventlog` · `diag.autostart` | read-only |
-| Network | `net.config` · `net.dns_flush` · `net.adapter_reset` | dns_flush/adapter_reset ✅ |
-| Screen | `screen.capture` | read-only |
-| Telemetry | `telemetry.collect` | read-only |
-| Agent mgmt | `agent.update` | ✅ |
+| Shell | `powershell_exec` | ✅ |
+| Packages | `winget_list` · `winget_install` · `winget_uninstall` · `winget_update` | install/uninstall/update ✅ |
+| Files | `fs_list` · `fs_search` · `fs_read` · `fs_disk_usage` | read-only |
+| Diagnostics | `diag_processes` · `diag_services` · `diag_eventlog` · `diag_autostart` | read-only |
+| Network | `net_config` · `net_dns_flush` · `net_adapter_reset` | dns_flush/adapter_reset ✅ |
+| Screen | `screen_capture` | read-only |
+| Telemetry | `telemetry_collect` | read-only |
+| Agent mgmt | `agent_update` | ✅ |
 | Server-only | `list_agents` · `select_agent` · `fleet_overview` · `agent_health` · `agent_snapshot` | read-only |
 
 ### The local kill switch (endpoint user)
@@ -181,7 +181,7 @@ sequenceDiagram
   participant Server as kenny-server
   participant Agent as kenny-agent (service)
   Op->>Server: update agent
-  Server->>Agent: agent.update {version, url, sha256}
+  Server->>Agent: agent_update {version, url, sha256}
   Agent->>Server: download new binary (url)
   Agent->>Agent: verify sha256, stage
   Agent-->>Server: {ok, staged_version}
@@ -191,8 +191,8 @@ sequenceDiagram
 
 ## Good habits for operators
 
-- Treat `powershell.exec` and the `winget`/`net` write tools as real admin power — confirm
-  deliberately. Screenshots and `fs.read` can expose private content; use them sparingly.
+- Treat `powershell_exec` and the `winget`/`net` write tools as real admin power — confirm
+  deliberately. Screenshots and `fs_read` can expose private content; use them sparingly.
 - Telemetry summaries come from the agent; the dashboard is for **your** family's machines only.
 - If a PC shows `crit`, open it and read the section reason before acting.
 - Rotate a PC's token (re-download the installer) if you suspect a leaked token.

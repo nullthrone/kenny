@@ -13,7 +13,7 @@ truth; `protocol.py` (Pydantic) and `protocol.rs` (serde) are implementations of
 - One JSON object per WebSocket message. Frame types: `register`, `request`, `response`,
   `telemetry`, `ping`, `pong`.
 - `request`/`response` are correlated by `id` (server-generated UUID).
-- `telemetry` is **pushed** by the agent, not requested. `telemetry.collect` returns the
+- `telemetry` is **pushed** by the agent, not requested. `telemetry_collect` returns the
   same snapshot shape on demand.
 - Every telemetry section payload carries `status` ∈ {ok, warn, crit} and a `summary`
   string. Health thresholds are authoritative on the server (`health_rules.py`).

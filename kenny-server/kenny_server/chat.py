@@ -81,13 +81,13 @@ SERVER_TOOLS: dict[str, dict[str, Any]] = {
 # Everything else (including all server-only tools) is read-only.
 STATE_CHANGING_TOOLS: frozenset[str] = frozenset(
     {
-        "powershell.exec",
-        "winget.install",
-        "winget.uninstall",
-        "winget.update",
-        "net.dns_flush",
-        "net.adapter_reset",
-        "agent.update",  # reserved for a future capability
+        "powershell_exec",
+        "winget_install",
+        "winget_uninstall",
+        "winget_update",
+        "net_dns_flush",
+        "net_adapter_reset",
+        "agent_update",  # reserved for a future capability
     }
 )
 

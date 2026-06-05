@@ -1,7 +1,7 @@
-//! Network tools: `net.config`, `net.dns_flush`, `net.adapter_reset`.
+//! Network tools: `net_config`, `net_dns_flush`, `net_adapter_reset`.
 //!
-//! `net.config` is portable read-only (interface inventory via `sysinfo`).
-//! `net.dns_flush` and `net.adapter_reset` mutate the system and are Windows-only;
+//! `net_config` is portable read-only (interface inventory via `sysinfo`).
+//! `net_dns_flush` and `net_adapter_reset` mutate the system and are Windows-only;
 //! off Windows they return `unsupported`.
 
 use serde::Deserialize;
@@ -10,7 +10,7 @@ use sysinfo::Networks;
 
 use crate::protocol::ErrorCode;
 
-/// `net.config` — interface and DNS inventory (read-only, portable).
+/// `net_config` — interface and DNS inventory (read-only, portable).
 pub fn config(_args: Value) -> Result<Value, (ErrorCode, String)> {
     let networks = Networks::new_with_refreshed_list();
     let interfaces: Vec<Value> = networks
@@ -32,7 +32,7 @@ pub fn config(_args: Value) -> Result<Value, (ErrorCode, String)> {
     Ok(json!({ "interfaces": interfaces, "dns": [] }))
 }
 
-/// `net.dns_flush` — clear the DNS resolver cache.
+/// `net_dns_flush` — clear the DNS resolver cache.
 pub async fn dns_flush(_args: Value) -> Result<Value, (ErrorCode, String)> {
     #[cfg(windows)]
     {
@@ -40,7 +40,7 @@ pub async fn dns_flush(_args: Value) -> Result<Value, (ErrorCode, String)> {
     }
     #[cfg(not(windows))]
     {
-        Err(unsupported("net.dns_flush"))
+        Err(unsupported("net_dns_flush"))
     }
 }
 
@@ -50,7 +50,7 @@ struct AdapterArgs {
     name: String,
 }
 
-/// `net.adapter_reset` — disable/re-enable a network adapter.
+/// `net_adapter_reset` — disable/re-enable a network adapter.
 pub async fn adapter_reset(_args: Value) -> Result<Value, (ErrorCode, String)> {
     #[cfg(windows)]
     {
@@ -63,7 +63,7 @@ pub async fn adapter_reset(_args: Value) -> Result<Value, (ErrorCode, String)> {
         let _ = AdapterArgs {
             name: String::new(),
         };
-        Err(unsupported("net.adapter_reset"))
+        Err(unsupported("net_adapter_reset"))
     }
 }
 

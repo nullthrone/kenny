@@ -10,7 +10,7 @@ per-install config — it does not build per download. Endpoints:
   link the target user can open without an operator login.
 * ``GET  /d/installer/{nonce}``          (public, nonce-gated) -> the installer ZIP, once.
 * ``POST /api/agents/{id}/update``       (operator) -> compute the binary sha256, mint a
-  short-lived ``/d/binary/{nonce}`` URL, and send ``agent.update`` to the online agent.
+  short-lived ``/d/binary/{nonce}`` URL, and send ``agent_update`` to the online agent.
 * ``GET  /d/binary/{nonce}``             (public, nonce-gated) -> the raw exe (for self-update).
 
 ``/d/*`` is exempt from operator auth (the nonce is the credential); see ``auth.py``.
@@ -196,7 +196,7 @@ def build_download_routes(
         url = f"{_public_url()}/d/binary/{nonce}"
         try:
             result = await tunnel.send_request(
-                agent_id, "agent.update", {"version": version, "url": url, "sha256": sha256}, 120
+                agent_id, "agent_update", {"version": version, "url": url, "sha256": sha256}, 120
             )
         except ToolError as exc:
             return JSONResponse({"ok": False, "error": exc.message}, status_code=502)

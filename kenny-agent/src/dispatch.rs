@@ -32,38 +32,38 @@ async fn run(tool: &str, args: Value) -> Result<Value, (ErrorCode, String)> {
     }
 
     match tool {
-        "powershell.exec" => handlers::powershell::exec(args).await,
+        "powershell_exec" => handlers::powershell::exec(args).await,
 
-        "fs.list" => handlers::fs::list(args),
-        "fs.search" => handlers::fs::search(args),
-        "fs.read" => handlers::fs::read(args),
-        "fs.disk_usage" => handlers::fs::disk_usage(args),
+        "fs_list" => handlers::fs::list(args),
+        "fs_search" => handlers::fs::search(args),
+        "fs_read" => handlers::fs::read(args),
+        "fs_disk_usage" => handlers::fs::disk_usage(args),
 
-        "winget.list" => handlers::winget::list(args).await,
-        "winget.install" => handlers::winget::install(args).await,
-        "winget.uninstall" => handlers::winget::uninstall(args).await,
-        "winget.update" => handlers::winget::update(args).await,
+        "winget_list" => handlers::winget::list(args).await,
+        "winget_install" => handlers::winget::install(args).await,
+        "winget_uninstall" => handlers::winget::uninstall(args).await,
+        "winget_update" => handlers::winget::update(args).await,
 
-        "diag.processes" => handlers::diagnostics::processes(args),
-        "diag.services" => handlers::diagnostics::services(args),
-        "diag.eventlog" => handlers::diagnostics::eventlog(args),
-        "diag.autostart" => handlers::diagnostics::autostart(args),
+        "diag_processes" => handlers::diagnostics::processes(args),
+        "diag_services" => handlers::diagnostics::services(args),
+        "diag_eventlog" => handlers::diagnostics::eventlog(args),
+        "diag_autostart" => handlers::diagnostics::autostart(args),
 
-        "net.config" => handlers::network::config(args),
-        "net.dns_flush" => handlers::network::dns_flush(args).await,
-        "net.adapter_reset" => handlers::network::adapter_reset(args).await,
+        "net_config" => handlers::network::config(args),
+        "net_dns_flush" => handlers::network::dns_flush(args).await,
+        "net_adapter_reset" => handlers::network::adapter_reset(args).await,
 
-        "screen.capture" => handlers::screenshot::capture(args),
+        "screen_capture" => handlers::screenshot::capture(args),
 
-        "telemetry.collect" => telemetry_collect(args),
+        "telemetry_collect" => telemetry_collect(args),
 
-        "agent.update" => handlers::agent_update::update(args).await,
+        "agent_update" => handlers::agent_update::update(args).await,
 
         other => Err((ErrorCode::Unsupported, format!("unknown tool: {other}"))),
     }
 }
 
-/// `telemetry.collect` — return the snapshot map (optionally a subset of sections).
+/// `telemetry_collect` — return the snapshot map (optionally a subset of sections).
 fn telemetry_collect(args: Value) -> Result<Value, (ErrorCode, String)> {
     let sections: Vec<String> = args
         .get("sections")
@@ -114,11 +114,11 @@ mod tests {
 
     #[tokio::test]
     async fn powershell_echo_round_trips() {
-        // powershell.exec is mutating, so this also exercises the "enabled" gate path.
+        // powershell_exec is mutating, so this also exercises the "enabled" gate path.
         let resp = with_remote_control(true, "kenny-dispatch-ps-on.control.json", async {
             handle(Request {
                 id: "2".to_string(),
-                tool: "powershell.exec".to_string(),
+                tool: "powershell_exec".to_string(),
                 args: json!({"script": "printf hi"}),
             })
             .await
@@ -132,7 +132,7 @@ mod tests {
     async fn telemetry_collect_returns_sections() {
         let req = Request {
             id: "3".to_string(),
-            tool: "telemetry.collect".to_string(),
+            tool: "telemetry_collect".to_string(),
             args: json!({"sections": ["disk"]}),
         };
         let resp = handle(req).await;
@@ -147,7 +147,7 @@ mod tests {
         let resp = with_remote_control(false, "kenny-dispatch-ps-off.control.json", async {
             handle(Request {
                 id: "4".to_string(),
-                tool: "powershell.exec".to_string(),
+                tool: "powershell_exec".to_string(),
                 args: json!({"script": "printf hi"}),
             })
             .await
@@ -163,7 +163,7 @@ mod tests {
         let resp = with_remote_control(false, "kenny-dispatch-tel-off.control.json", async {
             handle(Request {
                 id: "5".to_string(),
-                tool: "telemetry.collect".to_string(),
+                tool: "telemetry_collect".to_string(),
                 args: json!({"sections": ["disk"]}),
             })
             .await

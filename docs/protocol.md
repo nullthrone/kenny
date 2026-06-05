@@ -54,7 +54,7 @@ server closes the socket with a non-1000 code.
 {
   "type": "request",
   "id": "9f1c0e2a-...",
-  "tool": "powershell.exec",
+  "tool": "powershell_exec",
   "args": { "script": "Get-Process | Select -First 5", "timeout_s": 30 }
 }
 ```
@@ -80,11 +80,11 @@ Error:
 
 `error.code` ∈ {`timeout`, `not_found`, `exec_failed`, `unsupported`, `bad_args`,
 `internal`, `disabled`}. `unsupported` is returned by an agent that lacks the
-capability on its platform (e.g. `winget.list` on a Linux dev build). `disabled` is
+capability on its platform (e.g. `winget_list` on a Linux dev build). `disabled` is
 returned when the agent is online but the person at the endpoint has switched remote
 control **off** locally (via the agent's tray menu): the agent then refuses every
-**mutating** tool (`powershell.exec`, `winget.install|uninstall|update`,
-`net.dns_flush`, `net.adapter_reset`, `agent.update`) while telemetry and read-only
+**mutating** tool (`powershell_exec`, `winget_install|uninstall|update`,
+`net_dns_flush`, `net_adapter_reset`, `agent_update`) while telemetry and read-only
 diagnostics keep working. Remote control is **on** by default and the choice persists
 across restarts. See ADR-0010.
 
@@ -127,7 +127,7 @@ without domain logic.
 }
 ```
 
-A `telemetry.collect` **request** (see tool catalog) returns the *same* snapshot
+A `telemetry_collect` **request** (see tool catalog) returns the *same* snapshot
 shape inside `response.result`, optionally restricted to `args.sections`.
 
 ### `ping` / `pong`
@@ -147,27 +147,27 @@ implements a handler with the same name. Argument keys are exact.
 
 | tool                 | args                          | result (sketch)                              |
 |----------------------|-------------------------------|----------------------------------------------|
-| `powershell.exec`    | `{script, timeout_s}`         | `{stdout, stderr, exit_code}`                |
-| `fs.list`            | `{path}`                      | `{entries:[{name,is_dir,bytes}]}`            |
-| `fs.search`          | `{root, pattern}`             | `{matches:[path]}`                           |
-| `fs.read`            | `{path}`                      | `{content, truncated}`                       |
-| `fs.disk_usage`      | `{}`                          | `{volumes:[...]}`                            |
-| `winget.list`        | `{}`                          | `{packages:[{id,name,version,available}]}`   |
-| `winget.install`     | `{id}`                        | `{ok, log}`                                  |
-| `winget.uninstall`   | `{id}`                        | `{ok, log}`                                  |
-| `winget.update`      | `{id?}`                       | `{ok, log}`                                  |
-| `diag.processes`     | `{}`                          | `{processes:[{pid,name,cpu,mem_bytes}]}`     |
-| `diag.services`      | `{filter?}`                   | `{services:[{name,display,status,start}]}`   |
-| `diag.eventlog`      | `{log, count}`                | `{events:[{time,level,source,message}]}`     |
-| `diag.autostart`     | `{}`                          | `{entries:[{name,command,location}]}`        |
-| `net.config`         | `{}`                          | `{interfaces:[...], dns:[...]}`              |
-| `net.dns_flush`      | `{}`                          | `{ok}`                                       |
-| `net.adapter_reset`  | `{name}`                      | `{ok}`                                       |
-| `screen.capture`     | `{}`                          | `{image_b64, format:"png"}`                  |
-| `telemetry.collect`  | `{sections?}`                 | snapshot map (see `telemetry` frame)         |
-| `agent.update`       | `{version, url, sha256}`      | `{ok, staged_version}`                       |
+| `powershell_exec`    | `{script, timeout_s}`         | `{stdout, stderr, exit_code}`                |
+| `fs_list`            | `{path}`                      | `{entries:[{name,is_dir,bytes}]}`            |
+| `fs_search`          | `{root, pattern}`             | `{matches:[path]}`                           |
+| `fs_read`            | `{path}`                      | `{content, truncated}`                       |
+| `fs_disk_usage`      | `{}`                          | `{volumes:[...]}`                            |
+| `winget_list`        | `{}`                          | `{packages:[{id,name,version,available}]}`   |
+| `winget_install`     | `{id}`                        | `{ok, log}`                                  |
+| `winget_uninstall`   | `{id}`                        | `{ok, log}`                                  |
+| `winget_update`      | `{id?}`                       | `{ok, log}`                                  |
+| `diag_processes`     | `{}`                          | `{processes:[{pid,name,cpu,mem_bytes}]}`     |
+| `diag_services`      | `{filter?}`                   | `{services:[{name,display,status,start}]}`   |
+| `diag_eventlog`      | `{log, count}`                | `{events:[{time,level,source,message}]}`     |
+| `diag_autostart`     | `{}`                          | `{entries:[{name,command,location}]}`        |
+| `net_config`         | `{}`                          | `{interfaces:[...], dns:[...]}`              |
+| `net_dns_flush`      | `{}`                          | `{ok}`                                       |
+| `net_adapter_reset`  | `{name}`                      | `{ok}`                                       |
+| `screen_capture`     | `{}`                          | `{image_b64, format:"png"}`                  |
+| `telemetry_collect`  | `{sections?}`                 | snapshot map (see `telemetry` frame)         |
+| `agent_update`       | `{version, url, sha256}`      | `{ok, staged_version}`                       |
 
-`agent.update` is a **server-triggered self-update** (state-changing): the agent
+`agent_update` is a **server-triggered self-update** (state-changing): the agent
 downloads the new binary from `url` (served by the server's download endpoint),
 verifies it against `sha256`, stages it, and restarts itself (as a Windows service)
 into the new version. The agent answers `{ok, staged_version}` *before* restarting, so
@@ -206,9 +206,12 @@ for fleet aggregation. These thresholds are illustrative of the data-driven rule
 
 ## Versioning
 
-`PROTOCOL_VERSION = "0.2"`. Both implementations expose this constant and include it
+`PROTOCOL_VERSION = "0.3"`. Both implementations expose this constant and include it
 nowhere on the wire yet (reserved for a future `register.meta.protocol`). Bump on any
 breaking change to a frame or tool schema.
 
-- `0.2` — added the `agent.update` tool (server-triggered self-update); no frame changes.
+- `0.3` — renamed every capability tool from dotted (`powershell.exec`) to
+  underscore (`powershell_exec`) identifiers so names are valid Anthropic tool
+  names (`^[a-zA-Z0-9_-]{1,128}$`); breaking tool-schema change, no frame changes.
+- `0.2` — added the `agent_update` tool (server-triggered self-update); no frame changes.
 - `0.1` — initial contract.

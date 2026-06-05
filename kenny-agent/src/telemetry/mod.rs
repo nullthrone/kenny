@@ -55,7 +55,7 @@ impl Section {
 /// Collect all sections and assemble a [`Telemetry`] frame body.
 ///
 /// `sections` restricts collection to the named sections when non-empty (used by
-/// the `telemetry.collect` request); an empty slice collects everything.
+/// the `telemetry_collect` request); an empty slice collects everything.
 pub fn collect(agent_id: &str, sections: &[String]) -> Telemetry {
     let snapshot = collectors::collect_all(sections);
     Telemetry {

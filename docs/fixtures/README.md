@@ -10,10 +10,10 @@ Adding/altering a fixture is a contract change — see `docs/protocol.md` § Ver
 | file                            | frame / payload                                  |
 |---------------------------------|--------------------------------------------------|
 | `register.json`                 | `register` frame                                 |
-| `request_powershell_exec.json`  | `request` frame (`powershell.exec`)              |
+| `request_powershell_exec.json`  | `request` frame (`powershell_exec`)              |
 | `response_powershell_exec.json` | successful `response` frame                      |
 | `response_error_timeout.json`   | error `response` frame                           |
 | `ping.json` / `pong.json`       | heartbeat frames                                 |
 | `telemetry_snapshot.json`       | `telemetry` frame with a representative snapshot |
-| `request_agent_update.json`     | `request` frame (`agent.update`)                 |
-| `response_agent_update.json`    | successful `response` frame (`agent.update`)     |
+| `request_agent_update.json`     | `request` frame (`agent_update`)                 |
+| `response_agent_update.json`    | successful `response` frame (`agent_update`)     |

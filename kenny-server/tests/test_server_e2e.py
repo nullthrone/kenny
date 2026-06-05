@@ -5,7 +5,7 @@ agent over the ``/agent/ws`` WebSocket that registers as ``dev`` and replays
 fixture responses plus one telemetry push, then drives the MCP tools via the
 FastMCP HTTP client:
 
-* ``select_agent`` + a forwarded ``powershell.exec`` (assert the result), and
+* ``select_agent`` + a forwarded ``powershell_exec`` (assert the result), and
 * push telemetry, then assert ``fleet_overview`` shows the agent.
 """
 
@@ -93,9 +93,9 @@ class MockAgent:
     async def _handle_request(self, frame: dict) -> None:
         assert self.ws is not None
         tool = frame["tool"]
-        if tool == "powershell.exec":
+        if tool == "powershell_exec":
             result = _fixture("response_powershell_exec.json")["result"]
-        elif tool == "telemetry.collect":
+        elif tool == "telemetry_collect":
             result = _fixture("telemetry_snapshot.json")["snapshot"]
         else:
             await self.ws.send(
@@ -144,14 +144,14 @@ async def test_e2e_forward_and_telemetry(tmp_path) -> None:
         )
         async with Client(transport) as client:
             tools = {t.name for t in await client.list_tools()}
-            assert "powershell.exec" in tools
+            assert "powershell_exec" in tools
             assert "select_agent" in tools
             assert "fleet_overview" in tools
 
-            # Select the agent and forward a powershell.exec call.
+            # Select the agent and forward a powershell_exec call.
             await client.call_tool("select_agent", {"id": "dev"})
             res = await client.call_tool(
-                "powershell.exec", {"args": {"script": "Get-Process", "timeout_s": 30}}
+                "powershell_exec", {"args": {"script": "Get-Process", "timeout_s": 30}}
             )
             assert res.data["exit_code"] == 0
             assert "Handles" in res.data["stdout"]
