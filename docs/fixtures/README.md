@@ -17,3 +17,4 @@ Adding/altering a fixture is a contract change — see `docs/protocol.md` § Ver
 | `telemetry_snapshot.json`       | `telemetry` frame with a representative snapshot |
 | `request_agent_update.json`     | `request` frame (`agent_update`)                 |
 | `response_agent_update.json`    | successful `response` frame (`agent_update`)     |
+| `log.json`                      | `log` frame (forwarded agent log event)          |

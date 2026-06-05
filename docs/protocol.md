@@ -30,6 +30,7 @@ Every frame has a `type` field. Known types:
 | `request`   | server → agent  | invoke one capability tool                |
 | `response`  | agent → server  | result/error for a `request` (by `id`)    |
 | `telemetry` | agent → server  | periodic pushed snapshot (no request)     |
+| `log`       | agent → server  | a forwarded structured log event          |
 | `ping`      | both            | heartbeat                                 |
 | `pong`      | both            | heartbeat reply                           |
 
@@ -130,6 +131,34 @@ without domain logic.
 A `telemetry_collect` **request** (see tool catalog) returns the *same* snapshot
 shape inside `response.result`, optionally restricted to `args.sections`.
 
+### `log` (agent → server, pushed)
+
+The agent forwards its own structured log events (from `tracing`) to the server so
+operator-visible events survive when the agent runs as a Windows service and its
+stderr is discarded. The agent emits one frame per event for events at or above a
+configurable level (`KENNY_LOG_FORWARD_LEVEL`, default `info`); the agent still
+writes a fuller record to a local rotating file. Forwarding is best-effort: while the
+agent is disconnected, events accumulate in a bounded buffer and the oldest are
+dropped under pressure — `log` frames are never retried like a `request`.
+
+```json
+{
+  "type": "log",
+  "agent_id": "papa-pc",
+  "at": "2026-06-04T18:00:01Z",
+  "level": "warn",
+  "target": "kenny_agent::tunnel",
+  "message": "tunnel error; backing off",
+  "fields": { "error": "connection reset", "backoff_secs": 4 }
+}
+```
+
+`level` ∈ {`error`, `warn`, `info`, `debug`, `trace`}. `at` is an RFC 3339 / ISO 8601
+timestamp. `target` is the emitting module path. `fields` is an optional object of
+structured key/values captured from the event (absent when the event has none). The
+server persists these alongside its own log records and the tool-call audit (see
+ADR-0017); they are never forwarded to an agent.
+
 ### `ping` / `pong`
 
 ```json
@@ -206,10 +235,12 @@ for fleet aggregation. These thresholds are illustrative of the data-driven rule
 
 ## Versioning
 
-`PROTOCOL_VERSION = "0.3"`. Both implementations expose this constant and include it
+`PROTOCOL_VERSION = "0.4"`. Both implementations expose this constant and include it
 nowhere on the wire yet (reserved for a future `register.meta.protocol`). Bump on any
 breaking change to a frame or tool schema.
 
+- `0.4` — added the `log` frame (agent → server) for forwarded structured log events;
+  additive frame, no tool changes. See ADR-0017.
 - `0.3` — renamed every capability tool from dotted (`powershell.exec`) to
   underscore (`powershell_exec`) identifiers so names are valid Anthropic tool
   names (`^[a-zA-Z0-9_-]{1,128}$`); breaking tool-schema change, no frame changes.
