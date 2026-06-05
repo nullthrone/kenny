@@ -14,6 +14,7 @@ tool-call log.
 
 from __future__ import annotations
 
+import logging
 from collections import deque
 from datetime import datetime, timezone
 from typing import Any
@@ -22,7 +23,7 @@ from fastmcp import FastMCP
 
 from . import health_rules
 from .registry import AgentRegistry
-from .store import TelemetryStore
+from .store import EventStore, TelemetryStore
 from .tunnel import AgentTunnel, ToolError
 
 # Forwarding capability tools: name -> ordered arg keys (optional keys end "?").
@@ -50,12 +51,18 @@ CAPABILITY_TOOLS: dict[str, list[str]] = {
 
 
 class CallLog:
-    """Bounded in-memory log of forwarded tool calls (for the dashboard)."""
+    """Persistent log of forwarded tool calls (for the dashboard).
 
-    def __init__(self, maxlen: int = 200) -> None:
+    Backed by :class:`~.store.EventStore` (kind='audit') when one is supplied;
+    falls back to a bounded in-memory deque when ``event_store`` is ``None`` (so
+    tests can use the log without a database).
+    """
+
+    def __init__(self, maxlen: int = 200, *, event_store: EventStore | None = None) -> None:
         self._entries: deque[dict[str, Any]] = deque(maxlen=maxlen)
+        self.event_store = event_store
 
-    def record(
+    async def record(
         self,
         agent_id: str,
         tool: str,
@@ -64,6 +71,11 @@ class CallLog:
         ok: bool,
         error: str | None = None,
     ) -> None:
+        if self.event_store is not None:
+            await self.event_store.insert_audit(
+                agent_id=agent_id, tool=tool, ok=ok, error=error
+            )
+            return
         self._entries.appendleft(
             {
                 "at": datetime.now(timezone.utc).isoformat(),
@@ -75,7 +87,19 @@ class CallLog:
             }
         )
 
-    def list(self, limit: int = 100) -> list[dict[str, Any]]:
+    async def list(self, limit: int = 100) -> list[dict[str, Any]]:
+        if self.event_store is not None:
+            rows = await self.event_store.query(kind="audit", limit=limit)
+            return [
+                {
+                    "at": r["at"],
+                    "agent_id": r["agent_id"],
+                    "tool": r["tool"],
+                    "ok": r["ok"],
+                    "error": r["error"],
+                }
+                for r in rows
+            ]
         return list(self._entries)[:limit]
 
 
@@ -140,18 +164,22 @@ def register_tools(
 
     # -- forwarding capability tools --------------------------------------
 
+    forward_logger = logging.getLogger("kenny.tools")
+
     def make_forwarder(tool_name: str):
         async def forward(args: dict[str, Any] | None = None) -> dict[str, Any]:
             """Forward this capability call to the active agent and return its result."""
             args = args or {}
             agent_id = registry.require_active()
             timeout_s = float(args.get("timeout_s", 30))
+            forward_logger.info("forward %s -> %s", tool_name, agent_id)
             try:
                 result = await tunnel.send_request(agent_id, tool_name, args, timeout_s)
-                call_log.record(agent_id, tool_name, args, ok=True)
+                await call_log.record(agent_id, tool_name, args, ok=True)
                 return result
             except ToolError as exc:
-                call_log.record(agent_id, tool_name, args, ok=False, error=exc.message)
+                forward_logger.warning("forward %s -> %s failed: %s", tool_name, agent_id, exc.message)
+                await call_log.record(agent_id, tool_name, args, ok=False, error=exc.message)
                 raise
 
         return forward

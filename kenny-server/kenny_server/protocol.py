@@ -4,7 +4,7 @@ The wire contract is ``../docs/protocol.md`` and the golden frames in
 ``../docs/fixtures/``. These models validate against those fixtures (see
 ``tests/test_fixtures.py``); change a frame shape only when the contract changes.
 
-A discriminated union on ``type`` covers all six frame kinds. Use
+A discriminated union on ``type`` covers all seven frame kinds. Use
 :func:`parse_frame` to turn an inbound JSON object into a model and
 :func:`dump_frame` to turn a model back into a JSON-ready dict.
 """
@@ -111,6 +111,20 @@ class Telemetry(BaseModel):
     snapshot: dict[str, Section]
 
 
+class Log(BaseModel):
+    """``log`` frame: agent -> server, a structured log line."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["log"] = "log"
+    agent_id: str
+    at: str
+    level: Literal["error", "warn", "info", "debug", "trace"]
+    target: str
+    message: str
+    fields: dict[str, Any] | None = None
+
+
 class Ping(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -124,7 +138,7 @@ class Pong(BaseModel):
 
 
 Frame = Annotated[
-    Union[Register, Request, Response, Telemetry, Ping, Pong],
+    Union[Register, Request, Response, Telemetry, Log, Ping, Pong],
     Field(discriminator="type"),
 ]
 
