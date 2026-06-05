@@ -284,6 +284,24 @@
     .k-audit__pager { display: flex; align-items: center; justify-content: flex-end; gap: 10px;
       margin-top: 10px; font-size: var(--text-xs); color: var(--fg-muted); }
 
+    /* events / logs — fleet-wide log + audit stream */
+    .k-events__row { display: grid; grid-template-columns: 72px 56px 60px 110px 1fr;
+      align-items: baseline; gap: 12px; padding: 8px 4px;
+      border-bottom: var(--border-width) solid var(--border); font-size: var(--text-sm); }
+    .k-events__row:last-child { border-bottom: 0; }
+    .k-events__lvl { font-size: 12px; font-weight: var(--weight-bold); letter-spacing: var(--tracking-label);
+      text-transform: uppercase; white-space: nowrap; }
+    .k-events__lvl--error, .k-events__lvl--crit { color: var(--crit-fg); }
+    .k-events__lvl--warn { color: var(--warn-fg); }
+    .k-events__lvl--info { color: var(--ok-fg); }
+    .k-events__lvl--debug, .k-events__lvl--trace { color: var(--fg-faint); }
+    .k-events__src { font-size: 12px; letter-spacing: var(--tracking-label); text-transform: uppercase;
+      color: var(--fg-faint); white-space: nowrap; }
+    .k-events__who { font-family: var(--font-mono); color: var(--fg-muted); white-space: nowrap;
+      overflow: hidden; text-overflow: ellipsis; }
+    .k-events__msg { color: var(--fg); overflow: hidden; text-overflow: ellipsis; }
+    .k-events__msg .k-events__target { font-family: var(--font-mono); color: var(--fg-faint); margin-right: 8px; }
+
     /* modal / popup — reused by section-detail and recommendations */
     .k-modal__overlay { position: fixed; inset: 0; z-index: 50; display: flex; align-items: flex-start;
       justify-content: center; padding: 7vh 18px 18px; background: rgba(0,0,0,.5);
@@ -584,18 +602,22 @@
 
     // -- console state -----------------------------------------------------
     let state = { fleet: null, bin: null, selected: null, detail: null,
-      audit: [], auditQuery: "", auditPage: 1 };
+      audit: [], auditQuery: "", auditPage: 1,
+      events: [], eventsQuery: "", eventsPage: 1 };
     const AUDIT_PAGE_SIZE = 25;
+    const EVENTS_PAGE_SIZE = 25;
 
     async function renderConsole() {
-      const [fleet, bin, audit] = await Promise.all([
+      const [fleet, bin, audit, events] = await Promise.all([
         getJSON("/api/fleet"),
         getJSON("/api/agent-binary").catch(() => null),
         getJSON("/api/audit").catch(() => ({ entries: [] })),
+        getJSON("/api/events").catch(() => ({ entries: [] })),
       ]);
       state.fleet = fleet;
       state.bin = bin;
       state.audit = audit.entries || [];
+      state.events = events.entries || [];
       const agents = fleet.agents || [];
       if (!state.selected || !agents.find(a => a.agent_id === state.selected)) {
         state.selected = worstOf(agents);
@@ -609,9 +631,11 @@
            <div class="k-panel kc-fleet">${fleetListHtml(agents)}${addPcHtml(bin)}</div>
            <div class="k-panel kc-detail" id="detail"><div class="k-muted">loading…</div></div>
          </div>` +
-        auditPanelHtml();
+        auditPanelHtml() +
+        eventsPanelHtml();
       mountChat();
       renderAudit();
+      renderEvents();
       if (state.selected) selectAgent(state.selected);
       else document.getElementById("detail").innerHTML =
         `<div class="k-muted">No PC selected. Use “Add a PC” to onboard the first machine.</div>`;
@@ -1183,6 +1207,76 @@
         ? `<button class="k-btn k-btn--quiet k-btn--sm" onclick="auditGo(-1)" ${state.auditPage <= 1 ? "disabled" : ""}>${icon('chevron-left', 13)}prev</button>
            <span>page ${state.auditPage} / ${pages}</span>
            <button class="k-btn k-btn--quiet k-btn--sm" onclick="auditGo(1)" ${state.auditPage >= pages ? "disabled" : ""}>next${icon('chevron-right', 13)}</button>`
+        : "";
+    }
+
+    // -- fleet-wide events / logs: searchable + paged ----------------------
+    function eventsPanelHtml() {
+      return `<div class="k-panel">
+        <div class="kc-section-lbl" style="margin-bottom:10px">events &amp; logs</div>
+        <div class="k-audit__bar">
+          <span class="k-audit__search">${icon('search', 15)}
+            <input class="k-input" id="events-search" placeholder="search by level, source, PC, or message…"
+              autocomplete="off" oninput="onEventsSearch(this.value)" value="${esc(state.eventsQuery)}" />
+          </span>
+          <span class="k-audit__count" id="events-count"></span>
+        </div>
+        <div class="k-audit" id="events-rows"></div>
+        <div class="k-audit__pager" id="events-pager"></div>
+      </div>`;
+    }
+    function eventsTime(e) { return (e.at || "").slice(11, 19); }
+    function filterEvents() {
+      const q = state.eventsQuery.trim().toLowerCase();
+      if (!q) return state.events;
+      return state.events.filter(e =>
+        String(e.level || "").toLowerCase().includes(q) ||
+        String(e.source || "").toLowerCase().includes(q) ||
+        String(e.agent_id || "").toLowerCase().includes(q) ||
+        String(e.target || "").toLowerCase().includes(q) ||
+        String(e.message || e.tool || "").toLowerCase().includes(q) ||
+        eventsTime(e).toLowerCase().includes(q));
+    }
+    function onEventsSearch(v) { state.eventsQuery = v; state.eventsPage = 1; renderEvents(); }
+    function eventsGo(delta) { state.eventsPage += delta; renderEvents(); }
+    function eventRow(e) {
+      // Audit rows carry no level/message; synthesize a readable line from the call.
+      const lvl = e.level || (e.ok === false ? "error" : "info");
+      const who = e.agent_id || "";
+      let body;
+      if (e.kind === "audit") {
+        body = `<span class="k-events__target">${esc(e.tool || "")}</span>${e.ok === false ? "failed: " + esc(e.error || "") : "ok"}`;
+      } else {
+        body = `${e.target ? `<span class="k-events__target">${esc(e.target)}</span>` : ""}${esc(e.message || "")}`;
+      }
+      return `<div class="k-events__row">
+        <span class="k-audit__time">${esc(eventsTime(e))}</span>
+        <span class="k-events__lvl k-events__lvl--${esc(lvl)}">${esc(lvl)}</span>
+        <span class="k-events__src">${esc(e.source || "")}</span>
+        <span class="k-events__who">${esc(who)}</span>
+        <span class="k-events__msg">${body}</span>
+      </div>`;
+    }
+    function renderEvents() {
+      const rowsEl = document.getElementById("events-rows");
+      if (!rowsEl) return;
+      const all = filterEvents();
+      const total = all.length;
+      const pages = Math.max(1, Math.ceil(total / EVENTS_PAGE_SIZE));
+      state.eventsPage = Math.min(Math.max(1, state.eventsPage), pages);
+      const start = (state.eventsPage - 1) * EVENTS_PAGE_SIZE;
+      const slice = all.slice(start, start + EVENTS_PAGE_SIZE);
+      rowsEl.innerHTML = slice.map(eventRow).join("")
+        || `<div class="k-muted" style="font-size:var(--text-sm);padding:8px 4px">${state.events.length ? "no matching events" : "no events yet"}</div>`;
+      const countEl = document.getElementById("events-count");
+      if (countEl) countEl.textContent = total
+        ? `${total} event${total === 1 ? "" : "s"} · showing ${start + 1}–${start + slice.length}`
+        : "0 events";
+      const pager = document.getElementById("events-pager");
+      if (pager) pager.innerHTML = pages > 1
+        ? `<button class="k-btn k-btn--quiet k-btn--sm" onclick="eventsGo(-1)" ${state.eventsPage <= 1 ? "disabled" : ""}>${icon('chevron-left', 13)}prev</button>
+           <span>page ${state.eventsPage} / ${pages}</span>
+           <button class="k-btn k-btn--quiet k-btn--sm" onclick="eventsGo(1)" ${state.eventsPage >= pages ? "disabled" : ""}>next${icon('chevron-right', 13)}</button>`
         : "";
     }
 

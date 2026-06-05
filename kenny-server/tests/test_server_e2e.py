@@ -119,6 +119,12 @@ class MockAgent:
         frame["agent_id"] = self.agent_id
         await self.ws.send(json.dumps(frame))
 
+    async def push_log(self) -> None:
+        assert self.ws is not None
+        frame = _fixture("log.json")
+        frame["agent_id"] = self.agent_id
+        await self.ws.send(json.dumps(frame))
+
     async def stop(self) -> None:
         if self._task is not None:
             self._task.cancel()
@@ -166,6 +172,42 @@ async def test_e2e_forward_and_telemetry(tmp_path) -> None:
             assert dev["online"] is True
             assert dev["overall"] == "crit"
             assert "defender" in dev["flagged_sections"]
+
+        await agent.stop()
+
+
+@pytest.mark.asyncio
+async def test_e2e_log_frame_persisted_and_connect_logged(tmp_path) -> None:
+    """An agent ``log`` frame is persisted (kind='log', source='agent'); the
+    tunnel also records a server-side connect log event."""
+
+    port = _free_port()
+    app = build_app(db_path=str(tmp_path / "e2e_log.sqlite"))
+
+    async with _Server(app, port):
+        agent = MockAgent(f"ws://127.0.0.1:{port}/agent/ws", "dev", "dev-token")
+        await agent.start()
+        await asyncio.sleep(0.1)
+        await agent.push_log()
+        await asyncio.sleep(0.15)
+
+        logs = await app.state.event_store.query(kind="log", agent_id="dev")
+        assert any(
+            e["source"] == "agent"
+            and e["level"] == "warn"
+            and e["target"] == "kenny_agent::tunnel"
+            and e["message"] == "tunnel error; backing off"
+            and e["fields"] == {"error": "connection reset", "backoff_secs": 4}
+            for e in logs
+        )
+
+        # The server-side connect event is captured by the drain task.
+        await asyncio.sleep(0.1)
+        server_logs = await app.state.event_store.query(kind="log")
+        assert any(
+            e["source"] == "server" and "connected" in (e["message"] or "")
+            for e in server_logs
+        )
 
         await agent.stop()
 

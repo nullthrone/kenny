@@ -34,8 +34,9 @@ from .auth import (
 )
 from .chat import ChatSessions
 from .distribution import ShareLinks, build_download_routes
+from .logging_config import StoreLogHandler, configure_logging, drain_log_queue
 from .registry import AgentRegistry
-from .store import TelemetryStore
+from .store import EventStore, TelemetryStore
 from .tokenstore import AgentTokenStore
 from .tools import CallLog, ScreenshotStore, register_tools
 from .tunnel import AgentTunnel
@@ -50,8 +51,9 @@ def build_app(db_path: str | None = None) -> Starlette:
     token_store = AgentTokenStore(db_path)
     registry = AgentRegistry(token_store=token_store)
     store = TelemetryStore(db_path)
-    tunnel = AgentTunnel(registry, store)
-    call_log = CallLog()
+    event_store = EventStore(db_path)
+    tunnel = AgentTunnel(registry, store, event_store)
+    call_log = CallLog(event_store=event_store)
     screenshots = ScreenshotStore()
     chat_sessions = ChatSessions()
     share_links = ShareLinks()
@@ -64,7 +66,16 @@ def build_app(db_path: str | None = None) -> Starlette:
     async def lifespan(app: Starlette) -> AsyncIterator[None]:
         await store.connect()
         await token_store.connect()
+        await event_store.connect()
         await store.prune()
+        await event_store.prune()
+        # Capture server-side log records onto a bounded queue and persist them
+        # via a background drain task (source='server'). See ADR-0017.
+        log_handler = StoreLogHandler()
+        drain_task = asyncio.create_task(drain_log_queue(log_handler.queue, event_store))
+        # Attach to root only: `kenny.*` records propagate up to root, so this one
+        # handler captures them once (no duplicate persisted events).
+        logging.getLogger().addHandler(log_handler)
         # Best-effort: fetch the prebuilt agent binary from GitHub when configured
         # and not overridden by an operator-placed binary (ADR-0014). Non-fatal.
         if (
@@ -78,10 +89,17 @@ def build_app(db_path: str | None = None) -> Starlette:
             except Exception as exc:  # noqa: BLE001 - never break startup
                 logging.getLogger("kenny.release").warning("agent binary fetch failed: %s", exc)
         # Chain the MCP app's own lifespan (session manager, etc.).
-        async with mcp_app.router.lifespan_context(app):
-            yield
-        await token_store.close()
-        await store.close()
+        try:
+            async with mcp_app.router.lifespan_context(app):
+                yield
+        finally:
+            logging.getLogger().removeHandler(log_handler)
+            drain_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await drain_task
+            await token_store.close()
+            await store.close()
+            await event_store.close()
 
     api_routes = build_api_routes(
         registry=registry,
@@ -89,6 +107,7 @@ def build_app(db_path: str | None = None) -> Starlette:
         tunnel=tunnel,
         call_log=call_log,
         screenshots=screenshots,
+        event_store=event_store,
         token_store=token_store,
     )
     chat_routes = build_chat_routes(
@@ -127,6 +146,7 @@ def build_app(db_path: str | None = None) -> Starlette:
     # Expose singletons for tests / introspection.
     app.state.registry = registry
     app.state.store = store
+    app.state.event_store = event_store
     app.state.token_store = token_store
     app.state.tunnel = tunnel
     app.state.call_log = call_log
@@ -145,9 +165,11 @@ def run() -> None:
 
     import uvicorn
 
+    configure_logging()
     host = os.environ.get("KENNY_HOST", "127.0.0.1")
     port = int(os.environ.get("KENNY_PORT", "8000"))
-    uvicorn.run(build_app(), host=host, port=port)
+    # ``log_config=None`` so our dictConfig owns formatting (not uvicorn's default).
+    uvicorn.run(build_app(), host=host, port=port, log_config=None)
 
 
 if __name__ == "__main__":

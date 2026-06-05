@@ -340,12 +340,12 @@ class ChatExecutor:
         timeout_s = float(args.get("timeout_s", 30))
         try:
             result = await self.tunnel.send_request(agent_id, tool, args, timeout_s)
-            self.call_log.record(agent_id, tool, args, ok=True)
+            await self.call_log.record(agent_id, tool, args, ok=True)
             if tool == "screen_capture" and isinstance(result, dict) and "image_b64" in result:
                 self.screenshots.put(agent_id, result["image_b64"], result.get("format", "png"))
             return result
         except ToolError as exc:
-            self.call_log.record(agent_id, tool, args, ok=False, error=exc.message)
+            await self.call_log.record(agent_id, tool, args, ok=False, error=exc.message)
             raise
 
     # -- server-only tool implementations ---------------------------------

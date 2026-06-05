@@ -1,0 +1,9 @@
+{
+  "type": "log",
+  "agent_id": "papa-pc",
+  "at": "2026-06-04T18:00:01Z",
+  "level": "warn",
+  "target": "kenny_agent::tunnel",
+  "message": "tunnel error; backing off",
+  "fields": { "error": "connection reset", "backoff_secs": 4 }
+}

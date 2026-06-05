@@ -11,7 +11,7 @@ use serde_json::{Map, Value};
 /// Wire-protocol version implemented by this binary (see protocol.md § Versioning).
 ///
 /// Not currently placed on the wire (reserved for `register.meta.protocol`).
-pub const PROTOCOL_VERSION: &str = "0.3";
+pub const PROTOCOL_VERSION: &str = "0.4";
 
 /// One WebSocket text message. Tagged by the `type` field.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -25,6 +25,8 @@ pub enum Frame {
     Response(Response),
     /// agent → server: periodic pushed snapshot (no request).
     Telemetry(Telemetry),
+    /// agent → server: a forwarded `tracing` log record.
+    Log(Log),
     /// heartbeat (either direction).
     Ping,
     /// heartbeat reply (either direction).
@@ -129,6 +131,33 @@ pub struct Telemetry {
     pub snapshot: Map<String, Value>,
 }
 
+/// `log` frame body: a single forwarded `tracing` record (agent → server).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Log {
+    pub agent_id: String,
+    /// RFC 3339 / ISO 8601 timestamp of when the record was emitted.
+    pub at: String,
+    pub level: LogLevel,
+    /// `tracing` event target (module path or explicit `target:`).
+    pub target: String,
+    /// The formatted log message.
+    pub message: String,
+    /// Structured fields carried alongside the message, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fields: Option<Value>,
+}
+
+/// Severity of a forwarded log record (`log.level`).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LogLevel {
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Trace,
+}
+
 /// Health status carried by every telemetry section.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -199,6 +228,40 @@ mod tests {
             serde_json::to_string(&ErrorCode::BadArgs).unwrap(),
             "\"bad_args\""
         );
+    }
+
+    #[test]
+    fn log_frame_round_trip() {
+        // With fields.
+        let with = Frame::Log(Log {
+            agent_id: "papa-pc".to_string(),
+            at: "2026-06-04T18:00:01Z".to_string(),
+            level: LogLevel::Warn,
+            target: "kenny_agent::tunnel".to_string(),
+            message: "tunnel error; backing off".to_string(),
+            fields: Some(serde_json::json!({"error": "connection reset", "backoff_secs": 4})),
+        });
+        let v = serde_json::to_value(&with).unwrap();
+        assert_eq!(v["type"], "log");
+        assert_eq!(v["level"], "warn");
+        assert_eq!(v["fields"]["backoff_secs"], 4);
+        let back: Frame = serde_json::from_value(v).unwrap();
+        assert_eq!(back, with);
+
+        // Without fields: the key is omitted entirely.
+        let without = Frame::Log(Log {
+            agent_id: "papa-pc".to_string(),
+            at: "2026-06-04T18:00:01Z".to_string(),
+            level: LogLevel::Info,
+            target: "kenny_agent::dispatch".to_string(),
+            message: "hello".to_string(),
+            fields: None,
+        });
+        let v = serde_json::to_value(&without).unwrap();
+        assert_eq!(v["type"], "log");
+        assert!(v.get("fields").is_none());
+        let back: Frame = serde_json::from_value(v).unwrap();
+        assert_eq!(back, without);
     }
 
     #[test]

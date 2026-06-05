@@ -127,3 +127,165 @@ class TelemetryStore:
             "received_at": row["received_at"],
             "snapshot": json.loads(row["snapshot"]),
         }
+
+
+_EVENTS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS events (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    at        TEXT NOT NULL,
+    agent_id  TEXT,
+    source    TEXT NOT NULL,
+    level     TEXT,
+    kind      TEXT NOT NULL,
+    tool      TEXT,
+    ok        INTEGER,
+    error     TEXT,
+    target    TEXT,
+    message   TEXT,
+    fields    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_events_time
+    ON events (at DESC);
+CREATE INDEX IF NOT EXISTS idx_events_agent_time
+    ON events (agent_id, at DESC);
+CREATE INDEX IF NOT EXISTS idx_events_kind_time
+    ON events (kind, at DESC);
+"""
+
+
+class EventStore:
+    """Async SQLite-backed store for log lines and tool-call audit events.
+
+    Shares the same database file as :class:`TelemetryStore` but owns its own
+    connection. ``source`` is ``'server'`` or ``'agent'``; ``kind`` is ``'log'``
+    or ``'audit'``. Retention mirrors the snapshot store (~30 days).
+    """
+
+    def __init__(self, db_path: str = DEFAULT_DB_PATH, retention_days: int = RETENTION_DAYS) -> None:
+        self.db_path = db_path
+        self.retention_days = retention_days
+        self._db: aiosqlite.Connection | None = None
+
+    async def connect(self) -> None:
+        if self._db is not None:
+            return
+        self._db = await aiosqlite.connect(self.db_path)
+        self._db.row_factory = aiosqlite.Row
+        # Two connections share one file; WAL keeps readers/writers from blocking.
+        await self._db.execute("PRAGMA journal_mode=WAL")
+        await self._db.executescript(_EVENTS_SCHEMA)
+        await self._db.commit()
+
+    async def close(self) -> None:
+        if self._db is not None:
+            await self._db.close()
+            self._db = None
+
+    @property
+    def _conn(self) -> aiosqlite.Connection:
+        if self._db is None:
+            raise RuntimeError("EventStore is not connected; call connect() first")
+        return self._db
+
+    async def insert_log(
+        self,
+        *,
+        source: str,
+        at: str,
+        level: str,
+        target: str | None = None,
+        message: str,
+        agent_id: str | None = None,
+        fields: dict[str, Any] | None = None,
+    ) -> None:
+        """Store a structured log line (kind='log')."""
+
+        await self._conn.execute(
+            "INSERT INTO events (at, agent_id, source, level, kind, target, message, fields) "
+            "VALUES (?, ?, ?, ?, 'log', ?, ?, ?)",
+            (
+                at,
+                agent_id,
+                source,
+                level,
+                target,
+                message,
+                json.dumps(fields) if fields is not None else None,
+            ),
+        )
+        await self._conn.commit()
+
+    async def insert_audit(
+        self,
+        *,
+        agent_id: str,
+        tool: str,
+        ok: bool,
+        error: str | None = None,
+        at: str | None = None,
+    ) -> None:
+        """Store a forwarded tool-call audit event (kind='audit', source='server')."""
+
+        at = at or datetime.now(timezone.utc).isoformat()
+        await self._conn.execute(
+            "INSERT INTO events (at, agent_id, source, kind, tool, ok, error) "
+            "VALUES (?, ?, 'server', 'audit', ?, ?, ?)",
+            (at, agent_id, tool, 1 if ok else 0, error),
+        )
+        await self._conn.commit()
+
+    async def query(
+        self,
+        *,
+        agent_id: str | None = None,
+        level: str | None = None,
+        kind: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        """Return matching events newest-first as a list of dicts."""
+
+        clauses: list[str] = []
+        params: list[Any] = []
+        if agent_id is not None:
+            clauses.append("agent_id = ?")
+            params.append(agent_id)
+        if level is not None:
+            clauses.append("level = ?")
+            params.append(level)
+        if kind is not None:
+            clauses.append("kind = ?")
+            params.append(kind)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(limit)
+        async with self._conn.execute(
+            "SELECT at, agent_id, source, level, kind, tool, ok, error, target, message, fields "
+            f"FROM events {where} ORDER BY at DESC, id DESC LIMIT ?",
+            params,
+        ) as cur:
+            rows = await cur.fetchall()
+        return [self._row_to_event(r) for r in rows]
+
+    async def prune(self, *, now: datetime | None = None) -> int:
+        """Delete events older than the retention window. Returns rows deleted."""
+
+        now = now or datetime.now(timezone.utc)
+        cutoff = (now - timedelta(days=self.retention_days)).isoformat()
+        cur = await self._conn.execute("DELETE FROM events WHERE at < ?", (cutoff,))
+        await self._conn.commit()
+        return cur.rowcount or 0
+
+    @staticmethod
+    def _row_to_event(row: aiosqlite.Row) -> dict[str, Any]:
+        return {
+            "at": row["at"],
+            "agent_id": row["agent_id"],
+            "source": row["source"],
+            "level": row["level"],
+            "kind": row["kind"],
+            "tool": row["tool"],
+            "ok": None if row["ok"] is None else bool(row["ok"]),
+            "error": row["error"],
+            "target": row["target"],
+            "message": row["message"],
+            "fields": json.loads(row["fields"]) if row["fields"] is not None else None,
+        }

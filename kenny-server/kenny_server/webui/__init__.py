@@ -16,7 +16,7 @@ from starlette.routing import Route
 
 from ..chat import ChatExecutor, ChatSessions, confirm_pending, run_turn
 from ..registry import AgentRegistry
-from ..store import TelemetryStore
+from ..store import EventStore, TelemetryStore
 from ..tokenstore import AgentTokenStore
 from ..tools import CallLog, ScreenshotStore, build_health
 from ..tunnel import AgentTunnel, ToolError
@@ -35,6 +35,7 @@ def build_api_routes(
     tunnel: AgentTunnel,
     call_log: CallLog,
     screenshots: ScreenshotStore,
+    event_store: EventStore,
     token_store: AgentTokenStore | None = None,
 ) -> list[Route]:
     """Build the dashboard's static + JSON routes."""
@@ -82,7 +83,9 @@ def build_api_routes(
                 "snapshot": snapshot,
                 "health": build_health(snapshot),
                 "history": hist_points,
-                "call_log": [c for c in call_log.list() if c["agent_id"] == agent_id],
+                "call_log": [
+                    c for c in await call_log.list() if c["agent_id"] == agent_id
+                ],
             }
         )
 
@@ -90,10 +93,10 @@ def build_api_routes(
         agent_id = request.path_params["id"]
         try:
             result = await tunnel.send_request(agent_id, "telemetry_collect", {}, 60)
-            call_log.record(agent_id, "telemetry_collect", {}, ok=True)
+            await call_log.record(agent_id, "telemetry_collect", {}, ok=True)
         except (ToolError, Exception) as exc:  # noqa: BLE001 - surface to UI
             message = exc.message if isinstance(exc, ToolError) else str(exc)
-            call_log.record(agent_id, "telemetry_collect", {}, ok=False, error=message)
+            await call_log.record(agent_id, "telemetry_collect", {}, ok=False, error=message)
             return JSONResponse({"ok": False, "error": message}, status_code=502)
         # Store the freshly collected snapshot so the drill-down updates.
         if result:
@@ -117,10 +120,10 @@ def build_api_routes(
         agent_id = request.path_params["id"]
         try:
             result = await tunnel.send_request(agent_id, "screen_capture", {}, 30)
-            call_log.record(agent_id, "screen_capture", {}, ok=True)
+            await call_log.record(agent_id, "screen_capture", {}, ok=True)
         except (ToolError, Exception) as exc:  # noqa: BLE001 - surface to UI
             message = exc.message if isinstance(exc, ToolError) else str(exc)
-            call_log.record(agent_id, "screen_capture", {}, ok=False, error=message)
+            await call_log.record(agent_id, "screen_capture", {}, ok=False, error=message)
             return JSONResponse({"ok": False, "error": message}, status_code=502)
         if isinstance(result, dict) and "image_b64" in result:
             screenshots.put(agent_id, result["image_b64"], result.get("format", "png"))
@@ -144,8 +147,29 @@ def build_api_routes(
                 "error": c.get("error"),
                 "state_changing": is_state_changing(c["tool"]),
             }
-            for c in call_log.list()
+            for c in await call_log.list()
         ]
+        return JSONResponse({"entries": entries})
+
+    async def api_events(request: Request) -> JSONResponse:
+        """Fleet-wide log/audit events for the dashboard, newest-first.
+
+        Query params: ``agent`` (agent_id), ``level``, ``kind`` (log|audit),
+        and ``limit`` (int, default 200, capped at 500).
+        """
+
+        params = request.query_params
+        agent = params.get("agent") or None
+        level = params.get("level") or None
+        kind = params.get("kind") or None
+        try:
+            limit = int(params.get("limit", 200))
+        except ValueError:
+            limit = 200
+        limit = max(1, min(limit, 500))
+        entries = await event_store.query(
+            agent_id=agent, level=level, kind=kind, limit=limit
+        )
         return JSONResponse({"entries": entries})
 
     async def api_rotate_token(request: Request) -> JSONResponse:
@@ -167,6 +191,7 @@ def build_api_routes(
         Route("/assets/{name}", asset),
         Route("/api/fleet", api_fleet),
         Route("/api/audit", api_audit),
+        Route("/api/events", api_events),
         Route("/api/agent/{id}", api_agent),
         Route("/api/agent/{id}/refresh", api_refresh, methods=["POST"]),
         Route("/api/agent/{id}/screenshot", api_screenshot),

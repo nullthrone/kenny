@@ -24,6 +24,7 @@ from typing import Any
 from starlette.websockets import WebSocket, WebSocketDisconnect, WebSocketState
 
 from .protocol import (
+    Log,
     Ping,
     Pong,
     Register,
@@ -34,7 +35,7 @@ from .protocol import (
     parse_frame,
 )
 from .registry import AgentRegistry, AuthError
-from .store import TelemetryStore
+from .store import EventStore, TelemetryStore
 
 DEFAULT_TIMEOUT_S = 30.0
 
@@ -53,9 +54,15 @@ class ToolError(Exception):
 class AgentTunnel:
     """Owns the WebSocket endpoint and per-agent pending-request futures."""
 
-    def __init__(self, registry: AgentRegistry, store: TelemetryStore) -> None:
+    def __init__(
+        self,
+        registry: AgentRegistry,
+        store: TelemetryStore,
+        event_store: EventStore,
+    ) -> None:
         self.registry = registry
         self.store = store
+        self.event_store = event_store
         # request_id -> Future[Response]
         self._pending: dict[str, asyncio.Future[Response]] = {}
 
@@ -115,6 +122,7 @@ class AgentTunnel:
             if agent_id is not None:
                 self.registry.mark_offline(agent_id)
                 self._fail_pending_for_disconnect()
+                logger.info("agent %s disconnected", agent_id)
 
     async def _handshake(self, websocket: WebSocket) -> str | None:
         raw = await websocket.receive_text()
@@ -139,6 +147,7 @@ class AgentTunnel:
             logger.warning("auth failed for agent %s; closing 4401", frame.agent_id)
             await websocket.close(code=4401)  # unauthorized (non-1000)
             return None
+        logger.info("agent %s connected", frame.agent_id)
         return frame.agent_id
 
     async def _serve(self, websocket: WebSocket, agent_id: str) -> None:
@@ -154,6 +163,17 @@ class AgentTunnel:
                     frame.agent_id,
                     frame.collected_at,
                     {k: v.model_dump() for k, v in frame.snapshot.items()},
+                )
+                logger.debug("telemetry from %s at %s", frame.agent_id, frame.collected_at)
+            elif isinstance(frame, Log):
+                await self.event_store.insert_log(
+                    source="agent",
+                    agent_id=frame.agent_id,
+                    at=frame.at,
+                    level=frame.level,
+                    target=frame.target,
+                    message=frame.message,
+                    fields=frame.fields,
                 )
             elif isinstance(frame, Ping):
                 await websocket.send_json(dump_frame(Pong()))

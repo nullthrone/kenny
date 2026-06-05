@@ -29,7 +29,7 @@ from kenny_server.chat import (
     run_turn,
 )
 from kenny_server.registry import AgentRegistry
-from kenny_server.store import TelemetryStore
+from kenny_server.store import EventStore, TelemetryStore
 from kenny_server.tools import CallLog, ScreenshotStore
 from kenny_server.tunnel import AgentTunnel
 
@@ -84,7 +84,7 @@ async def store(tmp_path) -> TelemetryStore:
 
 def _executor(store: TelemetryStore) -> tuple[ChatExecutor, AgentRegistry, AgentTunnel]:
     registry = AgentRegistry(tokens={"dev": "dev-token"})
-    tunnel = AgentTunnel(registry, store)
+    tunnel = AgentTunnel(registry, store, EventStore(db_path=store.db_path))
     call_log = CallLog()
     executor = ChatExecutor(
         registry=registry,

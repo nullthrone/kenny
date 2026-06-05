@@ -35,6 +35,8 @@ const BACKOFF_MAX: Duration = Duration::from_secs(60);
 const HEARTBEAT: Duration = Duration::from_secs(30);
 /// Bound on the outbound frame channel.
 const OUTBOX_CAP: usize = 64;
+/// Maximum log records drained into frames per wakeup.
+const LOG_BATCH: usize = 64;
 
 /// Connect-and-serve forever, reconnecting with exponential backoff. Never returns.
 ///
@@ -164,6 +166,27 @@ async fn serve_once(
         }
     });
 
+    // Log forwarding: drain buffered `tracing` records into `log` frames. Woken by
+    // the forwarder's `Notify`. Uses `try_send` so a full outbound channel drops
+    // the record rather than blocking the writer (telemetry/responses win). On a
+    // closed channel the session is ending, so stop.
+    let log_tx = tx.clone();
+    let log_agent_id = config.agent_id.clone();
+    let log_drain = tokio::spawn(async move {
+        loop {
+            crate::log_forward::notify().notified().await;
+            for ev in crate::log_forward::drain_into(LOG_BATCH) {
+                match log_tx.try_send(ev.into_frame(&log_agent_id)) {
+                    Ok(()) => {}
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        // Outbound is saturated; drop this record and move on.
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => return,
+                }
+            }
+        }
+    });
+
     // Read loop: dispatch requests, answer pings. Runs until the socket closes or a
     // shutdown is requested (service stop).
     let read_result = tokio::select! {
@@ -181,6 +204,7 @@ async fn serve_once(
     drop(tx);
     telemetry.abort();
     heartbeat.abort();
+    log_drain.abort();
     let _ = writer.await;
 
     read_result
@@ -237,7 +261,7 @@ async fn handle_text(text: &str, tx: &mpsc::Sender<Frame>) {
         }
         Frame::Pong => {}
         // The agent never expects to receive these; ignore defensively.
-        Frame::Register(_) | Frame::Response(_) | Frame::Telemetry(_) => {
+        Frame::Register(_) | Frame::Response(_) | Frame::Telemetry(_) | Frame::Log(_) => {
             debug!("ignoring frame not addressed to the agent");
         }
     }
