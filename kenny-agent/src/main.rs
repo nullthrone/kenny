@@ -16,6 +16,7 @@ mod config;
 mod control;
 mod dispatch;
 mod handlers;
+mod log_forward;
 mod protocol;
 mod service;
 mod telemetry;
@@ -23,23 +24,30 @@ mod tray;
 mod tunnel;
 mod util;
 
+use std::sync::OnceLock;
+
 use clap::Parser;
 use tracing::{error, info};
+use tracing_appender::non_blocking::WorkerGuard;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 
 use config::{Cli, Command};
+use log_forward::ForwardLayer;
 pub use protocol::PROTOCOL_VERSION;
 
 /// Agent version, **led by the GitHub release tag** at build time (see `build.rs`);
 /// falls back to the Cargo package version for dev/CI builds.
 pub const BUILD_VERSION: &str = env!("KENNY_BUILD_VERSION");
 
+/// Keeps the non-blocking file-appender worker alive for the whole process.
+/// Dropping the [`WorkerGuard`] flushes and stops the writer thread, so it must
+/// outlive every log call.
+static FILE_LOG_GUARD: OnceLock<WorkerGuard> = OnceLock::new();
+
 fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .init();
+    init_tracing();
 
     // Declare per-monitor DPI awareness before any window/screen work so
     // `screen_capture` grabs the full native resolution on HiDPI displays
@@ -113,6 +121,61 @@ fn main() {
             }
         }
     }
+}
+
+/// Initialize the process tracing subscriber as a layered registry:
+///
+/// * a stderr `fmt` layer (foreground behavior, unchanged),
+/// * a daily-rolling, non-blocking file layer (best-effort), and
+/// * the [`ForwardLayer`] that ships records to the server.
+///
+/// The env filter (`RUST_LOG`, default `info`) governs all layers; the forward
+/// layer additionally honors `KENNY_LOG_FORWARD_LEVEL`.
+fn init_tracing() {
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let stderr_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
+
+    // Best-effort daily file layer; if the log dir can't be created, skip it
+    // rather than failing to start.
+    let file_layer = match log_dir() {
+        Some(dir) if std::fs::create_dir_all(&dir).is_ok() => {
+            let appender = tracing_appender::rolling::daily(&dir, "kenny-agent.log");
+            let (writer, guard) = tracing_appender::non_blocking(appender);
+            // Stash the guard for the process lifetime.
+            let _ = FILE_LOG_GUARD.set(guard);
+            Some(
+                tracing_subscriber::fmt::layer()
+                    .with_ansi(false)
+                    .with_writer(writer),
+            )
+        }
+        _ => None,
+    };
+
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(stderr_layer)
+        .with(file_layer)
+        .with(ForwardLayer)
+        .init();
+}
+
+/// Directory for rolling agent log files.
+///
+/// On Windows: `%PROGRAMDATA%\kenny\logs` (falling back to `C:\ProgramData`).
+/// Elsewhere: a portable temp-dir location so dev/CI builds work.
+#[cfg(windows)]
+fn log_dir() -> Option<std::path::PathBuf> {
+    let base = std::env::var_os("PROGRAMDATA")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(r"C:\ProgramData"));
+    Some(base.join("kenny").join("logs"))
+}
+
+/// Portable log directory used off Windows.
+#[cfg(not(windows))]
+fn log_dir() -> Option<std::path::PathBuf> {
+    Some(std::env::temp_dir().join("kenny").join("logs"))
 }
 
 /// Declare per-monitor-v2 DPI awareness for the process (Windows only).
