@@ -3,72 +3,151 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>kenny fleet</title>
+  <title>kenny fleet console</title>
   <style>
     :root {
       --ok: #2e9e44; --warn: #d99100; --crit: #c0392b; --unknown: #888;
-      --bg: #0f1419; --panel: #1b2330; --fg: #e6edf3; --muted: #8b98a5;
+      --bg: #0f1419; --panel: #1b2330; --card: #0b0f14; --fg: #e6edf3; --muted: #8b98a5;
+      --border: #2a3441; --maxw: 1200px;
     }
     * { box-sizing: border-box; }
     body { margin: 0; font: 14px/1.5 system-ui, sans-serif; background: var(--bg); color: var(--fg); }
-    header { padding: 14px 20px; border-bottom: 1px solid #2a3441; display: flex; align-items: center; gap: 12px; }
-    header h1 { font-size: 18px; margin: 0; }
-    header .crumb { color: var(--muted); cursor: pointer; }
-    main { padding: 20px; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }
-    .tile { background: var(--panel); border-radius: 10px; padding: 14px; cursor: pointer; border: 1px solid #2a3441; }
-    .tile:hover { border-color: #3d4d5e; }
-    .tile h3 { margin: 0 0 6px; display: flex; align-items: center; gap: 8px; }
-    .dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
+    a { color: #4aa3ff; }
+    .wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 20px; }
+    header { border-bottom: 1px solid var(--border); }
+    header .wrap { display: flex; align-items: center; justify-content: space-between; padding: 12px 20px; }
+    .brand { display: flex; align-items: center; gap: 10px; }
+    .logo { width: 30px; height: 30px; border-radius: 8px; background: var(--fg); color: var(--bg);
+      display: flex; align-items: center; justify-content: center; }
+    .brand h1 { font-size: 16px; margin: 0; font-weight: 500; }
+    main { padding: 16px 0 40px; display: flex; flex-direction: column; gap: 14px; }
+
+    .panel { background: var(--panel); border-radius: 12px; padding: 14px 16px; }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 9px; padding: 10px 12px; }
+    .lbl { font-size: 11px; color: var(--muted); }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+    .row { display: flex; align-items: center; gap: 8px; }
+    .muted { color: var(--muted); font-size: 12px; }
+
+    .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex: none; }
     .ok { background: var(--ok); } .warn { background: var(--warn); }
     .crit { background: var(--crit); } .unknown { background: var(--unknown); }
-    .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; color: #fff; }
+    .pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 11px; font-weight: 500; color: #fff; }
     .pill.ok { background: var(--ok); } .pill.warn { background: var(--warn); }
     .pill.crit { background: var(--crit); } .pill.unknown { background: var(--unknown); }
-    .muted { color: var(--muted); font-size: 12px; }
-    .flags { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; }
-    .flags .tag { background: #2a3441; padding: 1px 8px; border-radius: 6px; font-size: 12px; }
-    .section { background: var(--panel); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; border: 1px solid #2a3441; }
-    .section h4 { margin: 0 0 4px; display: flex; align-items: center; gap: 8px; }
-    pre { background: #0b0f14; padding: 10px; border-radius: 8px; overflow: auto; max-height: 240px; font-size: 12px; }
-    button { background: #2563eb; color: #fff; border: 0; padding: 8px 14px; border-radius: 8px; cursor: pointer; font-size: 13px; }
+
+    button { background: #2563eb; color: #fff; border: 0; padding: 7px 12px; border-radius: 8px;
+      cursor: pointer; font-size: 13px; }
     button:hover { background: #1d4ed8; }
-    .row { display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap; }
-    .col { flex: 1; min-width: 320px; }
-    table { width: 100%; border-collapse: collapse; font-size: 12px; }
-    td, th { text-align: left; padding: 4px 6px; border-bottom: 1px solid #2a3441; }
-    .trend { display: flex; gap: 3px; align-items: flex-end; height: 40px; }
-    .trend span { width: 10px; border-radius: 2px; }
-    .tabs { margin-left: auto; display: flex; gap: 6px; }
-    .tab { padding: 5px 12px; border-radius: 8px; cursor: pointer; color: var(--muted); border: 1px solid transparent; }
-    .tab.active { color: var(--fg); background: var(--panel); border-color: #2a3441; }
-    .chat { display: flex; flex-direction: column; height: calc(100vh - 130px); }
-    .transcript { flex: 1; overflow: auto; display: flex; flex-direction: column; gap: 10px; padding-bottom: 10px; }
-    .msg { max-width: 80%; padding: 9px 12px; border-radius: 10px; white-space: pre-wrap; }
+    button.ghost { background: transparent; border: 1px solid var(--border); color: var(--fg); }
+    button.ghost:hover { background: #222c3a; }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+    button.small { font-size: 11px; padding: 4px 9px; }
+    input { padding: 7px 10px; border-radius: 8px; border: 1px solid var(--border);
+      background: var(--card); color: var(--fg); font-size: 13px; }
+
+    .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+    .stat .n { font-size: 22px; font-weight: 500; }
+
+    .console { display: grid; grid-template-columns: 230px minmax(0, 1fr); gap: 12px; align-items: start; }
+    @media (max-width: 760px) { .console { grid-template-columns: 1fr; } }
+    .fleet-list { display: flex; flex-direction: column; gap: 8px; }
+    .agent { display: flex; align-items: center; gap: 10px; cursor: pointer; }
+    .agent:hover { border-color: #3d4d5e; }
+    .agent.active { border-color: #3d4d5e; background: #16202c; }
+    .agent.sel-crit { border: 2px solid var(--crit); background: rgba(192,57,43,.12); }
+    .agent .name { font-size: 13px; font-weight: 500; }
+
+    .sections { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+    .sec h5 { margin: 0; font-size: 12px; font-weight: 500; }
+    .sec .sum { font-size: 12px; margin-top: 3px; }
+    .sec details { margin-top: 6px; }
+    .sec summary { cursor: pointer; font-size: 11px; color: var(--muted); }
+    pre { background: #060a0e; padding: 10px; border-radius: 8px; overflow: auto; max-height: 220px;
+      font-size: 11px; margin: 6px 0 0; }
+    svg.spark { width: 100%; height: 44px; display: block; }
+
+    .banner { border: 1px solid var(--warn); }
+    .banner .msg { white-space: pre-wrap; margin: 4px 0 8px; }
+
+    .chat { display: flex; flex-direction: column; }
+    .transcript { display: flex; flex-direction: column; gap: 9px; min-height: 80px;
+      max-height: 46vh; overflow: auto; padding: 4px 0 8px; }
+    .msg { max-width: 80%; padding: 8px 11px; border-radius: 10px; white-space: pre-wrap; font-size: 13px; }
     .msg.user { align-self: flex-end; background: #2563eb; color: #fff; }
-    .msg.assistant { align-self: flex-start; background: var(--panel); border: 1px solid #2a3441; }
-    .msg.tool { align-self: flex-start; background: #11202e; border: 1px solid #2a3441; color: var(--muted); font-size: 12px; font-family: ui-monospace, monospace; }
-    .confirm { align-self: flex-start; background: #2a1f12; border: 1px solid #d99100; border-radius: 10px; padding: 12px; }
-    .confirm .acts { margin-top: 8px; display: flex; gap: 8px; }
+    .msg.assistant { align-self: flex-start; background: var(--card); border: 1px solid var(--border); }
+    .msg.tool { align-self: flex-start; background: var(--card); border: 1px solid var(--border);
+      color: var(--muted); font-size: 12px; font-family: ui-monospace, monospace; }
+    .confirm { align-self: flex-start; max-width: 88%; background: #2a1f12;
+      border: 1px solid var(--warn); border-radius: 10px; padding: 12px; }
+    .confirm .acts { margin-top: 9px; display: flex; gap: 8px; }
     .confirm button.deny { background: #5b2630; }
-    .composer { display: flex; gap: 8px; margin-top: 10px; }
-    .composer input { flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #2a3441; background: #0b0f14; color: var(--fg); font-size: 14px; }
+    .composer { display: flex; gap: 8px; margin-top: 8px; }
+    .composer input { flex: 1; }
+
+    .audit { display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
+    .audit .at { color: var(--muted); flex: none; }
   </style>
 </head>
 <body>
   <header>
-    <h1>kenny</h1>
-    <span class="crumb" id="crumb" onclick="showFleet()">fleet</span>
-    <div class="tabs">
-      <span class="tab active" id="tab-fleet" onclick="selectTab('fleet')">fleet</span>
-      <span class="tab" id="tab-chat" onclick="selectTab('chat')">chat</span>
+    <div class="wrap">
+      <div class="brand">
+        <span class="logo" id="logo"></span>
+        <div>
+          <h1>kenny</h1>
+          <div class="lbl">fleet console</div>
+        </div>
+      </div>
+      <div class="row" id="status" style="gap:12px"></div>
     </div>
   </header>
-  <main id="app">loading…</main>
+  <main class="wrap" id="app">loading…</main>
 
   <script>
+    // -- tiny inline-SVG icon set (dependency-light, offline) -------------
+    const ICONS = {
+      shield: '<path d="M12 3l7 3v5c0 4-3 7-7 9-4-2-7-5-7-9V6z"/>',
+      refresh: '<path d="M4 12a8 8 0 0 1 14-5"/><path d="M20 5v4h-4"/><path d="M20 12a8 8 0 0 1-14 5"/><path d="M4 19v-4h4"/>',
+      download: '<path d="M12 4v10"/><path d="M8 11l4 4 4-4"/><path d="M5 20h14"/>',
+      disk: '<rect x="4" y="4" width="16" height="16" rx="2"/><circle cx="12" cy="12" r="3"/>',
+      reboot: '<path d="M4 12a8 8 0 1 1 2.3 5.6"/><path d="M4 18v-4h4"/>',
+      shieldcheck: '<path d="M12 3l7 3v5c0 4-3 7-7 9-4-2-7-5-7-9V6z"/><path d="M9 12l2 2 4-4"/>',
+      lock: '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
+      cpu: '<rect x="7" y="7" width="10" height="10" rx="1"/><path d="M10 2v3M14 2v3M10 19v3M14 19v3M2 10h3M2 14h3M19 10h3M19 14h3"/>',
+      alert: '<path d="M12 4l9 16H3z"/><path d="M12 10v4M12 17v.5"/>',
+      chat: '<path d="M4 5h16v10H9l-4 4z"/>',
+      net: '<circle cx="12" cy="5" r="2"/><circle cx="5" cy="19" r="2"/><circle cx="19" cy="19" r="2"/><path d="M12 7v4M12 11l-6 6M12 11l6 6"/>',
+      battery: '<rect x="3" y="8" width="16" height="8" rx="1"/><path d="M21 11v2"/>',
+      memory: '<rect x="4" y="7" width="16" height="10" rx="1"/><path d="M8 17v2M12 17v2M16 17v2"/>',
+      box: '<rect x="4" y="4" width="16" height="16" rx="2"/>',
+    };
+    function icon(name, size) {
+      const p = ICONS[name] || ICONS.box;
+      return `<svg width="${size||14}" height="${size||14}" viewBox="0 0 24 24" fill="none"
+        stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"
+        aria-hidden="true" style="vertical-align:-2px">${p}</svg>`;
+    }
+    document.getElementById('logo').innerHTML = icon('shield', 18);
+    // pick an icon for a telemetry section by name
+    function secIcon(name) {
+      if (name.startsWith('disk')) return 'disk';
+      if (name.includes('reboot')) return 'reboot';
+      if (name.includes('defender') || name.includes('firewall') || name.includes('av_')) return 'shieldcheck';
+      if (name.includes('encryption') || name === 'bitlocker') return 'lock';
+      if (name.includes('cpu') || name.includes('thermal')) return 'cpu';
+      if (name.includes('update')) return 'download';
+      if (name.includes('network') || name.includes('wifi') || name.includes('routing')) return 'net';
+      if (name.includes('memory')) return 'memory';
+      if (name.includes('battery')) return 'battery';
+      return 'box';
+    }
+
     const app = document.getElementById("app");
-    const crumb = document.getElementById("crumb");
+    const statusBar = document.getElementById("status");
+    const sev = s => ["ok", "warn", "crit"].includes(s) ? s : "unknown";
+    const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g,
+      c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
     async function getJSON(url, opts) {
       const r = await fetch(url, opts);
@@ -76,96 +155,226 @@
       if (!r.ok) throw new Error(url + " -> " + r.status);
       return r.json();
     }
-    const sev = s => ["ok", "warn", "crit"].includes(s) ? s : "unknown";
 
-    async function showFleet() {
-      crumb.textContent = "fleet";
-      crumb.onclick = showFleet;
-      const data = await getJSON("/api/fleet");
-      const tiles = (data.agents || []).map(a => `
-        <div class="tile" onclick="showAgent('${a.agent_id}')">
-          <h3><span class="dot ${sev(a.overall)}"></span>${a.agent_id}</h3>
-          <div class="muted">${a.online ? "online" : "offline"} · ${a.meta.hostname || ""}</div>
-          <div class="flags">
-            ${(a.flagged_sections || []).map(f => `<span class="tag">${f}</span>`).join("") || '<span class="muted">no flags</span>'}
-          </div>
-          <div class="muted" style="margin-top:6px">${a.collected_at || "no telemetry"}</div>
-        </div>`).join("");
-      app.innerHTML = `<div class="muted" style="margin-bottom:10px">fleet health:
-        <span class="pill ${sev(data.overall)}">${data.overall}</span></div>
-        <div class="grid">${tiles || '<div class="muted">no agents</div>'}</div>`;
+    // -- console state -----------------------------------------------------
+    let state = { fleet: null, bin: null, selected: null };
+
+    async function renderConsole() {
+      const [fleet, bin, audit] = await Promise.all([
+        getJSON("/api/fleet"),
+        getJSON("/api/agent-binary").catch(() => null),
+        getJSON("/api/audit").catch(() => ({ entries: [] })),
+      ]);
+      state.fleet = fleet;
+      state.bin = bin;
+      const agents = fleet.agents || [];
+      if (!state.selected || !agents.find(a => a.agent_id === state.selected)) {
+        state.selected = worstOf(agents);
+      }
+      renderStatusBar(fleet, agents);
+      app.innerHTML =
+        bannerHtml(bin) +
+        statsHtml(agents) +
+        `<div class="console">
+           <div class="panel">${fleetListHtml(agents)}${addPcHtml(bin)}</div>
+           <div class="panel" id="detail"><div class="muted">loading…</div></div>
+         </div>` +
+        chatHtml() +
+        auditHtml(audit.entries || []);
+      mountChat();
+      if (state.selected) selectAgent(state.selected);
+      else document.getElementById("detail").innerHTML =
+        `<div class="muted">No PC selected. Use “Add a PC” to onboard the first machine.</div>`;
     }
 
-    async function showAgent(id) {
-      crumb.innerHTML = `<span onclick="showFleet()">fleet</span> / ${id}`;
-      const data = await getJSON("/api/agent/" + encodeURIComponent(id));
-      const h = data.health || { overall: "unknown", sections: {} };
-      const sections = Object.entries(h.sections || {}).map(([name, s]) => `
-        <div class="section">
-          <h4><span class="dot ${sev(s.status)}"></span>${name}
-            <span class="pill ${sev(s.status)}">${s.status}</span></h4>
-          <div>${(data.snapshot && data.snapshot[name] && data.snapshot[name].summary) || ""}</div>
-          ${s.reason ? `<div class="muted">rule: ${s.reason}</div>` : ""}
-          <pre>${JSON.stringify((data.snapshot || {})[name] || {}, null, 2)}</pre>
-        </div>`).join("");
+    function worstOf(agents) {
+      const rank = { crit: 3, warn: 2, unknown: 1, ok: 0 };
+      let best = null, score = -1;
+      for (const a of agents) {
+        const s = rank[sev(a.overall)] ?? 0;
+        if (s > score) { score = s; best = a.agent_id; }
+      }
+      return best;
+    }
 
-      const hist = (data.history || []).slice().reverse();
-      const trend = hist.map(p => {
-        const ov = sev(p.overall);
-        const col = getComputedStyle(document.documentElement).getPropertyValue("--" + ov);
-        const ht = ov === "crit" ? 40 : ov === "warn" ? 26 : ov === "unknown" ? 8 : 14;
-        return `<span title="${p.collected_at}: ${p.overall}" style="height:${ht}px;background:${col.trim()}"></span>`;
+    function renderStatusBar(fleet, agents) {
+      const online = agents.filter(a => a.online).length;
+      const tunnel = online > 0
+        ? `<span class="row lbl" style="gap:5px"><span class="dot ok"></span>tunnel connected</span>`
+        : `<span class="row lbl" style="gap:5px"><span class="dot unknown"></span>no agent connected</span>`;
+      statusBar.innerHTML =
+        `<span class="pill ${sev(fleet.overall)}">fleet: ${esc(fleet.overall)}</span>
+         ${tunnel}
+         <span class="row muted" style="gap:5px">${icon('shield', 14)} operator</span>`;
+    }
+
+    function statsHtml(agents) {
+      const online = agents.filter(a => a.online).length;
+      const warn = agents.filter(a => sev(a.overall) === "warn").length;
+      const crit = agents.filter(a => sev(a.overall) === "crit").length;
+      const last = lastPush(agents);
+      const card = (lbl, n, color) =>
+        `<div class="card stat"><div class="lbl">${lbl}</div>
+          <div class="n" ${color ? `style="color:${color}"` : ""}>${n}</div></div>`;
+      return `<div class="stats">
+        ${card("PCs online", `${online}<span class="muted" style="font-size:13px"> / ${agents.length}</span>`)}
+        ${card("warnings", warn, warn ? "var(--warn)" : "")}
+        ${card("critical", crit, crit ? "var(--crit)" : "")}
+        ${card("last push", last)}
+      </div>`;
+    }
+
+    function lastPush(agents) {
+      const times = agents.map(a => a.collected_at).filter(Boolean).map(t => Date.parse(t)).filter(n => !isNaN(n));
+      if (!times.length) return `<span class="muted" style="font-size:14px">—</span>`;
+      const mins = Math.max(0, Math.round((Date.now() - Math.max(...times)) / 60000));
+      return `${mins}<span class="muted" style="font-size:13px"> min</span>`;
+    }
+
+    // -- fleet list (master) ----------------------------------------------
+    function fleetListHtml(agents) {
+      const sorted = agents.slice().sort((a, b) => {
+        const rank = { crit: 3, warn: 2, unknown: 1, ok: 0 };
+        return (rank[sev(b.overall)] || 0) - (rank[sev(a.overall)] || 0);
+      });
+      const items = sorted.map(a => {
+        const name = (a.meta && a.meta.hostname) || a.agent_id;
+        const cls = a.agent_id === state.selected
+          ? (sev(a.overall) === "crit" ? "sel-crit" : "active") : "";
+        return `<div class="card agent ${cls}" onclick="selectAgent('${esc(a.agent_id)}')">
+          <span class="dot ${sev(a.overall)}"></span>
+          <div style="flex:1;min-width:0">
+            <div class="name">${esc(name)}</div>
+            <div class="lbl" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(a.summary || "")}</div>
+          </div></div>`;
+      }).join("");
+      return `<div class="lbl" style="margin-bottom:8px">fleet · worst-of</div>
+        <div class="fleet-list">${items || '<div class="muted">No agents yet.</div>'}</div>`;
+    }
+
+    function addPcHtml(bin) {
+      const dis = bin && !bin.available ? "disabled" : "";
+      return `<div class="card" style="margin-top:10px">
+        <div class="row" style="gap:6px;margin-bottom:6px">${icon('download', 14)}<span style="font-size:12px;font-weight:500">Add a PC</span></div>
+        <div class="lbl" style="margin-bottom:7px">Enter an agent id, then download its installer.</div>
+        <input id="new-agent-id" placeholder="agent id (e.g. papa-pc)" style="width:100%;margin-bottom:7px" />
+        <div class="row" style="gap:6px">
+          <button class="small" onclick="downloadNewInstaller()" ${dis}>download installer</button>
+          <button class="small ghost" onclick="shareNewInstaller()" ${dis}>share link</button>
+        </div>
+      </div>`;
+    }
+
+    // -- agent detail ------------------------------------------------------
+    async function selectAgent(id) {
+      state.selected = id;
+      // reflect selection in the fleet list + chat context without a full re-render
+      document.querySelectorAll(".agent").forEach(el => el.classList.remove("active", "sel-crit"));
+      const det = document.getElementById("detail");
+      if (det) det.innerHTML = `<div class="muted">loading ${esc(id)}…</div>`;
+      setChatContext(id);
+      let data;
+      try { data = await getJSON("/api/agent/" + encodeURIComponent(id)); }
+      catch (e) { if (det) det.innerHTML = `<div class="muted">error: ${esc(e.message)}</div>`; return; }
+      if (state.selected !== id) return; // selection changed while loading
+      renderDetail(data);
+      // re-apply the active marker in the (still-present) fleet list
+      renderConsoleListSelection();
+    }
+
+    function renderConsoleListSelection() {
+      const agents = (state.fleet && state.fleet.agents) || [];
+      const a = agents.find(x => x.agent_id === state.selected);
+      document.querySelectorAll(".agent").forEach(el => {
+        const sel = el.getAttribute("onclick") || "";
+        if (sel.includes("'" + state.selected + "'")) {
+          el.classList.add(a && sev(a.overall) === "crit" ? "sel-crit" : "active");
+        }
+      });
+    }
+
+    function renderDetail(data) {
+      const det = document.getElementById("detail");
+      if (!det) return;
+      const h = data.health || { overall: "unknown", sections: {} };
+      const name = (data.meta || {}).hostname || data.agent_id;
+      const ver = (data.meta || {}).version ? " · v" + (data.meta || {}).version : "";
+
+      const secs = Object.entries(h.sections || {}).map(([n, s]) => {
+        const raw = (data.snapshot || {})[n] || {};
+        const reason = s.reason
+          ? `<div class="sum" style="color:var(--${sev(s.status)})">rule: ${esc(s.reason)}</div>` : "";
+        return `<div class="card sec">
+          <div class="row" style="justify-content:space-between">
+            <span class="row lbl" style="gap:5px">${icon(secIcon(n))}${esc(n)}</span>
+            <span class="dot ${sev(s.status)}"></span>
+          </div>
+          <div class="sum">${esc(s.summary || "")}</div>
+          ${reason}
+          <details><summary>raw</summary><pre>${esc(JSON.stringify(raw, null, 2))}</pre></details>
+        </div>`;
       }).join("");
 
-      const log = (data.call_log || []).map(c => `
-        <tr><td>${c.at}</td><td>${c.tool}</td><td>${c.ok ? "ok" : "ERR: " + (c.error || "")}</td></tr>`).join("");
-
-      app.innerHTML = `
-        <div class="row" style="margin-bottom:14px">
-          <div><h2 style="margin:0">${id}
-            <span class="pill ${sev(h.overall)}">${h.overall}</span></h2>
-            <div class="muted">${data.online ? "online" : "offline"} ·
-              ${(data.meta || {}).hostname || ""} · ${data.collected_at || "no telemetry"}</div>
+      det.innerHTML = `
+        <div class="row" style="justify-content:space-between;flex-wrap:wrap;gap:8px">
+          <div class="row" style="gap:8px">
+            <span class="dot ${sev(h.overall)}"></span>
+            <span style="font-size:14px;font-weight:500">${esc(name)}</span>
+            <span class="mono" style="color:var(--muted)">${esc(data.agent_id)}${esc(ver)}</span>
+            <span class="muted">${data.online ? "online" : "offline"}</span>
           </div>
-          <div style="display:flex;gap:8px;flex-wrap:wrap">
-            <button onclick="refreshNow('${id}')">refresh now</button>
-            <button onclick="downloadInstaller('${id}')">download installer</button>
-            <button onclick="shareInstaller('${id}')">share link</button>
-            <button onclick="updateAgent('${id}')">update agent</button>
+          <div class="row" style="gap:6px;flex-wrap:wrap">
+            <button class="small ghost" onclick="refreshNow('${esc(data.agent_id)}')">${icon('refresh', 13)} refresh</button>
+            <button class="small ghost" onclick="downloadInstaller('${esc(data.agent_id)}')">installer</button>
+            <button class="small ghost" onclick="shareInstaller('${esc(data.agent_id)}')">share</button>
+            <button class="small ghost" onclick="updateAgent('${esc(data.agent_id)}')">update</button>
           </div>
         </div>
-        <div class="row">
-          <div class="col">
-            <h3>sections</h3>
-            ${sections || '<div class="muted">no telemetry yet</div>'}
-          </div>
-          <div class="col">
-            <h3>health trend</h3>
-            <div class="trend">${trend || '<span class="muted">no history</span>'}</div>
-            <h3 style="margin-top:18px">tool-call log</h3>
-            <table><thead><tr><th>at</th><th>tool</th><th>result</th></tr></thead>
-              <tbody>${log || '<tr><td colspan=3 class="muted">no calls</td></tr>'}</tbody></table>
-          </div>
+        <div class="sections" style="margin-top:10px">${secs || '<div class="muted">no telemetry yet</div>'}</div>
+        <div class="card" style="margin-top:10px">
+          <div class="row" style="justify-content:space-between"><span class="lbl">health trend · 30 d</span></div>
+          ${sparkline(data.history || [])}
         </div>`;
     }
 
-    async function refreshNow(id) {
-      try {
-        await getJSON("/api/agent/" + encodeURIComponent(id) + "/refresh", { method: "POST" });
-      } catch (e) { alert("refresh failed: " + e.message); }
-      showAgent(id);
+    function sparkline(history) {
+      const pts = history.slice();
+      if (!pts.length) return `<div class="muted">no history</div>`;
+      const yOf = ov => ({ crit: 4, warn: 16, ok: 30, unknown: 38 }[sev(ov)] ?? 38);
+      const colOf = ov => `var(--${sev(ov)})`;
+      const n = pts.length;
+      const x = i => n === 1 ? 0 : (i / (n - 1)) * 400;
+      const line = pts.map((p, i) => `${x(i).toFixed(1)},${yOf(p.overall)}`).join(" ");
+      const last = pts[pts.length - 1];
+      return `<svg class="spark" viewBox="0 0 400 44" preserveAspectRatio="none" role="img">
+        <title>overall health over the last ${n} snapshots</title>
+        <polyline points="${line}" fill="none" stroke="${colOf(last.overall)}" stroke-width="2"/>
+      </svg>`;
     }
 
-    // -- agent distribution (installer download / share link / update) ----
-    function downloadInstaller(id) {
-      // operator cookie authorizes this GET; the browser downloads the ZIP.
-      window.location = "/api/agents/" + encodeURIComponent(id) + "/installer";
+    async function refreshNow(id) {
+      try { await getJSON("/api/agent/" + encodeURIComponent(id) + "/refresh", { method: "POST" }); }
+      catch (e) { alert("refresh failed: " + e.message); }
+      selectAgent(id);
+    }
+
+    // -- agent distribution (installer / share / update) ------------------
+    function downloadInstaller(id) { window.location = "/api/agents/" + encodeURIComponent(id) + "/installer"; }
+    function downloadNewInstaller() {
+      const id = (document.getElementById("new-agent-id").value || "").trim();
+      if (!id) return alert("enter an agent id");
+      downloadInstaller(id);
     }
     async function shareInstaller(id) {
       try {
         const r = await getJSON("/api/agents/" + encodeURIComponent(id) + "/share-link", { method: "POST" });
         prompt("One-time installer link (expires in " + r.expires_in + "s):", r.url);
       } catch (e) { alert("share failed: " + e.message); }
+    }
+    function shareNewInstaller() {
+      const id = (document.getElementById("new-agent-id").value || "").trim();
+      if (!id) return alert("enter an agent id");
+      shareInstaller(id);
     }
     async function updateAgent(id) {
       if (!confirm("Push a self-update to '" + id + "' now?")) return;
@@ -175,30 +384,51 @@
       } catch (e) { alert("update failed: " + e.message); }
     }
 
-    // -- tabs -----------------------------------------------------------
-    function selectTab(name) {
-      document.getElementById("tab-fleet").classList.toggle("active", name === "fleet");
-      document.getElementById("tab-chat").classList.toggle("active", name === "chat");
-      crumb.style.display = name === "fleet" ? "" : "none";
-      if (name === "fleet") showFleet();
-      else showChat();
+    // -- binary banner -----------------------------------------------------
+    function bannerHtml(bin) {
+      if (!bin || bin.available) return "";
+      const retry = bin.github_configured
+        ? `<button class="small" onclick="retryFetch(this)">retry GitHub fetch</button>` : "";
+      return `<div class="panel banner">
+        <div class="row" style="gap:8px">${icon('alert', 16)}<span style="font-size:13px;font-weight:500">No agent installer available</span></div>
+        <div class="msg muted">${esc(bin.message)}</div>${retry}
+      </div>`;
+    }
+    async function retryFetch(btn) {
+      btn.disabled = true; btn.textContent = "fetching…";
+      try {
+        const r = await getJSON("/api/agent-binary/fetch", { method: "POST" });
+        alert(r.ok ? ("fetched " + (r.version || "")) : ("fetch failed: " + r.message));
+      } catch (e) { alert("fetch failed: " + e.message); }
+      renderConsole();
     }
 
-    // -- chat -----------------------------------------------------------
+    // -- chat (prominent, central, context-aware) -------------------------
     let chatSessionId = null;
+    let chatContext = null; // selected agent id, or null for fleet-wide
 
-    function showChat() {
-      app.innerHTML = `
-        <div class="chat">
-          <div class="transcript" id="transcript"></div>
-          <div class="composer">
-            <input id="chat-input" placeholder="Ask kenny to inspect or fix an agent…" autofocus />
-            <button id="chat-send" onclick="sendChat()">send</button>
-          </div>
-        </div>`;
+    function chatHtml() {
+      return `<div class="panel chat">
+        <div class="row" style="gap:8px;margin-bottom:8px">
+          ${icon('chat', 16)}<span style="font-size:13px;font-weight:500">chat · server-hosted</span>
+          <span class="pill unknown" id="chat-ctx" style="background:var(--card);color:var(--muted);border:1px solid var(--border)">context: fleet</span>
+        </div>
+        <div class="transcript" id="transcript"></div>
+        <div class="composer">
+          <input id="chat-input" placeholder="Ask kenny to inspect or fix a PC…" autocomplete="off" />
+          <button onclick="sendChat()">send</button>
+        </div>
+      </div>`;
+    }
+    function mountChat() {
       const input = document.getElementById("chat-input");
-      input.addEventListener("keydown", e => { if (e.key === "Enter") sendChat(); });
-      input.focus();
+      if (input) input.addEventListener("keydown", e => { if (e.key === "Enter") sendChat(); });
+      setChatContext(state.selected);
+    }
+    function setChatContext(id) {
+      chatContext = id || null;
+      const chip = document.getElementById("chat-ctx");
+      if (chip) chip.textContent = "context: " + (id || "fleet");
     }
 
     function bubble(cls, text) {
@@ -210,64 +440,77 @@
       t.scrollTop = t.scrollHeight;
       return div;
     }
-
     function renderTurn(result) {
       (result.tool_events || []).forEach(ev => {
-        if (ev.type === "tool_result")
-          bubble("tool", (ev.ok ? "✓ " : "✗ ") + ev.tool);
-        else if (ev.type === "denied")
-          bubble("tool", "✗ denied " + ev.tool);
+        if (ev.type === "tool_result") bubble("tool", (ev.ok ? "✓ auto-run " : "✗ ") + ev.tool);
+        else if (ev.type === "denied") bubble("tool", "✗ denied " + ev.tool);
       });
       if (result.assistant_text) bubble("assistant", result.assistant_text);
       if (result.pending) renderPending(result.pending);
     }
-
     function renderPending(p) {
       const t = document.getElementById("transcript");
       const div = document.createElement("div");
       div.className = "confirm";
       div.innerHTML = `
-        <div><strong>Confirm action</strong></div>
-        <div class="muted">${p.tool} on ${p.agent_id || "(no agent)"}</div>
-        <pre>${JSON.stringify(p.args, null, 2)}</pre>
+        <div class="row" style="gap:6px;margin-bottom:6px">${icon('alert', 14)}
+          <strong style="font-size:12px;color:var(--warn)">confirm-gate</strong></div>
+        <div class="muted">${esc(p.tool)} on ${esc(p.agent_id || "(no agent)")}</div>
+        <pre>${esc(JSON.stringify(p.args, null, 2))}</pre>
         <div class="acts">
-          <button onclick="confirmChat(true, this)">approve</button>
-          <button class="deny" onclick="confirmChat(false, this)">deny</button>
+          <button onclick="confirmChat(true, this)">confirm</button>
+          <button class="deny" onclick="confirmChat(false, this)">cancel</button>
         </div>`;
       t.appendChild(div);
       t.scrollTop = t.scrollHeight;
     }
-
     async function sendChat() {
       const input = document.getElementById("chat-input");
-      const message = input.value.trim();
+      const message = (input.value || "").trim();
       if (!message) return;
       input.value = "";
       bubble("user", message);
+      const body = { session_id: chatSessionId, message };
+      if (chatContext) body.agent_id = chatContext;
       try {
         const result = await getJSON("/api/chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ session_id: chatSessionId, message }),
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
         });
         chatSessionId = result.session_id;
         renderTurn(result);
       } catch (e) { bubble("tool", "error: " + e.message); }
     }
-
     async function confirmChat(approve, btn) {
       btn.closest(".confirm").remove();
       try {
         const result = await getJSON("/api/chat/confirm", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
+          method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ session_id: chatSessionId, approve }),
         });
         renderTurn(result);
       } catch (e) { bubble("tool", "error: " + e.message); }
     }
 
-    showFleet().catch(e => app.textContent = "error: " + e.message);
+    // -- global audit log --------------------------------------------------
+    function auditHtml(entries) {
+      const rows = entries.map(e => {
+        const t = (e.at || "").slice(11, 16);
+        const pill = e.ok ? `<span class="pill ok">ok</span>` : `<span class="pill crit">err</span>`;
+        const kind = e.state_changing ? "state-changing" : "read-only";
+        return `<div class="row" style="gap:10px">
+          <span class="mono at" style="flex:none">${esc(t)}</span>${pill}
+          <span class="mono" style="flex:1;min-width:0">${esc(e.tool)}</span>
+          <span class="lbl" style="flex:none">${kind}</span>
+          <span class="lbl" style="flex:none">${esc(e.agent_id)}</span>
+        </div>`;
+      }).join("");
+      return `<div class="panel">
+        <div class="lbl" style="margin-bottom:8px">tool-call audit log</div>
+        <div class="audit">${rows || '<div class="muted">no calls yet</div>'}</div>
+      </div>`;
+    }
+
+    renderConsole().catch(e => app.textContent = "error: " + e.message);
   </script>
 </body>
 </html>
