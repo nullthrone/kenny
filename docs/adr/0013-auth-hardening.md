@@ -1,6 +1,6 @@
 # 0013. Auth hardening: token store, rotation, multi-operator, TLS cookie
 
-- Status: accepted
+- Status: accepted (amended by [ADR-0015](0015-agent-token-rotation-grace-window.md))
 - Date: 2026-06-04
 
 ## Context and Problem Statement

@@ -171,7 +171,7 @@ async def test_e2e_forward_and_telemetry(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_e2e_bad_token_rejected(tmp_path) -> None:
+async def test_e2e_bad_token_rejected(tmp_path, caplog) -> None:
     port = _free_port()
     app = build_app(db_path=str(tmp_path / "e2e2.sqlite"))
     async with _Server(app, port):
@@ -188,3 +188,59 @@ async def test_e2e_bad_token_rejected(tmp_path) -> None:
         )
         with pytest.raises(websockets.ConnectionClosed):
             await ws.recv()
+    # The handshake now logs the rejection instead of failing silently (issue #10).
+    assert any(
+        "auth failed for agent" in r.getMessage() for r in caplog.records
+    )
+
+
+async def _register_once(ws_url: str, agent_id: str, token: str) -> bool:
+    """Open /agent/ws, send one register frame, return True if it stays open.
+
+    A successful handshake leaves the socket open; an ``AuthError`` closes it
+    with 4401. We probe by sending a ping and seeing whether a pong comes back.
+    """
+
+    ws = await websockets.connect(ws_url)
+    try:
+        await ws.send(
+            json.dumps(
+                {
+                    "type": "register",
+                    "agent_id": agent_id,
+                    "token": token,
+                    "meta": {"hostname": "X", "os": "linux", "version": "0.1.0"},
+                }
+            )
+        )
+        await ws.send(json.dumps({"type": "ping"}))
+        try:
+            reply = json.loads(await asyncio.wait_for(ws.recv(), timeout=1.0))
+        except (websockets.ConnectionClosed, asyncio.TimeoutError):
+            return False
+        return reply.get("type") == "pong"
+    finally:
+        await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_e2e_rotation_grace_window_keeps_live_agent(tmp_path) -> None:
+    """Rotating an installer token must not instantly brick a live agent (#10)."""
+
+    port = _free_port()
+    app = build_app(db_path=str(tmp_path / "e2e3.sqlite"))
+    ws_url = f"ws://127.0.0.1:{port}/agent/ws"
+    async with _Server(app, port):
+        # The agent is provisioned and connected with its current token.
+        t1 = await app.state.token_store.create_or_rotate("thomas-pc")
+        assert await _register_once(ws_url, "thomas-pc", t1) is True
+
+        # Operator generates a new installer -> token rotates server-side.
+        t2 = await app.state.token_store.create_or_rotate("thomas-pc")
+
+        # The live agent, still holding t1, reconnects and is NOT locked out.
+        assert await _register_once(ws_url, "thomas-pc", t1) is True
+
+        # Once the new installer is deployed and t2 is used, t1 is retired.
+        assert await _register_once(ws_url, "thomas-pc", t2) is True
+        assert await _register_once(ws_url, "thomas-pc", t1) is False
