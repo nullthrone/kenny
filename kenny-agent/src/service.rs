@@ -169,6 +169,17 @@ mod windows_impl {
             tracing::warn!(error = %e, "could not set up tray kill switch; configure it manually");
         }
 
+        // Show the tray now, in the installing user's interactive session. The
+        // HKLM\Run entry only fires at the *next* logon, so without this the icon
+        // (and the screen-capture responder, ADR-0017) would be missing until then.
+        // Best-effort: a single-instance guard in the tray prevents a duplicate icon.
+        match std::process::Command::new(&exe).arg("tray").spawn() {
+            Ok(_) => info!("started tray helper in the current session"),
+            Err(e) => {
+                tracing::warn!(error = %e, "could not start tray now; it will start at next logon")
+            }
+        }
+
         Ok(())
     }
 
