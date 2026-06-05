@@ -48,7 +48,9 @@ async def test_create_or_rotate_returns_working_token(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_rotation_invalidates_old_token(tmp_path) -> None:
+async def test_rotation_grace_window_keeps_old_token(tmp_path) -> None:
+    """The old token survives a rotation (grace window) until the new one is used."""
+
     store = await _store(tmp_path)
     try:
         first = await store.create_or_rotate("agent-x")
@@ -56,9 +58,27 @@ async def test_rotation_invalidates_old_token(tmp_path) -> None:
 
         second = await store.create_or_rotate("agent-x")
         assert second != first
+        # The old token still verifies during the grace window...
+        assert await store.verify("agent-x", first) is True
+        # ...until the new token is first seen, which retires the old one.
         assert await store.verify("agent-x", second) is True
-        # Old token stops verifying after rotation.
         assert await store.verify("agent-x", first) is False
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_grace_window_can_be_disabled(tmp_path, monkeypatch) -> None:
+    """KENNY_TOKEN_GRACE_SECS=0 restores instant invalidation of the old token."""
+
+    monkeypatch.setenv("KENNY_TOKEN_GRACE_SECS", "0")
+    store = await _store(tmp_path)
+    try:
+        first = await store.create_or_rotate("agent-z")
+        second = await store.create_or_rotate("agent-z")
+        assert await store.verify("agent-z", second) is True
+        # No grace: the old token is rejected immediately after rotation.
+        assert await store.verify("agent-z", first) is False
     finally:
         await store.close()
 
@@ -91,9 +111,11 @@ async def test_list_agents(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_seed_does_not_clobber_rotated_token(tmp_path) -> None:
+async def test_seed_does_not_clobber_rotated_token(tmp_path, monkeypatch) -> None:
     """A rotated dev token survives a reconnect (seeding uses INSERT OR IGNORE)."""
 
+    # Disable the grace window so the original seed token is retired immediately.
+    monkeypatch.setenv("KENNY_TOKEN_GRACE_SECS", "0")
     path = str(tmp_path / "persist.sqlite")
     store = AgentTokenStore(path)
     await store.connect()

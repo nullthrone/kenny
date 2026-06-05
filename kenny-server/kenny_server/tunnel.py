@@ -17,6 +17,7 @@ Flow (see ``docs/protocol.md`` § Transport):
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from typing import Any
 
@@ -36,6 +37,8 @@ from .registry import AgentRegistry, AuthError
 from .store import TelemetryStore
 
 DEFAULT_TIMEOUT_S = 30.0
+
+logger = logging.getLogger("kenny.tunnel")
 
 
 class ToolError(Exception):
@@ -117,6 +120,11 @@ class AgentTunnel:
         raw = await websocket.receive_text()
         frame = parse_frame(raw)
         if not isinstance(frame, Register):
+            logger.warning(
+                "agent handshake rejected: first frame was %s, expected register; "
+                "closing 4400",
+                type(frame).__name__,
+            )
             await websocket.close(code=4400)  # expected register
             return None
 
@@ -128,6 +136,7 @@ class AgentTunnel:
                 frame.agent_id, frame.token, frame.meta.model_dump(), send_fn
             )
         except AuthError:
+            logger.warning("auth failed for agent %s; closing 4401", frame.agent_id)
             await websocket.close(code=4401)  # unauthorized (non-1000)
             return None
         return frame.agent_id
