@@ -337,14 +337,18 @@
     /* AI Recommendation block: sits at the top of the section-detail body,
        between the heading and the metrics. Only rendered for warn/crit when an
        Anthropic API key is configured. */
-    .k-airec { border: 1px solid var(--border); border-radius: var(--radius);
-      background: var(--surface-sunken, var(--surface)); padding: 11px 13px; margin-bottom: 14px; }
+    .k-airec { border: 1px solid var(--border); border-radius: var(--radius-md);
+      background: var(--bg-sunken); padding: 11px 13px; margin-bottom: 14px; }
+    /* The heading + sparkle read as the bright label of the block (the old
+       --accent-fg resolved to near-black on the dark surface). */
     .k-airec__head { display: flex; align-items: center; gap: 7px; font-size: var(--text-sm);
-      font-weight: var(--weight-bold); color: var(--accent-fg, var(--fg)); margin-bottom: 7px; }
-    .k-airec__head svg { color: var(--accent-fg, var(--fg)); }
+      font-weight: var(--weight-bold); color: var(--fg); margin-bottom: 7px; }
+    .k-airec__head svg { color: var(--accent); }
+    /* Reserve roughly the height of a full Diagnosis/Action/Urgency reply so the
+       block is sized from the start and doesn't visibly grow as it streams in. */
     .k-airec__body { font-size: var(--text-sm); color: var(--fg); white-space: pre-wrap;
-      overflow-wrap: anywhere; line-height: 1.5; min-height: 1.2em; }
-    .k-airec__wait { color: var(--muted); }
+      overflow-wrap: anywhere; line-height: 1.5; min-height: 8.5em; }
+    .k-airec__wait { color: var(--fg-muted); }
     .k-airec__err { color: var(--crit-fg); margin-top: 6px; }
     .k-airec__foot { margin-top: 9px; }
     .k-airec__foot:empty { display: none; }
@@ -485,13 +489,34 @@
       .kc-copilot { position: static; height: auto; }
       .kc-copilot .kc-transcript { flex: none; max-height: 46vh; }
     }
-    /* one-shot slide+fade when the copilot rail is toggled back on (see toggleCopilot) */
+    /* one-shot slide+fade when the copilot rail is toggled (see toggleCopilot):
+       it slides in from the right on open, and back out to the right on close. */
     @keyframes kCopilotIn { from { opacity: 0; transform: translateX(14px); } to { opacity: 1; transform: none; } }
+    @keyframes kCopilotOut { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateX(14px); } }
     .kc-copilot--enter { animation: kCopilotIn var(--dur) var(--ease); }
-    @media (prefers-reduced-motion: reduce) { .kc-copilot--enter { animation: none; } }
+    .kc-copilot--exit { animation: kCopilotOut var(--dur) var(--ease); }
+    @media (prefers-reduced-motion: reduce) { .kc-copilot--enter, .kc-copilot--exit { animation: none; } }
 
     .kc-banner { border-color: color-mix(in oklab, var(--warn-dot) 45%, var(--border)); }
     .kc-banner__msg { white-space: pre-wrap; margin: 6px 0 8px; }
+
+    /* toasts — in-app, non-blocking notifications (replace native alert()) */
+    .k-toasts { position: fixed; right: 18px; bottom: 18px; z-index: 60;
+      display: flex; flex-direction: column; gap: 8px; max-width: 380px; }
+    .k-toast { display: flex; align-items: flex-start; gap: 9px; padding: 10px 13px;
+      background: var(--surface-raised); border: 1px solid var(--border-strong);
+      border-radius: var(--radius-md); font-size: var(--text-sm); color: var(--fg);
+      box-shadow: 0 14px 34px -16px rgba(0,0,0,.6); animation: kToastIn var(--dur) var(--ease); }
+    .k-toast svg { width: 16px; height: 16px; flex: none; margin-top: 1px; }
+    .k-toast--ok svg { color: var(--ok-fg); }
+    .k-toast--err { border-color: color-mix(in oklab, var(--crit-solid) 55%, var(--border-strong)); }
+    .k-toast--err svg { color: var(--crit-fg); }
+    .k-toast.is-leaving { opacity: 0; transition: opacity var(--dur-slow) var(--ease); }
+    @keyframes kToastIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+    @media (prefers-reduced-motion: reduce) { .k-toast { animation: none; } }
+
+    /* modal action footer — buttons for the in-app confirm / share dialogs */
+    .k-modal__actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
   </style>
 </head>
 <body>
@@ -641,15 +666,21 @@
     }
 
     // -- modal / popup (reused by section detail + recommendations) --------
+    let modalOnClose = null;
     function closeModal() {
       const ov = document.getElementById("modal-overlay");
       if (ov) ov.remove();
       document.body.style.removeProperty("overflow");
       document.removeEventListener("keydown", onModalKey);
+      // Fire-and-clear so dialogs (confirm/share) can settle when dismissed by
+      // the close button, the overlay, or Escape — not just their own buttons.
+      const cb = modalOnClose; modalOnClose = null;
+      if (cb) cb();
     }
     function onModalKey(e) { if (e.key === "Escape") closeModal(); }
-    function openModal(titleHtml, bodyHtml, modalClass) {
+    function openModal(titleHtml, bodyHtml, modalClass, onClose) {
       closeModal();
+      modalOnClose = onClose || null;
       const ov = document.createElement("div");
       ov.id = "modal-overlay";
       ov.className = "k-modal__overlay";
@@ -664,6 +695,65 @@
       document.body.appendChild(ov);
       document.body.style.overflow = "hidden";
       document.addEventListener("keydown", onModalKey);
+    }
+
+    // -- in-app notifications + dialogs (replace native alert/confirm/prompt) --
+    // A non-blocking toast in the corner; auto-dismisses. kind: "ok" | "err".
+    function notify(message, kind = "ok") {
+      let host = document.getElementById("toasts");
+      if (!host) {
+        host = document.createElement("div");
+        host.id = "toasts"; host.className = "k-toasts";
+        document.body.appendChild(host);
+      }
+      const t = document.createElement("div");
+      t.className = "k-toast k-toast--" + (kind === "err" ? "err" : "ok");
+      t.innerHTML = `${icon(kind === "err" ? "triangle-alert" : "check", 16)}<span></span>`;
+      t.querySelector("span").textContent = message;
+      host.appendChild(t);
+      setTimeout(() => {
+        t.classList.add("is-leaving");
+        t.addEventListener("transitionend", () => t.remove(), { once: true });
+        setTimeout(() => t.remove(), 600); // belt-and-braces if no transition fires
+      }, 4200);
+    }
+
+    // An app-styled confirmation dialog. Resolves true on confirm, false on any
+    // dismissal (cancel button, overlay, Escape, close button).
+    function confirmModal({ title, ico = "triangle-alert", body, confirmLabel = "Confirm",
+                            confirmClass = "k-btn--primary", cancelLabel = "Cancel" }) {
+      return new Promise(resolve => {
+        let settled = false;
+        const settle = v => { if (!settled) { settled = true; resolve(v); } };
+        const titleHtml = `${icon(ico, 20)}<span>${esc(title)}</span>`;
+        const bodyHtml = `<div class="k-modal__sum">${esc(body)}</div>
+          <div class="k-modal__actions">
+            <button class="k-btn k-btn--ghost" id="km-cancel">${esc(cancelLabel)}</button>
+            <button class="k-btn ${confirmClass}" id="km-confirm">${esc(confirmLabel)}</button>
+          </div>`;
+        openModal(titleHtml, bodyHtml, null, () => settle(false));
+        document.getElementById("km-confirm").onclick = () => { settle(true); closeModal(); };
+        document.getElementById("km-cancel").onclick = () => closeModal();
+      });
+    }
+
+    // Show a one-time installer link in an app dialog with a copy button (the
+    // old native prompt() couldn't be styled and trapped the page).
+    function shareLinkModal(id, url, expiresIn) {
+      const titleHtml = `${icon('link', 20)}<span>Installer link</span>`;
+      const bodyHtml = `<div class="k-modal__sum">One-time installer link for <b>${esc(id)}</b>.
+          Expires in ${esc(expiresIn)}s and rotates the PC's token.</div>
+        <div class="k-row" style="gap:8px">
+          <input class="k-input k-mono" id="km-share-url" readonly>
+          <button class="k-btn k-btn--primary" id="km-share-copy" style="flex:none">copy</button>
+        </div>`;
+      openModal(titleHtml, bodyHtml);
+      const input = document.getElementById("km-share-url");
+      input.value = url; input.focus(); input.select();
+      document.getElementById("km-share-copy").onclick = async () => {
+        try { await navigator.clipboard.writeText(url); notify("link copied to clipboard"); }
+        catch (e) { input.focus(); input.select(); notify("press Ctrl+C to copy the link"); }
+      };
     }
 
     // -- value formatting for structured detail ----------------------------
@@ -891,15 +981,29 @@
     function toggleCopilot() {
       const on = !copilotOn();
       try { localStorage.setItem("kenny-copilot", on ? "on" : "off"); } catch (e) {}
-      applyCopilot();
-      // Play a one-shot slide+fade only when turning the rail back on, removing
-      // the class afterwards so periodic re-renders don't replay it.
+      const rail = document.querySelector(".kc-copilot");
+      const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
       if (on) {
-        const rail = document.querySelector(".kc-copilot");
-        if (rail) {
+        // Reveal the column first, then play the slide+fade in. The class is
+        // removed on animationend so periodic re-renders don't replay it.
+        applyCopilot();
+        if (rail && !reduce) {
           rail.classList.add("kc-copilot--enter");
           rail.addEventListener("animationend", () => rail.classList.remove("kc-copilot--enter"), { once: true });
         }
+      } else if (rail && !reduce) {
+        // Play the reverse slide+fade out *before* collapsing the column, so the
+        // rail animates away instead of vanishing. The button reflects the new
+        // (off) state immediately; applyCopilot hides the column when it ends.
+        const btn = document.getElementById("copilot-btn");
+        if (btn) btn.classList.remove("is-active");
+        rail.classList.add("kc-copilot--exit");
+        rail.addEventListener("animationend", () => {
+          rail.classList.remove("kc-copilot--exit");
+          applyCopilot();
+        }, { once: true });
+      } else {
+        applyCopilot();
       }
     }
 
@@ -1080,14 +1184,17 @@
     // Stream the Haiku recommendation into the popup. Re-queries the target on
     // every event so a closed modal simply ends the loop (the node is gone).
     async function streamRecommendation(agentId, section) {
-      let started = false;
+      let started = false, raw = "";
       try {
         for await (const ev of streamSSE("/api/recommendation/stream", { agent_id: agentId, section })) {
           const body = document.getElementById("airec-body");
           if (!body) return; // modal closed mid-stream
           if (ev.type === "text_delta") {
             if (!started) { body.textContent = ""; started = true; }
-            body.textContent += ev.text;
+            // Re-render the whole accumulated reply each delta so the inline
+            // Action steps land on their own lines (see formatRecommendation).
+            raw += ev.text;
+            body.textContent = formatRecommendation(raw);
           } else if (ev.type === "remediation") {
             if (ev.available && ev.prompt) renderRemediate(agentId, ev.prompt);
           } else if (ev.type === "error") {
@@ -1102,6 +1209,14 @@
         const body = document.getElementById("airec-body");
         if (body && !started) body.textContent = "recommendation unavailable";
       }
+    }
+
+    // The advisor returns "Diagnosis: … / Action: 1) … 2) … / Urgency: …" with the
+    // Action steps run together on one line. Break each numbered step (1) or 1.)
+    // onto its own line so the list reads as a list. Only single-digit paren/dot
+    // markers count as bullets — they don't occur in the Diagnosis/Urgency prose.
+    function formatRecommendation(text) {
+      return text.replace(/[ \t]+([1-9][.)])\s+/g, (_, mark) => "\n" + mark + " ");
     }
 
     // Auto-Remediate: Haiku judged the warning fixable with kenny's tools, so
@@ -1251,20 +1366,22 @@
          </div>`;
     }
 
-    // Jump from the flagged view to an agent's detail and open one section popup.
+    // Open one section's detail popup from the flagged view *in place* — without
+    // navigating back to the Fleet tab. We only need the agent's snapshot/health
+    // (what openSectionDetail reads from state.detail), so load that and open the
+    // popup over the warnings/critical list; closing it leaves the page intact.
     async function gotoAgentSection(id, name) {
+      let data;
+      try { data = await getJSON("/api/agent/" + encodeURIComponent(id)); }
+      catch (e) { notify("failed to load " + id + ": " + e.message, "err"); return; }
       state.selected = id;
-      state.tab = "fleet";
-      history.replaceState(null, "", "#/fleet"); // no hashchange → render once below
-      renderTabs();
-      await renderFleet();
-      await selectAgent(id); // ensure state.detail is loaded before opening the popup
+      state.detail = data;
       openSectionDetail(name);
     }
 
     async function refreshNow(id) {
       try { await getJSON("/api/agent/" + encodeURIComponent(id) + "/refresh", { method: "POST" }); }
-      catch (e) { alert("refresh failed: " + e.message); }
+      catch (e) { notify("refresh failed: " + e.message, "err"); }
       selectAgent(id);
     }
 
@@ -1278,7 +1395,7 @@
       try {
         await getJSON("/api/agent/" + encodeURIComponent(id) + "/screenshot", { method: "POST" });
       } catch (e) {
-        alert("screenshot failed: " + e.message);
+        notify("screenshot failed: " + e.message, "err");
         return;
       }
       const img = document.getElementById("kc-shot-" + id);
@@ -1293,26 +1410,32 @@
     function downloadInstaller(id) { window.location = "/api/agents/" + encodeURIComponent(id) + "/installer"; }
     function downloadNewInstaller() {
       const id = (document.getElementById("new-agent-id").value || "").trim();
-      if (!id) return alert("enter an agent id");
+      if (!id) return notify("enter an agent id", "err");
       downloadInstaller(id);
     }
     async function shareInstaller(id) {
       try {
         const r = await getJSON("/api/agents/" + encodeURIComponent(id) + "/share-link", { method: "POST" });
-        prompt("One-time installer link for '" + id + "' (expires in " + r.expires_in + "s; rotates the PC's token):", r.url);
-      } catch (e) { alert("share failed: " + e.message); }
+        shareLinkModal(id, r.url, r.expires_in);
+      } catch (e) { notify("share failed: " + e.message, "err"); }
     }
     function shareNewInstaller() {
       const id = (document.getElementById("new-agent-id").value || "").trim();
-      if (!id) return alert("enter an agent id");
+      if (!id) return notify("enter an agent id", "err");
       shareInstaller(id);
     }
     async function updateAgent(id) {
-      if (!confirm("Push a self-update to '" + id + "' now?")) return;
+      const ok = await confirmModal({
+        title: "Update agent",
+        ico: "circle-arrow-up",
+        body: "Push a self-update to '" + id + "' now?",
+        confirmLabel: "Push update",
+      });
+      if (!ok) return;
       try {
         const r = await getJSON("/api/agents/" + encodeURIComponent(id) + "/update", { method: "POST" });
-        alert("update triggered: v" + r.version);
-      } catch (e) { alert("update failed: " + e.message); }
+        notify("update triggered: v" + r.version);
+      } catch (e) { notify("update failed: " + e.message, "err"); }
     }
 
     // -- binary banner -----------------------------------------------------
@@ -1329,8 +1452,9 @@
       btn.disabled = true; btn.textContent = "fetching…";
       try {
         const r = await getJSON("/api/agent-binary/fetch", { method: "POST" });
-        alert(r.ok ? ("fetched " + (r.version || "")) : ("fetch failed: " + r.message));
-      } catch (e) { alert("fetch failed: " + e.message); }
+        if (r.ok) notify("fetched " + (r.version || ""));
+        else notify("fetch failed: " + r.message, "err");
+      } catch (e) { notify("fetch failed: " + e.message, "err"); }
       renderFleet();
     }
 
