@@ -50,9 +50,13 @@ def test_installer_returns_zip_with_token(tmp_path, binary):
         bat = zf.read("install.bat").decode()
         assert "--agent-id example-pc" in bat
         assert "install --server wss://kenny.example.com/agent/ws" in bat
-        # the minted token in the bat authenticates the agent
-        token = bat.split("--token ", 1)[1].split(" ", 1)[0]
+        # the minted one-time enrollment token in the bat provisions the agent
+        token = bat.split("--enroll-token ", 1)[1].split(" ", 1)[0]
         assert token
+        # the pinned server public key travels in the installer for anti-spoofing
+        pubkey = bat.split("--server-pubkey ", 1)[1].split(" ", 1)[0]
+        assert pubkey
+        assert "Server public key" in zf.read("README.txt").decode()
 
 
 def test_installer_503_without_binary(tmp_path, monkeypatch):
@@ -100,6 +104,78 @@ def test_sha256_helper(tmp_path):
     p = tmp_path / "blob.bin"
     p.write_bytes(BINARY_BYTES)
     assert _sha256_file(str(p)) == hashlib.sha256(BINARY_BYTES).hexdigest()
+
+
+# -- enrollment endpoint (ADR-0023) -----------------------------------------
+
+
+def _agent_pubkey() -> str:
+    import base64
+
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    pub = Ed25519PrivateKey.generate().public_key().public_bytes(
+        serialization.Encoding.Raw, serialization.PublicFormat.Raw
+    )
+    return base64.b64encode(pub).decode()
+
+
+def test_enroll_with_bearer_token(tmp_path):
+    app = _app(tmp_path)
+    with TestClient(app) as c:
+        # Mint the one-time enrollment token (operator path).
+        token = c.post("/api/agents/enroll-pc/token", headers=_bearer(app)).json()["token"]
+        # The agent enrolls its public key using that token (no operator auth).
+        pub = _agent_pubkey()
+        r = c.post(
+            "/api/agents/enroll-pc/enroll",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"public_key": pub},
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["ok"] is True
+        # Re-enrolling is refused (bind-once).
+        r2 = c.post(
+            "/api/agents/enroll-pc/enroll",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"public_key": _agent_pubkey()},
+        )
+        assert r2.status_code == 409
+
+
+def test_enroll_with_json_token_field(tmp_path):
+    app = _app(tmp_path)
+    with TestClient(app) as c:
+        token = c.post("/api/agents/json-pc/token", headers=_bearer(app)).json()["token"]
+        r = c.post(
+            "/api/agents/json-pc/enroll",
+            json={"public_key": _agent_pubkey(), "token": token},
+        )
+        assert r.status_code == 200, r.text
+
+
+def test_enroll_bad_token_401(tmp_path):
+    app = _app(tmp_path)
+    with TestClient(app) as c:
+        r = c.post(
+            "/api/agents/example-pc/enroll",
+            headers={"Authorization": "Bearer wrong-token"},
+            json={"public_key": _agent_pubkey()},
+        )
+        assert r.status_code == 401
+
+
+def test_enroll_missing_public_key_400(tmp_path):
+    app = _app(tmp_path)
+    with TestClient(app) as c:
+        token = c.post("/api/agents/bad-pc/token", headers=_bearer(app)).json()["token"]
+        r = c.post(
+            "/api/agents/bad-pc/enroll",
+            headers={"Authorization": f"Bearer {token}"},
+            json={},
+        )
+        assert r.status_code == 400
 
 
 # -- agent-binary status / fetch / precedence (ADR-0015) --------------------

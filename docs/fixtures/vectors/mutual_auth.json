@@ -1,0 +1,22 @@
+{
+  "_comment": [
+    "Golden test vectors for the v0.8 mutual-auth handshake (ADR-0023).",
+    "NOT a wire frame: lives in a subdirectory so the top-level fixture",
+    "round-trip scanners skip it. Both kenny-server and kenny-agent load",
+    "this file to assert byte-exact transcript construction and signature",
+    "verification interoperate. The keys/nonces here are throwaway test",
+    "material with fixed seeds; never use them in production.",
+    "transcript = label || 0x00 || agent_id || 0x00 || client_nonce || 0x00 || server_nonce"
+  ],
+  "label": "kenny-mutual-auth-v1",
+  "agent_id": "example-pc",
+  "server_seed_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+  "agent_seed_b64": "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8=",
+  "server_public_key_b64": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
+  "agent_public_key_b64": "Kay64UG8yvCyLhqU000LxzYeUm0L/hLIl5S8kyKWbdc=",
+  "client_nonce_b64": "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqo=",
+  "server_nonce_b64": "u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7s=",
+  "transcript_hex": "6b656e6e792d6d757475616c2d617574682d7631006578616d706c652d706300aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa00bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "server_sig_b64": "M6kjWFScTEgqP9az4DEML9nlksyveDe+PhYP3mS1KNgYg/FyDR6aLUYcsYFQHkZtl9xK27s1cz1plYx6pWalCw==",
+  "agent_sig_b64": "5iTbtZdQ3wQExGPRrh+kyzshKcI4HuLCAqdDzYskYa64ZvJU4UZY1cdNqQDsQsrVd8F6KJVf3YMD+7CWlB84Dw=="
+}

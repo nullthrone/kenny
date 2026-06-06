@@ -27,6 +27,13 @@ chrono = { version = "0.4", features = ["serde"] }
 base64 = "0.22"
 regex = "1"
 sysinfo = "0.31"
+# Per-agent mutual-auth (ADR-0023): Ed25519 keypair + signatures over the handshake
+# transcript. NOT windows-gated so keygen/signing/verification build and test on Linux CI.
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+# Synchronous HTTP client, reused for the one-time enrollment POST (ADR-0023) and the
+# self-update download. Not windows-gated: enrollment runs on every platform's tunnel.
+ureq = { version = "2", default-features = false, features = ["tls", "json"] }
 # Portable PNG encoder for screen_capture. NOT windows-gated so encode_png can be
 # unit-tested on Linux CI.
 png = "0.17"
@@ -52,7 +59,6 @@ windows-service = "0.7"
 # Self-update (download + verify + stage). Windows-only because `agent_update`
 # returns `unsupported` off Windows.
 sha2 = "0.10"
-ureq = { version = "2", default-features = false, features = ["tls"] }
 
 [profile.release]
 strip = true

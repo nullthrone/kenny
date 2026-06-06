@@ -122,13 +122,26 @@ def _is_public(path: str) -> bool:
     ``/d/*`` are nonce-gated agent-distribution downloads (the nonce in the URL is the
     credential), so a target user / the agent self-updater can fetch without a login.
     ``/assets/*`` are non-sensitive brand assets (logo, favicon) needed by the login
-    page itself, so they are served without a token.
+    page itself, so they are served without a token. ``/api/agents/<id>/enroll`` is
+    gated by the agent's own one-time enrollment token (verified in the handler), so
+    it bypasses the operator gate like ``/agent/ws`` does (ADR-0023).
     """
 
     return (
         path in ("/login", "/logout")
         or path.startswith("/d/")
         or path.startswith("/assets/")
+        or _is_enroll(path)
+    )
+
+
+def _is_enroll(path: str) -> bool:
+    """True for ``/api/agents/<id>/enroll`` (agent-token authed, not operator)."""
+
+    return (
+        path.startswith("/api/agents/")
+        and path.endswith("/enroll")
+        and path.count("/") == 4
     )
 
 

@@ -68,14 +68,40 @@ class RegisterMeta(BaseModel):
 
 
 class Register(BaseModel):
-    """``register`` frame: agent -> server, right after connect."""
+    """``register`` frame: agent -> server, right after connect.
+
+    From v0.8 the agent puts ``protocol`` and a fresh ``client_nonce`` on the
+    wire to select the mutual-auth handshake; ``token`` is optional/legacy and
+    only honoured during the migration window (``KENNY_ALLOW_TOKEN_AUTH``).
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     type: Literal["register"] = "register"
     agent_id: str
-    token: str
+    protocol: str | None = None
+    client_nonce: str | None = None
+    token: str | None = None
     meta: RegisterMeta
+
+
+class Challenge(BaseModel):
+    """``challenge`` frame: server -> agent, the server's signed nonce (auth step 2)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["challenge"] = "challenge"
+    server_nonce: str
+    server_sig: str
+
+
+class Auth(BaseModel):
+    """``auth`` frame: agent -> server, the agent's signature (auth step 3)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["auth"] = "auth"
+    agent_sig: str
 
 
 class Request(BaseModel):
@@ -159,7 +185,18 @@ class Pong(BaseModel):
 
 
 Frame = Annotated[
-    Union[Register, Request, Response, Telemetry, Log, Policy, Ping, Pong],
+    Union[
+        Register,
+        Challenge,
+        Auth,
+        Request,
+        Response,
+        Telemetry,
+        Log,
+        Policy,
+        Ping,
+        Pong,
+    ],
     Field(discriminator="type"),
 ]
 

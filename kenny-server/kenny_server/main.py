@@ -34,6 +34,7 @@ from .auth import (
 )
 from .chat import ChatSessions
 from .distribution import ShareLinks, build_download_routes
+from .keystore import KeyStore
 from .logging_config import StoreLogHandler, configure_logging, drain_log_queue
 from .policy import PolicyEngine
 from .registry import AgentRegistry
@@ -50,7 +51,8 @@ def build_app(db_path: str | None = None) -> Starlette:
     db_path = db_path or os.environ.get("KENNY_DB_PATH", "kenny.sqlite")
 
     token_store = AgentTokenStore(db_path)
-    registry = AgentRegistry(token_store=token_store)
+    key_store = KeyStore(db_path)
+    registry = AgentRegistry(token_store=token_store, key_store=key_store)
     store = TelemetryStore(db_path)
     event_store = EventStore(db_path)
     # Shared-catalog mirror + operator deny rules (ADR-0021). The engine loads the
@@ -77,6 +79,7 @@ def build_app(db_path: str | None = None) -> Starlette:
     async def lifespan(app: Starlette) -> AsyncIterator[None]:
         await store.connect()
         await token_store.connect()
+        await key_store.connect()
         await event_store.connect()
         await policy_store.connect()
         # Load persisted operator rules into the mirror engine at startup.
@@ -112,6 +115,7 @@ def build_app(db_path: str | None = None) -> Starlette:
             with contextlib.suppress(asyncio.CancelledError):
                 await drain_task
             await token_store.close()
+            await key_store.close()
             await store.close()
             await event_store.close()
             await policy_store.close()
@@ -140,6 +144,7 @@ def build_app(db_path: str | None = None) -> Starlette:
         token_store=token_store,
         tunnel=tunnel,
         share_links=share_links,
+        key_store=key_store,
     )
 
     # `operator_token` is the canonical single token (cookie value, tests);
@@ -165,6 +170,7 @@ def build_app(db_path: str | None = None) -> Starlette:
     app.state.store = store
     app.state.event_store = event_store
     app.state.token_store = token_store
+    app.state.key_store = key_store
     app.state.policy_store = policy_store
     app.state.policy_engine = policy_engine
     app.state.tunnel = tunnel

@@ -1,4 +1,4 @@
-# kenny Wire Protocol (v0.1)
+# kenny Wire Protocol (v0.8)
 
 > **Single source of truth.** This document and the JSON files in `docs/fixtures/`
 > define the contract between `kenny-server` (Python) and `kenny-agent` (Rust).
@@ -14,25 +14,37 @@
 - Claude talks to `kenny-server` over MCP (Streamable HTTP). That MCP layer is
   separate from this agent⇄server wire protocol; MCP tool calls are translated by
   the server into `request` frames on the tunnel.
-- Authentication is asymmetric and out of scope of this wire protocol except for the
-  agent's `register.token`: agents authenticate to the server with a per-agent token
-  (below); the **operator** authenticates to the server (MCP endpoint + web UI) with a
-  separate operator token (see ADR-0008). The server authenticates to the agent via TLS
-  (the agent dials a known `wss://` URL).
+- Authentication on this tunnel is **mutual** and per-agent, using Ed25519 signatures
+  layered over the (TLS) transport (ADR-0023). Each agent holds its own Ed25519 keypair
+  (private key never leaves the device); the server stores that agent's public key. The
+  server holds one server-wide Ed25519 keypair whose public half is **pinned in the
+  agent** at install time. Right after connect the two sides run a three-message
+  challenge-response (`register` → `challenge` → `auth`, below): the server proves its
+  identity to the agent (defeating server spoofing — an attacker who terminates/MITMs TLS
+  cannot push `request` frames because it cannot sign the agent's nonce), and the agent
+  proves its identity to the server. The **operator** authenticates to the server (MCP
+  endpoint + web UI) with a separate operator token (see ADR-0008), unrelated to this
+  handshake.
+- **Migration window:** during rollout a server may still accept the legacy per-agent
+  bearer `register.token` (symmetric) when `KENNY_ALLOW_TOKEN_AUTH=1`; the signature path
+  is selected whenever `register.protocol >= "0.8"` and `register.client_nonce` is present.
+  The token path is removed at cutover. See ADR-0023 and ADR-0014.
 
 ## Frame envelope
 
 Every frame has a `type` field. Known types:
 
-| type        | direction       | shape (see below)                         |
-|-------------|-----------------|-------------------------------------------|
-| `register`  | agent → server  | identifies the agent right after connect  |
-| `request`   | server → agent  | invoke one capability tool                |
-| `response`  | agent → server  | result/error for a `request` (by `id`)    |
-| `telemetry` | agent → server  | periodic pushed snapshot (no request)     |
-| `log`       | agent → server  | a forwarded structured log event          |
-| `ping`      | both            | heartbeat                                 |
-| `pong`      | both            | heartbeat reply                           |
+| type        | direction       | shape (see below)                          |
+|-------------|-----------------|--------------------------------------------|
+| `register`  | agent → server  | identifies the agent right after connect   |
+| `challenge` | server → agent  | server's signed nonce (mutual-auth step 2) |
+| `auth`      | agent → server  | agent's signature (mutual-auth step 3)     |
+| `request`   | server → agent  | invoke one capability tool                 |
+| `response`  | agent → server  | result/error for a `request` (by `id`)     |
+| `telemetry` | agent → server  | periodic pushed snapshot (no request)      |
+| `log`       | agent → server  | a forwarded structured log event           |
+| `ping`      | both            | heartbeat                                  |
+| `pong`      | both            | heartbeat reply                            |
 
 ### `register` (agent → server)
 
@@ -40,14 +52,84 @@ Every frame has a `type` field. Known types:
 {
   "type": "register",
   "agent_id": "example-pc",
-  "token": "<api-key>",
+  "protocol": "0.8",
+  "client_nonce": "<base64, 32 random bytes>",
   "meta": { "hostname": "EXAMPLE-PC", "os": "windows", "version": "0.1.0" }
 }
 ```
 
-`os` ∈ {`windows`, `linux`, `macos`}. The server authenticates `token` against its
-per-agent key store and registers the connection under `agent_id`. On failure the
-server closes the socket with a non-1000 code.
+`os` ∈ {`windows`, `linux`, `macos`}. `protocol` is the agent's `PROTOCOL_VERSION`;
+`client_nonce` is 32 fresh random bytes (base64) that the server must sign in the
+`challenge`. The server looks up `agent_id` and replies with a `challenge` (it never
+registers the connection until the agent's `auth` verifies).
+
+`token` (a per-agent bearer secret) is **optional and legacy**: it is only honoured
+during the migration window (`KENNY_ALLOW_TOKEN_AUTH=1`) and only when `protocol`/
+`client_nonce` are absent, in which case the server authenticates the token against its
+per-agent token store and registers immediately (no `challenge`/`auth`). On failure the
+server closes the socket with a non-1000 code (`4401`).
+
+### `challenge` (server → agent)
+
+```json
+{
+  "type": "challenge",
+  "server_nonce": "<base64, 32 random bytes>",
+  "server_sig": "<base64 Ed25519 signature over the transcript>"
+}
+```
+
+Sent in reply to a signature-path `register`. `server_sig` is the server's Ed25519
+signature, made with the server-wide private key, over the **transcript** (below). The
+agent verifies `server_sig` against its **pinned** server public key. If verification
+fails — or the frame is not a `challenge` — the agent **aborts the session, sends no
+`auth`, dispatches no `request`, and reconnects**. This is the anti-spoofing guarantee:
+only the holder of the server private key can answer the agent's fresh nonce.
+
+### `auth` (agent → server)
+
+```json
+{
+  "type": "auth",
+  "agent_sig": "<base64 Ed25519 signature over the transcript>"
+}
+```
+
+Sent only after the agent has verified `server_sig`. `agent_sig` is the agent's Ed25519
+signature, made with its per-agent private key, over the same **transcript**. The server
+verifies it against the agent's stored public key; on success it registers the connection
+under `agent_id` and proceeds (pushes `policy`, accepts `request` frames). On failure it
+closes the socket with `4401`.
+
+#### Transcript (signed by both sides)
+
+Both signatures cover the **same** byte string, constructed identically on both sides
+(`0x00` is a single NUL separator byte; nonces are the raw 32 bytes, not their base64):
+
+```
+transcript = "kenny-mutual-auth-v1"   (20 ASCII bytes, domain-separation label)
+           || 0x00
+           || agent_id                (UTF-8 bytes)
+           || 0x00
+           || client_nonce            (32 raw bytes, from register)
+           || 0x00
+           || server_nonce            (32 raw bytes, from challenge)
+```
+
+Binding both nonces and `agent_id` into both signatures prevents replay and reflection.
+Ed25519 public keys, private seeds, signatures, and nonces are exchanged as standard
+base64 (with padding). Deterministic golden vectors live in
+`docs/fixtures/vectors/mutual_auth.json`; both implementations verify against them so the
+transcript stays byte-identical across Rust and Python.
+
+#### Enrollment (first contact)
+
+An agent generates its keypair locally on first run; its public key reaches the server
+once via a one-time **enrollment token** carried by the installer (over TLS):
+`POST /api/agents/{id}/enroll` with `{ "public_key": "<base64>" }`, authorized by the
+enrollment token. The server records the public key bound to `agent_id` (the token is
+single-use). Thereafter only signatures authenticate. The installer also carries the
+pinned server public key. See ADR-0023.
 
 ### `request` (server → agent)
 
@@ -295,10 +377,14 @@ for fleet aggregation. These thresholds are illustrative of the data-driven rule
 
 ## Versioning
 
-`PROTOCOL_VERSION = "0.7"`. Both implementations expose this constant and include it
-nowhere on the wire yet (reserved for a future `register.meta.protocol`). Bump on any
-breaking change to a frame or tool schema.
+`PROTOCOL_VERSION = "0.8"`. Both implementations expose this constant; from v0.8 the
+agent puts it on the wire in `register.protocol` to select the mutual-auth handshake.
+Bump on any breaking change to a frame or tool schema.
 
+- `0.8` — mutual agent⇄server authentication via per-agent Ed25519 signatures: added the
+  `challenge` (server → agent) and `auth` (agent → server) frames and the
+  `register.protocol` / `register.client_nonce` fields; `register.token` becomes optional
+  (legacy, migration-window only). Breaking handshake change. See ADR-0023.
 - `0.7` — added the `remotehelp_status`, `remotehelp_start`, and `remotehelp_stop` tools
   (orchestrate Windows Quick Assist as a remote-help concierge); additive tools, no frame
   changes. See ADR-0022.
