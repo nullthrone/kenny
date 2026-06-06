@@ -9,5 +9,6 @@ pub mod diagnostics;
 pub mod fs;
 pub mod network;
 pub mod powershell;
+pub mod remotehelp;
 pub mod screenshot;
 pub mod winget;

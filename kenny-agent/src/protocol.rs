@@ -11,7 +11,7 @@ use serde_json::{Map, Value};
 /// Wire-protocol version implemented by this binary (see protocol.md § Versioning).
 ///
 /// Not currently placed on the wire (reserved for `register.meta.protocol`).
-pub const PROTOCOL_VERSION: &str = "0.6";
+pub const PROTOCOL_VERSION: &str = "0.7";
 
 /// One WebSocket text message. Tagged by the `type` field.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

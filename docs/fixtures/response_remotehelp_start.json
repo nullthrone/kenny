@@ -1,0 +1,6 @@
+{
+  "type": "response",
+  "id": "5e2d8f04-1a3b-4c5d-8e7f-001122334455",
+  "ok": true,
+  "result": { "launched": true, "pid": 4812, "note": "Quick Assist opened on the user's desktop. A helper must share the security code and the person at this PC must accept the connection." }
+}

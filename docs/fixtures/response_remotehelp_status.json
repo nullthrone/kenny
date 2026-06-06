@@ -1,0 +1,6 @@
+{
+  "type": "response",
+  "id": "3c7a1e90-4d2b-4a6f-9e10-aabbccddeeff",
+  "ok": true,
+  "result": { "installed": true, "version": "2.0.34.0", "internet_ok": true, "interactive_session": true }
+}

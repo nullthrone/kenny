@@ -66,6 +66,10 @@ async fn run(tool: &str, args: Value) -> Result<Value, (ErrorCode, String)> {
 
         "screen_capture" => handlers::screenshot::capture(args),
 
+        "remotehelp_status" => handlers::remotehelp::status(args).await,
+        "remotehelp_start" => handlers::remotehelp::start(args),
+        "remotehelp_stop" => handlers::remotehelp::stop(args).await,
+
         "telemetry_collect" => telemetry_collect(args),
 
         "agent_update" => handlers::agent_update::update(args).await,
