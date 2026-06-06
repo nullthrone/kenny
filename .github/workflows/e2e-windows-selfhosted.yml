@@ -1,0 +1,43 @@
+name: E2E Windows (self-hosted)
+
+# Opt-in, full-fidelity end-to-end against a REAL Windows machine registered as a
+# self-hosted runner (e.g. a family PC). Unlike the hosted windows-2022/2025 e2e in
+# ci.yml, such a runner has an interactive desktop session and persistent state, so
+# it can exercise the tools the hosted runners structurally cannot:
+#   - screen_capture (real desktop; the session-0 -> tray IPC routing)
+#   - winget_install / winget_uninstall of a real package
+#   - net_adapter_reset (would sever a hosted runner's own network)
+#   - agent_update over a real Windows service lifecycle
+#
+# This workflow is intentionally manual-only (workflow_dispatch) and stays inert
+# until someone registers a `[self-hosted, windows]` runner -- nothing runs it on
+# pushes or PRs. KENNY_E2E_FULL=1 opts the integration test into the extra,
+# interactive-desktop tool (screen_capture). The genuinely disruptive tools
+# (net_adapter_reset, winget_install/uninstall, agent_update) are documented in
+# the test but deliberately not asserted automatically; run them by hand.
+on:
+  workflow_dispatch:
+
+jobs:
+  e2e-full:
+    name: real agent <-> server (self-hosted Windows, full fidelity)
+    runs-on: [self-hosted, windows]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build agent
+        working-directory: kenny-agent
+        run: cargo build
+      - name: Install server
+        working-directory: kenny-server
+        run: pip install -e ".[dev]"
+      - name: Run full-fidelity integration test
+        working-directory: kenny-server
+        env:
+          KENNY_E2E: "1"
+          KENNY_E2E_FULL: "1"
+          KENNY_AGENT_BIN: ${{ github.workspace }}\kenny-agent\target\debug\kenny-agent.exe
+        run: python -m pytest tests/test_integration_e2e.py -q

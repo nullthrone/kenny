@@ -122,3 +122,33 @@ jobs:
           KENNY_E2E: "1"
           KENNY_AGENT_BIN: ${{ github.workspace }}/kenny-agent/target/debug/kenny-agent
         run: python -m pytest tests/test_integration_e2e.py -q
+
+  e2e-windows:
+    name: real agent <-> server (Windows)
+    needs: changes
+    if: ${{ needs.changes.outputs.server == 'true' || needs.changes.outputs.agent == 'true' || needs.changes.outputs.contract == 'true' || needs.changes.outputs.ci == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Two hosted images: windows-2022 + the newer windows-2025 where winget
+        # is reliably preinstalled. Both run the real #[cfg(windows)] tool paths.
+        os: [windows-2022, windows-2025]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build agent
+        working-directory: kenny-agent
+        run: cargo build
+      - name: Install server
+        working-directory: kenny-server
+        run: pip install -e ".[dev]"
+      - name: Run real-agent integration test
+        working-directory: kenny-server
+        env:
+          KENNY_E2E: "1"
+          KENNY_AGENT_BIN: ${{ github.workspace }}\kenny-agent\target\debug\kenny-agent.exe
+        run: python -m pytest tests/test_integration_e2e.py -q
