@@ -32,6 +32,7 @@ from starlette.routing import Route
 
 from . import agent_release
 from .agent_release import _sha256_file as _sha256_file  # re-export (used by tests)
+from .keystore import KeyStore
 from .registry import AgentRegistry
 from .tokenstore import AgentTokenStore
 from .tunnel import AgentTunnel, ToolError
@@ -106,38 +107,53 @@ class ShareLinks:
         return entry.agent_id
 
 
-def _install_bat(agent_id: str, token: str, wss: str, interval: int) -> str:
+def _install_bat(
+    agent_id: str, token: str, wss: str, interval: int, server_pubkey: str
+) -> str:
     return (
         "@echo off\r\n"
         "rem kenny-agent installer: registers the agent as an auto-starting Windows service.\r\n"
         "rem Run as Administrator.\r\n"
+        "rem --enroll-token is the one-time enrollment secret; the agent generates its\r\n"
+        "rem own Ed25519 keypair and POSTs its public key to /api/agents/<id>/enroll.\r\n"
+        "rem --server-pubkey is the pinned server identity used to verify the challenge.\r\n"
         f'"%~dp0kenny-agent.exe" install --server {wss} --agent-id {agent_id} '
-        f"--token {token} --telemetry-interval-secs {interval}\r\n"
+        f"--enroll-token {token} --server-pubkey {server_pubkey} "
+        f"--telemetry-interval-secs {interval}\r\n"
         "pause\r\n"
     )
 
 
-def _readme(agent_id: str, wss: str) -> str:
+def _readme(agent_id: str, wss: str, server_pubkey: str) -> str:
     return (
         "kenny-agent\r\n"
         "===========\r\n\r\n"
-        f"Agent id : {agent_id}\r\n"
-        f"Server   : {wss}\r\n\r\n"
+        f"Agent id          : {agent_id}\r\n"
+        f"Server            : {wss}\r\n"
+        f"Server public key : {server_pubkey}\r\n\r\n"
         "To install (as Administrator): run install.bat.\r\n"
         "It registers kenny-agent.exe as an auto-starting Windows service.\r\n"
+        "On first run the agent generates its Ed25519 keypair and enrolls its public\r\n"
+        "key with the server using the one-time enrollment token. Thereafter only\r\n"
+        "signatures authenticate. The pinned server public key above lets the agent\r\n"
+        "verify the server's challenge (anti-spoofing).\r\n"
         "To remove: kenny-agent.exe uninstall\r\n"
     )
 
 
-def _build_installer_zip(binary: str, agent_id: str, token: str) -> bytes:
+def _build_installer_zip(
+    binary: str, agent_id: str, token: str, server_pubkey: str
+) -> bytes:
     wss = _wss_url()
     interval = int(os.environ.get("KENNY_TELEMETRY_INTERVAL_SECS", "900") or 900)
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         with open(binary, "rb") as fh:
             zf.writestr("kenny-agent.exe", fh.read())
-        zf.writestr("install.bat", _install_bat(agent_id, token, wss, interval))
-        zf.writestr("README.txt", _readme(agent_id, wss))
+        zf.writestr(
+            "install.bat", _install_bat(agent_id, token, wss, interval, server_pubkey)
+        )
+        zf.writestr("README.txt", _readme(agent_id, wss, server_pubkey))
     return buf.getvalue()
 
 
@@ -147,8 +163,12 @@ def build_download_routes(
     token_store: AgentTokenStore,
     tunnel: AgentTunnel,
     share_links: ShareLinks,
+    key_store: KeyStore | None = None,
 ) -> list[Route]:
     """Build the agent-distribution routes (installer download, share link, update)."""
+
+    def _server_pubkey() -> str:
+        return key_store.server_public_key_b64() if key_store is not None else ""
 
     async def installer(request: Request) -> Response:
         binary = agent_binary_path()
@@ -156,7 +176,7 @@ def build_download_routes(
             return JSONResponse({"error": "agent binary not configured"}, status_code=503)
         agent_id = request.path_params["id"]
         token = await token_store.create_or_rotate(agent_id)
-        data = _build_installer_zip(binary, agent_id, token)
+        data = _build_installer_zip(binary, agent_id, token, _server_pubkey())
         return Response(
             data,
             media_type="application/zip",
@@ -178,12 +198,51 @@ def build_download_routes(
         if agent_id is None:
             return JSONResponse({"error": "link invalid or expired"}, status_code=404)
         token = await token_store.create_or_rotate(agent_id)
-        data = _build_installer_zip(binary, agent_id, token)
+        data = _build_installer_zip(binary, agent_id, token, _server_pubkey())
         return Response(
             data,
             media_type="application/zip",
             headers={"Content-Disposition": f'attachment; filename="kenny-agent-{agent_id}.zip"'},
         )
+
+    async def enroll(request: Request) -> Response:
+        """Bind an agent's Ed25519 public key on first contact (ADR-0023).
+
+        Auth: the per-agent enrollment token (the minted installer token) acts as
+        the one-time enrollment secret. It is read from the ``Authorization:
+        Bearer <token>`` header, or a JSON ``token`` field as a fallback, and
+        verified against the token store. Body: ``{"public_key": "<base64>"}``.
+        Returns 200 on success, 409 if already enrolled, 401 on a bad token.
+        """
+
+        if key_store is None:
+            return JSONResponse({"error": "key store not configured"}, status_code=503)
+        agent_id = request.path_params["id"]
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - malformed JSON
+            return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+
+        auth_header = request.headers.get("authorization", "")
+        token = ""
+        if auth_header.lower().startswith("bearer "):
+            token = auth_header[len("bearer ") :].strip()
+        if not token:
+            token = str(body.get("token", "")).strip()
+        if not token or not await token_store.verify(agent_id, token):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+        public_key = body.get("public_key")
+        if not isinstance(public_key, str) or not public_key:
+            return JSONResponse({"error": "public_key is required"}, status_code=400)
+        try:
+            await key_store.enroll(agent_id, public_key)
+        except ValueError as exc:
+            msg = str(exc)
+            if "already enrolled" in msg:
+                return JSONResponse({"error": msg}, status_code=409)
+            return JSONResponse({"error": msg}, status_code=400)
+        return JSONResponse({"ok": True, "agent_id": agent_id})
 
     async def trigger_update(request: Request) -> Response:
         binary = agent_binary_path()
@@ -241,6 +300,7 @@ def build_download_routes(
 
     return [
         Route("/api/agents/{id}/installer", installer),
+        Route("/api/agents/{id}/enroll", enroll, methods=["POST"]),
         Route("/api/agents/{id}/share-link", share_link, methods=["POST"]),
         Route("/api/agents/{id}/update", trigger_update, methods=["POST"]),
         Route("/api/agent-binary", agent_binary_status),

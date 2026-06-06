@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 if TYPE_CHECKING:
+    from .keystore import KeyStore
     from .tokenstore import AgentTokenStore
 
 SendFn = Callable[[dict[str, Any]], Awaitable[None]]
@@ -73,9 +74,11 @@ class AgentRegistry:
         self,
         tokens: dict[str, str] | None = None,
         token_store: "AgentTokenStore | None" = None,
+        key_store: "KeyStore | None" = None,
     ) -> None:
         self._tokens = tokens if tokens is not None else load_tokens()
         self._token_store = token_store
+        self._key_store = key_store
         self._agents: dict[str, Agent] = {}
         self._active_agent: str | None = None
 
@@ -86,6 +89,14 @@ class AgentRegistry:
     @token_store.setter
     def token_store(self, store: "AgentTokenStore | None") -> None:
         self._token_store = store
+
+    @property
+    def key_store(self) -> "KeyStore | None":
+        return self._key_store
+
+    @key_store.setter
+    def key_store(self, store: "KeyStore | None") -> None:
+        self._key_store = store
 
     # -- auth & connection lifecycle ---------------------------------------
 
@@ -110,6 +121,20 @@ class AgentRegistry:
             raise AuthError(f"authentication failed for agent {agent_id!r}")
         self.authenticate(agent_id, token)
 
+    async def authenticate_signature(
+        self, agent_id: str, transcript: bytes, agent_sig: str
+    ) -> None:
+        """Verify the agent's Ed25519 ``auth`` signature over the transcript.
+
+        Raises :class:`AuthError` when no key store is wired or the signature
+        does not verify against the agent's stored (or grace) public key.
+        """
+
+        if self._key_store is None:
+            raise AuthError("signature auth unavailable: no key store")
+        if not await self._key_store.verify_signature(agent_id, transcript, agent_sig):
+            raise AuthError(f"signature authentication failed for agent {agent_id!r}")
+
     async def register_async(
         self,
         agent_id: str,
@@ -120,6 +145,20 @@ class AgentRegistry:
         """Authenticate via the token store (async) and mark the agent online."""
 
         await self.authenticate_async(agent_id, token)
+        return self._mark_online(agent_id, meta, send_fn)
+
+    def register_signed_async(
+        self,
+        agent_id: str,
+        meta: dict[str, Any],
+        send_fn: SendFn,
+    ) -> Agent:
+        """Mark an agent online after its signature already verified.
+
+        The signature path verifies via :meth:`authenticate_signature` before the
+        connection is registered, so this only marks the agent online (no token).
+        """
+
         return self._mark_online(agent_id, meta, send_fn)
 
     def register(

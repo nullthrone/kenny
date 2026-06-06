@@ -12,6 +12,7 @@ FastMCP HTTP client:
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import socket
 from pathlib import Path
@@ -19,12 +20,22 @@ from pathlib import Path
 import pytest
 import uvicorn
 import websockets
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+    Ed25519PrivateKey,
+    Ed25519PublicKey,
+)
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 
+from kenny_server.keystore import build_transcript
 from kenny_server.main import build_app
 
 FIXTURES_DIR = Path(__file__).resolve().parents[2] / "docs" / "fixtures"
+VECTORS = json.loads((FIXTURES_DIR / "vectors" / "mutual_auth.json").read_text())
+# A deterministic server seed so the mock agent can pin the public key.
+SERVER_SEED_B64 = VECTORS["server_seed_b64"]
+SERVER_PUBLIC_KEY_B64 = VECTORS["server_public_key_b64"]
 
 
 def _free_port() -> int:
@@ -58,28 +69,85 @@ class _Server:
 
 
 class MockAgent:
-    """Connects to /agent/ws, registers, and replays fixtures on demand."""
+    """Connects to /agent/ws and replays fixtures on demand.
 
-    def __init__(self, ws_url: str, agent_id: str, token: str) -> None:
+    Performs the full v0.8 mutual-auth handshake by default (register +
+    client_nonce + protocol, verify the server's challenge, send a signed auth);
+    set ``signed=False`` to use the legacy token path (migration window).
+    """
+
+    def __init__(
+        self,
+        ws_url: str,
+        agent_id: str,
+        token: str = "",
+        *,
+        signed: bool = True,
+        private_key: Ed25519PrivateKey | None = None,
+        server_public_key_b64: str = SERVER_PUBLIC_KEY_B64,
+        bad_sig: bool = False,
+    ) -> None:
         self.ws_url = ws_url
         self.agent_id = agent_id
         self.token = token
+        self.signed = signed
+        self.bad_sig = bad_sig
+        self._private_key = private_key or Ed25519PrivateKey.generate()
+        self._server_pub = Ed25519PublicKey.from_public_bytes(
+            base64.b64decode(server_public_key_b64)
+        )
         self.ws: websockets.WebSocketClientProtocol | None = None
         self._task: asyncio.Task | None = None
 
+    @property
+    def public_key_b64(self) -> str:
+        pub = self._private_key.public_key().public_bytes(
+            serialization.Encoding.Raw, serialization.PublicFormat.Raw
+        )
+        return base64.b64encode(pub).decode()
+
     async def start(self) -> None:
         self.ws = await websockets.connect(self.ws_url)
+        if self.signed:
+            await self._signed_handshake()
+        else:
+            await self.ws.send(
+                json.dumps(
+                    {
+                        "type": "register",
+                        "agent_id": self.agent_id,
+                        "token": self.token,
+                        "meta": {"hostname": "DEV-PC", "os": "linux", "version": "0.1.0"},
+                    }
+                )
+            )
+        self._task = asyncio.create_task(self._loop())
+
+    async def _signed_handshake(self) -> None:
+        assert self.ws is not None
+        client_nonce = b"\x11" * 32
         await self.ws.send(
             json.dumps(
                 {
                     "type": "register",
                     "agent_id": self.agent_id,
-                    "token": self.token,
+                    "protocol": "0.8",
+                    "client_nonce": base64.b64encode(client_nonce).decode(),
                     "meta": {"hostname": "DEV-PC", "os": "linux", "version": "0.1.0"},
                 }
             )
         )
-        self._task = asyncio.create_task(self._loop())
+        challenge = json.loads(await self.ws.recv())
+        assert challenge["type"] == "challenge", challenge
+        server_nonce = base64.b64decode(challenge["server_nonce"])
+        transcript = build_transcript(self.agent_id, client_nonce, server_nonce)
+        # Anti-spoofing: verify the server's signature against the pinned key.
+        self._server_pub.verify(base64.b64decode(challenge["server_sig"]), transcript)
+        if self.bad_sig:
+            agent_sig = base64.b64encode(b"\x00" * 64).decode()
+        else:
+            agent_sig = base64.b64encode(self._private_key.sign(transcript)).decode()
+        await self.ws.send(json.dumps({"type": "auth", "agent_sig": agent_sig}))
 
     async def _loop(self) -> None:
         assert self.ws is not None
@@ -133,12 +201,15 @@ class MockAgent:
 
 
 @pytest.mark.asyncio
-async def test_e2e_forward_and_telemetry(tmp_path) -> None:
+async def test_e2e_forward_and_telemetry(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("KENNY_SERVER_PRIVATE_KEY", SERVER_SEED_B64)
     port = _free_port()
     app = build_app(db_path=str(tmp_path / "e2e.sqlite"))
 
     async with _Server(app, port):
-        agent = MockAgent(f"ws://127.0.0.1:{port}/agent/ws", "dev", "dev-token")
+        agent = MockAgent(f"ws://127.0.0.1:{port}/agent/ws", "dev")
+        # Enroll the agent's public key before the signed handshake.
+        await app.state.key_store.enroll("dev", agent.public_key_b64)
         await agent.start()
         # Give the server a moment to process registration.
         await asyncio.sleep(0.1)
@@ -177,15 +248,17 @@ async def test_e2e_forward_and_telemetry(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_e2e_log_frame_persisted_and_connect_logged(tmp_path) -> None:
+async def test_e2e_log_frame_persisted_and_connect_logged(tmp_path, monkeypatch) -> None:
     """An agent ``log`` frame is persisted (kind='log', source='agent'); the
     tunnel also records a server-side connect log event."""
 
+    monkeypatch.setenv("KENNY_SERVER_PRIVATE_KEY", SERVER_SEED_B64)
     port = _free_port()
     app = build_app(db_path=str(tmp_path / "e2e_log.sqlite"))
 
     async with _Server(app, port):
-        agent = MockAgent(f"ws://127.0.0.1:{port}/agent/ws", "dev", "dev-token")
+        agent = MockAgent(f"ws://127.0.0.1:{port}/agent/ws", "dev")
+        await app.state.key_store.enroll("dev", agent.public_key_b64)
         await agent.start()
         await asyncio.sleep(0.1)
         await agent.push_log()
@@ -213,7 +286,9 @@ async def test_e2e_log_frame_persisted_and_connect_logged(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_e2e_bad_token_rejected(tmp_path, caplog) -> None:
+async def test_e2e_bad_token_rejected(tmp_path, caplog, monkeypatch) -> None:
+    # Legacy token path (migration window): explicitly enabled.
+    monkeypatch.setenv("KENNY_ALLOW_TOKEN_AUTH", "1")
     port = _free_port()
     app = build_app(db_path=str(tmp_path / "e2e2.sqlite"))
     async with _Server(app, port):
@@ -234,6 +309,69 @@ async def test_e2e_bad_token_rejected(tmp_path, caplog) -> None:
     assert any(
         "auth failed for agent" in r.getMessage() for r in caplog.records
     )
+
+
+@pytest.mark.asyncio
+async def test_e2e_legacy_token_auth_succeeds(tmp_path, monkeypatch) -> None:
+    """A legacy token-only register still registers when KENNY_ALLOW_TOKEN_AUTH=1."""
+
+    monkeypatch.setenv("KENNY_ALLOW_TOKEN_AUTH", "1")
+    monkeypatch.setenv("KENNY_SERVER_PRIVATE_KEY", SERVER_SEED_B64)
+    port = _free_port()
+    app = build_app(db_path=str(tmp_path / "e2e_legacy.sqlite"))
+    async with _Server(app, port):
+        agent = MockAgent(
+            f"ws://127.0.0.1:{port}/agent/ws", "dev", "dev-token", signed=False
+        )
+        await agent.start()
+        await asyncio.sleep(0.1)
+        assert app.state.registry.get("dev").online is True
+        await agent.stop()
+
+
+@pytest.mark.asyncio
+async def test_e2e_bad_signature_rejected(tmp_path, monkeypatch) -> None:
+    """An agent that sends a bad agent_sig is closed 4401 and gets no request."""
+
+    monkeypatch.setenv("KENNY_SERVER_PRIVATE_KEY", SERVER_SEED_B64)
+    port = _free_port()
+    app = build_app(db_path=str(tmp_path / "e2e_badsig.sqlite"))
+    ws_url = f"ws://127.0.0.1:{port}/agent/ws"
+    async with _Server(app, port):
+        key = Ed25519PrivateKey.generate()
+        pub = base64.b64encode(
+            key.public_key().public_bytes(
+                serialization.Encoding.Raw, serialization.PublicFormat.Raw
+            )
+        ).decode()
+        await app.state.key_store.enroll("dev", pub)
+
+        ws = await websockets.connect(ws_url)
+        client_nonce = b"\x22" * 32
+        await ws.send(
+            json.dumps(
+                {
+                    "type": "register",
+                    "agent_id": "dev",
+                    "protocol": "0.8",
+                    "client_nonce": base64.b64encode(client_nonce).decode(),
+                    "meta": {"hostname": "X", "os": "linux", "version": "0.1.0"},
+                }
+            )
+        )
+        challenge = json.loads(await ws.recv())
+        assert challenge["type"] == "challenge"
+        # Send a deliberately invalid agent signature.
+        await ws.send(
+            json.dumps({"type": "auth", "agent_sig": base64.b64encode(b"\x00" * 64).decode()})
+        )
+        # The socket is closed 4401; no `request` frame is ever delivered.
+        with pytest.raises(websockets.ConnectionClosed) as exc_info:
+            await ws.recv()
+        assert exc_info.value.rcvd.code == 4401
+        # The registry never marked the agent online.
+        agent = app.state.registry.get("dev")
+        assert agent is None or agent.online is False
 
 
 async def _register_once(ws_url: str, agent_id: str, token: str) -> bool:
@@ -271,9 +409,10 @@ async def _register_once(ws_url: str, agent_id: str, token: str) -> bool:
 
 
 @pytest.mark.asyncio
-async def test_e2e_rotation_grace_window_keeps_live_agent(tmp_path) -> None:
+async def test_e2e_rotation_grace_window_keeps_live_agent(tmp_path, monkeypatch) -> None:
     """Rotating an installer token must not instantly brick a live agent (#10)."""
 
+    monkeypatch.setenv("KENNY_ALLOW_TOKEN_AUTH", "1")
     port = _free_port()
     app = build_app(db_path=str(tmp_path / "e2e3.sqlite"))
     ws_url = f"ws://127.0.0.1:{port}/agent/ws"

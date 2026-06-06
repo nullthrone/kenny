@@ -17,7 +17,10 @@ Flow (see ``docs/protocol.md`` § Transport):
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
+import os
+import secrets
 import uuid
 from typing import Any
 
@@ -25,8 +28,11 @@ from starlette.websockets import WebSocket, WebSocketDisconnect, WebSocketState
 
 from datetime import datetime, timezone
 
+from .keystore import build_transcript
 from .policy import PolicyEngine
 from .protocol import (
+    Auth,
+    Challenge,
     Log,
     Ping,
     Policy,
@@ -43,8 +49,27 @@ from .registry import AgentRegistry, AuthError
 from .store import EventStore, PolicyStore, TelemetryStore
 
 DEFAULT_TIMEOUT_S = 30.0
+HANDSHAKE_TIMEOUT_S = 10.0
 
 logger = logging.getLogger("kenny.tunnel")
+
+
+def _signature_path(frame: Register) -> bool:
+    """True when the register frame selects the v0.8 signature handshake.
+
+    Selected when ``protocol >= "0.8"`` and a ``client_nonce`` is present (per
+    ``docs/protocol.md`` § Transport / Migration window).
+    """
+
+    if frame.client_nonce is None or frame.protocol is None:
+        return False
+    return frame.protocol >= "0.8"
+
+
+def _token_auth_enabled() -> bool:
+    """Whether legacy bearer-token auth is still accepted (migration window)."""
+
+    return os.environ.get("KENNY_ALLOW_TOKEN_AUTH", "1") not in ("0", "false", "")
 
 
 class ToolError(Exception):
@@ -187,14 +212,13 @@ class AgentTunnel:
         async def send_fn(payload: dict[str, Any]) -> None:
             await websocket.send_json(payload)
 
-        try:
-            await self.registry.register_async(
-                frame.agent_id, frame.token, frame.meta.model_dump(), send_fn
-            )
-        except AuthError:
-            logger.warning("auth failed for agent %s; closing 4401", frame.agent_id)
-            await websocket.close(code=4401)  # unauthorized (non-1000)
-            return None
+        if _signature_path(frame):
+            if not await self._handshake_signed(websocket, frame, send_fn):
+                return None
+        else:
+            if not await self._handshake_token(websocket, frame, send_fn):
+                return None
+
         logger.info("agent %s connected", frame.agent_id)
         # Push the current operator deny rules to the just-connected agent
         # (always, even when empty, so behaviour is deterministic). ADR-0021.
@@ -205,6 +229,107 @@ class AgentTunnel:
             except Exception as exc:  # noqa: BLE001 - never break the handshake
                 logger.debug("policy delivery to %s failed: %s", frame.agent_id, exc)
         return frame.agent_id
+
+    async def _handshake_signed(
+        self, websocket: WebSocket, frame: Register, send_fn: Any
+    ) -> bool:
+        """Run the v0.8 mutual-auth challenge/response. Returns True on success.
+
+        The server signs the transcript (proving its identity to the agent), then
+        requires a valid ``auth`` signature from the agent before registering the
+        connection. Any failure closes the socket with ``4401`` and returns False.
+        """
+
+        key_store = self.registry.key_store
+        if key_store is None:
+            logger.warning(
+                "signature handshake for %s but no key store; closing 4401",
+                frame.agent_id,
+            )
+            await websocket.close(code=4401)
+            return False
+
+        try:
+            client_nonce = base64.b64decode(frame.client_nonce or "")
+        except Exception:  # noqa: BLE001 - malformed base64
+            client_nonce = b""
+        if len(client_nonce) != 32:
+            logger.warning(
+                "bad client_nonce from %s; closing 4401", frame.agent_id
+            )
+            await websocket.close(code=4401)
+            return False
+
+        server_nonce = secrets.token_bytes(32)
+        transcript = build_transcript(frame.agent_id, client_nonce, server_nonce)
+        server_sig = key_store.sign_transcript(transcript)
+        await send_fn(
+            dump_frame(
+                Challenge(
+                    server_nonce=base64.b64encode(server_nonce).decode(),
+                    server_sig=server_sig,
+                )
+            )
+        )
+
+        # A stalled handshake must not pin the socket indefinitely.
+        try:
+            reply_raw = await asyncio.wait_for(
+                websocket.receive_text(), timeout=HANDSHAKE_TIMEOUT_S
+            )
+        except asyncio.TimeoutError:
+            logger.warning("auth timeout for agent %s; closing 4401", frame.agent_id)
+            await websocket.close(code=4401)
+            return False
+
+        try:
+            auth = parse_frame(reply_raw)
+        except Exception:  # noqa: BLE001 - malformed frame
+            auth = None
+        if not isinstance(auth, Auth):
+            logger.warning(
+                "expected auth frame from %s; closing 4401", frame.agent_id
+            )
+            await websocket.close(code=4401)
+            return False
+
+        try:
+            await self.registry.authenticate_signature(
+                frame.agent_id, transcript, auth.agent_sig
+            )
+        except AuthError:
+            logger.warning(
+                "signature auth failed for agent %s; closing 4401", frame.agent_id
+            )
+            await websocket.close(code=4401)
+            return False
+
+        self.registry.register_signed_async(
+            frame.agent_id, frame.meta.model_dump(), send_fn
+        )
+        return True
+
+    async def _handshake_token(
+        self, websocket: WebSocket, frame: Register, send_fn: Any
+    ) -> bool:
+        """Legacy bearer-token registration (migration window). True on success."""
+
+        if not _token_auth_enabled():
+            logger.warning(
+                "token auth disabled and no signature material from %s; closing 4401",
+                frame.agent_id,
+            )
+            await websocket.close(code=4401)
+            return False
+        try:
+            await self.registry.register_async(
+                frame.agent_id, frame.token or "", frame.meta.model_dump(), send_fn
+            )
+        except AuthError:
+            logger.warning("auth failed for agent %s; closing 4401", frame.agent_id)
+            await websocket.close(code=4401)  # unauthorized (non-1000)
+            return False
+        return True
 
     async def _serve(self, websocket: WebSocket, agent_id: str) -> None:
         while True:
