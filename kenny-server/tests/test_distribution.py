@@ -102,7 +102,7 @@ def test_sha256_helper(tmp_path):
     assert _sha256_file(str(p)) == hashlib.sha256(BINARY_BYTES).hexdigest()
 
 
-# -- agent-binary status / fetch / precedence (ADR-0014) --------------------
+# -- agent-binary status / fetch / precedence (ADR-0015) --------------------
 
 
 def test_agent_binary_status_unavailable(tmp_path, monkeypatch):

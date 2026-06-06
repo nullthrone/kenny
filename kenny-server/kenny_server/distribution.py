@@ -1,5 +1,5 @@
 """Agent distribution: download an installer from the GUI, share an expiring link,
-and trigger a server-side self-update (ADR-0011, ADR-0012).
+and trigger a server-side self-update (ADR-0012, ADR-0013).
 
 The server serves a **prebuilt** agent binary (``KENNY_AGENT_BINARY``) and injects
 per-install config — it does not build per download. Endpoints:
@@ -44,7 +44,7 @@ def agent_binary_path() -> str | None:
     """Path to the prebuilt agent binary, or None if unavailable.
 
     Operator-placed ``KENNY_AGENT_BINARY`` wins; otherwise the GitHub-fetched
-    cache (``agent_release.cache_path()``) is used if present (ADR-0014).
+    cache (``agent_release.cache_path()``) is used if present (ADR-0015).
     """
 
     path = os.environ.get("KENNY_AGENT_BINARY", "").strip()

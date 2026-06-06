@@ -53,7 +53,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Build release binary
         working-directory: kenny-agent
-        # The release tag is the leading source of the agent version (ADR-0014):
+        # The release tag is the leading source of the agent version (ADR-0015):
         # build.rs stamps it into the binary (reported as meta.version).
         env:
           KENNY_AGENT_VERSION: ${{ github.ref_name }}

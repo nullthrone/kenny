@@ -5,7 +5,7 @@
 //! (`kenny-agent tray`) runs in the interactive user session, so it is the only
 //! process that can actually grab the screen. This module wires the two together
 //! over a local **named pipe**: the tray hosts a server that captures on demand and
-//! the service connects as a client to fetch the PNG. See ADR-0017.
+//! the service connects as a client to fetch the PNG. See ADR-0018.
 //!
 //! Wire framing is a single length-prefixed blob (`u32` little-endian length, then
 //! the PNG bytes). The framing helpers are platform-neutral so they can be unit

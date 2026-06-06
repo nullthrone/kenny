@@ -164,14 +164,14 @@ mod windows_impl {
         // Set up the local remote-control kill switch: a shared control file the user's
         // tray can write and the LocalSystem service can read, plus a logon autostart for
         // the tray itself. Best-effort: the service + gating work even if this fails (the
-        // tray can be started manually), so don't abort the install. See ADR-0010.
+        // tray can be started manually), so don't abort the install. See ADR-0011.
         if let Err(e) = setup_tray_kill_switch(&exe) {
             tracing::warn!(error = %e, "could not set up tray kill switch; configure it manually");
         }
 
         // Show the tray now, in the installing user's interactive session. The
         // HKLM\Run entry only fires at the *next* logon, so without this the icon
-        // (and the screen-capture responder, ADR-0017) would be missing until then.
+        // (and the screen-capture responder, ADR-0018) would be missing until then.
         // Best-effort: a single-instance guard in the tray prevents a duplicate icon.
         match std::process::Command::new(&exe).arg("tray").spawn() {
             Ok(_) => info!("started tray helper in the current session"),
@@ -239,7 +239,7 @@ mod windows_impl {
     /// running and is therefore safe to call unconditionally on every service start. That
     /// is what brings the tray back after the user closes it (Task Manager) or it crashes:
     /// a service restart relaunches it. Best-effort — before anyone logs in there is no
-    /// token, a normal non-fatal outcome that the logon autostart covers. See ADR-0019.
+    /// token, a normal non-fatal outcome that the logon autostart covers.
     fn launch_tray_in_active_session() -> anyhow::Result<()> {
         use anyhow::Context as _;
         use windows::core::PWSTR;
@@ -444,7 +444,7 @@ mod windows_impl {
         })?;
 
         // (Re)launch the tray into the interactive session. A service start/restart is the
-        // recovery path for a tray the user closed or that crashed (ADR-0019); the tray's
+        // recovery path for a tray the user closed or that crashed; the tray's
         // single-instance guard makes this harmless when one is already running.
         if let Err(e) = launch_tray_in_active_session() {
             info!(error = %e, "did not launch tray on service start (likely nobody logged in)");

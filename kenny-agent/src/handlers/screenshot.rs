@@ -8,7 +8,7 @@
 //! which has no visible desktop, so a direct grab there returns a black frame.
 //! When we detect session 0 we therefore delegate to the tray helper (which runs
 //! in the interactive user session) over a local named pipe; see
-//! [`crate::screencap_ipc`] and ADR-0017. A foreground/dev run (session ≠ 0) grabs
+//! [`crate::screencap_ipc`] and ADR-0018. A foreground/dev run (session ≠ 0) grabs
 //! directly.
 
 use serde_json::Value;
@@ -122,7 +122,7 @@ mod windows_impl {
     pub fn capture() -> Result<Value, (ErrorCode, String)> {
         if in_session_zero() {
             // Running as the session-0 service: the desktop lives in the user's
-            // session, so ask the tray helper to capture it (ADR-0017).
+            // session, so ask the tray helper to capture it (ADR-0018).
             return crate::screencap_ipc::capture_via_tray();
         }
         let png = grab_primary_png().map_err(|e| (ErrorCode::Internal, e))?;

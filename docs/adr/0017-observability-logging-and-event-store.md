@@ -12,7 +12,7 @@ central or persistent:
   to `WARNING` on stderr without timestamps, and only a handful of call sites log at
   all. The tool-call audit (`CallLog`) is an in-memory `deque(200)` lost on restart.
 - The **agent** logs via `tracing` to stderr only. When it runs as a Windows service
-  (ADR-0012, LocalSystem, no attached terminal) all of that output is discarded, so
+  (ADR-0013, LocalSystem, no attached terminal) all of that output is discarded, so
   there is no record of reconnects, tool dispatch, or errors on the endpoint.
 
 We want operator-visible events — from both the server and every agent — to be
@@ -62,4 +62,4 @@ already runs (ADR-0007), and keeps a family-scale fleet dependency-light. Concre
 
 Frame shape: `docs/protocol.md` § `log` and `docs/fixtures/log.json`
 (`PROTOCOL_VERSION` 0.4). Builds on ADR-0007 (push model + SQLite) and is motivated by
-ADR-0012 (Windows service — service-mode stderr is discarded).
+ADR-0013 (Windows service — service-mode stderr is discarded).

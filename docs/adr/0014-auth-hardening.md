@@ -1,6 +1,6 @@
-# 0013. Auth hardening: token store, rotation, multi-operator, TLS cookie
+# 0014. Auth hardening: token store, rotation, multi-operator, TLS cookie
 
-- Status: accepted (amended by [ADR-0015](0015-agent-token-rotation-grace-window.md))
+- Status: accepted
 - Date: 2026-06-04
 
 ## Context and Problem Statement
@@ -8,7 +8,7 @@
 ADR-0008 shipped deliberately dev-grade auth: agent tokens from an env map and a single
 plaintext operator token. The backlog called for per-agent unique tokens with rotation, a
 real store, hashed comparison, and a `Secure` login cookie under TLS — needed in particular
-because the agent installer download (ADR-0011/WS5) must mint a per-agent token.
+because the agent installer download (ADR-0012/WS5) must mint a per-agent token.
 
 ## Considered Options
 

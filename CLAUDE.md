@@ -14,6 +14,22 @@ bodies, and identifiers.
 Architecture and rationale live in **`docs/adr/`** (MADR). Read them there — they are
 not duplicated here. Start with `docs/adr/0001-use-madr-and-record-decisions.md`.
 
+## When (not) to write an ADR
+
+Write an ADR when a decision is **architectural** — hard to reverse, cross-cutting, or
+moving a structural boundary: language/runtime choices, the wire contract or
+`PROTOCOL_VERSION`, the network/trust topology, the auth model, the storage/observability
+model, the deployment/distribution shape, or the agent/session model.
+
+Do **not** write an ADR for an **implementation detail** — a localized coding choice, a
+bug fix, a refactor, dashboard/UI layout, a test/CI tweak, naming, or anything contained
+to one file/component that leaves the contract and the boundaries unchanged. Record those
+in the commit message and, where it helps a reader, a code comment.
+
+Rule of thumb: if it touches `docs/protocol.md`/fixtures, moves both server and agent at
+once, or a maintainer would be surprised to find it silently reverted — it's an ADR. If
+reverting it is a routine pull request, it isn't.
+
 ## Repo map
 
 - `docs/protocol.md` + `docs/fixtures/` — the agent⇄server wire **contract** (single
@@ -30,8 +46,8 @@ not duplicated here. Start with `docs/adr/0001-use-madr-and-record-decisions.md`
   language. Change `docs/protocol.md` + `docs/fixtures/` first, then both sides.
 - **Python and Rust must not drift.** Both round-trip the golden fixtures; run
   `/contract-check` after touching the protocol.
-- **Record significant decisions as an ADR** (`/new-adr`). Architecture explanations
-  belong in ADRs, not in any CLAUDE.md.
+- **Record architectural decisions as an ADR** (`/new-adr`) — see *When (not) to write an
+  ADR* above. Architecture explanations belong in ADRs, not in any CLAUDE.md.
 - **`#[cfg(windows)]` discipline** in the agent: Windows-only code is gated and has a
   portable fallback so CI/dev on Linux stays green.
 - **This file carries no volatile or redundant content.** If a line can go stale when

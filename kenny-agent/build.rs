@@ -1,4 +1,4 @@
-//! Stamp the agent version, led by the GitHub release tag (ADR-0014).
+//! Stamp the agent version, led by the GitHub release tag (ADR-0015).
 //!
 //! At release build time CI sets `KENNY_AGENT_VERSION=<tag>` (e.g. `v0.3.0`);
 //! we expose it to the crate as the compile-time env `KENNY_BUILD_VERSION`.

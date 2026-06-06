@@ -1,4 +1,4 @@
-# 0012. Agent as a Windows service + server-triggered self-update
+# 0013. Agent as a Windows service + server-triggered self-update
 
 - Status: accepted
 - Date: 2026-06-04
@@ -38,7 +38,7 @@ SCM lifecycle makes the in-place update clean.
 - Good, because one binary installs, runs as a service, and updates itself; the operator
   triggers updates from the server, no manual reinstall.
 - Good, because the update pulls the same prebuilt, hashed (optionally signed) artifact as
-  first install (ADR-0011) — verified before swap.
+  first install (ADR-0012) — verified before swap.
 - Bad, because the SCM integration and the live swap/restart can only be runtime-verified on
   real Windows; they are compile-verified via `cargo check --target x86_64-pc-windows-gnu`
   and covered on the `agent-windows` CI job, with the off-Windows path returning `unsupported`.
@@ -46,6 +46,6 @@ SCM lifecycle makes the in-place update clean.
 ## More Information
 
 - Server side: registers `agent.update` as a forwarded tool, serves the binary at `url`
-  (ADR-0011/WS5), supplies the `sha256`, and triggers by comparing `register.meta.version`.
+  (ADR-0012/WS5), supplies the `sha256`, and triggers by comparing `register.meta.version`.
 - Implementation: `kenny-agent/src/service.rs`, `handlers/agent_update.rs`, `config.rs`,
   `tunnel.rs` (`run_until` graceful stop).

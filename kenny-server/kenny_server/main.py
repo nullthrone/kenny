@@ -77,7 +77,7 @@ def build_app(db_path: str | None = None) -> Starlette:
         # handler captures them once (no duplicate persisted events).
         logging.getLogger().addHandler(log_handler)
         # Best-effort: fetch the prebuilt agent binary from GitHub when configured
-        # and not overridden by an operator-placed binary (ADR-0014). Non-fatal.
+        # and not overridden by an operator-placed binary (ADR-0015). Non-fatal.
         if (
             agent_release.github_configured()
             and not os.environ.get("KENNY_AGENT_BINARY", "").strip()

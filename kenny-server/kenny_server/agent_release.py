@@ -1,6 +1,6 @@
-"""Best-effort fetch of the prebuilt agent binary from GitHub Releases (ADR-0014).
+"""Best-effort fetch of the prebuilt agent binary from GitHub Releases (ADR-0015).
 
-The server serves a **prebuilt** ``kenny-agent.exe`` (ADR-0011). To avoid the
+The server serves a **prebuilt** ``kenny-agent.exe`` (ADR-0012). To avoid the
 first-agent chicken-and-egg (operator must hand-place the binary into the data
 volume before any installer can be downloaded), the server can fetch the latest
 release asset itself **when it can** — i.e. a GitHub token is configured and the
@@ -90,7 +90,7 @@ def _read_sidecar(binary_path: str) -> str | None:
 
 
 def resolve_agent_version(manual_path: str | None = None) -> str:
-    """Agent version, **led by the GitHub release tag** (ADR-0014).
+    """Agent version, **led by the GitHub release tag** (ADR-0015).
 
     The tag of the served binary wins: it is written to a ``.version`` sidecar on
     fetch (and may be dropped next to a manually-placed binary). ``KENNY_AGENT_VERSION``
