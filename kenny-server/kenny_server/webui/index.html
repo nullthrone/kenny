@@ -249,16 +249,19 @@
     .k-gate__head svg { width: 15px; height: 15px; color: var(--accent); }
     .k-gate__title { font-size: var(--text-xs); font-weight: var(--weight-bold); color: var(--accent);
       letter-spacing: var(--tracking-label); text-transform: uppercase; white-space: nowrap; }
-    .k-gate__body { padding: 11px 12px 12px; }
+    .k-gate__body { padding: 11px 12px 12px; max-height: 40vh; overflow-y: auto; }
     .k-gate__desc { font-size: var(--text-sm); color: var(--fg-muted); margin-bottom: 8px; }
     .k-gate__desc b { color: var(--fg); font-weight: var(--weight-bold); }
     .k-gate__call { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--fg);
       background: var(--bg-sunken); border: var(--border-width) solid var(--border);
-      border-radius: var(--radius-sm); padding: 8px 10px; margin-bottom: 11px;
+      border-radius: var(--radius-sm); padding: 8px 10px;
       white-space: pre-wrap; overflow-x: auto; }
     .k-gate__call .tok-key { color: var(--fg-faint); }
     .k-gate__call .tok-tool { color: var(--accent); font-weight: var(--weight-bold); }
-    .k-gate__acts { display: flex; gap: 8px; }
+    /* Actions live in a footer bar pinned inside the frame (mirrors the head),
+       so the buttons stay visible while a long script body scrolls above. */
+    .k-gate__foot { display: flex; gap: 8px; padding: 9px 12px;
+      background: var(--accent-wash); border-top: var(--border-width) solid color-mix(in oklab, var(--accent) 30%, transparent); }
 
     /* audit log */
     .k-audit { display: flex; flex-direction: column; }
@@ -1099,19 +1102,30 @@
       t.appendChild(card);
       t.scrollTop = t.scrollHeight;
     }
-    // Apply one streamed chat event. getBubble() lazily creates the single
-    // assistant bubble the first time a text token arrives, so empty turns
-    // (tool-only or a confirm-gate) don't leave a blank bubble behind.
-    function handleChatEvent(ev, getBubble) {
+    // Per-stream state for handleChatEvent. ctx.bubble() lazily creates the
+    // single assistant bubble the first time a text token arrives, so empty
+    // turns (tool-only or a confirm-gate) don't leave a blank bubble behind.
+    function newChatCtx() {
+      return { _div: null, bubble() { return (this._div ||= bubble("assistant", "")); }, brokeSinceText: false };
+    }
+    // Apply one streamed chat event. ctx.brokeSinceText tracks whether a tool
+    // ran since the last text token, so a new text segment is separated from
+    // the prior one with a blank line instead of running straight into it
+    // ("...prüfen.Gut, wir haben...").
+    function handleChatEvent(ev, ctx) {
       const t = document.getElementById("transcript");
       if (ev.type === "text_delta") {
-        const div = getBubble();
+        const div = ctx.bubble();
+        if (ctx.brokeSinceText && div.textContent) div.textContent += "\n\n";
+        ctx.brokeSinceText = false;
         div.textContent += ev.text;
         t.scrollTop = t.scrollHeight;
       } else if (ev.type === "tool_result") {
+        ctx.brokeSinceText = true;
         toolRun(ev.tool, ev.ok !== false);
         if (ev.image_b64) chatShot(ev.image_b64, ev.format || "png");
       } else if (ev.type === "denied") {
+        ctx.brokeSinceText = true;
         toolRun("denied " + ev.tool, false);
       } else if (ev.type === "pending") {
         renderPending(ev);
@@ -1139,10 +1153,10 @@
         <div class="k-gate__body">
           <div class="k-gate__desc">This will <b>change state</b> on <b>${esc(p.agent_id || "the active PC")}</b>. Review before it runs.</div>
           <div class="k-gate__call">${gateCall(p.tool, p.args)}</div>
-          <div class="k-gate__acts">
-            <button class="k-btn k-btn--primary" onclick="confirmChat(true, this)">${icon('check', 15)}confirm &amp; run</button>
-            <button class="k-btn k-btn--ghost" onclick="confirmChat(false, this)">cancel</button>
-          </div>
+        </div>
+        <div class="k-gate__foot">
+          <button class="k-btn k-btn--primary" onclick="confirmChat(true, this)">${icon('check', 15)}confirm &amp; run</button>
+          <button class="k-btn k-btn--ghost" onclick="confirmChat(false, this)">cancel</button>
         </div>`;
       t.appendChild(div);
       t.scrollTop = t.scrollHeight;
@@ -1156,22 +1170,20 @@
       bubble("user", message);
       const body = { session_id: chatSessionId, message };
       if (chatContext) body.agent_id = chatContext;
-      let assistantDiv = null;
-      const getBubble = () => (assistantDiv ||= bubble("assistant", ""));
+      const ctx = newChatCtx();
       try {
         for await (const ev of streamSSE("/api/chat/stream", body)) {
-          handleChatEvent(ev, getBubble);
+          handleChatEvent(ev, ctx);
         }
       } catch (e) { toolRun("error: " + e.message, false); }
     }
     async function confirmChat(approve, btn) {
       btn.closest(".k-gate").remove();
       setComposerEnabled(true);
-      let assistantDiv = null;
-      const getBubble = () => (assistantDiv ||= bubble("assistant", ""));
+      const ctx = newChatCtx();
       try {
         for await (const ev of streamSSE("/api/chat/confirm/stream", { session_id: chatSessionId, approve })) {
-          handleChatEvent(ev, getBubble);
+          handleChatEvent(ev, ctx);
         }
       } catch (e) { toolRun("error: " + e.message, false); }
     }
