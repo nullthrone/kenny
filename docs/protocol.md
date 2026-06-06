@@ -80,7 +80,7 @@ Error:
 ```
 
 `error.code` ∈ {`timeout`, `not_found`, `exec_failed`, `unsupported`, `bad_args`,
-`internal`, `disabled`}. `unsupported` is returned by an agent that lacks the
+`internal`, `disabled`, `blocked`}. `unsupported` is returned by an agent that lacks the
 capability on its platform (e.g. `winget_list` on a Linux dev build). `disabled` is
 returned when the agent is online but the person at the endpoint has switched remote
 control **off** locally (via the agent's tray menu): the agent then refuses every
@@ -88,6 +88,15 @@ control **off** locally (via the agent's tray menu): the agent then refuses ever
 `net_dns_flush`, `net_adapter_reset`, `agent_update`) while telemetry and read-only
 diagnostics keep working. Remote control is **on** by default and the choice persists
 across restarts. See ADR-0011.
+
+`blocked` is returned by the agent's **deterministic, always-on safety guard**: a
+compiled-in policy that refuses individually dangerous calls (e.g. a `powershell_exec`
+script that deletes volume shadow copies, clears event logs, or disables Defender; an
+`fs_read` of the SAM hive; an `agent_update` from a non-allowlisted host) regardless of
+operator approval or kill-switch state. Unlike `disabled`, the guard cannot be turned off
+remotely and is **not** a substitute for the operator confirm-gate (ADR-0009) or the
+local kill-switch (ADR-0011); it is a last-line, defense-in-depth refusal sitting below
+them. The `message` names the matched rule. See ADR-0020.
 
 ### `telemetry` (agent → server, pushed)
 
@@ -235,10 +244,12 @@ for fleet aggregation. These thresholds are illustrative of the data-driven rule
 
 ## Versioning
 
-`PROTOCOL_VERSION = "0.4"`. Both implementations expose this constant and include it
+`PROTOCOL_VERSION = "0.5"`. Both implementations expose this constant and include it
 nowhere on the wire yet (reserved for a future `register.meta.protocol`). Bump on any
 breaking change to a frame or tool schema.
 
+- `0.5` — added the `blocked` error code for the agent's deterministic, always-on safety
+  guard; additive to the error-code set, no frame or tool-schema changes. See ADR-0020.
 - `0.4` — added the `log` frame (agent → server) for forwarded structured log events;
   additive frame, no tool changes. See ADR-0017.
 - `0.3` — renamed every capability tool from dotted (`powershell.exec`) to

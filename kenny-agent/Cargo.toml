@@ -19,6 +19,7 @@ thiserror = "1"
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 base64 = "0.22"
+regex = "1"
 sysinfo = "0.31"
 # Portable PNG encoder for screen_capture. NOT windows-gated so encode_png can be
 # unit-tested on Linux CI.

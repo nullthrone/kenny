@@ -11,7 +11,7 @@ use serde_json::{Map, Value};
 /// Wire-protocol version implemented by this binary (see protocol.md § Versioning).
 ///
 /// Not currently placed on the wire (reserved for `register.meta.protocol`).
-pub const PROTOCOL_VERSION: &str = "0.4";
+pub const PROTOCOL_VERSION: &str = "0.5";
 
 /// One WebSocket text message. Tagged by the `type` field.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -119,6 +119,10 @@ pub enum ErrorCode {
     /// The agent is online but remote control was switched off locally at the
     /// endpoint (via the tray menu); mutating tools are refused. See ADR-0011.
     Disabled,
+    /// Refused by the agent's deterministic, always-on safety guard: a compiled-in
+    /// policy that blocks individually dangerous calls regardless of operator approval
+    /// or kill-switch state. Cannot be turned off remotely. See ADR-0020.
+    Blocked,
 }
 
 /// `telemetry` frame body (also the shape returned by `telemetry_collect`).
@@ -227,6 +231,10 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&ErrorCode::BadArgs).unwrap(),
             "\"bad_args\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ErrorCode::Blocked).unwrap(),
+            "\"blocked\""
         );
     }
 

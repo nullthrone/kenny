@@ -17,6 +17,7 @@ mod control;
 mod dispatch;
 mod handlers;
 mod log_forward;
+mod policy;
 mod protocol;
 mod screencap_ipc;
 mod service;
@@ -209,6 +210,9 @@ fn set_dpi_awareness() {}
 
 /// Run the foreground reconnecting tunnel (never returns under normal operation).
 fn run_tunnel(config: config::Config) {
+    // Record the server host for the always-on safety guard's `agent_update` allowlist.
+    policy::set_server_url(&config.server);
+
     info!(
         agent_id = %config.agent_id,
         server = %config.server,
