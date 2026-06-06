@@ -32,8 +32,8 @@ mod windows_impl {
         INVALID_HANDLE_VALUE,
     };
     use windows::Win32::Storage::FileSystem::{
-        CreateFileW, ReadFile, WriteFile, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_MODE,
-        OPEN_EXISTING, PIPE_ACCESS_OUTBOUND,
+        CreateFileW, FlushFileBuffers, ReadFile, WriteFile, FILE_FLAGS_AND_ATTRIBUTES,
+        FILE_SHARE_MODE, OPEN_EXISTING, PIPE_ACCESS_OUTBOUND,
     };
     use windows::Win32::System::Pipes::{
         ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, WaitNamedPipeW,
@@ -79,7 +79,12 @@ mod windows_impl {
             Ok(written as usize)
         }
         fn flush(&mut self) -> io::Result<()> {
-            Ok(())
+            // A pipe server that calls `DisconnectNamedPipe` while bytes are still unread
+            // *discards* them, and the peer's next read fails with ERROR_PIPE_NOT_CONNECTED
+            // (0x800700E9). `serve()` disconnects right after `serve_one` returns, so flush
+            // until the service has drained the PNG before we tear the pipe down.
+            // SAFETY: `self.0` is a valid pipe handle we own and opened for writing.
+            unsafe { FlushFileBuffers(self.0) }.map_err(io::Error::other)
         }
     }
 

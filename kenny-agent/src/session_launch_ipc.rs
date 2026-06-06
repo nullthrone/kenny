@@ -67,8 +67,8 @@ mod windows_impl {
         INVALID_HANDLE_VALUE,
     };
     use windows::Win32::Storage::FileSystem::{
-        CreateFileW, ReadFile, WriteFile, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_MODE,
-        OPEN_EXISTING, PIPE_ACCESS_DUPLEX,
+        CreateFileW, FlushFileBuffers, ReadFile, WriteFile, FILE_FLAGS_AND_ATTRIBUTES,
+        FILE_SHARE_MODE, OPEN_EXISTING, PIPE_ACCESS_DUPLEX,
     };
     use windows::Win32::System::Pipes::{
         ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, WaitNamedPipeW,
@@ -117,7 +117,13 @@ mod windows_impl {
             Ok(written as usize)
         }
         fn flush(&mut self) -> io::Result<()> {
-            Ok(())
+            // A pipe server that calls `DisconnectNamedPipe` while bytes are still unread
+            // *discards* them, and the peer's next read fails with ERROR_PIPE_NOT_CONNECTED
+            // (0x800700E9). `serve()` disconnects immediately after `serve_one` returns, so
+            // without this the launch reply can be dropped before the service reads it.
+            // `FlushFileBuffers` blocks until the peer has drained everything we wrote.
+            // SAFETY: `self.0` is a valid pipe handle we own and opened for writing.
+            unsafe { FlushFileBuffers(self.0) }.map_err(io::Error::other)
         }
     }
 
