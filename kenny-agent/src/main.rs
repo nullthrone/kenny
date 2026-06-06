@@ -42,6 +42,12 @@ pub use protocol::PROTOCOL_VERSION;
 /// falls back to the Cargo package version for dev/CI builds.
 pub const BUILD_VERSION: &str = env!("KENNY_BUILD_VERSION");
 
+/// Base file name of the rolling agent log. `tracing_appender`'s daily rotation
+/// appends a `.YYYY-MM-DD` suffix, so on disk the files are
+/// `kenny-agent.log.2026-06-06` etc. Shared with the tray so its "open logs"
+/// menu item can locate the newest one.
+pub const LOG_FILE_PREFIX: &str = "kenny-agent.log";
+
 /// Keeps the non-blocking file-appender worker alive for the whole process.
 /// Dropping the [`WorkerGuard`] flushes and stops the writer thread, so it must
 /// outlive every log call.
@@ -140,7 +146,7 @@ fn init_tracing() {
     // rather than failing to start.
     let file_layer = match log_dir() {
         Some(dir) if std::fs::create_dir_all(&dir).is_ok() => {
-            let appender = tracing_appender::rolling::daily(&dir, "kenny-agent.log");
+            let appender = tracing_appender::rolling::daily(&dir, LOG_FILE_PREFIX);
             let (writer, guard) = tracing_appender::non_blocking(appender);
             // Stash the guard for the process lifetime.
             let _ = FILE_LOG_GUARD.set(guard);
@@ -166,7 +172,7 @@ fn init_tracing() {
 /// On Windows: `%PROGRAMDATA%\kenny\logs` (falling back to `C:\ProgramData`).
 /// Elsewhere: a portable temp-dir location so dev/CI builds work.
 #[cfg(windows)]
-fn log_dir() -> Option<std::path::PathBuf> {
+pub fn log_dir() -> Option<std::path::PathBuf> {
     let base = std::env::var_os("PROGRAMDATA")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::PathBuf::from(r"C:\ProgramData"));
@@ -175,7 +181,7 @@ fn log_dir() -> Option<std::path::PathBuf> {
 
 /// Portable log directory used off Windows.
 #[cfg(not(windows))]
-fn log_dir() -> Option<std::path::PathBuf> {
+pub fn log_dir() -> Option<std::path::PathBuf> {
     Some(std::env::temp_dir().join("kenny").join("logs"))
 }
 

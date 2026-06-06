@@ -9,12 +9,19 @@
 //!
 //! Two icon variants make the state legible at a glance: the normal "Kenny" badge when
 //! remote control is on, and a greyed/struck-through badge when it is off.
+//!
+//! The menu deliberately has **no "quit"**: the tray is load-bearing (it also hosts the
+//! screen-capture responder, ADR-0017), so letting the user close it would silently break
+//! remote control. If it is ever killed anyway (Task Manager, a crash), a service restart
+//! relaunches it into the active session — see [`crate::service`]. The menu instead
+//! offers a read-only **"Protokoll anzeigen"** entry that opens the newest agent log.
 
 /// Run the tray helper.
 ///
 /// On Windows this registers a notification-area icon and pumps the message loop until
-/// the user picks **Beenden**. Elsewhere there is no tray, so this is a no-op stub that
-/// returns an error (keeping `cargo build`/`cargo test` green on Linux CI).
+/// the window is destroyed (e.g. at logoff/shutdown). Elsewhere there is no tray, so this
+/// is a no-op stub that returns an error (keeping `cargo build`/`cargo test` green on
+/// Linux CI).
 #[cfg(windows)]
 pub fn run() -> anyhow::Result<()> {
     windows_impl::run()
@@ -24,6 +31,33 @@ pub fn run() -> anyhow::Result<()> {
 #[cfg(not(windows))]
 pub fn run() -> anyhow::Result<()> {
     anyhow::bail!("the tray helper is only supported on Windows");
+}
+
+/// Pick the agent log file to open: the most-recently-modified entry in `dir` whose
+/// name starts with [`crate::LOG_FILE_PREFIX`] (the daily appender suffixes a date, so
+/// there are several). Returns `None` when the directory is missing, unreadable, or holds
+/// no log file — the caller then falls back to opening the directory itself.
+///
+/// Kept platform-neutral (used by the Windows menu, unit-tested on Linux CI).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn newest_log_file(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    let mut newest: Option<(std::time::SystemTime, std::path::PathBuf)> = None;
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        if !entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(crate::LOG_FILE_PREFIX)
+        {
+            continue;
+        }
+        let Ok(modified) = entry.metadata().and_then(|m| m.modified()) else {
+            continue;
+        };
+        if newest.as_ref().is_none_or(|(t, _)| modified > *t) {
+            newest = Some((modified, entry.path()));
+        }
+    }
+    newest.map(|(_, path)| path)
 }
 
 #[cfg(windows)]
@@ -39,16 +73,16 @@ mod windows_impl {
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::System::Threading::CreateMutexW;
     use windows::Win32::UI::Shell::{
-        Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
-        NOTIFYICONDATAW,
+        ShellExecuteW, Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE,
+        NIM_MODIFY, NOTIFYICONDATAW,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         AppendMenuW, CreateIconFromResourceEx, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
-        DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW,
-        GetSystemMetrics, LoadCursorW, LookupIconIdFromDirectoryEx, PostMessageW, PostQuitMessage,
-        RegisterClassW, SetForegroundWindow, TrackPopupMenu, TranslateMessage, CW_USEDEFAULT,
-        HICON, HMENU, IDC_ARROW, IMAGE_FLAGS, MENU_ITEM_FLAGS, MF_CHECKED, MF_DISABLED, MF_GRAYED,
-        MF_SEPARATOR, MF_STRING, MSG, SM_CXSMICON, SM_CYSMICON, TPM_BOTTOMALIGN, TPM_RIGHTBUTTON,
+        DestroyIcon, DestroyMenu, DispatchMessageW, GetCursorPos, GetMessageW, GetSystemMetrics,
+        LoadCursorW, LookupIconIdFromDirectoryEx, PostMessageW, PostQuitMessage, RegisterClassW,
+        SetForegroundWindow, TrackPopupMenu, TranslateMessage, CW_USEDEFAULT, HICON, HMENU,
+        IDC_ARROW, IMAGE_FLAGS, MENU_ITEM_FLAGS, MF_CHECKED, MF_DISABLED, MF_GRAYED, MF_SEPARATOR,
+        MF_STRING, MSG, SM_CXSMICON, SM_CYSMICON, SW_SHOWNORMAL, TPM_BOTTOMALIGN, TPM_RIGHTBUTTON,
         WINDOW_EX_STYLE, WM_APP, WM_COMMAND, WM_DESTROY, WM_LBUTTONUP, WM_RBUTTONUP, WNDCLASSW,
         WS_OVERLAPPEDWINDOW,
     };
@@ -64,8 +98,8 @@ mod windows_impl {
     const TRAY_UID: u32 = 1;
     /// Menu command: toggle remote control on/off.
     const ID_TOGGLE: usize = 1001;
-    /// Menu command: quit the tray helper.
-    const ID_QUIT: usize = 1002;
+    /// Menu command: open the newest local agent log in the default editor.
+    const ID_OPEN_LOGS: usize = 1003;
     /// `CreateIconFromResourceEx` version word for modern (3.0) icon resources.
     const ICON_RESOURCE_VERSION: u32 = 0x0003_0000;
 
@@ -264,6 +298,36 @@ mod windows_impl {
         });
     }
 
+    /// Open the newest local agent log file in the user's default editor.
+    ///
+    /// `.log` files are associated with Notepad on a stock Windows, so a `ShellExecute`
+    /// "open" pops the log in an editor. Falls back to opening the log *directory* (e.g.
+    /// before the first log has rolled, or if none match), and is a no-op if there is no
+    /// log directory at all. Best-effort: failures are logged, never fatal.
+    unsafe fn open_logs() {
+        let Some(dir) = crate::log_dir() else {
+            tracing::warn!("no log directory configured; nothing to open");
+            return;
+        };
+        // Prefer the newest concrete log file; otherwise open the directory itself.
+        let target = super::newest_log_file(&dir).unwrap_or(dir);
+        let wide = to_wide(&target.to_string_lossy());
+        // SAFETY: `wide` is a valid NUL-terminated wide string that outlives the call;
+        // the verb/dir/params are static or null.
+        let hinst = ShellExecuteW(
+            None,
+            w!("open"),
+            PCWSTR(wide.as_ptr()),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        );
+        // ShellExecuteW returns an HINSTANCE > 32 on success.
+        if hinst.0 as usize <= 32 {
+            tracing::warn!(path = %target.display(), "could not open log via ShellExecute");
+        }
+    }
+
     /// Pop up the context menu at the cursor.
     unsafe fn show_menu(hwnd: HWND) {
         let enabled = STATE.with(|s| s.borrow().as_ref().map(|st| st.enabled).unwrap_or(true));
@@ -292,7 +356,9 @@ mod windows_impl {
             };
         let _ = AppendMenuW(menu, toggle_flags, ID_TOGGLE, w!("Fernsteuerung aktiv"));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-        let _ = AppendMenuW(menu, MF_STRING, ID_QUIT, w!("Beenden"));
+        // Read-only convenience: open the local agent log so the person at the PC can see
+        // what kenny is doing. There is intentionally no "quit" — see the module docs.
+        let _ = AppendMenuW(menu, MF_STRING, ID_OPEN_LOGS, w!("Protokoll anzeigen"));
 
         let mut pt = POINT::default();
         let _ = GetCursorPos(&mut pt);
@@ -327,9 +393,7 @@ mod windows_impl {
                 WM_COMMAND => {
                     match wparam.0 & 0xffff {
                         ID_TOGGLE => toggle(),
-                        ID_QUIT => {
-                            let _ = DestroyWindow(hwnd);
-                        }
+                        ID_OPEN_LOGS => open_logs(),
                         _ => {}
                     }
                     LRESULT(0)
@@ -341,5 +405,49 @@ mod windows_impl {
                 _ => DefWindowProcW(hwnd, msg, wparam, lparam),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::newest_log_file;
+    use std::fs;
+    use std::time::{Duration, SystemTime};
+
+    #[test]
+    fn newest_log_file_picks_most_recent_match() {
+        let dir = std::env::temp_dir().join(format!("kenny-tray-logs-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        // A non-log file must be ignored even if it is the newest thing in the dir.
+        fs::write(dir.join("unrelated.txt"), b"x").unwrap();
+        let old = dir.join("kenny-agent.log.2026-06-05");
+        let new = dir.join("kenny-agent.log.2026-06-06");
+        fs::write(&old, b"old").unwrap();
+        fs::write(&new, b"new").unwrap();
+
+        // Make `new` distinctly newer regardless of write granularity.
+        let later = SystemTime::now() + Duration::from_secs(5);
+        let f = fs::File::open(&new).unwrap();
+        f.set_modified(later).unwrap();
+
+        assert_eq!(newest_log_file(&dir).as_deref(), Some(new.as_path()));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn newest_log_file_none_when_no_match_or_dir() {
+        let missing = std::env::temp_dir().join("kenny-tray-does-not-exist-xyz");
+        let _ = fs::remove_dir_all(&missing);
+        assert_eq!(newest_log_file(&missing), None);
+
+        let empty = std::env::temp_dir().join(format!("kenny-tray-empty-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&empty);
+        fs::create_dir_all(&empty).unwrap();
+        fs::write(empty.join("readme.md"), b"x").unwrap();
+        assert_eq!(newest_log_file(&empty), None);
+        let _ = fs::remove_dir_all(&empty);
     }
 }

@@ -228,6 +228,86 @@ mod windows_impl {
             .status();
     }
 
+    /// (Re)launch the tray helper into the active interactive session.
+    ///
+    /// The service runs in session 0; a plain `spawn()` child would land there too —
+    /// invisible to the logged-in user. To put the tray on the real desktop we take the
+    /// active console session's user token (`WTSGetActiveConsoleSessionId` +
+    /// `WTSQueryUserToken`) and `CreateProcessAsUserW` on `winsta0\default`.
+    ///
+    /// The tray takes a single-instance mutex, so this is a no-op when one is already
+    /// running and is therefore safe to call unconditionally on every service start. That
+    /// is what brings the tray back after the user closes it (Task Manager) or it crashes:
+    /// a service restart relaunches it. Best-effort — before anyone logs in there is no
+    /// token, a normal non-fatal outcome that the logon autostart covers. See ADR-0019.
+    fn launch_tray_in_active_session() -> anyhow::Result<()> {
+        use anyhow::Context as _;
+        use windows::core::PWSTR;
+        use windows::Win32::Foundation::{CloseHandle, FALSE, HANDLE};
+        use windows::Win32::System::RemoteDesktop::{
+            WTSGetActiveConsoleSessionId, WTSQueryUserToken,
+        };
+        use windows::Win32::System::Threading::{
+            CreateProcessAsUserW, CREATE_NO_WINDOW, PROCESS_INFORMATION, STARTUPINFOW,
+        };
+
+        let exe = std::env::current_exe()?;
+
+        // SAFETY: every call is passed valid, owned buffers / out-params; the user token
+        // and the new process/thread handles are closed on all paths.
+        unsafe {
+            let session_id = WTSGetActiveConsoleSessionId();
+            // 0xFFFFFFFF means no session is currently attached to the physical console.
+            if session_id == u32::MAX {
+                anyhow::bail!("no active console session");
+            }
+
+            let mut token = HANDLE::default();
+            WTSQueryUserToken(session_id, &mut token)
+                .context("WTSQueryUserToken (nobody logged in?)")?;
+
+            // CreateProcessAsUserW may write into the command-line buffer, so it must be a
+            // writable, NUL-terminated UTF-16 vector that outlives the call.
+            let mut cmdline: Vec<u16> = format!("\"{}\" tray", exe.display())
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect();
+            // Target the interactive window station/desktop so the icon actually appears.
+            let mut desktop: Vec<u16> = "winsta0\\default"
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect();
+
+            let si = STARTUPINFOW {
+                cb: std::mem::size_of::<STARTUPINFOW>() as u32,
+                lpDesktop: PWSTR(desktop.as_mut_ptr()),
+                ..Default::default()
+            };
+            let mut pi = PROCESS_INFORMATION::default();
+
+            let result = CreateProcessAsUserW(
+                token,
+                None,
+                PWSTR(cmdline.as_mut_ptr()),
+                None,
+                None,
+                FALSE,
+                CREATE_NO_WINDOW,
+                None,
+                None,
+                &si,
+                &mut pi,
+            );
+
+            let _ = CloseHandle(token);
+            result.context("CreateProcessAsUserW")?;
+            // We don't wait on the tray; release our handles to the new process/thread.
+            let _ = CloseHandle(pi.hProcess);
+            let _ = CloseHandle(pi.hThread);
+        }
+        Ok(())
+    }
+
     /// `uninstall` — stop (best effort) and delete the service.
     pub fn uninstall(args: UninstallArgs) -> anyhow::Result<()> {
         let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
@@ -362,6 +442,13 @@ mod windows_impl {
             wait_hint: Duration::default(),
             process_id: None,
         })?;
+
+        // (Re)launch the tray into the interactive session. A service start/restart is the
+        // recovery path for a tray the user closed or that crashed (ADR-0019); the tray's
+        // single-instance guard makes this harmless when one is already running.
+        if let Err(e) = launch_tray_in_active_session() {
+            info!(error = %e, "did not launch tray on service start (likely nobody logged in)");
+        }
 
         // Run the tunnel on a tokio runtime until the shutdown signal fires.
         let runtime = tokio::runtime::Runtime::new()?;
