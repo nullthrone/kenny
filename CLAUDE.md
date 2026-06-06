@@ -3,6 +3,12 @@
 kenny is a self-hosted remote-admin and fleet-monitoring system for Windows PCs in a
 family setting, operated through Claude (MCP) and a web dashboard.
 
+## Language
+
+Respond to the architect in the language they write in, but keep everything committed to
+the repository strictly in English — code, comments, docs, commit messages, PR titles and
+bodies, and identifiers.
+
 ## Why is it built this way?
 
 Architecture and rationale live in **`docs/adr/`** (MADR). Read them there — they are
