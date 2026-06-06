@@ -147,6 +147,24 @@ def build_api_routes(
             screenshots.put(agent_id, result["image_b64"], result.get("format", "png"))
         return JSONResponse({"ok": True})
 
+    async def api_remotehelp(request: Request) -> JSONResponse:
+        """Open Quick Assist on the agent's desktop for a remote-help session.
+
+        Forwards ``remotehelp_start``; the returned ``note`` reminds the operator of
+        the human-in-the-loop steps (helper shares the code, the person accepts).
+        """
+
+        agent_id = request.path_params["id"]
+        try:
+            result = await tunnel.send_request(agent_id, "remotehelp_start", {}, 30)
+            await call_log.record(agent_id, "remotehelp_start", {}, ok=True)
+        except (ToolError, Exception) as exc:  # noqa: BLE001 - surface to UI
+            message = exc.message if isinstance(exc, ToolError) else str(exc)
+            await call_log.record(agent_id, "remotehelp_start", {}, ok=False, error=message)
+            return JSONResponse({"ok": False, "error": message}, status_code=502)
+        note = result.get("note") if isinstance(result, dict) else None
+        return JSONResponse({"ok": True, "note": note})
+
     async def api_audit(_request: Request) -> JSONResponse:
         """Recent tool-call audit log across the whole fleet (for the dashboard).
 
@@ -272,6 +290,7 @@ def build_api_routes(
         Route("/api/events", api_events),
         Route("/api/agent/{id}", api_agent),
         Route("/api/agent/{id}/refresh", api_refresh, methods=["POST"]),
+        Route("/api/agent/{id}/remotehelp", api_remotehelp, methods=["POST"]),
         Route("/api/agent/{id}/screenshot", api_screenshot),
         Route("/api/agent/{id}/screenshot", api_capture, methods=["POST"]),
         Route("/api/agents/{id}/token", api_rotate_token, methods=["POST"]),
