@@ -10,8 +10,36 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: detect changes
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      server: ${{ steps.filter.outputs.server }}
+      agent: ${{ steps.filter.outputs.agent }}
+      contract: ${{ steps.filter.outputs.contract }}
+      ci: ${{ steps.filter.outputs.ci }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            server:
+              - 'kenny-server/**'
+            agent:
+              - 'kenny-agent/**'
+            contract:
+              - 'docs/protocol.md'
+              - 'docs/fixtures/**'
+            ci:
+              - '.github/workflows/ci.yml'
+
   server:
     name: kenny-server (Python)
+    needs: changes
+    if: ${{ needs.changes.outputs.server == 'true' || needs.changes.outputs.contract == 'true' || needs.changes.outputs.ci == 'true' }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -30,6 +58,8 @@ jobs:
 
   agent:
     name: kenny-agent (Rust)
+    needs: changes
+    if: ${{ needs.changes.outputs.agent == 'true' || needs.changes.outputs.contract == 'true' || needs.changes.outputs.ci == 'true' }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -50,6 +80,8 @@ jobs:
 
   agent-windows:
     name: kenny-agent (Windows)
+    needs: changes
+    if: ${{ needs.changes.outputs.agent == 'true' || needs.changes.outputs.contract == 'true' || needs.changes.outputs.ci == 'true' }}
     runs-on: windows-latest
     defaults:
       run:
@@ -68,6 +100,8 @@ jobs:
 
   e2e:
     name: real agent <-> server (Linux)
+    needs: changes
+    if: ${{ needs.changes.outputs.server == 'true' || needs.changes.outputs.agent == 'true' || needs.changes.outputs.contract == 'true' || needs.changes.outputs.ci == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
