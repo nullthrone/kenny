@@ -406,12 +406,17 @@
        align-items:start lets the sticky rail scroll independently of the cards. */
     .kc-console { display: grid; grid-template-columns: 300px minmax(0, 1fr) 380px;
       gap: 16px; align-items: start; }
-    .kc-console.no-copilot { grid-template-columns: 300px minmax(0, 1fr); }
-    /* Hide the docked rail when toggled off — desktop only. Below the rail
-       breakpoint the copilot is an overlay drawer (see .kc-copilot rules below),
-       so it must never be display:none'd by a persisted desktop "off" preference;
-       its visibility there is driven solely by .copilot-drawer-open. */
-    @media (min-width: 1181px) { .kc-console.no-copilot .kc-copilot { display: none; } }
+    /* The docked-rail "off" state only reshapes the layout on desktop: it drops
+       the 3rd column and hides the rail. This stays desktop-scoped on purpose —
+       below the rail breakpoint the copilot is an out-of-flow overlay drawer, so
+       the grid must be driven purely by width. If these .no-copilot rules leaked
+       to narrow widths their higher specificity (0,2,0) would override the
+       width-based media rules (0,1,0) and force a 300px two-column grid onto a
+       phone, overflowing the viewport. */
+    @media (min-width: 1181px) {
+      .kc-console.no-copilot { grid-template-columns: 300px minmax(0, 1fr); }
+      .kc-console.no-copilot .kc-copilot { display: none; }
+    }
     @media (max-width: 1180px) { .kc-console { grid-template-columns: 280px minmax(0, 1fr); } }
     @media (max-width: 820px) { .kc-console { grid-template-columns: 1fr; } }
     .kc-section-lbl { font-size: 12px; color: var(--fg-muted); letter-spacing: .04em; text-transform: uppercase; }
