@@ -21,7 +21,23 @@ pub async fn run(agent_id: String, interval: Duration, out: mpsc::Sender<Frame>)
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         ticker.tick().await;
-        let telemetry = crate::telemetry::collect(&agent_id, &[]);
+        // Collection runs real WMI/PowerShell/CIM on Windows and can take several
+        // seconds. Run it off the async runtime via `spawn_blocking` so it never stalls
+        // the tunnel's read loop, heartbeat replies, or in-flight tool responses (which
+        // share this task's runtime). The first tick still fires immediately, so the
+        // server still sees fresh data right after register.
+        let collect_agent_id = agent_id.clone();
+        let telemetry = match tokio::task::spawn_blocking(move || {
+            crate::telemetry::collect(&collect_agent_id, &[])
+        })
+        .await
+        {
+            Ok(t) => t,
+            Err(e) => {
+                warn!(error = %e, "telemetry collection task failed; skipping this tick");
+                continue;
+            }
+        };
         debug!(sections = telemetry.snapshot.len(), "pushing telemetry");
         if out.send(Frame::Telemetry(telemetry)).await.is_err() {
             warn!("telemetry channel closed; scheduler stopping");

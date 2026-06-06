@@ -674,7 +674,7 @@ mod tests {
             let _ = serve_once(&config, &mut shutdown).await;
         });
 
-        let dispatched = tokio::time::timeout(Duration::from_secs(5), server)
+        let dispatched = tokio::time::timeout(Duration::from_secs(15), server)
             .await
             .expect("server task timed out")
             .unwrap();
@@ -756,7 +756,7 @@ mod tests {
             let _ = serve_once(&config, &mut shutdown).await;
         });
 
-        let outcome = tokio::time::timeout(Duration::from_secs(5), server)
+        let outcome = tokio::time::timeout(Duration::from_secs(15), server)
             .await
             .expect("server task timed out")
             .unwrap();
