@@ -36,3 +36,4 @@ implementation detail", see *When (not) to write an ADR* in the repository `CLAU
 | [0020](0020-agent-side-deterministic-tool-guard.md) | Agent-side deterministic safety guard for dangerous tool calls | accepted |
 | [0021](0021-shared-policy-catalog-operator-rules-and-server-mirror.md) | Shared policy catalog, operator deny rules, and a server-side mirror | accepted |
 | [0022](0022-remote-help-concierge-via-user-session-launch.md) | Orchestrate Windows Quick Assist as a concierge via user-session launch | accepted |
+| [0023](0023-mutual-agent-auth-ed25519.md) | Mutual agent⇄server authentication via per-agent Ed25519 signatures | accepted |
