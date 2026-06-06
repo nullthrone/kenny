@@ -1,4 +1,4 @@
-# 0017. Screenshots captured in the user session via the tray helper
+# 0018. Screenshots captured in the user session via the tray helper
 
 - Status: accepted
 - Date: 2026-06-05
@@ -7,7 +7,7 @@
 
 The `screen_capture` tool returned a black image in the normal deployment. The cause
 is Windows **session 0 isolation**: the agent runs as a LocalSystem service in session 0
-(see [ADR-0012](0012-agent-windows-service-and-self-update.md)), which has no visible
+(see [ADR-0013](0013-agent-windows-service-and-self-update.md)), which has no visible
 desktop. A GDI `BitBlt` only sees the desktop of the *calling* session, so a grab from
 the service produces a black frame — regardless of how correct the capture code is.
 
@@ -18,7 +18,7 @@ capture. We need a way to grab the *interactive* desktop and hand the result bac
 session-0 process that owns the tunnel.
 
 A component already lives in the interactive session: the **tray helper**
-(`kenny-agent tray`, [ADR-0010](0010-local-remote-control-kill-switch.md)), auto-started
+(`kenny-agent tray`, [ADR-0011](0011-local-remote-control-kill-switch.md)), auto-started
 at logon. Until now it only flipped the kill-switch control file. A second problem
 surfaced alongside this: the tray icon did not appear right after `install`, because
 `install` only registered the HKLM `...\Run` autostart, which fires at the *next* logon
@@ -35,7 +35,7 @@ rather than immediately.
   capture, duplicating the user-session presence the tray already provides.
 - **Run the agent in the user session instead of as a service.** Matches ADR-0004's
   assumption but loses the always-on, pre-logon, auto-restart properties the service was
-  chosen for ([ADR-0012](0012-agent-windows-service-and-self-update.md)).
+  chosen for ([ADR-0013](0013-agent-windows-service-and-self-update.md)).
 
 ## Decision Outcome
 
@@ -86,5 +86,5 @@ Chosen option: **capture in the tray, deliver over a local named pipe.**
 - Code: `kenny-agent/src/screencap_ipc.rs`, `kenny-agent/src/handlers/screenshot.rs`,
   `kenny-agent/src/tray.rs`, `kenny-agent/src/service.rs`, `kenny-agent/src/main.rs`.
 - Related: [ADR-0004](0004-agent-initiated-outbound-connection.md) (session assumption),
-  [ADR-0010](0010-local-remote-control-kill-switch.md) (tray + kill switch),
-  [ADR-0012](0012-agent-windows-service-and-self-update.md) (session-0 service).
+  [ADR-0011](0011-local-remote-control-kill-switch.md) (tray + kill switch),
+  [ADR-0013](0013-agent-windows-service-and-self-update.md) (session-0 service).

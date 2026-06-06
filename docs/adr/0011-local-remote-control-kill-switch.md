@@ -1,4 +1,4 @@
-# 0010. Local remote-control kill switch (tray on/off)
+# 0011. Local remote-control kill switch (tray on/off)
 
 - Status: accepted
 - Date: 2026-06-05

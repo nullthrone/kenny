@@ -1,4 +1,4 @@
-"""GitHub auto-fetch of the prebuilt agent binary (ADR-0014).
+"""GitHub auto-fetch of the prebuilt agent binary (ADR-0015).
 
 All tests use ``httpx.MockTransport`` — no real network.
 """

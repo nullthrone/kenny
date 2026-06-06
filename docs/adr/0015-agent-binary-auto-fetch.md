@@ -1,4 +1,4 @@
-# 0014. Server auto-fetch of the prebuilt agent binary from GitHub Releases
+# 0015. Server auto-fetch of the prebuilt agent binary from GitHub Releases
 
 - Status: accepted
 - Date: 2026-06-05
@@ -6,7 +6,7 @@
 ## Context and Problem Statement
 
 kenny serves a **prebuilt** `kenny-agent.exe` and injects per-install config at download time
-(ADR-0011); the same artifact powers self-update (ADR-0012). Until now an operator had to **manually
+(ADR-0012); the same artifact powers self-update (ADR-0013). Until now an operator had to **manually
 place** that binary at `KENNY_AGENT_BINARY` (typically copying it into the `/data` volume) before the
 dashboard could produce any installer. This created a first-agent chicken-and-egg: the *download
 installer* button only existed inside an already-enrolled agent's view, and a fresh deployment had no
@@ -45,6 +45,6 @@ so the first installer can be downloaded without a pre-existing agent tile.
 
 ## More Information
 
-- Supplements [ADR-0011](0011-agent-distribution-prebuilt-binary.md) and [ADR-0012](0012-agent-windows-service-and-self-update.md).
+- Supplements [ADR-0012](0012-agent-distribution-prebuilt-binary.md) and [ADR-0013](0013-agent-windows-service-and-self-update.md).
 - Implementation: `kenny-server/kenny_server/agent_release.py`, the `/api/agent-binary[/fetch]` routes in `distribution.py`, the startup hook in `main.py`.
 - Release asset source: `.github/workflows/release.yml`.

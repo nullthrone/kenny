@@ -11,7 +11,7 @@
 //!
 //! Default is **on**: a missing/unreadable/corrupt file reads as enabled, so the
 //! agent is fully operable out of the box and a transient read error never silently
-//! widens the block. See ADR-0010.
+//! widens the block. See ADR-0011.
 
 use std::path::PathBuf;
 

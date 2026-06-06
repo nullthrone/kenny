@@ -12,7 +12,7 @@ agent (so a rotated token survives a restart).
 
 Shares the same DB file as :class:`~kenny_server.store.TelemetryStore`
 (``KENNY_DB_PATH``); it opens its own aiosqlite connection to keep the two
-stores independent and simple. See ADR-0013.
+stores independent and simple. See ADR-0014.
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ def _grace_secs() -> int:
 
     Bounds how long the previous token stays valid after a rotation so that
     generating an installer never instantly bricks a still-connected agent. See
-    ADR-0015. ``0`` restores the historic instant-invalidation behaviour.
+    ADR-0014. ``0`` restores the historic instant-invalidation behaviour.
     """
 
     raw = os.environ.get("KENNY_TOKEN_GRACE_SECS")
@@ -124,7 +124,7 @@ class AgentTokenStore:
         recent :meth:`create_or_rotate`) also verifies until either the current
         token is first seen here — which retires the previous one — or its grace
         window (``prev_expires_at``) lapses. This keeps a still-connected agent
-        authenticating across a rotation it hasn't picked up yet (ADR-0015).
+        authenticating across a rotation it hasn't picked up yet (ADR-0014).
         """
 
         if not token:
@@ -168,7 +168,7 @@ class AgentTokenStore:
         it. Any previously issued token is demoted to a grace-period token that
         keeps verifying until the new one is first used or ``KENNY_TOKEN_GRACE_SECS``
         elapses, so generating an installer never instantly bricks a live agent
-        (ADR-0015).
+        (ADR-0014).
         """
 
         token = secrets.token_urlsafe(32)

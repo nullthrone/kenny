@@ -117,7 +117,7 @@ pub enum ErrorCode {
     BadArgs,
     Internal,
     /// The agent is online but remote control was switched off locally at the
-    /// endpoint (via the tray menu); mutating tools are refused. See ADR-0010.
+    /// endpoint (via the tray menu); mutating tools are refused. See ADR-0011.
     Disabled,
 }
 

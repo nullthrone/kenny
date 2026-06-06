@@ -1,4 +1,4 @@
-# 0011. Agent distribution: prebuilt binary + config injection
+# 0012. Agent distribution: prebuilt binary + config injection
 
 - Status: accepted
 - Date: 2026-06-04
@@ -25,7 +25,7 @@ Chosen option: **A (prebuilt binary + config injection).**
 - Cheap: build once per release, not per download; fast, cacheable downloads; no build
   toolchain / Docker-in-Docker / Windows licensing on the (Free-Tier) server.
 - Reproducible and **signable** (one artifact per version) — a prerequisite for safe
-  self-update (ADR-0012), which pulls the same prebuilt binary.
+  self-update (ADR-0013), which pulls the same prebuilt binary.
 - The per-agent token is delivered in the generated config/installer. Embedding the token in
   a unique binary (B) is **not** real secrecy (it is extractable), so B's only real benefit —
   a single self-contained exe — is cosmetic and does not justify its cost/latency/complexity
@@ -39,11 +39,11 @@ need ever appears.
 - Good, because distribution is a static file serve + a small generated config; trivially cheap.
 - Good, because the same artifact powers first install and server-triggered self-update.
 - Bad, because the token rides in a config file rather than "inside" the binary — acceptable
-  (extraction-equivalent), and the token is per-agent, rotatable (ADR-0013), and TLS-protected.
+  (extraction-equivalent), and the token is per-agent, rotatable (ADR-0014), and TLS-protected.
 
 ## More Information
 
-- The server mints/rotates the per-agent token via the token store (ADR-0013) when generating
+- The server mints/rotates the per-agent token via the token store (ADR-0014) when generating
   a bundle. A shareable, **expiring one-time link** lets the target user download without an
   operator login (nonce-gated).
 - Implementation: download routes in `kenny-server` (WS5); prebuilt artifact from the release

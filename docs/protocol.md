@@ -87,7 +87,7 @@ control **off** locally (via the agent's tray menu): the agent then refuses ever
 **mutating** tool (`powershell_exec`, `winget_install|uninstall|update`,
 `net_dns_flush`, `net_adapter_reset`, `agent_update`) while telemetry and read-only
 diagnostics keep working. Remote control is **on** by default and the choice persists
-across restarts. See ADR-0010.
+across restarts. See ADR-0011.
 
 ### `telemetry` (agent → server, pushed)
 

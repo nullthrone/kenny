@@ -139,7 +139,7 @@ with `error.code = "disabled"`; **telemetry and all read-only tools keep working
 the fleet view stays live. Remote control is **on by default** and the choice persists
 across restarts. The tray icon shows the state at a glance (normal Kenny = on, greyed
 with a red slash = off). To re-enable, open the menu and toggle it back on. See
-[ADR-0010](adr/0010-local-remote-control-kill-switch.md).
+[ADR-0011](adr/0011-local-remote-control-kill-switch.md).
 
 ## Adding a PC to the fleet
 

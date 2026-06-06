@@ -58,10 +58,10 @@ KENNY_DOMAIN=kenny.example.com KENNY_OPERATOR_TOKEN=... docker compose --profile
 | `KENNY_TLS` | server | unset | Set `1` behind TLS so the login cookie gets the `Secure` flag. |
 | `KENNY_PUBLIC_URL` | server | `http://localhost:<port>` | External base URL; used to build installer/update links and the agent `--server` `wss://…/agent/ws`. |
 | `KENNY_AGENT_BINARY` | server | — | Path to the prebuilt `kenny-agent.exe` the server serves for installer download + self-update. Overrides the GitHub auto-fetch when set. |
-| `KENNY_GITHUB_TOKEN` | server | — | GitHub token enabling auto-fetch of the agent binary from Releases (ADR-0014). When set (and `KENNY_AGENT_BINARY` is not), the server fetches `kenny-agent.exe` on startup. |
+| `KENNY_GITHUB_TOKEN` | server | — | GitHub token enabling auto-fetch of the agent binary from Releases (ADR-0015). When set (and `KENNY_AGENT_BINARY` is not), the server fetches `kenny-agent.exe` on startup. |
 | `KENNY_GITHUB_REPO` | server | `t11z/kenny` | Repo to fetch the agent binary release from. |
 | `KENNY_AGENT_BINARY_CACHE` | server | `<dir of KENNY_DB_PATH>/kenny-agent.exe` | Where the auto-fetched binary is cached (the `/data` volume in the container). |
-| `KENNY_AGENT_VERSION` | server | `0.2.0` | **Fallback** version label only — the GitHub release tag of the fetched binary leads (ADR-0014). Used when no tag is known (e.g. a manually-placed binary without a `.version` sidecar). |
+| `KENNY_AGENT_VERSION` | server | `0.2.0` | **Fallback** version label only — the GitHub release tag of the fetched binary leads (ADR-0015). Used when no tag is known (e.g. a manually-placed binary without a `.version` sidecar). |
 | `KENNY_HOST` / `KENNY_PORT` | server | `127.0.0.1` / `8000` | Bind address (container sets `0.0.0.0`). |
 | `KENNY_DB_PATH` | server | `kenny.sqlite` | SQLite telemetry store (container: `/data/kenny.sqlite`). |
 | `KENNY_TELEMETRY_INTERVAL_SECS` | agent / server | `900` | Agent push interval; also pre-filled into generated installers. |
@@ -69,7 +69,7 @@ KENNY_DOMAIN=kenny.example.com KENNY_OPERATOR_TOKEN=... docker compose --profile
 > **Security:** if `KENNY_OPERATOR_TOKEN` is unset the server uses a loud, insecure dev token. Always
 > set real tokens and serve over `wss`/`https` for anything non-local. See
 > [`adr/0008-operator-authentication.md`](adr/0008-operator-authentication.md) and
-> [`adr/0013-auth-hardening.md`](adr/0013-auth-hardening.md).
+> [`adr/0014-auth-hardening.md`](adr/0014-auth-hardening.md).
 
 ## Running from source (development)
 
@@ -89,7 +89,7 @@ contract and golden fixtures.
 ## Enabling agent downloads from the GUI
 
 The server serves a **prebuilt** binary; it does not compile per download (see
-[`adr/0011-agent-distribution-prebuilt-binary.md`](adr/0011-agent-distribution-prebuilt-binary.md)). Point it at a binary and set the
+[`adr/0012-agent-distribution-prebuilt-binary.md`](adr/0012-agent-distribution-prebuilt-binary.md)). Point it at a binary and set the
 public URL:
 
 ```yaml
@@ -108,7 +108,7 @@ and a minted `--token`.
 
 To avoid the first-agent chicken-and-egg (hand-placing the `.exe` into the volume before any
 installer can be downloaded), the server can fetch the binary itself when a GitHub token is
-configured (ADR-0014):
+configured (ADR-0015):
 
 ```yaml
 environment:
@@ -126,7 +126,7 @@ PC** control lets you download an installer for the very first machine without a
 ## Installing the agent on Windows
 
 The single binary manages its own service (see
-[`adr/0012-agent-windows-service-and-self-update.md`](adr/0012-agent-windows-service-and-self-update.md)):
+[`adr/0013-agent-windows-service-and-self-update.md`](adr/0013-agent-windows-service-and-self-update.md)):
 
 ```powershell
 # run as Administrator
