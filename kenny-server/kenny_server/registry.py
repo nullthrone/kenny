@@ -23,7 +23,7 @@ SendFn = Callable[[dict[str, Any]], Awaitable[None]]
 
 _DEV_TOKENS: dict[str, str] = {
     "dev": "dev-token",
-    "papa-pc": "dev-token-papa",
+    "example-pc": "dev-token-1",
 }
 
 

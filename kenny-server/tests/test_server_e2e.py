@@ -279,15 +279,15 @@ async def test_e2e_rotation_grace_window_keeps_live_agent(tmp_path) -> None:
     ws_url = f"ws://127.0.0.1:{port}/agent/ws"
     async with _Server(app, port):
         # The agent is provisioned and connected with its current token.
-        t1 = await app.state.token_store.create_or_rotate("thomas-pc")
-        assert await _register_once(ws_url, "thomas-pc", t1) is True
+        t1 = await app.state.token_store.create_or_rotate("example-pc-2")
+        assert await _register_once(ws_url, "example-pc-2", t1) is True
 
         # Operator generates a new installer -> token rotates server-side.
-        t2 = await app.state.token_store.create_or_rotate("thomas-pc")
+        t2 = await app.state.token_store.create_or_rotate("example-pc-2")
 
         # The live agent, still holding t1, reconnects and is NOT locked out.
-        assert await _register_once(ws_url, "thomas-pc", t1) is True
+        assert await _register_once(ws_url, "example-pc-2", t1) is True
 
         # Once the new installer is deployed and t2 is used, t1 is retired.
-        assert await _register_once(ws_url, "thomas-pc", t2) is True
-        assert await _register_once(ws_url, "thomas-pc", t1) is False
+        assert await _register_once(ws_url, "example-pc-2", t2) is True
+        assert await _register_once(ws_url, "example-pc-2", t1) is False

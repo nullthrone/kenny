@@ -52,7 +52,7 @@ def test_engine_permits_benign_call() -> None:
     assert engine.check(
         "powershell_exec", {"script": "Get-Process | Select-Object -First 5"}
     ) is None
-    assert engine.check("fs_read", {"path": r"C:\Users\papa\notes.txt"}) is None
+    assert engine.check("fs_read", {"path": r"C:\Users\testuser\notes.txt"}) is None
 
 
 def test_engine_does_not_mirror_agent_update() -> None:

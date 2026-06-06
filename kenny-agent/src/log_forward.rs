@@ -337,10 +337,10 @@ mod tests {
 
     #[test]
     fn into_frame_carries_agent_id() {
-        let frame = ev("hi").into_frame("papa-pc");
+        let frame = ev("hi").into_frame("example-pc");
         match frame {
             Frame::Log(log) => {
-                assert_eq!(log.agent_id, "papa-pc");
+                assert_eq!(log.agent_id, "example-pc");
                 assert_eq!(log.message, "hi");
             }
             _ => panic!("expected Frame::Log"),

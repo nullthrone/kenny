@@ -39,9 +39,9 @@ Every frame has a `type` field. Known types:
 ```json
 {
   "type": "register",
-  "agent_id": "papa-pc",
+  "agent_id": "example-pc",
   "token": "<api-key>",
-  "meta": { "hostname": "PAPA-PC", "os": "windows", "version": "0.1.0" }
+  "meta": { "hostname": "EXAMPLE-PC", "os": "windows", "version": "0.1.0" }
 }
 ```
 
@@ -140,7 +140,7 @@ without domain logic.
 ```json
 {
   "type": "telemetry",
-  "agent_id": "papa-pc",
+  "agent_id": "example-pc",
   "collected_at": "2026-06-04T18:00:00Z",
   "snapshot": {
     "disk": {
@@ -150,7 +150,7 @@ without domain logic.
         { "mount": "C:", "total_bytes": 511000000000, "free_bytes": 46000000000, "percent_used": 91 }
       ],
       "top_dirs": [
-        { "path": "C:\\Users\\papa\\Videos", "bytes": 120000000000 }
+        { "path": "C:\\Users\\testuser\\Videos", "bytes": 120000000000 }
       ]
     },
     "defender": {
@@ -184,7 +184,7 @@ dropped under pressure — `log` frames are never retried like a `request`.
 ```json
 {
   "type": "log",
-  "agent_id": "papa-pc",
+  "agent_id": "example-pc",
   "at": "2026-06-04T18:00:01Z",
   "level": "warn",
   "target": "kenny_agent::tunnel",

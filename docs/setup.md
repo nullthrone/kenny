@@ -34,7 +34,7 @@ flowchart TB
 ```bash
 # from the repo root
 KENNY_OPERATOR_TOKEN="$(openssl rand -hex 24)" \
-KENNY_AGENT_TOKENS="papa-pc=$(openssl rand -hex 16),oma-laptop=$(openssl rand -hex 16)" \
+KENNY_AGENT_TOKENS="example-pc=$(openssl rand -hex 16),example-laptop=$(openssl rand -hex 16)" \
 ANTHROPIC_API_KEY="sk-ant-..." \
 docker compose up --build -d
 ```
@@ -131,7 +131,7 @@ The single binary manages its own service (see
 ```powershell
 # run as Administrator
 kenny-agent.exe install --server wss://kenny.example.com/agent/ws `
-  --agent-id papa-pc --token <token> [--telemetry-interval-secs 900] [--service-name kenny-agent]
+  --agent-id example-pc --token <token> [--telemetry-interval-secs 900] [--service-name kenny-agent]
 
 kenny-agent.exe uninstall          # remove the service
 kenny-agent.exe run                # foreground (default when no subcommand) — for debugging

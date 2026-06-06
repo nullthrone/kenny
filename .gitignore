@@ -25,3 +25,6 @@ kenny-server/*.sqlite*
 # Python build artifacts
 /kenny-server/build/
 /kenny-server/dist/
+
+# mkdocs build output
+site/

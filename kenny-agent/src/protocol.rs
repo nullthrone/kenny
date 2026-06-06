@@ -271,7 +271,7 @@ mod tests {
     fn log_frame_round_trip() {
         // With fields.
         let with = Frame::Log(Log {
-            agent_id: "papa-pc".to_string(),
+            agent_id: "example-pc".to_string(),
             at: "2026-06-04T18:00:01Z".to_string(),
             level: LogLevel::Warn,
             target: "kenny_agent::tunnel".to_string(),
@@ -287,7 +287,7 @@ mod tests {
 
         // Without fields: the key is omitted entirely.
         let without = Frame::Log(Log {
-            agent_id: "papa-pc".to_string(),
+            agent_id: "example-pc".to_string(),
             at: "2026-06-04T18:00:01Z".to_string(),
             level: LogLevel::Info,
             target: "kenny_agent::dispatch".to_string(),

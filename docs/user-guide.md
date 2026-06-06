@@ -83,8 +83,8 @@ a reasonable per-section status.
 
 ### Option A — the dashboard chat (no local client)
 
-Open the **chat** tab and ask in plain language (“is Defender on for papa-pc?”, “free up disk on
-oma-laptop”). Claude picks the right kenny tools and runs them.
+Open the **chat** tab and ask in plain language (“is Defender on for example-pc?”, “free up disk on
+example-laptop”). Claude picks the right kenny tools and runs them.
 
 ```mermaid
 sequenceDiagram
@@ -92,7 +92,7 @@ sequenceDiagram
   participant Chat as Dashboard chat
   participant Claude as Claude (server-side)
   participant Agent as kenny-agent
-  Op->>Chat: "Update 7-Zip on papa-pc"
+  Op->>Chat: "Update 7-Zip on example-pc"
   Chat->>Claude: message + tool catalog
   Claude-->>Chat: read-only tool calls (diag/telemetry)
   Chat->>Agent: forwarded (auto-run)

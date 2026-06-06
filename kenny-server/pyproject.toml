@@ -3,6 +3,15 @@ name = "kenny-server"
 version = "0.1.0"
 description = "kenny server: MCP endpoint for Claude, agent tunnel, telemetry store, and operator dashboard"
 requires-python = ">=3.11"
+license = "AGPL-3.0-only"
+authors = [{ name = "t11z and the kenny contributors" }]
+keywords = ["remote-admin", "telemetry", "windows", "mcp", "fastmcp", "fleet-monitoring"]
+classifiers = [
+    "Programming Language :: Python :: 3.11",
+    "Framework :: AsyncIO",
+    "Topic :: System :: Systems Administration",
+    "Topic :: System :: Monitoring",
+]
 dependencies = [
     "fastmcp>=2.0",
     "starlette>=0.37",
@@ -20,6 +29,16 @@ dev = [
     "pytest-asyncio>=0.23",
     "ruff>=0.5",
 ]
+docs = [
+    "mkdocs-material>=9.5",
+    "mkdocs-awesome-pages-plugin>=2.9",
+]
+
+[project.urls]
+Homepage = "https://github.com/t11z/kenny"
+Repository = "https://github.com/t11z/kenny"
+Documentation = "https://t11z.github.io/kenny/"
+Issues = "https://github.com/t11z/kenny/issues"
 
 [project.scripts]
 kenny-server = "kenny_server.main:run"

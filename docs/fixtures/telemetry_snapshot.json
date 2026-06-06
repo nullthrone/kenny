@@ -1,6 +1,6 @@
 {
   "type": "telemetry",
-  "agent_id": "papa-pc",
+  "agent_id": "example-pc",
   "collected_at": "2026-06-04T18:00:00Z",
   "snapshot": {
     "disk": {
@@ -10,7 +10,7 @@
         { "mount": "C:", "total_bytes": 511000000000, "free_bytes": 46000000000, "percent_used": 91 }
       ],
       "top_dirs": [
-        { "path": "C:\\Users\\papa\\Videos", "bytes": 120000000000 }
+        { "path": "C:\\Users\\testuser\\Videos", "bytes": 120000000000 }
       ]
     },
     "defender": {

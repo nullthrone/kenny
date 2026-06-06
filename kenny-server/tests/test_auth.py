@@ -67,7 +67,7 @@ def test_rotate_token_requires_operator(tmp_path) -> None:
     app = _app(tmp_path)
     with TestClient(app) as c:
         # No operator credential -> 401, no token minted.
-        r = c.post("/api/agents/papa-pc/token", follow_redirects=False)
+        r = c.post("/api/agents/example-pc/token", follow_redirects=False)
         assert r.status_code == 401
 
 
@@ -79,7 +79,7 @@ async def test_rotate_token_then_agent_authenticates(tmp_path) -> None:
     token = app.state.operator_token
     with TestClient(app) as c:
         r = c.post(
-            "/api/agents/papa-pc/token",
+            "/api/agents/example-pc/token",
             headers={"Authorization": f"Bearer {token}"},
         )
         assert r.status_code == 200
@@ -88,9 +88,9 @@ async def test_rotate_token_then_agent_authenticates(tmp_path) -> None:
 
         # The minted token verifies through the store-backed agent auth path.
         token_store = app.state.token_store
-        assert await token_store.verify("papa-pc", minted) is True
+        assert await token_store.verify("example-pc", minted) is True
         # The old seeded token no longer works after rotation.
-        assert await token_store.verify("papa-pc", "dev-token-papa") is False
+        assert await token_store.verify("example-pc", "dev-token-1") is False
 
 
 @pytest.mark.asyncio

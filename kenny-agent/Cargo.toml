@@ -3,6 +3,12 @@ name = "kenny-agent"
 version = "0.1.0"
 edition = "2021"
 description = "kenny agent: outbound-tunnel remote-admin and telemetry agent for Windows PCs"
+license = "AGPL-3.0-only"
+authors = ["t11z and the kenny contributors"]
+repository = "https://github.com/t11z/kenny"
+homepage = "https://github.com/t11z/kenny"
+keywords = ["remote-admin", "telemetry", "windows", "mcp", "agent"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
