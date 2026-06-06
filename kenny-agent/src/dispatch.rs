@@ -4,7 +4,7 @@
 //! `(ErrorCode, message)`, which becomes `response.error`.
 
 use serde_json::{json, Value};
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::control;
 use crate::handlers;
@@ -34,8 +34,13 @@ async fn run(tool: &str, args: Value) -> Result<Value, (ErrorCode, String)> {
 
     // Deterministic, always-on safety guard: refuse individually dangerous calls
     // regardless of approval or kill-switch state. Cannot be disabled remotely. See
-    // ADR-0020. Runs for every tool before reaching a handler.
-    policy::check(tool, &args)?;
+    // ADR-0020. Runs for every tool before reaching a handler. On a block, emit a
+    // structured warn (forwarded to the server's event store via the `log` frame,
+    // ADR-0017/0021) naming the matched rule, then refuse the call.
+    if let Err((code, message)) = policy::check(tool, &args) {
+        warn!(tool = %tool, reason = %message, "tool call refused by safety guard");
+        return Err((code, message));
+    }
 
     match tool {
         "powershell_exec" => handlers::powershell::exec(args).await,

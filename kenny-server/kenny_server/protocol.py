@@ -126,6 +126,26 @@ class Log(BaseModel):
     fields: dict[str, Any] | None = None
 
 
+class PolicyRule(BaseModel):
+    """One deny rule (shared catalog shape; also used by the ``policy`` frame)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    applies_to: Literal["powershell", "self_protection", "path"]
+    pattern: str
+    reason: str
+
+
+class Policy(BaseModel):
+    """``policy`` frame: server -> agent, operator's append-only extra deny rules."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["policy"] = "policy"
+    rules: list[PolicyRule] = Field(default_factory=list)
+
+
 class Ping(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -139,7 +159,7 @@ class Pong(BaseModel):
 
 
 Frame = Annotated[
-    Union[Register, Request, Response, Telemetry, Log, Ping, Pong],
+    Union[Register, Request, Response, Telemetry, Log, Policy, Ping, Pong],
     Field(discriminator="type"),
 ]
 

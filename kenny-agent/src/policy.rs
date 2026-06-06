@@ -6,20 +6,26 @@
 //! or the operator is wrong or compromised, the agent still refuses. The guard cannot be
 //! turned off remotely. Refusals surface as `error.code = "blocked"`. See ADR-0020.
 //!
+//! The built-in rules live in the shared catalog `docs/policy/deny_rules.json`, embedded
+//! at build time so both the Rust agent and the Python server consume one source of truth
+//! (ADR-0021). On top of the built-ins, the operator can deliver an **append-only** set of
+//! extra deny rules over the `policy` frame; they are additive and can never weaken or
+//! remove a built-in. The `agent_update` host allowlist stays in code (it is agent-only:
+//! it needs the agent's configured server host).
+//!
 //! Scope (be honest): a regex blocklist over a Turing-complete shell is a *seatbelt, not a
 //! sandbox*. It catches catastrophic foot-guns (disk/shadow-copy/log destruction, Defender
 //! disable, self-tampering) and the cheapest bypass (`-EncodedCommand`), which raises the
 //! bar substantially — but it is not a complete boundary. The real boundary stays auth +
 //! confirm-gate + kill-switch; this sits below them as defense-in-depth.
 
-use std::sync::OnceLock;
+use std::sync::{OnceLock, RwLock};
 
 use regex::Regex;
+use serde::Deserialize;
 use serde_json::Value;
 
-use crate::config::SERVICE_NAME;
-use crate::control::CONTROL_FILE;
-use crate::protocol::ErrorCode;
+use crate::protocol::{ErrorCode, PolicyRule, PolicyTarget};
 
 /// Host of the configured server URL, captured at startup so `agent_update` can verify
 /// the download host without threading config through the dispatcher. Set once by
@@ -29,6 +35,10 @@ static SERVER_HOST: OnceLock<String> = OnceLock::new();
 /// GitHub hosts that serve release binaries (ADR-0015). Matched case-insensitively.
 const GITHUB_HOSTS: &[&str] = &["github.com", "objects.githubusercontent.com"];
 
+/// The shared deny-rule catalog, embedded at build time so the binary stays
+/// self-contained. Path is relative to this source file → repo `docs/policy/deny_rules.json`.
+const CATALOG_JSON: &str = include_str!("../../docs/policy/deny_rules.json");
+
 /// Record the configured server's host for the `agent_update` allowlist. Called once at
 /// startup with the `--server` URL (e.g. `wss://kenny.example.com/agent/ws`).
 pub fn set_server_url(url: &str) {
@@ -37,28 +47,94 @@ pub fn set_server_url(url: &str) {
     }
 }
 
-/// A single deterministic deny rule: a compiled pattern and the reason reported on a hit.
+/// A single compiled deterministic deny rule: a pattern and the reason reported on a hit.
 struct Rule {
     re: Regex,
-    reason: &'static str,
+    reason: String,
 }
 
-fn rule(pattern: &str, reason: &'static str) -> Rule {
-    Rule {
-        // Patterns are authored in this file; a bad pattern is a build-time bug we want to
-        // surface loudly rather than silently disable a guard.
-        re: Regex::new(pattern).expect("policy regex must compile"),
-        reason,
+/// Compiled rules grouped by the call surface they apply to.
+#[derive(Default)]
+struct Grouped {
+    powershell: Vec<Rule>,
+    self_protection: Vec<Rule>,
+    path: Vec<Rule>,
+}
+
+impl Grouped {
+    /// Compile a list of `PolicyRule`s into groups. A rule whose pattern fails to compile
+    /// is skipped and logged (never fatal): for built-ins this is a build-time mistake a
+    /// unit test catches, for operator rules it keeps a single bad pattern from breaking
+    /// the whole guard.
+    fn compile(rules: &[PolicyRule]) -> Self {
+        let mut g = Grouped::default();
+        for r in rules {
+            let re = match Regex::new(&r.pattern) {
+                Ok(re) => re,
+                Err(e) => {
+                    tracing::warn!(
+                        id = %r.id,
+                        pattern = %r.pattern,
+                        error = %e,
+                        "skipping deny rule with uncompilable pattern"
+                    );
+                    continue;
+                }
+            };
+            let compiled = Rule {
+                re,
+                reason: r.reason.clone(),
+            };
+            match r.applies_to {
+                PolicyTarget::Powershell => g.powershell.push(compiled),
+                PolicyTarget::SelfProtection => g.self_protection.push(compiled),
+                PolicyTarget::Path => g.path.push(compiled),
+            }
+        }
+        g
     }
 }
 
+/// Shape of the catalog file. `serde` ignores the extra `catalog_version` / `comment` keys.
+#[derive(Deserialize)]
+struct Catalog {
+    rules: Vec<PolicyRule>,
+}
+
+/// The compiled built-in rules, parsed once from the embedded catalog.
+fn builtins() -> &'static Grouped {
+    static BUILTINS: OnceLock<Grouped> = OnceLock::new();
+    BUILTINS.get_or_init(|| {
+        let catalog: Catalog =
+            serde_json::from_str(CATALOG_JSON).expect("embedded deny-rule catalog must parse");
+        Grouped::compile(&catalog.rules)
+    })
+}
+
+/// Operator-supplied append-only rules, recompiled on each `policy` frame. Default empty.
+fn operator() -> &'static RwLock<Grouped> {
+    static OPERATOR: OnceLock<RwLock<Grouped>> = OnceLock::new();
+    OPERATOR.get_or_init(|| RwLock::new(Grouped::default()))
+}
+
+/// Replace the operator rule set (ADR-0021 `policy` frame). Additive to the built-ins,
+/// which it can never weaken or remove. A rule whose pattern fails to compile is skipped
+/// and logged, never fatal.
+pub fn set_operator_rules(rules: Vec<PolicyRule>) {
+    let compiled = Grouped::compile(&rules);
+    *operator().write().unwrap() = compiled;
+}
+
 /// Gate a tool call. `Ok(())` lets dispatch proceed; `Err((Blocked, reason))` refuses it.
+///
+/// For each relevant surface, BUILT-IN rules are evaluated first, then OPERATOR rules:
+/// built-ins always apply and operator rules are purely additive.
 pub fn check(tool: &str, args: &Value) -> Result<(), (ErrorCode, String)> {
     match tool {
         "powershell_exec" => {
             let script = str_arg(args, "script").unwrap_or_default();
-            first_match(dangerous_ps_rules(), script)?;
-            first_match(self_protection_rules(), script)?;
+            match_group(|g| &g.powershell, script)?;
+            match_group(|g| &g.self_protection, script)?;
         }
         // winget/net args carry no scripts, but scan their string values for self-tampering
         // so no mutating tool can be turned against the agent itself.
@@ -66,7 +142,7 @@ pub fn check(tool: &str, args: &Value) -> Result<(), (ErrorCode, String)> {
         | "net_adapter_reset" => {
             let mut text = String::new();
             collect_strings(args, &mut text);
-            first_match(self_protection_rules(), &text)?;
+            match_group(|g| &g.self_protection, &text)?;
         }
         "fs_read" | "fs_list" => check_path(str_arg(args, "path").unwrap_or_default())?,
         "fs_search" => check_path(str_arg(args, "root").unwrap_or_default())?,
@@ -74,6 +150,17 @@ pub fn check(tool: &str, args: &Value) -> Result<(), (ErrorCode, String)> {
         _ => {}
     }
     Ok(())
+}
+
+/// Evaluate `haystack` against a rule group: built-ins first, then operator rules.
+/// `select` picks the group from a [`Grouped`]. Returns the first match as a `blocked` error.
+fn match_group(
+    select: impl Fn(&Grouped) -> &Vec<Rule>,
+    haystack: &str,
+) -> Result<(), (ErrorCode, String)> {
+    first_match(select(builtins()), haystack)?;
+    let op = operator().read().unwrap();
+    first_match(select(&op), haystack)
 }
 
 /// Return the first rule that matches `haystack`, as a `blocked` error.
@@ -89,149 +176,17 @@ fn first_match(rules: &[Rule], haystack: &str) -> Result<(), (ErrorCode, String)
     Ok(())
 }
 
-/// Catastrophic, irreversible, or evasion-oriented PowerShell/shell commands.
-fn dangerous_ps_rules() -> &'static [Rule] {
-    static RULES: OnceLock<Vec<Rule>> = OnceLock::new();
-    RULES.get_or_init(|| {
-        vec![
-            // Disk / partition destruction.
-            rule(r"(?i)\bformat\s+[a-z]:", "format <drive>: (disk format)"),
-            rule(r"(?i)\bformat\.com\b", "format.com (disk format)"),
-            rule(r"(?i)\bFormat-Volume\b", "Format-Volume (disk format)"),
-            rule(r"(?i)\bClear-Disk\b", "Clear-Disk (wipe disk)"),
-            rule(r"(?i)\bdiskpart\b", "diskpart (low-level disk edit)"),
-            rule(r"(?i)\bRemove-Partition\b", "Remove-Partition"),
-            // Volume shadow-copy deletion — classic ransomware precursor.
-            rule(
-                r"(?i)\bvssadmin\b\s+delete\s+shadows?",
-                "vssadmin delete shadows (shadow-copy deletion)",
-            ),
-            rule(
-                r"(?i)\bwmic\b\s+shadowcopy\s+delete",
-                "wmic shadowcopy delete (shadow-copy deletion)",
-            ),
-            rule(
-                r"(?i)Win32_ShadowCopy.*\bdelete\b",
-                "Win32_ShadowCopy delete (shadow-copy deletion)",
-            ),
-            // Event-log clearing — anti-forensics.
-            rule(r"(?i)\bwevtutil\b\s+cl\b", "wevtutil cl (clear event log)"),
-            rule(r"(?i)\bClear-EventLog\b", "Clear-EventLog (anti-forensics)"),
-            // Boot configuration tampering.
-            rule(r"(?i)\bbcdedit\b", "bcdedit (boot config edit)"),
-            rule(r"(?i)\bbootrec\b", "bootrec (boot record edit)"),
-            // Secure-wipe of free space / files.
-            rule(r"(?i)\bcipher\b\s+/w", "cipher /w (secure wipe)"),
-            // Obfuscation: encoded command (the cheapest blocklist bypass).
-            rule(
-                r"(?i)-encodedcommand\b",
-                "-EncodedCommand (obfuscated payload)",
-            ),
-            rule(
-                r"(?i)(^|\s)-e(c|nc|ncoded)?\s+[A-Za-z0-9+/=]{16,}",
-                "-e <base64> (obfuscated encoded command)",
-            ),
-            // Download-and-execute.
-            rule(
-                r"(?i)\bInvoke-Expression\b",
-                "Invoke-Expression (download/run)",
-            ),
-            rule(r"(?i)\biex\b\s*\(", "iex( (download/run)"),
-            rule(r"(?i)Net\.WebClient", "Net.WebClient (download/run)"),
-            rule(r"(?i)\bDownloadString\b", "DownloadString (download/run)"),
-            rule(r"(?i)\bDownloadFile\b", "DownloadFile (download/run)"),
-            // Defender disable.
-            rule(
-                r"(?i)Set-MpPreference\b.*-Disable\w*",
-                "Set-MpPreference -Disable* (disable Defender)",
-            ),
-            rule(
-                r"(?i)\bUninstall-WindowsFeature\b.*Defender",
-                "Uninstall Defender feature",
-            ),
-            // Account creation / privilege escalation.
-            rule(
-                r"(?i)\bnet\s+user\b.*/add",
-                "net user /add (create account)",
-            ),
-            rule(
-                r"(?i)\bnet\s+localgroup\b.*administrators.*/add",
-                "net localgroup administrators /add (privilege escalation)",
-            ),
-            rule(r"(?i)\bNew-LocalUser\b", "New-LocalUser (create account)"),
-            rule(
-                r"(?i)\bAdd-LocalGroupMember\b.*administrators",
-                "Add-LocalGroupMember Administrators (privilege escalation)",
-            ),
-        ]
-    })
-}
-
-/// Calls that would turn the agent against itself: stopping/removing the kenny service,
-/// deleting its binary, or tampering with the kill-switch control file. Built from the
-/// service name and control-file constants so they stay in lockstep with the rest of the
-/// crate.
-fn self_protection_rules() -> &'static [Rule] {
-    static RULES: OnceLock<Vec<Rule>> = OnceLock::new();
-    RULES.get_or_init(|| {
-        let svc = regex::escape(SERVICE_NAME);
-        let ctrl = regex::escape(CONTROL_FILE);
-        vec![
-            rule(
-                &format!(r"(?i)\b(Stop|Disable|Remove|Suspend)-Service\b.*{svc}"),
-                "stop/disable the kenny agent service",
-            ),
-            rule(
-                &format!(r"(?i)\bsc(\.exe)?\b\s+(stop|delete|config)\b.*{svc}"),
-                "sc stop/delete the kenny agent service",
-            ),
-            rule(
-                &format!(r"(?i)\bStop-Process\b.*{svc}"),
-                "kill the kenny agent process",
-            ),
-            rule(
-                &format!(r"(?i){svc}\.exe"),
-                "reference the kenny agent binary",
-            ),
-            rule(
-                &format!(r"(?i){ctrl}"),
-                "tamper with the kill-switch control file",
-            ),
-        ]
-    })
-}
-
 /// Refuse reads/searches of credential-bearing or otherwise sensitive locations, and any
 /// path-traversal sequence. Path separators are normalised to `\` and matched
 /// case-insensitively so both `/` and `\` forms are covered.
 fn check_path(path: &str) -> Result<(), (ErrorCode, String)> {
     let norm = path.replace('/', "\\");
-    first_match(sensitive_path_rules(), &norm)
-}
-
-fn sensitive_path_rules() -> &'static [Rule] {
-    static RULES: OnceLock<Vec<Rule>> = OnceLock::new();
-    RULES.get_or_init(|| {
-        vec![
-            rule(
-                r"(?i)\\system32\\config\\(sam|security|system|software|default)\b",
-                "registry hive (SAM/SECURITY/SYSTEM)",
-            ),
-            rule(r"(?i)ntds\.dit", "Active Directory database (ntds.dit)"),
-            rule(r"(?i)\\\.ssh\\", "SSH key directory"),
-            rule(r"(?i)\bid_rsa\b", "SSH private key"),
-            rule(r"(?i)\\login data\b", "browser credential store"),
-            rule(
-                r"(?i)\b(logins\.json|key4\.db|key3\.db)\b",
-                "browser credential store",
-            ),
-            rule(r"(?:^|[\\])\.\.(?:[\\]|$)", "path traversal (..)"),
-        ]
-    })
+    match_group(|g| &g.path, &norm)
 }
 
 /// Restrict `agent_update` downloads to the configured server host plus GitHub release
-/// hosts. Composes with — does not replace — the handler's SHA-256 verification.
+/// hosts. Composes with — does not replace — the handler's SHA-256 verification. This is
+/// agent-only (not in the shared catalog): it needs the agent's configured server host.
 fn check_update_url(url: &str) -> Result<(), (ErrorCode, String)> {
     let host = match host_of(url) {
         Some(h) => h,
@@ -303,9 +258,29 @@ fn collect_strings(v: &Value, out: &mut String) {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::sync::Mutex;
+
+    /// Serialises tests that mutate the process-global operator rule set so they never
+    /// observe each other's state.
+    static OPERATOR_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn ps(script: &str) -> Result<(), (ErrorCode, String)> {
         check("powershell_exec", &json!({ "script": script }))
+    }
+
+    #[test]
+    fn catalog_patterns_all_compile() {
+        let catalog: Catalog =
+            serde_json::from_str(CATALOG_JSON).expect("embedded catalog must parse");
+        for r in &catalog.rules {
+            Regex::new(&r.pattern)
+                .unwrap_or_else(|e| panic!("rule {} has uncompilable pattern: {e}", r.id));
+        }
+        // And the built-ins compiled into all three groups.
+        let g = builtins();
+        assert!(!g.powershell.is_empty());
+        assert!(!g.self_protection.is_empty());
+        assert!(!g.path.is_empty());
     }
 
     #[test]
@@ -401,5 +376,79 @@ mod tests {
             Some("host.com")
         );
         assert_eq!(host_of("not a url").as_deref(), Some("not a url"));
+    }
+
+    #[test]
+    fn operator_rules_add_then_clear() {
+        let _guard = OPERATOR_TEST_LOCK.lock().unwrap();
+
+        // Before any operator rule, `choco install` is allowed.
+        ps("choco install x").unwrap();
+
+        set_operator_rules(vec![PolicyRule {
+            id: "op_block_choco".to_string(),
+            applies_to: PolicyTarget::Powershell,
+            pattern: r"(?i)\bchoco\b".to_string(),
+            reason: "operator: block chocolatey".to_string(),
+        }]);
+        let err = ps("choco install x").unwrap_err();
+        assert_eq!(err.0, ErrorCode::Blocked);
+
+        // Clearing the operator rules removes the addition, but built-ins still block.
+        set_operator_rules(vec![]);
+        ps("choco install x").unwrap();
+        let err = ps("vssadmin delete shadows /all /quiet").unwrap_err();
+        assert_eq!(err.0, ErrorCode::Blocked);
+    }
+
+    #[test]
+    fn bad_operator_pattern_is_skipped_not_fatal() {
+        let _guard = OPERATOR_TEST_LOCK.lock().unwrap();
+
+        set_operator_rules(vec![
+            PolicyRule {
+                id: "op_bad".to_string(),
+                applies_to: PolicyTarget::Powershell,
+                pattern: r"(unclosed".to_string(),
+                reason: "broken".to_string(),
+            },
+            PolicyRule {
+                id: "op_good".to_string(),
+                applies_to: PolicyTarget::Powershell,
+                pattern: r"(?i)\bchoco\b".to_string(),
+                reason: "ok".to_string(),
+            },
+        ]);
+        // The good rule still applies; the bad one was skipped.
+        ps("choco install x").unwrap_err();
+        set_operator_rules(vec![]);
+    }
+
+    /// Lockstep guard: the self-protection patterns in the embedded catalog must reference
+    /// the agent's `SERVICE_NAME` / `CONTROL_FILE` constants, so changing a constant without
+    /// updating the catalog fails here rather than silently disabling self-protection. The
+    /// catalog escapes regex metacharacters (e.g. `kenny\-agent`), so we strip backslashes
+    /// before comparing against the literal constants.
+    #[test]
+    fn self_protection_patterns_track_constants() {
+        let catalog: Catalog =
+            serde_json::from_str(CATALOG_JSON).expect("embedded catalog must parse");
+        let unescape = |p: &str| p.replace('\\', "");
+        let sp: Vec<String> = catalog
+            .rules
+            .iter()
+            .filter(|r| r.applies_to == PolicyTarget::SelfProtection)
+            .map(|r| unescape(&r.pattern))
+            .collect();
+        assert!(
+            sp.iter().any(|p| p.contains(crate::config::SERVICE_NAME)),
+            "no self_protection pattern references SERVICE_NAME ({})",
+            crate::config::SERVICE_NAME
+        );
+        assert!(
+            sp.iter().any(|p| p.contains(crate::control::CONTROL_FILE)),
+            "no self_protection pattern references CONTROL_FILE ({})",
+            crate::control::CONTROL_FILE
+        );
     }
 }

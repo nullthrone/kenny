@@ -266,6 +266,12 @@ async fn handle_text(text: &str, tx: &mpsc::Sender<Frame>) {
                 }
             });
         }
+        Frame::Policy(p) => {
+            // Operator's append-only deny rules (ADR-0021): additive to the built-ins,
+            // which they can never weaken or remove. The agent never sends a Policy frame.
+            info!(count = p.rules.len(), "applied operator policy rules");
+            crate::policy::set_operator_rules(p.rules);
+        }
         Frame::Ping => {
             let _ = tx.send(Frame::Pong).await;
         }

@@ -1,0 +1,17 @@
+{
+  "type": "policy",
+  "rules": [
+    {
+      "id": "op_block_choco",
+      "applies_to": "powershell",
+      "pattern": "(?i)\\bchoco\\b",
+      "reason": "operator: block chocolatey package manager"
+    },
+    {
+      "id": "op_block_downloads_dir",
+      "applies_to": "path",
+      "pattern": "(?i)\\\\secret-projects\\\\",
+      "reason": "operator: keep secret-projects off-limits"
+    }
+  ]
+}

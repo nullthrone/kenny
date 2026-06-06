@@ -98,6 +98,37 @@ remotely and is **not** a substitute for the operator confirm-gate (ADR-0009) or
 local kill-switch (ADR-0011); it is a last-line, defense-in-depth refusal sitting below
 them. The `message` names the matched rule. See ADR-0020.
 
+The guard's built-in rules ship as a **shared deny-rule catalog** (`docs/policy/deny_rules.json`):
+the agent embeds it at build time and the server loads the same file for an optional
+best-effort **mirror** that can refuse a call before forwarding (earlier feedback). The
+agent remains the authoritative enforcement point. Operators may add — but never remove —
+deny rules on top of the built-ins; those extra rules are delivered to the agent via the
+`policy` frame below. See ADR-0021.
+
+### `policy` (server → agent)
+
+After a successful `register` (and again whenever the operator changes the list), the
+server pushes the operator's **append-only** extra deny rules to the agent. These are
+*additive* to the agent's compiled-in built-ins (which can never be weakened or removed by
+this frame). An empty `rules` array clears the operator additions but leaves the built-ins
+intact.
+
+```json
+{
+  "type": "policy",
+  "rules": [
+    { "id": "op_block_choco", "applies_to": "powershell",
+      "pattern": "(?i)\\bchoco\\b", "reason": "operator: block chocolatey" }
+  ]
+}
+```
+
+Each rule has `id` (stable identifier), `applies_to` ∈ {`powershell`, `self_protection`,
+`path`}, a `pattern` (regex in the portable subset common to Rust `regex` and Python `re` —
+no backreferences/lookaround), and a human-readable `reason`. The agent recompiles its rule
+set on each `policy` frame; a rule whose pattern fails to compile is skipped (logged), never
+fatal. The same `{id, applies_to, pattern, reason}` shape is used by the shared catalog.
+
 ### `telemetry` (agent → server, pushed)
 
 The agent pushes a snapshot on a timer (default every 900 s; the server may send
@@ -244,10 +275,12 @@ for fleet aggregation. These thresholds are illustrative of the data-driven rule
 
 ## Versioning
 
-`PROTOCOL_VERSION = "0.5"`. Both implementations expose this constant and include it
+`PROTOCOL_VERSION = "0.6"`. Both implementations expose this constant and include it
 nowhere on the wire yet (reserved for a future `register.meta.protocol`). Bump on any
 breaking change to a frame or tool schema.
 
+- `0.6` — added the `policy` frame (server → agent) delivering the operator's append-only
+  extra deny rules for the safety guard; additive frame, no tool changes. See ADR-0021.
 - `0.5` — added the `blocked` error code for the agent's deterministic, always-on safety
   guard; additive to the error-code set, no frame or tool-schema changes. See ADR-0020.
 - `0.4` — added the `log` frame (agent → server) for forwarded structured log events;

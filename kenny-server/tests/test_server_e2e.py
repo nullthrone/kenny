@@ -256,11 +256,16 @@ async def _register_once(ws_url: str, agent_id: str, token: str) -> bool:
             )
         )
         await ws.send(json.dumps({"type": "ping"}))
+        # On a successful handshake the server now also pushes a `policy` frame
+        # (ADR-0021) before any pong; a real agent drains inbound non-request
+        # frames, so skip anything that isn't the pong we're probing for.
         try:
-            reply = json.loads(await asyncio.wait_for(ws.recv(), timeout=1.0))
+            while True:
+                reply = json.loads(await asyncio.wait_for(ws.recv(), timeout=1.0))
+                if reply.get("type") == "pong":
+                    return True
         except (websockets.ConnectionClosed, asyncio.TimeoutError):
             return False
-        return reply.get("type") == "pong"
     finally:
         await ws.close()
 

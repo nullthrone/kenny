@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -23,9 +24,10 @@ from ..chat import (
     run_turn,
     run_turn_events,
 )
+from ..policy import PolicyEngine
 from ..recommend import ai_available, recommend_events, warning_facts
 from ..registry import AgentRegistry
-from ..store import EventStore, TelemetryStore
+from ..store import EventStore, PolicyStore, TelemetryStore
 from ..tokenstore import AgentTokenStore
 from ..tools import CallLog, ScreenshotStore, build_health
 from ..tunnel import AgentTunnel, ToolError
@@ -46,8 +48,12 @@ def build_api_routes(
     screenshots: ScreenshotStore,
     event_store: EventStore,
     token_store: AgentTokenStore | None = None,
+    policy_store: PolicyStore | None = None,
+    policy_engine: PolicyEngine | None = None,
 ) -> list[Route]:
     """Build the dashboard's static + JSON routes."""
+
+    _APPLIES_TO = {"powershell", "self_protection", "path"}
 
     async def index(_request: Request) -> FileResponse:
         return FileResponse(_INDEX)
@@ -198,9 +204,69 @@ def build_api_routes(
         token = await token_store.create_or_rotate(agent_id)
         return JSONResponse({"agent_id": agent_id, "token": token})
 
+    async def api_policy_list(_request: Request) -> JSONResponse:
+        """Built-in (catalog) + operator deny rules for the policy view (ADR-0021)."""
+
+        builtin = policy_engine.builtin_rules() if policy_engine is not None else []
+        operator = await policy_store.list() if policy_store is not None else []
+        return JSONResponse({"builtin": builtin, "operator": operator})
+
+    async def api_policy_add(request: Request) -> JSONResponse:
+        """Append an operator deny rule, recompile the mirror, and broadcast it."""
+
+        if policy_store is None:
+            return JSONResponse({"error": "policy store not configured"}, status_code=503)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - malformed JSON
+            return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        rule_id = str(body.get("id", "")).strip()
+        applies_to = str(body.get("applies_to", "")).strip()
+        pattern = body.get("pattern", "")
+        reason = str(body.get("reason", "")).strip()
+        if not rule_id:
+            return JSONResponse({"error": "id is required"}, status_code=400)
+        if applies_to not in _APPLIES_TO:
+            return JSONResponse(
+                {"error": f"applies_to must be one of {sorted(_APPLIES_TO)}"},
+                status_code=400,
+            )
+        if not isinstance(pattern, str) or not pattern:
+            return JSONResponse({"error": "pattern is required"}, status_code=400)
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            return JSONResponse({"error": f"invalid pattern: {exc}"}, status_code=400)
+        if not reason:
+            return JSONResponse({"error": "reason is required"}, status_code=400)
+        await policy_store.add(
+            id=rule_id, applies_to=applies_to, pattern=pattern, reason=reason
+        )
+        operator = await policy_store.list()
+        if policy_engine is not None:
+            policy_engine.set_operator_rules(operator)
+        await tunnel.broadcast_policy()
+        return JSONResponse({"operator": operator})
+
+    async def api_policy_remove(request: Request) -> JSONResponse:
+        """Remove one operator deny rule, recompile the mirror, and broadcast."""
+
+        if policy_store is None:
+            return JSONResponse({"error": "policy store not configured"}, status_code=503)
+        rule_id = request.path_params["id"]
+        removed = await policy_store.remove(rule_id)
+        operator = await policy_store.list()
+        if policy_engine is not None:
+            policy_engine.set_operator_rules(operator)
+        await tunnel.broadcast_policy()
+        return JSONResponse({"ok": True, "removed": removed, "operator": operator})
+
     return [
         Route("/", index),
         Route("/assets/{name}", asset),
+        Route("/api/policy/rules", api_policy_list),
+        Route("/api/policy/rules", api_policy_add, methods=["POST"]),
+        Route("/api/policy/rules/{id}", api_policy_remove, methods=["DELETE"]),
         Route("/api/fleet", api_fleet),
         Route("/api/audit", api_audit),
         Route("/api/events", api_events),
