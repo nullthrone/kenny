@@ -36,31 +36,69 @@ pub fn run_text(script: &str) -> Option<String> {
 
 /// Run a program with raw arguments (e.g. `netsh`, `w32tm`) and return stdout.
 pub fn run_command(program: &str, args: &[&str]) -> Option<String> {
-    let output = Command::new(program).args(args).output().ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    Some(String::from_utf8_lossy(&output.stdout).into_owned())
+    let mut cmd = Command::new(program);
+    cmd.args(args);
+    run_with_budget(cmd)
 }
 
 fn run_raw(script: &str) -> Option<String> {
     // `-NonInteractive`/`-NoProfile` keep this fast and deterministic; the
     // ExecutionPolicy bypass avoids inheriting a locked-down machine policy.
-    let output = Command::new("powershell.exe")
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            script,
-        ])
-        .output()
+    let mut cmd = Command::new("powershell.exe");
+    cmd.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        script,
+    ]);
+    run_with_budget(cmd)
+}
+
+/// Spawn `cmd` and return its stdout, but never block longer than [`PROBE_BUDGET`].
+///
+/// A single hung probe (a wedged CIM/WMI query, a service stuck starting) must not
+/// stall the whole telemetry snapshot — collectors run on a bounded pool, but a
+/// child with no timeout would still pin one worker indefinitely. On timeout the
+/// child is killed and `None` returned, so the collector falls back to its default.
+/// `stderr` is discarded (we only consume stdout JSON), which also rules out a
+/// stderr-pipe-buffer deadlock; telemetry stdout is small, so reading it after the
+/// child exits cannot block.
+fn run_with_budget(mut cmd: Command) -> Option<String> {
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::time::Instant;
+
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
         .ok()?;
-    if !output.status.success() {
-        return None;
+
+    let deadline = Instant::now() + PROBE_BUDGET;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if !status.success() {
+                    return None;
+                }
+                let mut buf = String::new();
+                child.stdout.take()?.read_to_string(&mut buf).ok()?;
+                return Some(buf);
+            }
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(_) => return None,
+        }
     }
-    Some(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 /// Normalize a value that PowerShell's `ConvertTo-Json` may emit either as a
@@ -76,9 +114,7 @@ pub fn as_array(value: Value) -> Vec<Value> {
     }
 }
 
-/// Best-effort: a tiny sleep budget marker kept for future timeout plumbing.
-///
-/// Not currently used to bound the child (PowerShell startup dominates), but
-/// documents the intent that probes should stay short.
-#[allow(dead_code)]
+/// Per-probe wall-clock budget. A telemetry probe that has not finished within this
+/// window is killed and treated as "no data" (the collector then falls back to its
+/// default), so one wedged CIM/PowerShell call can never stall the whole snapshot.
 pub const PROBE_BUDGET: Duration = Duration::from_secs(20);
