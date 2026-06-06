@@ -1,5 +1,13 @@
 name: CI
 
+# Runs on self-hosted runners (no GitHub-hosted minutes):
+#   [self-hosted, linux]   -> Fridolin (arm64, 24/7) or the ubuntu2404-amd64 VM,
+#                             whichever is free; label match is case-insensitive.
+#   [self-hosted, windows] -> the Windows 11 VM (real #[cfg(windows)] tool paths).
+# No hosted fallback: a job queues until a matching runner is online. Runners must
+# provide the toolchains the steps assume (git/curl + a C linker for Rust on Linux;
+# MSVC build tools + the Windows SDK for the Rust msvc target on Windows).
+
 on:
   push:
     branches: ["main"]
@@ -12,7 +20,7 @@ concurrency:
 jobs:
   changes:
     name: detect changes
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux]
     permissions:
       contents: read
       pull-requests: read
@@ -47,7 +55,7 @@ jobs:
     name: kenny-server (Python)
     needs: changes
     if: ${{ needs.changes.outputs.server == 'true' || needs.changes.outputs.contract == 'true' || needs.changes.outputs.ci == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux]
     defaults:
       run:
         working-directory: kenny-server
@@ -67,7 +75,7 @@ jobs:
     name: kenny-agent (Rust)
     needs: changes
     if: ${{ needs.changes.outputs.agent == 'true' || needs.changes.outputs.contract == 'true' || needs.changes.outputs.ci == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux]
     defaults:
       run:
         working-directory: kenny-agent
@@ -89,7 +97,7 @@ jobs:
     name: kenny-agent (Windows)
     needs: changes
     if: ${{ needs.changes.outputs.agent == 'true' || needs.changes.outputs.contract == 'true' || needs.changes.outputs.ci == 'true' }}
-    runs-on: windows-latest
+    runs-on: [self-hosted, windows]
     defaults:
       run:
         working-directory: kenny-agent
@@ -109,7 +117,7 @@ jobs:
     name: real agent <-> server (Linux)
     needs: changes
     if: ${{ needs.changes.outputs.server_code == 'true' || needs.changes.outputs.agent == 'true' || needs.changes.outputs.contract == 'true' || needs.changes.outputs.ci == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux]
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -133,13 +141,9 @@ jobs:
     name: real agent <-> server (Windows)
     needs: changes
     if: ${{ needs.changes.outputs.server_code == 'true' || needs.changes.outputs.agent == 'true' || needs.changes.outputs.contract == 'true' || needs.changes.outputs.ci == 'true' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        # Two hosted images: windows-2022 + the newer windows-2025 where winget
-        # is reliably preinstalled. Both run the real #[cfg(windows)] tool paths.
-        os: [windows-2022, windows-2025]
-    runs-on: ${{ matrix.os }}
+    # Self-hosted Windows 11 runner (a single machine), so no hosted-image matrix.
+    # It runs the real #[cfg(windows)] tool paths on the actual target OS.
+    runs-on: [self-hosted, windows]
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
