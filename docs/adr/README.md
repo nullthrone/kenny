@@ -32,3 +32,7 @@ implementation detail", see *When (not) to write an ADR* in the repository `CLAU
 | [0016](0016-anthropic-native-tool-naming.md) | Anthropic-native (underscore) capability tool names | accepted |
 | [0017](0017-observability-logging-and-event-store.md) | Observability: structured logging and a persistent event store | accepted |
 | [0018](0018-screenshots-captured-in-user-session-via-tray.md) | Screenshots captured in the user session via the tray helper | accepted |
+| [0019](0019-ai-recommendations-and-auto-remediation.md) | AI recommendations and tool-aware auto-remediation | accepted |
+| [0020](0020-agent-side-deterministic-tool-guard.md) | Agent-side deterministic safety guard for dangerous tool calls | accepted |
+| [0021](0021-shared-policy-catalog-operator-rules-and-server-mirror.md) | Shared policy catalog, operator deny rules, and a server-side mirror | accepted |
+| [0022](0022-remote-help-concierge-via-user-session-launch.md) | Orchestrate Windows Quick Assist as a concierge via user-session launch | accepted |

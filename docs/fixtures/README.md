@@ -12,9 +12,20 @@ Adding/altering a fixture is a contract change — see `docs/protocol.md` § Ver
 | `register.json`                 | `register` frame                                 |
 | `request_powershell_exec.json`  | `request` frame (`powershell_exec`)              |
 | `response_powershell_exec.json` | successful `response` frame                      |
+| `request_winget_list.json`      | `request` frame (`winget_list`)                  |
+| `response_winget_list.json`     | successful `response` frame (`winget_list`)      |
+| `request_remotehelp_status.json`  | `request` frame (`remotehelp_status`)          |
+| `response_remotehelp_status.json` | successful `response` frame (`remotehelp_status`) |
+| `request_remotehelp_start.json`   | `request` frame (`remotehelp_start`)           |
+| `response_remotehelp_start.json`  | successful `response` frame (`remotehelp_start`) |
+| `request_remotehelp_stop.json`    | `request` frame (`remotehelp_stop`)            |
+| `response_remotehelp_stop.json`   | successful `response` frame (`remotehelp_stop`) |
 | `response_error_timeout.json`   | error `response` frame                           |
+| `response_error_blocked.json`   | error `response` frame (safety-guard `blocked`)  |
+| `response_error_disabled.json`  | error `response` frame (kill-switch `disabled`)  |
 | `ping.json` / `pong.json`       | heartbeat frames                                 |
 | `telemetry_snapshot.json`       | `telemetry` frame with a representative snapshot |
 | `request_agent_update.json`     | `request` frame (`agent_update`)                 |
 | `response_agent_update.json`    | successful `response` frame (`agent_update`)     |
+| `policy.json`                   | `policy` frame (operator append-only deny rules) |
 | `log.json`                      | `log` frame (forwarded agent log event)          |

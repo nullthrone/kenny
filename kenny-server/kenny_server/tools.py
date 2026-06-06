@@ -45,6 +45,9 @@ CAPABILITY_TOOLS: dict[str, list[str]] = {
     "net_dns_flush": [],
     "net_adapter_reset": ["name"],
     "screen_capture": [],
+    "remotehelp_status": [],
+    "remotehelp_start": [],
+    "remotehelp_stop": [],
     "telemetry_collect": ["sections?"],
     "agent_update": ["version", "url", "sha256"],
 }

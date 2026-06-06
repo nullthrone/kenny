@@ -8,36 +8,7 @@
 //! the service connects as a client to fetch the PNG. See ADR-0018.
 //!
 //! Wire framing is a single length-prefixed blob (`u32` little-endian length, then
-//! the PNG bytes). The framing helpers are platform-neutral so they can be unit
-//! tested on Linux; the pipe server/client are Windows-only.
-
-use std::io::{self, Read, Write};
-
-/// Read a length-prefixed frame (`u32` LE length + payload) from `r`.
-///
-/// Off Windows the pipe server/client are compiled out, so the only callers are
-/// the unit tests; `allow(dead_code)` keeps the portable `cargo build` clean.
-#[cfg_attr(not(windows), allow(dead_code))]
-pub fn read_frame<R: Read>(r: &mut R) -> io::Result<Vec<u8>> {
-    let mut len_buf = [0u8; 4];
-    r.read_exact(&mut len_buf)?;
-    let len = u32::from_le_bytes(len_buf) as usize;
-    let mut buf = vec![0u8; len];
-    r.read_exact(&mut buf)?;
-    Ok(buf)
-}
-
-/// Write `payload` as a length-prefixed frame (`u32` LE length + payload) to `w`.
-#[cfg_attr(not(windows), allow(dead_code))]
-pub fn write_frame<W: Write>(w: &mut W, payload: &[u8]) -> io::Result<()> {
-    let len: u32 = payload
-        .len()
-        .try_into()
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "frame too large"))?;
-    w.write_all(&len.to_le_bytes())?;
-    w.write_all(payload)?;
-    w.flush()
-}
+//! the PNG bytes), shared with [`crate::session_launch_ipc`] via [`crate::ipc`].
 
 /// Named-pipe path shared by the tray server and the service client.
 #[cfg(windows)]
@@ -47,10 +18,13 @@ const PIPE_NAME: &str = r"\\.\pipe\kenny-agent-screencap";
 mod windows_impl {
     use super::*;
     use std::ffi::OsStr;
+    use std::io::{self, Read, Write};
     use std::os::windows::ffi::OsStrExt;
     use std::time::{Duration, Instant};
 
     use serde_json::Value;
+
+    use crate::ipc::{read_frame, write_frame};
     use tracing::{debug, warn};
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::{
@@ -232,38 +206,3 @@ mod windows_impl {
 
 #[cfg(windows)]
 pub use windows_impl::{capture_via_tray, serve};
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Cursor;
-
-    #[test]
-    fn frame_round_trips() {
-        let payload = b"\x89PNG\r\n\x1a\n some bytes".to_vec();
-        let mut buf = Vec::new();
-        write_frame(&mut buf, &payload).unwrap();
-        // Length prefix is little-endian u32.
-        assert_eq!(&buf[..4], &(payload.len() as u32).to_le_bytes());
-        let mut cur = Cursor::new(buf);
-        let back = read_frame(&mut cur).unwrap();
-        assert_eq!(back, payload);
-    }
-
-    #[test]
-    fn empty_frame_round_trips() {
-        let mut buf = Vec::new();
-        write_frame(&mut buf, &[]).unwrap();
-        let mut cur = Cursor::new(buf);
-        assert!(read_frame(&mut cur).unwrap().is_empty());
-    }
-
-    #[test]
-    fn truncated_frame_errors() {
-        // Claims 10 bytes but provides none.
-        let mut buf = 10u32.to_le_bytes().to_vec();
-        buf.truncate(4);
-        let mut cur = Cursor::new(buf);
-        assert!(read_frame(&mut cur).is_err());
-    }
-}

@@ -100,9 +100,10 @@ pub fn set_remote_control_enabled(enabled: bool) -> std::io::Result<()> {
 
 /// Whether a tool *writes to the device* and is therefore gated by the kill switch.
 ///
-/// Read-only diagnostics (`fs_*`, `diag_*`, `net_config`, `screen_capture`) and
-/// `telemetry_collect` are **not** mutating and keep working while remote control is
-/// off. Keep this list in lockstep with the tool catalog in `docs/protocol.md`.
+/// Read-only diagnostics (`fs_*`, `diag_*`, `net_config`, `screen_capture`,
+/// `remotehelp_status`) and `telemetry_collect` are **not** mutating and keep working
+/// while remote control is off. Keep this list in lockstep with the tool catalog in
+/// `docs/protocol.md`.
 pub fn is_mutating(tool: &str) -> bool {
     matches!(
         tool,
@@ -112,6 +113,8 @@ pub fn is_mutating(tool: &str) -> bool {
             | "winget_update"
             | "net_dns_flush"
             | "net_adapter_reset"
+            | "remotehelp_start"
+            | "remotehelp_stop"
             | "agent_update"
     )
 }
@@ -170,10 +173,13 @@ mod tests {
         assert!(is_mutating("powershell_exec"));
         assert!(is_mutating("winget_install"));
         assert!(is_mutating("agent_update"));
+        assert!(is_mutating("remotehelp_start"));
+        assert!(is_mutating("remotehelp_stop"));
         assert!(!is_mutating("telemetry_collect"));
         assert!(!is_mutating("fs_list"));
         assert!(!is_mutating("diag_processes"));
         assert!(!is_mutating("net_config"));
         assert!(!is_mutating("screen_capture"));
+        assert!(!is_mutating("remotehelp_status"));
     }
 }

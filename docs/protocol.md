@@ -233,6 +233,9 @@ implements a handler with the same name. Argument keys are exact.
 | `net_dns_flush`      | `{}`                          | `{ok}`                                       |
 | `net_adapter_reset`  | `{name}`                      | `{ok}`                                       |
 | `screen_capture`     | `{}`                          | `{image_b64, format:"png"}`                  |
+| `remotehelp_status`  | `{}`                          | `{installed, version, internet_ok, interactive_session}` |
+| `remotehelp_start`   | `{}`                          | `{launched, pid, note}`                      |
+| `remotehelp_stop`    | `{}`                          | `{stopped}`                                  |
 | `telemetry_collect`  | `{sections?}`                 | snapshot map (see `telemetry` frame)         |
 | `agent_update`       | `{version, url, sha256}`      | `{ok, staged_version}`                       |
 
@@ -243,6 +246,23 @@ into the new version. The agent answers `{ok, staged_version}` *before* restarti
 the connection drops and the agent reconnects on the new version (compare
 `register.meta.version`). On a non-Windows/dev build the agent returns
 `error.code = "unsupported"`.
+
+The `remotehelp_*` tools orchestrate Windows **Quick Assist** as a remote-help
+*concierge*: kenny prepares and brokers a session but does **not** carry the screen or
+input itself (Quick Assist brings its own Microsoft relay, NAT traversal, and
+encryption). `remotehelp_status` is **read-only** — it reports whether Quick Assist is
+installed (`installed`, `version` from `Get-AppxPackage`), whether the internet is
+reachable (`internet_ok`), and whether an interactive user session is present to host the
+app (`interactive_session`). `remotehelp_start` and `remotehelp_stop` are **mutating**:
+`start` launches Quick Assist **on the interactive user desktop** and answers
+`{launched, pid, note}` (the `note` reminds the operator that a human helper must supply
+the Quick Assist code and the person at the PC must accept); `stop` terminates Quick
+Assist (`{stopped}`) so no session lingers. Because the agent runs as a session-0 service
+with no desktop, `start` launches the app via the user-session tray helper over a local
+named pipe, restricted to an allow-list of remote-help executables — same delivery
+mechanism as `screen_capture` (ADR-0018). On a non-Windows/dev build `start`/`stop`
+return `error.code = "unsupported"` and `status` reports everything not-available. See
+ADR-0022.
 
 ### Server-only MCP tools (not forwarded to a single agent)
 
@@ -275,10 +295,13 @@ for fleet aggregation. These thresholds are illustrative of the data-driven rule
 
 ## Versioning
 
-`PROTOCOL_VERSION = "0.6"`. Both implementations expose this constant and include it
+`PROTOCOL_VERSION = "0.7"`. Both implementations expose this constant and include it
 nowhere on the wire yet (reserved for a future `register.meta.protocol`). Bump on any
 breaking change to a frame or tool schema.
 
+- `0.7` — added the `remotehelp_status`, `remotehelp_start`, and `remotehelp_stop` tools
+  (orchestrate Windows Quick Assist as a remote-help concierge); additive tools, no frame
+  changes. See ADR-0022.
 - `0.6` — added the `policy` frame (server → agent) delivering the operator's append-only
   extra deny rules for the safety guard; additive frame, no tool changes. See ADR-0021.
 - `0.5` — added the `blocked` error code for the agent's deterministic, always-on safety
