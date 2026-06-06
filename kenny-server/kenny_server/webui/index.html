@@ -243,7 +243,11 @@
     /* confirm-gate — deliberate, amber-framed safety moment */
     .k-gate { align-self: flex-start; max-width: 92%; background: var(--surface);
       border: var(--border-width-emphasis) solid var(--accent); border-radius: var(--radius-md);
-      padding: 0; overflow: hidden; }
+      padding: 0; overflow: hidden;
+      /* The transcript is a flex column with a capped height; without this the
+         gate gets shrunk below its content and `overflow: hidden` clips the
+         footer buttons. Keep its natural height and let the transcript scroll. */
+      flex-shrink: 0; }
     .k-gate__head { display: flex; align-items: center; gap: 8px; padding: 9px 12px;
       background: var(--accent-wash); border-bottom: var(--border-width) solid color-mix(in oklab, var(--accent) 30%, transparent); }
     .k-gate__head svg { width: 15px; height: 15px; color: var(--accent); }
