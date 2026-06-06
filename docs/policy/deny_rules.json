@@ -1,0 +1,240 @@
+{
+  "catalog_version": 1,
+  "comment": "Shared deny-rule catalog for the deterministic agent-side safety guard (ADR-0020/0021). Single source of truth: the Rust agent embeds this via include_str! and the Python server loads it for its best-effort mirror. applies_to is one of powershell|self_protection|path. Patterns must use the portable regex subset common to Rust `regex` and Python `re` (no backreferences/lookaround). Path rules are matched after normalising / to \\.",
+  "rules": [
+    {
+      "id": "ps_format_drive",
+      "applies_to": "powershell",
+      "pattern": "(?i)\\bformat\\s+[a-z]:",
+      "reason": "format <drive>: (disk format)"
+    },
+    {
+      "id": "ps_format_com",
+      "applies_to": "powershell",
+      "pattern": "(?i)\\bformat\\.com\\b",
+      "reason": "format.com (disk format)"
+    },
+    {
+      "id": "ps_format_volume",
+      "applies_to": "powershell",
+      "pattern": "(?i)\\bFormat-Volume\\b",
+      "reason": "Format-Volume (disk format)"
+    },
+    {
+      "id": "ps_clear_disk",
+      "applies_to": "powershell",
+      "pattern": "(?i)\\bClear-Disk\\b",
+      "reason": "Clear-Disk (wipe disk)"
+    },
+    {
+      "id": "ps_diskpart",
+      "applies_to": "powershell",
+      "pattern": "(?i)\\bdiskpart\\b",
+      "reason": "diskpart (low-level disk edit)"
+    },
+    {
+      "id": "ps_remove_partition",
+      "applies_to": "powershell",
+      "pattern": "(?i)\\bRemove-Partition\\b",
+      "reason": "Remove-Partition"
+    },
+    {
+      "id": "ps_vssadmin_shadows",
+      "applies_to": "powershell",
+      "pattern": "(?i)\\bvssadmin\\b\\s+delete\\s+shadows?",
+      "reason": "vssadmin delete shadows (shadow-copy deletion)"
+    },
+    {
+      "id": "ps_wmic_shadowcopy",
+      "applies_to": "powershell",
+      "pattern": "(?i)\\bwmic\\b\\s+shadowcopy\\s+delete",
+      "reason": "wmic shadowcopy delete (shadow-copy deletion)"
+    },
+    {
+      "id": "ps_win32_shadowcopy",
+      "applies_to": "powershell",
+      "pattern": "(?i)Win32_ShadowCopy.*\\bdelete\\b",
+      "reason": "Win32_ShadowCopy delete (shadow-copy deletion)"
+    },
+    {
+      "id": "ps_wevtutil_cl",
+      "applies_to": "powershell",
+      "pattern": "(?i)\\bwevtutil\\b\\s+cl\\b",
+      "reason": "wevtutil cl (clear event log)"
+    },
+    {
+      "id": "ps_clear_eventlog",
+      "applies_to": "powershell",
+      "pattern": "(?i)\\bClear-EventLog\\b",
+      "reason": "Clear-EventLog (anti-forensics)"
+    },
+    {
+      "id": "ps_bcdedit",
+      "applies_to": "powershell",
+      "pattern": "(?i)\\bbcdedit\\b",
+      "reason": "bcdedit (boot config edit)"
+    },
+    {
+      "id": "ps_bootrec",
+      "applies_to": "powershell",
+      "pattern": "(?i)\\bbootrec\\b",
+      "reason": "bootrec (boot record edit)"
+    },
+    {
+      "id": "ps_cipher_wipe",
+      "applies_to": "powershell",
+      "pattern": "(?i)\\bcipher\\b\\s+/w",
+      "reason": "cipher /w (secure wipe)"
+    },
+    {
+      "id": "ps_encodedcommand",
+      "applies_to": "powershell",
+      "pattern": "(?i)-encodedcommand\\b",
+      "reason": "-EncodedCommand (obfuscated payload)"
+    },
+    {
+      "id": "ps_encoded_short",
+      "applies_to": "powershell",
+      "pattern": "(?i)(^|\\s)-e(c|nc|ncoded)?\\s+[A-Za-z0-9+/=]{16,}",
+      "reason": "-e <base64> (obfuscated encoded command)"
+    },
+    {
+      "id": "ps_invoke_expression",
+      "applies_to": "powershell",
+      "pattern": "(?i)\\bInvoke-Expression\\b",
+      "reason": "Invoke-Expression (download/run)"
+    },
+    {
+      "id": "ps_iex",
+      "applies_to": "powershell",
+      "pattern": "(?i)\\biex\\b\\s*\\(",
+      "reason": "iex( (download/run)"
+    },
+    {
+      "id": "ps_webclient",
+      "applies_to": "powershell",
+      "pattern": "(?i)Net\\.WebClient",
+      "reason": "Net.WebClient (download/run)"
+    },
+    {
+      "id": "ps_downloadstring",
+      "applies_to": "powershell",
+      "pattern": "(?i)\\bDownloadString\\b",
+      "reason": "DownloadString (download/run)"
+    },
+    {
+      "id": "ps_downloadfile",
+      "applies_to": "powershell",
+      "pattern": "(?i)\\bDownloadFile\\b",
+      "reason": "DownloadFile (download/run)"
+    },
+    {
+      "id": "ps_defender_disable",
+      "applies_to": "powershell",
+      "pattern": "(?i)Set-MpPreference\\b.*-Disable\\w*",
+      "reason": "Set-MpPreference -Disable* (disable Defender)"
+    },
+    {
+      "id": "ps_uninstall_defender",
+      "applies_to": "powershell",
+      "pattern": "(?i)\\bUninstall-WindowsFeature\\b.*Defender",
+      "reason": "Uninstall Defender feature"
+    },
+    {
+      "id": "ps_net_user_add",
+      "applies_to": "powershell",
+      "pattern": "(?i)\\bnet\\s+user\\b.*/add",
+      "reason": "net user /add (create account)"
+    },
+    {
+      "id": "ps_net_localgroup_admin",
+      "applies_to": "powershell",
+      "pattern": "(?i)\\bnet\\s+localgroup\\b.*administrators.*/add",
+      "reason": "net localgroup administrators /add (privilege escalation)"
+    },
+    {
+      "id": "ps_new_localuser",
+      "applies_to": "powershell",
+      "pattern": "(?i)\\bNew-LocalUser\\b",
+      "reason": "New-LocalUser (create account)"
+    },
+    {
+      "id": "ps_add_localgroupmember",
+      "applies_to": "powershell",
+      "pattern": "(?i)\\bAdd-LocalGroupMember\\b.*administrators",
+      "reason": "Add-LocalGroupMember Administrators (privilege escalation)"
+    },
+    {
+      "id": "sp_stop_service",
+      "applies_to": "self_protection",
+      "pattern": "(?i)\\b(Stop|Disable|Remove|Suspend)-Service\\b.*kenny\\-agent",
+      "reason": "stop/disable the kenny agent service"
+    },
+    {
+      "id": "sp_sc_service",
+      "applies_to": "self_protection",
+      "pattern": "(?i)\\bsc(\\.exe)?\\b\\s+(stop|delete|config)\\b.*kenny\\-agent",
+      "reason": "sc stop/delete the kenny agent service"
+    },
+    {
+      "id": "sp_stop_process",
+      "applies_to": "self_protection",
+      "pattern": "(?i)\\bStop-Process\\b.*kenny\\-agent",
+      "reason": "kill the kenny agent process"
+    },
+    {
+      "id": "sp_binary",
+      "applies_to": "self_protection",
+      "pattern": "(?i)kenny\\-agent\\.exe",
+      "reason": "reference the kenny agent binary"
+    },
+    {
+      "id": "sp_control_file",
+      "applies_to": "self_protection",
+      "pattern": "(?i)kenny\\-agent\\.control\\.json",
+      "reason": "tamper with the kill-switch control file"
+    },
+    {
+      "id": "path_registry_hive",
+      "applies_to": "path",
+      "pattern": "(?i)\\\\system32\\\\config\\\\(sam|security|system|software|default)\\b",
+      "reason": "registry hive (SAM/SECURITY/SYSTEM)"
+    },
+    {
+      "id": "path_ntds",
+      "applies_to": "path",
+      "pattern": "(?i)ntds\\.dit",
+      "reason": "Active Directory database (ntds.dit)"
+    },
+    {
+      "id": "path_ssh_dir",
+      "applies_to": "path",
+      "pattern": "(?i)\\\\\\.ssh\\\\",
+      "reason": "SSH key directory"
+    },
+    {
+      "id": "path_id_rsa",
+      "applies_to": "path",
+      "pattern": "(?i)\\bid_rsa\\b",
+      "reason": "SSH private key"
+    },
+    {
+      "id": "path_login_data",
+      "applies_to": "path",
+      "pattern": "(?i)\\\\login data\\b",
+      "reason": "browser credential store"
+    },
+    {
+      "id": "path_browser_db",
+      "applies_to": "path",
+      "pattern": "(?i)\\b(logins\\.json|key4\\.db|key3\\.db)\\b",
+      "reason": "browser credential store"
+    },
+    {
+      "id": "path_traversal",
+      "applies_to": "path",
+      "pattern": "(?:^|[\\\\])\\.\\.(?:[\\\\]|$)",
+      "reason": "path traversal (..)"
+    }
+  ]
+}

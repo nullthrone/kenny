@@ -23,10 +23,15 @@ from typing import Any
 
 from starlette.websockets import WebSocket, WebSocketDisconnect, WebSocketState
 
+from datetime import datetime, timezone
+
+from .policy import PolicyEngine
 from .protocol import (
     Log,
     Ping,
+    Policy,
     Pong,
+    PolicyRule,
     Register,
     Request,
     Response,
@@ -35,7 +40,7 @@ from .protocol import (
     parse_frame,
 )
 from .registry import AgentRegistry, AuthError
-from .store import EventStore, TelemetryStore
+from .store import EventStore, PolicyStore, TelemetryStore
 
 DEFAULT_TIMEOUT_S = 30.0
 
@@ -59,10 +64,15 @@ class AgentTunnel:
         registry: AgentRegistry,
         store: TelemetryStore,
         event_store: EventStore,
+        *,
+        policy_engine: PolicyEngine | None = None,
+        policy_store: PolicyStore | None = None,
     ) -> None:
         self.registry = registry
         self.store = store
         self.event_store = event_store
+        self.policy_engine = policy_engine
+        self.policy_store = policy_store
         # request_id -> Future[Response]
         self._pending: dict[str, asyncio.Future[Response]] = {}
 
@@ -80,6 +90,24 @@ class AgentTunnel:
         Returns the ``result`` dict on success; raises :class:`ToolError` on an
         error response or timeout.
         """
+
+        # Best-effort server mirror (ADR-0021): refuse obviously dangerous calls
+        # before forwarding. The agent stays authoritative; this only adds
+        # earlier feedback and runs before the pending future / send.
+        if self.policy_engine is not None:
+            hit = self.policy_engine.check(tool, args)
+            if hit is not None:
+                _code, reason = hit
+                await self.event_store.insert_log(
+                    source="server",
+                    at=datetime.now(timezone.utc).isoformat(),
+                    level="warn",
+                    target="kenny.policy",
+                    message=f"blocked {tool}: {reason}",
+                    agent_id=agent_id,
+                    fields={"tool": tool, "reason": reason},
+                )
+                raise ToolError("blocked", reason)
 
         send_fn = self.registry.send_fn_for(agent_id)
         request_id = str(uuid.uuid4())
@@ -103,6 +131,26 @@ class AgentTunnel:
             err.code if err else "internal",
             err.message if err else "agent returned an error without detail",
         )
+
+    async def broadcast_policy(self) -> None:
+        """Push the current operator deny rules to every online agent.
+
+        Called after an operator changes the rule set (ADR-0021). Per-agent send
+        errors are swallowed (logged at debug) so one stale socket can't break a
+        fleet-wide broadcast.
+        """
+
+        if self.policy_store is None:
+            return
+        rules = [PolicyRule(**r) for r in await self.policy_store.list()]
+        payload = dump_frame(Policy(rules=rules))
+        for agent in self.registry.list():
+            if not agent.online or agent.send_fn is None:
+                continue
+            try:
+                await agent.send_fn(payload)
+            except Exception as exc:  # noqa: BLE001 - one bad socket must not abort
+                logger.debug("policy broadcast to %s failed: %s", agent.agent_id, exc)
 
     # -- WebSocket endpoint ------------------------------------------------
 
@@ -148,6 +196,14 @@ class AgentTunnel:
             await websocket.close(code=4401)  # unauthorized (non-1000)
             return None
         logger.info("agent %s connected", frame.agent_id)
+        # Push the current operator deny rules to the just-connected agent
+        # (always, even when empty, so behaviour is deterministic). ADR-0021.
+        if self.policy_store is not None:
+            try:
+                rules = [PolicyRule(**r) for r in await self.policy_store.list()]
+                await send_fn(dump_frame(Policy(rules=rules)))
+            except Exception as exc:  # noqa: BLE001 - never break the handshake
+                logger.debug("policy delivery to %s failed: %s", frame.agent_id, exc)
         return frame.agent_id
 
     async def _serve(self, websocket: WebSocket, agent_id: str) -> None:

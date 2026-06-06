@@ -11,6 +11,7 @@
 **/*.sqlite*
 **/*.db
 .github
-docs
+docs/*
+!docs/policy
 kenny-agent
 **/.DS_Store

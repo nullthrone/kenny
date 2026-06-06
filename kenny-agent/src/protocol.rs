@@ -11,7 +11,7 @@ use serde_json::{Map, Value};
 /// Wire-protocol version implemented by this binary (see protocol.md § Versioning).
 ///
 /// Not currently placed on the wire (reserved for `register.meta.protocol`).
-pub const PROTOCOL_VERSION: &str = "0.5";
+pub const PROTOCOL_VERSION: &str = "0.6";
 
 /// One WebSocket text message. Tagged by the `type` field.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -27,6 +27,9 @@ pub enum Frame {
     Telemetry(Telemetry),
     /// agent → server: a forwarded `tracing` log record.
     Log(Log),
+    /// server → agent: operator's append-only extra deny rules (ADR-0021). Additive to
+    /// the compiled-in built-ins; can never weaken or remove them.
+    Policy(Policy),
     /// heartbeat (either direction).
     Ping,
     /// heartbeat reply (either direction).
@@ -149,6 +152,32 @@ pub struct Log {
     /// Structured fields carried alongside the message, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fields: Option<Value>,
+}
+
+/// `policy` frame body: the operator's current set of append-only deny rules (ADR-0021).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Policy {
+    pub rules: Vec<PolicyRule>,
+}
+
+/// A single deny rule: `applies_to` selects which call surface the `pattern` is matched
+/// against, and `reason` is reported on a hit. Shared shape between the embedded built-in
+/// catalog (`docs/policy/deny_rules.json`) and operator-supplied rules.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PolicyRule {
+    pub id: String,
+    pub applies_to: PolicyTarget,
+    pub pattern: String,
+    pub reason: String,
+}
+
+/// The call surface a [`PolicyRule`] applies to (`applies_to`).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PolicyTarget {
+    Powershell,
+    SelfProtection,
+    Path,
 }
 
 /// Severity of a forwarded log record (`log.level`).

@@ -35,8 +35,9 @@ from .auth import (
 from .chat import ChatSessions
 from .distribution import ShareLinks, build_download_routes
 from .logging_config import StoreLogHandler, configure_logging, drain_log_queue
+from .policy import PolicyEngine
 from .registry import AgentRegistry
-from .store import EventStore, TelemetryStore
+from .store import EventStore, PolicyStore, TelemetryStore
 from .tokenstore import AgentTokenStore
 from .tools import CallLog, ScreenshotStore, register_tools
 from .tunnel import AgentTunnel
@@ -52,7 +53,17 @@ def build_app(db_path: str | None = None) -> Starlette:
     registry = AgentRegistry(token_store=token_store)
     store = TelemetryStore(db_path)
     event_store = EventStore(db_path)
-    tunnel = AgentTunnel(registry, store, event_store)
+    # Shared-catalog mirror + operator deny rules (ADR-0021). The engine loads the
+    # catalog at construction and never raises if it is missing (fail-open).
+    policy_store = PolicyStore(db_path)
+    policy_engine = PolicyEngine()
+    tunnel = AgentTunnel(
+        registry,
+        store,
+        event_store,
+        policy_engine=policy_engine,
+        policy_store=policy_store,
+    )
     call_log = CallLog(event_store=event_store)
     screenshots = ScreenshotStore()
     chat_sessions = ChatSessions()
@@ -67,6 +78,9 @@ def build_app(db_path: str | None = None) -> Starlette:
         await store.connect()
         await token_store.connect()
         await event_store.connect()
+        await policy_store.connect()
+        # Load persisted operator rules into the mirror engine at startup.
+        policy_engine.set_operator_rules(await policy_store.list())
         await store.prune()
         await event_store.prune()
         # Capture server-side log records onto a bounded queue and persist them
@@ -100,6 +114,7 @@ def build_app(db_path: str | None = None) -> Starlette:
             await token_store.close()
             await store.close()
             await event_store.close()
+            await policy_store.close()
 
     api_routes = build_api_routes(
         registry=registry,
@@ -109,6 +124,8 @@ def build_app(db_path: str | None = None) -> Starlette:
         screenshots=screenshots,
         event_store=event_store,
         token_store=token_store,
+        policy_store=policy_store,
+        policy_engine=policy_engine,
     )
     chat_routes = build_chat_routes(
         registry=registry,
@@ -148,6 +165,8 @@ def build_app(db_path: str | None = None) -> Starlette:
     app.state.store = store
     app.state.event_store = event_store
     app.state.token_store = token_store
+    app.state.policy_store = policy_store
+    app.state.policy_engine = policy_engine
     app.state.tunnel = tunnel
     app.state.call_log = call_log
     app.state.screenshots = screenshots

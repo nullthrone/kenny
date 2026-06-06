@@ -5,6 +5,9 @@ FROM python:3.11-slim
 
 WORKDIR /app
 COPY kenny-server/ /app/
+# Ship the shared deny-rule catalog so the best-effort policy mirror can load it
+# (the resolver's container candidate is /app/docs/policy/deny_rules.json). ADR-0021.
+COPY docs/policy/ /app/docs/policy/
 
 RUN pip install --no-cache-dir . && mkdir -p /data
 

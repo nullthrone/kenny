@@ -289,3 +289,90 @@ class EventStore:
             "message": row["message"],
             "fields": json.loads(row["fields"]) if row["fields"] is not None else None,
         }
+
+
+_POLICY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS operator_policy_rules (
+    id          TEXT PRIMARY KEY,
+    applies_to  TEXT NOT NULL,
+    pattern     TEXT NOT NULL,
+    reason      TEXT NOT NULL,
+    created_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_operator_policy_created
+    ON operator_policy_rules (created_at);
+"""
+
+
+class PolicyStore:
+    """Async SQLite-backed store for the operator's append-only deny rules.
+
+    Persists ONLY operator additions (ADR-0021); built-in rules live in the
+    shared catalog and are never stored here. "Append-only" means operator rules
+    can never weaken the built-ins — operators may still add/remove their own
+    entries. Shares the same database file as the other stores (own connection).
+    """
+
+    def __init__(self, db_path: str = DEFAULT_DB_PATH) -> None:
+        self.db_path = db_path
+        self._db: aiosqlite.Connection | None = None
+
+    async def connect(self) -> None:
+        if self._db is not None:
+            return
+        self._db = await aiosqlite.connect(self.db_path)
+        self._db.row_factory = aiosqlite.Row
+        await self._db.execute("PRAGMA journal_mode=WAL")
+        await self._db.executescript(_POLICY_SCHEMA)
+        await self._db.commit()
+
+    async def close(self) -> None:
+        if self._db is not None:
+            await self._db.close()
+            self._db = None
+
+    @property
+    def _conn(self) -> aiosqlite.Connection:
+        if self._db is None:
+            raise RuntimeError("PolicyStore is not connected; call connect() first")
+        return self._db
+
+    async def list(self) -> list[dict[str, Any]]:
+        """Return operator rules (id/applies_to/pattern/reason), oldest-first."""
+
+        async with self._conn.execute(
+            "SELECT id, applies_to, pattern, reason FROM operator_policy_rules "
+            "ORDER BY created_at, id"
+        ) as cur:
+            rows = await cur.fetchall()
+        return [
+            {
+                "id": r["id"],
+                "applies_to": r["applies_to"],
+                "pattern": r["pattern"],
+                "reason": r["reason"],
+            }
+            for r in rows
+        ]
+
+    async def add(
+        self, *, id: str, applies_to: str, pattern: str, reason: str
+    ) -> None:
+        """Insert (or replace) an operator rule, stamping ``created_at``."""
+
+        created_at = datetime.now(timezone.utc).isoformat()
+        await self._conn.execute(
+            "INSERT OR REPLACE INTO operator_policy_rules "
+            "(id, applies_to, pattern, reason, created_at) VALUES (?, ?, ?, ?, ?)",
+            (id, applies_to, pattern, reason, created_at),
+        )
+        await self._conn.commit()
+
+    async def remove(self, id: str) -> bool:
+        """Delete one operator rule by id. Returns True if a row was removed."""
+
+        cur = await self._conn.execute(
+            "DELETE FROM operator_policy_rules WHERE id = ?", (id,)
+        )
+        await self._conn.commit()
+        return (cur.rowcount or 0) > 0
