@@ -38,3 +38,6 @@ offers an optional Caddy reverse-proxy profile for TLS termination (so agents di
   dashboard works in the non-editable container install.
 - Build context is the repo root (`docker build -f kenny-server/Dockerfile .`) so the
   Dockerfile can copy the server package; `.dockerignore` keeps the context small.
+- The release image is a multi-arch manifest (`linux/amd64` + `linux/arm64`) so it runs
+  on the OCI Free Tier (Ampere/arm64) host as well as amd64; the release workflow builds
+  arm64 via QEMU and smoke-tests the runner-native amd64 image before publishing.

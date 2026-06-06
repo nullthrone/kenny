@@ -22,6 +22,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      # QEMU lets this amd64 runner build the linux/arm64 image too.
+      - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v4
       - name: Image metadata
         id: meta
@@ -32,12 +34,16 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest
+      # Build only the runner-native amd64 image here so it can be `load`ed and
+      # smoke-tested locally (`load: true` cannot handle a multi-arch manifest).
+      # The arm64 variant is built and verified in the push step below.
       - name: Build image (load locally, do not push yet)
         uses: docker/build-push-action@v7
         with:
           context: .
           file: kenny-server/Dockerfile
           load: true
+          platforms: linux/amd64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-to: type=gha,mode=max
@@ -67,12 +73,15 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # Publish a multi-arch manifest (amd64 + arm64). The amd64 layers are reused
+      # from the cache populated by the build above; arm64 is built here via QEMU.
       - name: Push image (only after the smoke test passed)
         uses: docker/build-push-action@v7
         with:
           context: .
           file: kenny-server/Dockerfile
           push: true
+          platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           provenance: true
