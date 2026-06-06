@@ -533,7 +533,13 @@
     async function getJSON(url, opts) {
       const r = await fetch(url, opts);
       if (r.status === 401) { location = "/login"; throw new Error("unauthorized"); }
-      if (!r.ok) throw new Error(url + " -> " + r.status);
+      if (!r.ok) {
+        // Surface the server-provided reason (e.g. the agent's screen_capture
+        // error) instead of a bare status code; mirrors streamSSE() below.
+        let msg = url + " -> " + r.status;
+        try { const j = await r.json(); if (j && j.error) msg = j.error; } catch (e) {}
+        throw new Error(msg);
+      }
       return r.json();
     }
 
@@ -848,7 +854,7 @@
           </div>
           <img class="kc-shot" id="kc-shot-${esc(data.agent_id)}"
             src="/api/agent/${encodeURIComponent(data.agent_id)}/screenshot?t=${Date.now()}"
-            onclick="openModal('${icon('camera', 18)}<span>Screenshot</span>', '<img class=&quot;kc-shot&quot; src=&quot;' + this.src + '&quot;>')"
+            onclick="screenshotModal(this.src)"
             onerror="this.style.display='none';this.nextElementSibling.style.display='block'">
           <div class="k-muted" style="display:none;font-size:12px">noch keiner</div>
         </div>`;
@@ -963,6 +969,12 @@
       try { await getJSON("/api/agent/" + encodeURIComponent(id) + "/refresh", { method: "POST" }); }
       catch (e) { alert("refresh failed: " + e.message); }
       selectAgent(id);
+    }
+
+    // Enlarge the agent-detail screenshot in a modal. Built in JS (not inline in
+    // the img's onclick attribute) so the icon() SVG markup can't break the tag.
+    function screenshotModal(src) {
+      openModal(`${icon('camera', 18)}<span>Screenshot</span>`, `<img class="kc-shot" src="${src}">`);
     }
 
     async function captureScreenshot(id) {
