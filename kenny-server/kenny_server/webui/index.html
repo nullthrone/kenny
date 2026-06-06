@@ -371,6 +371,15 @@
     .kc-icon-btn:hover { background: var(--surface-raised); color: var(--fg); }
     .kc-icon-btn svg { width: 16px; height: 16px; }
 
+    /* top-level tab navigation (Fleet / Activity) */
+    .kc-tabs { display: flex; align-items: center; gap: 6px; }
+    .kc-tab { display: inline-flex; align-items: center; gap: 7px; padding: 7px 14px; border-radius: var(--radius-sm);
+      font-size: var(--text-sm); font-weight: 500; color: var(--fg-muted); text-decoration: none;
+      border: 1px solid transparent; transition: background var(--dur) var(--ease), color var(--dur) var(--ease); }
+    .kc-tab:hover { background: var(--surface-raised); color: var(--fg); }
+    .kc-tab.is-active { background: var(--surface-raised); color: var(--fg); border-color: var(--border-strong); }
+    .kc-tab svg { width: 16px; height: 16px; }
+
     .kc-main { display: flex; flex-direction: column; gap: 14px; padding-top: 16px; }
 
     .kc-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
@@ -396,6 +405,17 @@
     .kc-agent__name { font-size: var(--text-sm); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .kc-agent__sum { font-size: var(--text-xs); color: var(--fg-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .kc-agent__off { font-size: 11px; color: var(--fg-faint); letter-spacing: .04em; text-transform: uppercase; flex: none; }
+
+    /* activity sub-nav: anchors styled like the fleet list, distinct class so
+       renderConsoleListSelection()'s .kc-agent query never touches them */
+    .kc-navitem { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; cursor: pointer;
+      background: var(--bg-sunken); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 10px 12px;
+      transition: border-color var(--dur) var(--ease); font-family: var(--font-sans); color: var(--fg); text-decoration: none; }
+    .kc-navitem:hover { border-color: var(--border-strong); }
+    .kc-navitem.is-active { background: var(--surface-raised); border-color: var(--border-strong); }
+    .kc-navitem svg { flex: none; color: var(--fg-muted); }
+    .kc-navitem__name { font-size: var(--text-sm); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .kc-navitem__sub { font-size: var(--text-xs); color: var(--fg-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
     .kc-addpc { margin-top: 4px; padding: 12px; background: var(--bg-sunken);
       border: 1px dashed var(--border-strong); border-radius: var(--radius-md); }
@@ -441,6 +461,7 @@
         <div class="kc-brand__sub">fleet console</div>
       </div>
     </div>
+    <nav class="kc-tabs" id="tabs"></nav>
     <div class="kc-header__right" id="header-right"></div>
   </header>
   <main class="kc-app kc-main" id="app">loading…</main>
@@ -526,6 +547,7 @@
 
     const app = document.getElementById("app");
     const headerRight = document.getElementById("header-right");
+    const tabsEl = document.getElementById("tabs");
     const sev = s => ["ok", "warn", "crit"].includes(s) ? s : "unknown";
     const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g,
       c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -636,23 +658,48 @@
     }
 
     // -- console state -----------------------------------------------------
-    let state = { fleet: null, bin: null, selected: null, detail: null,
+    let state = { tab: "fleet", activityView: "audit",
+      fleet: null, bin: null, selected: null, detail: null,
       audit: [], auditQuery: "", auditPage: 1,
       events: [], eventsQuery: "", eventsPage: 1 };
     const AUDIT_PAGE_SIZE = 25;
     const EVENTS_PAGE_SIZE = 25;
 
-    async function renderConsole() {
-      const [fleet, bin, audit, events] = await Promise.all([
+    // -- top-level tab routing (Fleet / Activity) via location.hash -------
+    // Hash scheme: #/fleet, #/activity/audit, #/activity/events. A bare or
+    // unknown hash falls back to the Fleet tab (and the audit sub-view).
+    function parseHash() {
+      const parts = (location.hash || "").replace(/^#\/?/, "").split("/").filter(Boolean);
+      if (parts[0] === "activity") {
+        return { tab: "activity", activityView: parts[1] === "events" ? "events" : "audit" };
+      }
+      return { tab: "fleet", activityView: state.activityView };
+    }
+
+    function renderTabs() {
+      const tab = (name, href, ico, label) =>
+        `<a class="kc-tab${state.tab === name ? " is-active" : ""}" href="${href}">${icon(ico, 16)}${label}</a>`;
+      tabsEl.innerHTML =
+        tab("fleet", "#/fleet", "network", "Fleet") +
+        tab("activity", "#/activity/" + state.activityView, "activity", "Activity");
+    }
+
+    async function router() {
+      const { tab, activityView } = parseHash();
+      state.tab = tab;
+      state.activityView = activityView;
+      renderTabs();
+      if (tab === "activity") await renderActivity();
+      else await renderFleet();
+    }
+
+    async function renderFleet() {
+      const [fleet, bin] = await Promise.all([
         getJSON("/api/fleet"),
         getJSON("/api/agent-binary").catch(() => null),
-        getJSON("/api/audit").catch(() => ({ entries: [] })),
-        getJSON("/api/events").catch(() => ({ entries: [] })),
       ]);
       state.fleet = fleet;
       state.bin = bin;
-      state.audit = audit.entries || [];
-      state.events = events.entries || [];
       const agents = fleet.agents || [];
       if (!state.selected || !agents.find(a => a.agent_id === state.selected)) {
         state.selected = worstOf(agents);
@@ -665,15 +712,50 @@
         `<div class="kc-console">
            <div class="k-panel kc-fleet">${fleetListHtml(agents)}${addPcHtml(bin)}</div>
            <div class="k-panel kc-detail" id="detail"><div class="k-muted">loading…</div></div>
-         </div>` +
-        auditPanelHtml() +
-        eventsPanelHtml();
+         </div>`;
       mountChat();
-      renderAudit();
-      renderEvents();
       if (state.selected) selectAgent(state.selected);
       else document.getElementById("detail").innerHTML =
         `<div class="k-muted">No PC selected. Use “Add a PC” to onboard the first machine.</div>`;
+    }
+
+    // -- activity tab: fleet-wide observability (audit + events) ----------
+    function activityNavHtml(view) {
+      const item = (v, ico, name, sub) =>
+        `<a class="kc-navitem${view === v ? " is-active" : ""}" href="#/activity/${v}">
+           ${icon(ico, 16)}
+           <span class="kc-agent__body">
+             <span class="kc-navitem__name">${name}</span>
+             <span class="kc-navitem__sub">${sub}</span>
+           </span></a>`;
+      return `<div class="kc-section-lbl">activity</div>
+        <div class="kc-fleet__list">
+          ${item("audit", "shield-check", "tool-call audit log", "forwarded capability calls")}
+          ${item("events", "activity", "events &amp; logs", "server + agent events")}
+        </div>`;
+    }
+
+    async function renderActivity() {
+      // The header roll-up needs fleet data in every tab; fetch it if missing.
+      if (!state.fleet) {
+        state.fleet = await getJSON("/api/fleet").catch(() => ({ agents: [] }));
+      }
+      renderHeaderRight(state.fleet, state.fleet.agents || []);
+      // Lazy-load the fleet-wide logs on entry (same fallbacks as before).
+      const [audit, events] = await Promise.all([
+        getJSON("/api/audit").catch(() => ({ entries: [] })),
+        getJSON("/api/events").catch(() => ({ entries: [] })),
+      ]);
+      state.audit = audit.entries || [];
+      state.events = events.entries || [];
+      const view = state.activityView;
+      app.innerHTML =
+        `<div class="kc-console">
+           <div class="k-panel kc-fleet">${activityNavHtml(view)}</div>
+           ${view === "events" ? eventsPanelHtml() : auditPanelHtml()}
+         </div>`;
+      if (view === "events") renderEvents();
+      else renderAudit();
     }
 
     function worstOf(agents) {
@@ -1034,7 +1116,7 @@
         const r = await getJSON("/api/agent-binary/fetch", { method: "POST" });
         alert(r.ok ? ("fetched " + (r.version || "")) : ("fetch failed: " + r.message));
       } catch (e) { alert("fetch failed: " + e.message); }
-      renderConsole();
+      renderFleet();
     }
 
     // -- chat (server-hosted Claude; read-only auto-run vs confirm-gate) ---
@@ -1333,7 +1415,13 @@
         : "";
     }
 
-    renderConsole().catch(e => app.textContent = "error: " + e.message);
+    window.addEventListener("hashchange", () => {
+      router().catch(e => app.textContent = "error: " + e.message);
+    });
+    // Normalize a bare URL to the default tab (replaceState does not fire
+    // hashchange, so router() runs exactly once below).
+    if (!location.hash) history.replaceState(null, "", "#/fleet");
+    router().catch(e => app.textContent = "error: " + e.message);
   </script>
 </body>
 </html>
