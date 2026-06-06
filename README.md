@@ -1,7 +1,21 @@
-# kenny
+<div align="center">
 
-Self-hosted remote administration **and fleet monitoring** for Windows PCs in a family
-setting, operated through **Claude** (MCP) and a web **dashboard**.
+<img src="docs/assets/kenny-mark-64.png" alt="kenny" width="72" height="72" />
+
+# 🐕 kenny
+
+**Self-hosted remote administration _and fleet monitoring_ for Windows PCs, driven by Claude (MCP) and a web dashboard.**
+
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-E8A33D.svg)](LICENSE)
+[![CI](https://github.com/t11z/kenny/actions/workflows/ci.yml/badge.svg)](https://github.com/t11z/kenny/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/badge/docs-mkdocs-E8A33D.svg)](https://t11z.github.io/kenny/)
+[![Release](https://img.shields.io/github/v/release/t11z/kenny?color=E8A33D)](https://github.com/t11z/kenny/releases)
+
+</div>
+
+kenny started as a way to look after the family's Windows PCs — keep an eye on disk space and
+Defender, fix things over the phone without "can you read me what it says" — operated through
+Claude instead of a clunky console. It works for any small fleet you administer with consent.
 
 ```mermaid
 flowchart LR
@@ -30,7 +44,7 @@ flowchart LR
   server (NAT/firewall friendly), executes tool calls in the user's session, and pushes
   periodic health snapshots.
 
-## Features
+## ✨ Features
 
 ### Fleet monitoring
 - **Push telemetry** from each PC (default every 15 min, plus an immediate first push),
@@ -46,8 +60,8 @@ flowchart LR
 - Fleet view with a **traffic-light** per PC and the fleet's worst-of health.
 - Per-agent **drill-down**: each telemetry section with status + rule reason (click a section for a
   structured detail popup), a **health trend**, and a searchable, paged **tool-call audit log**.
-- Action buttons: refresh now, reinstall, re-share, update agent; onboard a new PC from **Add a PC**
-  (installer / share link).
+- Action buttons: refresh now, **remote help** (Quick Assist), reinstall, re-share, update agent;
+  onboard a new PC from **Add a PC** (installer / share link).
 - Single-page, dependency-light; cookie login at `/login`.
 
 ### Remote administration — capability tools
@@ -56,7 +70,9 @@ flowchart LR
 - **Files**: `fs_list` · `fs_search` · `fs_read` · `fs_disk_usage`
 - **Diagnostics**: `diag_processes` · `diag_services` · `diag_eventlog` · `diag_autostart`
 - **Network**: `net_config` · `net_dns_flush` · `net_adapter_reset`
-- **Screen**: `screen_capture` · **Telemetry**: `telemetry_collect` · **Agent mgmt**: `agent_update`
+- **Screen**: `screen_capture` · **Remote help**: `remotehelp_status` · `remotehelp_start` ·
+  `remotehelp_stop` (Quick Assist concierge) · **Telemetry**: `telemetry_collect` ·
+  **Agent mgmt**: `agent_update`
 - **Server-only orchestration**: `list_agents` · `select_agent` · `fleet_overview` ·
   `agent_health` · `agent_snapshot`
 - Windows-only tools have **portable Linux fallbacks**, so the agent builds and runs in CI/dev.
@@ -67,7 +83,8 @@ flowchart LR
   same tools, with prompt-cached system + tool schemas; model configurable (default
   `claude-sonnet-4-6`).
 - **Confirm-gate**: read-only tools auto-run; state-changing tools (`powershell_exec`, `winget`
-  writes, `net_dns_flush`/`adapter_reset`, `agent_update`) require explicit operator confirmation.
+  writes, `net_dns_flush`/`adapter_reset`, `remotehelp_start`/`_stop`, `agent_update`) require
+  explicit operator confirmation.
 
 ### Agent distribution & lifecycle
 - **One-click installer download** from the GUI: a prebuilt binary + a generated `install.bat`
@@ -80,7 +97,7 @@ flowchart LR
 
 ### Transport & connectivity
 - Agent **dials out** over WSS (NAT/firewall friendly) and never listens.
-- **Frozen, versioned JSON wire contract** (`PROTOCOL_VERSION 0.2`) with golden fixtures
+- **Frozen, versioned JSON wire contract** (`PROTOCOL_VERSION 0.7`) with golden fixtures
   round-tripped by both sides; request/response correlation, ping/pong heartbeat, and
   exponential-backoff reconnect.
 
@@ -89,39 +106,38 @@ flowchart LR
   with the `Secure` flag under TLS.
 - **Per-agent tokens** in a SQLite token store with a **rotation endpoint**; the agent authenticates
   on `register`.
+- A **local kill-switch** (tray) and a deterministic, always-on **agent-side safety guard** that
+  refuses individually dangerous calls regardless of operator approval.
 - TLS server identity (`wss`), confirm-gate for destructive actions, and a tool-call audit log.
-
-### Deployment & ops
-- **Docker image + Compose** (persistent data volume, optional Caddy TLS profile for `wss`/`https`).
-- **GHCR release workflow** on tag `v*`: server image + Windows agent binary (SHA‑256, optional
-  Authenticode signing).
-- **Dependabot** for pip, cargo, GitHub Actions, and the Docker base image.
-- **CI**: server tests + lint, agent `fmt`/`clippy`/`test`/`build`, a Windows job for
-  `#[cfg(windows)]` code, and a **real agent↔server e2e** job.
-- **`/security-review`** command files deduplicated security issues for kenny's weak points.
 
 ### Engineering
 - **Contract-first** (`docs/protocol.md` + `docs/fixtures/`), **ADRs** (MADR) for every significant
   decision, and Claude Code **skills/commands + subagents** for repeatable changes.
 
-## Documentation
+## 📚 Documentation
+
+The full docs site: **<https://t11z.github.io/kenny/>** (built from `docs/` with MkDocs Material).
 
 - **[User guide](docs/user-guide.md)** — operator workflows: dashboard, chat, running tools,
   adding/updating agents (with diagrams).
 - **[Setup & operations](docs/setup.md)** — hosting, environment variables, TLS, building &
   distributing the agent, releases.
+- **[Wire protocol](docs/protocol.md)** + **[fixtures](docs/fixtures)** — the agent⇄server contract
+  (single source of truth; both sides round-trip the fixtures so they cannot drift).
+- **[Architecture decisions](docs/adr)** — MADR records for every significant decision.
 
-## How it fits together
+## 🚀 Quickstart
 
-- The agent⇄server **wire contract** is the single source of truth:
-  [`docs/protocol.md`](docs/protocol.md) + [`docs/fixtures/`](docs/fixtures). Both
-  components round-trip the golden fixtures so they cannot drift.
-- Why things are the way they are: architecture decisions in
-  [`docs/adr/`](docs/adr) (MADR).
-- Coding conventions for agents/humans: [`CLAUDE.md`](CLAUDE.md) and the per-component
-  `CLAUDE.md` files (deliberately free of architecture/contract duplication).
+```bash
+# Server (Docker Compose): dashboard, MCP endpoint, agent tunnel on one port
+cp .env.example .env   # set KENNY_OPERATOR_TOKEN etc. (see docs/setup.md)
+docker compose up -d
+```
 
-## Develop
+Then open the dashboard, use **Add a PC** to download an installer for each Windows machine. Full
+details — TLS, environment variables, building the agent — are in **[docs/setup.md](docs/setup.md)**.
+
+## 🛠️ Develop
 
 ```bash
 # server
@@ -132,17 +148,22 @@ cd kenny-agent && cargo test && cargo build
 ```
 
 Helper commands inside Claude Code: `/new-adr`, `/add-tool`, `/add-collector`,
-`/contract-check`, `/e2e`, `/security-review`.
+`/contract-check`, `/e2e`, `/security-review`. See **[CONTRIBUTING.md](CONTRIBUTING.md)**.
 
-## Authentication
+## 🤝 Community & contributing
 
-- **Agent → server:** per-agent token in the `register` frame (`KENNY_AGENT_TOKENS`).
-- **Operator → server:** one operator bearer token (`KENNY_OPERATOR_TOKEN`) gates the
-  MCP endpoint, the `/api` routes, and the web UI (browser logs in at `/login`). Claude
-  sends `Authorization: Bearer <token>`. See `docs/adr/0008-operator-authentication.md`.
-- **Server → agent:** TLS — run the server behind **`wss`/`https`** in production; the
-  agent dials a known `wss://…/agent/ws` URL. `ws://` and the dev token fallbacks are
-  for local use only.
+- **[Contributing guide](CONTRIBUTING.md)** — build/test, the contract-first workflow, and how to
+  add a tool or a telemetry collector.
+- **[Code of Conduct](CODE_OF_CONDUCT.md)** — Contributor Covenant.
+- **[Security policy](SECURITY.md)** — please report vulnerabilities **privately**, never in a
+  public issue (kenny is a remote-admin tool).
+- Questions and ideas: **[GitHub Discussions](https://github.com/t11z/kenny/discussions)**.
+
+## 📄 License
+
+kenny is licensed under the **GNU Affero General Public License v3.0** ([AGPL-3.0-only](LICENSE)).
+Because the server is network-facing, the AGPL's §13 means anyone who runs a modified kenny as a
+service must offer its source to users.
 
 ## Status
 
@@ -150,6 +171,6 @@ Both components are implemented against the contract: capability tools, telemetr
 health rules, the fleet dashboard, a server-hosted Claude chat (with a confirm-gate for
 state-changing tools), operator + agent auth (token store with rotation), the Windows service +
 server-triggered self-update, agent installer download, Docker/Compose, and a GHCR release
-workflow. Runtime-only Windows behaviors (service control, live self-update swap) are
-compile-verified via cross-build and the Windows CI job; real-hardware verification, TLS hardening,
-and code-signing are operational follow-ups (see `docs/adr/`).
+workflow. Runtime-only Windows behaviors (service control, live self-update swap, Quick Assist)
+are compile-verified via cross-build and the Windows CI job; real-hardware verification, TLS
+hardening, and code-signing are operational follow-ups (see `docs/adr/`).

@@ -22,7 +22,7 @@ pub struct RunArgs {
     #[arg(long, env = "KENNY_SERVER")]
     pub server: String,
 
-    /// Stable identifier for this agent (e.g. `papa-pc`).
+    /// Stable identifier for this agent (e.g. `example-pc`).
     #[arg(long = "agent-id", env = "KENNY_AGENT_ID")]
     pub agent_id: String,
 
@@ -185,14 +185,14 @@ mod tests {
             "--server",
             "wss://example/agent/ws",
             "--agent-id",
-            "papa-pc",
+            "example-pc",
             "--token",
             "secret",
         ]);
         assert!(cli.command.is_none(), "no subcommand => default run path");
         let run = cli.run.into_run_args().expect("required flags present");
         assert_eq!(run.server, "wss://example/agent/ws");
-        assert_eq!(run.agent_id, "papa-pc");
+        assert_eq!(run.agent_id, "example-pc");
         assert_eq!(run.telemetry_interval_secs, 900);
     }
 

@@ -18,7 +18,7 @@ async def test_seeds_dev_tokens(tmp_path) -> None:
     store = await _store(tmp_path)
     try:
         assert await store.verify("dev", "dev-token") is True
-        assert await store.verify("papa-pc", "dev-token-papa") is True
+        assert await store.verify("example-pc", "dev-token-1") is True
         assert await store.verify("dev", "wrong") is False
         assert await store.verify("unknown", "whatever") is False
     finally:
@@ -105,7 +105,7 @@ async def test_list_agents(tmp_path) -> None:
     try:
         await store.create_or_rotate("z-agent")
         agents = {a["agent_id"] for a in await store.list_agents()}
-        assert {"dev", "papa-pc", "z-agent"} <= agents
+        assert {"dev", "example-pc", "z-agent"} <= agents
     finally:
         await store.close()
 

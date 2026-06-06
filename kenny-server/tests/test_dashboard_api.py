@@ -51,13 +51,13 @@ def test_agent_endpoint_reports_ai_enabled(tmp_path, monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     app = build_app(db_path=str(tmp_path / "ai.sqlite"))
     with TestClient(app) as c:
-        body = c.get("/api/agent/papa-pc", headers=_bearer(app)).json()
+        body = c.get("/api/agent/example-pc", headers=_bearer(app)).json()
         assert body["ai_enabled"] is True
 
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     app2 = build_app(db_path=str(tmp_path / "ai2.sqlite"))
     with TestClient(app2) as c:
-        body = c.get("/api/agent/papa-pc", headers=_bearer(app2)).json()
+        body = c.get("/api/agent/example-pc", headers=_bearer(app2)).json()
         assert body["ai_enabled"] is False
 
 
@@ -67,8 +67,8 @@ def test_audit_endpoint_shape_and_classification(tmp_path):
         from functools import partial
 
         es = app.state.event_store
-        c.portal.call(partial(es.insert_audit, agent_id="papa-pc", tool="telemetry_collect", ok=True))
-        c.portal.call(partial(es.insert_audit, agent_id="papa-pc", tool="winget_update", ok=True))
+        c.portal.call(partial(es.insert_audit, agent_id="example-pc", tool="telemetry_collect", ok=True))
+        c.portal.call(partial(es.insert_audit, agent_id="example-pc", tool="winget_update", ok=True))
         r = c.get("/api/audit", headers=_bearer(app))
         assert r.status_code == 200
         entries = r.json()["entries"]
@@ -94,13 +94,13 @@ def test_events_endpoint_filters(tmp_path):
         c.portal.call(
             partial(es.insert_log, source="agent", at="2026-06-05T10:00:00Z",
                     level="warn", target="kenny_agent::tunnel", message="backing off",
-                    agent_id="papa-pc")
+                    agent_id="example-pc")
         )
         c.portal.call(
             partial(es.insert_log, source="server", at="2026-06-05T10:00:01Z",
-                    level="info", target="kenny.tunnel", message="papa-pc connected")
+                    level="info", target="kenny.tunnel", message="example-pc connected")
         )
-        c.portal.call(partial(es.insert_audit, agent_id="papa-pc", tool="winget_update", ok=True))
+        c.portal.call(partial(es.insert_audit, agent_id="example-pc", tool="winget_update", ok=True))
 
         # Unfiltered: all three events, newest-first.
         entries = c.get("/api/events", headers=_bearer(app)).json()["entries"]
@@ -113,7 +113,7 @@ def test_events_endpoint_filters(tmp_path):
         assert len(logs) == 2
 
         # agent + level filters compose.
-        warns = c.get("/api/events?agent=papa-pc&level=warn", headers=_bearer(app)).json()["entries"]
+        warns = c.get("/api/events?agent=example-pc&level=warn", headers=_bearer(app)).json()["entries"]
         assert len(warns) == 1
         assert warns[0]["message"] == "backing off"
 
@@ -135,11 +135,11 @@ def test_screenshot_get_404_then_200(tmp_path):
 
     app = build_app(db_path=str(tmp_path / "shot.sqlite"))
     with TestClient(app) as c:
-        r = c.get("/api/agent/papa-pc/screenshot", headers=_bearer(app))
+        r = c.get("/api/agent/example-pc/screenshot", headers=_bearer(app))
         assert r.status_code == 404
 
-        app.state.screenshots.put("papa-pc", _TINY_PNG_B64, "png")
-        r = c.get("/api/agent/papa-pc/screenshot", headers=_bearer(app))
+        app.state.screenshots.put("example-pc", _TINY_PNG_B64, "png")
+        r = c.get("/api/agent/example-pc/screenshot", headers=_bearer(app))
         assert r.status_code == 200
         assert r.headers["content-type"] == "image/png"
         assert r.content == base64.b64decode(_TINY_PNG_B64)
@@ -157,12 +157,12 @@ def test_screenshot_post_triggers_capture(tmp_path):
 
     app.state.tunnel.send_request = fake_send_request
     with TestClient(app) as c:
-        r = c.post("/api/agent/papa-pc/screenshot", headers=_bearer(app))
+        r = c.post("/api/agent/example-pc/screenshot", headers=_bearer(app))
         assert r.status_code == 200
         assert r.json() == {"ok": True}
         # The capture was stored and is now retrievable.
-        assert app.state.screenshots.get("papa-pc") is not None
-        r = c.get("/api/agent/papa-pc/screenshot", headers=_bearer(app))
+        assert app.state.screenshots.get("example-pc") is not None
+        r = c.get("/api/agent/example-pc/screenshot", headers=_bearer(app))
         assert r.status_code == 200
         assert r.headers["content-type"] == "image/png"
 
@@ -170,8 +170,8 @@ def test_screenshot_post_triggers_capture(tmp_path):
 def test_screenshot_requires_auth(tmp_path):
     app = build_app(db_path=str(tmp_path / "shot3.sqlite"))
     with TestClient(app) as c:
-        assert c.get("/api/agent/papa-pc/screenshot").status_code == 401
-        assert c.post("/api/agent/papa-pc/screenshot").status_code == 401
+        assert c.get("/api/agent/example-pc/screenshot").status_code == 401
+        assert c.post("/api/agent/example-pc/screenshot").status_code == 401
 
 
 def test_remotehelp_post_starts_quick_assist(tmp_path):

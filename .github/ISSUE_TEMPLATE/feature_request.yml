@@ -1,0 +1,38 @@
+name: "✨ Feature request"
+description: "Suggest a capability, collector, or improvement."
+labels: ["feature"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: What are you trying to do that kenny doesn't support today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: |
+        What would you like? If it's a new capability tool or telemetry collector, note that
+        it touches the wire contract (docs/protocol.md + fixtures) and both server and agent.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - new capability tool
+        - new telemetry collector
+        - dashboard / UX
+        - protocol / contract
+        - deployment / ops
+        - docs
+        - other
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered

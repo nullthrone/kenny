@@ -1,0 +1,54 @@
+name: "🐛 Bug report"
+description: "Something in kenny isn't working as documented."
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug! For **security vulnerabilities, do not use this form** —
+        see [SECURITY.md](https://github.com/t11z/kenny/blob/main/SECURITY.md) and report privately.
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Which part of kenny is affected?
+      options:
+        - kenny-server (Python)
+        - kenny-agent (Rust / Windows)
+        - dashboard (web UI)
+        - protocol / contract
+        - docs
+        - not sure
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps. Include the tool call / dashboard action if relevant.
+      placeholder: |
+        1. …
+        2. …
+        3. see error
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / output
+      description: Relevant server or agent logs (redact tokens, hostnames, personal data).
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+      description: Release tag or commit SHA, and OS (Windows version for the agent).
+    validations:
+      required: true

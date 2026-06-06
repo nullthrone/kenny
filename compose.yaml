@@ -12,7 +12,8 @@ services:
     build:
       context: .
       dockerfile: kenny-server/Dockerfile
-    image: ghcr.io/t11z/kenny-server:dev
+    # Canonical image is ghcr.io/t11z/kenny-server; forks override with KENNY_OWNER.
+    image: ghcr.io/${KENNY_OWNER:-t11z}/kenny-server:dev
     environment:
       # Required: the operator bearer token (MCP + dashboard + chat).
       KENNY_OPERATOR_TOKEN: ${KENNY_OPERATOR_TOKEN:?set KENNY_OPERATOR_TOKEN}

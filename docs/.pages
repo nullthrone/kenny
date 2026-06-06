@@ -1,0 +1,7 @@
+nav:
+  - Home: index.md
+  - Setup & operations: setup.md
+  - User guide: user-guide.md
+  - Wire protocol: protocol.md
+  - Architecture decisions: adr
+  - ...
