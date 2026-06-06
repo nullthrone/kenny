@@ -29,6 +29,7 @@ ErrorCode = Literal[
     "bad_args",
     "internal",
     "disabled",
+    "blocked",
 ]
 
 

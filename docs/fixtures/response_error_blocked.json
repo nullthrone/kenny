@@ -1,0 +1,6 @@
+{
+  "type": "response",
+  "id": "5e2d8a1c-3b4f-5a6b-7c8d-9e0f1a2b3c4d",
+  "ok": false,
+  "error": { "code": "blocked", "message": "refused by agent safety policy: vssadmin delete shadows" }
+}

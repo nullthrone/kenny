@@ -8,6 +8,7 @@ use tracing::debug;
 
 use crate::control;
 use crate::handlers;
+use crate::policy;
 use crate::protocol::{ErrorCode, Request, Response};
 
 /// Dispatch one request and produce the response to send back.
@@ -30,6 +31,11 @@ async fn run(tool: &str, args: Value) -> Result<Value, (ErrorCode, String)> {
             "remote control is disabled at the endpoint".to_string(),
         ));
     }
+
+    // Deterministic, always-on safety guard: refuse individually dangerous calls
+    // regardless of approval or kill-switch state. Cannot be disabled remotely. See
+    // ADR-0020. Runs for every tool before reaching a handler.
+    policy::check(tool, &args)?;
 
     match tool {
         "powershell_exec" => handlers::powershell::exec(args).await,
@@ -155,6 +161,23 @@ mod tests {
         .await;
         assert!(!resp.ok, "mutating tool must be refused while disabled");
         assert_eq!(resp.error.unwrap().code, ErrorCode::Disabled);
+    }
+
+    #[tokio::test]
+    async fn dangerous_powershell_is_blocked_even_when_enabled() {
+        // The safety guard refuses a dangerous script independently of the kill-switch:
+        // remote control is ON here, yet the call is still blocked.
+        let resp = with_remote_control(true, "kenny-dispatch-ps-blocked.control.json", async {
+            handle(Request {
+                id: "6".to_string(),
+                tool: "powershell_exec".to_string(),
+                args: json!({"script": "vssadmin delete shadows /all /quiet"}),
+            })
+            .await
+        })
+        .await;
+        assert!(!resp.ok, "dangerous script must be refused");
+        assert_eq!(resp.error.unwrap().code, ErrorCode::Blocked);
     }
 
     #[tokio::test]
