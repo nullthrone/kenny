@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -471,20 +472,36 @@ async def _execute_one(
         return {"error": {"code": exc.code, "message": exc.message}}, True
 
 
-async def _drive(
+async def _drive_events(
     session: ChatSession,
     executor: ChatExecutor,
     *,
     client: Any,
     model: str,
-) -> TurnResult:
-    """Run the tool-use loop until end_turn or a confirmation gate.
+) -> AsyncIterator[dict[str, Any]]:
+    """Run the tool-use loop, yielding structured events as they happen.
 
-    Resumes from ``session._queue`` / ``session._staged_results`` so a confirmed
-    tool can continue mid-turn without re-asking the model.
+    This is the single source of truth for the loop. It yields, in order:
+
+    * ``{"type": "text_delta", "text": ...}`` — one per token as the assistant
+      block streams;
+    * ``{"type": "tool_result", "tool": ..., "args": ..., "ok": bool[, "image_b64",
+      "format"]}`` — emitted the moment each tool executes (live);
+    * ``{"type": "pending", "tool": ..., "args": ..., "agent_id": ...}`` — a
+      state-changing call awaiting operator confirmation;
+    * ``{"type": "done", "session_id": ..., "assistant_text": ..., "pending":
+      dict|None, "done": bool}`` — terminal, carrying the scalars a
+      :class:`TurnResult` needs.
+
+    ``_drive`` drains this into a :class:`TurnResult` for the non-streaming JSON
+    endpoints; the SSE endpoints forward the events verbatim. Resumes from
+    ``session._queue`` / ``session._staged_results`` so a confirmed tool can
+    continue mid-turn without re-asking the model.
+
+    Note: ``stream.text_stream`` performs blocking network reads on the event
+    loop — the same tradeoff as the previous blocking ``messages.create()``,
+    acceptable for this single-user, self-hosted dashboard.
     """
-
-    tool_events: list[dict[str, Any]] = []
 
     for _ in range(_MAX_ITERATIONS):
         # Drain any queued tool_use blocks from the prior assistant turn.
@@ -502,24 +519,28 @@ async def _drive(
                     args=args,
                     agent_id=agent_id,
                 )
-                tool_events.append(
-                    {"type": "pending", "tool": tool, "args": args, "agent_id": agent_id}
-                )
+                yield {"type": "pending", "tool": tool, "args": args, "agent_id": agent_id}
                 # Pause: hold the remaining queue + staged results for resume.
-                return TurnResult(
-                    session_id=session.id,
-                    assistant_text=_latest_text(session),
-                    tool_events=tool_events,
-                    pending=session.pending.to_public(),
-                    done=False,
-                )
+                yield {
+                    "type": "done",
+                    "session_id": session.id,
+                    "assistant_text": _latest_text(session),
+                    "pending": session.pending.to_public(),
+                    "done": False,
+                }
+                return
 
             payload, is_error = await _execute_one(executor, tool, args)
-            event = {"type": "tool_result", "tool": tool, "args": args, "ok": not is_error}
+            event: dict[str, Any] = {
+                "type": "tool_result",
+                "tool": tool,
+                "args": args,
+                "ok": not is_error,
+            }
             image = None if is_error else _image_of(payload)
             if image is not None:
                 event["image_b64"], event["format"] = image
-            tool_events.append(event)
+            yield event
             session._staged_results.append(
                 _tool_result_block(block["id"], payload, is_error=is_error)
             )
@@ -529,14 +550,17 @@ async def _drive(
             session.messages.append({"role": "user", "content": session._staged_results})
             session._staged_results = []
 
-        # Ask the model for the next step.
-        response = client.messages.create(
+        # Ask the model for the next step, streaming the assistant text token by token.
+        with client.messages.stream(
             model=model,
             max_tokens=4096,
             system=_cached_system(),
             tools=_cached_tools(),
             messages=session.messages,
-        )
+        ) as stream:
+            for text in stream.text_stream:
+                yield {"type": "text_delta", "text": text}
+            response = stream.get_final_message()
         content = _assistant_content(response)
         session.messages.append({"role": "assistant", "content": content})
 
@@ -548,21 +572,48 @@ async def _drive(
             continue
 
         # end_turn (or no tools requested): turn complete.
-        return TurnResult(
-            session_id=session.id,
-            assistant_text=_text_of(content),
-            tool_events=tool_events,
-            pending=None,
-            done=True,
-        )
+        yield {
+            "type": "done",
+            "session_id": session.id,
+            "assistant_text": _text_of(content),
+            "pending": None,
+            "done": True,
+        }
+        return
 
     # Iteration cap hit; return what we have.
+    yield {
+        "type": "done",
+        "session_id": session.id,
+        "assistant_text": _latest_text(session),
+        "pending": None,
+        "done": True,
+    }
+
+
+async def _drive(
+    session: ChatSession,
+    executor: ChatExecutor,
+    *,
+    client: Any,
+    model: str,
+) -> TurnResult:
+    """Drain :func:`_drive_events` into a :class:`TurnResult` (non-streaming path)."""
+
+    tool_events: list[dict[str, Any]] = []
+    final: dict[str, Any] | None = None
+    async for ev in _drive_events(session, executor, client=client, model=model):
+        if ev["type"] in ("tool_result", "pending", "denied"):
+            tool_events.append(ev)
+        elif ev["type"] == "done":
+            final = ev
+    assert final is not None  # the generator always ends with a done event
     return TurnResult(
-        session_id=session.id,
-        assistant_text=_latest_text(session),
+        session_id=final["session_id"],
+        assistant_text=final["assistant_text"],
         tool_events=tool_events,
-        pending=None,
-        done=True,
+        pending=final["pending"],
+        done=final["done"],
     )
 
 
@@ -602,6 +653,30 @@ async def run_turn(
     return await _drive(session, executor, client=client, model=model)
 
 
+async def run_turn_events(
+    session: ChatSession,
+    user_text: str,
+    *,
+    executor: ChatExecutor,
+    client: Any,
+    model: str | None = None,
+) -> AsyncIterator[dict[str, Any]]:
+    """Streaming variant of :func:`run_turn`: yield loop events as they happen.
+
+    Same setup as :func:`run_turn` (reject a pending session, append the user
+    message), then forward :func:`_drive_events` so the SSE endpoint can stream
+    assistant tokens, live tool results, and the terminal ``done`` event.
+    """
+
+    if session.pending is not None:
+        raise RuntimeError("session has a pending confirmation; resolve it first")
+
+    model = model or os.environ.get("KENNY_CHAT_MODEL", DEFAULT_MODEL)
+    session.messages.append({"role": "user", "content": user_text})
+    async for ev in _drive_events(session, executor, client=client, model=model):
+        yield ev
+
+
 async def confirm_pending(
     session: ChatSession,
     *,
@@ -617,11 +692,29 @@ async def confirm_pending(
     deny — callers must explicitly pass ``approve=True``.
     """
 
-    pending = session.pending
-    if pending is None:
+    if session.pending is None:
         raise RuntimeError("no pending confirmation for this session")
 
     model = model or os.environ.get("KENNY_CHAT_MODEL", DEFAULT_MODEL)
+    resume_event = await _apply_confirmation(session, approve=approve, executor=executor)
+
+    result = await _drive(session, executor, client=client, model=model)
+    result.tool_events.insert(0, resume_event)
+    return result
+
+
+async def _apply_confirmation(
+    session: ChatSession, *, approve: bool, executor: ChatExecutor
+) -> dict[str, Any]:
+    """Resolve the pending call (run on approve, feed a denial otherwise).
+
+    Clears ``session.pending``, stages the tool_result block for the resumed
+    loop, and returns the ``resume_event`` to surface first to the UI. Shared by
+    :func:`confirm_pending` and :func:`confirm_pending_events`.
+    """
+
+    pending = session.pending
+    assert pending is not None  # callers check before delegating
     session.pending = None
 
     if approve:
@@ -629,7 +722,7 @@ async def confirm_pending(
         session._staged_results.append(
             _tool_result_block(pending.tool_use_id, payload, is_error=is_error)
         )
-        resume_event = {
+        resume_event: dict[str, Any] = {
             "type": "tool_result",
             "tool": pending.tool,
             "args": pending.args,
@@ -649,7 +742,29 @@ async def confirm_pending(
             "args": pending.args,
             "agent_id": pending.agent_id,
         }
+    return resume_event
 
-    result = await _drive(session, executor, client=client, model=model)
-    result.tool_events.insert(0, resume_event)
-    return result
+
+async def confirm_pending_events(
+    session: ChatSession,
+    *,
+    approve: bool,
+    executor: ChatExecutor,
+    client: Any,
+    model: str | None = None,
+) -> AsyncIterator[dict[str, Any]]:
+    """Streaming variant of :func:`confirm_pending`.
+
+    Yields the ``resume_event`` first (reproducing the non-streaming
+    ``tool_events.insert(0, resume_event)`` ordering), then forwards the resumed
+    :func:`_drive_events` loop.
+    """
+
+    if session.pending is None:
+        raise RuntimeError("no pending confirmation for this session")
+
+    model = model or os.environ.get("KENNY_CHAT_MODEL", DEFAULT_MODEL)
+    resume_event = await _apply_confirmation(session, approve=approve, executor=executor)
+    yield resume_event
+    async for ev in _drive_events(session, executor, client=client, model=model):
+        yield ev
