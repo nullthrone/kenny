@@ -121,12 +121,15 @@ async def test_real_agent_end_to_end(tmp_path) -> None:
                     "powershell_exec",
                     {"args": {"script": "echo hi", "timeout_s": 20}},
                 )
-                # The Linux fallback runs `sh -c "echo hi"`.
+                # `sh -c "echo hi"` on Linux; real `powershell.exe` on Windows.
                 assert res.data["exit_code"] == 0
                 assert "hi" in res.data["stdout"]
 
-                # The agent pushes telemetry on its first tick; wait for it.
-                for _ in range(50):  # ~10s
+                # The agent pushes telemetry on its first tick; wait for it. Windows
+                # collectors spawn PowerShell/CIM and are far slower on a cold runner
+                # than the Linux sysinfo collectors, so allow a much longer window.
+                telemetry_polls = 300 if sys.platform == "win32" else 50  # ~60s / ~10s
+                for _ in range(telemetry_polls):
                     fleet = (await client.call_tool("fleet_overview", {})).data
                     dev = next(
                         (a for a in fleet["agents"] if a["agent_id"] == "dev"), None
