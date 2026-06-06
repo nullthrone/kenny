@@ -41,7 +41,15 @@ pub use stub::{install, run_service, uninstall};
 pub struct ServiceConfig {
     pub server: String,
     pub agent_id: String,
-    pub token: String,
+    /// Legacy per-agent bearer token (migration window only). Optional from v0.8.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    /// Pinned server Ed25519 public key (standard base64) for the signature path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_pubkey: Option<String>,
+    /// One-time enrollment token, persisted so the service's first run can enroll.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enroll_token: Option<String>,
     pub telemetry_interval_secs: u64,
 }
 
@@ -91,6 +99,8 @@ mod windows_impl {
             server: args.run.server.clone(),
             agent_id: args.run.agent_id.clone(),
             token: args.run.token.clone(),
+            server_pubkey: args.run.server_pubkey.clone(),
+            enroll_token: args.run.enroll_token.clone(),
             telemetry_interval_secs: args.run.telemetry_interval_secs,
         };
         let path = config_path()?;
@@ -364,12 +374,16 @@ mod windows_impl {
         let mut server = None;
         let mut agent_id = None;
         let mut token = None;
+        let mut server_pubkey = None;
+        let mut enroll_token = None;
         let mut interval = None;
         if let Ok(bytes) = std::fs::read(config_path()?) {
             if let Ok(persisted) = serde_json::from_slice::<ServiceConfig>(&bytes) {
                 server = Some(persisted.server);
                 agent_id = Some(persisted.agent_id);
-                token = Some(persisted.token);
+                token = persisted.token;
+                server_pubkey = persisted.server_pubkey;
+                enroll_token = persisted.enroll_token;
                 interval = Some(persisted.telemetry_interval_secs);
             }
         }
@@ -383,6 +397,12 @@ mod windows_impl {
         if let Some(t) = &args.run.token {
             token = Some(t.clone());
         }
+        if let Some(k) = &args.run.server_pubkey {
+            server_pubkey = Some(k.clone());
+        }
+        if let Some(e) = &args.run.enroll_token {
+            enroll_token = Some(e.clone());
+        }
         if let Some(i) = args.run.telemetry_interval_secs {
             interval = Some(i);
         }
@@ -390,7 +410,9 @@ mod windows_impl {
             server: server.ok_or_else(|| anyhow::anyhow!("no server in config file or flags"))?,
             agent_id: agent_id
                 .ok_or_else(|| anyhow::anyhow!("no agent-id in config file or flags"))?,
-            token: token.ok_or_else(|| anyhow::anyhow!("no token in config file or flags"))?,
+            token,
+            server_pubkey,
+            enroll_token,
             telemetry_interval_secs: interval.unwrap_or(900),
         })
     }

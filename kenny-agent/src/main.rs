@@ -17,6 +17,7 @@ mod control;
 mod dispatch;
 mod handlers;
 mod ipc;
+mod keys;
 mod log_forward;
 mod policy;
 mod protocol;

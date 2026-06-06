@@ -26,9 +26,22 @@ pub struct RunArgs {
     #[arg(long = "agent-id", env = "KENNY_AGENT_ID")]
     pub agent_id: String,
 
-    /// Per-agent API key presented in the `register` frame.
+    /// Per-agent bearer token presented in the `register` frame. **Legacy** and
+    /// optional from v0.8: only used during the migration window when the signature
+    /// path is not configured. See ADR-0023.
     #[arg(long, env = "KENNY_TOKEN")]
-    pub token: String,
+    pub token: Option<String>,
+
+    /// Pinned server Ed25519 public key (standard base64). Required for the mutual-auth
+    /// signature path (v0.8): the agent verifies the server's `challenge` against it.
+    #[arg(long = "server-pubkey", env = "KENNY_SERVER_PUBKEY")]
+    pub server_pubkey: Option<String>,
+
+    /// One-time enrollment token (carried by the installer). On first run, when no agent
+    /// key exists yet, the agent enrolls its freshly generated public key with the server
+    /// over HTTPS using this token. See ADR-0023.
+    #[arg(long = "enroll-token", env = "KENNY_ENROLL_TOKEN")]
+    pub enroll_token: Option<String>,
 
     /// Telemetry push interval in seconds (default 900 per ADR-0007).
     #[arg(
@@ -74,6 +87,12 @@ pub struct TopLevelRunArgs {
     #[arg(long, env = "KENNY_TOKEN")]
     pub token: Option<String>,
 
+    #[arg(long = "server-pubkey", env = "KENNY_SERVER_PUBKEY")]
+    pub server_pubkey: Option<String>,
+
+    #[arg(long = "enroll-token", env = "KENNY_ENROLL_TOKEN")]
+    pub enroll_token: Option<String>,
+
     #[arg(
         long = "telemetry-interval-secs",
         env = "KENNY_TELEMETRY_INTERVAL_SECS"
@@ -85,12 +104,25 @@ impl TopLevelRunArgs {
     /// Resolve the top-level (optional) flags into a concrete [`RunArgs`], erroring
     /// if a required connection flag is missing.
     pub fn into_run_args(self) -> Result<RunArgs, String> {
+        let server = self.server.ok_or("--server is required to run the agent")?;
+        let agent_id = self
+            .agent_id
+            .ok_or("--agent-id is required to run the agent")?;
+        // From v0.8 the signature path (`--server-pubkey`) is the default. A bare
+        // legacy `--token` is still accepted for the migration window. Require at least
+        // one so we never start without any way to authenticate.
+        if self.server_pubkey.is_none() && self.token.is_none() {
+            return Err(
+                "--server-pubkey (signature path) or --token (legacy) is required to run the agent"
+                    .to_string(),
+            );
+        }
         Ok(RunArgs {
-            server: self.server.ok_or("--server is required to run the agent")?,
-            agent_id: self
-                .agent_id
-                .ok_or("--agent-id is required to run the agent")?,
-            token: self.token.ok_or("--token is required to run the agent")?,
+            server,
+            agent_id,
+            token: self.token,
+            server_pubkey: self.server_pubkey,
+            enroll_token: self.enroll_token,
             telemetry_interval_secs: self.telemetry_interval_secs.unwrap_or(900),
         })
     }
@@ -193,7 +225,46 @@ mod tests {
         let run = cli.run.into_run_args().expect("required flags present");
         assert_eq!(run.server, "wss://example/agent/ws");
         assert_eq!(run.agent_id, "example-pc");
+        assert_eq!(run.token.as_deref(), Some("secret"));
         assert_eq!(run.telemetry_interval_secs, 900);
+    }
+
+    #[test]
+    fn signature_path_parses_pubkey_and_enroll_token() {
+        let cli = Cli::parse_from([
+            "kenny-agent",
+            "--server",
+            "wss://example/agent/ws",
+            "--agent-id",
+            "example-pc",
+            "--server-pubkey",
+            "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
+            "--enroll-token",
+            "one-time",
+        ]);
+        let run = cli
+            .run
+            .into_run_args()
+            .expect("signature path is valid without --token");
+        assert!(run.token.is_none());
+        assert_eq!(
+            run.server_pubkey.as_deref(),
+            Some("A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=")
+        );
+        assert_eq!(run.enroll_token.as_deref(), Some("one-time"));
+    }
+
+    #[test]
+    fn run_requires_some_auth_material() {
+        // Neither --token nor --server-pubkey: must be rejected.
+        let cli = Cli::parse_from([
+            "kenny-agent",
+            "--server",
+            "wss://example/agent/ws",
+            "--agent-id",
+            "example-pc",
+        ]);
+        assert!(cli.run.into_run_args().is_err());
     }
 
     #[test]

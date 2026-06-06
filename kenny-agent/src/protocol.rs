@@ -1,4 +1,4 @@
-//! Wire-protocol types mirroring `../docs/protocol.md` (v0.1).
+//! Wire-protocol types mirroring `../docs/protocol.md` (v0.8).
 //!
 //! These serde models are the Rust side of the contract between `kenny-server`
 //! (Python) and `kenny-agent`. They are round-tripped against `../docs/fixtures/`
@@ -10,8 +10,9 @@ use serde_json::{Map, Value};
 
 /// Wire-protocol version implemented by this binary (see protocol.md § Versioning).
 ///
-/// Not currently placed on the wire (reserved for `register.meta.protocol`).
-pub const PROTOCOL_VERSION: &str = "0.7";
+/// From v0.8 this is placed on the wire in `register.protocol` to select the
+/// mutual-auth handshake.
+pub const PROTOCOL_VERSION: &str = "0.8";
 
 /// One WebSocket text message. Tagged by the `type` field.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -19,6 +20,10 @@ pub const PROTOCOL_VERSION: &str = "0.7";
 pub enum Frame {
     /// agent → server: identifies the agent right after connect.
     Register(Register),
+    /// server → agent: the server's signed nonce (mutual-auth step 2). See ADR-0023.
+    Challenge(Challenge),
+    /// agent → server: the agent's signature over the transcript (mutual-auth step 3).
+    Auth(Auth),
     /// server → agent: invoke one capability tool.
     Request(Request),
     /// agent → server: result/error for a `request` (by `id`).
@@ -40,8 +45,33 @@ pub enum Frame {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Register {
     pub agent_id: String,
-    pub token: String,
+    /// The agent's `PROTOCOL_VERSION`; present from v0.8 to select the mutual-auth path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<String>,
+    /// 32 fresh random bytes (base64) the server must sign in the `challenge`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_nonce: Option<String>,
+    /// Per-agent bearer secret. Optional and legacy: honoured only during the migration
+    /// window when the signature path is not in use. See ADR-0023.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
     pub meta: RegisterMeta,
+}
+
+/// `challenge` frame body (server → agent): the server's signed nonce.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Challenge {
+    /// 32 random bytes (base64) the agent must bind into its own signature.
+    pub server_nonce: String,
+    /// Ed25519 signature (base64) over the transcript, made with the server's private key.
+    pub server_sig: String,
+}
+
+/// `auth` frame body (agent → server): the agent's signature over the transcript.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Auth {
+    /// Ed25519 signature (base64) over the transcript, made with the agent's private key.
+    pub agent_sig: String,
 }
 
 /// Metadata describing the registering agent.
@@ -246,9 +276,72 @@ mod tests {
             checked += 1;
         }
         assert!(
-            checked >= 7,
+            checked >= 9,
             "expected to check the golden fixtures, got {checked}"
         );
+    }
+
+    /// Interop guard against the Python side: rebuild the transcript from the golden
+    /// vectors, sign it with the agent seed, and assert it matches `agent_sig_b64`; then
+    /// verify `server_sig_b64` against `server_public_key_b64`. If the transcript byte
+    /// layout drifts between Rust and Python, this fails. See ADR-0023.
+    #[test]
+    fn mutual_auth_vectors_interop() {
+        use base64::engine::general_purpose::STANDARD;
+        use base64::Engine as _;
+        use ed25519_dalek::{Signer, SigningKey, Verifier, VerifyingKey};
+
+        let path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs/fixtures/vectors/mutual_auth.json");
+        let raw = fs::read_to_string(&path).expect("read mutual_auth vectors");
+        let v: Value = serde_json::from_str(&raw).expect("parse mutual_auth vectors");
+
+        let agent_id = v["agent_id"].as_str().unwrap();
+        let client_nonce = STANDARD
+            .decode(v["client_nonce_b64"].as_str().unwrap())
+            .unwrap();
+        let server_nonce = STANDARD
+            .decode(v["server_nonce_b64"].as_str().unwrap())
+            .unwrap();
+
+        // Rebuild the transcript via the single-source-of-truth helper used by the tunnel.
+        let transcript = crate::keys::build_transcript(agent_id, &client_nonce, &server_nonce);
+
+        // Cross-check the documented hex transcript.
+        let want_hex = v["transcript_hex"].as_str().unwrap();
+        let got_hex: String = transcript.iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(got_hex, want_hex, "transcript bytes differ from the vector");
+
+        // Sign with the agent seed; must reproduce agent_sig_b64.
+        let agent_seed: [u8; 32] = STANDARD
+            .decode(v["agent_seed_b64"].as_str().unwrap())
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let agent_key = SigningKey::from_bytes(&agent_seed);
+        let agent_sig = agent_key.sign(&transcript);
+        assert_eq!(
+            STANDARD.encode(agent_sig.to_bytes()),
+            v["agent_sig_b64"].as_str().unwrap(),
+            "agent signature differs from the vector"
+        );
+
+        // Verify server_sig_b64 against server_public_key_b64 (the agent's pin path).
+        let server_pub: [u8; 32] = STANDARD
+            .decode(v["server_public_key_b64"].as_str().unwrap())
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let server_vk = VerifyingKey::from_bytes(&server_pub).unwrap();
+        let server_sig_bytes: [u8; 64] = STANDARD
+            .decode(v["server_sig_b64"].as_str().unwrap())
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let server_sig = ed25519_dalek::Signature::from_bytes(&server_sig_bytes);
+        server_vk
+            .verify(&transcript, &server_sig)
+            .expect("server signature must verify against the pinned public key");
     }
 
     #[test]
