@@ -128,7 +128,7 @@ async def test_real_agent_end_to_end(tmp_path) -> None:
                 # The agent pushes telemetry on its first tick; wait for it. Windows
                 # collectors spawn PowerShell/CIM and are far slower on a cold runner
                 # than the Linux sysinfo collectors, so allow a much longer window.
-                telemetry_polls = 300 if sys.platform == "win32" else 50  # ~60s / ~10s
+                telemetry_polls = 600 if sys.platform == "win32" else 50  # ~120s / ~10s
                 for _ in range(telemetry_polls):
                     fleet = (await client.call_tool("fleet_overview", {})).data
                     dev = next(
