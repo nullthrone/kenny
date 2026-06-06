@@ -18,6 +18,7 @@ jobs:
       pull-requests: read
     outputs:
       server: ${{ steps.filter.outputs.server }}
+      server_code: ${{ steps.filter.outputs.server_code }}
       agent: ${{ steps.filter.outputs.agent }}
       contract: ${{ steps.filter.outputs.contract }}
       ci: ${{ steps.filter.outputs.ci }}
@@ -29,6 +30,11 @@ jobs:
           filters: |
             server:
               - 'kenny-server/**'
+            # Server code excluding the web dashboard. Pure UI changes don't
+            # affect the agent<->server wire behaviour, so they skip the e2e jobs.
+            server_code:
+              - 'kenny-server/**'
+              - '!kenny-server/kenny_server/webui/**'
             agent:
               - 'kenny-agent/**'
             contract:
@@ -102,7 +108,7 @@ jobs:
   e2e:
     name: real agent <-> server (Linux)
     needs: changes
-    if: ${{ needs.changes.outputs.server == 'true' || needs.changes.outputs.agent == 'true' || needs.changes.outputs.contract == 'true' || needs.changes.outputs.ci == 'true' }}
+    if: ${{ needs.changes.outputs.server_code == 'true' || needs.changes.outputs.agent == 'true' || needs.changes.outputs.contract == 'true' || needs.changes.outputs.ci == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -126,7 +132,7 @@ jobs:
   e2e-windows:
     name: real agent <-> server (Windows)
     needs: changes
-    if: ${{ needs.changes.outputs.server == 'true' || needs.changes.outputs.agent == 'true' || needs.changes.outputs.contract == 'true' || needs.changes.outputs.ci == 'true' }}
+    if: ${{ needs.changes.outputs.server_code == 'true' || needs.changes.outputs.agent == 'true' || needs.changes.outputs.contract == 'true' || needs.changes.outputs.ci == 'true' }}
     strategy:
       fail-fast: false
       matrix:
