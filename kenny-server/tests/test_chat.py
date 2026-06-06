@@ -208,6 +208,33 @@ async def test_read_only_tool_auto_executes(store: TelemetryStore) -> None:
     assert "overall" in payload and "agents" in payload
 
 
+async def test_run_turn_heals_aborted_tool_use(store: TelemetryStore) -> None:
+    """A turn stopped mid tool-loop can leave a trailing assistant ``tool_use``
+    with no matching ``tool_result`` (invalid for the next call). The next turn
+    heals the session by dropping it, so a follow-up message still succeeds."""
+
+    executor, _registry, _tunnel = _executor(store)
+    session = ChatSession(id="aborted")
+    session.messages = [
+        {"role": "user", "content": "check the fleet"},
+        {"role": "assistant", "content": [tool_use_block("tu1", "fleet_overview", {}).__dict__]},
+    ]
+    session._queue = [tool_use_block("tu1", "fleet_overview", {}).__dict__]
+
+    client = FakeAnthropic([_Response([text_block("All good now.")], "end_turn")])
+    result = await run_turn(session, "are we ok now?", executor=executor, client=client)
+
+    assert result.assistant_text == "All good now."
+    assert session._queue == []
+    # No dangling assistant tool_use turn remains in the history.
+    assert not any(
+        m["role"] == "assistant"
+        and isinstance(m["content"], list)
+        and any(isinstance(b, dict) and b.get("type") == "tool_use" for b in m["content"])
+        for m in session.messages
+    )
+
+
 async def test_state_changing_tool_requires_confirmation(store: TelemetryStore) -> None:
     executor, registry, tunnel = _executor(store)
     session = ChatSession(id="s2")

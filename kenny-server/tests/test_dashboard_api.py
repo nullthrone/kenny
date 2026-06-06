@@ -44,6 +44,23 @@ def test_fleet_summary_no_telemetry():
     assert _fleet_summary({"overall": "unknown", "sections": {}}, None) == "no telemetry yet"
 
 
+def test_agent_endpoint_reports_ai_enabled(tmp_path, monkeypatch):
+    """/api/agent/{id} carries ``ai_enabled`` so the UI knows whether to offer
+    the AI Recommendation block; it mirrors whether an API key is configured."""
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    app = build_app(db_path=str(tmp_path / "ai.sqlite"))
+    with TestClient(app) as c:
+        body = c.get("/api/agent/papa-pc", headers=_bearer(app)).json()
+        assert body["ai_enabled"] is True
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    app2 = build_app(db_path=str(tmp_path / "ai2.sqlite"))
+    with TestClient(app2) as c:
+        body = c.get("/api/agent/papa-pc", headers=_bearer(app2)).json()
+        assert body["ai_enabled"] is False
+
+
 def test_audit_endpoint_shape_and_classification(tmp_path):
     app = build_app(db_path=str(tmp_path / "audit.sqlite"))
     with TestClient(app) as c:
