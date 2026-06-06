@@ -174,6 +174,48 @@ def test_screenshot_requires_auth(tmp_path):
         assert c.post("/api/agent/example-pc/screenshot").status_code == 401
 
 
+def test_remotehelp_post_starts_quick_assist(tmp_path):
+    """POST /api/agent/{id}/remotehelp forwards remotehelp_start and passes the
+    agent's ``note`` (human-in-the-loop reminder) back to the UI."""
+
+    app = build_app(db_path=str(tmp_path / "rh.sqlite"))
+    note = "Quick Assist opened on the user's desktop. A helper must share the code."
+
+    async def fake_send_request(agent_id, tool, args, timeout_s):  # noqa: ANN001, ANN202
+        assert tool == "remotehelp_start"
+        return {"launched": True, "pid": 4812, "note": note}
+
+    app.state.tunnel.send_request = fake_send_request
+    with TestClient(app) as c:
+        r = c.post("/api/agent/papa-pc/remotehelp", headers=_bearer(app))
+        assert r.status_code == 200
+        assert r.json() == {"ok": True, "note": note}
+
+
+def test_remotehelp_post_surfaces_tool_error(tmp_path):
+    """A refused start (e.g. kill switch off) surfaces as a 502 with the message."""
+
+    from kenny_server.tunnel import ToolError
+
+    app = build_app(db_path=str(tmp_path / "rh2.sqlite"))
+
+    async def fake_send_request(agent_id, tool, args, timeout_s):  # noqa: ANN001, ANN202
+        raise ToolError("disabled", "remote control is disabled at the endpoint")
+
+    app.state.tunnel.send_request = fake_send_request
+    with TestClient(app) as c:
+        r = c.post("/api/agent/papa-pc/remotehelp", headers=_bearer(app))
+        assert r.status_code == 502
+        assert r.json()["ok"] is False
+        assert "disabled" in r.json()["error"]
+
+
+def test_remotehelp_requires_auth(tmp_path):
+    app = build_app(db_path=str(tmp_path / "rh3.sqlite"))
+    with TestClient(app) as c:
+        assert c.post("/api/agent/papa-pc/remotehelp").status_code == 401
+
+
 def test_brand_asset_served_and_public(tmp_path):
     """The dashboard's brand assets (logo/favicon) are served and reachable
     without an operator token (the login page itself loads them)."""
