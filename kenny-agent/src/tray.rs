@@ -427,9 +427,11 @@ mod tests {
         fs::write(&old, b"old").unwrap();
         fs::write(&new, b"new").unwrap();
 
-        // Make `new` distinctly newer regardless of write granularity.
+        // Make `new` distinctly newer regardless of write granularity. Open with
+        // write access: Windows requires FILE_WRITE_ATTRIBUTES to set file times,
+        // so a read-only handle fails `set_modified` with "Access is denied".
         let later = SystemTime::now() + Duration::from_secs(5);
-        let f = fs::File::open(&new).unwrap();
+        let f = fs::OpenOptions::new().write(true).open(&new).unwrap();
         f.set_modified(later).unwrap();
 
         assert_eq!(newest_log_file(&dir).as_deref(), Some(new.as_path()));
