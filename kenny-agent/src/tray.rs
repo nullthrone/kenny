@@ -47,9 +47,10 @@ mod windows_impl {
         DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW,
         GetSystemMetrics, LoadCursorW, LookupIconIdFromDirectoryEx, PostMessageW, PostQuitMessage,
         RegisterClassW, SetForegroundWindow, TrackPopupMenu, TranslateMessage, CW_USEDEFAULT,
-        HICON, HMENU, IDC_ARROW, IMAGE_FLAGS, MENU_ITEM_FLAGS, MF_CHECKED, MF_SEPARATOR, MF_STRING,
-        MSG, SM_CXSMICON, SM_CYSMICON, TPM_BOTTOMALIGN, TPM_RIGHTBUTTON, WINDOW_EX_STYLE, WM_APP,
-        WM_COMMAND, WM_DESTROY, WM_LBUTTONUP, WM_RBUTTONUP, WNDCLASSW, WS_OVERLAPPEDWINDOW,
+        HICON, HMENU, IDC_ARROW, IMAGE_FLAGS, MENU_ITEM_FLAGS, MF_CHECKED, MF_DISABLED, MF_GRAYED,
+        MF_SEPARATOR, MF_STRING, MSG, SM_CXSMICON, SM_CYSMICON, TPM_BOTTOMALIGN, TPM_RIGHTBUTTON,
+        WINDOW_EX_STYLE, WM_APP, WM_COMMAND, WM_DESTROY, WM_LBUTTONUP, WM_RBUTTONUP, WNDCLASSW,
+        WS_OVERLAPPEDWINDOW,
     };
 
     /// Embedded icon for the "remote control on" state (multi-resolution `.ico`).
@@ -197,6 +198,12 @@ mod windows_impl {
         }
     }
 
+    /// Encode a string as a NUL-terminated UTF-16 buffer for the wide Win32 APIs.
+    /// The returned `Vec` must outlive the call that reads its pointer.
+    fn to_wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
     /// Copy a tooltip string into the fixed `szTip` buffer (NUL-terminated).
     fn set_tip(nid: &mut NOTIFYICONDATAW, tip: &str) {
         let buf = &mut nid.szTip;
@@ -265,6 +272,17 @@ mod windows_impl {
         if menu.is_invalid() {
             return;
         }
+        // Version header (disabled/greyed, no command id): the agent version is led by
+        // the GitHub release tag at build time (see `build.rs`/`crate::BUILD_VERSION`),
+        // shown inline so there is no separate "About" window.
+        let version_label = to_wide(&format!("kenny v{}", crate::BUILD_VERSION));
+        let _ = AppendMenuW(
+            menu,
+            MF_STRING | MF_DISABLED | MF_GRAYED,
+            0,
+            PCWSTR(version_label.as_ptr()),
+        );
+        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         // Checkable "Fernsteuerung aktiv": checked == currently on; click toggles it.
         let toggle_flags = MF_STRING
             | if enabled {
