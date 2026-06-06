@@ -386,13 +386,25 @@ async def _overview(
     latest = await store.latest(agent_id)
     snapshot = latest["snapshot"] if latest else None
     health = build_health(snapshot)
-    flagged = [n for n, s in health["sections"].items() if s["status"] in ("warn", "crit")]
+    sections = health["sections"]
+    flagged = [n for n, s in sections.items() if s["status"] in ("warn", "crit")]
+
+    def _by_status(level: str) -> list[dict[str, Any]]:
+        # Enough detail for the dashboard to render the flagged section cards.
+        return [
+            {"name": n, "summary": s.get("summary", ""), "reason": s.get("reason")}
+            for n, s in sections.items()
+            if s["status"] == level
+        ]
+
     return {
         "agent_id": agent_id,
         "online": bool(agent and agent.online),
         "meta": agent.meta if agent else {},
         "overall": health["overall"],
         "flagged_sections": flagged,
+        "warn_sections": _by_status("warn"),
+        "crit_sections": _by_status("crit"),
         "summary": _fleet_summary(health, snapshot),
         "collected_at": latest["collected_at"] if latest else None,
     }
