@@ -28,7 +28,7 @@ async def test_insert_log_round_trip(events: EventStore) -> None:
         level="warn",
         target="kenny_agent::tunnel",
         message="tunnel error; backing off",
-        agent_id="papa-pc",
+        agent_id="example-pc",
         fields={"error": "connection reset", "backoff_secs": 4},
     )
     rows = await events.query(kind="log")
@@ -39,7 +39,7 @@ async def test_insert_log_round_trip(events: EventStore) -> None:
     assert row["kind"] == "log"
     assert row["target"] == "kenny_agent::tunnel"
     assert row["message"] == "tunnel error; backing off"
-    assert row["agent_id"] == "papa-pc"
+    assert row["agent_id"] == "example-pc"
     assert row["fields"] == {"error": "connection reset", "backoff_secs": 4}
     assert row["tool"] is None
     assert row["ok"] is None
@@ -58,9 +58,9 @@ async def test_insert_log_without_fields(events: EventStore) -> None:
 
 
 async def test_insert_audit_round_trip(events: EventStore) -> None:
-    await events.insert_audit(agent_id="papa-pc", tool="winget_update", ok=True)
+    await events.insert_audit(agent_id="example-pc", tool="winget_update", ok=True)
     await events.insert_audit(
-        agent_id="papa-pc", tool="powershell_exec", ok=False, error="timeout"
+        agent_id="example-pc", tool="powershell_exec", ok=False, error="timeout"
     )
     rows = await events.query(kind="audit")
     assert len(rows) == 2

@@ -1,0 +1,36 @@
+/* kenny docs theme — match the dashboard's warm "border-collie" palette
+   (amber accent on warm neutrals). Values mirror the webui design tokens. */
+
+:root {
+  --md-primary-fg-color: #E8A33D;       /* amber */
+  --md-primary-fg-color--light: #F0B65C;
+  --md-primary-fg-color--dark: #C9852A;
+  --md-accent-fg-color: #E8A33D;
+}
+
+/* Amber links/accents read better on the warm dark background. */
+[data-md-color-scheme="slate"] {
+  --md-hue: 30;
+  --md-default-bg-color: #1A1917;       /* warm-900 */
+  --md-default-bg-color--light: #201E1B;
+  --md-default-fg-color: #ECE6DA;       /* warm-100 */
+  --md-default-fg-color--light: #A89F8E;
+  --md-code-bg-color: #141311;          /* warm-950 */
+  --md-code-fg-color: #ECE6DA;
+  --md-typeset-a-color: #F0B65C;
+  --md-footer-bg-color: #141311;
+  --md-accent-fg-color: #F0B65C;
+}
+
+[data-md-color-scheme="default"] {
+  --md-default-bg-color: #F3EEE3;       /* warm-50 */
+  --md-code-bg-color: #FBF7EF;          /* warm-0 */
+  --md-typeset-a-color: #92610F;        /* amber-text */
+}
+
+/* Keep the amber header/footer regardless of scheme. */
+.md-header,
+.md-tabs {
+  background-color: #23221E;            /* surface */
+  color: #ECE6DA;
+}

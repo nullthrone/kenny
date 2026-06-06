@@ -1,0 +1,74 @@
+site_name: kenny
+site_description: Self-hosted remote administration and fleet monitoring for Windows PCs, driven by Claude.
+site_url: https://t11z.github.io/kenny/
+repo_url: https://github.com/t11z/kenny
+repo_name: t11z/kenny
+edit_uri: edit/main/docs/
+docs_dir: docs
+# The ADR template carries placeholder links (xxxx-…); keep it in the repo but out of the site.
+exclude_docs: |
+  adr/0000-template.md
+copyright: Copyright &copy; 2026 t11z and the kenny contributors · AGPL-3.0-only
+
+theme:
+  name: material
+  logo: assets/kenny-mark-64.png
+  favicon: assets/kenny-favicon.png
+  icon:
+    repo: fontawesome/brands/github
+  font:
+    text: Hanken Grotesk
+    code: JetBrains Mono
+  palette:
+    # Dark first (matches the dashboard's warm "border-collie" theme).
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: amber
+      accent: amber
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: amber
+      accent: amber
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.tracking
+    - content.code.copy
+    - content.action.edit
+    - search.suggest
+    - search.highlight
+
+extra_css:
+  - css/kenny-theme.css
+
+plugins:
+  - search
+  - awesome-pages
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/t11z/kenny

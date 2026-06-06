@@ -1,6 +1,6 @@
 {
   "type": "log",
-  "agent_id": "papa-pc",
+  "agent_id": "example-pc",
   "at": "2026-06-04T18:00:01Z",
   "level": "warn",
   "target": "kenny_agent::tunnel",

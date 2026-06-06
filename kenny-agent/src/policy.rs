@@ -338,7 +338,7 @@ mod tests {
         // A normal documents path is allowed.
         check(
             "fs_read",
-            &json!({ "path": "C:\\Users\\papa\\Documents\\notes.txt" }),
+            &json!({ "path": "C:\\Users\\testuser\\Documents\\notes.txt" }),
         )
         .unwrap();
     }
