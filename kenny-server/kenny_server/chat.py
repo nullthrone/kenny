@@ -630,6 +630,42 @@ def _latest_text(session: ChatSession) -> str:
     return ""
 
 
+def heal_session(session: ChatSession) -> None:
+    """Repair a session left mid-turn by an aborted stream (the operator's Stop).
+
+    The assistant turn is only committed to ``session.messages`` after its stream
+    finishes, and tool_result blocks are committed at the start of the next loop
+    iteration. So an abort that lands during the tool loop can leave the trailing
+    assistant message holding ``tool_use`` blocks with no matching ``tool_result``
+    — invalid input for the next Anthropic call. Drop that trailing message and
+    clear the transient loop state so the next turn starts clean. (An abort during
+    text streaming commits nothing, so the common case is already a no-op.)
+
+    Called at the top of a fresh turn; ``pending`` is intentionally left untouched
+    (it is resolved via the confirm endpoints, and the stream endpoints reject a
+    pending session before reaching here).
+    """
+
+    session._queue = []
+    session._staged_results = []
+    msgs = session.messages
+    if not msgs:
+        return
+    last = msgs[-1]
+    if last.get("role") != "assistant":
+        return
+    content = last.get("content")
+    if not isinstance(content, list):
+        return
+    has_tool_use = any(
+        isinstance(b, dict) and b.get("type") == "tool_use" for b in content
+    )
+    # As the trailing message, an assistant tool_use turn is by definition
+    # unanswered (nothing follows it to carry the tool_result blocks).
+    if has_tool_use:
+        msgs.pop()
+
+
 async def run_turn(
     session: ChatSession,
     user_text: str,
@@ -649,6 +685,7 @@ async def run_turn(
         raise RuntimeError("session has a pending confirmation; resolve it first")
 
     model = model or os.environ.get("KENNY_CHAT_MODEL", DEFAULT_MODEL)
+    heal_session(session)
     session.messages.append({"role": "user", "content": user_text})
     return await _drive(session, executor, client=client, model=model)
 
@@ -672,6 +709,7 @@ async def run_turn_events(
         raise RuntimeError("session has a pending confirmation; resolve it first")
 
     model = model or os.environ.get("KENNY_CHAT_MODEL", DEFAULT_MODEL)
+    heal_session(session)
     session.messages.append({"role": "user", "content": user_text})
     async for ev in _drive_events(session, executor, client=client, model=model):
         yield ev

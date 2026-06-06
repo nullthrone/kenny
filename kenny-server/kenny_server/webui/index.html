@@ -334,6 +334,21 @@
     .k-dtable td.k-mono { font-family: var(--font-mono); }
     .k-modal__sum { font-size: var(--text-base); color: var(--fg); margin-bottom: 10px; }
 
+    /* AI Recommendation block: sits at the top of the section-detail body,
+       between the heading and the metrics. Only rendered for warn/crit when an
+       Anthropic API key is configured. */
+    .k-airec { border: 1px solid var(--border); border-radius: var(--radius);
+      background: var(--surface-sunken, var(--surface)); padding: 11px 13px; margin-bottom: 14px; }
+    .k-airec__head { display: flex; align-items: center; gap: 7px; font-size: var(--text-sm);
+      font-weight: var(--weight-bold); color: var(--accent-fg, var(--fg)); margin-bottom: 7px; }
+    .k-airec__head svg { color: var(--accent-fg, var(--fg)); }
+    .k-airec__body { font-size: var(--text-sm); color: var(--fg); white-space: pre-wrap;
+      overflow-wrap: anywhere; line-height: 1.5; min-height: 1.2em; }
+    .k-airec__wait { color: var(--muted); }
+    .k-airec__err { color: var(--crit-fg); margin-top: 6px; }
+    .k-airec__foot { margin-top: 9px; }
+    .k-airec__foot:empty { display: none; }
+
     /* ====================================================================
        CONSOLE LAYOUT (.kc-*)
        ==================================================================== */
@@ -530,6 +545,7 @@
       'plus': '<path d="M12 4.5v15m7.5-7.5h-15"/>',
       'link': '<path d="M13.19 8.688a4.5 4.5 0 0 1 1.242 7.244l-4.5 4.5a4.5 4.5 0 0 1-6.364-6.364l1.757-1.757m13.35-.622 1.757-1.757a4.5 4.5 0 0 0-6.364-6.364l-4.5 4.5a4.5 4.5 0 0 0 1.242 7.244"/>',
       'send-horizontal': '<path d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5"/>',
+      'square': '<path d="M5.25 7.5A2.25 2.25 0 0 1 7.5 5.25h9a2.25 2.25 0 0 1 2.25 2.25v9a2.25 2.25 0 0 1-2.25 2.25h-9a2.25 2.25 0 0 1-2.25-2.25v-9Z"/>',
       'circle-arrow-up': '<path d="m15 11.25-3-3m0 0-3 3m3-3v7.5M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/>',
       'user-round': '<path d="M17.982 18.725A7.488 7.488 0 0 0 12 15.75a7.488 7.488 0 0 0-5.982 2.975m11.963 0a9 9 0 1 0-11.963 0m11.963 0A8.966 8.966 0 0 1 12 21a8.966 8.966 0 0 1-5.982-2.275M15 9.75a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z"/>',
       'sun': '<path d="M12 3v2.25m6.364.386-1.591 1.591M21 12h-2.25m-.386 6.364-1.591-1.591M12 18.75V21m-4.773-4.227-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0Z"/>',
@@ -597,9 +613,10 @@
     // POST a JSON body and yield parsed Server-Sent Events ({type, ...}) as they
     // arrive. Pre-stream errors (400/404/409) come back as a JSON body; 401 sends
     // the operator to /login (cookie auth is sent automatically by fetch).
-    async function* streamSSE(url, body) {
+    async function* streamSSE(url, body, opts) {
       const r = await fetch(url, {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+        signal: opts && opts.signal,
       });
       if (r.status === 401) { location = "/login"; throw new Error("unauthorized"); }
       if (!r.ok) {
@@ -1002,7 +1019,6 @@
             <button class="k-btn k-btn--danger k-btn--sm" onclick="updateAgent('${esc(data.agent_id)}')">${icon('circle-arrow-up', 13)}update</button>
           </div>
         </div>
-        <div class="kc-tiles">${secs || '<div class="k-muted">no telemetry yet</div>'}</div>
         <div class="k-card k-card--sunken kc-trend">
           <div class="k-row" style="justify-content:space-between">
             <span class="kc-section-lbl">health trend · 30 d</span>
@@ -1010,6 +1026,7 @@
           </div>
           ${sparkline(data.history || [])}
         </div>
+        <div class="kc-tiles">${secs || '<div class="k-muted">no telemetry yet</div>'}</div>
         <div class="k-card k-card--sunken kc-shotcard">
           <div class="k-row" style="justify-content:space-between">
             <span class="kc-section-lbl">last screenshot</span>
@@ -1047,7 +1064,69 @@
       const st = sev(s.status);
       const title = `${icon(secIcon(name), 20)}<span>${esc(name)}</span>
         <span class="k-pill k-pill--${st}">${icon(STATUS_ICON[st], 13)}${esc(st)}</span>`;
-      openModal(title, renderSectionDetail(raw, s));
+      // For flagged sections, offer an AI Recommendation between the heading and
+      // the metrics — but only when the server reports an API key is configured.
+      const ai = (data.ai_enabled && st !== "ok")
+        ? `<section class="k-airec">
+             <div class="k-airec__head">${icon('sparkles', 15)}<span>AI Recommendation</span></div>
+             <div class="k-airec__body" id="airec-body"><span class="k-airec__wait">thinking…</span></div>
+             <div class="k-airec__foot" id="airec-foot"></div>
+           </section>`
+        : "";
+      openModal(title, ai + renderSectionDetail(raw, s));
+      if (ai) streamRecommendation(data.agent_id, name);
+    }
+
+    // Stream the Haiku recommendation into the popup. Re-queries the target on
+    // every event so a closed modal simply ends the loop (the node is gone).
+    async function streamRecommendation(agentId, section) {
+      let started = false;
+      try {
+        for await (const ev of streamSSE("/api/recommendation/stream", { agent_id: agentId, section })) {
+          const body = document.getElementById("airec-body");
+          if (!body) return; // modal closed mid-stream
+          if (ev.type === "text_delta") {
+            if (!started) { body.textContent = ""; started = true; }
+            body.textContent += ev.text;
+          } else if (ev.type === "remediation") {
+            if (ev.available && ev.prompt) renderRemediate(agentId, ev.prompt);
+          } else if (ev.type === "error") {
+            if (!started) { body.textContent = ""; started = true; }
+            const e = document.createElement("div");
+            e.className = "k-airec__err";
+            e.textContent = "recommendation unavailable: " + ev.error;
+            body.appendChild(e);
+          }
+        }
+      } catch (e) {
+        const body = document.getElementById("airec-body");
+        if (body && !started) body.textContent = "recommendation unavailable";
+      }
+    }
+
+    // Auto-Remediate: Haiku judged the warning fixable with kenny's tools, so
+    // offer a button that hands the suggested prompt to the copilot.
+    function renderRemediate(agentId, prompt) {
+      const foot = document.getElementById("airec-foot");
+      if (!foot || foot.querySelector(".k-airec__fix")) return;
+      const btn = document.createElement("button");
+      btn.className = "k-btn k-btn--primary k-airec__fix";
+      btn.innerHTML = `${icon('sparkles', 14)}Auto-Remediate`;
+      btn.onclick = () => autoRemediate(agentId, prompt);
+      foot.appendChild(btn);
+    }
+
+    // Inject the remediation prompt into the copilot: reveal the rail, scope the
+    // chat to this PC, close the popup, and start the turn. State-changing steps
+    // still hit the confirm-gate — Auto-Remediate does not bypass confirmation.
+    function autoRemediate(agentId, prompt) {
+      if (!copilotOn()) {
+        try { localStorage.setItem("kenny-copilot", "on"); } catch (e) {}
+        applyCopilot();
+      }
+      closeModal();
+      setChatContext(agentId);
+      startChatTurn(prompt);
     }
 
     function renderSectionDetail(raw, s) {
@@ -1258,6 +1337,7 @@
     // -- chat (server-hosted Claude; read-only auto-run vs confirm-gate) ---
     let chatSessionId = null;
     let chatContext = null; // selected agent id, or null for fleet-wide
+    let chatAbort = null;   // AbortController while a turn streams (drives Stop)
 
     function chatHtml() {
       return `<div class="k-panel kc-chat kc-copilot">
@@ -1296,6 +1376,26 @@
       const send = document.getElementById("chat-send");
       if (input) input.disabled = !on;
       if (send) send.disabled = !on;
+    }
+    // Swap the send button to a Stop button while a turn streams (like the
+    // desktop apps). Only touches the button's label/handler — the disabled
+    // state is owned by setComposerEnabled (e.g. the confirm-gate lock).
+    function setComposerStreaming(on) {
+      const send = document.getElementById("chat-send");
+      if (!send) return;
+      if (on) {
+        send.innerHTML = `${icon('square', 15)}stop`;
+        send.onclick = stopChat;
+        send.disabled = false;
+      } else {
+        send.innerHTML = `${icon('send-horizontal', 15)}send`;
+        send.onclick = sendChat;
+      }
+    }
+    // Stop the in-flight turn: aborting the fetch disconnects the SSE stream;
+    // the server cancels its generator and the next turn heals the session.
+    function stopChat() {
+      if (chatAbort) chatAbort.abort();
     }
 
     function bubble(cls, text) {
@@ -1390,29 +1490,50 @@
       setComposerEnabled(false); // lock the composer until the gate is resolved
     }
     async function sendChat() {
+      if (chatAbort) return; // a turn is already streaming (Enter while busy)
       const input = document.getElementById("chat-input");
       const message = (input.value || "").trim();
       if (!message) return;
       input.value = "";
+      startChatTurn(message);
+    }
+    // Drive one chat turn for a given message — from the composer or an injected
+    // Auto-Remediate prompt. Streams under an AbortController so Stop can cut it.
+    async function startChatTurn(message) {
+      if (chatAbort) return; // never overlap turns
       bubble("user", message);
       const body = { session_id: chatSessionId, message };
       if (chatContext) body.agent_id = chatContext;
       const ctx = newChatCtx();
+      chatAbort = new AbortController();
+      setComposerStreaming(true);
       try {
-        for await (const ev of streamSSE("/api/chat/stream", body)) {
+        for await (const ev of streamSSE("/api/chat/stream", body, { signal: chatAbort.signal })) {
           handleChatEvent(ev, ctx);
         }
-      } catch (e) { toolRun("error: " + e.message, false); }
+      } catch (e) {
+        if (e.name !== "AbortError") toolRun("error: " + e.message, false);
+      } finally {
+        chatAbort = null;
+        setComposerStreaming(false);
+      }
     }
     async function confirmChat(approve, btn) {
       btn.closest(".k-gate").remove();
       setComposerEnabled(true);
       const ctx = newChatCtx();
+      chatAbort = new AbortController();
+      setComposerStreaming(true);
       try {
-        for await (const ev of streamSSE("/api/chat/confirm/stream", { session_id: chatSessionId, approve })) {
+        for await (const ev of streamSSE("/api/chat/confirm/stream", { session_id: chatSessionId, approve }, { signal: chatAbort.signal })) {
           handleChatEvent(ev, ctx);
         }
-      } catch (e) { toolRun("error: " + e.message, false); }
+      } catch (e) {
+        if (e.name !== "AbortError") toolRun("error: " + e.message, false);
+      } finally {
+        chatAbort = null;
+        setComposerStreaming(false);
+      }
     }
 
     // -- global audit log: searchable + paged ------------------------------

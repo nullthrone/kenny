@@ -23,6 +23,7 @@ from ..chat import (
     run_turn,
     run_turn_events,
 )
+from ..recommend import ai_available, recommend_events, warning_facts
 from ..registry import AgentRegistry
 from ..store import EventStore, TelemetryStore
 from ..tokenstore import AgentTokenStore
@@ -90,6 +91,9 @@ def build_api_routes(
                 "collected_at": latest["collected_at"] if latest else None,
                 "snapshot": snapshot,
                 "health": build_health(snapshot),
+                # Whether the AI Recommendation block is offered for flagged
+                # sections (true only when an Anthropic API key is configured).
+                "ai_enabled": ai_available(),
                 "history": hist_points,
                 "call_log": [
                     c for c in await call_log.list() if c["agent_id"] == agent_id
@@ -365,11 +369,48 @@ def build_chat_routes(
 
         return StreamingResponse(gen(), media_type="text/event-stream", headers=_STREAM_HEADERS)
 
+    async def api_recommendation_stream(request: Request) -> Response:
+        """Stream a Haiku "AI Recommendation" for one flagged section as SSE.
+
+        Body: ``{agent_id, section}``. Pre-stream validation returns JSON
+        (``400`` missing/unknown/healthy section, ``503`` if no API key); once
+        streaming starts the status is fixed at 200 and failures surface in-band
+        as an ``error`` event. Inherits operator auth from the ``/api`` middleware.
+        """
+
+        body = await request.json()
+        agent_id = str(body.get("agent_id", "")).strip()
+        section = str(body.get("section", "")).strip()
+        if not agent_id or not section:
+            return JSONResponse({"error": "agent_id and section are required"}, status_code=400)
+        if not ai_available():
+            return JSONResponse(
+                {"error": "AI recommendations are not configured"}, status_code=503
+            )
+        latest = await store.latest(agent_id)
+        snapshot = latest["snapshot"] if latest else None
+        facts = warning_facts(snapshot, section)
+        if facts is None:
+            return JSONResponse(
+                {"error": "section is not flagged or has no telemetry"}, status_code=400
+            )
+        client = client_factory()
+
+        async def gen() -> Any:
+            try:
+                async for ev in recommend_events(client, facts):
+                    yield _sse(ev)
+            except Exception as exc:  # noqa: BLE001 - surface to the UI in-band
+                yield _sse({"type": "error", "error": str(exc)})
+
+        return StreamingResponse(gen(), media_type="text/event-stream", headers=_STREAM_HEADERS)
+
     return [
         Route("/api/chat", api_chat, methods=["POST"]),
         Route("/api/chat/confirm", api_chat_confirm, methods=["POST"]),
         Route("/api/chat/stream", api_chat_stream, methods=["POST"]),
         Route("/api/chat/confirm/stream", api_chat_confirm_stream, methods=["POST"]),
+        Route("/api/recommendation/stream", api_recommendation_stream, methods=["POST"]),
     ]
 
 
