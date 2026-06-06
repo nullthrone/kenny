@@ -3,8 +3,9 @@
 //! Opens one outbound connection to `kenny-server`, sends `register`, then runs
 //! three concurrent concerns over the single socket:
 //!
-//! * **read loop** — decode inbound frames; dispatch `request` → `response`, reply
-//!   to `ping` with `pong`.
+//! * **read loop** — decode inbound frames; reply to `ping` with `pong` and spawn
+//!   each `request` onto its own task so a slow tool never stalls the socket (which
+//!   would starve the server's WebSocket keepalive and get us disconnected).
 //! * **telemetry scheduler** — push `telemetry` frames on a timer.
 //! * **heartbeat** — send periodic `ping` so the server's missed-interval logic
 //!   keeps us online.
@@ -251,10 +252,19 @@ async fn handle_text(text: &str, tx: &mpsc::Sender<Frame>) {
     };
     match frame {
         Frame::Request(req) => {
-            let response = dispatch::handle(req).await;
-            if tx.send(Frame::Response(response)).await.is_err() {
-                warn!("outbound channel closed while sending response");
-            }
+            // Dispatch on its own task so a long-running tool (e.g. a deep
+            // `powershell_exec` scan) never blocks the read loop. Blocking here
+            // would stop us polling the socket, so tungstenite could not answer
+            // the server's WebSocket keepalive pings — the server then drops the
+            // connection mid-command. Responses are correlated by `id`, so
+            // concurrent in-flight tools are fine.
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                let response = dispatch::handle(req).await;
+                if tx.send(Frame::Response(response)).await.is_err() {
+                    warn!("outbound channel closed while sending response");
+                }
+            });
         }
         Frame::Ping => {
             let _ = tx.send(Frame::Pong).await;
