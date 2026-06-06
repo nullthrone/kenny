@@ -48,6 +48,68 @@ pub async fn update(_args: Value) -> Result<Value, (ErrorCode, String)> {
     }
 }
 
+/// True when two paths refer to the same executable image. Windows file paths are
+/// case-insensitive, so compare canonicalized, lowercased strings; fall back to the
+/// raw path when canonicalization fails (e.g. a binary that is mid-swap).
+#[cfg(any(windows, test))]
+fn same_executable(a: &std::path::Path, b: &std::path::Path) -> bool {
+    fn norm(p: &std::path::Path) -> String {
+        std::fs::canonicalize(p)
+            .unwrap_or_else(|_| p.to_path_buf())
+            .to_string_lossy()
+            .to_lowercase()
+    }
+    norm(a) == norm(b)
+}
+
+/// A fresh process table with executable paths populated, so callers can match
+/// processes by the binary they run (the default refresh does not guarantee `exe`).
+#[cfg(any(windows, test))]
+fn process_snapshot() -> sysinfo::System {
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        ProcessRefreshKind::new().with_exe(UpdateKind::Always),
+    );
+    sys
+}
+
+/// Terminate every *other* process whose executable image is `target`.
+///
+/// A running `.exe` is locked on Windows, so the file cannot be replaced while a
+/// process still runs it. The caller has already stopped the service, but the tray
+/// runs the same binary in the interactive session (ADR-0011) and would otherwise
+/// keep the image locked — the actual cause of "target exe still locked" — aborting
+/// the self-update swap (ADR-0013). We skip our own PID (the updater runs a side
+/// copy, but be defensive). Best-effort: per-process failures are logged, not fatal.
+/// Returns the number of processes signalled.
+#[cfg(any(windows, test))]
+fn terminate_processes_running(target: &std::path::Path) -> usize {
+    let me = sysinfo::get_current_pid().ok();
+    let sys = process_snapshot();
+    let mut signalled = 0usize;
+    for (pid, proc_) in sys.processes() {
+        if Some(*pid) == me {
+            continue;
+        }
+        let Some(exe) = proc_.exe() else { continue };
+        if !same_executable(exe, target) {
+            continue;
+        }
+        if proc_.kill() {
+            signalled += 1;
+            tracing::info!(pid = pid.as_u32(), "terminated process locking target exe");
+        } else {
+            tracing::warn!(
+                pid = pid.as_u32(),
+                "could not terminate process locking target exe"
+            );
+        }
+    }
+    signalled
+}
+
 #[cfg(windows)]
 mod windows_impl {
     use super::*;
@@ -226,6 +288,19 @@ mod windows_impl {
             sleep(Duration::from_millis(500));
         }
 
+        // The service is stopped, but the tray runs the SAME binary in the user's
+        // interactive session (ADR-0011) and keeps the image locked — the actual
+        // cause of "target exe still locked". Terminate any process still running the
+        // target so its file lock is released; the retry loop below absorbs the brief
+        // delay before the kernel drops the handle after TerminateProcess.
+        let killed = super::terminate_processes_running(target);
+        if killed > 0 {
+            info!(
+                count = killed,
+                "terminated processes locking target exe before swap"
+            );
+        }
+
         // Swap: running exe → .old, new → exe. Retry briefly in case the image lock
         // hasn't been released yet.
         let old = target.with_extension("old");
@@ -281,5 +356,43 @@ mod tests {
         .await;
         let (code, _msg) = res.expect_err("must be unsupported off Windows");
         assert_eq!(code, ErrorCode::Unsupported);
+    }
+
+    #[test]
+    fn same_executable_matches_identical_path() {
+        let me = std::env::current_exe().expect("current exe path");
+        assert!(same_executable(&me, &me));
+    }
+
+    #[test]
+    fn same_executable_rejects_distinct_paths() {
+        use std::path::Path;
+        assert!(!same_executable(
+            Path::new("/opt/a/kenny"),
+            Path::new("/opt/b/kenny")
+        ));
+    }
+
+    #[test]
+    fn snapshot_populates_exe_for_current_process() {
+        // Guards the fix: matching processes by their binary requires `exe()` to be
+        // populated by the refresh. If this regresses, the tray would never be matched
+        // and the self-update swap would fail again on a locked exe.
+        let me = sysinfo::get_current_pid().expect("current pid");
+        let sys = process_snapshot();
+        let proc_ = sys
+            .process(me)
+            .expect("current process present in snapshot");
+        assert!(
+            proc_.exe().is_some(),
+            "exe path must be populated by the refresh"
+        );
+    }
+
+    #[test]
+    fn terminate_skips_when_no_process_runs_target() {
+        // No process was started from this path, so nothing is terminated.
+        let bogus = std::env::temp_dir().join("kenny-agent-not-a-real-binary-zzz");
+        assert_eq!(terminate_processes_running(&bogus), 0);
     }
 }
