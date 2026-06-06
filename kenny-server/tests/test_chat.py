@@ -25,8 +25,10 @@ from kenny_server.chat import (
     ChatSessions,
     build_tool_schemas,
     confirm_pending,
+    confirm_pending_events,
     is_state_changing,
     run_turn,
+    run_turn_events,
 )
 from kenny_server.registry import AgentRegistry
 from kenny_server.store import EventStore, TelemetryStore
@@ -56,6 +58,35 @@ def tool_use_block(tool_id: str, name: str, inp: dict[str, Any]) -> _Block:
     return _Block(type="tool_use", id=tool_id, name=name, input=inp)
 
 
+def _chunks(text: str) -> list[str]:
+    """Split text into word-ish chunks so streaming tests see multiple deltas."""
+
+    return re.findall(r"\S+\s*", text) or ([text] if text else [])
+
+
+class _StreamCtx:
+    """Mimics ``anthropic`` ``messages.stream()``: a sync context manager that
+    exposes ``text_stream`` (token chunks) and ``get_final_message()``."""
+
+    def __init__(self, response: _Response) -> None:
+        self._response = response
+        self.text_stream = [
+            chunk
+            for b in response.content
+            if getattr(b, "type", None) == "text"
+            for chunk in _chunks(b.text)
+        ]
+
+    def __enter__(self) -> _StreamCtx:
+        return self
+
+    def __exit__(self, *_exc: Any) -> bool:
+        return False
+
+    def get_final_message(self) -> _Response:
+        return self._response
+
+
 class FakeMessages:
     def __init__(self, scripted: list[_Response]) -> None:
         self._scripted = scripted
@@ -64,6 +95,12 @@ class FakeMessages:
     def create(self, **kwargs: Any) -> _Response:
         self.calls.append(kwargs)
         return self._scripted.pop(0)
+
+    def stream(self, **kwargs: Any) -> _StreamCtx:
+        # Records into the same ``calls`` list and pops the same scripted queue
+        # as ``create`` so streaming and non-streaming paths stay in lockstep.
+        self.calls.append(kwargs)
+        return _StreamCtx(self._scripted.pop(0))
 
 
 class FakeAnthropic:
@@ -322,6 +359,110 @@ async def test_screen_capture_fed_back_as_image(store: TelemetryStore) -> None:
     rec = executor.screenshots.get("dev")
     assert rec is not None and rec["image_b64"] == tiny_b64
     assert rec["format"] == "png" and "captured_at" in rec
+
+
+async def _collect(events: Any) -> list[dict[str, Any]]:
+    return [ev async for ev in events]
+
+
+async def test_run_turn_events_streams_text(store: TelemetryStore) -> None:
+    executor, _registry, _tunnel = _executor(store)
+    session = ChatSession(id="se1")
+    client = FakeAnthropic([_Response([text_block("The fleet is healthy.")], "end_turn")])
+
+    events = await _collect(
+        run_turn_events(session, "How is the fleet?", executor=executor, client=client)
+    )
+
+    deltas = [e["text"] for e in events if e["type"] == "text_delta"]
+    assert len(deltas) > 1  # streamed in multiple chunks
+    assert "".join(deltas) == "The fleet is healthy."
+    done = events[-1]
+    assert done["type"] == "done"
+    assert done["done"] is True
+    assert done["assistant_text"] == "The fleet is healthy."
+    assert done["session_id"] == "se1"
+
+
+async def test_stream_emits_tool_result_before_text(store: TelemetryStore) -> None:
+    executor, _registry, _tunnel = _executor(store)
+    session = ChatSession(id="se2")
+    client = FakeAnthropic(
+        [
+            _Response([tool_use_block("tu1", "fleet_overview", {})], "tool_use"),
+            _Response([text_block("All green.")], "end_turn"),
+        ]
+    )
+
+    events = await _collect(
+        run_turn_events(session, "How is the fleet?", executor=executor, client=client)
+    )
+    types = [e["type"] for e in events]
+    first_tool = types.index("tool_result")
+    first_text = types.index("text_delta")
+    assert first_tool < first_text  # the tool ran (live) before the reply streamed
+    assert events[first_tool]["tool"] == "fleet_overview"
+
+
+async def test_stream_confirm_gate(store: TelemetryStore) -> None:
+    executor, registry, tunnel = _executor(store)
+    session = ChatSession(id="se3")
+
+    sent: list[str] = []
+
+    async def fake_send_request(agent_id, tool, args, timeout_s):  # type: ignore[no-untyped-def]
+        sent.append(tool)
+        return {"installed": True}
+
+    tunnel.send_request = fake_send_request  # type: ignore[assignment]
+    registry._active_agent = "dev"
+
+    client = FakeAnthropic(
+        [
+            _Response([tool_use_block("tu2", "winget_install", {"id": "Git.Git"})], "tool_use"),
+            _Response([text_block("Git is installed.")], "end_turn"),
+        ]
+    )
+
+    events = await _collect(
+        run_turn_events(session, "Install git", executor=executor, client=client)
+    )
+    pending = [e for e in events if e["type"] == "pending"]
+    assert pending and pending[0]["tool"] == "winget_install"
+    assert events[-1]["type"] == "done" and events[-1]["done"] is False
+    assert sent == []  # nothing executed before confirmation
+    assert session.pending is not None
+
+    resumed = await _collect(
+        confirm_pending_events(session, approve=True, executor=executor, client=client)
+    )
+    # resume_event (the executed tool_result) is yielded first.
+    assert resumed[0]["type"] == "tool_result" and resumed[0]["tool"] == "winget_install"
+    deltas = "".join(e["text"] for e in resumed if e["type"] == "text_delta")
+    assert deltas == "Git is installed."
+    assert resumed[-1]["type"] == "done" and resumed[-1]["done"] is True
+    assert sent == ["winget_install"]
+    assert session.pending is None
+
+
+async def test_drive_batch_still_matches(store: TelemetryStore) -> None:
+    """The drained (non-streaming) path produces the same public shape as before."""
+
+    executor, _registry, _tunnel = _executor(store)
+    session = ChatSession(id="se4")
+    client = FakeAnthropic(
+        [
+            _Response([tool_use_block("tu1", "fleet_overview", {})], "tool_use"),
+            _Response([text_block("The fleet is healthy.")], "end_turn"),
+        ]
+    )
+    result = await run_turn(session, "How is the fleet?", executor=executor, client=client)
+    pub = result.to_public()
+    assert pub["done"] is True
+    assert pub["pending"] is None
+    assert pub["assistant_text"] == "The fleet is healthy."
+    assert [e["type"] for e in pub["tool_events"]] == ["tool_result"]
+    assert pub["tool_events"][0]["tool"] == "fleet_overview"
 
 
 def test_sessions_registry_round_trips() -> None:

@@ -537,6 +537,35 @@
       return r.json();
     }
 
+    // POST a JSON body and yield parsed Server-Sent Events ({type, ...}) as they
+    // arrive. Pre-stream errors (400/404/409) come back as a JSON body; 401 sends
+    // the operator to /login (cookie auth is sent automatically by fetch).
+    async function* streamSSE(url, body) {
+      const r = await fetch(url, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      });
+      if (r.status === 401) { location = "/login"; throw new Error("unauthorized"); }
+      if (!r.ok) {
+        let msg = url + " -> " + r.status;
+        try { const j = await r.json(); if (j && j.error) msg = j.error; } catch (e) {}
+        throw new Error(msg);
+      }
+      const reader = r.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let idx;
+        while ((idx = buf.indexOf("\n\n")) >= 0) {
+          const frame = buf.slice(0, idx); buf = buf.slice(idx + 2);
+          const line = frame.split("\n").find(l => l.startsWith("data:"));
+          if (line) yield JSON.parse(line.slice(5).trim());
+        }
+      }
+    }
+
     // -- modal / popup (reused by section detail + recommendations) --------
     function closeModal() {
       const ov = document.getElementById("modal-overlay");
@@ -1070,16 +1099,28 @@
       t.appendChild(card);
       t.scrollTop = t.scrollHeight;
     }
-    function renderTurn(result) {
-      (result.tool_events || []).forEach(ev => {
-        if (ev.type === "tool_result") {
-          toolRun(ev.tool, ev.ok !== false);
-          if (ev.image_b64) chatShot(ev.image_b64, ev.format || "png");
-        }
-        else if (ev.type === "denied") toolRun("denied " + ev.tool, false);
-      });
-      if (result.assistant_text) bubble("assistant", result.assistant_text);
-      if (result.pending) renderPending(result.pending);
+    // Apply one streamed chat event. getBubble() lazily creates the single
+    // assistant bubble the first time a text token arrives, so empty turns
+    // (tool-only or a confirm-gate) don't leave a blank bubble behind.
+    function handleChatEvent(ev, getBubble) {
+      const t = document.getElementById("transcript");
+      if (ev.type === "text_delta") {
+        const div = getBubble();
+        div.textContent += ev.text;
+        t.scrollTop = t.scrollHeight;
+      } else if (ev.type === "tool_result") {
+        toolRun(ev.tool, ev.ok !== false);
+        if (ev.image_b64) chatShot(ev.image_b64, ev.format || "png");
+      } else if (ev.type === "denied") {
+        toolRun("denied " + ev.tool, false);
+      } else if (ev.type === "pending") {
+        renderPending(ev);
+      } else if (ev.type === "done") {
+        if (ev.session_id) chatSessionId = ev.session_id;
+      } else if (ev.type === "error") {
+        if (ev.session_id) chatSessionId = ev.session_id;
+        toolRun("error: " + ev.error, false);
+      }
     }
     function gateCall(tool, args) {
       const entries = Object.entries(args || {});
@@ -1115,23 +1156,23 @@
       bubble("user", message);
       const body = { session_id: chatSessionId, message };
       if (chatContext) body.agent_id = chatContext;
+      let assistantDiv = null;
+      const getBubble = () => (assistantDiv ||= bubble("assistant", ""));
       try {
-        const result = await getJSON("/api/chat", {
-          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
-        });
-        chatSessionId = result.session_id;
-        renderTurn(result);
+        for await (const ev of streamSSE("/api/chat/stream", body)) {
+          handleChatEvent(ev, getBubble);
+        }
       } catch (e) { toolRun("error: " + e.message, false); }
     }
     async function confirmChat(approve, btn) {
       btn.closest(".k-gate").remove();
       setComposerEnabled(true);
+      let assistantDiv = null;
+      const getBubble = () => (assistantDiv ||= bubble("assistant", ""));
       try {
-        const result = await getJSON("/api/chat/confirm", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ session_id: chatSessionId, approve }),
-        });
-        renderTurn(result);
+        for await (const ev of streamSSE("/api/chat/confirm/stream", { session_id: chatSessionId, approve })) {
+          handleChatEvent(ev, getBubble);
+        }
       } catch (e) { toolRun("error: " + e.message, false); }
     }
 

@@ -7,14 +7,22 @@ The dashboard is a single vanilla-JS page (``index.html``) that calls the
 from __future__ import annotations
 
 import base64
+import json
 from pathlib import Path
 from typing import Any
 
 from starlette.requests import Request
-from starlette.responses import FileResponse, JSONResponse, Response
+from starlette.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
-from ..chat import ChatExecutor, ChatSessions, confirm_pending, run_turn
+from ..chat import (
+    ChatExecutor,
+    ChatSessions,
+    confirm_pending,
+    confirm_pending_events,
+    run_turn,
+    run_turn_events,
+)
 from ..registry import AgentRegistry
 from ..store import EventStore, TelemetryStore
 from ..tokenstore import AgentTokenStore
@@ -208,6 +216,12 @@ def _anthropic_client() -> Any:
     return anthropic.Anthropic()
 
 
+def _sse(event: dict[str, Any]) -> bytes:
+    """Encode one chat event as a Server-Sent Events ``data:`` frame."""
+
+    return f"data: {json.dumps(event, default=str)}\n\n".encode()
+
+
 def build_chat_routes(
     *,
     registry: AgentRegistry,
@@ -284,9 +298,78 @@ def build_chat_routes(
             return JSONResponse({"error": str(exc), "session_id": session.id}, status_code=502)
         return JSONResponse(result.to_public())
 
+    # SSE response headers: disable proxy/browser buffering so tokens flush live.
+    _STREAM_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+
+    async def api_chat_stream(request: Request) -> Response:
+        """Streaming twin of ``/api/chat``: emit chat events as Server-Sent Events.
+
+        Pre-stream validation (empty message, pending-409) returns JSON *before*
+        the first byte; once the stream starts the status is fixed at 200, so any
+        later failure is surfaced in-band as an ``error`` event.
+        """
+
+        body = await request.json()
+        message = str(body.get("message", "")).strip()
+        if not message:
+            return JSONResponse({"error": "message is required"}, status_code=400)
+        session = sessions.get_or_create(body.get("session_id"))
+        if session.pending is not None:
+            return JSONResponse(
+                {
+                    "error": "a confirmation is pending; resolve it first",
+                    "pending": session.pending.to_public(),
+                    "session_id": session.id,
+                },
+                status_code=409,
+            )
+        agent_id = str(body.get("agent_id", "")).strip()
+        if agent_id:
+            try:
+                registry.select(agent_id)
+            except KeyError:
+                if agent_id in await store.known_agents():
+                    registry._active_agent = agent_id  # noqa: SLF001 (matches chat.py dev path)
+        client = client_factory()
+
+        async def gen() -> Any:
+            try:
+                async for ev in run_turn_events(session, message, executor=executor, client=client):
+                    yield _sse(ev)
+            except Exception as exc:  # noqa: BLE001 - surface to the UI in-band
+                yield _sse({"type": "error", "error": str(exc), "session_id": session.id})
+
+        return StreamingResponse(gen(), media_type="text/event-stream", headers=_STREAM_HEADERS)
+
+    async def api_chat_confirm_stream(request: Request) -> Response:
+        """Streaming twin of ``/api/chat/confirm``."""
+
+        body = await request.json()
+        session_id = body.get("session_id")
+        session = sessions.get(session_id) if session_id else None
+        if session is None:
+            return JSONResponse({"error": "unknown session"}, status_code=404)
+        if session.pending is None:
+            return JSONResponse({"error": "no pending confirmation"}, status_code=409)
+        approve = bool(body.get("approve", False))
+        client = client_factory()
+
+        async def gen() -> Any:
+            try:
+                async for ev in confirm_pending_events(
+                    session, approve=approve, executor=executor, client=client
+                ):
+                    yield _sse(ev)
+            except Exception as exc:  # noqa: BLE001 - surface to the UI in-band
+                yield _sse({"type": "error", "error": str(exc), "session_id": session.id})
+
+        return StreamingResponse(gen(), media_type="text/event-stream", headers=_STREAM_HEADERS)
+
     return [
         Route("/api/chat", api_chat, methods=["POST"]),
         Route("/api/chat/confirm", api_chat_confirm, methods=["POST"]),
+        Route("/api/chat/stream", api_chat_stream, methods=["POST"]),
+        Route("/api/chat/confirm/stream", api_chat_confirm_stream, methods=["POST"]),
     ]
 
 
