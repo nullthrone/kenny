@@ -166,9 +166,28 @@ def test_classification() -> None:
     assert not is_state_changing("fleet_overview")
     assert not is_state_changing("diag_processes")
     assert not is_state_changing("fs_read")
+    assert not is_state_changing("remotehelp_status")
     assert is_state_changing("winget_install")
     assert is_state_changing("powershell_exec")
     assert is_state_changing("net_dns_flush")
+    # remotehelp_start/_stop are mutating on the agent (control.rs); the chat
+    # confirm-gate must agree so they aren't auto-invoked (ADR-0022, issue #55).
+    assert is_state_changing("remotehelp_start")
+    assert is_state_changing("remotehelp_stop")
+
+
+def test_tool_result_payload_capped() -> None:
+    from kenny_server.chat import _MAX_TOOL_RESULT_CHARS, _tool_result_block
+
+    # A small, attacker-influenceable payload is passed through unchanged.
+    small = _tool_result_block("tu_1", {"content": "hello", "truncated": False})
+    assert json.loads(small["content"]) == {"content": "hello", "truncated": False}
+
+    # A huge payload (e.g. a malicious agent's fs_read) is truncated with a marker
+    # so it can't blow up context or maximise the prompt-injection surface.
+    huge = _tool_result_block("tu_2", {"content": "A" * (_MAX_TOOL_RESULT_CHARS * 2)})
+    assert len(huge["content"]) <= _MAX_TOOL_RESULT_CHARS + 40
+    assert "truncated" in huge["content"]
 
 
 async def test_read_only_tool_auto_executes(store: TelemetryStore) -> None:
