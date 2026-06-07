@@ -538,6 +538,56 @@
 
     /* modal action footer — buttons for the in-app confirm / share dialogs */
     .k-modal__actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+
+    /* ====================================================================
+       OVERVIEW — high-level fleet dashboard (ECharts widgets + KPI tiles)
+       ==================================================================== */
+    .kc-ov { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: var(--space-4); margin-top: var(--space-5); }
+    .kc-ov__wide { grid-column: 1 / -1; }
+    @media (max-width: 900px) { .kc-ov { grid-template-columns: minmax(0, 1fr); }
+      .kc-ov__wide { grid-column: auto; } }
+    .kc-ov__card { display: flex; flex-direction: column; gap: var(--space-3); min-width: 0; }
+    .kc-ov__head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .kc-ov__title { display: flex; align-items: center; gap: 8px; font-size: var(--text-md);
+      font-weight: var(--weight-bold); letter-spacing: var(--tracking-tight); }
+    .kc-ov__title svg { width: 18px; height: 18px; color: var(--accent); }
+    .kc-ov__hint { font-size: var(--text-xs); color: var(--fg-faint); }
+    .kc-chart { width: 100%; min-height: 240px; }
+
+    /* KPI tiles — actionable totals; clickable for drill-down */
+    .kc-kpis { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: var(--space-3); }
+    @media (max-width: 1100px) { .kc-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+    @media (max-width: 560px) { .kc-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    .kc-kpi { text-align: left; background: var(--bg-sunken); border: 1px solid var(--border);
+      border-radius: var(--radius-md); padding: var(--space-3) var(--space-4); cursor: pointer;
+      transition: border-color var(--dur) var(--ease), transform var(--dur-fast) var(--ease); font: inherit; }
+    .kc-kpi:hover { border-color: var(--border-strong); transform: translateY(-1px); }
+    .kc-kpi[data-empty="1"] { cursor: default; }
+    .kc-kpi[data-empty="1"]:hover { border-color: var(--border); transform: none; }
+    .kc-kpi__val { font-size: var(--text-2xl); font-weight: var(--weight-bold); line-height: 1;
+      letter-spacing: var(--tracking-tight); }
+    .kc-kpi__val.is-alert { color: var(--crit-fg); }
+    .kc-kpi__suffix { font-size: var(--text-md); color: var(--fg-faint); font-weight: var(--weight-normal); }
+    .kc-kpi__lbl { margin-top: 6px; font-size: var(--text-sm); color: var(--fg-muted); }
+
+    /* drill-down table (inside the reused modal) */
+    .kc-dtable { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
+    .kc-dtable th { text-align: left; color: var(--fg-faint); font-weight: var(--weight-bold);
+      font-size: var(--text-xs); letter-spacing: var(--tracking-label); text-transform: uppercase;
+      padding: 4px 10px; border-bottom: 1px solid var(--border); }
+    .kc-dtable td { padding: 7px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .kc-dtable tr:last-child td { border-bottom: none; }
+    .kc-linkbtn { font: inherit; color: var(--link); background: none; border: none; padding: 0;
+      cursor: pointer; text-align: left; }
+    .kc-linkbtn:hover { text-decoration: underline; text-underline-offset: 2px; }
+    .kc-seg { display: inline-flex; align-items: center; gap: 6px; }
+
+    /* compact select used by the dynamic widgets (Top-N metric, Sankey/Trend) */
+    .kc-ovsel { font: inherit; font-size: var(--text-sm); color: var(--fg); background: var(--surface);
+      border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 4px 8px; cursor: pointer; }
+    .kc-ov__empty { color: var(--fg-muted); font-size: var(--text-sm); padding: var(--space-5);
+      text-align: center; }
   </style>
 </head>
 <body>
@@ -555,6 +605,8 @@
   <main class="kc-app kc-main" id="app">loading…</main>
   <div class="kc-backdrop" id="copilot-backdrop" onclick="closeCopilotDrawer()"></div>
 
+  <!-- Apache ECharts, vendored locally (no CDN) — powers the Overview charts. -->
+  <script src="/assets/echarts.min.js"></script>
   <script>
     // -- inline-SVG icon set (Lucide idiom: outline, 1.75 stroke, round caps;
     //    dependency-light + offline, no CDN). ----------------------------------
@@ -814,11 +866,15 @@
       try { localStorage.setItem("kenny-theme", next); } catch (e) {}
       const btn = document.getElementById("theme-btn");
       if (btn) btn.innerHTML = icon(next === "dark" ? "sun" : "moon", 16);
+      // Overview charts read their colours from CSS tokens at build time, so
+      // repaint them from the cached payload when the theme flips.
+      if (state.tab === "overview" && state.overview) paintOverview();
     }
 
     // -- console state -----------------------------------------------------
-    let state = { tab: "fleet", activityView: "audit",
+    let state = { tab: "overview", activityView: "audit",
       fleet: null, bin: null, selected: null, detail: null,
+      overview: null, trend: null, topMetric: "disk", sankeyByOs: false, trendDays: 30,
       audit: [], auditQuery: "", auditPage: 1,
       events: [], eventsQuery: "", eventsPage: 1 };
     const AUDIT_PAGE_SIZE = 25;
@@ -830,6 +886,9 @@
     // Fleet tab (and the audit sub-view).
     function parseHash() {
       const parts = (location.hash || "").replace(/^#\/?/, "").split("/").filter(Boolean);
+      if (parts[0] === "fleet") {
+        return { tab: "fleet", activityView: state.activityView };
+      }
       if (parts[0] === "activity") {
         return { tab: "activity", activityView: parts[1] === "events" ? "events" : "audit" };
       }
@@ -837,24 +896,28 @@
         return { tab: "flagged", flaggedSev: parts[1] === "crit" ? "crit" : "warn",
                  activityView: state.activityView };
       }
-      return { tab: "fleet", activityView: state.activityView };
+      // Overview is the default landing view (bare or unknown hash).
+      return { tab: "overview", activityView: state.activityView };
     }
 
     function renderTabs() {
       const tab = (name, href, ico, label) =>
         `<a class="kc-tab${state.tab === name ? " is-active" : ""}" href="${href}">${icon(ico, 16)}${label}</a>`;
       tabsEl.innerHTML =
+        tab("overview", "#/overview", "activity", "Overview") +
         tab("fleet", "#/fleet", "network", "Fleet") +
         tab("activity", "#/activity/" + state.activityView, "activity", "Activity");
     }
 
     async function router() {
+      disposeOvCharts();  // tear down Overview charts when leaving/re-entering
       const { tab, activityView, flaggedSev } = parseHash();
       state.tab = tab;
       state.activityView = activityView;
       state.flaggedSev = flaggedSev || "warn";
       renderTabs();
-      if (tab === "activity") await renderActivity();
+      if (tab === "overview") await renderOverview();
+      else if (tab === "activity") await renderActivity();
       else if (tab === "flagged") await renderFlagged();
       else await renderFleet();
     }
@@ -883,6 +946,387 @@
       if (state.selected) selectAgent(state.selected);
       else document.getElementById("detail").innerHTML =
         `<div class="k-muted">No PC selected. Use “Add a PC” to onboard the first machine.</div>`;
+    }
+
+    // ====================================================================
+    // OVERVIEW TAB — high-level fleet dashboard (vendored Apache ECharts).
+    // Each widget answers one question and is fully drill-down-able: clicking
+    // any segment/bar/node/KPI opens a table of the hosts behind that figure.
+    // Charts read their colours from the active theme's CSS tokens at build
+    // time, so toggleTheme() repaints them from the cached payload.
+    // ====================================================================
+    let ovChartInstances = [];
+    let ovResizeBound = false;
+
+    function disposeOvCharts() {
+      ovChartInstances.forEach(i => { try { i.dispose(); } catch (e) {} });
+      ovChartInstances = [];
+    }
+    function disposeDom(el) {
+      const ex = (window.echarts && el) ? echarts.getInstanceByDom(el) : null;
+      if (ex) { try { ex.dispose(); } catch (e) {} ovChartInstances = ovChartInstances.filter(i => i !== ex); }
+    }
+    function newChart(el) {
+      disposeDom(el);
+      const inst = echarts.init(el, null, { renderer: "svg" });
+      ovChartInstances.push(inst);
+      return inst;
+    }
+    function bindOvResize() {
+      if (ovResizeBound) return;
+      ovResizeBound = true;
+      window.addEventListener("resize", () =>
+        ovChartInstances.forEach(i => { try { i.resize(); } catch (e) {} }));
+    }
+
+    function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+    function statusColor(key) {
+      return ({
+        ok: cssVar("--ok-solid") || cssVar("--ok-dot"),
+        warn: cssVar("--warn-solid") || cssVar("--warn-dot"),
+        crit: cssVar("--crit-solid") || cssVar("--crit-dot"),
+        unknown: cssVar("--unk-dot"),
+      })[key] || cssVar("--unk-dot");
+    }
+    function catPalette() {
+      return [cssVar("--accent"), cssVar("--ok-solid"), "#6E8FB8", cssVar("--amber-deep"),
+              "#B08CC0", cssVar("--crit-solid"), cssVar("--fg-faint")];
+    }
+    // Shared theme-aware ECharts base (text/tooltip colours from CSS tokens).
+    function chartBase() {
+      const fg = cssVar("--fg"), muted = cssVar("--fg-muted"), border = cssVar("--border-strong"),
+            font = cssVar("--font-sans");
+      return {
+        _fg: fg, _muted: muted, _border: border,
+        textStyle: { color: fg, fontFamily: font },
+        tooltip: { backgroundColor: cssVar("--surface-raised"), borderColor: border, borderWidth: 1,
+                   textStyle: { color: fg, fontFamily: font }, confine: true },
+      };
+    }
+
+    // -- drill-down: any aggregate -> table of the contributing hosts ------
+    function gotoAgent(id) {
+      closeModal();
+      state.selected = id;
+      if (location.hash === "#/fleet") router().catch(() => {});
+      else location.hash = "#/fleet";
+    }
+    function membersTableHtml(members, valueHeader) {
+      if (!members || !members.length) return `<div class="k-muted">no hosts</div>`;
+      const showVal = valueHeader !== null && valueHeader !== undefined;
+      const fmt = v => v === true ? "yes" : v === false ? "no" : (v == null ? "—" : v);
+      const rows = members.map(m => `<tr>
+          <td><button class="kc-linkbtn" data-agent="${esc(m.agent_id)}">${esc(m.agent_id)}</button></td>
+          ${showVal ? `<td class="k-mono">${esc(fmt(m.value))}</td>` : ""}
+          <td class="k-muted">${esc(m.detail || "")}</td>
+        </tr>`).join("");
+      return `<table class="kc-dtable"><thead><tr><th>Host</th>${showVal ? `<th>${esc(valueHeader)}</th>` : ""}<th>Detail</th></tr></thead><tbody>${rows}</tbody></table>`;
+    }
+    function openDrilldown(titleText, ico, members, valueHeader) {
+      const n = members ? members.length : 0;
+      const head = `<div class="kc-ov__hint" style="margin-bottom:10px">${n} host${n === 1 ? "" : "s"}</div>`;
+      openModal(`${icon(ico || "box", 18)}<span>${esc(titleText)}</span>`, head + membersTableHtml(members, valueHeader));
+      document.querySelectorAll("#modal-overlay .kc-linkbtn[data-agent]").forEach(
+        el => el.onclick = () => gotoAgent(el.dataset.agent));
+    }
+
+    async function renderOverview() {
+      const [overview, trend, fleet] = await Promise.all([
+        getJSON("/api/fleet/overview"),
+        getJSON("/api/fleet/trend?days=" + state.trendDays).catch(() => ({ days: [] })),
+        state.fleet ? Promise.resolve(state.fleet) : getJSON("/api/fleet").catch(() => ({ agents: [] })),
+      ]);
+      state.overview = overview;
+      state.trend = trend;
+      state.fleet = fleet;
+      renderHeaderRight(fleet, fleet.agents || []);
+      paintOverview();
+    }
+
+    function paintOverview() {
+      disposeOvCharts();
+      const o = state.overview;
+      if (!o || !o.agent_count) {
+        app.innerHTML = `<section class="kc-ov"><div class="k-panel kc-ov__wide">
+          <div class="kc-ov__empty">No telemetry yet. Onboard a PC from the
+          <a href="#/fleet">Fleet</a> tab to populate the overview.</div></div></section>`;
+        return;
+      }
+      const card = (cls, ico, title, hint, body) => `
+        <div class="k-panel kc-ov__card ${cls || ""}">
+          <div class="kc-ov__head"><div class="kc-ov__title">${icon(ico, 18)}${esc(title)}</div>
+            ${hint ? `<div class="kc-ov__hint">${hint}</div>` : ""}</div>
+          ${body}</div>`;
+      const updated = o.generated_at ? new Date(o.generated_at).toLocaleTimeString() : "";
+      const topOptions = o.top.metrics.map(m =>
+        `<option value="${esc(m.key)}"${m.key === state.topMetric ? " selected" : ""}>${esc(m.label)}</option>`).join("");
+      const trendOptions = [7, 30, 90].map(d =>
+        `<option value="${d}"${d === state.trendDays ? " selected" : ""}>${d} days</option>`).join("");
+
+      app.innerHTML = `<section class="kc-ov">
+        ${card("kc-ov__wide", "activity", "Fleet at a glance",
+            `${o.online_count}/${o.agent_count} online${updated ? ` · updated ${esc(updated)}` : ""}`,
+            `<div class="kc-kpis" id="ov-kpis"></div>`)}
+        ${card("", "life-buoy", "Fleet health", "status mix",
+            `<div class="kc-chart" id="ov-health" style="height:280px"></div>`)}
+        ${card("", "box", "Fleet inventory", "OS &amp; form factor",
+            `<div class="k-row" style="align-items:stretch;gap:0">
+               <div class="kc-chart" id="ov-os" style="height:280px;flex:1"></div>
+               <div class="kc-chart" id="ov-device" style="height:280px;flex:1"></div></div>`)}
+        ${card("kc-ov__wide", "lock", "Security posture", "share of hosts compliant",
+            `<div class="kc-chart" id="ov-posture" style="height:270px"></div>`)}
+        ${card("kc-ov__wide", "triangle-alert", "Problem sections",
+            "hosts in warn / crit per section — click to drill down",
+            `<div class="kc-chart" id="ov-sections"></div>`)}
+        ${card("kc-ov__wide", "activity", "Top hosts",
+            `<select class="kc-ovsel" id="ov-top-sel">${topOptions}</select>`,
+            `<div class="kc-chart" id="ov-top"></div>`)}
+        ${card("kc-ov__wide", "network", "Problem flow", "host → severity → section",
+            `<div class="kc-chart" id="ov-sankey"></div>`)}
+        ${card("kc-ov__wide", "clock", "Fleet health trend",
+            `<select class="kc-ovsel" id="ov-trend-sel">${trendOptions}</select>`,
+            `<div class="kc-chart" id="ov-trend" style="height:300px"></div>`)}
+      </section>`;
+
+      buildKpis();
+      buildHealth();
+      buildPie("ov-os", o.os.segments, "OS", "box");
+      buildPie("ov-device", o.device.segments, "Device", "monitor");
+      buildPosture();
+      buildSections();
+      buildTop();
+      buildSankey();
+      buildTrend();
+      bindOvResize();
+
+      const tsel = document.getElementById("ov-trend-sel");
+      if (tsel) tsel.onchange = async () => {
+        state.trendDays = +tsel.value;
+        state.trend = await getJSON("/api/fleet/trend?days=" + state.trendDays).catch(() => ({ days: [] }));
+        buildTrend();
+      };
+    }
+
+    function buildKpis() {
+      const host = document.getElementById("ov-kpis");
+      if (!host) return;
+      const alertKeys = ["reboot", "failed_updates", "quarantine", "os_eol"];
+      host.innerHTML = state.overview.kpis.map((k, i) => {
+        const empty = !(k.members && k.members.length);
+        const alert = alertKeys.includes(k.key) && k.value > 0;
+        return `<button class="kc-kpi" data-empty="${empty ? 1 : 0}" data-kpi="${i}">
+            <div class="kc-kpi__val${alert ? " is-alert" : ""}">${k.value}${k.suffix ? `<span class="kc-kpi__suffix"> ${esc(k.suffix)}</span>` : ""}</div>
+            <div class="kc-kpi__lbl">${esc(k.label)}</div></button>`;
+      }).join("");
+      host.querySelectorAll(".kc-kpi[data-kpi]").forEach(el => {
+        const k = state.overview.kpis[+el.dataset.kpi];
+        if (k.members && k.members.length)
+          el.onclick = () => openDrilldown(k.label, "activity", k.members, k.key === "online" ? "State" : "Count");
+      });
+    }
+
+    function buildHealth() {
+      const el = document.getElementById("ov-health");
+      if (!el) return;
+      const base = chartBase();
+      const inst = newChart(el);
+      inst.setOption({
+        textStyle: base.textStyle,
+        tooltip: { ...base.tooltip, trigger: "item", formatter: p => `${esc(p.name)}: <b>${p.value}</b> (${p.percent}%)` },
+        legend: { bottom: 0, textStyle: { color: base._muted }, icon: "circle" },
+        series: [{
+          type: "pie", radius: ["48%", "72%"], center: ["50%", "44%"], avoidLabelOverlap: true,
+          label: { color: base._fg, formatter: "{b}\n{c}" }, labelLine: { lineStyle: { color: base._border } },
+          data: state.overview.health.segments.map(s => ({
+            name: s.label, value: s.value, itemStyle: { color: statusColor(s.key) }, _seg: s })),
+        }],
+      });
+      inst.on("click", p => { const s = p.data && p.data._seg; if (s) openDrilldown("Fleet health · " + s.label, "life-buoy", s.members, "Status"); });
+    }
+
+    function buildPie(elId, segments, drillTitle, ico) {
+      const el = document.getElementById(elId);
+      if (!el) return;
+      if (!segments || !segments.length) { disposeDom(el); el.innerHTML = `<div class="kc-ov__empty">no data</div>`; return; }
+      const base = chartBase();
+      const inst = newChart(el);
+      const pal = catPalette();
+      inst.setOption({
+        textStyle: base.textStyle,
+        tooltip: { ...base.tooltip, trigger: "item", formatter: p => `${esc(p.name)}: <b>${p.value}</b> (${p.percent}%)` },
+        legend: { type: "scroll", bottom: 0, textStyle: { color: base._muted }, icon: "circle" },
+        series: [{
+          type: "pie", radius: ["40%", "68%"], center: ["50%", "44%"],
+          label: { color: base._fg, formatter: "{c}" }, labelLine: { lineStyle: { color: base._border } },
+          data: segments.map((s, i) => ({ name: s.label, value: s.value, itemStyle: { color: pal[i % pal.length] }, _seg: s })),
+        }],
+      });
+      inst.on("click", p => { const s = p.data && p.data._seg; if (s) openDrilldown(drillTitle + " · " + s.label, ico || "box", s.members, "Count"); });
+    }
+
+    function buildPosture() {
+      const el = document.getElementById("ov-posture");
+      if (!el) return;
+      const base = chartBase();
+      const inst = newChart(el);
+      const metrics = state.overview.posture.metrics;
+      const centers = ["17%", "50%", "83%"];
+      const colorFor = b => b === "compliant" ? statusColor("ok") : b === "noncompliant" ? statusColor("crit") : cssVar("--unk-dot");
+      const total = m => m.compliant + m.noncompliant + m.unknown;
+      const series = metrics.map((m, i) => ({
+        type: "pie", radius: ["38%", "58%"], center: [centers[i], "42%"], label: { show: false },
+        data: [
+          { name: "OK", value: m.compliant, itemStyle: { color: colorFor("compliant") }, _members: m.members_compliant, _m: m },
+          { name: "Not OK", value: m.noncompliant, itemStyle: { color: colorFor("noncompliant") }, _members: m.members_noncompliant, _m: m },
+          { name: "Unknown", value: m.unknown, itemStyle: { color: colorFor("unknown") }, _members: m.members_unknown, _m: m },
+        ],
+      }));
+      const titles = metrics.map((m, i) => ({
+        subtext: `${m.label}\n${total(m) ? Math.round(100 * m.compliant / total(m)) : 0}% ok`,
+        left: centers[i], top: "80%", textAlign: "center",
+        subtextStyle: { color: base._muted, fontFamily: cssVar("--font-sans"), lineHeight: 15, align: "center" },
+      }));
+      inst.setOption({
+        textStyle: base.textStyle,
+        tooltip: { ...base.tooltip, trigger: "item", formatter: p => `${esc(p.name)}: <b>${p.value}</b>` },
+        title: titles, series,
+      });
+      inst.on("click", p => { const d = p.data; if (d && d._members && d._members.length) openDrilldown(d._m.label + " · " + p.name, "lock", d._members, "State"); });
+    }
+
+    function buildSections() {
+      const el = document.getElementById("ov-sections");
+      if (!el) return;
+      const rows = state.overview.sections.rows || [];
+      if (!rows.length) { disposeDom(el); el.style.height = "auto"; el.innerHTML = `<div class="kc-ov__empty">No warnings or critical sections — all green.</div>`; return; }
+      el.style.height = Math.max(180, rows.length * 30 + 60) + "px";
+      const base = chartBase();
+      const chartRows = rows.slice().reverse();  // worst at the top of a horizontal bar
+      const mkData = (countKey, memKey, sev) => chartRows.map(r =>
+        ({ value: r[countKey], _members: r[memKey], _section: r.section, _sev: sev }));
+      const inst = newChart(el);
+      inst.setOption({
+        textStyle: base.textStyle,
+        tooltip: { ...base.tooltip, trigger: "item", formatter: p => `${p.seriesName} · ${esc(p.name)}: <b>${p.value}</b>` },
+        legend: { top: 0, right: 0, textStyle: { color: base._muted }, data: ["Warning", "Critical"] },
+        grid: { left: 4, right: 16, top: 32, bottom: 4, containLabel: true },
+        xAxis: { type: "value", minInterval: 1, axisLabel: { color: base._muted }, splitLine: { lineStyle: { color: base._border } } },
+        yAxis: { type: "category", data: chartRows.map(r => r.section), axisLabel: { color: base._fg }, axisLine: { lineStyle: { color: base._border } } },
+        series: [
+          { name: "Warning", type: "bar", stack: "sev", data: mkData("warn", "members_warn", "warn"), itemStyle: { color: statusColor("warn") } },
+          { name: "Critical", type: "bar", stack: "sev", data: mkData("crit", "members_crit", "crit"), itemStyle: { color: statusColor("crit") } },
+        ],
+      });
+      inst.on("click", p => { const d = p.data; if (d && d._members && d._members.length) openDrilldown(`${d._section} · ${d._sev === "crit" ? "Critical" : "Warning"}`, "box", d._members, "Status"); });
+    }
+
+    function buildTop() {
+      const el = document.getElementById("ov-top");
+      if (!el) return;
+      const base = chartBase();
+      const inst = newChart(el);
+      const apply = () => {
+        const metrics = state.overview.top.metrics;
+        const m = metrics.find(x => x.key === state.topMetric) || metrics[0];
+        state.topMetric = m.key;
+        const entries = (m.entries || []).slice(0, 8).reverse();  // largest on top
+        if (!entries.length) { el.style.height = "120px"; inst.clear(); inst.setOption({ title: { text: "no data for this metric", left: "center", top: "middle", textStyle: { color: base._muted, fontSize: 14, fontFamily: cssVar("--font-sans") } } }); return; }
+        el.style.height = Math.max(150, entries.length * 30 + 30) + "px";
+        inst.resize();
+        const unit = m.unit || "";
+        const colorOf = v => (m.key === "disk" || m.key === "memory")
+          ? (v >= 95 ? statusColor("crit") : v > 80 ? statusColor("warn") : statusColor("ok"))
+          : cssVar("--accent");
+        inst.setOption({
+          textStyle: base.textStyle,
+          tooltip: { ...base.tooltip, trigger: "item", formatter: p => `${esc(p.name)}: <b>${p.value}${unit}</b><br/>${esc(p.data._detail || "")}` },
+          grid: { left: 4, right: 44, top: 6, bottom: 4, containLabel: true },
+          xAxis: { type: "value", axisLabel: { color: base._muted, formatter: "{value}" + unit }, splitLine: { lineStyle: { color: base._border } } },
+          yAxis: { type: "category", data: entries.map(e => e.agent_id), axisLabel: { color: base._fg }, axisLine: { lineStyle: { color: base._border } } },
+          series: [{
+            type: "bar", data: entries.map(e => ({ value: e.value, _detail: e.detail, itemStyle: { color: colorOf(e.value) } })),
+            label: { show: true, position: "right", color: base._muted, formatter: p => p.value + unit },
+          }],
+        }, true);
+      };
+      apply();
+      inst.on("click", () => {
+        const m = state.overview.top.metrics.find(x => x.key === state.topMetric);
+        if (m && m.entries && m.entries.length)
+          openDrilldown(m.label + " — full ranking", "activity", m.entries, m.label + (m.unit ? ` (${m.unit})` : ""));
+      });
+      const sel = document.getElementById("ov-top-sel");
+      if (sel) sel.onchange = () => { state.topMetric = sel.value; apply(); };
+    }
+
+    function buildSankey() {
+      const el = document.getElementById("ov-sankey");
+      if (!el) return;
+      const sankey = state.overview.sankey;
+      if (!sankey.nodes.length || !sankey.links.length) { disposeDom(el); el.style.height = "auto"; el.innerHTML = `<div class="kc-ov__empty">No warnings or critical sections to chart — all green.</div>`; return; }
+      const base = chartBase();
+      const hostCount = sankey.nodes.filter(n => n.kind === "host").length;
+      el.style.height = Math.max(260, hostCount * 26 + 70) + "px";
+      const inst = newChart(el);
+      const nodeColor = k => k === "host" ? cssVar("--accent") : k === "crit" ? statusColor("crit")
+        : k === "warn" ? statusColor("warn") : statusColor("ok");
+      inst.setOption({
+        textStyle: base.textStyle,
+        tooltip: {
+          ...base.tooltip, trigger: "item",
+          formatter: p => p.dataType === "edge"
+            ? `${esc(p.data.source)} → ${esc(p.data.target)}: <b>${p.data.value}</b>` : esc(p.name),
+        },
+        series: [{
+          type: "sankey", left: 8, right: 110, top: 10, bottom: 10, nodeWidth: 14, nodeGap: 8,
+          emphasis: { focus: "adjacency" },
+          data: sankey.nodes.map(n => ({ name: n.name, itemStyle: { color: nodeColor(n.kind) }, _kind: n.kind })),
+          links: sankey.links.map(l => ({ source: l.source, target: l.target, value: l.value, members: l.members })),
+          label: { color: base._fg }, lineStyle: { color: "gradient", opacity: 0.3, curveness: 0.5 },
+        }],
+      });
+      inst.on("click", p => {
+        if (p.dataType === "edge") {
+          openDrilldown(`${p.data.source} → ${p.data.target}`, "network", p.data.members || [], "Section");
+          return;
+        }
+        const name = p.name, seen = {}, mem = [];
+        sankey.links.forEach(l => {
+          if (l.source === name || l.target === name)
+            (l.members || []).forEach(m => { const k = m.agent_id + "|" + m.value; if (!seen[k]) { seen[k] = 1; mem.push(m); } });
+        });
+        if (mem.length) openDrilldown(name, "network", mem, "Section");
+      });
+    }
+
+    function buildTrend() {
+      const el = document.getElementById("ov-trend");
+      if (!el) return;
+      const days = (state.trend && state.trend.days) || [];
+      if (!days.length) { disposeDom(el); el.style.height = "auto"; el.innerHTML = `<div class="kc-ov__empty">Not enough history yet — the trend fills in as agents report.</div>`; return; }
+      el.style.height = "300px";
+      const base = chartBase();
+      const inst = newChart(el);
+      const mk = (key, label) => ({
+        name: label, type: "line", stack: "total", areaStyle: { opacity: 0.85 }, symbol: "none",
+        emphasis: { focus: "series" }, itemStyle: { color: statusColor(key) },
+        data: days.map(d => ({ value: d[key], _day: d, _status: key })),
+      });
+      inst.setOption({
+        textStyle: base.textStyle,
+        tooltip: { ...base.tooltip, trigger: "axis" },
+        legend: { top: 0, right: 0, textStyle: { color: base._muted }, data: ["OK", "Warning", "Critical", "No data"] },
+        grid: { left: 4, right: 14, top: 30, bottom: 4, containLabel: true },
+        xAxis: { type: "category", boundaryGap: false, data: days.map(d => d.date), axisLabel: { color: base._muted }, axisLine: { lineStyle: { color: base._border } } },
+        yAxis: { type: "value", minInterval: 1, axisLabel: { color: base._muted }, splitLine: { lineStyle: { color: base._border } } },
+        series: [mk("ok", "OK"), mk("warn", "Warning"), mk("crit", "Critical"), mk("unknown", "No data")],
+      });
+      inst.on("click", p => {
+        const d = p.data && p.data._day, st = p.data && p.data._status;
+        if (d && st && d.members && d.members[st] && d.members[st].length)
+          openDrilldown(`${st} · ${d.date}`, "activity", d.members[st], "Status");
+      });
+      inst.resize();
     }
 
     // -- activity tab: fleet-wide observability (audit + events) ----------
@@ -1882,7 +2326,7 @@
     });
     // Normalize a bare URL to the default tab (replaceState does not fire
     // hashchange, so router() runs exactly once below).
-    if (!location.hash) history.replaceState(null, "", "#/fleet");
+    if (!location.hash) history.replaceState(null, "", "#/overview");
     router().catch(e => app.textContent = "error: " + e.message);
   </script>
 </body>
