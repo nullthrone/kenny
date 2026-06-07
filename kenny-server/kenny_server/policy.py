@@ -191,8 +191,14 @@ class PolicyEngine:
             return self._match("powershell", script) or self._match("self_protection", script)
 
         if tool in _SELF_PROTECTION_TOOLS:
+            # These tools forward their string args into a shell/exec on the agent
+            # (e.g. net_adapter_reset interpolates the adapter name into a PowerShell
+            # command), so scan the args against the full powershell catalog as well
+            # as self_protection — mirroring the agent guard — so a destructive command
+            # cannot be smuggled through an argument
+            # (kenny-sec:handlers/net-adapter-reset-powershell-injection).
             blob = " ".join(_iter_strings(args))
-            return self._match("self_protection", blob)
+            return self._match("powershell", blob) or self._match("self_protection", blob)
 
         if tool in ("fs_read", "fs_list", "fs_search"):
             key = "root" if tool == "fs_search" else "path"

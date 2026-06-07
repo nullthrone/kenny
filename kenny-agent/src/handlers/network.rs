@@ -75,6 +75,18 @@ fn unsupported(tool: &str) -> (ErrorCode, String) {
     )
 }
 
+/// Escape a string for safe interpolation inside a **single-quoted** PowerShell
+/// string. PowerShell treats every character in a single-quoted string literally
+/// except the single quote, which is escaped by doubling it (`'` -> `''`). Applying
+/// this to the adapter name neutralises argument/script injection via
+/// `net_adapter_reset` (a `'` would otherwise close the string and let the rest of
+/// the name run as PowerShell). Portable so it can be unit-tested on non-Windows CI;
+/// only the Windows build interpolates the result, so it is dead code off Windows.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn ps_single_quote(s: &str) -> String {
+    s.replace('\'', "''")
+}
+
 #[cfg(windows)]
 mod windows_impl {
     use super::*;
@@ -92,8 +104,12 @@ mod windows_impl {
 
     /// Real impl: `Disable-NetAdapter` then `Enable-NetAdapter` for `name`.
     pub async fn adapter_reset(name: &str) -> Result<Value, (ErrorCode, String)> {
+        // Escape the operator-supplied adapter name so it cannot break out of the
+        // single-quoted PowerShell string and inject commands (see
+        // kenny-sec:handlers/net-adapter-reset-powershell-injection).
+        let safe = super::ps_single_quote(name);
         let script = format!(
-            "Disable-NetAdapter -Name '{name}' -Confirm:$false; Start-Sleep -Seconds 2; Enable-NetAdapter -Name '{name}' -Confirm:$false"
+            "Disable-NetAdapter -Name '{safe}' -Confirm:$false; Start-Sleep -Seconds 2; Enable-NetAdapter -Name '{safe}' -Confirm:$false"
         );
         let out = Command::new("powershell.exe")
             .args(["-NoProfile", "-NonInteractive", "-Command", &script])
@@ -117,6 +133,23 @@ mod tests {
     fn config_lists_interfaces() {
         let v = config(json!({})).unwrap();
         assert!(v["interfaces"].is_array());
+    }
+
+    #[test]
+    fn ps_single_quote_escapes_quotes() {
+        // Legitimate adapter names pass through unchanged.
+        assert_eq!(ps_single_quote("Ethernet"), "Ethernet");
+        assert_eq!(ps_single_quote("Wi-Fi"), "Wi-Fi");
+        assert_eq!(
+            ps_single_quote("vEthernet (Default Switch)"),
+            "vEthernet (Default Switch)"
+        );
+        // An injection attempt has its closing quote doubled, so inside the
+        // single-quoted PowerShell string it stays literal text and cannot break out.
+        assert_eq!(
+            ps_single_quote("x'; Format-Volume -DriveLetter D -Force; '"),
+            "x''; Format-Volume -DriveLetter D -Force; ''"
+        );
     }
 
     #[cfg(not(windows))]

@@ -100,6 +100,27 @@ def test_engine_self_protection_concatenates_winget_args() -> None:
     assert hit[0] == "blocked"
 
 
+def test_engine_blocks_destructive_command_smuggled_in_net_arg() -> None:
+    engine = PolicyEngine()
+    # net_adapter_reset interpolates the adapter name into a PowerShell command on
+    # the agent; a destructive command hidden in the name must be caught by the
+    # powershell catalog (not just self_protection), mirroring the agent guard.
+    hit = engine.check(
+        "net_adapter_reset",
+        {"name": "Ethernet'; Format-Volume -DriveLetter D -Force; '"},
+    )
+    assert hit is not None
+    assert hit[0] == "blocked"
+    assert "Format-Volume" in hit[1]
+    # Same for a destructive command smuggled into a winget arg.
+    assert engine.check(
+        "winget_install", {"id": "x; vssadmin delete shadows /all"}
+    ) is not None
+    # A benign adapter name still passes.
+    assert engine.check("net_adapter_reset", {"name": "Ethernet"}) is None
+    assert engine.check("net_adapter_reset", {"name": "Wi-Fi"}) is None
+
+
 # -- PolicyStore round-trip -------------------------------------------------
 
 
