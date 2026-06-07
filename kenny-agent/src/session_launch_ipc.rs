@@ -117,11 +117,11 @@ mod windows_impl {
             Ok(written as usize)
         }
         fn flush(&mut self) -> io::Result<()> {
-            // A pipe server that calls `DisconnectNamedPipe` while bytes are still unread
-            // *discards* them, and the peer's next read fails with ERROR_PIPE_NOT_CONNECTED
-            // (0x800700E9). `serve()` disconnects immediately after `serve_one` returns, so
-            // without this the launch reply can be dropped before the service reads it.
-            // `FlushFileBuffers` blocks until the peer has drained everything we wrote.
+            // Push any buffered bytes out toward the peer. This does *not* on its own
+            // close the discard-on-disconnect race (see `wait_for_client_disconnect`):
+            // contrary to its docs, `FlushFileBuffers` does not reliably block until the
+            // peer's read on a duplex pipe, which is why the launch reply was still being
+            // dropped with ERROR_PIPE_NOT_CONNECTED (0x800700E9).
             // SAFETY: `self.0` is a valid pipe handle we own and opened for writing.
             unsafe { FlushFileBuffers(self.0) }.map_err(io::Error::other)
         }
@@ -184,7 +184,28 @@ mod windows_impl {
         let body = serde_json::to_vec(&reply).unwrap_or_default();
         if let Err(e) = write_frame(&mut stream, &body) {
             warn!(error = %e, "failed to send session-launch reply");
+            return;
         }
+        // The reply now sits in the pipe buffer. `serve()` calls `DisconnectNamedPipe`
+        // the instant we return, and that discards anything the client has not yet read —
+        // so block until the client has drained the reply and closed its end first.
+        wait_for_client_disconnect(pipe);
+    }
+
+    /// Block until the connected client closes its end of the duplex pipe.
+    ///
+    /// The service client closes its handle only *after* `read_frame` has handed it the
+    /// full reply, so this blocking `ReadFile` unblocks (with end-of-pipe /
+    /// `ERROR_BROKEN_PIPE`) exactly when the exchange is complete. Waiting for that before
+    /// `serve()` disconnects is what actually guarantees the reply is never discarded
+    /// mid-flight — `FlushFileBuffers` does not reliably do so (see `PipeStream::flush`).
+    fn wait_for_client_disconnect(pipe: HANDLE) {
+        let mut scratch = [0u8; 1];
+        let mut read: u32 = 0;
+        // SAFETY: `pipe` is a valid duplex pipe handle we own; `scratch`/`read` are local
+        // out-params. The client never writes again after its request, so we expect either
+        // 0 bytes or a broken-pipe error — the outcome is intentionally ignored.
+        let _ = unsafe { ReadFile(pipe, Some(&mut scratch), Some(&mut read), None) };
     }
 
     /// Parse a request, refuse anything off the allow-list, and spawn it in this session.
