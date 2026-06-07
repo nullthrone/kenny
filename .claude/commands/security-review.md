@@ -42,7 +42,29 @@ Go surface by surface. For each, read the cited code and look for concrete, expl
 - **Supply chain / CI** (`.github/workflows/*`, `Dockerfile`): action pinning (tags vs SHA), workflow
   `permissions` scoping, unsigned release binary default, image provenance.
 
-## 2. Dedup BEFORE filing (open AND closed issues)
+## 2. Rule out deliberate decisions BEFORE judging (read the ADRs)
+
+Before you assign severity or file anything, check whether the behaviour is a **deliberate,
+ADR-recorded architectural decision** — not an oversight. Skipping this leads to filing
+"findings" that merely restate an accepted trade-off (e.g. `ws://` permitted for local use,
+`Secure` cookie only under TLS, RCE-by-design command handlers, agents trusted to push
+telemetry).
+
+- Read `docs/adr/` for the surface in question (grep the ADRs for the relevant terms, e.g.
+  `ws://`/`TLS`/`transport`, `token`/`cookie`/`Secure`, `confirm`/`gate`, `self-update`). The
+  ADR **Context**, **Decision Outcome**, **Consequences ("Bad, because …")**, and **More
+  Information** sections often state the exact trade-off and its assumed deployment (e.g.
+  "serve over `wss`/`https` in production; `ws://` is for local use only").
+- If the behaviour is the documented intent, treat the ADR like a closed issue: **do not file
+  it as a vulnerability.** Either drop it, or — if there is a genuine *residual* gap the ADR
+  does **not** cover (e.g. the decision is sound but the code does not fail-closed/warn when its
+  stated precondition is violated) — file only that narrow residual, at its true (usually lower)
+  severity, and cite the ADR explaining why the rest is out of scope.
+- An ADR can be wrong or outdated. You may still file against a documented decision, but only
+  with **clear new evidence** that the decision's own assumptions no longer hold — say so
+  explicitly and reference the ADR, rather than re-litigating a settled trade-off.
+
+## 3. Dedup BEFORE filing (open AND closed issues)
 
 For each candidate finding, derive a stable fingerprint slug: `kenny-sec:<area>/<short-slug>`
 (e.g. `kenny-sec:webui/telemetry-innerhtml-xss`). Then, using the GitHub MCP tools, check whether it
@@ -57,7 +79,7 @@ If a matching issue exists in **any** state (open or closed), DO NOT file again 
 "already tracked (#N, <state>)". A closed issue means a human already decided on it; reopen only if you
 have clear new evidence, and say why in a comment instead of opening a new one.
 
-## 3. File new findings only (English, templated)
+## 4. File new findings only (English, templated)
 
 For each genuinely new finding, create an issue with `mcp__github__issue_write`:
 
@@ -70,10 +92,12 @@ For each genuinely new finding, create an issue with `mcp__github__issue_write`:
   - **Affected surface** — which weak point.
   - **Location** — `file:line` (and the relevant snippet).
   - **Impact / attack scenario** — concrete, who can do what.
-  - **Recommendation** — the smallest sound fix; reference the relevant ADR if any.
+  - **Recommendation** — the smallest sound fix; reference the relevant ADR if any (and, if the
+    finding touches an ADR-recorded decision, state why it is still in scope per step 2).
   - Footer: `kenny-sec:<slug>` (the dedup fingerprint — keep it exact).
 
-## 4. Report
+## 5. Report
 
-Print a table: finding → severity → action (`filed #N` / `duplicate of #N (state)` / `skipped`).
+Print a table: finding → severity → action (`filed #N` / `duplicate of #N (state)` /
+`by design — ADR-#### (skipped)` / `skipped`).
 Do not open pull requests or change code — this command only investigates and files issues.
