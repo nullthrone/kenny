@@ -110,6 +110,36 @@ fn terminate_processes_running(target: &std::path::Path) -> usize {
     signalled
 }
 
+/// Poll until no *other* process runs `target`, or `timeout` elapses. Returns `true`
+/// once the image is free of other processes, `false` on timeout.
+///
+/// `TerminateProcess` (via [`terminate_processes_running`]) is asynchronous: it signals
+/// a process but returns before the kernel has reaped it and released its handles —
+/// including the tray's per-session single-instance mutex. The self-update swap uses the
+/// rename-the-running-exe trick (ADR-0013), so the rename succeeds *immediately* even
+/// while the old tray is still alive; nothing in the swap path waits for it to die. We
+/// must therefore wait explicitly before restarting the service, otherwise the freshly
+/// launched tray loses the mutex race against the still-dying old tray and exits — and
+/// the user is left looking at the OLD-version tray while the service runs the new one.
+#[cfg(any(windows, test))]
+fn wait_for_no_process_running(target: &std::path::Path, timeout: std::time::Duration) -> bool {
+    let me = sysinfo::get_current_pid().ok();
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        let sys = process_snapshot();
+        let still_running = sys.processes().iter().any(|(pid, proc_)| {
+            Some(*pid) != me && proc_.exe().is_some_and(|exe| same_executable(exe, target))
+        });
+        if !still_running {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
 #[cfg(windows)]
 mod windows_impl {
     use super::*;
@@ -289,16 +319,26 @@ mod windows_impl {
         }
 
         // The service is stopped, but the tray runs the SAME binary in the user's
-        // interactive session (ADR-0011) and keeps the image locked — the actual
-        // cause of "target exe still locked". Terminate any process still running the
-        // target so its file lock is released; the retry loop below absorbs the brief
-        // delay before the kernel drops the handle after TerminateProcess.
+        // interactive session (ADR-0011, ADR-0018) and holds the per-session
+        // single-instance mutex. Terminate any process still running the target.
         let killed = super::terminate_processes_running(target);
         if killed > 0 {
             info!(
                 count = killed,
                 "terminated processes locking target exe before swap"
             );
+        }
+
+        // Wait for those processes to actually exit before swapping + restarting.
+        // TerminateProcess is asynchronous, and the rename-the-running-exe swap below
+        // does NOT block on the image (renaming a running exe succeeds on Windows), so
+        // without this wait the restarted service would relaunch the tray while the old
+        // tray is still alive and holding the single-instance mutex — the new tray would
+        // lose the race and exit, leaving the OLD-version tray reporting a stale version
+        // (e.g. tray shows v1.0.0 after the service updated to v1.1.2). The poll also
+        // lets the cleanup `remove_file(&old)` below actually succeed.
+        if !super::wait_for_no_process_running(target, Duration::from_secs(10)) {
+            warn!("processes running target exe did not exit before timeout; tray may report a stale version");
         }
 
         // Swap: running exe → .old, new → exe. Retry briefly in case the image lock
@@ -394,5 +434,66 @@ mod tests {
         // No process was started from this path, so nothing is terminated.
         let bogus = std::env::temp_dir().join("kenny-agent-not-a-real-binary-zzz");
         assert_eq!(terminate_processes_running(&bogus), 0);
+    }
+
+    #[test]
+    fn wait_returns_immediately_when_no_process_runs_target() {
+        // Nothing runs this path, so the wait succeeds on the first snapshot. A long
+        // timeout proves we don't busy-wait to the deadline when the image is free.
+        let bogus = std::env::temp_dir().join("kenny-agent-not-a-real-binary-zzz");
+        let start = std::time::Instant::now();
+        assert!(wait_for_no_process_running(
+            &bogus,
+            std::time::Duration::from_secs(30)
+        ));
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "must return as soon as no process holds the target, not at the deadline"
+        );
+    }
+
+    #[test]
+    fn wait_times_out_while_another_process_runs_target() {
+        // A live process (other than us) holding the target image must make the wait
+        // block to its deadline and report `false`. Run a child from a private copy of a
+        // long-lived binary so we fully control the path and it isn't our own PID.
+        let src = std::path::Path::new("/bin/sleep");
+        if !src.exists() {
+            return; // No `sleep` on this host; skip rather than fail.
+        }
+        let target = std::env::temp_dir().join(format!("kenny-wait-test-{}", std::process::id()));
+        std::fs::copy(src, &target).expect("copy sleep binary");
+        // Make the copy executable for hosts that don't preserve the mode bit.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&target).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&target, perms).unwrap();
+        }
+
+        let mut child = std::process::Command::new(&target)
+            .arg("30")
+            .spawn()
+            .expect("spawn child running target");
+        // Give the child a moment to appear in the process table.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        let start = std::time::Instant::now();
+        let freed = wait_for_no_process_running(&target, std::time::Duration::from_millis(300));
+        let elapsed = start.elapsed();
+
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = std::fs::remove_file(&target);
+
+        assert!(
+            !freed,
+            "must report not-free while a process still runs target"
+        );
+        assert!(
+            elapsed >= std::time::Duration::from_millis(300),
+            "must block until the deadline when the image stays held"
+        );
     }
 }
