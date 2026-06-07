@@ -10,15 +10,48 @@ minimum severity.
 
 ## 1. Investigate kenny's weak points
 
-Go surface by surface. For each, read the cited code and look for concrete, exploitable issues
-(assign a CWE where it fits). Do not invent generic advice — tie every finding to a file:line.
+This is a code investigation, not a checklist tick. Two steps: first **derive the attack surface
+from the current code** (1a), then use the known hotspots (1b) only as a seed. Throughout, keep the
+core rule: **do not invent generic advice — tie every finding to a file:line and assign a CWE where
+it fits.**
+
+### 1a. Discovery & coverage (do this first — derive surfaces from the code, not from a list)
+
+A fixed list goes stale as the code grows; enumerate the live surface yourself so new code is never
+silently out of scope. Before judging anything, build a coverage map from the code:
+
+- **Enumerate every agent handler** in `kenny-agent/src/handlers/` (one by one — do not assume the
+  set below is complete).
+- **Enumerate every server entry point** under `kenny-server/kenny_server/`: FastMCP tools, HTTP/API
+  routes, the agent WebSocket handler, and the download/distribution and auth routes.
+- **Trace every place agent-controlled data is rendered** (dashboard / web UI) **or executed**
+  (agent handlers, chat tool-calls) — these are the highest-value sinks.
+
+Drive the review with established frameworks as a *coverage lens* (not as a substitute for concrete,
+code-anchored findings). For kenny's context, walk at least:
+
+- **STRIDE per trust boundary** — boundaries: operator↔server, server↔agent, agent↔Windows OS, and
+  server↔external (GitHub Releases, Anthropic API). Going boundary by boundary forces full
+  enumeration and catches surfaces a topic list would miss.
+- **OWASP Top 10 for LLM Apps** — for the LLM surfaces (`chat.py`, `recommend.py`): prompt
+  injection, excessive agency, sensitive-information disclosure.
+- **OWASP ASVS / Top 10** — web/API baseline for the server and dashboard: authn/session, access
+  control, XSS, input validation, rate-limiting.
+- **CWE Top 25** (tag every finding with its CWE) **and SLSA** for the supply chain (self-update,
+  `agent_release.py`, CI / release signing, image provenance).
+
+### 1b. Known hotspots — a non-exhaustive seed, not the scope boundary (do not stop here)
+
+These are high-signal places to look first, but they are **not** the full surface — anything 1a
+surfaces is in scope even if it is absent below.
 
 - **Operator auth** (`kenny-server/kenny_server/auth.py`): shared single token; login cookie
   carries the raw token; insecure dev fallback when `KENNY_OPERATOR_TOKEN` is unset; constant-time
   compare; `Secure` cookie only under `KENNY_TLS`; `/d/*` and `/login` auth exemptions; no
   rate-limiting on `/login` (operator-token brute force).
-- **Agent auth** (`registry.py`, `tokenstore.py`): token-at-rest (hashed vs plaintext), rotation,
-  dev fallback tokens, comparison timing, replay across reconnects.
+- **Agent auth** (`registry.py`, `tokenstore.py`, `keystore.py`): token-at-rest (hashed vs
+  plaintext), rotation, dev fallback tokens, comparison timing, replay across reconnects; Ed25519
+  mutual-auth key storage, key rotation / grace period (ADR-0023).
 - **Self-update** (`kenny-agent/src/handlers/agent_update.rs`, server `distribution.py`): the agent
   fetches and executes a binary from a server-supplied `url` — who can trigger `agent_update`, is
   the `sha256` an *authenticated* integrity check (or MITM-forgeable, i.e. no code signature?), is
@@ -28,10 +61,18 @@ Go surface by surface. For each, read the cited code and look for concrete, expl
   embedding the agent token in plaintext `install.bat` (token leakage via a shared link).
 - **Command-exec handlers** (`kenny-agent/src/handlers/` powershell/winget/fs/network): RCE/admin by
   design — check argument injection and **path traversal / arbitrary read** in `fs.*`, and timeouts.
-- **Server-side chat** (`kenny-server/kenny_server/chat.py`): can the confirm-gate for state-changing
-  tools be bypassed; **prompt injection** from agent-controlled telemetry / `fs_read` content / tool
-  output steering Claude into read-only-but-sensitive calls (e.g. `screen_capture`, reading secrets);
-  session isolation; API-key handling (CWE-77/CWE-94 adjacent).
+- **Diagnostics & remote-presence handlers** (`diagnostics.rs`, `screenshot.rs`, `remotehelp.rs`):
+  information disclosure and privileged actions; Session 0 → user-session delegation over tray IPC
+  (named pipes) for `screen_capture` / `remotehelp_*` (ADR-0018/0022) — who can trigger them and
+  what the IPC trusts.
+- **Server-side chat & recommendations** (`kenny-server/kenny_server/chat.py`, `recommend.py`): can
+  the confirm-gate for state-changing tools be bypassed; **prompt injection** from agent-controlled
+  telemetry / `fs_read` content / cached facts / tool output steering Claude into
+  read-only-but-sensitive calls (e.g. `screen_capture`, reading secrets); session isolation; API-key
+  handling (CWE-77/CWE-94 adjacent).
+- **Tool guard & policy** (`kenny-agent/src/...` tool guard, server `policy.py`): deterministic
+  deny-rule enforcement and the server-side mirror (ADR-0020/0021) — can a denied tool slip through
+  either side, regex/catalog gaps.
 - **Web UI XSS** (`kenny-server/kenny_server/webui/index.html`): agent-controlled telemetry fields
   (e.g. section `summary`, hostnames) rendered into `innerHTML` without escaping → stored XSS in the
   operator's browser from a malicious/compromised agent (CWE-79).
@@ -39,8 +80,9 @@ Go surface by surface. For each, read the cited code and look for concrete, expl
   identity is TLS-only with no cert pinning.
 - **Input/data** (`protocol.py`, `store.py`): frame validation limits, telemetry size/JSON-bomb,
   SQL parameterization, retention.
-- **Supply chain / CI** (`.github/workflows/*`, `Dockerfile`): action pinning (tags vs SHA), workflow
-  `permissions` scoping, unsigned release binary default, image provenance.
+- **Supply chain / CI** (`.github/workflows/*`, `Dockerfile`, `agent_release.py`): action pinning
+  (tags vs SHA), workflow `permissions` scoping, GitHub-token handling on binary auto-fetch, unsigned
+  release binary default, image provenance.
 
 ## 2. Rule out deliberate decisions BEFORE judging (read the ADRs)
 
