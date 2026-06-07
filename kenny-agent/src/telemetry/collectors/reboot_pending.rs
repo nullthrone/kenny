@@ -10,6 +10,25 @@ use serde_json::Value;
 use crate::protocol::Status;
 use crate::telemetry::Section;
 
+/// Reason labels that are dropped before a reboot is reported as pending.
+///
+/// `PendingFileRenameOperations` is set by routine servicing, antivirus and
+/// temp-file cleanup and then lingers indefinitely, so on its own it would keep
+/// this section permanently in `warn` without indicating an actionable reboot.
+/// Excluding it here is purely a reporting decision: the wire shape of `reasons`
+/// is unchanged, the label simply never appears.
+#[cfg_attr(not(windows), allow(dead_code))] // used by the Windows collector + tests
+const EXCLUDED_REASONS: &[&str] = &["PendingFileRenameOperations"];
+
+/// Drop excluded labels (see [`EXCLUDED_REASONS`]) from a list of reboot reasons.
+#[cfg_attr(not(windows), allow(dead_code))] // used by the Windows collector + tests
+fn apply_exclusions(reasons: Vec<String>) -> Vec<String> {
+    reasons
+        .into_iter()
+        .filter(|r| !EXCLUDED_REASONS.contains(&r.as_str()))
+        .collect()
+}
+
 /// Collect the `reboot_pending` section.
 pub fn collect() -> Section {
     #[cfg(windows)]
@@ -52,6 +71,9 @@ ConvertTo-Json -Compress @($reasons)
             .into_iter()
             .filter_map(|r| r.as_str().map(str::to_string))
             .collect();
+        // Drop labels that are effectively always present (see EXCLUDED_REASONS)
+        // so they don't pin the section to `warn`.
+        let reasons = super::apply_exclusions(reasons);
 
         let pending = !reasons.is_empty();
         let (status, summary) = if pending {
@@ -79,5 +101,31 @@ mod tests {
     fn reboot_pending_section_is_valid() {
         let v = collect().into_value();
         assert!(v["pending"].is_boolean());
+    }
+
+    #[test]
+    fn pending_file_rename_operations_is_excluded() {
+        let kept = apply_exclusions(vec![
+            "WindowsUpdate".to_string(),
+            "PendingFileRenameOperations".to_string(),
+        ]);
+        assert_eq!(kept, vec!["WindowsUpdate".to_string()]);
+    }
+
+    #[test]
+    fn excluded_only_reasons_clear_the_pending_flag() {
+        // A reason list that is nothing but excluded labels collapses to empty,
+        // so the section reports no pending reboot.
+        let kept = apply_exclusions(vec!["PendingFileRenameOperations".to_string()]);
+        assert!(kept.is_empty());
+    }
+
+    #[test]
+    fn unlisted_reasons_pass_through() {
+        let reasons = vec![
+            "WindowsUpdate".to_string(),
+            "ComponentBasedServicing".to_string(),
+        ];
+        assert_eq!(apply_exclusions(reasons.clone()), reasons);
     }
 }
