@@ -136,12 +136,16 @@ pub fn check(tool: &str, args: &Value) -> Result<(), (ErrorCode, String)> {
             match_group(|g| &g.powershell, script)?;
             match_group(|g| &g.self_protection, script)?;
         }
-        // winget/net args carry no scripts, but scan their string values for self-tampering
-        // so no mutating tool can be turned against the agent itself.
+        // These mutating tools forward their string args into a shell/exec (e.g.
+        // net_adapter_reset interpolates the adapter name into a PowerShell command).
+        // Scan those args against the full powershell catalog as well as
+        // self_protection, so a destructive command can never be smuggled through an
+        // argument and evade the guard (kenny-sec:handlers/net-adapter-reset-powershell-injection).
         "winget_install" | "winget_uninstall" | "winget_update" | "net_dns_flush"
         | "net_adapter_reset" => {
             let mut text = String::new();
             collect_strings(args, &mut text);
+            match_group(|g| &g.powershell, &text)?;
             match_group(|g| &g.self_protection, &text)?;
         }
         "fs_read" | "fs_list" => check_path(str_arg(args, "path").unwrap_or_default())?,
@@ -320,6 +324,27 @@ mod tests {
         ps("Remove-Item 'C:\\Program Files\\kenny\\kenny-agent.exe'").unwrap_err();
         // Self-protection also applies to other mutating tools' string args.
         check("winget_install", &json!({ "id": "stop kenny-agent.exe" })).unwrap_err();
+    }
+
+    #[test]
+    fn net_arg_cannot_smuggle_destructive_command() {
+        // A destructive command hidden in the adapter name (the net_adapter_reset
+        // injection sink) is caught by the powershell catalog, not just self_protection.
+        let err = check(
+            "net_adapter_reset",
+            &json!({ "name": "Ethernet'; Format-Volume -DriveLetter D -Force; '" }),
+        )
+        .unwrap_err();
+        assert_eq!(err.0, ErrorCode::Blocked);
+        // The same guarding applies to winget args forwarded into a shell.
+        check(
+            "winget_install",
+            &json!({ "id": "x; vssadmin delete shadows /all" }),
+        )
+        .unwrap_err();
+        // A benign adapter name still passes.
+        check("net_adapter_reset", &json!({ "name": "Ethernet" })).unwrap();
+        check("net_adapter_reset", &json!({ "name": "Wi-Fi" })).unwrap();
     }
 
     #[test]
