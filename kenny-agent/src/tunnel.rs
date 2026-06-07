@@ -58,6 +58,13 @@ pub async fn run(config: Config) -> ! {
 /// forever); the Windows service passes a [`watch::Receiver`](tokio::sync::watch)
 /// driven by the SCM stop handler so the loop ends and the process exits cleanly.
 pub async fn run_until(config: Config, mut shutdown: tokio::sync::watch::Receiver<bool>) {
+    // Record the server host for the always-on safety guard's `agent_update` allowlist.
+    // Both the foreground (`run`) and the Windows service (`run-service`) paths funnel
+    // through here, so the host can never be left unset by a forgetful entry point. The
+    // service path previously never set it, so `agent_update` from the configured server
+    // was wrongly refused as "host not allowlisted". `set_server_url` is idempotent.
+    crate::policy::set_server_url(&config.server);
+
     // Honor a shutdown that was requested before we ever connected.
     if *shutdown.borrow() {
         return;
@@ -764,5 +771,41 @@ mod tests {
         agent.abort();
         std::env::remove_var(crate::keys::KEY_FILE_ENV);
         let _ = std::fs::remove_file(&key_path);
+    }
+
+    /// REGRESSION: `run_until` must record the configured server host into the
+    /// `agent_update` allowlist. Both the foreground (`run`) and the Windows service
+    /// (`run-service`) paths funnel through `run_until`; the service path previously
+    /// never recorded the host, so `agent_update` from the configured server was wrongly
+    /// refused as "host not allowlisted". We pre-fire the shutdown so `run_until` returns
+    /// immediately after recording the host — no network needed.
+    #[tokio::test]
+    async fn run_until_allowlists_server_host_for_agent_update() {
+        // A distinctive host so this never collides with the GitHub/`evil.example.com`
+        // assertions in the policy unit tests (the global `SERVER_HOST` is set-once).
+        let host = "update-allowlist-regression.example";
+        let config = Config {
+            server: format!("wss://{host}/agent/ws"),
+            agent_id: "example-pc".to_string(),
+            token: Some("legacy-token".to_string()),
+            server_pubkey: None,
+            enroll_token: None,
+            telemetry_interval_secs: 3600,
+        };
+
+        // Shutdown already requested ⇒ `run_until` records the host, then returns at once.
+        let (_tx, shutdown) = tokio::sync::watch::channel(true);
+        run_until(config, shutdown).await;
+
+        // The safety guard now permits an `agent_update` served by the configured host.
+        crate::policy::check(
+            "agent_update",
+            &serde_json::json!({
+                "version": "1.2.3",
+                "url": format!("https://{host}/kenny-agent.exe"),
+                "sha256": "ab",
+            }),
+        )
+        .expect("agent_update from the configured server host must be allowlisted");
     }
 }
