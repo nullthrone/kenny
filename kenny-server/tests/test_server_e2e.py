@@ -187,6 +187,17 @@ class MockAgent:
         frame["agent_id"] = self.agent_id
         await self.ws.send(json.dumps(frame))
 
+    async def push_oversized_telemetry(self) -> None:
+        """Send a telemetry frame whose payload exceeds the server's size cap."""
+
+        assert self.ws is not None
+        frame = _fixture("telemetry_snapshot.json")
+        frame["agent_id"] = self.agent_id
+        # Inflate a section summary past KENNY_MAX_TELEMETRY_BYTES.
+        section = next(iter(frame["snapshot"]))
+        frame["snapshot"][section]["summary"] = "x" * (600 * 1024)
+        await self.ws.send(json.dumps(frame))
+
     async def push_log(self) -> None:
         assert self.ws is not None
         frame = _fixture("log.json")
@@ -243,6 +254,34 @@ async def test_e2e_forward_and_telemetry(tmp_path, monkeypatch) -> None:
             assert dev["online"] is True
             assert dev["overall"] == "crit"
             assert "defender" in dev["flagged_sections"]
+
+        await agent.stop()
+
+
+@pytest.mark.asyncio
+async def test_e2e_oversized_telemetry_dropped(tmp_path, monkeypatch) -> None:
+    """An oversized telemetry frame is dropped (not stored) and the connection
+    survives, so a following normal push is still persisted."""
+
+    monkeypatch.setenv("KENNY_SERVER_PRIVATE_KEY", SERVER_SEED_B64)
+    port = _free_port()
+    app = build_app(db_path=str(tmp_path / "oversized.sqlite"))
+
+    async with _Server(app, port):
+        agent = MockAgent(f"ws://127.0.0.1:{port}/agent/ws", "dev")
+        await app.state.key_store.enroll("dev", agent.public_key_b64)
+        await agent.start()
+        await asyncio.sleep(0.1)
+
+        # Oversized frame: dropped, nothing stored.
+        await agent.push_oversized_telemetry()
+        await asyncio.sleep(0.15)
+        assert await app.state.store.latest("dev") is None
+
+        # The socket is still alive: a normal push afterwards is persisted.
+        await agent.push_telemetry()
+        await asyncio.sleep(0.15)
+        assert await app.state.store.latest("dev") is not None
 
         await agent.stop()
 

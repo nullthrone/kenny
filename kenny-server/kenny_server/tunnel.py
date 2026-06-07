@@ -53,6 +53,13 @@ HANDSHAKE_TIMEOUT_S = 10.0
 
 logger = logging.getLogger("kenny.tunnel")
 
+# Bound inbound frames so a compromised/malicious agent cannot exhaust server
+# memory/disk by pushing very large or section-heavy telemetry (CWE-400/770).
+# Generous defaults that fit normal snapshots; tune down per deployment. An
+# oversized frame is dropped + logged, never parsed-into-store.
+_MAX_FRAME_BYTES = int(os.environ.get("KENNY_MAX_TELEMETRY_BYTES", str(256 * 1024)))
+_MAX_SECTIONS = int(os.environ.get("KENNY_MAX_TELEMETRY_SECTIONS", "128"))
+
 
 def _signature_path(frame: Register) -> bool:
     """True when the register frame selects the v0.8 signature handshake.
@@ -334,12 +341,30 @@ class AgentTunnel:
     async def _serve(self, websocket: WebSocket, agent_id: str) -> None:
         while True:
             raw = await websocket.receive_text()
+            # Reject oversized frames before parsing/persisting them, so a
+            # compromised agent can't exhaust server memory/disk (CWE-400/770).
+            if len(raw) > _MAX_FRAME_BYTES:
+                logger.warning(
+                    "dropping oversized frame from %s (%d bytes > %d cap)",
+                    agent_id,
+                    len(raw),
+                    _MAX_FRAME_BYTES,
+                )
+                continue
             frame = parse_frame(raw)
             self.registry.mark_seen(agent_id)
 
             if isinstance(frame, Response):
                 self._resolve(frame)
             elif isinstance(frame, Telemetry):
+                if len(frame.snapshot) > _MAX_SECTIONS:
+                    logger.warning(
+                        "dropping telemetry from %s: %d sections > %d cap",
+                        agent_id,
+                        len(frame.snapshot),
+                        _MAX_SECTIONS,
+                    )
+                    continue
                 await self.store.insert(
                     frame.agent_id,
                     frame.collected_at,
