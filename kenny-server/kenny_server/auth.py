@@ -15,6 +15,7 @@ from __future__ import annotations
 import hmac
 import logging
 import os
+import time
 from http.cookies import SimpleCookie
 
 from starlette.requests import Request
@@ -254,6 +255,60 @@ def _tls_enabled() -> bool:
     return os.environ.get("KENNY_TLS", "").strip() in ("1", "true", "True", "yes")
 
 
+class LoginRateLimiter:
+    """In-memory per-IP login throttle (dev-grade, like ``ShareLinks``/``CallLog``).
+
+    ``/login`` is unauthenticated by design (ADR-0008), so without a limiter the
+    single shared operator token can be brute-forced online (CWE-307). After
+    ``max_attempts`` consecutive failures from one client IP, that IP is locked
+    out for ``lockout_secs``; a successful login clears its counter. Bounds are
+    read from the environment at construction so a deployment can tune them.
+    """
+
+    def __init__(
+        self,
+        *,
+        max_attempts: int | None = None,
+        lockout_secs: float | None = None,
+        clock=time.monotonic,
+    ) -> None:
+        self.max_attempts = (
+            max_attempts
+            if max_attempts is not None
+            else int(os.environ.get("KENNY_LOGIN_MAX_ATTEMPTS", "5"))
+        )
+        self.lockout_secs = (
+            lockout_secs
+            if lockout_secs is not None
+            else float(os.environ.get("KENNY_LOGIN_LOCKOUT_SECS", "60"))
+        )
+        self._clock = clock
+        self._fails: dict[str, int] = {}
+        self._locked_until: dict[str, float] = {}
+
+    def retry_after(self, ip: str) -> float | None:
+        """Seconds the IP must wait, or ``None`` if it may attempt now."""
+
+        until = self._locked_until.get(ip)
+        if until is None:
+            return None
+        remaining = until - self._clock()
+        if remaining <= 0:
+            self._locked_until.pop(ip, None)
+            self._fails.pop(ip, None)
+            return None
+        return remaining
+
+    def record_failure(self, ip: str) -> None:
+        self._fails[ip] = self._fails.get(ip, 0) + 1
+        if self._fails[ip] >= self.max_attempts:
+            self._locked_until[ip] = self._clock() + self.lockout_secs
+
+    def reset(self, ip: str) -> None:
+        self._fails.pop(ip, None)
+        self._locked_until.pop(ip, None)
+
+
 def build_auth_routes(
     token: str | list[str], *, cookie_name: str = COOKIE_NAME
 ) -> list[Route]:
@@ -263,12 +318,25 @@ def build_auth_routes(
     # configured token is accepted at login.
     cookie_value = token[0] if isinstance(token, list) else token
     secure_cookie = _tls_enabled()
+    limiter = LoginRateLimiter()
 
     async def login(request: Request) -> Response:
         if request.method == "POST":
+            ip = request.client.host if request.client else "unknown"
+            retry = limiter.retry_after(ip)
+            if retry is not None:
+                resp = HTMLResponse(
+                    _LOGIN_HTML.format(
+                        msg='<p class="err">Too many attempts. Try again later.</p>'
+                    ),
+                    status_code=429,
+                )
+                resp.headers["Retry-After"] = str(int(retry) + 1)
+                return resp
             form = await request.form()
             provided = str(form.get("token", ""))
             if _token_valid(provided, token):
+                limiter.reset(ip)
                 resp = RedirectResponse(url="/", status_code=303)
                 # Cookie carries the shared token; HttpOnly so page JS can't read it.
                 # `secure` is set behind TLS (KENNY_TLS=1) so it isn't sent over http.
@@ -281,6 +349,8 @@ def build_auth_routes(
                     path="/",
                 )
                 return resp
+            limiter.record_failure(ip)
+            logger.warning("failed operator login attempt from %s", ip)
             return HTMLResponse(
                 _LOGIN_HTML.format(msg='<p class="err">Invalid token.</p>'),
                 status_code=401,

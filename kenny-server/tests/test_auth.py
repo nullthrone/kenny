@@ -55,6 +55,24 @@ def test_login_rejects_wrong_token(tmp_path) -> None:
         assert c.get("/api/fleet", follow_redirects=False).status_code == 401
 
 
+def test_login_rate_limited_after_repeated_failures(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("KENNY_LOGIN_MAX_ATTEMPTS", "3")
+    app = _app(tmp_path)
+    token = app.state.operator_token
+    with TestClient(app) as c:
+        # First three wrong attempts are rejected with 401 (not yet locked).
+        for _ in range(3):
+            r = c.post("/login", data={"token": "wrong"}, follow_redirects=False)
+            assert r.status_code == 401
+        # The next attempt is locked out with 429 + Retry-After.
+        r = c.post("/login", data={"token": "wrong"}, follow_redirects=False)
+        assert r.status_code == 429
+        assert int(r.headers["retry-after"]) >= 1
+        # Even the correct token is refused while locked out.
+        r = c.post("/login", data={"token": token}, follow_redirects=False)
+        assert r.status_code == 429
+
+
 def test_mcp_endpoint_requires_token(tmp_path) -> None:
     app = _app(tmp_path)
     with TestClient(app) as c:
