@@ -99,6 +99,29 @@ class TelemetryStore:
             rows = await cur.fetchall()
         return [self._row_to_record(r) for r in rows]
 
+    async def daily_latest(
+        self, agent_id: str, since: str, *, limit: int = 400
+    ) -> list[dict[str, Any]]:
+        """Return the last snapshot of each calendar day since ``since``, oldest first.
+
+        Used by the fleet health trend: one representative snapshot per UTC day
+        keeps the query cheap regardless of push frequency. ``since`` is an ISO
+        timestamp (or date) lower bound. Relies on SQLite returning the row of
+        the ``MAX(collected_at)`` within each ``GROUP BY`` date bucket.
+        """
+
+        async with self._conn.execute(
+            "SELECT collected_at, snapshot, MAX(collected_at) AS _m FROM snapshots "
+            "WHERE agent_id = ? AND collected_at >= ? "
+            "GROUP BY substr(collected_at, 1, 10) ORDER BY collected_at ASC LIMIT ?",
+            (agent_id, since, limit),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [
+            {"collected_at": r["collected_at"], "snapshot": json.loads(r["snapshot"])}
+            for r in rows
+        ]
+
     async def known_agents(self) -> list[str]:
         """Return distinct agent_ids that have stored snapshots."""
 

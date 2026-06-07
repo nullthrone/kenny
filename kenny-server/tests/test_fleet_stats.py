@@ -1,0 +1,244 @@
+"""Fleet-wide aggregation for the Overview dashboard.
+
+Covers the pure aggregation functions in ``fleet_stats`` against synthetic
+multi-agent snapshots, and the ``/api/fleet/overview`` + ``/api/fleet/trend``
+routes end-to-end via the dashboard test harness.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from functools import partial
+
+from starlette.testclient import TestClient
+
+from kenny_server import fleet_stats
+from kenny_server.main import build_app
+from kenny_server.tools import build_health
+
+NOW = datetime(2026, 6, 7, tzinfo=timezone.utc)
+
+
+def _agent(agent_id: str, snapshot: dict | None, *, online: bool = True, meta: dict | None = None) -> dict:
+    """Build the agent record the web layer hands to the aggregator."""
+
+    return {
+        "agent_id": agent_id,
+        "online": online,
+        "meta": meta or {},
+        "snapshot": snapshot,
+        "health": build_health(snapshot),
+        "collected_at": "2026-06-07T00:00:00Z",
+    }
+
+
+def _fleet() -> list[dict]:
+    """Three diverse hosts: one healthy desktop, one warn laptop, one crit host."""
+
+    healthy = {
+        "disk": {"status": "ok", "summary": "C: 40% full", "volumes": [{"mount": "C:", "percent_used": 40}]},
+        "memory": {"status": "ok", "summary": "ok", "percent_used": 35, "total_bytes": 16 * 1024**3},
+        "os_support": {"status": "ok", "summary": "Win 11", "name": "Windows 11", "version": "23H2", "build": "22631"},
+        "defender": {"status": "ok", "summary": "ok", "realtime_protection": True},
+        "firewall": {"status": "ok", "summary": "ok", "profiles": [{"name": "Domain", "enabled": True}]},
+        "encryption": {"status": "ok", "summary": "ok", "volumes": [{"mount": "C:", "protection_status": 1, "encryption_percent": 100}]},
+        "reliability": {"status": "ok", "summary": "ok", "recent_crashes": 1, "stability_index": 9.2},
+        "uptime": {"status": "ok", "summary": "ok", "uptime_secs": 3 * 86400},
+    }
+    warn_laptop = {
+        "disk": {"status": "warn", "summary": "C: 88% full", "volumes": [{"mount": "C:", "percent_used": 88}]},
+        "memory": {"status": "ok", "summary": "ok", "percent_used": 50, "total_bytes": 8 * 1024**3},
+        "os_support": {"status": "ok", "summary": "Win 11", "name": "Windows 11", "version": "23H2", "build": "22631"},
+        "battery": {"status": "ok", "summary": "ok", "present": True, "charge_percent": 72, "health_percent": 80},
+        "defender": {"status": "ok", "summary": "ok", "realtime_protection": True},
+        "firewall": {"status": "warn", "summary": "public off", "profiles": [{"name": "Public", "enabled": False}]},
+        "app_updates": {"status": "warn", "summary": "3 updates", "available": 3},
+        "reboot_pending": {"status": "warn", "summary": "reboot", "pending": True, "reasons": ["WindowsUpdate"]},
+        "reliability": {"status": "ok", "summary": "ok", "recent_crashes": 4},
+        "uptime": {"status": "ok", "summary": "ok", "uptime_secs": 10 * 86400},
+    }
+    crit_host = {
+        "disk": {"status": "crit", "summary": "C: 97% full", "volumes": [{"mount": "C:", "percent_used": 97}]},
+        "memory": {"status": "crit", "summary": "97%", "percent_used": 97, "total_bytes": 8 * 1024**3},
+        "os_support": {"status": "ok", "summary": "Win 10", "name": "Windows 10", "version": "22H2", "build": "19045"},
+        "defender": {"status": "crit", "summary": "off", "enabled": False, "realtime_protection": False},
+        "encryption": {"status": "ok", "summary": "off", "volumes": [{"mount": "C:", "protection_status": 0}]},
+        "win_update": {"status": "warn", "summary": "1 failed", "recent": [{"kb": "KB5039211", "result": "failed"}]},
+        "defender_quarantine": {"status": "warn", "summary": "1", "items": [{"name": "EICAR"}]},
+        "app_updates": {"status": "warn", "summary": "5 updates", "available": 5},
+        "reliability": {"status": "ok", "summary": "ok", "recent_crashes": 22},
+        "uptime": {"status": "ok", "summary": "ok", "uptime_secs": 40 * 86400},
+    }
+    return [
+        _agent("desktop-1", healthy, meta={"hostname": "DESKTOP-1"}),
+        _agent("laptop-1", warn_laptop),
+        _agent("crit-1", crit_host, online=False),
+    ]
+
+
+def test_overview_top_level_counts():
+    out = fleet_stats.aggregate_overview(_fleet(), now=NOW)
+    assert out["agent_count"] == 3
+    assert out["online_count"] == 2
+
+
+def test_health_mix_donut():
+    out = fleet_stats.aggregate_overview(_fleet(), now=NOW)
+    seg = {s["key"]: s["value"] for s in out["health"]["segments"]}
+    # one ok (healthy desktop), one warn (laptop), one crit (crit-1)
+    assert seg == {"ok": 1, "warn": 1, "crit": 1}
+    # the crit segment's members drill down to the offending host
+    crit_seg = next(s for s in out["health"]["segments"] if s["key"] == "crit")
+    assert [m["agent_id"] for m in crit_seg["members"]] == ["crit-1"]
+
+
+def test_kpis_action_totals_and_members():
+    kpis = {k["key"]: k for k in fleet_stats.aggregate_overview(_fleet(), now=NOW)["kpis"]}
+    assert kpis["online"]["value"] == 2 and kpis["online"]["suffix"] == "/ 3"
+    assert kpis["reboot"]["value"] == 1
+    assert [m["agent_id"] for m in kpis["reboot"]["members"]] == ["laptop-1"]
+    # open app updates is a sum (3 + 5) with per-host drill-down
+    assert kpis["app_updates"]["value"] == 8
+    assert {m["agent_id"] for m in kpis["app_updates"]["members"]} == {"laptop-1", "crit-1"}
+    assert kpis["failed_updates"]["value"] == 1
+    assert kpis["quarantine"]["value"] == 1
+
+
+def test_section_severity_sorted_with_drilldown():
+    rows = fleet_stats.aggregate_overview(_fleet(), now=NOW)["sections"]["rows"]
+    by_section = {r["section"]: r for r in rows}
+    # disk has both a warn (laptop) and a crit (crit-1)
+    assert by_section["disk"]["warn"] == 1 and by_section["disk"]["crit"] == 1
+    assert [m["agent_id"] for m in by_section["disk"]["members_crit"]] == ["crit-1"]
+    # crit-heavy sections sort ahead of warn-only ones
+    severities = [(r["crit"], r["warn"]) for r in rows]
+    assert severities == sorted(severities, reverse=True)
+
+
+def test_os_and_device_inventory():
+    out = fleet_stats.aggregate_overview(_fleet(), now=NOW)
+    os_seg = {s["label"]: s["value"] for s in out["os"]["segments"]}
+    assert os_seg == {"Windows 11 23H2": 2, "Windows 10 22H2": 1}
+    dev = {s["label"]: s["value"] for s in out["device"]["segments"]}
+    # only laptop-1 reports a present battery
+    assert dev == {"Laptop": 1, "Desktop": 2}
+
+
+def test_security_posture_compliance_counts():
+    metrics = {m["key"]: m for m in fleet_stats.aggregate_overview(_fleet(), now=NOW)["posture"]["metrics"]}
+    enc = metrics["encryption"]
+    assert enc["compliant"] == 1 and enc["noncompliant"] == 1 and enc["unknown"] == 1
+    assert [m["agent_id"] for m in enc["members_noncompliant"]] == ["crit-1"]
+    fw = metrics["firewall"]
+    assert fw["compliant"] == 1 and fw["noncompliant"] == 1
+
+
+def test_top_metrics_ranked():
+    top = {m["key"]: m for m in fleet_stats.aggregate_overview(_fleet(), now=NOW)["top"]["metrics"]}
+    disk = top["disk"]["entries"]
+    assert [e["agent_id"] for e in disk] == ["crit-1", "laptop-1", "desktop-1"]
+    assert disk[0]["value"] == 97
+    crashes = top["crashes"]["entries"]
+    assert crashes[0]["agent_id"] == "crit-1" and crashes[0]["value"] == 22
+
+
+def test_sankey_nodes_and_links():
+    sankey = fleet_stats.aggregate_overview(_fleet(), now=NOW)["sankey"]
+    kinds = {n["name"]: n["kind"] for n in sankey["nodes"]}
+    assert kinds["Critical"] == "crit" and kinds["Warning"] == "warn"
+    # a host->severity link exists for the crit host's crit sections
+    crit_link = next(lk for lk in sankey["links"] if lk["source"] == "crit-1" and lk["target"] == "Critical")
+    assert crit_link["value"] >= 1
+    # every link carries member observations for drill-down
+    assert all("members" in lk and lk["members"] for lk in sankey["links"])
+
+
+def test_overview_handles_agent_without_snapshot():
+    agents = _fleet() + [_agent("new-pc", None)]
+    out = fleet_stats.aggregate_overview(agents, now=NOW)
+    assert out["agent_count"] == 4
+    unknown = next(s for s in out["health"]["segments"] if s["key"] == "unknown")
+    assert [m["agent_id"] for m in unknown["members"]] == ["new-pc"]
+
+
+def test_trend_buckets_by_day():
+    points = {
+        "a": [
+            {"collected_at": "2026-06-05T08:00:00Z", "overall": "ok"},
+            {"collected_at": "2026-06-05T20:00:00Z", "overall": "warn"},  # last of the day wins
+            {"collected_at": "2026-06-06T09:00:00Z", "overall": "ok"},
+        ],
+        "b": [
+            {"collected_at": "2026-06-05T10:00:00Z", "overall": "crit"},
+            {"collected_at": "2026-06-06T10:00:00Z", "overall": "ok"},
+        ],
+    }
+    days = fleet_stats.aggregate_trend(points, 30, now=NOW)["days"]
+    by_date = {d["date"]: d for d in days}
+    assert by_date["2026-06-05"]["warn"] == 1 and by_date["2026-06-05"]["crit"] == 1
+    assert by_date["2026-06-06"]["ok"] == 2
+    # drill-down members are present per status bucket
+    assert [m["agent_id"] for m in by_date["2026-06-05"]["members"]["warn"]] == ["a"]
+
+
+def test_trend_drops_points_outside_window():
+    points = {"a": [
+        {"collected_at": "2026-01-01T00:00:00Z", "overall": "ok"},  # well outside 30d
+        {"collected_at": "2026-06-06T00:00:00Z", "overall": "ok"},
+    ]}
+    days = fleet_stats.aggregate_trend(points, 30, now=NOW)["days"]
+    assert [d["date"] for d in days] == ["2026-06-06"]
+
+
+# -- route-level tests -----------------------------------------------------
+
+
+def _bearer(app):
+    return {"Authorization": f"Bearer {app.state.operator_token}"}
+
+
+def test_fleet_overview_route(tmp_path):
+    app = build_app(db_path=str(tmp_path / "overview.sqlite"))
+    with TestClient(app) as c:
+        store = app.state.store
+        for a in _fleet():
+            c.portal.call(partial(store.insert, a["agent_id"], "2026-06-07T00:00:00Z", a["snapshot"]))
+        r = c.get("/api/fleet/overview", headers=_bearer(app))
+        assert r.status_code == 200
+        body = r.json()
+        assert body["agent_count"] == 3
+        assert {s["key"] for s in body["health"]["segments"]} == {"ok", "warn", "crit"}
+        assert any(row["section"] == "disk" for row in body["sections"]["rows"])
+
+
+def test_fleet_overview_requires_auth(tmp_path):
+    app = build_app(db_path=str(tmp_path / "overview2.sqlite"))
+    with TestClient(app) as c:
+        assert c.get("/api/fleet/overview").status_code == 401
+        assert c.get("/api/fleet/trend").status_code == 401
+
+
+def test_fleet_trend_route(tmp_path):
+    app = build_app(db_path=str(tmp_path / "trend.sqlite"))
+    snap = {"disk": {"status": "warn", "summary": "C: 88% full", "volumes": [{"mount": "C:", "percent_used": 88}]}}
+    with TestClient(app) as c:
+        store = app.state.store
+        c.portal.call(partial(store.insert, "laptop-1", "2026-06-06T09:00:00Z", snap))
+        c.portal.call(partial(store.insert, "laptop-1", "2026-06-06T21:00:00Z", snap))
+        r = c.get("/api/fleet/trend?days=30", headers=_bearer(app))
+        assert r.status_code == 200
+        days = r.json()["days"]
+        assert len(days) == 1
+        assert days[0]["date"] == "2026-06-06"
+        assert days[0]["warn"] == 1
+
+
+def test_echarts_asset_served_with_js_mime(tmp_path):
+    """The vendored charting library is served from /assets with a JS mime type."""
+
+    app = build_app(db_path=str(tmp_path / "echarts.sqlite"))
+    with TestClient(app) as c:
+        r = c.get("/assets/echarts.min.js")  # no auth: same public asset route as the logo
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("application/javascript")
+        assert len(r.content) > 0

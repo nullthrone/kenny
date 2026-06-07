@@ -34,9 +34,16 @@ from ..tunnel import AgentTunnel, ToolError
 
 _INDEX = Path(__file__).parent / "index.html"
 _ASSETS = Path(__file__).parent / "assets"
-# Whitelist of static brand assets the dashboard inlines via <link>/<img>.
+# Whitelist of static assets the dashboard loads via <link>/<img>/<script>.
 # Kept explicit (no directory walk) so the route can't serve anything else.
-_ASSET_TYPES = {".png": "image/png", ".ico": "image/x-icon", ".svg": "image/svg+xml"}
+# ``.js`` covers the vendored charting library (Apache ECharts) used by the
+# Overview dashboard — bundled locally so the UI never reaches for a CDN.
+_ASSET_TYPES = {
+    ".png": "image/png",
+    ".ico": "image/x-icon",
+    ".svg": "image/svg+xml",
+    ".js": "application/javascript",
+}
 
 
 def build_api_routes(
@@ -78,6 +85,58 @@ def build_api_routes(
 
         overall = health_rules.worst(*(a["overall"] for a in agents if a["overall"] != "unknown"))
         return JSONResponse({"overall": overall or "unknown", "agents": agents})
+
+    async def api_fleet_overview(_request: Request) -> JSONResponse:
+        """Fleet-wide aggregates for the high-level Overview dashboard.
+
+        Loads the latest snapshot + rolled-up health for every agent and hands
+        them to :func:`fleet_stats.aggregate_overview`. Read-only; inherits
+        operator auth from the ``/api`` middleware.
+        """
+
+        from .. import fleet_stats
+
+        ids = await _known_ids(registry, store)
+        agents: list[dict[str, Any]] = []
+        for agent_id in ids:
+            agent = registry.get(agent_id)
+            latest = await store.latest(agent_id)
+            snapshot = latest["snapshot"] if latest else None
+            agents.append(
+                {
+                    "agent_id": agent_id,
+                    "online": bool(agent and agent.online),
+                    "meta": agent.meta if agent else {},
+                    "snapshot": snapshot,
+                    "health": build_health(snapshot),
+                    "collected_at": latest["collected_at"] if latest else None,
+                }
+            )
+        return JSONResponse(fleet_stats.aggregate_overview(agents))
+
+    async def api_fleet_trend(request: Request) -> JSONResponse:
+        """Daily fleet health counts over a window (default 30 days, capped 1–90)."""
+
+        from datetime import datetime, timedelta, timezone
+
+        from .. import fleet_stats
+
+        try:
+            days = int(request.query_params.get("days", 30))
+        except ValueError:
+            days = 30
+        days = max(1, min(days, 90))
+        since = (datetime.now(timezone.utc) - timedelta(days=days)).date().isoformat()
+
+        ids = await _known_ids(registry, store)
+        points_by_agent: dict[str, list[dict[str, Any]]] = {}
+        for agent_id in ids:
+            daily = await store.daily_latest(agent_id, since)
+            points_by_agent[agent_id] = [
+                {"collected_at": d["collected_at"], "overall": build_health(d["snapshot"])["overall"]}
+                for d in daily
+            ]
+        return JSONResponse(fleet_stats.aggregate_trend(points_by_agent, days))
 
     async def api_agent(request: Request) -> JSONResponse:
         agent_id = request.path_params["id"]
@@ -286,6 +345,8 @@ def build_api_routes(
         Route("/api/policy/rules", api_policy_add, methods=["POST"]),
         Route("/api/policy/rules/{id}", api_policy_remove, methods=["DELETE"]),
         Route("/api/fleet", api_fleet),
+        Route("/api/fleet/overview", api_fleet_overview),
+        Route("/api/fleet/trend", api_fleet_trend),
         Route("/api/audit", api_audit),
         Route("/api/events", api_events),
         Route("/api/agent/{id}", api_agent),
