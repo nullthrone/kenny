@@ -1,8 +1,17 @@
 name: Triage bot
 
-# A Claude-powered triage assistant (anthropics/claude-code-action, OAuth token).
+# A Claude-powered triage assistant (anthropics/claude-code-action) that posts to GitHub
+# under its own "Kenny" GitHub App identity (comments appear as `kenny[bot]` with the App's
+# avatar). The Anthropic/model auth (CLAUDE_CODE_OAUTH_TOKEN) is separate from the GitHub
+# identity (the Kenny App token minted per run).
 #
-# Setup: add the repo secret CLAUDE_CODE_OAUTH_TOKEN (run `claude setup-token` locally).
+# Setup:
+#   * CLAUDE_CODE_OAUTH_TOKEN — Anthropic/model auth (run `claude setup-token` locally).
+#   * Kenny GitHub App — create a GitHub App named "Kenny", upload a dog avatar, install it on
+#     this repo with Issues: read/write, Pull requests: read/write, Contents: read/write.
+#     Store its App ID as the secret KENNY_APP_ID and its private key as KENNY_APP_PRIVATE_KEY.
+#     Each job mints a short-lived installation token from these and passes it as github_token,
+#     so every comment/label/PR is attributed to `kenny[bot]`.
 # Create the labels it uses: bug, feature, question, docs, needs-info, confirmed, security,
 # wontfix, area:server, area:agent, area:protocol, area:dashboard.
 #
@@ -33,7 +42,7 @@ jobs:
     if: >
       github.event_name == 'issues' &&
       github.event.issue.user.login != 't11z' &&
-      github.event.issue.user.login != 'claude'
+      github.event.issue.user.login != 'kenny[bot]'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -41,9 +50,16 @@ jobs:
       pull-requests: read
     steps:
       - uses: actions/checkout@v5
+      # Mint a short-lived token for the Kenny GitHub App so comments post as `kenny[bot]`.
+      - uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ secrets.KENNY_APP_ID }}
+          private-key: ${{ secrets.KENNY_APP_PRIVATE_KEY }}
       - uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ steps.app-token.outputs.token }}
           prompt: |
             You are Kenny, kenny's issue-triage assistant. Triage issue #${{ github.event.issue.number }}.
 
@@ -93,14 +109,14 @@ jobs:
 
   fix:
     name: maintainer /fix → open a PR
-    # Only a maintainer comment "/fix" on an issue (not a PR) that was NOT opened by t11z/claude.
+    # Only a maintainer comment "/fix" on an issue (not a PR) that was NOT opened by t11z/kenny.
     if: >
       github.event_name == 'issue_comment' &&
       github.event.issue.pull_request == null &&
       startsWith(github.event.comment.body, '/fix') &&
       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) &&
       github.event.issue.user.login != 't11z' &&
-      github.event.issue.user.login != 'claude'
+      github.event.issue.user.login != 'kenny[bot]'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -108,9 +124,16 @@ jobs:
       pull-requests: write
     steps:
       - uses: actions/checkout@v5
+      # Mint a short-lived token for the Kenny GitHub App so the PR/comments post as `kenny[bot]`.
+      - uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ secrets.KENNY_APP_ID }}
+          private-key: ${{ secrets.KENNY_APP_PRIVATE_KEY }}
       - uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ steps.app-token.outputs.token }}
           prompt: |
             You are Kenny, kenny's fix assistant. A maintainer ran `/fix` on issue
             #${{ github.event.issue.number }} ("${{ github.event.issue.title }}"),
