@@ -117,11 +117,11 @@ mod windows_impl {
             Ok(written as usize)
         }
         fn flush(&mut self) -> io::Result<()> {
-            // A pipe server that calls `DisconnectNamedPipe` while bytes are still unread
-            // *discards* them, and the peer's next read fails with ERROR_PIPE_NOT_CONNECTED
-            // (0x800700E9). `serve()` disconnects immediately after `serve_one` returns, so
-            // without this the launch reply can be dropped before the service reads it.
-            // `FlushFileBuffers` blocks until the peer has drained everything we wrote.
+            // Push any buffered bytes out toward the peer. This does *not* on its own
+            // close the discard-on-disconnect race (see `wait_for_client_disconnect`):
+            // contrary to its docs, `FlushFileBuffers` does not reliably block until the
+            // peer's read on a duplex pipe, which is why the launch reply was still being
+            // dropped with ERROR_PIPE_NOT_CONNECTED (0x800700E9).
             // SAFETY: `self.0` is a valid pipe handle we own and opened for writing.
             unsafe { FlushFileBuffers(self.0) }.map_err(io::Error::other)
         }
@@ -184,7 +184,28 @@ mod windows_impl {
         let body = serde_json::to_vec(&reply).unwrap_or_default();
         if let Err(e) = write_frame(&mut stream, &body) {
             warn!(error = %e, "failed to send session-launch reply");
+            return;
         }
+        // The reply now sits in the pipe buffer. `serve()` calls `DisconnectNamedPipe`
+        // the instant we return, and that discards anything the client has not yet read —
+        // so block until the client has drained the reply and closed its end first.
+        wait_for_client_disconnect(pipe);
+    }
+
+    /// Block until the connected client closes its end of the duplex pipe.
+    ///
+    /// The service client closes its handle only *after* `read_frame` has handed it the
+    /// full reply, so this blocking `ReadFile` unblocks (with end-of-pipe /
+    /// `ERROR_BROKEN_PIPE`) exactly when the exchange is complete. Waiting for that before
+    /// `serve()` disconnects is what actually guarantees the reply is never discarded
+    /// mid-flight — `FlushFileBuffers` does not reliably do so (see `PipeStream::flush`).
+    fn wait_for_client_disconnect(pipe: HANDLE) {
+        let mut scratch = [0u8; 1];
+        let mut read: u32 = 0;
+        // SAFETY: `pipe` is a valid duplex pipe handle we own; `scratch`/`read` are local
+        // out-params. The client never writes again after its request, so we expect either
+        // 0 bytes or a broken-pipe error — the outcome is intentionally ignored.
+        let _ = unsafe { ReadFile(pipe, Some(&mut scratch), Some(&mut read), None) };
     }
 
     /// Parse a request, refuse anything off the allow-list, and spawn it in this session.
@@ -330,6 +351,96 @@ mod windows_impl {
                 pid: None,
                 error: Some(message),
             }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::thread;
+
+        /// A separate pipe name so the regression test never collides with a real tray.
+        const TEST_PIPE: &str = r"\\.\pipe\kenny-agent-session-launch-test";
+
+        /// Regression test for the ERROR_PIPE_NOT_CONNECTED (0x800700E9) launch failure.
+        ///
+        /// Reproduces the tray's serve()/serve_one() teardown around a canned reply (no
+        /// process spawn) on a real Win32 named pipe, and has the client deliberately wait
+        /// before reading. Without `wait_for_client_disconnect`, `DisconnectNamedPipe` would
+        /// run first and discard the buffered reply, so the client's read would fail — the
+        /// exact bug. With the fix the server blocks until the client has drained and closed,
+        /// so the reply is always delivered. The pre-read delay makes the distinction
+        /// deterministic rather than timing-dependent.
+        #[test]
+        fn reply_survives_server_teardown() {
+            const PAYLOAD: &[u8] = b"{\"ok\":true,\"pid\":1234}";
+
+            let server = thread::spawn(|| {
+                let name = wide(TEST_PIPE);
+                // SAFETY: `name` is a valid NUL-terminated wide string; mirrors `serve()`.
+                let pipe = unsafe {
+                    CreateNamedPipeW(
+                        PCWSTR(name.as_ptr()),
+                        PIPE_ACCESS_DUPLEX,
+                        PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+                        1,
+                        PIPE_BUFFER,
+                        PIPE_BUFFER,
+                        0,
+                        None,
+                    )
+                };
+                assert!(pipe != INVALID_HANDLE_VALUE, "CreateNamedPipeW failed");
+                // SAFETY: `pipe` is a valid pipe handle we own.
+                let connected = unsafe { ConnectNamedPipe(pipe, None) };
+                let ok = connected.is_ok() || unsafe { GetLastError() } == ERROR_PIPE_CONNECTED;
+                assert!(ok, "ConnectNamedPipe failed");
+
+                let mut stream = PipeStream(pipe);
+                write_frame(&mut stream, PAYLOAD).expect("write reply");
+                // The fix under test: block until the client has drained and closed.
+                wait_for_client_disconnect(pipe);
+                // SAFETY: `pipe` is valid; tear it down exactly like `serve()`.
+                unsafe {
+                    let _ = DisconnectNamedPipe(pipe);
+                    let _ = CloseHandle(pipe);
+                }
+            });
+
+            // Client: open the pipe (retrying until the server has created it).
+            let name = wide(TEST_PIPE);
+            let mut handle = None;
+            for _ in 0..100 {
+                // SAFETY: `name` is a valid NUL-terminated wide string.
+                let opened = unsafe {
+                    CreateFileW(
+                        PCWSTR(name.as_ptr()),
+                        GENERIC_READ | GENERIC_WRITE,
+                        FILE_SHARE_MODE(0),
+                        None,
+                        OPEN_EXISTING,
+                        FILE_FLAGS_AND_ATTRIBUTES(0),
+                        None,
+                    )
+                };
+                if let Ok(h) = opened {
+                    handle = Some(h);
+                    break;
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+            let handle = handle.expect("client could not open test pipe");
+
+            // Wait before reading: the buggy teardown would discard the reply in this window.
+            thread::sleep(Duration::from_millis(150));
+            let mut stream = PipeStream(handle);
+            let got = read_frame(&mut stream).expect("reply must survive server teardown");
+            // SAFETY: `handle` is a valid handle we opened above.
+            unsafe {
+                let _ = CloseHandle(handle);
+            }
+            assert_eq!(got, PAYLOAD);
+            server.join().expect("server thread panicked");
         }
     }
 }
