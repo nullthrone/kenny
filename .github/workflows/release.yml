@@ -23,11 +23,11 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       # QEMU lets this amd64 runner build the linux/arm64 image too.
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v4
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4
       - name: Image metadata
         id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6
         with:
           images: ghcr.io/${{ github.repository_owner }}/kenny-server
           tags: |
@@ -38,7 +38,7 @@ jobs:
       # smoke-tested locally (`load: true` cannot handle a multi-arch manifest).
       # The arm64 variant is built and verified in the push step below.
       - name: Build image (load locally, do not push yet)
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7
         with:
           context: .
           file: kenny-server/Dockerfile
@@ -68,7 +68,7 @@ jobs:
             exit 1
           fi
       - name: Log in to GHCR
-        uses: docker/login-action@v4
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -76,7 +76,7 @@ jobs:
       # Publish a multi-arch manifest (amd64 + arm64). The amd64 layers are reused
       # from the cache populated by the build above; arm64 is built here via QEMU.
       - name: Push image (only after the smoke test passed)
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7
         with:
           context: .
           file: kenny-server/Dockerfile
@@ -94,7 +94,7 @@ jobs:
       HAS_CERT: ${{ secrets.WINDOWS_CERT_BASE64 != '' }}
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - name: Build release binary
         working-directory: kenny-agent
         # The release tag is the leading source of the agent version (ADR-0015):
@@ -143,7 +143,7 @@ jobs:
           $name = "${{ steps.stage.outputs.artifact }}"
           (Get-FileHash $name -Algorithm SHA256).Hash.ToLower() + "  " + $name | Out-File "$name.sha256" -Encoding ascii
       - name: Publish to the Release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3
         with:
           files: |
             kenny-agent/${{ steps.stage.outputs.artifact }}
