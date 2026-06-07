@@ -9,6 +9,12 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Least-privilege default for all jobs; checkout/build/test need only read.
+# The `changes` job overrides this with its own block (it also needs
+# pull-requests: read so dorny/paths-filter can read PR file lists).
+permissions:
+  contents: read
+
 jobs:
   changes:
     name: detect changes

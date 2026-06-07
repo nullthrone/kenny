@@ -18,6 +18,10 @@ name: E2E Windows (self-hosted)
 on:
   workflow_dispatch:
 
+# Least-privilege default; the job only checks out and builds/tests.
+permissions:
+  contents: read
+
 jobs:
   e2e-full:
     name: real agent <-> server (self-hosted Windows, full fidelity)
