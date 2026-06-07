@@ -213,9 +213,9 @@ fn set_dpi_awareness() {}
 
 /// Run the foreground reconnecting tunnel (never returns under normal operation).
 fn run_tunnel(config: config::Config) {
-    // Record the server host for the always-on safety guard's `agent_update` allowlist.
-    policy::set_server_url(&config.server);
-
+    // The server host for the `agent_update` allowlist is recorded inside
+    // `tunnel::run_until`, which every entry point (foreground and service) funnels
+    // through, so it does not need to be set here.
     info!(
         agent_id = %config.agent_id,
         server = %config.server,
