@@ -26,7 +26,7 @@ uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 base64 = "0.22"
 regex = "1"
-sysinfo = "0.31"
+sysinfo = "0.39"
 # Per-agent mutual-auth (ADR-0023): Ed25519 keypair + signatures over the handshake
 # transcript. NOT windows-gated so keygen/signing/verification build and test on Linux CI.
 ed25519-dalek = { version = "2", features = ["rand_core"] }
