@@ -1,7 +1,7 @@
 # kenny-server image. Build from the repo root:
 #   docker build -f kenny-server/Dockerfile -t kenny-server .
 # (compose.yaml does this for you.)
-FROM python:3.11-slim
+FROM python:3.14-slim
 
 WORKDIR /app
 COPY kenny-server/ /app/
