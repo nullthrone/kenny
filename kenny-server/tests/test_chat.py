@@ -176,6 +176,26 @@ def test_classification() -> None:
     assert is_state_changing("remotehelp_stop")
 
 
+def test_system_prompt_defers_confirmation_to_the_gate_dialog() -> None:
+    """The confirm-gate dialog must be the single confirmation point.
+
+    Regression guard: the prompt used to tell the model to "propose them, then
+    wait", which made it ask for confirmation in prose AND then trigger the gate
+    dialog — the operator was asked twice. The prompt must instead steer the
+    model to issue the call directly and let the dialog handle approval.
+    """
+
+    from kenny_server.chat import _SYSTEM_PROMPT
+
+    lowered = _SYSTEM_PROMPT.lower()
+    # The old double-asking instruction must not come back.
+    assert "propose them, then wait" not in lowered
+    # The model is told not to ask for permission in prose first.
+    assert "do not ask for permission in prose" in lowered
+    # And that the confirmation dialog is the single place consent is given.
+    assert "single place consent is given" in lowered
+
+
 def test_tool_result_payload_capped() -> None:
     from kenny_server.chat import _MAX_TOOL_RESULT_CHARS, _tool_result_block
 
