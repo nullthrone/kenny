@@ -120,6 +120,23 @@ def _rule_memory(payload: dict[str, Any], now: datetime) -> "tuple[Status, str] 
     return None
 
 
+def _rule_thermals(payload: dict[str, Any], now: datetime) -> "tuple[Status, str] | None":
+    sensors = payload.get("sensors") or []
+    temps = [
+        s.get("temperature_c")
+        for s in sensors
+        if isinstance(s.get("temperature_c"), (int, float))
+    ]
+    if not temps:
+        return None  # no sensors reported -> defer to agent status
+    hottest = max(temps)
+    if hottest >= 95:
+        return "crit", f"Hottest sensor {hottest:.0f}°C (>=95°C)"
+    if hottest >= 85:
+        return "warn", f"Hottest sensor {hottest:.0f}°C (>=85°C)"
+    return "ok", f"Hottest {hottest:.0f}°C"
+
+
 def _rule_os_support(payload: dict[str, Any], now: datetime) -> "tuple[Status, str] | None":
     if payload.get("eol") is True:
         return "crit", "OS is end-of-life"
@@ -141,6 +158,7 @@ RULES: dict[str, Rule] = {
     "reboot_pending": _rule_reboot_pending,
     "battery": _rule_battery,
     "memory": _rule_memory,
+    "thermals": _rule_thermals,
     "os_support": _rule_os_support,
 }
 

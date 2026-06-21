@@ -38,6 +38,14 @@
       "summary": "Reboot required (Windows Update)",
       "pending": true,
       "reasons": ["WindowsUpdate"]
+    },
+    "thermals": {
+      "status": "ok",
+      "summary": "hottest 61C",
+      "sensors": [
+        { "label": "CPU Thermal Zone", "temperature_c": 61.0 },
+        { "label": "ACPI Thermal Zone", "temperature_c": 48.5 }
+      ]
     }
   }
 }
