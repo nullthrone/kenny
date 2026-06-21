@@ -57,6 +57,27 @@ def test_os_support_eol() -> None:
     assert crit["status"] == "crit"
 
 
+def test_thermals_thresholds() -> None:
+    def _eval(temps: list[float]) -> dict:
+        sensors = [{"label": f"zone{i}", "temperature_c": t} for i, t in enumerate(temps)]
+        return health_rules.evaluate_section(
+            "thermals", {"status": "ok", "summary": "", "sensors": sensors}, now=NOW
+        )
+
+    assert _eval([40.0, 97.0])["status"] == "crit"
+    assert _eval([40.0, 88.0])["status"] == "warn"
+    assert _eval([40.0, 61.0])["status"] == "ok"
+
+
+def test_thermals_no_sensors_defers_to_agent() -> None:
+    # With no sensors the rule defers, so the agent-reported status passes through.
+    result = health_rules.evaluate_section(
+        "thermals", {"status": "ok", "summary": "no temperature sensors", "sensors": []}, now=NOW
+    )
+    assert result["status"] == "ok"
+    assert "reason" not in result
+
+
 def test_worst_of() -> None:
     assert health_rules.worst("ok", "warn", "crit") == "crit"
     assert health_rules.worst("ok", "warn") == "warn"
