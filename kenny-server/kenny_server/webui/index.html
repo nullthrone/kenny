@@ -314,7 +314,7 @@
       cursor: pointer; flex: none; transition: background var(--dur) var(--ease), color var(--dur) var(--ease); }
     .k-modal__close:hover { background: var(--surface-raised); color: var(--fg); }
     .k-modal__close svg { width: 18px; height: 18px; }
-    .k-modal__body { padding: 16px 18px 18px; overflow-y: auto; }
+    .k-modal__body { padding: 16px 18px 18px; overflow-y: auto; overflow-x: hidden; }
 
     /* structured section detail */
     .k-detail-grp { margin-top: 16px; }
@@ -358,8 +358,9 @@
       color: var(--fg); cursor: pointer; }
     .kwf-tog input { accent-color: var(--accent); width: 15px; height: 15px; cursor: pointer; }
     .kwf-add { display: flex; gap: 8px; margin-bottom: 8px; }
-    .kwf-add .k-input { flex: 1; }
-    .kwf-add select.k-input { flex: none; }
+    .kwf-add .k-input { flex: 1 1 auto; min-width: 0; }
+    .kwf-add select.k-input { flex: none; width: auto; max-width: max-content; }
+    .kwf-add .k-btn { flex: none; }
     .kwf-list { display: flex; flex-direction: column; gap: 4px; }
     .kwf-row { display: flex; align-items: center; gap: 8px; font-size: var(--text-sm);
       padding: 5px 8px; border: 1px solid var(--border); border-radius: var(--radius-sm);
