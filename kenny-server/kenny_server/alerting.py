@@ -47,6 +47,8 @@ _PRUNE_EVERY = timedelta(hours=24)
 # Forecast alerts re-fire at most daily; the underlying condition moves slowly.
 _FORECAST_COOLDOWN = timedelta(hours=24)
 
+_DAY_INDEX = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
+
 
 class _Prunable(Protocol):
     async def prune(self) -> int: ...
@@ -76,6 +78,9 @@ class AlertEngine:
         cooldown_s: int = DEFAULT_COOLDOWN_S,
         offline_after_s: int = DEFAULT_OFFLINE_AFTER_S,
         prunables: list[_Prunable] | None = None,
+        digest_enabled: bool = True,
+        digest_day: str = "mon",
+        digest_hour: int = 8,
     ) -> None:
         self._store = store
         self._alert_state = alert_state
@@ -86,6 +91,9 @@ class AlertEngine:
         self._offline_after = timedelta(seconds=offline_after_s)
         self._prunables = prunables or []
         self._last_prune: datetime | None = None
+        self._digest_enabled = digest_enabled
+        self._digest_day = _DAY_INDEX.get(digest_day.strip().lower()[:3], 0)
+        self._digest_hour = max(0, min(23, digest_hour))
 
     # -- one evaluation pass -------------------------------------------------
 
@@ -404,7 +412,10 @@ class AlertEngine:
         return last is not None and (since is None or last >= since)
 
     async def _dispatch(self, note: Notification, now: datetime) -> None:
-        level = "info" if note.kind == "recovery" else ("crit" if note.priority in ("high", "urgent") else "warn")
+        if note.kind in ("recovery", "digest"):
+            level = "info"
+        else:
+            level = "crit" if note.priority in ("high", "urgent") else "warn"
         await self._event_store.insert_alert(
             agent_id=note.agent_id,
             message=f"{note.title}\n{note.body}",
@@ -424,10 +435,61 @@ class AlertEngine:
         while True:
             try:
                 await self.evaluate_once()
+                await self.maybe_send_digest()
                 await self._maybe_prune()
             except Exception:  # noqa: BLE001 - never let the loop die
                 logger.exception("alert evaluation pass failed")
             await asyncio.sleep(interval_s)
+
+    # -- weekly digest (ADR-0028) -------------------------------------------------
+
+    async def maybe_send_digest(self, now: datetime | None = None) -> bool:
+        """Send the weekly digest when the scheduled slot has passed; True if sent.
+
+        The last-sent timestamp is persisted (``alert_state`` scope ``digest``),
+        so a restart never double-sends. On the very first run the current time
+        becomes the baseline without sending — the first digest arrives at the
+        next scheduled slot instead of on install.
+        """
+
+        if not self._digest_enabled or not self._notifiers:
+            return False
+        now = now or datetime.now(timezone.utc)
+        row = await self._alert_state.get("", "digest")
+        if row is None:
+            await self._alert_state.upsert(
+                "", "digest", status=now.isoformat(), since=now.isoformat(), last_notified_at=None
+            )
+            return False
+        last_sent = _parse_ts(row["status"]) or now
+        days_back = (now.weekday() - self._digest_day) % 7
+        slot = (now - timedelta(days=days_back)).replace(
+            hour=self._digest_hour, minute=0, second=0, microsecond=0
+        )
+        if slot > now:
+            slot -= timedelta(days=7)
+        if last_sent >= slot:
+            return False
+        from .digest import build_digest
+
+        title, body = await build_digest(
+            self._store, self._event_store, self._registry, now=now
+        )
+        await self._dispatch(
+            Notification(
+                title=title,
+                body=body,
+                priority="low",
+                tags=["newspaper"],
+                agent_id=None,
+                kind="digest",
+            ),
+            now,
+        )
+        await self._alert_state.upsert(
+            "", "digest", status=now.isoformat(), since=now.isoformat(), last_notified_at=now.isoformat()
+        )
+        return True
 
     async def _maybe_prune(self, now: datetime | None = None) -> None:
         now = now or datetime.now(timezone.utc)

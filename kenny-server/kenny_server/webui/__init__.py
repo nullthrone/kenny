@@ -273,6 +273,14 @@ def build_api_routes(
             }
         )
 
+    async def api_digest_preview(request: Request) -> JSONResponse:
+        """Render (but do not send) the weekly digest for a manual check."""
+
+        from ..digest import build_digest
+
+        title, body = await build_digest(store, event_store, registry)
+        return JSONResponse({"title": title, "body": body})
+
     async def api_refresh(request: Request) -> JSONResponse:
         agent_id = request.path_params["id"]
         try:
@@ -608,6 +616,7 @@ def build_api_routes(
         Route("/api/fleet", api_fleet),
         Route("/api/fleet/overview", api_fleet_overview),
         Route("/api/fleet/trend", api_fleet_trend),
+        Route("/api/digest/preview", api_digest_preview),
         Route("/api/audit", api_audit),
         Route("/api/events", api_events),
         Route("/api/agent/{id}", api_agent),

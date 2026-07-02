@@ -117,6 +117,9 @@ def build_app(db_path: str | None = None) -> Starlette:
             os.environ.get("KENNY_ALERT_OFFLINE_AFTER_SECS", str(DEFAULT_OFFLINE_AFTER_S))
         ),
         prunables=[store, event_store, webfilter_store],
+        digest_enabled=os.environ.get("KENNY_DIGEST_ENABLED", "1") not in ("0", "false", ""),
+        digest_day=os.environ.get("KENNY_DIGEST_DAY", "mon"),
+        digest_hour=int(os.environ.get("KENNY_DIGEST_HOUR", "8")),
     )
 
     mcp = FastMCP("kenny")
