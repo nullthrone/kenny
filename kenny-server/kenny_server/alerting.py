@@ -28,10 +28,12 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
 
+from .diffs import diff_snapshots
 from .health_rules import evaluate_snapshot
 from .notify import Notification, Notifier
 from .registry import AgentRegistry
 from .store import AlertStateStore, EventStore, TelemetryStore
+from .trends import DISK_FULL_ALERT_DAYS, disk_forecast
 
 logger = logging.getLogger("kenny.alerting")
 
@@ -42,6 +44,8 @@ DEFAULT_COOLDOWN_S = 3600
 DEFAULT_OFFLINE_AFTER_S = 2700
 
 _PRUNE_EVERY = timedelta(hours=24)
+# Forecast alerts re-fire at most daily; the underlying condition moves slowly.
+_FORECAST_COOLDOWN = timedelta(hours=24)
 
 
 class _Prunable(Protocol):
@@ -109,6 +113,7 @@ class AlertEngine:
             out.append(offline_note)
         if not is_offline:
             out.extend(await self._health_transitions(agent_id, latest, state, now))
+            out.extend(await self._change_notifications(agent_id, latest, state, now))
         for note in out:
             await self._dispatch(note, now)
         return out
@@ -248,6 +253,139 @@ class AlertEngine:
                 )
             )
         return out
+
+    # -- inventory changes & forecasts (ADR-0029) --------------------------------
+
+    async def _change_notifications(
+        self,
+        agent_id: str,
+        latest: dict[str, Any],
+        state: dict[str, dict[str, Any]],
+        now: datetime,
+    ) -> list[Notification]:
+        """Diff consecutive snapshots and check the disk forecast.
+
+        Gated on a persisted cursor (scope ``change:_cursor``) holding the last
+        processed ``collected_at``, so the work runs once per new snapshot (not
+        per evaluation tick) and a restart never re-notifies an old diff.
+        """
+
+        cursor_row = state.get("change:_cursor")
+        cursor = cursor_row["status"] if cursor_row else None
+        latest_at = str(latest.get("collected_at"))
+        if cursor == latest_at:
+            return []
+        await self._alert_state.upsert(
+            agent_id,
+            "change:_cursor",
+            status=latest_at,
+            since=now.isoformat(),
+            last_notified_at=(cursor_row or {}).get("last_notified_at"),
+        )
+        out: list[Notification] = []
+        # Only diff when this is genuinely the next snapshot after a processed
+        # one; on the very first sighting just set the cursor.
+        if cursor is not None:
+            history = await self._store.history(agent_id, limit=2)
+            if len(history) == 2:
+                changes = diff_snapshots(history[1]["snapshot"], latest["snapshot"])
+                note = await self._notify_changes(agent_id, changes, state, now)
+                if note is not None:
+                    out.append(note)
+        forecast_note = await self._forecast_alert(agent_id, state, now)
+        if forecast_note is not None:
+            out.append(forecast_note)
+        return out
+
+    async def _notify_changes(
+        self,
+        agent_id: str,
+        changes: list[dict[str, Any]],
+        state: dict[str, dict[str, Any]],
+        now: datetime,
+    ) -> Notification | None:
+        by_section: dict[str, list[dict[str, Any]]] = {}
+        for change in changes:
+            by_section.setdefault(change["section"], []).append(change)
+
+        lines: list[str] = []
+        priority = "default"
+        for section, section_changes in sorted(by_section.items()):
+            scope = f"change:{section}"
+            row = state.get(scope)
+            if not self._cooldown_passed(row, now):
+                continue
+            for c in section_changes:
+                detail = f" ({c['detail']})" if c.get("detail") else ""
+                lines.append(f"{section}: {c['kind']} {c['key']}{detail}")
+            if section == "local_accounts":
+                priority = "high"
+            await self._alert_state.upsert(
+                agent_id,
+                scope,
+                status="changed",
+                since=now.isoformat(),
+                last_notified_at=now.isoformat(),
+            )
+        if not lines:
+            return None
+        return Notification(
+            title=f"{agent_id}: {len(lines)} change(s) detected",
+            body="\n".join(lines),
+            priority=priority,
+            tags=["mag"],
+            agent_id=agent_id,
+            kind="change",
+        )
+
+    async def _forecast_alert(
+        self,
+        agent_id: str,
+        state: dict[str, dict[str, Any]],
+        now: datetime,
+    ) -> Notification | None:
+        since = (now - timedelta(days=30)).date().isoformat()
+        daily = await self._store.daily_latest(agent_id, since)
+        filling = [
+            f
+            for f in disk_forecast(daily)
+            if f["days_until_full"] is not None and f["days_until_full"] < DISK_FULL_ALERT_DAYS
+        ]
+        scope = "section:disk_forecast"
+        row = state.get(scope)
+        if not filling:
+            if row and row["status"] != "ok":
+                await self._alert_state.upsert(
+                    agent_id,
+                    scope,
+                    status="ok",
+                    since=now.isoformat(),
+                    last_notified_at=row.get("last_notified_at"),
+                )
+            return None
+        last = _parse_ts((row or {}).get("last_notified_at"))
+        if last is not None and now - last < _FORECAST_COOLDOWN:
+            return None
+        await self._alert_state.upsert(
+            agent_id,
+            scope,
+            status="warn",
+            since=(row or {}).get("since") if row and row["status"] == "warn" else now.isoformat(),
+            last_notified_at=now.isoformat(),
+        )
+        lines = [
+            f"{f['mount']}: ~{f['days_until_full']:.0f}d until full "
+            f"({f['current_percent']:.0f}% now, +{f['slope_percent_per_day']:.2f}%/day)"
+            for f in filling
+        ]
+        return Notification(
+            title=f"{agent_id}: disk filling up",
+            body="\n".join(lines),
+            priority="default",
+            tags=["chart_with_upwards_trend"],
+            agent_id=agent_id,
+            kind="alert",
+        )
 
     # -- helpers ----------------------------------------------------------------
 

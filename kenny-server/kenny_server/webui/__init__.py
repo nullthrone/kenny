@@ -130,9 +130,12 @@ def build_api_routes(
         operator auth from the ``/api`` middleware.
         """
 
-        from .. import fleet_stats
+        from datetime import datetime, timedelta, timezone
+
+        from .. import fleet_stats, trends
 
         ids = await _known_ids(registry, store)
+        forecast_since = (datetime.now(timezone.utc) - timedelta(days=30)).date().isoformat()
         snapshots = []
         rows = []
         for agent_id in ids:
@@ -155,7 +158,13 @@ def build_api_routes(
             }
             for agent_id, agent, snapshot, latest in rows
         ]
-        return JSONResponse(fleet_stats.aggregate_overview(agents))
+        disk_forecasts: dict[str, list[dict[str, Any]]] = {}
+        for agent_id in ids:
+            daily = await store.daily_latest(agent_id, forecast_since)
+            disk_forecasts[agent_id] = trends.disk_forecast(daily)
+        return JSONResponse(
+            fleet_stats.aggregate_overview(agents, disk_forecasts=disk_forecasts)
+        )
 
     async def api_fleet_trend(request: Request) -> JSONResponse:
         """Daily fleet health counts over a window (default 30 days, capped 1–90)."""
@@ -209,6 +218,58 @@ def build_api_routes(
                 "call_log": [
                     c for c in await call_log.list() if c["agent_id"] == agent_id
                 ],
+            }
+        )
+
+    async def api_agent_changes(request: Request) -> JSONResponse:
+        """Inventory changes between a ~N-day-old baseline snapshot and now (ADR-0029)."""
+
+        from datetime import datetime, timedelta, timezone
+
+        from .. import diffs
+
+        agent_id = request.path_params["id"]
+        try:
+            days = int(request.query_params.get("days", 1))
+        except ValueError:
+            days = 1
+        days = max(1, min(days, 30))
+        latest = await store.latest(agent_id)
+        if latest is None:
+            return JSONResponse(
+                {"agent_id": agent_id, "days": days, "baseline": None, "latest": None, "changes": []}
+            )
+        since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        daily = await store.daily_latest(agent_id, since)
+        baseline = daily[0] if daily else None
+        changes = (
+            diffs.diff_snapshots(baseline["snapshot"], latest["snapshot"]) if baseline else []
+        )
+        return JSONResponse(
+            {
+                "agent_id": agent_id,
+                "days": days,
+                "baseline": baseline["collected_at"] if baseline else None,
+                "latest": latest["collected_at"],
+                "changes": changes,
+            }
+        )
+
+    async def api_agent_trends(request: Request) -> JSONResponse:
+        """Disk-full forecast and battery trend over the 30-day daily history."""
+
+        from datetime import datetime, timedelta, timezone
+
+        from .. import trends
+
+        agent_id = request.path_params["id"]
+        since = (datetime.now(timezone.utc) - timedelta(days=30)).date().isoformat()
+        daily = await store.daily_latest(agent_id, since)
+        return JSONResponse(
+            {
+                "agent_id": agent_id,
+                "disk": trends.disk_forecast(daily),
+                "battery": trends.battery_trend(daily),
             }
         )
 
@@ -550,6 +611,8 @@ def build_api_routes(
         Route("/api/audit", api_audit),
         Route("/api/events", api_events),
         Route("/api/agent/{id}", api_agent),
+        Route("/api/agent/{id}/changes", api_agent_changes),
+        Route("/api/agent/{id}/trends", api_agent_trends),
         Route("/api/agent/{id}/refresh", api_refresh, methods=["POST"]),
         Route("/api/agent/{id}/remotehelp", api_remotehelp, methods=["POST"]),
         Route("/api/agent/{id}/screenshot", api_screenshot),

@@ -1264,7 +1264,7 @@
     function buildKpis() {
       const host = document.getElementById("ov-kpis");
       if (!host) return;
-      const alertKeys = ["reboot", "failed_updates", "quarantine", "os_eol"];
+      const alertKeys = ["reboot", "failed_updates", "quarantine", "os_eol", "disk_forecast"];
       host.innerHTML = state.overview.kpis.map((k, i) => {
         const empty = !(k.members && k.members.length);
         const alert = alertKeys.includes(k.key) && k.value > 0;
@@ -1830,6 +1830,13 @@
           ${sparkline(data.history || [])}
         </div>
         <div class="kc-tiles">${secs || '<div class="k-muted">no telemetry yet</div>'}</div>
+        <div class="k-card k-card--sunken">
+          <div class="k-row" style="justify-content:space-between">
+            <span class="kc-section-lbl">changes &amp; forecast · 24 h</span>
+            <span class="k-mono" style="font-size:11px;color:var(--fg-faint)">vs. yesterday's snapshot</span>
+          </div>
+          <div id="kc-changes"><div class="k-muted" style="font-size:12px">loading…</div></div>
+        </div>
         <div class="k-card k-card--sunken kc-shotcard">
           <div class="k-row" style="justify-content:space-between">
             <span class="kc-section-lbl">last screenshot</span>
@@ -1841,6 +1848,50 @@
             onerror="this.style.display='none';this.nextElementSibling.style.display='block'">
           <div class="k-muted" style="display:none;font-size:12px">none yet</div>
         </div>`;
+      mountChangesPanel(data.agent_id);
+    }
+
+    // Inventory changes (vs. yesterday's snapshot) + disk/battery forecasts
+    // (ADR-0029). Loaded async after the detail view renders; a stale panel
+    // (selection changed while loading) is a no-op.
+    async function mountChangesPanel(agentId) {
+      const panel = document.getElementById("kc-changes");
+      if (!panel) return;
+      let changes, trends;
+      try {
+        [changes, trends] = await Promise.all([
+          getJSON("/api/agent/" + encodeURIComponent(agentId) + "/changes?days=1"),
+          getJSON("/api/agent/" + encodeURIComponent(agentId) + "/trends"),
+        ]);
+      } catch (e) {
+        panel.innerHTML = `<div class="k-muted" style="font-size:12px">error: ${esc(e.message)}</div>`;
+        return;
+      }
+      if (state.selected !== agentId || document.getElementById("kc-changes") !== panel) return;
+      let body = "";
+      const filling = (trends.disk || []).filter(f => f.days_until_full !== null);
+      if (filling.length) {
+        body += filling.map(f =>
+          `<div class="k-reason k-reason--${f.days_until_full < 14 ? "warn" : "ok"}" style="margin:4px 0">
+             <span>${esc(f.mount)} ~${Math.round(f.days_until_full)}d until full
+             (${Math.round(f.current_percent)}% now, +${f.slope_percent_per_day.toFixed(2)}%/day)</span>
+           </div>`).join("");
+      }
+      const bat = trends.battery;
+      if (bat && bat.percent_per_30d !== null && bat.percent_per_30d < 0) {
+        body += `<div class="k-muted" style="font-size:12px;margin:4px 0">
+          battery health ${Math.round(bat.current_percent)}% (${bat.percent_per_30d.toFixed(1)}%/30d)</div>`;
+      }
+      const rows = (changes.changes || []).map(c => `<tr>
+        <td>${esc(c.section)}</td>
+        <td><span class="k-pill k-pill--${c.kind === "removed" ? "ok" : "warn"}">${esc(c.kind)}</span></td>
+        <td class="k-mono">${esc(c.key)}</td>
+        <td class="k-mono">${esc(c.detail || "")}</td></tr>`).join("");
+      if (rows) {
+        body += `<table class="k-dtable"><thead><tr><th>section</th><th>change</th><th>what</th><th>detail</th></tr></thead>
+          <tbody>${rows}</tbody></table>`;
+      }
+      panel.innerHTML = body || `<div class="k-muted" style="font-size:12px">no inventory changes; no disks filling up</div>`;
     }
 
     function sparkline(history) {

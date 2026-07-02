@@ -195,6 +195,95 @@ async def test_health_is_skipped_while_offline(stores) -> None:
     assert "offline" in sent[0].title
 
 
+def autostart_snapshot(names: list[str]) -> dict:
+    return {
+        "autostart": {
+            "status": "ok",
+            "summary": f"{len(names)} entries",
+            "entries": [
+                {"name": n, "location": "HKCU\\Run", "command": f"{n.lower()}.exe"}
+                for n in names
+            ],
+        }
+    }
+
+
+async def test_change_notification_on_new_autostart_entry(stores) -> None:
+    store, events, _ = stores
+    notifier = FakeNotifier()
+    engine = make_engine(stores, notifier)
+
+    await insert(store, autostart_snapshot(["OneDrive"]), NOW - timedelta(minutes=15))
+    # First sighting only sets the cursor: no diff, no notification.
+    assert await engine.evaluate_once(NOW - timedelta(minutes=10)) == []
+
+    await insert(store, autostart_snapshot(["OneDrive", "Sketchy"]), NOW - timedelta(minutes=5))
+    sent = await engine.evaluate_once(NOW)
+    assert len(sent) == 1
+    assert sent[0].kind == "change"
+    assert "autostart: added Sketchy" in sent[0].body
+    assert sent[0].priority == "default"
+
+    # Another autostart change within the cooldown stays silent...
+    await insert(store, autostart_snapshot(["OneDrive"]), NOW + timedelta(minutes=5))
+    assert await engine.evaluate_once(NOW + timedelta(minutes=6)) == []
+    # ...and the same tick does not re-process the same snapshot.
+    assert await engine.evaluate_once(NOW + timedelta(minutes=7)) == []
+
+    rows = await events.query(kind="alert")
+    assert any("Sketchy" in r["message"] for r in rows)
+
+
+async def test_local_accounts_change_is_high_priority(stores) -> None:
+    store, _, _ = stores
+    notifier = FakeNotifier()
+    engine = make_engine(stores, notifier)
+
+    def accounts(is_admin: bool) -> dict:
+        return {
+            "local_accounts": {
+                "status": "ok",
+                "summary": "",
+                "accounts": [{"name": "kid", "enabled": True, "is_admin": is_admin}],
+            }
+        }
+
+    await insert(store, accounts(False), NOW - timedelta(minutes=15))
+    await engine.evaluate_once(NOW - timedelta(minutes=10))
+    await insert(store, accounts(True), NOW - timedelta(minutes=5))
+    sent = await engine.evaluate_once(NOW)
+    assert len(sent) == 1
+    assert sent[0].priority == "high"
+    assert "is_admin: False -> True" in sent[0].body
+
+
+async def test_disk_forecast_alert_with_daily_cooldown(stores) -> None:
+    store, _, _ = stores
+    notifier = FakeNotifier()
+    engine = make_engine(stores, notifier)
+
+    # Six days rising +2 %/day up to 78 % (below the 80 % warn rule):
+    # ~11 days until full, under the 14-day forecast threshold.
+    base = NOW - timedelta(days=5)
+    for i in range(6):
+        at = base + timedelta(days=i)
+        await insert(store, snapshot(68.0 + 2.0 * i), at)
+
+    sent = await engine.evaluate_once(NOW)
+    assert len(sent) == 1
+    assert "disk filling up" in sent[0].title
+    assert "C:" in sent[0].body
+
+    # A new snapshot within the 24 h forecast cooldown stays silent.
+    await insert(store, snapshot(78.2), NOW + timedelta(hours=2))
+    assert await engine.evaluate_once(NOW + timedelta(hours=3)) == []
+
+    # After the cooldown a new snapshot re-fires the (still true) forecast.
+    await insert(store, snapshot(80.0 + 0.4), NOW + timedelta(days=2))
+    sent = await engine.evaluate_once(NOW + timedelta(days=2, hours=1))
+    assert any("disk filling up" in n.title for n in sent)
+
+
 async def test_restart_does_not_refire_persisted_state(stores) -> None:
     store, _, _ = stores
     notifier = FakeNotifier()
