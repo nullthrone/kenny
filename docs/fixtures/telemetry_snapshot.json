@@ -47,6 +47,34 @@
         { "label": "ACPI Thermal Zone", "temperature_c": 48.5 }
       ]
     },
+    "reliability": {
+      "status": "warn",
+      "summary": "48 error/critical events in 7d",
+      "stability_index": 6.8,
+      "recent_crashes": 48,
+      "window_days": 7,
+      "events": [
+        {
+          "source": "Application Error",
+          "event_id": 1000,
+          "level": "error",
+          "count": 30,
+          "sample": "Faulting application name: chrome.exe, version 126.0.0.0, faulting module ntdll.dll",
+          "last_seen": "2026-06-04T17:22:10Z",
+          "by_day": { "2026-06-02": 8, "2026-06-03": 12, "2026-06-04": 10 }
+        },
+        {
+          "source": "disk",
+          "event_id": 51,
+          "level": "error",
+          "count": 18,
+          "sample": "An error was detected on device \\Device\\Harddisk0\\DR0 during a paging operation.",
+          "last_seen": "2026-06-04T09:05:44Z",
+          "by_day": { "2026-06-01": 6, "2026-06-03": 7, "2026-06-04": 5 }
+        }
+      ],
+      "truncated": false
+    },
     "web_activity": {
       "status": "ok",
       "summary": "42 domains observed (24h)",

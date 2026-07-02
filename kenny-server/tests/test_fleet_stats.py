@@ -190,6 +190,34 @@ def test_trend_drops_points_outside_window():
     assert [d["date"] for d in days] == ["2026-06-06"]
 
 
+def test_reliability_categories_aggregate():
+    a1 = _agent("pc1", {"reliability": {
+        "status": "warn", "summary": "", "recent_crashes": 50, "events": [
+            {"source": "Application Error", "event_id": 1000, "level": "error", "count": 30,
+             "category": "App crash / hang"},
+            {"source": "disk", "event_id": 51, "level": "error", "count": 20,
+             "category": "Disk & storage"}]}})
+    a2 = _agent("pc2", {"reliability": {
+        "status": "warn", "summary": "", "recent_crashes": 5, "events": [
+            {"source": "Kernel-Power", "event_id": 41, "level": "critical", "count": 5,
+             "category": "Power & boot"}]}})
+    out = fleet_stats.aggregate_overview([a1, a2], now=NOW)["reliability_categories"]
+    assert out["agents"] == ["pc1", "pc2"]
+    assert set(out["categories"]) == {"App crash / hang", "Disk & storage", "Power & boot"}
+    by = {(c["agent_id"], c["category"]): c for c in out["cells"]}
+    assert by[("pc1", "App crash / hang")]["count"] == 30
+    assert by[("pc2", "Power & boot")]["crit"] is True
+    assert "Application Error ×30" in by[("pc1", "App crash / hang")]["detail"]
+    # Each cell carries a member for drill-down.
+    assert by[("pc1", "Disk & storage")]["members"][0]["agent_id"] == "pc1"
+
+
+def test_reliability_categories_empty_without_events():
+    # The baseline fleet's reliability sections carry only a count, no breakdown.
+    out = fleet_stats.aggregate_overview(_fleet(), now=NOW)["reliability_categories"]
+    assert out["cells"] == []
+
+
 # -- route-level tests -----------------------------------------------------
 
 
@@ -231,6 +259,27 @@ def test_fleet_trend_route(tmp_path):
         assert len(days) == 1
         assert days[0]["date"] == "2026-06-06"
         assert days[0]["warn"] == 1
+
+
+def test_reliability_categories_route_fallback(tmp_path, monkeypatch):
+    # With no API key the read path stamps every event group "Other" (graceful
+    # degradation) but the heatmap still aggregates counts + drill-down detail.
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    app = build_app(db_path=str(tmp_path / "relcat.sqlite"))
+    snap = {"reliability": {"status": "warn", "summary": "", "recent_crashes": 40, "events": [
+        {"source": "disk", "event_id": 51, "level": "error", "count": 40,
+         "sample": "paging error", "last_seen": "2026-06-07T00:00:00Z"}]}}
+    with TestClient(app) as c:
+        store = app.state.store
+        c.portal.call(partial(store.insert, "pc1", "2026-06-07T00:00:00Z", snap))
+        r = c.get("/api/fleet/overview", headers=_bearer(app))
+        assert r.status_code == 200
+        rc = r.json()["reliability_categories"]
+        assert rc["agents"] == ["pc1"]
+        assert rc["categories"] == ["Other"]
+        cell = rc["cells"][0]
+        assert cell["count"] == 40
+        assert "disk ×40" in cell["detail"]
 
 
 def test_echarts_asset_served_with_js_mime(tmp_path):

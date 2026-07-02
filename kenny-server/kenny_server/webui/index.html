@@ -345,6 +345,16 @@
     .k-detail-grp:first-child { margin-top: 0; }
     .k-detail-grp__lbl { font-size: var(--text-xs); color: var(--fg-muted); letter-spacing: var(--tracking-label);
       text-transform: uppercase; margin-bottom: 8px; }
+    .k-relcat { border: 1px solid var(--border); border-radius: 6px; margin-bottom: 6px; overflow: hidden; }
+    .k-relcat > summary { display: flex; align-items: center; gap: 10px; padding: 8px 12px; cursor: pointer;
+      list-style: none; background: var(--surface-raised); }
+    .k-relcat > summary::-webkit-details-marker { display: none; }
+    .k-relcat > summary::before { content: "▸"; color: var(--fg-muted); font-size: 11px; }
+    .k-relcat[open] > summary::before { content: "▾"; }
+    .k-relcat__name { font-weight: 600; }
+    .k-relcat__count { margin-left: auto; color: var(--fg-muted); font-size: var(--text-sm); }
+    .k-relcat table { margin: 0; }
+    .k-relcat th { white-space: nowrap; }
     .k-deflist { display: grid; grid-template-columns: minmax(120px, max-content) 1fr; gap: 6px 16px; align-items: baseline; }
     .k-deflist__k { color: var(--fg-muted); font-size: var(--text-sm); }
     .k-deflist__v { color: var(--fg); font-size: var(--text-sm); overflow-wrap: anywhere; }
@@ -1223,6 +1233,9 @@
             `<div class="kc-chart" id="ov-top"></div>`)}
         ${card("kc-ov__wide", "network", "Problem flow", "host → severity → section",
             `<div class="kc-chart" id="ov-sankey"></div>`)}
+        ${card("kc-ov__wide", "activity", "Reliability — what's going wrong",
+            "hosts × problem category (7d) — click a cell to inspect",
+            `<div class="kc-chart" id="ov-reliability"></div>`)}
         ${card("kc-ov__wide", "clock", "Fleet health trend",
             `<select class="kc-ovsel" id="ov-trend-sel">${trendOptions}</select>`,
             `<div class="kc-chart" id="ov-trend" style="height:300px"></div>`)}
@@ -1236,6 +1249,7 @@
       buildSections();
       buildTop();
       buildSankey();
+      buildReliabilityCategories();
       buildTrend();
       bindOvResize();
 
@@ -1436,6 +1450,51 @@
             (l.members || []).forEach(m => { const k = m.agent_id + "|" + m.value; if (!seen[k]) { seen[k] = 1; mem.push(m); } });
         });
         if (mem.length) openDrilldown(name, "network", mem, "Section");
+      });
+    }
+
+    // Fleet heatmap: hosts × friendly problem category, cell = event count over 7d.
+    // Answers "which PC has which class of problem" at a glance; click a cell to
+    // drill into the loudest sources behind it. Data rides /api/fleet/overview.
+    function buildReliabilityCategories() {
+      const el = document.getElementById("ov-reliability");
+      if (!el) return;
+      const rc = (state.overview && state.overview.reliability_categories) || { agents: [], categories: [], cells: [] };
+      const agents = rc.agents || [], cats = rc.categories || [], cells = rc.cells || [];
+      if (!cells.length) {
+        disposeDom(el); el.style.height = "auto";
+        el.innerHTML = `<div class="kc-ov__empty">No error or critical events across the fleet — nothing to break down.</div>`;
+        return;
+      }
+      el.style.height = Math.max(140, agents.length * 30 + 70) + "px";
+      const base = chartBase();
+      const inst = newChart(el);
+      const xIdx = Object.fromEntries(cats.map((c, i) => [c, i]));
+      const yIdx = Object.fromEntries(agents.map((a, i) => [a, i]));
+      let max = 1;
+      const data = cells.map(c => {
+        if (c.count > max) max = c.count;
+        return { value: [xIdx[c.category], yIdx[c.agent_id], c.count], _cell: c };
+      });
+      inst.setOption({
+        textStyle: base.textStyle,
+        tooltip: { ...base.tooltip, trigger: "item", formatter: p => {
+          const c = p.data && p.data._cell; if (!c) return "";
+          return `${esc(c.agent_id)} · ${esc(c.category)}<br/><b>${c.count}</b> event(s)${c.crit ? " · has critical" : ""}<br/>${esc(c.detail || "")}`;
+        } },
+        grid: { left: 4, right: 14, top: 6, bottom: 40, containLabel: true },
+        xAxis: { type: "category", data: cats, splitArea: { show: true },
+                 axisLabel: { color: base._muted, rotate: 20 }, axisLine: { lineStyle: { color: base._border } } },
+        yAxis: { type: "category", data: agents, splitArea: { show: true },
+                 axisLabel: { color: base._fg }, axisLine: { lineStyle: { color: base._border } } },
+        visualMap: { min: 0, max, calculable: false, show: false,
+                     inRange: { color: [cssVar("--surface-raised"), cssVar("--amber-deep") || cssVar("--accent"), statusColor("crit")] } },
+        series: [{ type: "heatmap", data, itemStyle: { borderColor: base._border, borderWidth: 1 },
+                   emphasis: { itemStyle: { borderColor: base._fg } } }],
+      });
+      inst.on("click", p => {
+        const c = p.data && p.data._cell; if (!c) return;
+        openDrilldown(`${c.category} · ${c.agent_id}`, "activity", c.members || [], "Events");
       });
     }
 
@@ -1821,11 +1880,114 @@
       openModal(title, ai + render(raw, s));
       if (ai) streamRecommendation(data.agent_id, name);
       if (name === "web_activity") mountWebfilterPanel(data.agent_id);
+      if (name === "reliability") mountReliabilityHeatmap(raw);
     }
 
     // Custom section renderers keyed by telemetry section name; a section not
     // listed here falls back to the generic renderSectionDetail partitioner.
-    const SECTION_RENDERERS = { web_activity: renderWebActivityDetail };
+    const SECTION_RENDERERS = {
+      web_activity: renderWebActivityDetail,
+      reliability: renderReliabilityDetail,
+    };
+
+    // Reliability detail: WHAT is going wrong on this PC. A category × day heatmap
+    // (built from the per-group `by_day` histograms) over the loudest problem
+    // categories, then each category expands to the raw sources / event ids /
+    // sample messages behind it. The heatmap is mounted async (see
+    // mountReliabilityHeatmap) after the modal DOM exists.
+    function renderReliabilityDetail(raw, s) {
+      let body = "";
+      if (s && s.summary) body += `<div class="k-modal__sum">${esc(s.summary)}</div>`;
+      if (s) body += reasonHtml(s.reason, s.status);
+      const events = Array.isArray(raw.events) ? raw.events : [];
+      const si = typeof raw.stability_index === "number" ? `${raw.stability_index.toFixed(1)} / 10` : "not reported";
+      body += defListGrp(null, [
+        ["error/critical events", raw.recent_crashes == null ? "—" : String(raw.recent_crashes)],
+        ["stability index", si],
+        ["window", `${raw.window_days || 7} days`],
+      ]);
+      if (!events.length) {
+        body += `<div class="k-detail-grp"><div class="k-muted">No error or critical events in the window — nothing to break down.</div></div>`;
+        return body;
+      }
+      body += `<div class="k-detail-grp"><div class="k-detail-grp__lbl">what's going wrong · by day</div>
+        <div class="kc-chart" id="k-reliab-heat" style="height:200px"></div></div>`;
+
+      // Group the raw events by friendly category for the expandable breakdown.
+      const byCat = {};
+      for (const e of events) {
+        const cat = e.category || e.source || "Other";
+        (byCat[cat] = byCat[cat] || []).push(e);
+      }
+      const cats = Object.keys(byCat).sort((a, b) =>
+        catTotal(byCat[b]) - catTotal(byCat[a]));
+      const groups = cats.map(cat => {
+        const rows = byCat[cat].slice().sort((a, b) => (b.count || 0) - (a.count || 0)).map(e => `<tr>
+          <td class="k-mono">${esc(e.source || "?")}${e.event_id != null ? " / " + esc(String(e.event_id)) : ""}</td>
+          <td>${relLevelBadge(e.level)}</td>
+          <td class="k-mono">${esc(String(e.count ?? "—"))}</td>
+          <td>${esc(fmtValue("last_seen", e.last_seen))}</td>
+          <td class="k-muted">${esc(e.sample || "")}</td></tr>`).join("");
+        return `<details class="k-relcat">
+          <summary><span class="k-relcat__name">${esc(cat)}</span>
+            <span class="k-relcat__count">${catTotal(byCat[cat])} event(s)</span></summary>
+          <table class="k-dtable"><thead><tr><th>source / id</th><th>level</th><th>count</th><th>last seen</th><th>sample</th></tr></thead>
+            <tbody>${rows}</tbody></table></details>`;
+      }).join("");
+      body += `<div class="k-detail-grp"><div class="k-detail-grp__lbl">details — click a category to expand</div>${groups}</div>`;
+      return body;
+    }
+    function catTotal(evs) { return evs.reduce((n, e) => n + (e.count || 0), 0); }
+    function relLevelBadge(level) {
+      const cls = level === "critical" ? "crit" : "warn";
+      return `<span class="k-pill k-pill--${cls}">${esc(level || "error")}</span>`;
+    }
+
+    // Draw the category × day heatmap into the reliability popup from the events'
+    // `by_day` histograms. Rows = friendly categories, cols = days; a closed modal
+    // (missing element) is a no-op.
+    function mountReliabilityHeatmap(raw) {
+      const el = document.getElementById("k-reliab-heat");
+      if (!el || !window.echarts) return;
+      const events = Array.isArray(raw.events) ? raw.events : [];
+      // category -> { day -> count }
+      const grid = {}, dayset = {};
+      for (const e of events) {
+        const cat = e.category || e.source || "Other";
+        const bd = e.by_day || {};
+        for (const day of Object.keys(bd)) {
+          dayset[day] = true;
+          (grid[cat] = grid[cat] || {})[day] = (grid[cat][day] || 0) + (bd[day] || 0);
+        }
+      }
+      const days = Object.keys(dayset).sort();
+      const cats = Object.keys(grid).sort((a, b) => catTotal(events.filter(e => (e.category || e.source || "Other") === b)) - catTotal(events.filter(e => (e.category || e.source || "Other") === a)));
+      if (!days.length || !cats.length) { el.style.height = "auto"; el.innerHTML = `<div class="k-muted" style="font-size:12px">no per-day breakdown available.</div>`; return; }
+      el.style.height = Math.max(120, cats.length * 30 + 60) + "px";
+      const base = chartBase();
+      const inst = newChart(el);
+      let max = 1;
+      const data = [];
+      cats.forEach((cat, y) => days.forEach((day, x) => {
+        const v = (grid[cat] || {})[day] || 0;
+        if (v > max) max = v;
+        data.push({ value: [x, y, v], _cat: cat, _day: day });
+      }));
+      inst.setOption({
+        textStyle: base.textStyle,
+        tooltip: { ...base.tooltip, trigger: "item", formatter: p =>
+          `${esc(p.data._cat)} · ${esc(p.data._day)}<br/><b>${p.data.value[2]}</b> event(s)` },
+        grid: { left: 4, right: 14, top: 6, bottom: 20, containLabel: true },
+        xAxis: { type: "category", data: days, splitArea: { show: true },
+                 axisLabel: { color: base._muted, formatter: v => (v || "").slice(5) },
+                 axisLine: { lineStyle: { color: base._border } } },
+        yAxis: { type: "category", data: cats, splitArea: { show: true },
+                 axisLabel: { color: base._fg }, axisLine: { lineStyle: { color: base._border } } },
+        visualMap: { min: 0, max, calculable: false, show: false,
+                     inRange: { color: [cssVar("--surface-raised"), cssVar("--amber-deep") || cssVar("--accent"), statusColor("crit")] } },
+        series: [{ type: "heatmap", data, itemStyle: { borderColor: base._border, borderWidth: 1 } }],
+      });
+    }
 
     // Parental-controls detail: flagged hits + observed domains + the per-host
     // list editor (mounted async after the modal opens — see mountWebfilterPanel).

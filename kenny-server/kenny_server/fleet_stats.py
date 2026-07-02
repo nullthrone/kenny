@@ -66,6 +66,63 @@ def aggregate_overview(agents: list[Agent], *, now: datetime | None = None) -> d
         "posture": _security_posture(agents),
         "top": _top_metrics(agents),
         "sankey": _sankey(agents),
+        "reliability_categories": _reliability_categories(agents),
+    }
+
+
+def _reliability_categories(agents: list[Agent]) -> dict[str, Any]:
+    """Heatmap grid: how many error/critical events of each friendly category each
+    host has. Reads the server-annotated ``category`` on the reliability events
+    (see ADR-0028); an unannotated event falls back to its raw ``source``.
+
+    Returns ``{agents, categories, cells:[{agent_id, category, count, crit, detail,
+    members}]}`` — cells sum event counts per host+category, ``crit`` flags any
+    critical-level group, and ``detail`` names the loudest sources for the tooltip.
+    """
+
+    # (agent_id, category) -> {count, crit, sources: {source: count}}
+    cells: dict[tuple[str, str], dict[str, Any]] = {}
+    categories: set[str] = set()
+    host_set: set[str] = set()
+    for a in agents:
+        aid = a["agent_id"]
+        rel = _section(a.get("snapshot"), "reliability")
+        events = rel.get("events") if rel else None
+        for e in events or []:
+            if not isinstance(e, dict):
+                continue
+            category = str(e.get("category") or e.get("source") or "Other")
+            count = int(_num(e.get("count")) or 0)
+            if count <= 0:
+                continue
+            host_set.add(aid)
+            categories.add(category)
+            cell = cells.setdefault((aid, category), {"count": 0, "crit": False, "sources": {}})
+            cell["count"] += count
+            if e.get("level") == "critical":
+                cell["crit"] = True
+            src = str(e.get("source") or "?")
+            cell["sources"][src] = cell["sources"].get(src, 0) + count
+
+    out_cells: list[dict[str, Any]] = []
+    for (aid, category), c in cells.items():
+        top_src = sorted(c["sources"].items(), key=lambda kv: kv[1], reverse=True)[:3]
+        detail = ", ".join(f"{s} ×{n}" for s, n in top_src)
+        out_cells.append(
+            {
+                "agent_id": aid,
+                "category": category,
+                "count": c["count"],
+                "crit": c["crit"],
+                "detail": detail,
+                "members": [_member(aid, c["count"], detail)],
+            }
+        )
+
+    return {
+        "agents": sorted(host_set),
+        "categories": sorted(categories),
+        "cells": out_cells,
     }
 
 
