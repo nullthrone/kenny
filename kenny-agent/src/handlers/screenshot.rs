@@ -270,7 +270,12 @@ mod tests {
         assert_eq!(info.height, 2);
         assert_eq!(info.color_type, png::ColorType::Rgba);
 
-        let mut out = vec![0u8; reader.output_buffer_size()];
+        let mut out = vec![
+            0u8;
+            reader
+                .output_buffer_size()
+                .expect("decoded PNG frame size is known")
+        ];
         let frame = reader.next_frame(&mut out).expect("decode frame");
         let bytes = &out[..frame.buffer_size()];
         // First pixel: BGRA (10,20,30,0) -> RGBA (30,20,10,255).

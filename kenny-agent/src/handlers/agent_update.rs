@@ -70,7 +70,8 @@ fn process_snapshot() -> sysinfo::System {
     let mut sys = System::new();
     sys.refresh_processes_specifics(
         ProcessesToUpdate::All,
-        ProcessRefreshKind::new().with_exe(UpdateKind::Always),
+        true,
+        ProcessRefreshKind::nothing().with_exe(UpdateKind::Always),
     );
     sys
 }
