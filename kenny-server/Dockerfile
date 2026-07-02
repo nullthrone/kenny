@@ -11,10 +11,15 @@ COPY docs/policy/ /app/docs/policy/
 
 RUN pip install --no-cache-dir . && mkdir -p /data
 
+# The release workflow passes the git tag here so the running server reports its
+# real version (see kenny_server/__init__.py); unset for local/dev builds.
+ARG KENNY_SERVER_VERSION=""
+
 # Bind to all interfaces inside the container; persist the SQLite store on a volume.
 ENV KENNY_HOST=0.0.0.0 \
     KENNY_PORT=8000 \
-    KENNY_DB_PATH=/data/kenny.sqlite
+    KENNY_DB_PATH=/data/kenny.sqlite \
+    KENNY_SERVER_VERSION=${KENNY_SERVER_VERSION}
 
 EXPOSE 8000
 VOLUME ["/data"]
