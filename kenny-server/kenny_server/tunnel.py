@@ -62,16 +62,29 @@ _MAX_FRAME_BYTES = int(os.environ.get("KENNY_MAX_TELEMETRY_BYTES", str(256 * 102
 _MAX_SECTIONS = int(os.environ.get("KENNY_MAX_TELEMETRY_SECTIONS", "128"))
 
 
+def _parse_version(value: str) -> tuple[int, ...]:
+    """Parse ``PROTOCOL_VERSION`` strings into comparable component tuples.
+
+    Comparison must be numeric per component, not lexicographic: ``"0.10"`` is
+    newer than ``"0.8"`` but compares smaller as a string.
+    """
+
+    try:
+        return tuple(int(p) for p in value.split("."))
+    except ValueError:
+        return (0,)
+
+
 def _signature_path(frame: Register) -> bool:
     """True when the register frame selects the v0.8 signature handshake.
 
-    Selected when ``protocol >= "0.8"`` and a ``client_nonce`` is present (per
-    ``docs/protocol.md`` § Transport / Migration window).
+    Selected when ``protocol >= 0.8`` (numeric) and a ``client_nonce`` is
+    present (per ``docs/protocol.md`` § Transport / Migration window).
     """
 
     if frame.client_nonce is None or frame.protocol is None:
         return False
-    return frame.protocol >= "0.8"
+    return _parse_version(frame.protocol) >= (0, 8)
 
 
 def _token_auth_enabled() -> bool:

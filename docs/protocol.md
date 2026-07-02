@@ -599,11 +599,15 @@ for fleet aggregation. These thresholds are illustrative of the data-driven rule
 
 ## Versioning
 
-`PROTOCOL_VERSION = "0.9"`. Both implementations expose this constant; from v0.8 the
+`PROTOCOL_VERSION = "0.10"`. Both implementations expose this constant; from v0.8 the
 agent puts it on the wire in `register.protocol` to select the mutual-auth handshake
-(the `>= "0.8"` comparison still holds at `"0.9"`). Bump on any breaking change to a frame
-or tool schema.
+(compare versions **numerically per component**, not lexically — `"0.10"` is newer than
+`"0.9"`). Bump on any breaking change to a frame or tool schema.
 
+- `0.10` — added the `installed_software`, `browser_extensions`, `listening_ports`,
+  `scheduled_tasks`, `local_accounts`, `backup_status`, `net_quality`, and `screen_time`
+  telemetry sections (security inventory, resilience, parental awareness); additive
+  sections only, no frame or tool changes. See ADR-0030, ADR-0031.
 - `0.9` — added the `webfilter_status`, `webfilter_apply`, and `webfilter_clear` tools and
   the `web_activity` telemetry section for parental-controls observability and on-demand web
   filtering; additive tools + section, no frame changes. See ADR-0026.
