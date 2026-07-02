@@ -13,7 +13,7 @@ use crate::protocol::ErrorCode;
 /// `diag_processes` — running processes with cpu and memory.
 pub fn processes(_args: Value) -> Result<Value, (ErrorCode, String)> {
     let mut sys = System::new();
-    sys.refresh_processes(ProcessesToUpdate::All);
+    sys.refresh_processes(ProcessesToUpdate::All, true);
     let processes: Vec<Value> = sys
         .processes()
         .values()

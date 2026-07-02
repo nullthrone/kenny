@@ -77,7 +77,7 @@ mod portable {
         let rows = components
             .list()
             .iter()
-            .map(|c| (c.label().to_string(), c.temperature()));
+            .filter_map(|c| Some((c.label().to_string(), c.temperature()?)));
         section_from_sensors(rows)
     }
 }

@@ -12,7 +12,7 @@ const TOP_N: usize = 15;
 /// Collect the `processes` section.
 pub fn collect() -> Section {
     let mut sys = System::new();
-    sys.refresh_processes(ProcessesToUpdate::All);
+    sys.refresh_processes(ProcessesToUpdate::All, true);
     let mut procs: Vec<_> = sys.processes().values().collect();
     procs.sort_by_key(|p| std::cmp::Reverse(p.memory()));
     let count = procs.len();
