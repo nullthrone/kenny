@@ -97,8 +97,8 @@ def test_effective_list_layers() -> None:
     assert eff["blocks"]["extern.adult"] == "external_adult"
     assert eff["blocks"]["vpn.bypass"] == "bypass"
     assert "allow.example" in eff["allows"]
-    # seed always contributes
-    assert "pornhub.com" in eff["blocks"]
+    # seed always contributes (exact dict-key lookup, not a URL substring check)
+    assert eff["blocks"].get("pornhub.com") == "seed"
 
 
 def test_effective_list_toggles_off() -> None:
@@ -397,7 +397,7 @@ def test_rule_web_activity_aged_out_is_ok() -> None:
 
 # --- integration: mock agent + tunnel enrichment + API -----------------------
 
-from tests.test_server_e2e import (  # noqa: E402
+from test_server_e2e import (  # noqa: E402
     SERVER_SEED_B64,
     MockAgent,
     _fixture,
