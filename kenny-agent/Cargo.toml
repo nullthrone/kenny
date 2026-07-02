@@ -36,7 +36,7 @@ rand_core = { version = "0.6", features = ["getrandom"] }
 ureq = { version = "2", default-features = false, features = ["tls", "json"] }
 # Portable PNG encoder for screen_capture. NOT windows-gated so encode_png can be
 # unit-tested on Linux CI.
-png = "0.17"
+png = "0.18"
 # Bundled SQLite for browser-history parsing (`web_activity` collector). NOT
 # windows-gated: bundling the amalgamation lets the Chromium/Firefox history readers
 # be unit-tested against fabricated temp DBs on Linux CI (matches the ungated
