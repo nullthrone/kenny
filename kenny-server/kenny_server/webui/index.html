@@ -1939,8 +1939,40 @@
     const SECTION_RENDERERS = {
       web_activity: renderWebActivityDetail,
       reliability: renderReliabilityDetail,
+      screen_time: renderScreenTimeDetail,
     };
 
+    // Parental awareness (ADR-0031): whole-machine interactive minutes per day
+    // as simple horizontal bars — deliberately nothing finer than day buckets.
+    function renderScreenTimeDetail(raw, s) {
+      let body = "";
+      if (s && s.summary) body += `<div class="k-modal__sum">${esc(s.summary)}</div>`;
+      const days = Array.isArray(raw.days) ? raw.days : [];
+      if (days.length) {
+        const max = Math.max(...days.map(d => d.active_minutes || 0), 60);
+        body += `<div class="k-detail-grp"><div class="k-detail-grp__lbl">interactive time per day</div>`
+          + days.map(d => {
+            const mins = d.active_minutes || 0;
+            const pct = Math.min(100, Math.round((mins / max) * 100));
+            return `<div class="k-row" style="gap:8px;align-items:center;margin:3px 0">
+              <span class="k-mono" style="font-size:11px;width:78px">${esc(d.date)}</span>
+              <div style="flex:1;background:rgba(128,128,128,.15);border-radius:4px;height:14px;overflow:hidden">
+                <div style="width:${pct}%;height:100%;background:var(--ok-dot)"></div>
+              </div>
+              <span class="k-mono" style="font-size:11px;width:44px;text-align:right">${(mins / 60).toFixed(1)}h</span>
+            </div>`;
+          }).join("") + `</div>`;
+      } else {
+        body += `<div class="k-muted">no session data in the window</div>`;
+      }
+      const scalars = [];
+      for (const k of ["window_days", "source"]) {
+        if (raw[k] !== undefined) scalars.push([k, fmtValue(k, raw[k])]);
+      }
+      if (Array.isArray(raw.errors) && raw.errors.length) scalars.push(["errors", raw.errors.join("; ")]);
+      if (scalars.length) body += defListGrp(null, scalars);
+      return body;
+    }
     // Reliability detail: WHAT is going wrong on this PC. A category × day heatmap
     // (built from the per-group `by_day` histograms) over the loudest problem
     // categories, then each category expands to the raw sources / event ids /
@@ -2039,7 +2071,6 @@
         series: [{ type: "heatmap", data, itemStyle: { borderColor: base._border, borderWidth: 1 } }],
       });
     }
-
     // Parental-controls detail: flagged hits + observed domains + the per-host
     // list editor (mounted async after the modal opens — see mountWebfilterPanel).
     function renderWebActivityDetail(raw, s) {
