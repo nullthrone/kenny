@@ -407,6 +407,9 @@ fn write_atomic(path: &std::path::Path, content: &str) -> Result<(), (ErrorCode,
             format!("cannot write temp hosts file {}: {e}", tmp.display()),
         )
     })?;
+    clear_readonly_if_present(path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })?;
     std::fs::rename(&tmp, path).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
         (
@@ -415,6 +418,44 @@ fn write_atomic(path: &std::path::Path, content: &str) -> Result<(), (ErrorCode,
         )
     })?;
     Ok(())
+}
+
+/// Clear the read-only attribute on `path` if it exists and is read-only.
+///
+/// On Windows, replacing an existing file that has `FILE_ATTRIBUTE_READONLY` set fails
+/// with `ERROR_ACCESS_DENIED` even for SYSTEM — the attribute check happens independently
+/// of the caller's privileges. Antivirus products and hardening guides commonly set the
+/// hosts file read-only as an anti-hijack measure, so clear it before the atomic replace
+/// rather than surface a misleading "access denied" on an otherwise-privileged process.
+#[cfg_attr(not(windows), allow(dead_code))]
+// On Windows this only clears FILE_ATTRIBUTE_READONLY, not an ACL; the "world writable on
+// Unix" caveat clippy warns about doesn't bite here — the Unix path is test/dev-only (a real
+// tool call is `unsupported` off Windows), never the production hosts file.
+#[allow(clippy::permissions_set_readonly_false)]
+fn clear_readonly_if_present(path: &std::path::Path) -> Result<(), (ErrorCode, String)> {
+    match std::fs::metadata(path) {
+        Ok(meta) => {
+            let mut perms = meta.permissions();
+            if perms.readonly() {
+                perms.set_readonly(false);
+                std::fs::set_permissions(path, perms).map_err(|e| {
+                    (
+                        ErrorCode::ExecFailed,
+                        format!(
+                            "cannot clear read-only attribute on hosts file {}: {e}",
+                            path.display()
+                        ),
+                    )
+                })?;
+            }
+            Ok(())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err((
+            ErrorCode::ExecFailed,
+            format!("cannot stat hosts file {}: {e}", path.display()),
+        )),
+    }
 }
 
 #[cfg(windows)]
@@ -740,6 +781,38 @@ mod tests {
             apply_hosts_only(path, &domains).unwrap();
             assert_eq!(std::fs::read_to_string(path).unwrap(), before);
 
+            let removed = clear_hosts_only(path).unwrap();
+            assert_eq!(removed, 2);
+            let after = std::fs::read_to_string(path).unwrap();
+            assert!(!after.contains(BEGIN));
+            assert!(after.contains("127.0.0.1 localhost"));
+        });
+    }
+
+    #[test]
+    fn apply_and_clear_succeed_when_hosts_file_is_read_only() {
+        // Regression test: a hosts file pre-marked read-only (a common AV/anti-hijack
+        // hardening default) must not make `webfilter_apply`/`clear` fail with
+        // "access denied" — see `clear_readonly_if_present`.
+        with_hosts_file("kenny-webfilter-hosts-readonly.test", |path| {
+            std::fs::write(path, "127.0.0.1 localhost\n").unwrap();
+            let mut perms = std::fs::metadata(path).unwrap().permissions();
+            perms.set_readonly(true);
+            std::fs::set_permissions(path, perms).unwrap();
+
+            let domains = validate_domains(&sample()).unwrap();
+            let n = apply_hosts_only(path, &domains).unwrap();
+            assert_eq!(n, 2);
+            let content = std::fs::read_to_string(path).unwrap();
+            assert!(content.contains("0.0.0.0 badsite.example"));
+            assert!(content.contains("127.0.0.1 localhost"));
+            assert!(
+                !std::fs::metadata(path).unwrap().permissions().readonly(),
+                "the replaced file must not still be read-only"
+            );
+
+            // The replaced file is no longer read-only, but clearing again must be a
+            // harmless no-op and clear must still succeed.
             let removed = clear_hosts_only(path).unwrap();
             assert_eq!(removed, 2);
             let after = std::fs::read_to_string(path).unwrap();
