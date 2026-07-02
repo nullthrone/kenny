@@ -592,7 +592,11 @@ def build_chat_routes(
                 status_code=409,
             )
         # Context-aware chat: if the dashboard has an agent selected, scope the
-        # active agent to it so forwarded capability tools target that machine.
+        # active agent to it so forwarded capability tools target that machine,
+        # and remember it on the session so the model is told about it too (see
+        # chat._context_note). Always sync, including clearing back to None when
+        # the dashboard switches to fleet-wide — otherwise the session would
+        # keep pointing (and telling the model) at a stale agent.
         agent_id = str(body.get("agent_id", "")).strip()
         if agent_id:
             try:
@@ -600,7 +604,7 @@ def build_chat_routes(
             except KeyError:
                 if agent_id in await store.known_agents():
                     registry._active_agent = agent_id  # noqa: SLF001 (matches chat.py dev path)
-            session.agent_id = agent_id
+        session.agent_id = agent_id or None
         try:
             result = await run_turn(session, message, executor=executor, client=client_factory())
         except Exception as exc:  # noqa: BLE001 - surface to the UI
@@ -651,6 +655,8 @@ def build_chat_routes(
                 },
                 status_code=409,
             )
+        # See api_chat above: always sync session.agent_id (including clearing
+        # it back to None) so it never lags the dashboard's current selection.
         agent_id = str(body.get("agent_id", "")).strip()
         if agent_id:
             try:
@@ -658,7 +664,7 @@ def build_chat_routes(
             except KeyError:
                 if agent_id in await store.known_agents():
                     registry._active_agent = agent_id  # noqa: SLF001 (matches chat.py dev path)
-            session.agent_id = agent_id
+        session.agent_id = agent_id or None
         client = client_factory()
 
         async def gen() -> Any:

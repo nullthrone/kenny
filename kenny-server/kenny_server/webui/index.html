@@ -206,11 +206,35 @@
 
     /* chat bubbles */
     .k-bubble { max-width: 80%; padding: 9px 12px; border-radius: var(--radius-md);
-      font-size: var(--text-sm); line-height: var(--leading-snug); white-space: pre-wrap; }
+      font-size: var(--text-sm); line-height: var(--leading-snug); white-space: pre-wrap;
+      overflow-wrap: anywhere; }
     .k-bubble--user { align-self: flex-end; background: var(--surface-raised);
       border: var(--border-width) solid var(--border); color: var(--fg); border-bottom-right-radius: var(--radius-xs); }
     .k-bubble--assistant { align-self: flex-start; background: var(--surface);
       border: var(--border-width) solid var(--border); color: var(--fg); border-bottom-left-radius: var(--radius-xs); }
+    /* rendered markdown inside an assistant bubble (see renderMarkdown()) */
+    .k-bubble p { margin: 0 0 8px; }
+    .k-bubble p:last-child { margin-bottom: 0; }
+    .k-bubble ul, .k-bubble ol { margin: 0 0 8px; padding-left: 1.3em; }
+    .k-bubble ul:last-child, .k-bubble ol:last-child { margin-bottom: 0; }
+    .k-bubble li { margin: 2px 0; }
+    .k-bubble h1, .k-bubble h2, .k-bubble h3, .k-bubble h4, .k-bubble h5, .k-bubble h6 {
+      margin: 10px 0 6px; font-size: var(--text-sm); font-weight: var(--weight-bold); }
+    .k-bubble h1:first-child, .k-bubble h2:first-child, .k-bubble h3:first-child,
+    .k-bubble h4:first-child, .k-bubble h5:first-child, .k-bubble h6:first-child { margin-top: 0; }
+    .k-bubble code { font-family: var(--font-mono); font-size: 0.9em;
+      background: var(--bg-sunken); border-radius: var(--radius-xs); padding: 1px 4px; }
+    /* fenced code blocks scroll horizontally instead of breaking mid-token,
+       same convention as .k-gate__call — breaking code garbles it, prose is fine to wrap */
+    .k-bubble pre { font-family: var(--font-mono); font-size: var(--text-xs);
+      background: var(--bg-sunken); border: var(--border-width) solid var(--border);
+      border-radius: var(--radius-sm); padding: 8px 10px; margin: 6px 0;
+      white-space: pre; overflow-x: auto; }
+    .k-bubble pre:last-child { margin-bottom: 0; }
+    .k-bubble pre code { background: none; padding: 0; }
+    .k-bubble blockquote { margin: 6px 0; padding-left: 10px;
+      border-left: var(--border-width-emphasis) solid var(--border); color: var(--fg-muted); }
+    .k-bubble a { color: var(--accent); }
     .k-toolrun { align-self: flex-start; display: inline-flex; align-items: center; gap: 8px;
       font-family: var(--font-mono); font-size: var(--text-xs); color: var(--fg-muted);
       background: var(--bg-sunken); border: var(--border-width) solid var(--border);
@@ -2317,11 +2341,102 @@
       if (chatAbort) chatAbort.abort();
     }
 
+    // Minimal, escape-first markdown renderer for assistant chat replies.
+    // Hand-rolled instead of a vendored library so the escaping guarantee is
+    // easy to audit: every code path HTML-escapes raw text (via esc()) before
+    // any tag is layered on, and link hrefs are allow-listed to http(s)/mailto.
+    // That matters here specifically because assistant text isn't fully
+    // trusted either (ADR-0024) — a compromised agent's tool output can end
+    // up quoted back by the model, so nothing in this text should be treated
+    // as real HTML. User messages are never run through this; they keep using
+    // textContent, unchanged.
+    function renderMarkdown(text) {
+      text = String(text == null ? "" : text).replace(/\r\n/g, "\n");
+
+      // Pull fenced code blocks out first so no inline rule below ever sees
+      // (or reformats) their contents.
+      const codeBlocks = [];
+      text = text.replace(/```[^\n]*\n([\s\S]*?)```/g, (_, code) => {
+        codeBlocks.push(`<pre><code>${esc(code.replace(/\n$/, ""))}</code></pre>`);
+        return " B" + (codeBlocks.length - 1) + " ";
+      });
+
+      // Inline formatting on one already-escaped line. Each rule stashes its
+      // own HTML behind an opaque token before the next rule runs, so e.g. a
+      // bold marker inside inline code, or code inside link text, can never
+      // be misread by a later rule; restorePass() unwraps every token after.
+      function inline(raw) {
+        let s = esc(raw);
+        const spans = [];
+        const stash = html => { spans.push(html); return " C" + (spans.length - 1) + " "; };
+        s = s.replace(/`([^`\n]+)`/g, (_, c) => stash(`<code>${c}</code>`));
+        s = s.replace(/\*\*([^\n]+?)\*\*|__([^\n]+?)__/g, (_, a, b) => stash(`<strong>${a ?? b}</strong>`));
+        s = s.replace(/(?<![\w*])\*([^*\n]+?)\*(?![\w*])/g, (_, a) => stash(`<em>${a}</em>`));
+        s = s.replace(/(?<![\w_])_([^_\n]+?)_(?![\w_])/g, (_, a) => stash(`<em>${a}</em>`));
+        s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|mailto:[^\s)]+)\)/gi,
+          (_, t, u) => stash(`<a href="${u}" target="_blank" rel="noopener noreferrer">${t}</a>`));
+        for (let n = 0; n < 3 && / C\d+ /.test(s); n++) {
+          s = s.replace(/ C(\d+) /g, (_, i) => spans[+i]);
+        }
+        return s;
+      }
+
+      // Block-level: group lines into headers/lists/blockquotes/paragraphs.
+      function blocksOf(src) {
+        const lines = src.split("\n");
+        let html = "";
+        let i = 0;
+        while (i < lines.length) {
+          const line = lines[i];
+          const codeToken = /^B(\d+)$/.exec(line.trim());
+          if (codeToken) { html += codeBlocks[+codeToken[1]]; i++; continue; }
+          if (/^\s*$/.test(line)) { i++; continue; }
+
+          const heading = /^(#{1,6})\s+(.*)$/.exec(line);
+          if (heading) {
+            const level = heading[1].length;
+            html += `<h${level}>${inline(heading[2])}</h${level}>`;
+            i++; continue;
+          }
+
+          if (/^>\s?/.test(line)) {
+            const quoted = [];
+            while (i < lines.length && /^>\s?/.test(lines[i])) { quoted.push(lines[i].replace(/^>\s?/, "")); i++; }
+            html += `<blockquote>${blocksOf(quoted.join("\n"))}</blockquote>`;
+            continue;
+          }
+
+          const ordered = /^\s*\d+[.)]\s+/.test(line);
+          const unordered = /^\s*[-*]\s+/.test(line);
+          if (ordered || unordered) {
+            const itemRe = ordered ? /^\s*\d+[.)]\s+(.*)$/ : /^\s*[-*]\s+(.*)$/;
+            const items = [];
+            while (i < lines.length && itemRe.test(lines[i])) { items.push(itemRe.exec(lines[i])[1]); i++; }
+            const tag = ordered ? "ol" : "ul";
+            html += `<${tag}>${items.map(it => `<li>${inline(it)}</li>`).join("")}</${tag}>`;
+            continue;
+          }
+
+          const para = [];
+          while (i < lines.length && !/^\s*$/.test(lines[i]) && !/^(#{1,6})\s+/.test(lines[i]) &&
+                 !/^>\s?/.test(lines[i]) && !/^\s*[-*]\s+/.test(lines[i]) && !/^\s*\d+[.)]\s+/.test(lines[i]) &&
+                 !/^B\d+$/.test(lines[i].trim())) {
+            para.push(lines[i]); i++;
+          }
+          html += `<p>${para.map(inline).join("<br>")}</p>`;
+        }
+        return html;
+      }
+
+      return blocksOf(text);
+    }
+
     function bubble(cls, text) {
       const t = document.getElementById("transcript");
       const div = document.createElement("div");
       div.className = "k-bubble k-bubble--" + cls;
-      div.textContent = text;
+      if (cls === "assistant") div.innerHTML = renderMarkdown(text);
+      else div.textContent = text;
       t.appendChild(div);
       t.scrollTop = t.scrollHeight;
       return div;
@@ -2352,7 +2467,7 @@
     // single assistant bubble the first time a text token arrives, so empty
     // turns (tool-only or a confirm-gate) don't leave a blank bubble behind.
     function newChatCtx() {
-      return { _div: null, bubble() { return (this._div ||= bubble("assistant", "")); }, brokeSinceText: false };
+      return { _div: null, _raw: "", bubble() { return (this._div ||= bubble("assistant", "")); }, brokeSinceText: false };
     }
     // Apply one streamed chat event. ctx.brokeSinceText tracks whether a tool
     // ran since the last text token, so a new text segment is separated from
@@ -2366,12 +2481,18 @@
         // bubble for whatever follows, so replayed turns don't run together.
         bubble("user", ev.text);
         ctx._div = null;
+        ctx._raw = "";
         ctx.brokeSinceText = false;
       } else if (ev.type === "text_delta") {
         const div = ctx.bubble();
-        if (ctx.brokeSinceText && div.textContent) div.textContent += "\n\n";
+        if (ctx.brokeSinceText && ctx._raw) ctx._raw += "\n\n";
         ctx.brokeSinceText = false;
-        div.textContent += ev.text;
+        ctx._raw += ev.text;
+        // Re-render the whole buffered reply each token rather than appending
+        // HTML incrementally — a delta can land mid-token (e.g. split a
+        // "**bold" marker), which incremental innerHTML append can't recover
+        // from. The buffer is short enough per turn for this to be cheap.
+        div.innerHTML = renderMarkdown(ctx._raw);
         t.scrollTop = t.scrollHeight;
       } else if (ev.type === "tool_result") {
         ctx.brokeSinceText = true;
@@ -2428,8 +2549,11 @@
     async function startChatTurn(message) {
       if (chatAbort) return; // never overlap turns
       bubble("user", message);
-      const body = { session_id: chatSessionId, message };
-      if (chatContext) body.agent_id = chatContext;
+      // Always send agent_id (possibly "") so the session mirrors the current
+      // dashboard selection exactly, including switching back to fleet-wide —
+      // omitting the key entirely would leave the server-side session pointing
+      // at whatever agent was last selected.
+      const body = { session_id: chatSessionId, message, agent_id: chatContext || "" };
       const ctx = newChatCtx();
       chatAbort = new AbortController();
       setComposerStreaming(true);
