@@ -1,6 +1,9 @@
-//! `reliability` section — system stability index / recent crashes.
+//! `reliability` section — what is going wrong on the PC, not just how much.
 //!
-//! Real data from `Win32_ReliabilityStabilityMetrics` / `Get-WinEvent` on Windows.
+//! Reports a breakdown of the Error/Critical entries in the System + Application
+//! event logs over a rolling window (7 days), grouped by source + event id, each
+//! with a sample message and a per-day histogram. Real data from `Get-WinEvent`
+//! on Windows; the server categorizes the groups and draws the heatmaps.
 
 use serde_json::json;
 #[cfg(windows)]
@@ -8,6 +11,12 @@ use serde_json::Value;
 
 use crate::protocol::Status;
 use crate::telemetry::Section;
+
+/// How many days of event-log history the breakdown covers.
+const WINDOW_DAYS: u64 = 7;
+/// Cap the number of event groups reported so the frame stays bounded.
+#[cfg(windows)]
+const MAX_GROUPS: usize = 20;
 
 /// Collect the `reliability` section.
 pub fn collect() -> Section {
@@ -20,7 +29,13 @@ pub fn collect() -> Section {
         Section::with_fields(
             Status::Ok,
             "n/a on this platform",
-            json!({ "stability_index": null, "recent_crashes": 0 }),
+            json!({
+                "stability_index": null,
+                "recent_crashes": 0,
+                "window_days": WINDOW_DAYS,
+                "events": [],
+                "truncated": false,
+            }),
         )
     }
 }
@@ -30,49 +45,104 @@ mod windows_impl {
     use super::*;
     use crate::telemetry::collectors::winps;
 
-    /// Count Error/Critical (Level 1/2) events in the System + Application logs over
-    /// the last 7 days, and read the latest reliability stability index if exposed.
+    /// Group Error/Critical (Level 1/2) events in the System + Application logs
+    /// over the last 7 days by (ProviderName, Id): count, level, a sample message,
+    /// last-seen, and a per-day histogram. Also read the latest reliability
+    /// stability index. The heavy lifting is in PowerShell; Rust shapes the result.
     pub fn collect() -> Section {
         let script = r#"
 $since = (Get-Date).AddDays(-7)
-$errors = 0
+$events = @()
 foreach ($log in 'System','Application') {
   try {
-    $errors += @(Get-WinEvent -FilterHashtable @{ LogName=$log; Level=1,2; StartTime=$since } -ErrorAction Stop).Count
+    $events += @(Get-WinEvent -FilterHashtable @{ LogName=$log; Level=1,2; StartTime=$since } -ErrorAction Stop)
   } catch {}
 }
+$groups = @()
+foreach ($g in ($events | Group-Object ProviderName, Id)) {
+  $first = $g.Group | Sort-Object TimeCreated -Descending | Select-Object -First 1
+  $level = if ($first.Level -eq 1) { 'critical' } else { 'error' }
+  $msg = if ($first.Message) { ($first.Message -split "`r?`n")[0] } else { '' }
+  if ($msg.Length -gt 200) { $msg = $msg.Substring(0,200) }
+  $byDay = @{}
+  foreach ($e in $g.Group) {
+    $d = $e.TimeCreated.ToString('yyyy-MM-dd')
+    if ($byDay.ContainsKey($d)) { $byDay[$d]++ } else { $byDay[$d] = 1 }
+  }
+  $groups += [pscustomobject]@{
+    source    = $first.ProviderName
+    event_id  = [int]$first.Id
+    level     = $level
+    count     = [int]$g.Count
+    sample    = $msg
+    last_seen = $first.TimeCreated.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+    by_day    = $byDay
+  }
+}
+$total = ($events | Measure-Object).Count
 $index = $null
 try {
   $m = Get-CimInstance -ClassName Win32_ReliabilityStabilityMetrics -ErrorAction Stop |
        Sort-Object TimeGenerated -Descending | Select-Object -First 1
   if ($m) { $index = [double]$m.SystemStabilityIndex }
 } catch {}
-[pscustomobject]@{ stability_index = $index; recent_crashes = $errors } | ConvertTo-Json -Compress
+[pscustomobject]@{
+  stability_index = $index
+  recent_crashes  = $total
+  groups          = @($groups)
+} | ConvertTo-Json -Depth 6 -Compress
 "#;
 
         let Some(v) = winps::run_json(script) else {
             return Section::with_fields(
                 Status::Ok,
                 "reliability unavailable",
-                json!({ "stability_index": null, "recent_crashes": 0 }),
+                json!({
+                    "stability_index": null,
+                    "recent_crashes": 0,
+                    "window_days": WINDOW_DAYS,
+                    "events": [],
+                    "truncated": false,
+                }),
             );
         };
 
-        let crashes = v.get("recent_crashes").and_then(Value::as_u64).unwrap_or(0);
+        let total = v.get("recent_crashes").and_then(Value::as_u64).unwrap_or(0);
         let index = v.get("stability_index").cloned().unwrap_or(Value::Null);
 
-        let (status, summary) = if crashes >= 20 {
-            (
-                Status::Warn,
-                format!("{crashes} error/critical events in 7d"),
-            )
+        // Sort groups by count desc and cap to MAX_GROUPS so the frame stays bounded.
+        let mut groups: Vec<Value> = v
+            .get("groups")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        groups.sort_by_key(|g| {
+            std::cmp::Reverse(g.get("count").and_then(Value::as_u64).unwrap_or(0))
+        });
+        let truncated = groups.len() > MAX_GROUPS;
+        groups.truncate(MAX_GROUPS);
+
+        let has_critical = groups
+            .iter()
+            .any(|g| g.get("level").and_then(Value::as_str) == Some("critical"));
+
+        // The agent sets a reasonable status; health_rules.py is authoritative.
+        let (status, summary) = if has_critical || total >= 20 {
+            (Status::Warn, format!("{total} error/critical events in 7d"))
         } else {
-            (Status::Ok, format!("{crashes} error event(s) in 7d"))
+            (Status::Ok, format!("{total} error event(s) in 7d"))
         };
+
         Section::with_fields(
             status,
             summary,
-            json!({ "stability_index": index, "recent_crashes": crashes }),
+            json!({
+                "stability_index": index,
+                "recent_crashes": total,
+                "window_days": WINDOW_DAYS,
+                "events": groups,
+                "truncated": truncated,
+            }),
         )
     }
 }
@@ -85,5 +155,8 @@ mod tests {
     fn reliability_section_is_valid() {
         let v = collect().into_value();
         assert!(v.get("recent_crashes").is_some());
+        // The breakdown is always present (empty on non-Windows).
+        assert!(v.get("events").and_then(|e| e.as_array()).is_some());
+        assert!(v.get("window_days").is_some());
     }
 }

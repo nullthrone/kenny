@@ -150,6 +150,53 @@ def _rule_os_support(payload: dict[str, Any], now: datetime) -> "tuple[Status, s
     return None
 
 
+def _number(value: Any) -> float | None:
+    """Coerce a JSON number to float, rejecting bools and non-numerics."""
+
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def _reliability_reason(events: list[Any], total: int) -> str:
+    """A content reason: the biggest problem groups by category (or raw source)."""
+
+    tally: dict[str, int] = {}
+    for e in events or []:
+        if not isinstance(e, dict):
+            continue
+        label = e.get("category") or e.get("source") or "?"
+        tally[label] = tally.get(label, 0) + int(_number(e.get("count")) or 0)
+    top = sorted(tally.items(), key=lambda kv: kv[1], reverse=True)[:3]
+    if not top:
+        return f"{total} error/critical events in 7d"
+    return ", ".join(f"{label} ×{count}" for label, count in top)
+
+
+def _rule_reliability(payload: dict[str, Any], now: datetime) -> "tuple[Status, str] | None":
+    # Judge on the *content* of the error breakdown, not a bare count. `events` is
+    # the grouped breakdown (each with count/level, and a server-annotated
+    # `category`); `stability_index` is the Windows Reliability Index (0-10).
+    events = payload.get("events")
+    si = _number(payload.get("stability_index"))
+    total = _number(payload.get("recent_crashes"))
+    if events is None and total is None and si is None:
+        return None
+    if total is None:
+        total = sum(int(_number(e.get("count")) or 0) for e in (events or []) if isinstance(e, dict))
+    total_i = int(total)
+    has_critical = any(
+        isinstance(e, dict) and e.get("level") == "critical" for e in (events or [])
+    )
+
+    if total_i >= 50 or (si is not None and si < 3):
+        status: Status = "crit"
+    elif total_i >= 15 or has_critical or (si is not None and si < 6):
+        status = "warn"
+    else:
+        status = "ok"
+
+    return status, _reliability_reason(events if isinstance(events, list) else [], total_i)
+
+
 _WEB_ACTIVITY_SERIOUS = {"custom", "seed", "external_adult"}
 
 
@@ -186,6 +233,7 @@ RULES: dict[str, Rule] = {
     "thermals": _rule_thermals,
     "os_support": _rule_os_support,
     "web_activity": _rule_web_activity,
+    "reliability": _rule_reliability,
 }
 
 

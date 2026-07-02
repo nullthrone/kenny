@@ -28,6 +28,7 @@ from ..chat import (
     run_turn_events,
 )
 from ..policy import PolicyEngine
+from ..event_categories import annotate_events, categorize_events
 from ..recommend import ai_available, recommend_events, warning_facts
 from ..registry import AgentRegistry
 from ..store import ChatHistoryStore, EventStore, PolicyStore, TelemetryStore
@@ -62,8 +63,13 @@ def build_api_routes(
     policy_store: PolicyStore | None = None,
     policy_engine: PolicyEngine | None = None,
     webfilter: WebFilterService | None = None,
+    client_factory: Any = None,
 ) -> list[Route]:
-    """Build the dashboard's static + JSON routes."""
+    """Build the dashboard's static + JSON routes.
+
+    ``client_factory`` builds the Anthropic client for read-path event
+    categorization; defaults to :func:`_anthropic_client` (injected in tests).
+    """
 
     _APPLIES_TO = {"powershell", "self_protection", "path"}
     _WEBFILTER_ACTIONS = {"watch", "block", "allow"}
@@ -84,6 +90,30 @@ def build_api_routes(
             return Response(status_code=404)
         return FileResponse(path, media_type=media)
 
+    async def _annotate_reliability(snapshots: list[dict[str, Any] | None]) -> None:
+        """Stamp a friendly ``category`` onto every reliability event across the
+        given snapshots (mutating the in-memory copies loaded from the store).
+
+        One batched LLM call for the whole set, cached and deduped by
+        :func:`event_categories.categorize_events`; a no-op when there are no
+        events, and — with no API key — every event resolves to ``"Other"``.
+        """
+
+        groups: list[dict[str, Any]] = []
+        for snap in snapshots:
+            rel = snap.get("reliability") if isinstance(snap, dict) else None
+            if isinstance(rel, dict):
+                groups.extend(e for e in (rel.get("events") or []) if isinstance(e, dict))
+        if not groups:
+            return
+        factory = client_factory or _anthropic_client
+        client = factory() if ai_available() else None
+        mapping = await categorize_events(client, groups)
+        for snap in snapshots:
+            rel = snap.get("reliability") if isinstance(snap, dict) else None
+            if isinstance(rel, dict) and isinstance(rel.get("events"), list):
+                annotate_events(rel["events"], mapping)
+
     async def api_fleet(_request: Request) -> JSONResponse:
         ids = await _known_ids(registry, store)
         agents = [await _overview(i, registry, store) for i in ids]
@@ -103,21 +133,28 @@ def build_api_routes(
         from .. import fleet_stats
 
         ids = await _known_ids(registry, store)
-        agents: list[dict[str, Any]] = []
+        snapshots = []
+        rows = []
         for agent_id in ids:
             agent = registry.get(agent_id)
             latest = await store.latest(agent_id)
             snapshot = latest["snapshot"] if latest else None
-            agents.append(
-                {
-                    "agent_id": agent_id,
-                    "online": bool(agent and agent.online),
-                    "meta": agent.meta if agent else {},
-                    "snapshot": snapshot,
-                    "health": build_health(snapshot),
-                    "collected_at": latest["collected_at"] if latest else None,
-                }
-            )
+            snapshots.append(snapshot)
+            rows.append((agent_id, agent, snapshot, latest))
+        # Annotate reliability events with friendly categories before health
+        # evaluation + aggregation, so both the reason and the heatmap use them.
+        await _annotate_reliability(snapshots)
+        agents: list[dict[str, Any]] = [
+            {
+                "agent_id": agent_id,
+                "online": bool(agent and agent.online),
+                "meta": agent.meta if agent else {},
+                "snapshot": snapshot,
+                "health": build_health(snapshot),
+                "collected_at": latest["collected_at"] if latest else None,
+            }
+            for agent_id, agent, snapshot, latest in rows
+        ]
         return JSONResponse(fleet_stats.aggregate_overview(agents))
 
     async def api_fleet_trend(request: Request) -> JSONResponse:
@@ -150,6 +187,9 @@ def build_api_routes(
         latest = await store.latest(agent_id)
         snapshot = latest["snapshot"] if latest else None
         history = await store.history(agent_id, limit=50)
+        # Categorize the latest reliability events (for the detail heatmap + the
+        # health reason). History points only carry `overall`, so they don't need it.
+        await _annotate_reliability([snapshot])
         hist_points = [
             {"collected_at": h["collected_at"], "overall": build_health(h["snapshot"])["overall"]}
             for h in history

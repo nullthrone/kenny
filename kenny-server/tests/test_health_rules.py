@@ -25,6 +25,9 @@ def test_snapshot_section_statuses() -> None:
     assert sections["defender"]["status"] == "crit"
     assert sections["win_update"]["status"] == "warn"
     assert sections["reboot_pending"]["status"] == "warn"
+    # reliability: 48 events (>=15) with no critical group -> warn, content reason.
+    assert sections["reliability"]["status"] == "warn"
+    assert "×" in sections["reliability"]["reason"]
 
 
 def test_snapshot_overall_is_crit() -> None:
@@ -75,6 +78,57 @@ def test_thermals_no_sensors_defers_to_agent() -> None:
         "thermals", {"status": "ok", "summary": "no temperature sensors", "sensors": []}, now=NOW
     )
     assert result["status"] == "ok"
+    assert "reason" not in result
+
+
+def test_reliability_content_reason_and_thresholds() -> None:
+    def _eval(payload: dict) -> dict:
+        return health_rules.evaluate_section(
+            "reliability", {"status": "ok", "summary": "", **payload}, now=NOW
+        )
+
+    events = [
+        {"source": "Application Error", "event_id": 1000, "level": "error", "count": 30,
+         "category": "App crash / hang"},
+        {"source": "disk", "event_id": 51, "level": "error", "count": 18,
+         "category": "Disk & storage"},
+    ]
+    warn = _eval({"recent_crashes": 48, "events": events})
+    assert warn["status"] == "warn"
+    # The reason names the biggest categories by count, not a bare number.
+    assert warn["reason"].startswith("App crash / hang ×30")
+    assert "Disk & storage ×18" in warn["reason"]
+
+    # A critical-level group escalates to warn even with a small total.
+    crit_evt = [{"source": "Kernel-Power", "event_id": 41, "level": "critical", "count": 2,
+                 "category": "Power & boot"}]
+    assert _eval({"recent_crashes": 2, "events": crit_evt})["status"] == "warn"
+
+    # Large total -> crit; low stability index -> crit.
+    assert _eval({"recent_crashes": 60, "events": events})["status"] == "crit"
+    assert _eval({"recent_crashes": 3, "stability_index": 2.0})["status"] == "crit"
+
+    # Quiet host -> ok.
+    assert _eval({"recent_crashes": 4, "events": []})["status"] == "ok"
+
+
+def test_reliability_falls_back_to_source_without_category() -> None:
+    # Before annotation runs (or with no API key), the reason uses the raw source.
+    result = health_rules.evaluate_section(
+        "reliability",
+        {"status": "ok", "summary": "", "recent_crashes": 20,
+         "events": [{"source": "Ntfs", "event_id": 55, "level": "error", "count": 20}]},
+        now=NOW,
+    )
+    assert result["status"] == "warn"
+    assert "Ntfs ×20" in result["reason"]
+
+
+def test_reliability_defers_when_no_fields() -> None:
+    result = health_rules.evaluate_section(
+        "reliability", {"status": "warn", "summary": "collector unavailable"}, now=NOW
+    )
+    assert result["status"] == "warn"
     assert "reason" not in result
 
 

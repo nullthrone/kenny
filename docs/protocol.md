@@ -439,6 +439,37 @@ rule consumes. That annotation is **server-internal and not part of this wire co
 agent never sends `flagged`. Off Windows the section is the standard `n/a on this platform`
 stub with empty `sources`/`domains`.
 
+The `reliability` section reports **what** is going wrong, not just how many errors there are:
+a breakdown of the Error/Critical entries in the System + Application event logs over a rolling
+window (default 7 days), grouped by Windows source + event id. Each group carries a real sample
+message, its level, a total count, when it was last seen, and a per-day histogram. The list is
+bounded (top ~20 groups by count, `truncated` beyond; `sample` capped ~200 chars). The section
+payload the agent sends:
+
+```json
+"reliability": {
+  "status": "warn",
+  "summary": "192 error/critical events in 7d",
+  "stability_index": 6.8,
+  "recent_crashes": 192,
+  "window_days": 7,
+  "events": [
+    { "source": "Application Error", "event_id": 1000, "level": "error", "count": 84,
+      "sample": "Faulting application name: chrome.exe, version 126.0.0.0 ...",
+      "last_seen": "2026-07-01T20:14:33Z",
+      "by_day": { "2026-06-27": 10, "2026-06-28": 12 } }
+  ],
+  "truncated": false
+}
+```
+
+`stability_index` (Windows Reliability Index, 0–10, or `null`) and `recent_crashes` (the total
+count = sum of the groups' counts) are retained. On the read path the server annotates each
+group with a friendly `category` (via the connected LLM, cached) for the dashboard's
+reliability heatmaps; that `category` is **server-internal and not part of this wire contract** —
+the agent never sends it (see ADR-0028). Off Windows the section is the `n/a on this platform`
+stub with `events: []`.
+
 Health thresholds (e.g. disk used > 80% ⇒ `warn` and ≥ 95% ⇒ `crit`; Defender
 real-time protection off ⇒ `crit`; Defender scan older than 14 days ⇒ `warn`) are
 evaluated **server-side** in `kenny-server/kenny_server/health_rules.py`. The agent
