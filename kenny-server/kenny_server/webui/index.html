@@ -489,6 +489,13 @@
     .kc-chat__title svg { width: 16px; height: 16px; }
     .kc-ctx { font-family: var(--font-mono); font-size: 11px; color: var(--fg-muted);
       background: var(--bg-sunken); border: 1px solid var(--border); border-radius: var(--radius-pill); padding: 3px 10px; }
+    .kc-history-list { display: flex; flex-direction: column; gap: 2px; max-height: 60vh; overflow-y: auto; }
+    .kc-history-row { display: flex; align-items: center; gap: 8px; padding: 9px 10px; border-radius: var(--radius-sm);
+      cursor: pointer; transition: background var(--dur) var(--ease); }
+    .kc-history-row:hover { background: var(--bg-sunken); }
+    .kc-history-row__main { flex: 1; min-width: 0; }
+    .kc-history-row__title { font-size: var(--text-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .kc-history-row__meta { font-size: 11px; color: var(--fg-muted); margin-top: 2px; }
     .kc-transcript { display: flex; flex-direction: column; gap: 9px; max-height: 46vh; overflow-y: auto;
       padding: 4px; min-height: 96px; }
     .kc-composer { display: flex; gap: 8px; }
@@ -2158,7 +2165,11 @@
       return `<div class="k-panel kc-chat kc-copilot">
         <div class="kc-chat__head">
           <span class="k-row kc-chat__title" style="gap:8px">${icon('message-square', 16)}chat · server-hosted</span>
-          <span class="kc-ctx" id="chat-ctx">context: fleet</span>
+          <span class="k-row" style="gap:6px">
+            <button class="k-btn k-btn--ghost k-btn--sm" onclick="newChat()" title="start a new chat">${icon('plus', 13)}new</button>
+            <button class="k-btn k-btn--ghost k-btn--sm" onclick="openHistoryPanel()" title="browse past conversations">${icon('clock', 13)}history</button>
+            <span class="kc-ctx" id="chat-ctx">context: fleet</span>
+          </span>
         </div>
         <div class="kc-transcript" id="transcript"></div>
         <div class="kc-composer">
@@ -2256,7 +2267,14 @@
     // ("...check.Good, we have...").
     function handleChatEvent(ev, ctx) {
       const t = document.getElementById("transcript");
-      if (ev.type === "text_delta") {
+      if (ev.type === "user_text") {
+        // Only emitted during history replay (a live turn draws its own user
+        // bubble immediately in startChatTurn). Starts a fresh assistant
+        // bubble for whatever follows, so replayed turns don't run together.
+        bubble("user", ev.text);
+        ctx._div = null;
+        ctx.brokeSinceText = false;
+      } else if (ev.type === "text_delta") {
         const div = ctx.bubble();
         if (ctx.brokeSinceText && div.textContent) div.textContent += "\n\n";
         ctx.brokeSinceText = false;
@@ -2349,6 +2367,56 @@
         chatAbort = null;
         setComposerStreaming(false);
       }
+    }
+
+    // -- chat history: browse / resume / delete past conversations ---------
+    function newChat() {
+      if (chatAbort) return; // don't swap out from under a streaming turn
+      chatSessionId = null;
+      const t = document.getElementById("transcript");
+      if (t) t.innerHTML = "";
+      setChatContext(state.selected);
+      setComposerEnabled(true);
+    }
+    async function openHistoryPanel() {
+      if (chatAbort) return;
+      let r;
+      try { r = await getJSON("/api/chat/history"); }
+      catch (e) { notify("could not load history: " + e.message, "err"); return; }
+      openModal(`${icon('clock', 18)}<span>Chat history</span>`, historyListHtml(r.conversations || []));
+    }
+    function historyListHtml(rows) {
+      if (!rows.length) return `<div class="k-muted">No saved conversations yet.</div>`;
+      return `<div class="kc-history-list">` + rows.map(row => `
+        <div class="kc-history-row" onclick="loadConversation('${esc(row.id)}')">
+          <div class="kc-history-row__main">
+            <div class="kc-history-row__title">${esc(row.title)}</div>
+            <div class="kc-history-row__meta">${esc(new Date(row.updated_at).toLocaleString())}${row.agent_id ? " · " + esc(row.agent_id) : ""}</div>
+          </div>
+          <button class="k-btn k-btn--ghost k-btn--sm" onclick="deleteConversation('${esc(row.id)}', event)" title="delete this conversation">${icon('x', 13)}</button>
+        </div>`).join("") + `</div>`;
+    }
+    async function loadConversation(id) {
+      if (chatAbort) return; // never swap the transcript mid-stream
+      let r;
+      try { r = await getJSON(`/api/chat/history/${id}`); }
+      catch (e) { notify("could not load conversation: " + e.message, "err"); return; }
+      closeModal();
+      chatSessionId = r.id;
+      const t = document.getElementById("transcript");
+      if (t) t.innerHTML = "";
+      setChatContext(r.agent_id || null);
+      const ctx = newChatCtx();
+      for (const ev of r.transcript) handleChatEvent(ev, ctx);
+      // A persisted transcript never carries a pending confirm-gate (it's
+      // process-local and never saved), so the composer stays enabled.
+    }
+    async function deleteConversation(id, evt) {
+      if (evt) evt.stopPropagation(); // don't also trigger the row's loadConversation
+      try { await fetch(`/api/chat/history/${id}`, { method: "DELETE" }); }
+      catch (e) { notify("could not delete conversation: " + e.message, "err"); return; }
+      if (id === chatSessionId) newChat();
+      openHistoryPanel(); // refresh the list in place
     }
 
     // -- global audit log: searchable + paged ------------------------------

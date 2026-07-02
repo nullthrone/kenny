@@ -38,7 +38,7 @@ from .keystore import KeyStore
 from .logging_config import StoreLogHandler, configure_logging, drain_log_queue
 from .policy import PolicyEngine
 from .registry import AgentRegistry
-from .store import EventStore, PolicyStore, TelemetryStore, WebFilterStore
+from .store import ChatHistoryStore, EventStore, PolicyStore, TelemetryStore, WebFilterStore
 from .tokenstore import AgentTokenStore
 from .tools import CallLog, ScreenshotStore, register_tools
 from .tunnel import AgentTunnel
@@ -90,7 +90,8 @@ def build_app(db_path: str | None = None) -> Starlette:
     )
     call_log = CallLog(event_store=event_store)
     screenshots = ScreenshotStore()
-    chat_sessions = ChatSessions()
+    chat_history_store = ChatHistoryStore(db_path)
+    chat_sessions = ChatSessions(store=chat_history_store)
     share_links = ShareLinks()
 
     mcp = FastMCP("kenny")
@@ -112,6 +113,7 @@ def build_app(db_path: str | None = None) -> Starlette:
         await event_store.connect()
         await policy_store.connect()
         await webfilter_store.connect()
+        await chat_history_store.connect()
         # Load persisted operator rules into the mirror engine at startup.
         policy_engine.set_operator_rules(await policy_store.list())
         await store.prune()
@@ -167,6 +169,7 @@ def build_app(db_path: str | None = None) -> Starlette:
             await event_store.close()
             await policy_store.close()
             await webfilter_store.close()
+            await chat_history_store.close()
 
     api_routes = build_api_routes(
         registry=registry,
@@ -187,6 +190,7 @@ def build_app(db_path: str | None = None) -> Starlette:
         call_log=call_log,
         sessions=chat_sessions,
         screenshots=screenshots,
+        history_store=chat_history_store,
     )
     download_routes = build_download_routes(
         registry=registry,
@@ -228,6 +232,7 @@ def build_app(db_path: str | None = None) -> Starlette:
     app.state.call_log = call_log
     app.state.screenshots = screenshots
     app.state.chat_sessions = chat_sessions
+    app.state.chat_history_store = chat_history_store
     app.state.share_links = share_links
     app.state.mcp = mcp
     app.state.operator_token = operator_token

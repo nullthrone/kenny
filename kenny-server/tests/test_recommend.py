@@ -18,7 +18,7 @@ from starlette.testclient import TestClient
 from kenny_server import recommend
 from kenny_server.chat import ChatSessions
 from kenny_server.registry import AgentRegistry
-from kenny_server.store import EventStore, TelemetryStore
+from kenny_server.store import ChatHistoryStore, EventStore, TelemetryStore
 from kenny_server.tools import CallLog, ScreenshotStore
 from kenny_server.tunnel import AgentTunnel
 from kenny_server.webui import build_chat_routes
@@ -135,6 +135,7 @@ def _build_with_snapshot(tmp_path, scripts, snapshots):
     store = TelemetryStore(db_path=str(tmp_path / "rec.sqlite"))
     registry = AgentRegistry(tokens={"dev": "dev-token"})
     tunnel = AgentTunnel(registry, store, EventStore(db_path=store.db_path))
+    history_store = ChatHistoryStore(db_path=store.db_path)
     queue = list(scripts)
 
     def factory() -> Any:
@@ -145,18 +146,21 @@ def _build_with_snapshot(tmp_path, scripts, snapshots):
         store=store,
         tunnel=tunnel,
         call_log=CallLog(),
-        sessions=ChatSessions(),
+        sessions=ChatSessions(store=history_store),
         screenshots=ScreenshotStore(),
+        history_store=history_store,
         client_factory=factory,
     )
 
     @asynccontextmanager
     async def lifespan(_app):
         await store.connect()
+        await history_store.connect()
         for agent_id, snap in snapshots.items():
             await store.insert(agent_id, "2026-06-06T00:00:00Z", snap)
         yield
         await store.close()
+        await history_store.close()
 
     return Starlette(routes=routes, lifespan=lifespan)
 
