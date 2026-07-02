@@ -986,6 +986,7 @@
       if (typeof v === "number") {
         if (k.endsWith("_bytes") || k === "bytes") return fmtBytes(v);
         if (k.startsWith("percent") || k.endsWith("_percent") || k.endsWith("_pct")) return v + "%";
+        if (k === "temperature_c" || k.endsWith("_temperature_c")) return v + " °C";
         return String(v);
       }
       if (typeof v === "string" && ISO_RE.test(v)) {
