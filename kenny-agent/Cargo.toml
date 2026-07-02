@@ -37,6 +37,15 @@ ureq = { version = "2", default-features = false, features = ["tls", "json"] }
 # Portable PNG encoder for screen_capture. NOT windows-gated so encode_png can be
 # unit-tested on Linux CI.
 png = "0.17"
+# Bundled SQLite for browser-history parsing (`web_activity` collector). NOT
+# windows-gated: bundling the amalgamation lets the Chromium/Firefox history readers
+# be unit-tested against fabricated temp DBs on Linux CI (matches the ungated
+# ureq/png precedent above).
+rusqlite = { version = "0.32", features = ["bundled"] }
+# SHA-256. Used by `agent_update` (Windows-only) for binary verification AND by the
+# `webfilter` handler's portable `list_hash`, which is unit-tested on Linux CI — so this
+# is NOT windows-gated (the ungated ureq/png/rusqlite precedent applies).
+sha2 = "0.10"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
@@ -56,9 +65,6 @@ windows = { version = "0.58", features = [
 ] }
 # Windows service lifecycle (install/uninstall/run-service + SCM control handler).
 windows-service = "0.7"
-# Self-update (download + verify + stage). Windows-only because `agent_update`
-# returns `unsupported` off Windows.
-sha2 = "0.10"
 
 [profile.release]
 strip = true

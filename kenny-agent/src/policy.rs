@@ -47,6 +47,13 @@ pub fn set_server_url(url: &str) {
     }
 }
 
+/// The configured server host captured at startup, if any. Used by the `webfilter`
+/// handler's self-protection reserved set so a pushed block list can never blackhole
+/// the tunnel endpoint. Absent in unit tests (then only the static reserved names apply).
+pub fn server_host() -> Option<String> {
+    SERVER_HOST.get().cloned()
+}
+
 /// A single compiled deterministic deny rule: a pattern and the reason reported on a hit.
 struct Rule {
     re: Regex,

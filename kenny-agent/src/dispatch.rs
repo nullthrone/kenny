@@ -70,6 +70,10 @@ async fn run(tool: &str, args: Value) -> Result<Value, (ErrorCode, String)> {
         "remotehelp_start" => handlers::remotehelp::start(args),
         "remotehelp_stop" => handlers::remotehelp::stop(args).await,
 
+        "webfilter_status" => handlers::webfilter::status(args).await,
+        "webfilter_apply" => handlers::webfilter::apply(args).await,
+        "webfilter_clear" => handlers::webfilter::clear(args).await,
+
         "telemetry_collect" => telemetry_collect(args),
 
         "agent_update" => handlers::agent_update::update(args).await,
@@ -187,6 +191,65 @@ mod tests {
         .await;
         assert!(!resp.ok, "dangerous script must be refused");
         assert_eq!(resp.error.unwrap().code, ErrorCode::Blocked);
+    }
+
+    #[tokio::test]
+    async fn webfilter_apply_blocked_when_disabled() {
+        // webfilter_apply is mutating, so the kill switch refuses it with `disabled`
+        // before it ever reaches the (unsupported off-Windows) handler.
+        let resp = with_remote_control(false, "kenny-dispatch-wf-off.control.json", async {
+            handle(Request {
+                id: "7".to_string(),
+                tool: "webfilter_apply".to_string(),
+                args: json!({
+                    "domains": ["x.example"],
+                    "doh_policy": "disable",
+                    "list_hash": "deadbeefdeadbeef"
+                }),
+            })
+            .await
+        })
+        .await;
+        assert!(!resp.ok);
+        assert_eq!(resp.error.unwrap().code, ErrorCode::Disabled);
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn webfilter_apply_unsupported_off_windows_when_enabled() {
+        // With remote control ON, the mutating gate passes and the handler reports
+        // `unsupported` on a non-Windows build.
+        let resp = with_remote_control(true, "kenny-dispatch-wf-on.control.json", async {
+            handle(Request {
+                id: "8".to_string(),
+                tool: "webfilter_apply".to_string(),
+                args: json!({
+                    "domains": ["x.example"],
+                    "doh_policy": "disable",
+                    "list_hash": "deadbeefdeadbeef"
+                }),
+            })
+            .await
+        })
+        .await;
+        assert!(!resp.ok);
+        assert_eq!(resp.error.unwrap().code, ErrorCode::Unsupported);
+    }
+
+    #[tokio::test]
+    async fn webfilter_status_allowed_when_disabled() {
+        // Read-only status must work under the kill switch (and off Windows).
+        let resp = with_remote_control(false, "kenny-dispatch-wf-status.control.json", async {
+            handle(Request {
+                id: "9".to_string(),
+                tool: "webfilter_status".to_string(),
+                args: json!({}),
+            })
+            .await
+        })
+        .await;
+        assert!(resp.ok, "status is read-only and must work while disabled");
+        assert!(resp.result.unwrap()["doh_policy"].is_object());
     }
 
     #[tokio::test]

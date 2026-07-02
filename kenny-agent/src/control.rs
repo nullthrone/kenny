@@ -116,6 +116,8 @@ pub fn is_mutating(tool: &str) -> bool {
             | "remotehelp_start"
             | "remotehelp_stop"
             | "agent_update"
+            | "webfilter_apply"
+            | "webfilter_clear"
     )
 }
 
@@ -175,6 +177,10 @@ mod tests {
         assert!(is_mutating("agent_update"));
         assert!(is_mutating("remotehelp_start"));
         assert!(is_mutating("remotehelp_stop"));
+        assert!(is_mutating("webfilter_apply"));
+        assert!(is_mutating("webfilter_clear"));
+        // webfilter_status is read-only and must keep working under the kill switch.
+        assert!(!is_mutating("webfilter_status"));
         assert!(!is_mutating("telemetry_collect"));
         assert!(!is_mutating("fs_list"));
         assert!(!is_mutating("diag_processes"));

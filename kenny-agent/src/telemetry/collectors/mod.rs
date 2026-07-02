@@ -28,6 +28,7 @@ pub mod services;
 pub mod thermals;
 pub mod time_sync;
 pub mod uptime;
+pub mod web_activity;
 pub mod wifi_quality;
 pub mod win_update;
 
@@ -83,6 +84,8 @@ fn registry() -> Vec<(&'static str, Collector)> {
         ("printers", printers::collect),
         ("wifi_quality", wifi_quality::collect),
         ("autostart", autostart::collect),
+        // Parental controls.
+        ("web_activity", web_activity::collect),
     ]
 }
 
