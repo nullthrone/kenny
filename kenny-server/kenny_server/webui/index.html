@@ -352,6 +352,19 @@
     .k-airec__err { color: var(--crit-fg); margin-top: 6px; }
     .k-airec__foot { margin-top: 9px; }
     .k-airec__foot:empty { display: none; }
+    /* Parental-controls list editor (web_activity section detail). */
+    .kwf-togs { display: flex; flex-wrap: wrap; gap: 8px 16px; margin: 8px 0 12px; }
+    .kwf-tog { display: inline-flex; align-items: center; gap: 7px; font-size: var(--text-sm);
+      color: var(--fg); cursor: pointer; }
+    .kwf-tog input { accent-color: var(--accent); width: 15px; height: 15px; cursor: pointer; }
+    .kwf-add { display: flex; gap: 8px; margin-bottom: 8px; }
+    .kwf-add .k-input { flex: 1; }
+    .kwf-add select.k-input { flex: none; }
+    .kwf-list { display: flex; flex-direction: column; gap: 4px; }
+    .kwf-row { display: flex; align-items: center; gap: 8px; font-size: var(--text-sm);
+      padding: 5px 8px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+      background: var(--bg-sunken); }
+    .kwf-apply { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
 
     /* ====================================================================
        CONSOLE LAYOUT (.kc-*)
@@ -628,6 +641,7 @@
       'flame': '<path d="M15.362 5.214A8.252 8.252 0 0 1 12 21 8.25 8.25 0 0 1 6.038 7.047 8.287 8.287 0 0 0 9 9.601a8.983 8.983 0 0 1 3.361-6.867 8.21 8.21 0 0 0 3 2.48Z"/><path d="M12 18a3.75 3.75 0 0 0 .495-7.468 5.99 5.99 0 0 0-1.925 3.547 5.975 5.975 0 0 1-2.133-1.001A3.75 3.75 0 0 0 12 18Z"/>',
       'network': '<path d="M12 21a9.004 9.004 0 0 0 8.716-6.747M12 21a9.004 9.004 0 0 1-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S14.485 3 12 3m0 18c-2.485 0-4.5-4.03-4.5-9S9.515 3 12 3m0 0a8.997 8.997 0 0 1 7.843 4.582M12 3a8.997 8.997 0 0 0-7.843 4.582m15.686 0A11.953 11.953 0 0 1 12 10.5c-2.998 0-5.74-1.1-7.843-2.918m15.686 0A8.959 8.959 0 0 1 21 12c0 .778-.099 1.533-.284 2.253m0 0A17.919 17.919 0 0 1 12 16.5c-3.162 0-6.133-.815-8.716-2.247m0 0A9.015 9.015 0 0 1 3 12c0-1.605.42-3.113 1.157-4.418"/>',
       'wifi': '<path d="M8.288 15.038a5.25 5.25 0 0 1 7.424 0M5.106 11.856c3.807-3.808 9.98-3.808 13.788 0M1.924 8.674c5.565-5.565 14.587-5.565 20.152 0M12.53 18.22l-.53.53-.53-.53a.75.75 0 0 1 1.06 0Z"/>',
+      'globe': '<path d="M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/><path d="M3.6 9h16.8M3.6 15h16.8"/><path d="M12 3a13.5 13.5 0 0 0 0 18 13.5 13.5 0 0 0 0-18Z"/>',
       'download': '<path d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3"/>',
       'battery-medium': '<path d="M21 10.5h.375c.621 0 1.125.504 1.125 1.125v2.25c0 .621-.504 1.125-1.125 1.125H21M4.5 10.5h6.75V15H4.5v-4.5ZM3.75 18h15A2.25 2.25 0 0 0 21 15.75v-6a2.25 2.25 0 0 0-2.25-2.25h-15A2.25 2.25 0 0 0 1.5 9.75v6A2.25 2.25 0 0 0 3.75 18Z"/>',
       'printer': '<path d="M6.72 13.829c-.24.03-.48.062-.72.096m.72-.096a42.415 42.415 0 0 1 10.56 0m-10.56 0L6.34 18m10.94-4.171c.24.03.48.062.72.096m-.72-.096L17.66 18m0 0 .229 2.523a1.125 1.125 0 0 1-1.12 1.227H7.231c-.662 0-1.18-.568-1.12-1.227L6.34 18m11.318 0h1.091A2.25 2.25 0 0 0 21 15.75V9.456c0-1.081-.768-2.015-1.837-2.175a48.055 48.055 0 0 0-1.913-.247M6.34 18H5.25A2.25 2.25 0 0 1 3 15.75V9.456c0-1.081.768-2.015 1.837-2.175a48.041 48.041 0 0 1 1.913-.247m10.5 0a48.536 48.536 0 0 0-10.5 0m10.5 0V3.375c0-.621-.504-1.125-1.125-1.125h-8.25c-.621 0-1.125.504-1.125 1.125v3.659M18 10.5h.008v.008H18V10.5Zm-3 0h.008v.008H15V10.5Z"/>',
@@ -687,6 +701,7 @@
       if (n.includes("reliab")) return "activity";
       if (n.includes("peripher") || n.includes("usb")) return "usb";
       if (n.includes("os_support") || n.includes("support")) return "calendar-clock";
+      if (n.includes("web_activity") || n.includes("webfilter") || n.includes("web")) return "globe";
       return "box";
     }
 
@@ -1676,8 +1691,167 @@
              <div class="k-airec__foot" id="airec-foot"></div>
            </section>`
         : "";
-      openModal(title, ai + renderSectionDetail(raw, s));
+      const render = SECTION_RENDERERS[name] || renderSectionDetail;
+      openModal(title, ai + render(raw, s));
       if (ai) streamRecommendation(data.agent_id, name);
+      if (name === "web_activity") mountWebfilterPanel(data.agent_id);
+    }
+
+    // Custom section renderers keyed by telemetry section name; a section not
+    // listed here falls back to the generic renderSectionDetail partitioner.
+    const SECTION_RENDERERS = { web_activity: renderWebActivityDetail };
+
+    // Parental-controls detail: flagged hits + observed domains + the per-host
+    // list editor (mounted async after the modal opens — see mountWebfilterPanel).
+    function renderWebActivityDetail(raw, s) {
+      let body = "";
+      if (s && s.summary) body += `<div class="k-modal__sum">${esc(s.summary)}</div>`;
+      if (s) body += reasonHtml(s.reason, s.status);
+      const flagged = Array.isArray(raw.flagged) ? raw.flagged : [];
+      if (flagged.length) {
+        const rows = flagged.map(f => `<tr>
+          <td class="k-mono">${esc(f.domain)}</td>
+          <td>${wfCatBadge(f.category)}</td>
+          <td class="k-mono">${esc(f.matched_entry || "")}</td>
+          <td>${esc(fmtValue("last_seen", f.last_seen))}</td></tr>`).join("");
+        body += `<div class="k-detail-grp"><div class="k-detail-grp__lbl">flagged — matched this PC's list</div>
+          <table class="k-dtable"><thead><tr><th>domain</th><th>category</th><th>matched entry</th><th>last seen</th></tr></thead>
+          <tbody>${rows}</tbody></table></div>`;
+      }
+      const domains = Array.isArray(raw.domains) ? raw.domains : [];
+      if (domains.length) {
+        const rows = domains.map(d => ({
+          domain: d.domain, hits: d.hits,
+          sources: (d.sources || []).join(", "), last_seen: d.last_seen,
+        }));
+        body += tableGrp("observed domains (24h)", rows);
+      }
+      const scalars = [];
+      for (const k of ["window_hours", "sources", "browser_profiles_read", "truncated"]) {
+        if (raw[k] === undefined) continue;
+        const v = raw[k];
+        scalars.push([k, Array.isArray(v) ? (v.join(", ") || "—") : fmtValue(k, v)]);
+      }
+      if (Array.isArray(raw.errors) && raw.errors.length) scalars.push(["errors", raw.errors.join("; ")]);
+      if (scalars.length) body += defListGrp(null, scalars);
+      body += `<div class="k-detail-grp" id="kwf-panel"><div class="k-muted">loading parental-controls list…</div></div>`;
+      return body;
+    }
+    function wfCatBadge(cat) {
+      const label = { custom: "custom", seed: "seed", external_adult: "adult list", bypass: "bypass" }[cat] || cat || "—";
+      return `<span class="k-pill k-pill--${cat === "bypass" ? "warn" : "crit"}">${esc(label)}</span>`;
+    }
+    function wfActionBadge(action) {
+      const cls = action === "allow" ? "ok" : action === "watch" ? "warn" : "crit";
+      return `<span class="k-pill k-pill--${cls}">${esc(action)}</span>`;
+    }
+
+    // The dashboard's first editable list: fetch and render the per-host
+    // parental-controls config into #kwf-panel. Re-runs after every mutation so
+    // counts, drift, and applied-state stay current; a closed modal is a no-op.
+    async function mountWebfilterPanel(agentId) {
+      const panel = document.getElementById("kwf-panel");
+      if (!panel) return;
+      let d;
+      try { d = await getJSON("/api/agent/" + encodeURIComponent(agentId) + "/webfilter"); }
+      catch (e) {
+        const p = document.getElementById("kwf-panel");
+        if (p) p.innerHTML = `<div class="k-airec__err">list unavailable: ${esc(e.message)}</div>`;
+        return;
+      }
+      renderWebfilterPanel(agentId, d);
+    }
+    function renderWebfilterPanel(agentId, d) {
+      const panel = document.getElementById("kwf-panel");
+      if (!panel) return;
+      const c = d.config || {}, ext = d.external || {}, applied = d.applied || {};
+      const on = v => v === true || v === 1;
+      const aid = esc(agentId);
+      const tog = (key, label, val, hint) => `
+        <label class="kwf-tog" title="${esc(hint || "")}">
+          <input type="checkbox" ${on(val) ? "checked" : ""}
+            onchange="wfSetConfig('${aid}', '${key}', this.checked)"/><span>${esc(label)}</span></label>`;
+      const dohOn = (c.doh_policy || "disable") === "disable";
+      const custom = d.custom || [];
+      const customRows = custom.length ? custom.map(r => `
+        <div class="kwf-row"><span class="k-mono">${esc(r.domain)}</span>${wfActionBadge(r.action)}
+          ${r.note ? `<span class="k-muted">${esc(r.note)}</span>` : ""}
+          <button class="k-btn k-btn--danger k-btn--sm" style="margin-left:auto"
+            title="remove" onclick="wfRemoveDomain('${aid}', '${esc(r.domain)}')">${icon('x', 12)}</button></div>`
+        ).join("") : `<div class="k-muted">no custom entries yet</div>`;
+      const adultN = (ext.adult || {}).count || 0, bypassN = (ext.bypass || {}).count || 0;
+      const appliedLine = applied.at
+        ? `applied ${esc(fmtValue("at", applied.at))}${applied.ok === false ? " — agent reported failure" : ""}`
+        : "not yet applied";
+      const drift = d.drift ? `<span class="k-pill k-pill--warn">list changed since last apply</span>` : "";
+      panel.innerHTML = `
+        <div class="k-detail-grp__lbl">parental-controls list</div>
+        <div class="kwf-togs">
+          ${tog("enabled", "monitor this PC", c.enabled, "observe web activity and match it against this list")}
+          ${tog("block_mode", "block listed sites", c.block_mode, "push the block list to the agent (hosts file + DoH off)")}
+          ${tog("use_external_adult", "use adult blocklist", c.use_external_adult, "reference the StevenBlack porn-only list (" + adultN + " domains)")}
+          ${tog("use_bypass_protection", "block VPN/proxy bypass", c.use_bypass_protection, "also block DoH/VPN/proxy domains (" + bypassN + " domains)")}
+          <label class="kwf-tog" title="turn DNS-over-HTTPS off in browsers so the hosts block can't be bypassed">
+            <input type="checkbox" ${dohOn ? "checked" : ""}
+              onchange="wfSetConfig('${aid}', 'doh_policy', this.checked ? 'disable' : 'leave')"/><span>disable browser DoH</span></label>
+        </div>
+        <div class="kwf-add">
+          <input class="k-input" id="kwf-domain" autocomplete="off" placeholder="domain e.g. example.com"
+            onkeydown="if(event.key==='Enter')wfAddDomain('${aid}')"/>
+          <select class="k-input" id="kwf-action">
+            <option value="block">block</option>
+            <option value="watch">watch (alarm only)</option>
+            <option value="allow">allow (exception)</option>
+          </select>
+          <button class="k-btn k-btn--primary k-btn--sm" onclick="wfAddDomain('${aid}')">${icon('plus', 13)}add</button>
+        </div>
+        <div class="kwf-list">${customRows}</div>
+        <div class="k-muted" style="margin-top:6px">seed: ${d.seed_count || 0} known adult domains · adult list: ${adultN} · bypass: ${bypassN}</div>
+        <div class="kwf-apply">
+          <button class="k-btn k-btn--primary k-btn--sm" onclick="wfApply('${aid}')">${icon('refresh-cw', 13)}apply now</button>
+          <span class="k-muted">${esc(appliedLine)}</span> ${drift}
+        </div>
+        <div id="kwf-msg"></div>`;
+    }
+    async function wfSetConfig(agentId, key, value) {
+      try {
+        const body = {}; body[key] = value;
+        await getJSON("/api/agent/" + encodeURIComponent(agentId) + "/webfilter/config",
+          { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+        mountWebfilterPanel(agentId);
+      } catch (e) { wfMsg("could not update: " + e.message, true); }
+    }
+    async function wfAddDomain(agentId) {
+      const inp = document.getElementById("kwf-domain"), sel = document.getElementById("kwf-action");
+      const domain = ((inp && inp.value) || "").trim();
+      if (!domain) return;
+      try {
+        await getJSON("/api/agent/" + encodeURIComponent(agentId) + "/webfilter/domains",
+          { method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ domain, action: sel ? sel.value : "block" }) });
+        mountWebfilterPanel(agentId);
+      } catch (e) { wfMsg("could not add: " + e.message, true); }
+    }
+    async function wfRemoveDomain(agentId, domain) {
+      try {
+        await getJSON("/api/agent/" + encodeURIComponent(agentId) + "/webfilter/domains/" + encodeURIComponent(domain),
+          { method: "DELETE" });
+        mountWebfilterPanel(agentId);
+      } catch (e) { wfMsg("could not remove: " + e.message, true); }
+    }
+    async function wfApply(agentId) {
+      wfMsg("applying…", false);
+      try {
+        const r = await getJSON("/api/agent/" + encodeURIComponent(agentId) + "/webfilter/apply", { method: "POST" });
+        if (r && r.ok === false && r.error === "disabled")
+          wfMsg("remote control is switched off at the PC — new rules were not applied; monitoring continues.", true);
+        else wfMsg("applied.", false);
+        mountWebfilterPanel(agentId);
+      } catch (e) { wfMsg("apply failed: " + e.message, true); }
+    }
+    function wfMsg(text, isErr) {
+      const m = document.getElementById("kwf-msg");
+      if (m) m.innerHTML = `<div class="${isErr ? "k-airec__err" : "k-muted"}" style="margin-top:6px">${esc(text)}</div>`;
     }
 
     // Stream the Haiku recommendation into the popup. Re-queries the target on

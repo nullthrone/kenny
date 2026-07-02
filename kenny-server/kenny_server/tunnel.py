@@ -47,6 +47,7 @@ from .protocol import (
 )
 from .registry import AgentRegistry, AuthError
 from .store import EventStore, PolicyStore, TelemetryStore
+from .webfilter import WebFilterService
 
 DEFAULT_TIMEOUT_S = 30.0
 HANDSHAKE_TIMEOUT_S = 10.0
@@ -99,12 +100,14 @@ class AgentTunnel:
         *,
         policy_engine: PolicyEngine | None = None,
         policy_store: PolicyStore | None = None,
+        webfilter: WebFilterService | None = None,
     ) -> None:
         self.registry = registry
         self.store = store
         self.event_store = event_store
         self.policy_engine = policy_engine
         self.policy_store = policy_store
+        self.webfilter = webfilter
         # request_id -> Future[Response]
         self._pending: dict[str, asyncio.Future[Response]] = {}
 
@@ -365,10 +368,23 @@ class AgentTunnel:
                         _MAX_SECTIONS,
                     )
                     continue
+                snapshot = {k: v.model_dump() for k, v in frame.snapshot.items()}
+                # Parental controls (ADR-0026): enrich the web_activity section
+                # with server-computed `flagged` before persisting. A webfilter
+                # bug must never drop the whole snapshot.
+                if self.webfilter is not None and "web_activity" in snapshot:
+                    try:
+                        snapshot["web_activity"] = await self.webfilter.record_activity(
+                            frame.agent_id, snapshot["web_activity"]
+                        )
+                    except Exception:  # noqa: BLE001 - never lose the snapshot
+                        logger.exception(
+                            "webfilter record_activity failed for %s", frame.agent_id
+                        )
                 await self.store.insert(
                     frame.agent_id,
                     frame.collected_at,
-                    {k: v.model_dump() for k, v in frame.snapshot.items()},
+                    snapshot,
                 )
                 logger.debug("telemetry from %s at %s", frame.agent_id, frame.collected_at)
             elif isinstance(frame, Log):

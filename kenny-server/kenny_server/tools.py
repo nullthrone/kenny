@@ -25,6 +25,7 @@ from . import health_rules
 from .registry import AgentRegistry
 from .store import EventStore, TelemetryStore
 from .tunnel import AgentTunnel, ToolError
+from .webfilter import WebFilterService, load_seed
 
 # Forwarding capability tools: name -> ordered arg keys (optional keys end "?").
 CAPABILITY_TOOLS: dict[str, list[str]] = {
@@ -50,6 +51,11 @@ CAPABILITY_TOOLS: dict[str, list[str]] = {
     "remotehelp_stop": [],
     "telemetry_collect": ["sections?"],
     "agent_update": ["version", "url", "sha256"],
+    # Parental-controls enforcement (ADR-0026). apply/clear are mutating; status
+    # is read-only. The server pre-merges the effective block set for apply.
+    "webfilter_status": [],
+    "webfilter_apply": ["domains", "doh_policy", "list_hash"],
+    "webfilter_clear": [],
 }
 
 
@@ -162,6 +168,7 @@ def register_tools(
     store: TelemetryStore,
     tunnel: AgentTunnel,
     call_log: CallLog,
+    webfilter: WebFilterService | None = None,
 ) -> None:
     """Register all MCP tools on ``mcp``."""
 
@@ -252,3 +259,104 @@ def register_tools(
             "collected_at": latest["collected_at"],
             "snapshot": snapshot,
         }
+
+    # -- parental-controls (webfilter) server-only tools ------------------
+
+    if webfilter is None:
+        return
+
+    async def _webfilter_overview(agent_id: str) -> dict[str, Any]:
+        config = await webfilter.get_config(agent_id)
+        custom = await webfilter.list_domains(agent_id)
+        current_hash = await webfilter.current_list_hash(agent_id)
+        applied_hash = config.get("applied_hash")
+        return {
+            "agent_id": agent_id,
+            "config": config,
+            "custom": custom,
+            "seed_count": len(load_seed()),
+            "external": webfilter.cache.stats(),
+            "current_hash": current_hash,
+            "drift": bool(applied_hash) and applied_hash != current_hash,
+        }
+
+    @mcp.tool(
+        name="webfilter_get",
+        description="Get the parental-controls config, custom list, and drift for an agent.",
+    )
+    async def webfilter_get(id: str) -> dict[str, Any]:
+        return await _webfilter_overview(id)
+
+    @mcp.tool(
+        name="webfilter_set",
+        description=(
+            "Update parental-controls config and/or the custom domain list for an agent "
+            "(state-changing). Toggles: enabled, block_mode, use_external_adult, "
+            "use_bypass_protection, doh_policy. Optional add_domain/remove_domain (+action)."
+        ),
+    )
+    async def webfilter_set(
+        id: str,
+        enabled: bool | None = None,
+        block_mode: bool | None = None,
+        use_external_adult: bool | None = None,
+        use_bypass_protection: bool | None = None,
+        doh_policy: str | None = None,
+        add_domain: str | None = None,
+        remove_domain: str | None = None,
+        action: str | None = None,
+    ) -> dict[str, Any]:
+        await webfilter.set_config(
+            id,
+            enabled=enabled,
+            block_mode=block_mode,
+            use_external_adult=use_external_adult,
+            use_bypass_protection=use_bypass_protection,
+            doh_policy=doh_policy,
+        )
+        if add_domain:
+            try:
+                await webfilter.add_domain(id, add_domain, action or "block")
+            except ValueError as exc:
+                raise ToolError("bad_args", str(exc)) from exc
+        if remove_domain:
+            await webfilter.remove_domain(id, remove_domain)
+        return await _webfilter_overview(id)
+
+    @mcp.tool(
+        name="webfilter_push",
+        description=(
+            "Push the effective parental-controls block list to an agent (state-changing): "
+            "forwards webfilter_apply when block mode is on, else webfilter_clear."
+        ),
+    )
+    async def webfilter_push(id: str) -> dict[str, Any]:
+        config = await webfilter.get_config(id)
+        args = await webfilter.build_apply(id)
+        block_mode = bool(config["block_mode"])
+        tool = "webfilter_apply" if block_mode else "webfilter_clear"
+        call_args = args if block_mode else {}
+        try:
+            result = await tunnel.send_request(id, tool, call_args, 30)
+            await call_log.record(id, tool, call_args, ok=True)
+        except ToolError as exc:
+            await call_log.record(id, tool, call_args, ok=False, error=exc.message)
+            raise
+        applied_at = str(result.get("applied_at") or datetime.now(timezone.utc).isoformat())
+        await webfilter.set_applied_state(
+            id,
+            args["list_hash"] if block_mode else None,
+            applied_at,
+            bool(result.get("ok", True)),
+        )
+        return {"agent_id": id, "tool": tool, "result": result, "applied": call_args}
+
+    @mcp.tool(
+        name="web_activity_query",
+        description="Query observed web domains for an agent (optionally flagged-only).",
+    )
+    async def web_activity_query(
+        id: str, hours: int = 24, flagged_only: bool = False
+    ) -> dict[str, Any]:
+        events = await webfilter.activity(id, hours=hours, flagged_only=flagged_only)
+        return {"agent_id": id, "hours": hours, "events": events}

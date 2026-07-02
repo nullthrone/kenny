@@ -100,6 +100,13 @@ STATE_CHANGING_TOOLS: frozenset[str] = frozenset(
         "remotehelp_start",
         "remotehelp_stop",
         "agent_update",  # reserved for a future capability
+        # Parental-controls blocking (ADR-0026): apply/clear are mutating on the
+        # agent (refused with `disabled` under the kill switch); webfilter_set /
+        # webfilter_push change server-held state or push a new block list.
+        "webfilter_apply",
+        "webfilter_clear",
+        "webfilter_set",
+        "webfilter_push",
     }
 )
 

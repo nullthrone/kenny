@@ -46,6 +46,31 @@
         { "label": "CPU Thermal Zone", "temperature_c": 61.0 },
         { "label": "ACPI Thermal Zone", "temperature_c": 48.5 }
       ]
+    },
+    "web_activity": {
+      "status": "ok",
+      "summary": "42 domains observed (24h)",
+      "window_hours": 24,
+      "sources": ["dns_cache", "browser_history"],
+      "domains": [
+        {
+          "domain": "example.com",
+          "first_seen": "2026-06-04T09:12:00Z",
+          "last_seen": "2026-06-04T17:40:00Z",
+          "hits": 7,
+          "sources": ["dns_cache", "browser_history"]
+        },
+        {
+          "domain": "cdn.example.net",
+          "first_seen": "2026-06-04T16:05:00Z",
+          "last_seen": "2026-06-04T16:05:00Z",
+          "hits": 1,
+          "sources": ["dns_cache"]
+        }
+      ],
+      "truncated": false,
+      "browser_profiles_read": 3,
+      "errors": []
     }
   }
 }

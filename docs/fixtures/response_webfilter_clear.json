@@ -1,0 +1,10 @@
+{
+  "type": "response",
+  "id": "e5c9a3f2-6b4d-4e0c-9a32-7c8d9e0f1021",
+  "ok": true,
+  "result": {
+    "ok": true,
+    "removed_entries": 2,
+    "doh_policy_cleared": true
+  }
+}

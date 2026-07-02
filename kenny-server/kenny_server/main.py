@@ -38,11 +38,26 @@ from .keystore import KeyStore
 from .logging_config import StoreLogHandler, configure_logging, drain_log_queue
 from .policy import PolicyEngine
 from .registry import AgentRegistry
-from .store import EventStore, PolicyStore, TelemetryStore
+from .store import EventStore, PolicyStore, TelemetryStore, WebFilterStore
 from .tokenstore import AgentTokenStore
 from .tools import CallLog, ScreenshotStore, register_tools
 from .tunnel import AgentTunnel
+from .webfilter import ExternalListCache, WebFilterService
 from .webui import build_api_routes, build_chat_routes
+
+
+async def _webfilter_refresh_loop(
+    cache: ExternalListCache, interval_s: int, initial_delay_s: float
+) -> None:
+    """Periodically refresh the external adult/bypass lists (best-effort)."""
+
+    await asyncio.sleep(initial_delay_s)
+    while True:
+        try:
+            await cache.refresh_all()
+        except Exception:  # noqa: BLE001 - never let the loop die
+            logging.getLogger("kenny.webfilter").exception("external list refresh failed")
+        await asyncio.sleep(interval_s)
 
 
 def build_app(db_path: str | None = None) -> Starlette:
@@ -59,12 +74,19 @@ def build_app(db_path: str | None = None) -> Starlette:
     # catalog at construction and never raises if it is missing (fail-open).
     policy_store = PolicyStore(db_path)
     policy_engine = PolicyEngine()
+    # Parental controls (ADR-0026): per-host store + external-list cache under a
+    # dir derived from the DB path, wrapped in the service the tunnel/API/tools use.
+    webfilter_store = WebFilterStore(db_path)
+    cache_dir = os.path.dirname(os.path.abspath(db_path)) or "."
+    webfilter_cache = ExternalListCache(cache_dir)
+    webfilter = WebFilterService(webfilter_store, webfilter_cache)
     tunnel = AgentTunnel(
         registry,
         store,
         event_store,
         policy_engine=policy_engine,
         policy_store=policy_store,
+        webfilter=webfilter,
     )
     call_log = CallLog(event_store=event_store)
     screenshots = ScreenshotStore()
@@ -72,7 +94,14 @@ def build_app(db_path: str | None = None) -> Starlette:
     share_links = ShareLinks()
 
     mcp = FastMCP("kenny")
-    register_tools(mcp, registry=registry, store=store, tunnel=tunnel, call_log=call_log)
+    register_tools(
+        mcp,
+        registry=registry,
+        store=store,
+        tunnel=tunnel,
+        call_log=call_log,
+        webfilter=webfilter,
+    )
     mcp_app = mcp.http_app(path="/mcp")
 
     @contextlib.asynccontextmanager
@@ -82,10 +111,24 @@ def build_app(db_path: str | None = None) -> Starlette:
         await key_store.connect()
         await event_store.connect()
         await policy_store.connect()
+        await webfilter_store.connect()
         # Load persisted operator rules into the mirror engine at startup.
         policy_engine.set_operator_rules(await policy_store.list())
         await store.prune()
         await event_store.prune()
+        await webfilter_store.prune()
+        # Periodically refresh the external adult/bypass lists (ADR-0026). The
+        # initial fetch is delayed so short-lived test app instances never reach
+        # out; set KENNY_WEBFILTER_REFRESH_SECS=0 to disable entirely.
+        refresh_secs = int(os.environ.get("KENNY_WEBFILTER_REFRESH_SECS", str(24 * 3600)))
+        webfilter_task: asyncio.Task | None = None
+        if refresh_secs > 0:
+            initial_delay = float(
+                os.environ.get("KENNY_WEBFILTER_INITIAL_REFRESH_DELAY", "5")
+            )
+            webfilter_task = asyncio.create_task(
+                _webfilter_refresh_loop(webfilter_cache, refresh_secs, initial_delay)
+            )
         # Capture server-side log records onto a bounded queue and persist them
         # via a background drain task (source='server'). See ADR-0017.
         log_handler = StoreLogHandler()
@@ -114,11 +157,16 @@ def build_app(db_path: str | None = None) -> Starlette:
             drain_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await drain_task
+            if webfilter_task is not None:
+                webfilter_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await webfilter_task
             await token_store.close()
             await key_store.close()
             await store.close()
             await event_store.close()
             await policy_store.close()
+            await webfilter_store.close()
 
     api_routes = build_api_routes(
         registry=registry,
@@ -130,6 +178,7 @@ def build_app(db_path: str | None = None) -> Starlette:
         token_store=token_store,
         policy_store=policy_store,
         policy_engine=policy_engine,
+        webfilter=webfilter,
     )
     chat_routes = build_chat_routes(
         registry=registry,
@@ -173,6 +222,8 @@ def build_app(db_path: str | None = None) -> Starlette:
     app.state.key_store = key_store
     app.state.policy_store = policy_store
     app.state.policy_engine = policy_engine
+    app.state.webfilter_store = webfilter_store
+    app.state.webfilter = webfilter
     app.state.tunnel = tunnel
     app.state.call_log = call_log
     app.state.screenshots = screenshots

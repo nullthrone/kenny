@@ -31,6 +31,7 @@ from ..store import EventStore, PolicyStore, TelemetryStore
 from ..tokenstore import AgentTokenStore
 from ..tools import CallLog, ScreenshotStore, build_health
 from ..tunnel import AgentTunnel, ToolError
+from ..webfilter import WebFilterService, load_seed, normalize_domain
 
 _INDEX = Path(__file__).parent / "index.html"
 _ASSETS = Path(__file__).parent / "assets"
@@ -57,10 +58,12 @@ def build_api_routes(
     token_store: AgentTokenStore | None = None,
     policy_store: PolicyStore | None = None,
     policy_engine: PolicyEngine | None = None,
+    webfilter: WebFilterService | None = None,
 ) -> list[Route]:
     """Build the dashboard's static + JSON routes."""
 
     _APPLIES_TO = {"powershell", "self_protection", "path"}
+    _WEBFILTER_ACTIONS = {"watch", "block", "allow"}
 
     async def index(_request: Request) -> FileResponse:
         return FileResponse(_INDEX)
@@ -338,6 +341,140 @@ def build_api_routes(
         await tunnel.broadcast_policy()
         return JSONResponse({"ok": True, "removed": removed, "operator": operator})
 
+    # -- parental controls (webfilter) ------------------------------------
+
+    async def _webfilter_overview(agent_id: str) -> dict[str, Any]:
+        config = await webfilter.get_config(agent_id)
+        custom = await webfilter.list_domains(agent_id)
+        current_hash = await webfilter.current_list_hash(agent_id)
+        applied_hash = config.get("applied_hash")
+        stats = webfilter.cache.stats()
+        return {
+            "agent_id": agent_id,
+            "config": config,
+            "custom": custom,
+            "seed_count": len(load_seed()),
+            "external": {
+                "adult": {**stats["adult"], "enabled": config["use_external_adult"]},
+                "bypass": {**stats["bypass"], "enabled": config["use_bypass_protection"]},
+            },
+            "applied": {
+                "hash": applied_hash,
+                "at": config.get("applied_at"),
+                "ok": config.get("applied_ok"),
+            },
+            "current_hash": current_hash,
+            "drift": bool(applied_hash) and applied_hash != current_hash,
+        }
+
+    async def api_webfilter_get(request: Request) -> JSONResponse:
+        if webfilter is None:
+            return JSONResponse({"error": "webfilter not configured"}, status_code=503)
+        return JSONResponse(await _webfilter_overview(request.path_params["id"]))
+
+    async def api_webfilter_config(request: Request) -> JSONResponse:
+        if webfilter is None:
+            return JSONResponse({"error": "webfilter not configured"}, status_code=503)
+        agent_id = request.path_params["id"]
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - malformed JSON
+            return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        doh = body.get("doh_policy")
+        if doh is not None and doh not in ("disable", "leave"):
+            return JSONResponse(
+                {"error": "doh_policy must be 'disable' or 'leave'"}, status_code=400
+            )
+        config = await webfilter.set_config(
+            agent_id,
+            enabled=body.get("enabled"),
+            block_mode=body.get("block_mode"),
+            use_external_adult=body.get("use_external_adult"),
+            use_bypass_protection=body.get("use_bypass_protection"),
+            doh_policy=doh,
+        )
+        return JSONResponse({"config": config})
+
+    async def api_webfilter_add_domain(request: Request) -> JSONResponse:
+        if webfilter is None:
+            return JSONResponse({"error": "webfilter not configured"}, status_code=503)
+        agent_id = request.path_params["id"]
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - malformed JSON
+            return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        action = str(body.get("action", "block"))
+        if action not in _WEBFILTER_ACTIONS:
+            return JSONResponse(
+                {"error": f"action must be one of {sorted(_WEBFILTER_ACTIONS)}"},
+                status_code=400,
+            )
+        if normalize_domain(body.get("domain")) is None:
+            return JSONResponse({"error": "invalid domain"}, status_code=400)
+        note = body.get("note")
+        domain = await webfilter.add_domain(agent_id, str(body["domain"]), action, note)
+        return JSONResponse(
+            {"domain": domain, "custom": await webfilter.list_domains(agent_id)}
+        )
+
+    async def api_webfilter_remove_domain(request: Request) -> JSONResponse:
+        if webfilter is None:
+            return JSONResponse({"error": "webfilter not configured"}, status_code=503)
+        agent_id = request.path_params["id"]
+        removed = await webfilter.remove_domain(agent_id, request.path_params["domain"])
+        return JSONResponse(
+            {"ok": True, "removed": removed, "custom": await webfilter.list_domains(agent_id)}
+        )
+
+    async def api_webfilter_apply(request: Request) -> JSONResponse:
+        if webfilter is None:
+            return JSONResponse({"error": "webfilter not configured"}, status_code=503)
+        agent_id = request.path_params["id"]
+        config = await webfilter.get_config(agent_id)
+        args = await webfilter.build_apply(agent_id)
+        block_mode = bool(config["block_mode"])
+        tool = "webfilter_apply" if block_mode else "webfilter_clear"
+        call_args: dict[str, Any] = args if block_mode else {}
+        try:
+            result = await tunnel.send_request(agent_id, tool, call_args, 30)
+            await call_log.record(agent_id, tool, call_args, ok=True)
+        except ToolError as exc:
+            await call_log.record(agent_id, tool, call_args, ok=False, error=exc.message)
+            # The kill switch refuses mutating tools with `disabled`; surface it
+            # distinctly so the UI can show the local-override message (ADR-0026).
+            if exc.code == "disabled":
+                return JSONResponse({"ok": False, "error": "disabled"}, status_code=200)
+            return JSONResponse({"ok": False, "error": exc.message}, status_code=502)
+        except Exception as exc:  # noqa: BLE001 - surface to the UI
+            await call_log.record(agent_id, tool, call_args, ok=False, error=str(exc))
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=502)
+        from datetime import datetime, timezone
+
+        applied_at = str(result.get("applied_at") or datetime.now(timezone.utc).isoformat())
+        await webfilter.set_applied_state(
+            agent_id,
+            args["list_hash"] if block_mode else None,
+            applied_at,
+            bool(result.get("ok", True)),
+        )
+        return JSONResponse(
+            {"ok": True, "result": result, "applied": call_args, "block_mode": block_mode}
+        )
+
+    async def api_webfilter_activity(request: Request) -> JSONResponse:
+        if webfilter is None:
+            return JSONResponse({"error": "webfilter not configured"}, status_code=503)
+        agent_id = request.path_params["id"]
+        params = request.query_params
+        try:
+            hours = int(params.get("hours", 24))
+        except ValueError:
+            hours = 24
+        hours = max(1, min(hours, 24 * 30))
+        flagged_only = params.get("flagged") in ("1", "true", "yes")
+        events = await webfilter.activity(agent_id, hours=hours, flagged_only=flagged_only)
+        return JSONResponse({"agent_id": agent_id, "hours": hours, "events": events})
+
     return [
         Route("/", index),
         Route("/assets/{name}", asset),
@@ -354,6 +491,16 @@ def build_api_routes(
         Route("/api/agent/{id}/remotehelp", api_remotehelp, methods=["POST"]),
         Route("/api/agent/{id}/screenshot", api_screenshot),
         Route("/api/agent/{id}/screenshot", api_capture, methods=["POST"]),
+        Route("/api/agent/{id}/webfilter", api_webfilter_get),
+        Route("/api/agent/{id}/webfilter/config", api_webfilter_config, methods=["PUT"]),
+        Route("/api/agent/{id}/webfilter/domains", api_webfilter_add_domain, methods=["POST"]),
+        Route(
+            "/api/agent/{id}/webfilter/domains/{domain}",
+            api_webfilter_remove_domain,
+            methods=["DELETE"],
+        ),
+        Route("/api/agent/{id}/webfilter/apply", api_webfilter_apply, methods=["POST"]),
+        Route("/api/agent/{id}/webfilter/activity", api_webfilter_activity),
         Route("/api/agents/{id}/token", api_rotate_token, methods=["POST"]),
     ]
 

@@ -150,6 +150,31 @@ def _rule_os_support(payload: dict[str, Any], now: datetime) -> "tuple[Status, s
     return None
 
 
+_WEB_ACTIVITY_SERIOUS = {"custom", "seed", "external_adult"}
+
+
+def _rule_web_activity(payload: dict[str, Any], now: datetime) -> "tuple[Status, str] | None":
+    # `flagged` is a server-internal annotation added at insert time (ADR-0026).
+    # Absent => the host is not configured for parental controls; defer.
+    flagged = payload.get("flagged")
+    if flagged is None:
+        return None
+    recent = [
+        f
+        for f in flagged
+        if (age := _age_days(f.get("last_seen"), now=now)) is not None and age <= 1.0
+    ]
+    serious = [f for f in recent if f.get("category") in _WEB_ACTIVITY_SERIOUS]
+    if serious:
+        example = serious[0].get("domain", "?")
+        return "crit", f"{len(serious)} flagged domain(s) in 24h (e.g. {example})"
+    bypass = [f for f in recent if f.get("category") == "bypass"]
+    if bypass:
+        example = bypass[0].get("domain", "?")
+        return "warn", f"{len(bypass)} bypass domain(s) in 24h (e.g. {example})"
+    return "ok", "no flagged domains (24h)"
+
+
 # Section name -> rule. Easy to extend: add an entry.
 RULES: dict[str, Rule] = {
     "disk": _rule_disk,
@@ -160,6 +185,7 @@ RULES: dict[str, Rule] = {
     "memory": _rule_memory,
     "thermals": _rule_thermals,
     "os_support": _rule_os_support,
+    "web_activity": _rule_web_activity,
 }
 
 
