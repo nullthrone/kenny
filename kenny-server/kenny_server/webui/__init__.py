@@ -16,6 +16,7 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
+from .. import PROTOCOL_VERSION, __version__, agent_release, changelog
 from ..chat import (
     ChatExecutor,
     ChatSessions,
@@ -475,9 +476,29 @@ def build_api_routes(
         events = await webfilter.activity(agent_id, hours=hours, flagged_only=flagged_only)
         return JSONResponse({"agent_id": agent_id, "hours": hours, "events": events})
 
+    async def api_about(_request: Request) -> JSONResponse:
+        """Static server identity for the About modal (no network)."""
+
+        return JSONResponse(
+            {
+                "server_version": __version__,
+                "protocol_version": PROTOCOL_VERSION,
+                "repo": agent_release.github_repo(),
+            }
+        )
+
+    async def api_changelog(_request: Request) -> JSONResponse:
+        """GitHub Releases for the About modal's changelog, server-proxied + cached."""
+
+        repo = agent_release.github_repo()
+        releases = await changelog.fetch_releases(repo)
+        return JSONResponse({"repo": repo, "releases": releases})
+
     return [
         Route("/", index),
         Route("/assets/{name}", asset),
+        Route("/api/about", api_about),
+        Route("/api/changelog", api_changelog),
         Route("/api/policy/rules", api_policy_list),
         Route("/api/policy/rules", api_policy_add, methods=["POST"]),
         Route("/api/policy/rules/{id}", api_policy_remove, methods=["DELETE"]),
