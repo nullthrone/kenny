@@ -237,6 +237,34 @@ def _cached_tools() -> list[dict[str, Any]]:
     return tools
 
 
+def _context_note(session: "ChatSession") -> list[dict[str, Any]]:
+    """An extra, uncached system block naming the dashboard's selected agent.
+
+    The dashboard shows the operator a "context: <agent>" pill and scopes
+    forwarded capability tools to it (see the ``agent_id`` handling in
+    ``webui/__init__.py``), but that selection was never stated to the model in
+    words — only tool routing saw it. Without this, the model has no lexical
+    signal of which machine is selected and can't answer "which PC is this?"
+    without first calling a tool. Kept separate from the cached
+    ``_SYSTEM_PROMPT`` block (``_cached_system``) since it varies per session
+    and must not bust that prompt-cache prefix.
+    """
+
+    if not session.agent_id:
+        return []
+    return [
+        {
+            "type": "text",
+            "text": (
+                f'The operator currently has the agent "{session.agent_id}" selected '
+                "in the dashboard (shown as the chat's context). Assume unqualified "
+                'references to "this machine"/"this PC"/"it" refer to that agent '
+                "unless the operator names a different one."
+            ),
+        }
+    ]
+
+
 @dataclass
 class PendingCall:
     """A state-changing tool call awaiting operator confirmation."""
@@ -727,7 +755,7 @@ async def _drive_events(
         with client.messages.stream(
             model=model,
             max_tokens=4096,
-            system=_cached_system(),
+            system=_cached_system() + _context_note(session),
             tools=_cached_tools(),
             messages=session.messages,
         ) as stream:

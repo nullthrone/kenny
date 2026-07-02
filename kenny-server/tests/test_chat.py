@@ -198,6 +198,21 @@ def test_system_prompt_defers_confirmation_to_the_gate_dialog() -> None:
     assert "single place consent is given" in lowered
 
 
+def test_context_note_names_the_selected_agent() -> None:
+    """The dashboard's selected agent must reach the model in words, not just
+    scope tool routing (see build_chat_routes' agent_id handling) — otherwise
+    the model can't answer "which PC is this?" without calling a tool first."""
+
+    from kenny_server.chat import _context_note
+
+    assert _context_note(ChatSession(id="s1")) == []
+    note = _context_note(ChatSession(id="s2", agent_id="linus-pc"))
+    assert len(note) == 1
+    assert "linus-pc" in note[0]["text"]
+    # Must stay out of the cached system block so it never busts that prefix.
+    assert "cache_control" not in note[0]
+
+
 def test_tool_result_payload_capped() -> None:
     from kenny_server.chat import _MAX_TOOL_RESULT_CHARS, _tool_result_block
 

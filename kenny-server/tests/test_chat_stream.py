@@ -338,3 +338,67 @@ def test_history_routes_require_auth(tmp_path):
         assert c.get("/api/chat/history").status_code == 401
         assert c.get("/api/chat/history/x").status_code == 401
         assert c.delete("/api/chat/history/x").status_code == 401
+
+
+def test_dashboard_agent_selection_reaches_the_model_and_clears(tmp_path):
+    """Regression: the dashboard's "context: <agent>" pill only ever scoped
+    tool routing — the model itself had no lexical signal of the selection and
+    couldn't answer "which PC is this?" without calling a tool first. The
+    ``agent_id`` on a chat request must now also land in the outgoing
+    ``system`` blocks (``chat._context_note``), and must clear again once the
+    dashboard switches back to fleet-wide instead of lingering.
+    """
+
+    store = TelemetryStore(db_path=str(tmp_path / "ctxnote.sqlite"))
+    registry = AgentRegistry(tokens={"dev": "dev-token"})
+    tunnel = AgentTunnel(registry, store, EventStore(db_path=store.db_path))
+    history_store = ChatHistoryStore(db_path=store.db_path)
+    sessions = ChatSessions(store=history_store)
+    scripts = [
+        [_Response([text_block("linus-pc looks fine.")], "end_turn")],
+        [_Response([text_block("Here is the fleet overview.")], "end_turn")],
+    ]
+    clients: list[FakeAnthropic] = []
+
+    def factory() -> Any:
+        client = FakeAnthropic(scripts.pop(0))
+        clients.append(client)
+        return client
+
+    routes = build_chat_routes(
+        registry=registry,
+        store=store,
+        tunnel=tunnel,
+        call_log=CallLog(),
+        sessions=sessions,
+        screenshots=ScreenshotStore(),
+        history_store=history_store,
+        client_factory=factory,
+    )
+
+    @asynccontextmanager
+    async def lifespan(_app):
+        await store.connect()
+        await history_store.connect()
+        yield
+        await store.close()
+        await history_store.close()
+
+    app = Starlette(routes=routes, lifespan=lifespan)
+
+    with TestClient(app) as c:
+        r1 = c.post(
+            "/api/chat/stream",
+            json={"message": "which pc is this?", "agent_id": "linus-pc"},
+        )
+        sid = _frames(r1.text)[-1]["session_id"]
+        system1 = clients[0].messages.calls[-1]["system"]
+        assert any("linus-pc" in block["text"] for block in system1)
+
+        r2 = c.post(
+            "/api/chat/stream",
+            json={"session_id": sid, "message": "and the whole fleet?", "agent_id": ""},
+        )
+        assert r2.status_code == 200
+        system2 = clients[1].messages.calls[-1]["system"]
+        assert not any("linus-pc" in block["text"] for block in system2)
