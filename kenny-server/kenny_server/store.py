@@ -257,6 +257,35 @@ class EventStore:
         )
         await self._conn.commit()
 
+    async def insert_alert(
+        self,
+        *,
+        agent_id: str | None,
+        message: str,
+        level: str,
+        fields: dict[str, Any] | None = None,
+        at: str | None = None,
+    ) -> None:
+        """Store an emitted operator alert (kind='alert', source='server').
+
+        Alert history reuses the events table (ADR-0028): the Activity view and
+        the weekly digest read these back via ``query(kind='alert')``.
+        """
+
+        at = at or datetime.now(timezone.utc).isoformat()
+        await self._conn.execute(
+            "INSERT INTO events (at, agent_id, source, level, kind, target, message, fields) "
+            "VALUES (?, ?, 'server', ?, 'alert', 'kenny.alert', ?, ?)",
+            (
+                at,
+                agent_id,
+                level,
+                message,
+                json.dumps(fields) if fields is not None else None,
+            ),
+        )
+        await self._conn.commit()
+
     async def query(
         self,
         *,
@@ -312,6 +341,92 @@ class EventStore:
             "message": row["message"],
             "fields": json.loads(row["fields"]) if row["fields"] is not None else None,
         }
+
+
+_ALERT_STATE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS alert_state (
+    agent_id         TEXT NOT NULL,
+    scope            TEXT NOT NULL,
+    status           TEXT NOT NULL,
+    since            TEXT NOT NULL,
+    last_notified_at TEXT,
+    PRIMARY KEY (agent_id, scope)
+);
+"""
+
+
+class AlertStateStore:
+    """Async SQLite-backed last-known alert state per (agent, scope).
+
+    ``scope`` is ``'offline'``, ``'overall'``, ``'section:<name>'``,
+    ``'change:<section>'`` or ``'digest'``. Persisting the state (rather than
+    keeping it in memory) means a server restart does not re-fire alerts for
+    conditions that were already notified (ADR-0028). Rows are tiny and pruned
+    implicitly by being overwritten, so there is no retention job.
+    """
+
+    def __init__(self, db_path: str = DEFAULT_DB_PATH) -> None:
+        self.db_path = db_path
+        self._db: aiosqlite.Connection | None = None
+
+    async def connect(self) -> None:
+        if self._db is not None:
+            return
+        self._db = await aiosqlite.connect(self.db_path)
+        self._db.row_factory = aiosqlite.Row
+        await self._db.execute("PRAGMA journal_mode=WAL")
+        await self._db.executescript(_ALERT_STATE_SCHEMA)
+        await self._db.commit()
+
+    async def close(self) -> None:
+        if self._db is not None:
+            await self._db.close()
+            self._db = None
+
+    @property
+    def _conn(self) -> aiosqlite.Connection:
+        if self._db is None:
+            raise RuntimeError("AlertStateStore is not connected; call connect() first")
+        return self._db
+
+    async def get(self, agent_id: str, scope: str) -> dict[str, Any] | None:
+        async with self._conn.execute(
+            "SELECT agent_id, scope, status, since, last_notified_at FROM alert_state "
+            "WHERE agent_id = ? AND scope = ?",
+            (agent_id, scope),
+        ) as cur:
+            row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def get_all(self, agent_id: str) -> dict[str, dict[str, Any]]:
+        """Return every scope row for an agent, keyed by scope."""
+
+        async with self._conn.execute(
+            "SELECT agent_id, scope, status, since, last_notified_at FROM alert_state "
+            "WHERE agent_id = ?",
+            (agent_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+        return {r["scope"]: dict(r) for r in rows}
+
+    async def upsert(
+        self,
+        agent_id: str,
+        scope: str,
+        *,
+        status: str,
+        since: str,
+        last_notified_at: str | None,
+    ) -> None:
+        await self._conn.execute(
+            "INSERT INTO alert_state (agent_id, scope, status, since, last_notified_at) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT (agent_id, scope) DO UPDATE SET "
+            "status = excluded.status, since = excluded.since, "
+            "last_notified_at = excluded.last_notified_at",
+            (agent_id, scope, status, since, last_notified_at),
+        )
+        await self._conn.commit()
 
 
 _POLICY_SCHEMA = """

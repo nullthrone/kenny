@@ -1,0 +1,132 @@
+"""Outbound operator notifications: ntfy and a generic JSON webhook.
+
+Alert delivery is best-effort by design (ADR-0028): a dead or slow
+notification target must never stall or kill the evaluation loop, so every
+``send`` swallows and logs transport errors. Channels are configured purely
+via environment variables (``KENNY_NTFY_URL``, ``KENNY_NTFY_TOKEN``,
+``KENNY_WEBHOOK_URL``); with none configured, alert evaluation still runs and
+records history, it just pushes nothing.
+
+``client_factory`` is injected so tests can supply an ``httpx.MockTransport``
+(same pattern as ``webfilter.ExternalListCache``).
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Callable, Protocol
+
+import httpx
+
+logger = logging.getLogger("kenny.notify")
+
+_SEND_TIMEOUT_S = 15.0
+
+ClientFactory = Callable[[], httpx.AsyncClient]
+
+
+@dataclass
+class Notification:
+    """One operator-facing message, channel-agnostic."""
+
+    title: str
+    body: str
+    priority: str = "default"  # ntfy scale: "low" | "default" | "high" | "urgent"
+    tags: list[str] = field(default_factory=list)
+    agent_id: str | None = None
+    kind: str = "alert"  # "alert" | "recovery" | "change" | "digest"
+
+
+class Notifier(Protocol):
+    """A delivery channel for :class:`Notification`."""
+
+    name: str
+
+    async def send(self, notification: Notification) -> None: ...
+
+
+class _HttpNotifier:
+    """Shared httpx plumbing for the concrete channels."""
+
+    name = "http"
+
+    def __init__(self, url: str, *, client_factory: ClientFactory | None = None) -> None:
+        self._url = url
+        self._client_factory = client_factory
+
+    def _make_client(self) -> httpx.AsyncClient:
+        if self._client_factory is not None:
+            return self._client_factory()
+        return httpx.AsyncClient()
+
+    async def _post(self, **kwargs: object) -> None:
+        try:
+            async with self._make_client() as client:
+                resp = await client.post(self._url, timeout=_SEND_TIMEOUT_S, **kwargs)
+            if resp.status_code >= 400:
+                logger.warning("%s notify returned %s", self.name, resp.status_code)
+        except Exception as exc:  # noqa: BLE001 - delivery is best-effort
+            logger.warning("%s notify failed: %s", self.name, exc)
+
+
+class NtfyNotifier(_HttpNotifier):
+    """POST to an ntfy topic URL (https://ntfy.sh/<topic> or self-hosted)."""
+
+    name = "ntfy"
+
+    def __init__(
+        self,
+        url: str,
+        token: str | None = None,
+        *,
+        client_factory: ClientFactory | None = None,
+    ) -> None:
+        super().__init__(url, client_factory=client_factory)
+        self._token = token
+
+    async def send(self, notification: Notification) -> None:
+        headers = {
+            "Title": notification.title,
+            "Priority": notification.priority,
+        }
+        if notification.tags:
+            headers["Tags"] = ",".join(notification.tags)
+        if self._token:
+            headers["Authorization"] = f"Bearer {self._token}"
+        await self._post(content=notification.body.encode("utf-8"), headers=headers)
+
+
+class WebhookNotifier(_HttpNotifier):
+    """POST a JSON payload to a generic operator-configured webhook URL."""
+
+    name = "webhook"
+
+    async def send(self, notification: Notification) -> None:
+        await self._post(
+            json={
+                "kind": notification.kind,
+                "title": notification.title,
+                "body": notification.body,
+                "priority": notification.priority,
+                "tags": notification.tags,
+                "agent_id": notification.agent_id,
+                "at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+
+
+def load_notifiers(*, client_factory: ClientFactory | None = None) -> list[Notifier]:
+    """Build the configured channels from the environment (possibly empty)."""
+
+    notifiers: list[Notifier] = []
+    ntfy_url = os.environ.get("KENNY_NTFY_URL", "").strip()
+    if ntfy_url:
+        token = os.environ.get("KENNY_NTFY_TOKEN", "").strip() or None
+        notifiers.append(NtfyNotifier(ntfy_url, token, client_factory=client_factory))
+    webhook_url = os.environ.get("KENNY_WEBHOOK_URL", "").strip()
+    if webhook_url:
+        notifiers.append(WebhookNotifier(webhook_url, client_factory=client_factory))
+    return notifiers

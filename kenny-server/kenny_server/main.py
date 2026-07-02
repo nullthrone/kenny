@@ -26,6 +26,7 @@ from starlette.middleware import Middleware
 from starlette.routing import Mount, WebSocketRoute
 
 from . import agent_release
+from .alerting import DEFAULT_COOLDOWN_S, DEFAULT_OFFLINE_AFTER_S, AlertEngine
 from .auth import (
     OperatorAuthMiddleware,
     build_auth_routes,
@@ -36,9 +37,17 @@ from .chat import ChatSessions
 from .distribution import ShareLinks, build_download_routes
 from .keystore import KeyStore
 from .logging_config import StoreLogHandler, configure_logging, drain_log_queue
+from .notify import load_notifiers
 from .policy import PolicyEngine
 from .registry import AgentRegistry
-from .store import ChatHistoryStore, EventStore, PolicyStore, TelemetryStore, WebFilterStore
+from .store import (
+    AlertStateStore,
+    ChatHistoryStore,
+    EventStore,
+    PolicyStore,
+    TelemetryStore,
+    WebFilterStore,
+)
 from .tokenstore import AgentTokenStore
 from .tools import CallLog, ScreenshotStore, register_tools
 from .tunnel import AgentTunnel
@@ -93,6 +102,22 @@ def build_app(db_path: str | None = None) -> Starlette:
     chat_history_store = ChatHistoryStore(db_path)
     chat_sessions = ChatSessions(store=chat_history_store)
     share_links = ShareLinks()
+    # Push alerting (ADR-0028): transition detection over the health rules,
+    # delivered best-effort via the env-configured channels (possibly none).
+    alert_state = AlertStateStore(db_path)
+    notifiers = load_notifiers()
+    alert_engine = AlertEngine(
+        store=store,
+        alert_state=alert_state,
+        event_store=event_store,
+        registry=registry,
+        notifiers=notifiers,
+        cooldown_s=int(os.environ.get("KENNY_ALERT_COOLDOWN_SECS", str(DEFAULT_COOLDOWN_S))),
+        offline_after_s=int(
+            os.environ.get("KENNY_ALERT_OFFLINE_AFTER_SECS", str(DEFAULT_OFFLINE_AFTER_S))
+        ),
+        prunables=[store, event_store, webfilter_store],
+    )
 
     mcp = FastMCP("kenny")
     register_tools(
@@ -114,6 +139,7 @@ def build_app(db_path: str | None = None) -> Starlette:
         await policy_store.connect()
         await webfilter_store.connect()
         await chat_history_store.connect()
+        await alert_state.connect()
         # Load persisted operator rules into the mirror engine at startup.
         policy_engine.set_operator_rules(await policy_store.list())
         await store.prune()
@@ -131,6 +157,13 @@ def build_app(db_path: str | None = None) -> Starlette:
             webfilter_task = asyncio.create_task(
                 _webfilter_refresh_loop(webfilter_cache, refresh_secs, initial_delay)
             )
+        # Alert evaluation loop (ADR-0028). The initial delay keeps short-lived
+        # test app instances silent; KENNY_ALERT_INTERVAL_SECS=0 disables.
+        alert_secs = int(os.environ.get("KENNY_ALERT_INTERVAL_SECS", "60"))
+        alert_task: asyncio.Task | None = None
+        if alert_secs > 0:
+            alert_delay = float(os.environ.get("KENNY_ALERT_INITIAL_DELAY", "10"))
+            alert_task = asyncio.create_task(alert_engine.run(alert_secs, alert_delay))
         # Capture server-side log records onto a bounded queue and persist them
         # via a background drain task (source='server'). See ADR-0017.
         log_handler = StoreLogHandler()
@@ -163,6 +196,10 @@ def build_app(db_path: str | None = None) -> Starlette:
                 webfilter_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await webfilter_task
+            if alert_task is not None:
+                alert_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await alert_task
             await token_store.close()
             await key_store.close()
             await store.close()
@@ -170,6 +207,7 @@ def build_app(db_path: str | None = None) -> Starlette:
             await policy_store.close()
             await webfilter_store.close()
             await chat_history_store.close()
+            await alert_state.close()
 
     api_routes = build_api_routes(
         registry=registry,
@@ -233,6 +271,9 @@ def build_app(db_path: str | None = None) -> Starlette:
     app.state.screenshots = screenshots
     app.state.chat_sessions = chat_sessions
     app.state.chat_history_store = chat_history_store
+    app.state.alert_state = alert_state
+    app.state.alert_engine = alert_engine
+    app.state.notifiers = notifiers
     app.state.share_links = share_links
     app.state.mcp = mcp
     app.state.operator_token = operator_token
