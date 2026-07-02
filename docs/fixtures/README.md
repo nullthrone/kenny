@@ -29,3 +29,9 @@ Adding/altering a fixture is a contract change — see `docs/protocol.md` § Ver
 | `response_agent_update.json`    | successful `response` frame (`agent_update`)     |
 | `policy.json`                   | `policy` frame (operator append-only deny rules) |
 | `log.json`                      | `log` frame (forwarded agent log event)          |
+| `request_webfilter_status.json`  | `request` frame (`webfilter_status`)            |
+| `response_webfilter_status.json` | successful `response` frame (`webfilter_status`) |
+| `request_webfilter_apply.json`   | `request` frame (`webfilter_apply`)             |
+| `response_webfilter_apply.json`  | successful `response` frame (`webfilter_apply`) |
+| `request_webfilter_clear.json`   | `request` frame (`webfilter_clear`)             |
+| `response_webfilter_clear.json`  | successful `response` frame (`webfilter_clear`) |

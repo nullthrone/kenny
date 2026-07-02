@@ -1,0 +1,13 @@
+{
+  "type": "response",
+  "id": "c3a7e1d0-4f2b-4c8a-9e10-5a6b7c8d9e0f",
+  "ok": true,
+  "result": {
+    "active": true,
+    "entry_count": 2,
+    "list_hash": "a1b2c3d4e5f60718",
+    "doh_policy": { "chrome": "off", "edge": "off", "firefox": "off" },
+    "applied_at": "2026-07-02T09:15:00Z",
+    "supported": true
+  }
+}

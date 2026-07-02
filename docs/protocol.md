@@ -1,4 +1,4 @@
-# kenny Wire Protocol (v0.8)
+# kenny Wire Protocol (v0.9)
 
 > **Single source of truth.** This document and the JSON files in `docs/fixtures/`
 > define the contract between `kenny-server` (Python) and `kenny-agent` (Rust).
@@ -167,8 +167,8 @@ capability on its platform (e.g. `winget_list` on a Linux dev build). `disabled`
 returned when the agent is online but the person at the endpoint has switched remote
 control **off** locally (via the agent's tray menu): the agent then refuses every
 **mutating** tool (`powershell_exec`, `winget_install|uninstall|update`,
-`net_dns_flush`, `net_adapter_reset`, `agent_update`) while telemetry and read-only
-diagnostics keep working. Remote control is **on** by default and the choice persists
+`net_dns_flush`, `net_adapter_reset`, `agent_update`, `webfilter_apply|clear`) while
+telemetry and read-only diagnostics keep working. Remote control is **on** by default and the choice persists
 across restarts. See ADR-0011.
 
 `blocked` is returned by the agent's **deterministic, always-on safety guard**: a
@@ -320,6 +320,9 @@ implements a handler with the same name. Argument keys are exact.
 | `remotehelp_stop`    | `{}`                          | `{stopped}`                                  |
 | `telemetry_collect`  | `{sections?}`                 | snapshot map (see `telemetry` frame)         |
 | `agent_update`       | `{version, url, sha256}`      | `{ok, staged_version}`                       |
+| `webfilter_status`   | `{}`                          | `{active, entry_count, list_hash, doh_policy, applied_at, supported}` |
+| `webfilter_apply`    | `{domains, doh_policy, list_hash}` | `{ok, applied, doh_policy_applied, list_hash, applied_at}` |
+| `webfilter_clear`    | `{}`                          | `{ok, removed_entries, doh_policy_cleared}`  |
 
 `agent_update` is a **server-triggered self-update** (state-changing): the agent
 downloads the new binary from `url` (served by the server's download endpoint),
@@ -346,6 +349,35 @@ mechanism as `screen_capture` (ADR-0018). On a non-Windows/dev build `start`/`st
 return `error.code = "unsupported"` and `status` reports everything not-available. See
 ADR-0022.
 
+The `webfilter_*` tools implement **parental-controls blocking** (ADR-0026). They are the
+enforcement half of the `web_activity` telemetry section (below); the alarm path does not
+depend on them. The server owns the per-host list and pre-merges the effective block set into
+a flat `domains` array — the agent is a dumb, idempotent enforcer and carries no list logic.
+
+- `webfilter_status` (`{}`) is **read-only** (works under the kill switch, like
+  `remotehelp_status`): `{active, entry_count, list_hash, doh_policy:{chrome,edge,firefox}, applied_at, supported}`,
+  where `list_hash` is the agent's recomputed hash of the currently applied block (for drift
+  detection against the server's intended hash) and `doh_policy` reports the current per-browser
+  DNS-over-HTTPS policy state.
+- `webfilter_apply` (`{domains, doh_policy, list_hash}`) is **mutating**: it writes `domains`
+  as a marker-delimited block (`# kenny-webfilter begin`/`end`, one `0.0.0.0 <domain>` line
+  each) into the OS hosts file via atomic replace, and — when `doh_policy == "disable"` — sets
+  registry policies turning DNS-over-HTTPS **off** in Chrome, Edge, and Firefox so DoH cannot
+  bypass the hosts block; then flushes the DNS cache. `domains` are normalized lowercase host
+  names, **hard-capped at 10 000** (the agent returns `bad_args` above the cap rather than
+  silently truncating — a server/agent cap mismatch must surface). `doh_policy` ∈
+  {`"disable"`, `"leave"`}. `list_hash` is the server's `sha256(sorted domains)[:16]`, echoed
+  back in the result and by `webfilter_status`. The agent **refuses** (`blocked`) any list that
+  would blackhole a self-protected name (`localhost`, the configured server host, core
+  Microsoft-update infrastructure) so a bad list can never sever the tunnel or OS updates.
+  Result: `{ok, applied, doh_policy_applied, list_hash, applied_at}`.
+- `webfilter_clear` (`{}`) is **mutating**: removes only kenny's marker block and the
+  kenny-written DoH policy values, then flushes DNS. Result: `{ok, removed_entries, doh_policy_cleared}`.
+
+On a non-Windows/dev build `apply`/`clear` return `error.code = "unsupported"` and `status`
+reports `{active: false, supported: false, ...}`, keeping `cargo test`/`cargo build` green on
+Linux CI. See ADR-0026.
+
 ### Server-only MCP tools (not forwarded to a single agent)
 
 | tool              | args            | purpose                                            |
@@ -367,6 +399,37 @@ Each section payload **must** include `status` ∈ {`ok`, `warn`, `crit`} and a 
 **Security & crypto:** `firewall`, `encryption`, `av_thirdparty`, `defender_quarantine`.
 **Update & stability:** `reboot_pending`, `os_support`, `reliability`, `app_updates`.
 **Operations & daily:** `uptime`, `time_sync`, `printers`, `wifi_quality`, `autostart`.
+**Parental controls:** `web_activity`.
+
+The `web_activity` section reports the **host names** a PC has been reaching in a rolling
+window (default 24 h), observed from the OS DNS client cache and per-user browser history
+(host names only — never full URLs, page titles, or which user visited). It is bounded:
+domains are deduplicated and capped (250, `last_seen` desc, `truncated` beyond), well inside
+the frame size cap. The agent always reports `status: "ok"` — it holds no list and does not
+judge; the server matches observed domains against that host's per-host list and is
+authoritative (see ADR-0026). The section payload the agent sends:
+
+```json
+"web_activity": {
+  "status": "ok",
+  "summary": "42 domains observed (24h)",
+  "window_hours": 24,
+  "sources": ["dns_cache", "browser_history"],
+  "domains": [
+    { "domain": "example.com", "first_seen": "2026-06-04T09:12:00Z",
+      "last_seen": "2026-06-04T17:40:00Z", "hits": 7, "sources": ["dns_cache", "browser_history"] }
+  ],
+  "truncated": false,
+  "browser_profiles_read": 3,
+  "errors": []
+}
+```
+
+On telemetry insert the server annotates the *stored* payload with a `flagged` array (the
+matches against the host's list, with category and timestamps) that the `web_activity` health
+rule consumes. That annotation is **server-internal and not part of this wire contract** — the
+agent never sends `flagged`. Off Windows the section is the standard `n/a on this platform`
+stub with empty `sources`/`domains`.
 
 Health thresholds (e.g. disk used > 80% ⇒ `warn` and ≥ 95% ⇒ `crit`; Defender
 real-time protection off ⇒ `crit`; Defender scan older than 14 days ⇒ `warn`) are
@@ -377,10 +440,14 @@ for fleet aggregation. These thresholds are illustrative of the data-driven rule
 
 ## Versioning
 
-`PROTOCOL_VERSION = "0.8"`. Both implementations expose this constant; from v0.8 the
-agent puts it on the wire in `register.protocol` to select the mutual-auth handshake.
-Bump on any breaking change to a frame or tool schema.
+`PROTOCOL_VERSION = "0.9"`. Both implementations expose this constant; from v0.8 the
+agent puts it on the wire in `register.protocol` to select the mutual-auth handshake
+(the `>= "0.8"` comparison still holds at `"0.9"`). Bump on any breaking change to a frame
+or tool schema.
 
+- `0.9` — added the `webfilter_status`, `webfilter_apply`, and `webfilter_clear` tools and
+  the `web_activity` telemetry section for parental-controls observability and on-demand web
+  filtering; additive tools + section, no frame changes. See ADR-0026.
 - `0.8` — mutual agent⇄server authentication via per-agent Ed25519 signatures: added the
   `challenge` (server → agent) and `auth` (agent → server) frames and the
   `register.protocol` / `register.client_nonce` fields; `register.token` becomes optional
