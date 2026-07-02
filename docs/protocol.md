@@ -387,6 +387,14 @@ Linux CI. See ADR-0026.
 | `fleet_overview`  | `{}`            | per-agent rolled-up health for the dashboard        |
 | `agent_health`    | `{id}`          | per-section status/summary for one agent            |
 | `agent_snapshot`  | `{id, section?}`| latest stored snapshot (or one section) for an agent|
+| `webfilter_get`   | `{id}`          | one host's parental-controls config + custom list   |
+| `webfilter_set`   | `{id, ...}`     | edit a host's config/toggles or add/remove a domain |
+| `webfilter_push`  | `{id}`          | build the effective block set and forward `webfilter_apply`/`clear` |
+| `web_activity_query` | `{id, hours?, flagged_only?}` | observed/flagged domains for one host  |
+
+The `webfilter_*` server-only tools manage the per-host list and trigger a push; they wrap
+the forwarded `webfilter_apply`/`webfilter_clear` capability tools (ADR-0026). `webfilter_set`
+and `webfilter_push` are state-changing (they pass the operator confirm-gate, ADR-0009).
 
 ## Telemetry sections
 

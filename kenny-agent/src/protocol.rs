@@ -1,4 +1,4 @@
-//! Wire-protocol types mirroring `../docs/protocol.md` (v0.8).
+//! Wire-protocol types mirroring `../docs/protocol.md` (v0.9).
 //!
 //! These serde models are the Rust side of the contract between `kenny-server`
 //! (Python) and `kenny-agent`. They are round-tripped against `../docs/fixtures/`
