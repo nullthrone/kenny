@@ -45,7 +45,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 # SHA-256. Used by `agent_update` (Windows-only) for binary verification AND by the
 # `webfilter` handler's portable `list_hash`, which is unit-tested on Linux CI — so this
 # is NOT windows-gated (the ungated ureq/png/rusqlite precedent applies).
-sha2 = "0.10"
+sha2 = "0.11"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
