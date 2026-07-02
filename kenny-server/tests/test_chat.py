@@ -27,11 +27,13 @@ from kenny_server.chat import (
     confirm_pending,
     confirm_pending_events,
     is_state_changing,
+    persist_session,
+    public_transcript,
     run_turn,
     run_turn_events,
 )
 from kenny_server.registry import AgentRegistry
-from kenny_server.store import EventStore, TelemetryStore
+from kenny_server.store import ChatHistoryStore, EventStore, TelemetryStore
 from kenny_server.tools import CallLog, ScreenshotStore
 from kenny_server.tunnel import AgentTunnel
 
@@ -531,9 +533,162 @@ async def test_drive_batch_still_matches(store: TelemetryStore) -> None:
     assert pub["tool_events"][0]["tool"] == "fleet_overview"
 
 
-def test_sessions_registry_round_trips() -> None:
+async def test_sessions_registry_round_trips() -> None:
     sessions = ChatSessions()
     a = sessions.get_or_create(None)
-    assert sessions.get(a.id) is a
+    assert await sessions.get(a.id) is a
     b = sessions.get_or_create(a.id)
     assert b is a
+
+
+# -- persistence (ADR-0027) -------------------------------------------------
+
+
+@pytest.fixture
+async def history_store(tmp_path) -> ChatHistoryStore:
+    s = ChatHistoryStore(db_path=str(tmp_path / "history.sqlite"))
+    await s.connect()
+    yield s
+    await s.close()
+
+
+async def test_sessions_get_returns_none_when_absent_everywhere(history_store: ChatHistoryStore) -> None:
+    sessions = ChatSessions(store=history_store)
+    assert await sessions.get("nope") is None
+    # And with no store configured at all.
+    assert await ChatSessions().get("nope") is None
+
+
+async def test_sessions_get_falls_back_to_store(history_store: ChatHistoryStore) -> None:
+    messages = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": [{"type": "text", "text": "hello"}]},
+    ]
+    await history_store.save(id="s1", title="Greeting", agent_id="dev", messages=messages)
+
+    sessions = ChatSessions(store=history_store)
+    session = await sessions.get("s1")
+    assert session is not None
+    assert session.id == "s1"
+    assert session.title == "Greeting"
+    assert session.agent_id == "dev"
+    assert session.messages == messages
+
+    # Second call hits the in-memory cache: same object, no re-fetch needed.
+    again = await sessions.get("s1")
+    assert again is session
+
+
+async def test_sessions_get_heals_a_session_saved_mid_turn(history_store: ChatHistoryStore) -> None:
+    """A row persisted with a dangling, unanswered tool_use is repaired on load."""
+
+    messages = [
+        {"role": "user", "content": "install git"},
+        {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": "tu1", "name": "winget_install", "input": {}}],
+        },
+    ]
+    await history_store.save(id="s2", title="Install git", agent_id=None, messages=messages)
+
+    sessions = ChatSessions(store=history_store)
+    session = await sessions.get("s2")
+    assert session is not None
+    # heal_session drops the trailing, unanswered assistant tool_use message.
+    assert session.messages == [{"role": "user", "content": "install git"}]
+
+
+async def test_persist_session_derives_title_once(history_store: ChatHistoryStore) -> None:
+    session = ChatSession(id="s3", messages=[{"role": "user", "content": "  first question  "}])
+    await persist_session(history_store, session)
+    assert session.title == "first question"
+
+    session.messages.append({"role": "assistant", "content": [{"type": "text", "text": "answer"}]})
+    session.messages.append({"role": "user", "content": "a completely different second question"})
+    await persist_session(history_store, session)
+    # Title stays as derived from the first save; ChatSession.title itself is
+    # never re-derived, and ChatHistoryStore.save also refuses to overwrite it.
+    assert session.title == "first question"
+    row = await history_store.get("s3")
+    assert row is not None
+    assert row["title"] == "first question"
+    assert len(row["messages"]) == 3
+
+
+async def test_persist_session_noop_without_a_store() -> None:
+    session = ChatSession(id="s4", messages=[{"role": "user", "content": "hi"}])
+    await persist_session(None, session)
+    assert session.title is None  # never touched
+
+
+def test_derive_title_truncates_and_falls_back() -> None:
+    from kenny_server.chat import _derive_title
+
+    assert _derive_title("  How   is the fleet?  ") == "How is the fleet?"
+    assert _derive_title("") == "New conversation"
+    assert _derive_title("   ") == "New conversation"
+    long_text = "x" * 200
+    title = _derive_title(long_text)
+    assert len(title) <= 80
+    assert title.endswith("…")
+
+
+def test_public_transcript_flattens_text_and_tool_result_and_omits_pending() -> None:
+    messages = [
+        {"role": "user", "content": "take a screenshot and tell me the fleet status"},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "On it."},
+                {"type": "tool_use", "id": "tu1", "name": "screen_capture", "input": {}},
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "tu1",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {"type": "base64", "media_type": "image/png", "data": "aGVsbG8="},
+                        },
+                        {"type": "text", "text": "screen_capture (png)"},
+                    ],
+                }
+            ],
+        },
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "tool_use", "id": "tu2", "name": "winget_install", "input": {"id": "Git.Git"}}
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "tu2",
+                    "content": json.dumps({"error": {"code": "denied", "message": "operator denied this action"}}),
+                    "is_error": True,
+                }
+            ],
+        },
+        {"role": "assistant", "content": [{"type": "text", "text": "Understood, I won't install it."}]},
+    ]
+
+    events = public_transcript(messages)
+    types = [e["type"] for e in events]
+    assert types == ["user_text", "text_delta", "tool_result", "denied", "text_delta"]
+    assert "pending" not in types
+
+    shot = events[2]
+    assert shot["tool"] == "screen_capture" and shot["ok"] is True
+    assert shot["image_b64"] == "aGVsbG8=" and shot["format"] == "png"
+
+    denied = events[3]
+    assert denied["tool"] == "winget_install" and denied["args"] == {"id": "Git.Git"}
+
+    assert events[-1]["text"] == "Understood, I won't install it."

@@ -702,3 +702,128 @@ class WebFilterStore:
         )
         await self._conn.commit()
         return cur.rowcount or 0
+
+
+_CHAT_HISTORY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS chat_conversations (
+    id          TEXT PRIMARY KEY,
+    title       TEXT NOT NULL,
+    agent_id    TEXT,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    messages    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_chat_conversations_updated
+    ON chat_conversations (updated_at DESC);
+"""
+
+
+class ChatHistoryStore:
+    """Async SQLite-backed store for persisted copilot chat conversations.
+
+    Shares the DB file with the other stores but owns its own connection.
+    Unlike ``TelemetryStore``/``EventStore``/``WebFilterStore`` there is no
+    ``prune()`` here: retention is unlimited and operator-curated (manual
+    delete only), matching ``PolicyStore``'s append-until-explicitly-removed
+    shape rather than the auto-pruned telemetry pattern (ADR-0027).
+    """
+
+    def __init__(self, db_path: str = DEFAULT_DB_PATH) -> None:
+        self.db_path = db_path
+        self._db: aiosqlite.Connection | None = None
+
+    async def connect(self) -> None:
+        if self._db is not None:
+            return
+        self._db = await aiosqlite.connect(self.db_path)
+        self._db.row_factory = aiosqlite.Row
+        await self._db.execute("PRAGMA journal_mode=WAL")
+        await self._db.executescript(_CHAT_HISTORY_SCHEMA)
+        await self._db.commit()
+
+    async def close(self) -> None:
+        if self._db is not None:
+            await self._db.close()
+            self._db = None
+
+    @property
+    def _conn(self) -> aiosqlite.Connection:
+        if self._db is None:
+            raise RuntimeError("ChatHistoryStore is not connected; call connect() first")
+        return self._db
+
+    async def save(
+        self,
+        *,
+        id: str,
+        title: str,
+        agent_id: str | None,
+        messages: list[dict[str, Any]],
+    ) -> None:
+        """Insert-or-update one conversation.
+
+        ``title`` and ``created_at`` are only honored on first insert (a
+        conversation is titled once, at creation — see ``ON CONFLICT``
+        below); ``agent_id``/``messages``/``updated_at`` are refreshed on
+        every call.
+        """
+
+        now = datetime.now(timezone.utc).isoformat()
+        await self._conn.execute(
+            "INSERT INTO chat_conversations "
+            "(id, title, agent_id, created_at, updated_at, messages) "
+            "VALUES (?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(id) DO UPDATE SET "
+            "agent_id=excluded.agent_id, updated_at=excluded.updated_at, "
+            "messages=excluded.messages",
+            (id, title, agent_id, now, now, json.dumps(messages, default=str)),
+        )
+        await self._conn.commit()
+
+    async def get(self, id: str) -> dict[str, Any] | None:
+        """Return one conversation with its full parsed ``messages``, or None."""
+
+        async with self._conn.execute(
+            "SELECT id, title, agent_id, created_at, updated_at, messages "
+            "FROM chat_conversations WHERE id = ?",
+            (id,),
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        return {
+            "id": row["id"],
+            "title": row["title"],
+            "agent_id": row["agent_id"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "messages": json.loads(row["messages"]),
+        }
+
+    async def list(self) -> list[dict[str, Any]]:
+        """Return conversation summaries (no ``messages``), newest-updated first."""
+
+        async with self._conn.execute(
+            "SELECT id, title, agent_id, created_at, updated_at "
+            "FROM chat_conversations ORDER BY updated_at DESC"
+        ) as cur:
+            rows = await cur.fetchall()
+        return [
+            {
+                "id": r["id"],
+                "title": r["title"],
+                "agent_id": r["agent_id"],
+                "created_at": r["created_at"],
+                "updated_at": r["updated_at"],
+            }
+            for r in rows
+        ]
+
+    async def delete(self, id: str) -> bool:
+        """Delete one conversation by id. Returns True if a row was removed."""
+
+        cur = await self._conn.execute(
+            "DELETE FROM chat_conversations WHERE id = ?", (id,)
+        )
+        await self._conn.commit()
+        return (cur.rowcount or 0) > 0

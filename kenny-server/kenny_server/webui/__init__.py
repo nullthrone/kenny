@@ -22,13 +22,15 @@ from ..chat import (
     ChatSessions,
     confirm_pending,
     confirm_pending_events,
+    persist_session,
+    public_transcript,
     run_turn,
     run_turn_events,
 )
 from ..policy import PolicyEngine
 from ..recommend import ai_available, recommend_events, warning_facts
 from ..registry import AgentRegistry
-from ..store import EventStore, PolicyStore, TelemetryStore
+from ..store import ChatHistoryStore, EventStore, PolicyStore, TelemetryStore
 from ..tokenstore import AgentTokenStore
 from ..tools import CallLog, ScreenshotStore, build_health
 from ..tunnel import AgentTunnel, ToolError
@@ -548,6 +550,7 @@ def build_chat_routes(
     call_log: CallLog,
     sessions: ChatSessions,
     screenshots: ScreenshotStore,
+    history_store: ChatHistoryStore,
     client_factory: Any = _anthropic_client,
 ) -> list[Route]:
     """Build the server-hosted Claude chat routes.
@@ -556,8 +559,12 @@ def build_chat_routes(
       (assistant text, tool events, and any pending state-changing call).
     * ``POST /api/chat/confirm`` — approve/deny a pending state-changing call,
       then resume the turn.
+    * ``GET /api/chat/history`` — list persisted conversations (summary only).
+    * ``GET /api/chat/history/{id}`` — one conversation's full replayable
+      transcript (ADR-0027).
+    * ``DELETE /api/chat/history/{id}`` — delete a persisted conversation.
 
-    Both inherit operator auth from ``OperatorAuthMiddleware`` (``/api/*``).
+    All inherit operator auth from ``OperatorAuthMiddleware`` (``/api/*``).
     ``client_factory`` is injected so tests pass a fake Anthropic client.
     """
 
@@ -593,16 +600,18 @@ def build_chat_routes(
             except KeyError:
                 if agent_id in await store.known_agents():
                     registry._active_agent = agent_id  # noqa: SLF001 (matches chat.py dev path)
+            session.agent_id = agent_id
         try:
             result = await run_turn(session, message, executor=executor, client=client_factory())
         except Exception as exc:  # noqa: BLE001 - surface to the UI
             return JSONResponse({"error": str(exc), "session_id": session.id}, status_code=502)
+        await persist_session(history_store, session)
         return JSONResponse(result.to_public())
 
     async def api_chat_confirm(request: Request) -> JSONResponse:
         body = await request.json()
         session_id = body.get("session_id")
-        session = sessions.get(session_id) if session_id else None
+        session = await sessions.get(session_id) if session_id else None
         if session is None:
             return JSONResponse({"error": "unknown session"}, status_code=404)
         if session.pending is None:
@@ -614,6 +623,7 @@ def build_chat_routes(
             )
         except Exception as exc:  # noqa: BLE001 - surface to the UI
             return JSONResponse({"error": str(exc), "session_id": session.id}, status_code=502)
+        await persist_session(history_store, session)
         return JSONResponse(result.to_public())
 
     # SSE response headers: disable proxy/browser buffering so tokens flush live.
@@ -648,6 +658,7 @@ def build_chat_routes(
             except KeyError:
                 if agent_id in await store.known_agents():
                     registry._active_agent = agent_id  # noqa: SLF001 (matches chat.py dev path)
+            session.agent_id = agent_id
         client = client_factory()
 
         async def gen() -> Any:
@@ -656,6 +667,11 @@ def build_chat_routes(
                     yield _sse(ev)
             except Exception as exc:  # noqa: BLE001 - surface to the UI in-band
                 yield _sse({"type": "error", "error": str(exc), "session_id": session.id})
+                return
+            # Persist only after the loop fully drains — never per-event — so an
+            # aborted stream (operator Stop) leaves nothing inconsistent saved;
+            # the next turn's heal_session() cleans up as it does today.
+            await persist_session(history_store, session)
 
         return StreamingResponse(gen(), media_type="text/event-stream", headers=_STREAM_HEADERS)
 
@@ -664,7 +680,7 @@ def build_chat_routes(
 
         body = await request.json()
         session_id = body.get("session_id")
-        session = sessions.get(session_id) if session_id else None
+        session = await sessions.get(session_id) if session_id else None
         if session is None:
             return JSONResponse({"error": "unknown session"}, status_code=404)
         if session.pending is None:
@@ -680,8 +696,42 @@ def build_chat_routes(
                     yield _sse(ev)
             except Exception as exc:  # noqa: BLE001 - surface to the UI in-band
                 yield _sse({"type": "error", "error": str(exc), "session_id": session.id})
+                return
+            await persist_session(history_store, session)
 
         return StreamingResponse(gen(), media_type="text/event-stream", headers=_STREAM_HEADERS)
+
+    async def api_chat_history_list(request: Request) -> JSONResponse:
+        """List persisted conversations, newest-updated first (no message bodies)."""
+
+        rows = await history_store.list()
+        return JSONResponse({"conversations": rows})
+
+    async def api_chat_history_get(request: Request) -> JSONResponse:
+        """One conversation's full replayable transcript (ADR-0027)."""
+
+        row = await history_store.get(request.path_params["id"])
+        if row is None:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        return JSONResponse(
+            {
+                "id": row["id"],
+                "title": row["title"],
+                "agent_id": row["agent_id"],
+                "updated_at": row["updated_at"],
+                "transcript": public_transcript(row["messages"]),
+            }
+        )
+
+    async def api_chat_history_delete(request: Request) -> JSONResponse:
+        """Delete a persisted conversation (operator-triggered, manual only)."""
+
+        conversation_id = request.path_params["id"]
+        removed = await history_store.delete(conversation_id)
+        sessions.forget(conversation_id)
+        if not removed:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        return JSONResponse({"ok": True})
 
     async def api_recommendation_stream(request: Request) -> Response:
         """Stream a Haiku "AI Recommendation" for one flagged section as SSE.
@@ -724,6 +774,9 @@ def build_chat_routes(
         Route("/api/chat/confirm", api_chat_confirm, methods=["POST"]),
         Route("/api/chat/stream", api_chat_stream, methods=["POST"]),
         Route("/api/chat/confirm/stream", api_chat_confirm_stream, methods=["POST"]),
+        Route("/api/chat/history", api_chat_history_list, methods=["GET"]),
+        Route("/api/chat/history/{id}", api_chat_history_get, methods=["GET"]),
+        Route("/api/chat/history/{id}", api_chat_history_delete, methods=["DELETE"]),
         Route("/api/recommendation/stream", api_recommendation_stream, methods=["POST"]),
     ]
 

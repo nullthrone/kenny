@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .registry import AgentRegistry
-from .store import TelemetryStore
+from .store import ChatHistoryStore, TelemetryStore
 from .tools import (
     CAPABILITY_TOOLS,
     CallLog,
@@ -262,6 +262,11 @@ class ChatSession:
 
     id: str
     messages: list[dict[str, Any]] = field(default_factory=list)
+    # Title derived once, from the first user message, at first persist. Never
+    # re-derived afterward (see persist_session / ChatHistoryStore.save).
+    title: str | None = None
+    # Last-used chat context (selected agent id), remembered for resume.
+    agent_id: str | None = None
     # tool_use blocks from the latest assistant turn that we are mid-way through
     # executing (used to resume after a confirmation decision).
     pending: PendingCall | None = None
@@ -272,10 +277,17 @@ class ChatSession:
 
 
 class ChatSessions:
-    """In-memory registry of chat sessions keyed by session id."""
+    """Registry of chat sessions keyed by session id.
 
-    def __init__(self) -> None:
+    The in-memory dict is a fast path for the lifetime of one process; when a
+    store is given, ``get()`` falls back to it on a cache miss so a session
+    survives a restart (ADR-0027). SQLite is the source of truth; the dict is
+    just an accelerator a restart trivially discards.
+    """
+
+    def __init__(self, store: ChatHistoryStore | None = None) -> None:
         self._sessions: dict[str, ChatSession] = {}
+        self._store = store
 
     def get_or_create(self, session_id: str | None) -> ChatSession:
         if session_id and session_id in self._sessions:
@@ -285,8 +297,36 @@ class ChatSessions:
         self._sessions[sid] = session
         return session
 
-    def get(self, session_id: str) -> ChatSession | None:
-        return self._sessions.get(session_id)
+    async def get(self, session_id: str) -> ChatSession | None:
+        """In-memory hit first; else rehydrate from the store, if any.
+
+        A row loaded from the store is healed the same way an aborted stream
+        is (``heal_session``), covering a conversation persisted mid-turn by a
+        crash. The rehydrated session is cached so the rest of the turn (and
+        an immediate confirm) hits the fast path.
+        """
+
+        if session_id in self._sessions:
+            return self._sessions[session_id]
+        if self._store is None:
+            return None
+        row = await self._store.get(session_id)
+        if row is None:
+            return None
+        session = ChatSession(
+            id=row["id"],
+            messages=row["messages"],
+            title=row["title"],
+            agent_id=row["agent_id"],
+        )
+        heal_session(session)
+        self._sessions[session_id] = session
+        return session
+
+    def forget(self, session_id: str) -> None:
+        """Drop a session from the in-memory cache (used after a delete)."""
+
+        self._sessions.pop(session_id, None)
 
 
 @dataclass
@@ -332,6 +372,104 @@ def _block_to_dict(block: Any) -> dict[str, Any]:
 
 def _assistant_content(response: Any) -> list[dict[str, Any]]:
     return [_block_to_dict(b) for b in getattr(response, "content", [])]
+
+
+def _tool_result_image(content: Any) -> tuple[str, str] | None:
+    """Extract ``(image_b64, format)`` from a tool_result content list, if any."""
+
+    if not isinstance(content, list):
+        return None
+    for part in content:
+        if isinstance(part, dict) and part.get("type") == "image":
+            source = part.get("source") or {}
+            media_type = source.get("media_type", "image/png")
+            return source.get("data", ""), media_type.rsplit("/", 1)[-1]
+    return None
+
+
+def _tool_result_is_denied(content: Any) -> bool:
+    """True if a (text) tool_result content is the operator-denied payload."""
+
+    if not isinstance(content, str):
+        return False
+    try:
+        payload = json.loads(content)
+    except ValueError:
+        return False
+    return isinstance(payload, dict) and payload.get("error", {}).get("code") == "denied"
+
+
+def public_transcript(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Flatten a session's raw Anthropic ``messages`` into replay events.
+
+    Produces the same event shapes ``handleChatEvent`` already renders live
+    (``user_text``, ``text_delta``, ``tool_result``, ``denied``) so the
+    frontend can replay a saved conversation through its existing renderers.
+    ``tool_use`` blocks are paired with their matching ``tool_result`` by
+    ``tool_use_id`` — the same pairing the live loop performs. Never emits a
+    ``pending`` entry: confirm-gate state is transient and is never
+    persisted (see ``persist_session``), so a loaded conversation never shows
+    a stale confirmation card.
+    """
+
+    events: list[dict[str, Any]] = []
+    open_tool_uses: dict[str, dict[str, Any]] = {}
+
+    for msg in messages:
+        role = msg.get("role")
+        content = msg.get("content")
+
+        if role == "user":
+            if isinstance(content, str):
+                if content.strip():
+                    events.append({"type": "user_text", "text": content})
+                continue
+            if not isinstance(content, list):
+                continue
+            tool_results = [b for b in content if isinstance(b, dict) and b.get("type") == "tool_result"]
+            if tool_results:
+                for block in tool_results:
+                    tool_use_id = block.get("tool_use_id")
+                    info = open_tool_uses.pop(tool_use_id, None) or {"tool": "unknown", "args": {}}
+                    block_content = block.get("content")
+                    is_error = bool(block.get("is_error"))
+                    if is_error and _tool_result_is_denied(block_content):
+                        events.append({"type": "denied", "tool": info["tool"], "args": info["args"]})
+                        continue
+                    event: dict[str, Any] = {
+                        "type": "tool_result",
+                        "tool": info["tool"],
+                        "args": info["args"],
+                        "ok": not is_error,
+                    }
+                    image = None if is_error else _tool_result_image(block_content)
+                    if image is not None:
+                        event["image_b64"], event["format"] = image
+                    events.append(event)
+            else:
+                text = "".join(b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text")
+                if text:
+                    events.append({"type": "user_text", "text": text})
+            continue
+
+        if role == "assistant":
+            if isinstance(content, str):
+                if content:
+                    events.append({"type": "text_delta", "text": content})
+                continue
+            if not isinstance(content, list):
+                continue
+            text = _text_of(content)
+            if text:
+                events.append({"type": "text_delta", "text": text})
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    open_tool_uses[block.get("id")] = {
+                        "tool": block.get("name", ""),
+                        "args": block.get("input") or {},
+                    }
+
+    return events
 
 
 class ChatExecutor:
@@ -665,6 +803,39 @@ def _latest_text(session: ChatSession) -> str:
     return ""
 
 
+def _first_user_text(messages: list[dict[str, Any]]) -> str:
+    """Return the text of the first plain user message, or "" if none."""
+
+    for msg in messages:
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            text = "".join(
+                b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
+            )
+            if text:
+                return text
+    return ""
+
+
+def _derive_title(text: str) -> str:
+    """Turn a first user message into a short conversation title.
+
+    Collapses whitespace and truncates to ~80 chars. Falls back to a fixed
+    label when the first user turn carried no text (e.g. image-only).
+    """
+
+    collapsed = " ".join(text.split())
+    if not collapsed:
+        return "New conversation"
+    if len(collapsed) <= 80:
+        return collapsed
+    return collapsed[:79].rstrip() + "…"
+
+
 def heal_session(session: ChatSession) -> None:
     """Repair a session left mid-turn by an aborted stream (the operator's Stop).
 
@@ -699,6 +870,29 @@ def heal_session(session: ChatSession) -> None:
     # unanswered (nothing follows it to carry the tool_result blocks).
     if has_tool_use:
         msgs.pop()
+
+
+async def persist_session(store: ChatHistoryStore | None, session: ChatSession) -> None:
+    """Save a session's committed messages once a turn settles.
+
+    No-op when ``store`` is None (persistence not configured). Derives and
+    sets ``session.title`` on first save only, from the first user message
+    (ChatHistoryStore.save then refuses to overwrite it on later calls).
+    Only ever called after a turn reaches ``done`` or a fresh confirm-gate
+    pause — never mid-turn — so transient state (``pending``,
+    ``_staged_results``, ``_queue``) is never part of what's persisted.
+    """
+
+    if store is None:
+        return
+    if session.title is None:
+        session.title = _derive_title(_first_user_text(session.messages))
+    await store.save(
+        id=session.id,
+        title=session.title,
+        agent_id=session.agent_id,
+        messages=session.messages,
+    )
 
 
 async def run_turn(

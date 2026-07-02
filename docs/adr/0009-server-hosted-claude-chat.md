@@ -40,6 +40,8 @@ read-only is treated as state-changing.
 - Good, because the Anthropic client is dependency-injected, so the loop is testable without
   an API key; prompt caching is applied to the (stable) system prompt + tool schemas.
 - Bad, because chat session state is in-memory (dev-grade), lost on restart — acceptable now.
+  **Superseded by [ADR-0027](0027-persistent-chat-history.md): chat history is now persisted to
+  SQLite and survives a restart.**
 
 ## More Information
 
@@ -47,3 +49,5 @@ read-only is treated as state-changing.
   returning `{session_id, assistant_text, tool_events[], pending|null, done}`.
 - Config: `ANTHROPIC_API_KEY`, model `KENNY_CHAT_MODEL` (default `claude-sonnet-4-6`).
 - Implementation: `kenny-server/kenny_server/chat.py`, routes in `webui/`, UI tab in `index.html`.
+- Persistence superseded by ADR-0027 (persistent, resumable chat history) — everything else in
+  this ADR (confirm-gate model, tool classification) still stands.

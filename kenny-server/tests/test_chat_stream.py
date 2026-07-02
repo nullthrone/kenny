@@ -9,6 +9,7 @@ frames, the confirm-gate round-trip, and in-band ``error`` frames (status stays
 
 from __future__ import annotations
 
+import asyncio
 import json
 from contextlib import asynccontextmanager
 from typing import Any
@@ -19,7 +20,7 @@ from starlette.testclient import TestClient
 from kenny_server.chat import ChatSessions
 from kenny_server.main import build_app
 from kenny_server.registry import AgentRegistry
-from kenny_server.store import EventStore, TelemetryStore
+from kenny_server.store import ChatHistoryStore, EventStore, TelemetryStore
 from kenny_server.tools import CallLog, ScreenshotStore
 from kenny_server.tunnel import AgentTunnel
 from kenny_server.webui import build_chat_routes
@@ -47,7 +48,8 @@ def _build_app(tmp_path, scripts: list[list[_Response]]):
     store = TelemetryStore(db_path=str(tmp_path / "stream.sqlite"))
     registry = AgentRegistry(tokens={"dev": "dev-token"})
     tunnel = AgentTunnel(registry, store, EventStore(db_path=store.db_path))
-    sessions = ChatSessions()
+    history_store = ChatHistoryStore(db_path=store.db_path)
+    sessions = ChatSessions(store=history_store)
     queue = list(scripts)
 
     def factory() -> Any:
@@ -60,18 +62,22 @@ def _build_app(tmp_path, scripts: list[list[_Response]]):
         call_log=CallLog(),
         sessions=sessions,
         screenshots=ScreenshotStore(),
+        history_store=history_store,
         client_factory=factory,
     )
 
     @asynccontextmanager
     async def lifespan(_app):
         await store.connect()
+        await history_store.connect()
         yield
         await store.close()
+        await history_store.close()
 
     app = Starlette(routes=routes, lifespan=lifespan)
     app.state.registry = registry  # let tests stub the active agent / tunnel
     app.state.tunnel = tunnel
+    app.state.history_store = history_store
     return app
 
 
@@ -154,21 +160,25 @@ def test_stream_error_in_band(tmp_path):
     store = TelemetryStore(db_path=str(tmp_path / "boom.sqlite"))
     registry = AgentRegistry(tokens={"dev": "dev-token"})
     tunnel = AgentTunnel(registry, store, EventStore(db_path=store.db_path))
+    history_store = ChatHistoryStore(db_path=store.db_path)
     routes = build_chat_routes(
         registry=registry,
         store=store,
         tunnel=tunnel,
         call_log=CallLog(),
-        sessions=ChatSessions(),
+        sessions=ChatSessions(store=history_store),
         screenshots=ScreenshotStore(),
+        history_store=history_store,
         client_factory=_BoomAnthropic,
     )
 
     @asynccontextmanager
     async def lifespan(_app):
         await store.connect()
+        await history_store.connect()
         yield
         await store.close()
+        await history_store.close()
 
     app = Starlette(routes=routes, lifespan=lifespan)
     with TestClient(app) as c:
@@ -202,3 +212,129 @@ def test_stream_requires_auth(tmp_path):
     app = build_app(db_path=str(tmp_path / "auth.sqlite"))
     with TestClient(app) as c:
         assert c.post("/api/chat/stream", json={"message": "hi"}).status_code == 401
+
+
+# -- persistence (ADR-0027) --------------------------------------------------
+
+
+def test_stream_persists_after_turn_completes(tmp_path):
+    app = _build_app(tmp_path, [[_Response([text_block("The fleet is healthy.")], "end_turn")]])
+    with TestClient(app) as c:
+        r = c.post("/api/chat/stream", json={"message": "How is the fleet?"})
+        sid = _frames(r.text)[-1]["session_id"]
+
+        row = asyncio.run(app.state.history_store.get(sid))
+        assert row is not None
+        assert row["messages"][-1]["content"] == [{"type": "text", "text": "The fleet is healthy."}]
+
+
+def test_stream_confirm_gate_persists_and_heals_cleanly_on_reload(tmp_path):
+    """A conversation persisted mid-pause still carries the unresolved tool_use
+
+    (that's the honest state of the turn — pending state itself is never
+    persisted). Loading it back through ``ChatSessions.get`` — as happens after
+    a restart — runs ``heal_session`` and produces a usable session with that
+    dangling call dropped, per ADR-0027.
+    """
+
+    app = _build_app(
+        tmp_path,
+        [
+            [_Response([tool_use_block("tu2", "winget_install", {"id": "Git.Git"})], "tool_use")],
+            [_Response([text_block("Git is installed.")], "end_turn")],
+        ],
+    )
+
+    async def fake_send_request(agent_id, tool, args, timeout_s):  # type: ignore[no-untyped-def]
+        return {"installed": True}
+
+    app.state.tunnel.send_request = fake_send_request  # type: ignore[assignment]
+    app.state.registry._active_agent = "dev"
+
+    with TestClient(app) as c:
+        f1 = _frames(c.post("/api/chat/stream", json={"message": "install git"}).text)
+        sid = f1[-1]["session_id"]
+
+        row = asyncio.run(app.state.history_store.get(sid))
+        assert row is not None
+        last = row["messages"][-1]
+        assert last["role"] == "assistant"
+        assert any(b.get("type") == "tool_use" for b in last["content"])
+
+        # A fresh ChatSessions (simulating a restart: no in-memory cache) heals
+        # the dangling tool_use on load into a clean, model-callable session.
+        from kenny_server.chat import ChatSessions, heal_session
+
+        fresh = ChatSessions(store=app.state.history_store)
+        healed = asyncio.run(fresh.get(sid))
+        assert healed is not None
+        assert not healed.messages or healed.messages[-1]["role"] != "assistant"
+        heal_session(healed)  # idempotent — a second heal is a no-op
+        assert not healed.messages or healed.messages[-1]["role"] != "assistant"
+
+        c.post("/api/chat/confirm/stream", json={"session_id": sid, "approve": True})
+        row = asyncio.run(app.state.history_store.get(sid))
+        assert row is not None
+        assert row["messages"][-1]["content"] == [{"type": "text", "text": "Git is installed."}]
+
+
+def test_history_list_route(tmp_path):
+    app = _build_app(
+        tmp_path,
+        [
+            [_Response([text_block("first answer")], "end_turn")],
+            [_Response([text_block("second answer")], "end_turn")],
+        ],
+    )
+    with TestClient(app) as c:
+        c.post("/api/chat/stream", json={"message": "first question"})
+        c.post("/api/chat/stream", json={"message": "second question"})
+        r = c.get("/api/chat/history")
+        assert r.status_code == 200
+        rows = r.json()["conversations"]
+        assert len(rows) == 2
+        assert all("messages" not in row for row in rows)
+        assert {row["title"] for row in rows} == {"first question", "second question"}
+
+
+def test_history_get_route_returns_transcript(tmp_path):
+    app = _build_app(
+        tmp_path,
+        [[_Response([tool_use_block("tu1", "fleet_overview", {})], "tool_use"),
+          _Response([text_block("All green.")], "end_turn")]],
+    )
+    with TestClient(app) as c:
+        r = c.post("/api/chat/stream", json={"message": "status?"})
+        sid = _frames(r.text)[-1]["session_id"]
+
+        got = c.get(f"/api/chat/history/{sid}")
+        assert got.status_code == 200
+        body = got.json()
+        assert body["id"] == sid
+        types = [e["type"] for e in body["transcript"]]
+        assert types == ["user_text", "tool_result", "text_delta"]
+
+
+def test_history_get_route_404_for_unknown_id(tmp_path):
+    app = _build_app(tmp_path, [])
+    with TestClient(app) as c:
+        assert c.get("/api/chat/history/nope").status_code == 404
+
+
+def test_history_delete_route(tmp_path):
+    app = _build_app(tmp_path, [[_Response([text_block("hi there")], "end_turn")]])
+    with TestClient(app) as c:
+        r = c.post("/api/chat/stream", json={"message": "hello"})
+        sid = _frames(r.text)[-1]["session_id"]
+
+        assert c.delete(f"/api/chat/history/{sid}").json() == {"ok": True}
+        assert c.delete(f"/api/chat/history/{sid}").status_code == 404
+        assert c.get(f"/api/chat/history/{sid}").status_code == 404
+
+
+def test_history_routes_require_auth(tmp_path):
+    app = build_app(db_path=str(tmp_path / "auth2.sqlite"))
+    with TestClient(app) as c:
+        assert c.get("/api/chat/history").status_code == 401
+        assert c.get("/api/chat/history/x").status_code == 401
+        assert c.delete("/api/chat/history/x").status_code == 401
