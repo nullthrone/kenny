@@ -333,6 +333,25 @@
     .k-dtable tr:last-child td { border-bottom: 0; }
     .k-dtable td.k-mono { font-family: var(--font-mono); }
     .k-modal__sum { font-size: var(--text-base); color: var(--fg); margin-bottom: 10px; }
+    .k-modal__foot { margin-top: 12px; font-size: var(--text-sm); }
+    .k-modal__foot a { display: inline-flex; align-items: center; gap: 6px; color: var(--accent); text-decoration: none; }
+    .k-modal__foot a:hover { text-decoration: underline; }
+
+    /* About modal: server/agent identity + a live, filterable GitHub changelog */
+    .k-deflist__v a { display: inline-flex; align-items: center; gap: 6px; color: var(--accent); text-decoration: none; }
+    .k-deflist__v a:hover { text-decoration: underline; }
+    .k-about__changelog-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+    .k-about__changelog-bar select.k-input { flex: none; width: auto; }
+    .k-about__changelog { max-height: 320px; overflow-y: auto; border: var(--border-width) solid var(--border);
+      border-radius: var(--radius-md); background: var(--bg-sunken); }
+    .k-about__entry { padding: 10px 13px; border-bottom: var(--border-width) solid var(--border); }
+    .k-about__entry:last-child { border-bottom: 0; }
+    .k-about__entry-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
+    .k-about__entry-version { font-weight: var(--weight-bold); font-size: var(--text-sm); }
+    .k-about__entry-date { font-size: 12px; color: var(--fg-muted); white-space: nowrap; }
+    .k-about__entry-body { font-size: var(--text-sm); color: var(--fg); white-space: pre-wrap;
+      overflow-wrap: anywhere; line-height: var(--leading-normal); }
+    .k-about__empty { padding: 12px 13px; color: var(--fg-muted); font-size: var(--text-sm); }
 
     /* AI Recommendation block: sits at the top of the section-detail body,
        between the heading and the metrics. Only rendered for warn/crit when an
@@ -671,6 +690,7 @@
       'camera': '<path d="M6.827 6.175A2.31 2.31 0 0 1 5.186 7.23c-.38.054-.757.112-1.134.175C2.999 7.58 2.25 8.507 2.25 9.574V18a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9.574c0-1.067-.75-1.994-1.802-2.169a47.865 47.865 0 0 0-1.134-.175 2.31 2.31 0 0 1-1.64-1.055l-.822-1.316a2.192 2.192 0 0 0-1.736-1.039 48.774 48.774 0 0 0-5.232 0 2.192 2.192 0 0 0-1.736 1.039l-.821 1.316Z"/><path d="M16.5 12.75a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0ZM18.75 10.5h.008v.008h-.008V10.5Z"/>',
       'chevron-left': '<path d="M15.75 19.5 8.25 12l7.5-7.5"/>',
       'chevron-right': '<path d="m8.25 4.5 7.5 7.5-7.5 7.5"/>',
+      'info': '<path d="M11.25 11.25l.041-.02a.75.75 0 0 1 1.063.853l-.708 2.836a.75.75 0 0 0 1.063.853l.041-.021M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9-3.75h.008v.008H12V8.25Z"/>',
     };
     function icon(name, size) {
       const p = ICONS[name] || ICONS.box;
@@ -845,6 +865,78 @@
         try { await navigator.clipboard.writeText(url); notify("link copied to clipboard"); }
         catch (e) { input.focus(); input.select(); notify("press Ctrl+C to copy the link"); }
       };
+    }
+
+    // -- about modal: server/agent identity + a live, filterable GitHub changelog --
+    let aboutReleases = [];
+
+    async function openAboutModal() {
+      const titleHtml = `${icon('info', 18)}<span>About kenny</span>`;
+      openModal(titleHtml, `<div class="k-airec__wait">loading…</div>`);
+      let about, bin, changelog;
+      try {
+        [about, bin, changelog] = await Promise.all([
+          getJSON("/api/about"),
+          getJSON("/api/agent-binary").catch(() => null),
+          getJSON("/api/changelog").catch(() => ({ releases: [] })),
+        ]);
+      } catch (e) {
+        const body = document.querySelector("#modal-overlay .k-modal__body");
+        if (body) body.innerHTML = `<div class="k-airec__err">${icon('triangle-alert', 15)}failed to load: ${esc(e.message)}</div>`;
+        return;
+      }
+      renderAboutModal(about || {}, bin, changelog && changelog.releases || []);
+    }
+
+    function renderAboutModal(about, bin, releases) {
+      const repo = about.repo || "t11z/kenny";
+      const repoUrl = `https://github.com/${repo}`;
+      const current = String(about.server_version || "");
+      const runningKnown = releases.some(r => r.version === current);
+      const defaultVersion = runningKnown ? current : "";
+
+      aboutReleases = releases;
+
+      const options = `<option value="">all versions</option>` + releases.map(r =>
+        `<option value="${esc(r.version)}"${r.version === defaultVersion ? " selected" : ""}>${esc(r.version)}${r.version === current ? " (running)" : ""}</option>`
+      ).join("");
+
+      const body = `
+        <div class="k-deflist">
+          <div class="k-deflist__k">server version</div><div class="k-deflist__v k-mono">${esc(about.server_version || "unknown")}</div>
+          <div class="k-deflist__k">protocol version</div><div class="k-deflist__v k-mono">${esc(about.protocol_version || "unknown")}</div>
+          <div class="k-deflist__k">staged agent version</div><div class="k-deflist__v k-mono">${esc((bin && bin.version) || "unknown")}</div>
+          <div class="k-deflist__k">repository</div><div class="k-deflist__v"><a href="${esc(repoUrl)}" target="_blank" rel="noopener">${icon('link', 13)}${esc(repo)}</a></div>
+        </div>
+        <div class="k-detail-grp">
+          <div class="k-about__changelog-bar">
+            <div class="k-detail-grp__lbl">changelog</div>
+            ${releases.length ? `<select class="k-input" id="about-version-select" onchange="filterAboutChangelog(this.value)">${options}</select>` : ""}
+          </div>
+          <div class="k-about__changelog" id="about-changelog-body">${renderChangelogEntries(defaultVersion)}</div>
+        </div>
+        <div class="k-modal__foot"><a href="${esc(repoUrl)}/releases" target="_blank" rel="noopener">${icon('link', 13)}view full changelog on GitHub</a></div>`;
+
+      const overlayBody = document.querySelector("#modal-overlay .k-modal__body");
+      if (overlayBody) overlayBody.innerHTML = body;
+    }
+
+    function renderChangelogEntries(onlyVersion) {
+      const list = onlyVersion ? aboutReleases.filter(r => r.version === onlyVersion) : aboutReleases;
+      if (!list.length) return `<div class="k-about__empty">no ${aboutReleases.length ? "matching " : ""}release notes found on GitHub.</div>`;
+      return list.map(r => `
+        <div class="k-about__entry">
+          <div class="k-about__entry-head">
+            <span class="k-about__entry-version">${esc(r.name || r.version)}</span>
+            <span class="k-about__entry-date">${r.published_at ? esc(new Date(r.published_at).toLocaleDateString()) : ""}</span>
+          </div>
+          <div class="k-about__entry-body">${esc(r.body || "(no release notes)")}</div>
+        </div>`).join("");
+    }
+
+    function filterAboutChangelog(version) {
+      const el = document.getElementById("about-changelog-body");
+      if (el) el.innerHTML = renderChangelogEntries(version);
     }
 
     // -- value formatting for structured detail ----------------------------
@@ -1405,7 +1497,8 @@
       headerRight.innerHTML =
         fleetMetricsHtml(agents) +
         copilotBtn +
-        `<button class="kc-icon-btn" id="theme-btn" onclick="toggleTheme()" title="toggle theme">${icon(currentTheme() === "dark" ? "sun" : "moon", 16)}</button>
+        `<button class="kc-icon-btn" id="about-btn" onclick="openAboutModal()" title="about kenny" aria-label="about kenny">${icon('info', 16)}</button>
+         <button class="kc-icon-btn" id="theme-btn" onclick="toggleTheme()" title="toggle theme">${icon(currentTheme() === "dark" ? "sun" : "moon", 16)}</button>
          <span class="kc-operator">${icon('user-round', 15)}operator</span>`;
     }
 
