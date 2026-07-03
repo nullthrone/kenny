@@ -37,38 +37,56 @@ mod windows_impl {
         // ResultCode: 1=InProgress 2=Succeeded 3=SucceededWithErrors 4=Failed
         // 5=Aborted. We map 2/3 -> succeeded, everything else -> failed/other.
         // The KB number is parsed out of the update Title.
+        //
+        // The whole history read is wrapped in try/catch: the WUA COM history API
+        // (`GetTotalHistoryCount`/`QueryHistory`) throws terminating errors on many
+        // Windows configurations (managed hosts, the newer update stack, a stopped
+        // `wuauserv`). On any such throw we emit no stdout, so `run_json` returns
+        // `None` and the collector takes the "unavailable" fallback below rather
+        // than aborting the process with a partially-built result.
         let script = r#"
-$session = New-Object -ComObject Microsoft.Update.Session
-$searcher = $session.CreateUpdateSearcher()
-$count = $searcher.GetTotalHistoryCount()
-$recent = @()
-if ($count -gt 0) {
-  $take = [Math]::Min($count, 25)
-  foreach ($h in $searcher.QueryHistory(0, $take)) {
-    $kb = $null
-    if ($h.Title -match 'KB(\d+)') { $kb = "KB$($matches[1])" }
-    $result = switch ($h.ResultCode) { 2 { "succeeded" } 3 { "succeeded" } default { "failed" } }
-    $recent += [pscustomobject]@{
-      kb           = $kb
-      title        = [string]$h.Title
-      result       = $result
-      installed_at = if ($h.Date) { (Get-Date $h.Date).ToUniversalTime().ToString("o") } else { $null }
+$ErrorActionPreference = 'Stop'
+try {
+  $session = New-Object -ComObject Microsoft.Update.Session
+  $searcher = $session.CreateUpdateSearcher()
+  $count = $searcher.GetTotalHistoryCount()
+  $recent = @()
+  if ($count -gt 0) {
+    $take = [Math]::Min($count, 25)
+    foreach ($h in $searcher.QueryHistory(0, $take)) {
+      $kb = $null
+      if ($h.Title -match 'KB(\d+)') { $kb = "KB$($matches[1])" }
+      $result = switch ($h.ResultCode) { 2 { "succeeded" } 3 { "succeeded" } default { "failed" } }
+      $recent += [pscustomobject]@{
+        kb           = $kb
+        title        = [string]$h.Title
+        result       = $result
+        installed_at = if ($h.Date) { (Get-Date $h.Date).ToUniversalTime().ToString("o") } else { $null }
+      }
     }
   }
+  $lastCheck = $null
+  try {
+    $auto = New-Object -ComObject Microsoft.Update.AutoUpdate
+    if ($auto.Results.LastSearchSuccessDate) {
+      $lastCheck = (Get-Date $auto.Results.LastSearchSuccessDate).ToUniversalTime().ToString("o")
+    }
+  } catch {}
+  [pscustomobject]@{ last_check = $lastCheck; recent = $recent } | ConvertTo-Json -Compress -Depth 4
+} catch {
+  # Emit nothing: the Rust caller treats no-JSON as "history unavailable".
 }
-$lastCheck = $null
-try {
-  $auto = New-Object -ComObject Microsoft.Update.AutoUpdate
-  if ($auto.Results.LastSearchSuccessDate) {
-    $lastCheck = (Get-Date $auto.Results.LastSearchSuccessDate).ToUniversalTime().ToString("o")
-  }
-} catch {}
-[pscustomobject]@{ last_check = $lastCheck; recent = $recent } | ConvertTo-Json -Compress -Depth 4
 "#;
 
         let Some(v) = winps::run_json(script) else {
+            // Not being able to read the update history is a visibility gap, not an
+            // update failure — reporting `warn` here fires a permanent false alarm
+            // (the server rule can only downgrade to "ok", so worst-of pins the
+            // section at warn forever). Mirror `disk_smart`'s "SMART unavailable"
+            // fallback: stay `ok`; only actually-failed updates warrant a warn, and
+            // that is decided from `recent` below and by the server health rule.
             return Section::with_fields(
-                Status::Warn,
+                Status::Ok,
                 "update history unavailable",
                 json!({ "last_check": null, "recent": [] }),
             );
