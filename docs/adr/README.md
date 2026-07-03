@@ -37,3 +37,13 @@ implementation detail", see *When (not) to write an ADR* in the repository `CLAU
 | [0021](0021-shared-policy-catalog-operator-rules-and-server-mirror.md) | Shared policy catalog, operator deny rules, and a server-side mirror | accepted |
 | [0022](0022-remote-help-concierge-via-user-session-launch.md) | Orchestrate Windows Quick Assist as a concierge via user-session launch | accepted |
 | [0023](0023-mutual-agent-auth-ed25519.md) | Mutual agent⇄server authentication via per-agent Ed25519 signatures | accepted |
+| [0024](0024-untrusted-agent-data-in-chat-context.md) | Treat agent-supplied data as untrusted in the chat tool-use loop | accepted |
+| [0025](0025-vendor-charting-library-for-fleet-dashboard.md) | Vendor a charting library (Apache ECharts) for the fleet Overview dashboard | accepted |
+| [0026](0026-parental-controls-web-activity-and-webfilter.md) | Parental controls: web-activity observability and on-demand web filtering | accepted |
+| [0027](0027-persistent-chat-history.md) | Persistent, resumable copilot chat history | accepted |
+| [0028](0028-llm-categorization-of-reliability-events.md) | LLM categorization of reliability events | accepted |
+| [0029](0029-push-alerting-ntfy-webhook-and-weekly-digest.md) | Push alerting via ntfy/webhook and a weekly digest | accepted |
+| [0030](0030-server-side-diff-and-trend-engine.md) | Server-side snapshot diff and trend engine | accepted |
+| [0031](0031-security-and-resilience-telemetry-sections.md) | Security-inventory and resilience telemetry sections | accepted |
+| [0032](0032-screen-time-aggregated-session-minutes.md) | Screen time as aggregated whole-machine session minutes | accepted |
+| [0033](0033-agent-self-elevating-bootstrap-installer.md) | Agent self-elevating bootstrap installer + fixed install location | accepted |

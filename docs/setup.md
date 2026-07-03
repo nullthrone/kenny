@@ -101,8 +101,11 @@ environment:
 ```
 
 Then the dashboard's **download installer** / **share link** / **update agent** buttons work. The
-installer bundles `install.bat`, which runs `kenny-agent.exe install` with `--server`, `--agent-id`,
-and a minted `--token`.
+installer bundles `setup.bat` + a `kenny-agent.setup.json` sidecar carrying the per-agent
+`--server`, `--agent-id`, a minted one-time `--enroll-token`, and the pinned `--server-pubkey`. The
+relative double-clicks `setup.bat`; the agent self-elevates and installs itself into
+`%ProgramFiles%\kenny` (see
+[`adr/0033-agent-self-elevating-bootstrap-installer.md`](adr/0033-agent-self-elevating-bootstrap-installer.md)).
 
 ### Auto-fetch from GitHub (no manual binary placement)
 
@@ -125,19 +128,30 @@ PC** control lets you download an installer for the very first machine without a
 
 ## Installing the agent on Windows
 
-The single binary manages its own service (see
-[`adr/0013-agent-windows-service-and-self-update.md`](adr/0013-agent-windows-service-and-self-update.md)):
+The normal path is the dashboard bundle: **double-click `setup.bat` and approve the Windows
+security prompt**. `setup` reads `kenny-agent.setup.json`, elevates via UAC, copies the binary into
+`%ProgramFiles%\kenny`, and registers the auto-start service — no unzip-and-right-click ritual (see
+[`adr/0033-agent-self-elevating-bootstrap-installer.md`](adr/0033-agent-self-elevating-bootstrap-installer.md)
+and [`adr/0013-agent-windows-service-and-self-update.md`](adr/0013-agent-windows-service-and-self-update.md)).
+
+The single binary manages its own service. For manual/debugging use:
 
 ```powershell
-# run as Administrator
-kenny-agent.exe install --server wss://kenny.example.com/agent/ws `
-  --agent-id example-pc --token <token> [--telemetry-interval-secs 900] [--service-name kenny-agent]
+kenny-agent.exe setup              # self-elevating install (config from kenny-agent.setup.json,
+                                   #   or pass the flags below explicitly)
 
-kenny-agent.exe uninstall          # remove the service
+# equivalent explicit install (run as Administrator):
+kenny-agent.exe install --server wss://kenny.example.com/agent/ws `
+  --agent-id example-pc --server-pubkey <base64> --enroll-token <token> `
+  [--telemetry-interval-secs 900] [--service-name kenny-agent]
+
+kenny-agent.exe uninstall          # remove the service (and the %ProgramFiles%\kenny install dir)
 kenny-agent.exe run                # foreground (default when no subcommand) — for debugging
 ```
 
-`install` writes `kenny-agent.config.json` next to the exe and registers an auto-start service with
+`--server-pubkey` pins the server identity and `--enroll-token` is the one-time enrollment secret
+(ADR-0023); a bare legacy `--token` is only accepted during the migration window. `install` writes
+`kenny-agent.config.json` next to the exe and registers an auto-start service with
 restart-on-failure recovery. Updates are pushed from the server (no manual reinstall).
 
 ## Releases (GHCR image + Windows binary)

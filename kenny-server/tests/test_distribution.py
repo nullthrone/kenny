@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import zipfile
 
 import pytest
@@ -46,16 +47,23 @@ def test_installer_returns_zip_with_token(tmp_path, binary):
         assert r.headers["content-type"] == "application/zip"
         zf = zipfile.ZipFile(io.BytesIO(r.content))
         names = set(zf.namelist())
-        assert {"kenny-agent.exe", "install.bat", "README.txt"} <= names
-        bat = zf.read("install.bat").decode()
-        assert "--agent-id example-pc" in bat
-        assert "install --server wss://kenny.example.com/agent/ws" in bat
-        # the minted one-time enrollment token in the bat provisions the agent
-        token = bat.split("--enroll-token ", 1)[1].split(" ", 1)[0]
-        assert token
-        # the pinned server public key travels in the installer for anti-spoofing
-        pubkey = bat.split("--server-pubkey ", 1)[1].split(" ", 1)[0]
-        assert pubkey
+        assert {
+            "kenny-agent.exe",
+            "setup.bat",
+            "kenny-agent.setup.json",
+            "README.txt",
+        } <= names
+        # the connection settings (including the secret enroll token) live in the sidecar
+        cfg = json.loads(zf.read("kenny-agent.setup.json").decode())
+        assert cfg["server"] == "wss://kenny.example.com/agent/ws"
+        assert cfg["agent_id"] == "example-pc"
+        assert cfg["enroll_token"]  # minted one-time enrollment token provisions the agent
+        assert cfg["server_pubkey"]  # pinned server public key travels for anti-spoofing
+        assert isinstance(cfg["telemetry_interval_secs"], int)
+        # the launcher just runs the self-elevating setup subcommand; no secret in it
+        bat = zf.read("setup.bat").decode()
+        assert 'kenny-agent.exe" setup' in bat
+        assert cfg["enroll_token"] not in bat
         assert "Server public key" in zf.read("README.txt").decode()
 
 

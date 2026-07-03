@@ -138,6 +138,11 @@ pub enum Command {
     /// Install the agent as an auto-starting Windows service (Windows only).
     Install(InstallArgs),
 
+    /// Self-elevating bootstrap installer: resolve the connection config (flags or the
+    /// `kenny-agent.setup.json` sidecar), elevate via UAC if needed, copy the binary into
+    /// %ProgramFiles%\kenny, and run `install` from there (Windows only). See ADR-0033.
+    Setup(SetupArgs),
+
     /// Remove the Windows service (Windows only).
     Uninstall(UninstallArgs),
 
@@ -163,6 +168,17 @@ pub struct InstallArgs {
     #[command(flatten)]
     pub run: RunArgs,
 
+    /// Windows service name to register.
+    #[arg(long = "service-name", default_value = SERVICE_NAME)]
+    pub service_name: String,
+}
+
+/// Args for `setup`. All connection flags are optional: they may instead be supplied by
+/// the `kenny-agent.setup.json` sidecar the server ships next to the exe.
+#[derive(Debug, Clone, Args)]
+pub struct SetupArgs {
+    #[command(flatten)]
+    pub run: TopLevelRunArgs,
     /// Windows service name to register.
     #[arg(long = "service-name", default_value = SERVICE_NAME)]
     pub service_name: String,
@@ -304,6 +320,37 @@ mod tests {
             }
             other => panic!("expected run subcommand, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn setup_parses_with_explicit_flags() {
+        let cli = Cli::parse_from([
+            "kenny-agent",
+            "setup",
+            "--server",
+            "wss://example/agent/ws",
+            "--agent-id",
+            "example-pc",
+            "--enroll-token",
+            "one-time",
+        ]);
+        match cli.command {
+            Some(Command::Setup(a)) => {
+                assert_eq!(a.run.server.as_deref(), Some("wss://example/agent/ws"));
+                assert_eq!(a.run.agent_id.as_deref(), Some("example-pc"));
+                assert_eq!(a.run.enroll_token.as_deref(), Some("one-time"));
+                assert_eq!(a.service_name, SERVICE_NAME);
+            }
+            other => panic!("expected setup, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn setup_parses_with_no_flags_sidecar_driven() {
+        // The sidecar (`kenny-agent.setup.json`) may supply everything, so `setup`
+        // must parse with no connection flags at all.
+        let cli = Cli::parse_from(["kenny-agent", "setup"]);
+        assert!(matches!(cli.command, Some(Command::Setup(_))));
     }
 
     #[test]

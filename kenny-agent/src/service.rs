@@ -344,8 +344,36 @@ mod windows_impl {
         // Stop auto-starting the tray. The control file is left in place so the user's
         // on/off choice survives a reinstall; remove it manually to reset to default-on.
         remove_tray_autostart();
+
+        // Best-effort: remove the %ProgramFiles%\kenny install dir, but never the
+        // directory we're executing from (a portable/in-place run must not delete itself).
+        let dir = install_dir();
+        match exe_dir() {
+            Ok(cur) if cur.starts_with(&dir) => {
+                info!(dir = %dir.display(), "running from install dir; leaving it in place");
+            }
+            _ => {
+                if dir.exists() {
+                    if let Err(e) = std::fs::remove_dir_all(&dir) {
+                        tracing::warn!(error = %e, dir = %dir.display(), "could not remove install dir");
+                    } else {
+                        info!(dir = %dir.display(), "removed install dir");
+                    }
+                }
+            }
+        }
+
         info!(service = %args.service_name, "service removed");
         Ok(())
+    }
+
+    /// Install directory used by `setup`: `%ProgramFiles%\kenny`
+    /// (fallback `C:\Program Files\kenny`).
+    fn install_dir() -> PathBuf {
+        let base = std::env::var_os("ProgramFiles")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"C:\Program Files"));
+        base.join("kenny")
     }
 
     // The SCM calls `ffi_service_main`; `define_windows_service` generates it and

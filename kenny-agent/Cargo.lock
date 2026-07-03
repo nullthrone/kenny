@@ -426,6 +426,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "embed-manifest"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "94cdc65b1cf9e871453ce2f86f5aaec24ff2eaa36a1fa3e02e441dddc3613b99"
+
+[[package]]
 name = "errno"
 version = "0.3.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -770,6 +776,7 @@ dependencies = [
  "chrono",
  "clap",
  "ed25519-dalek",
+ "embed-manifest",
  "futures-util",
  "png",
  "rand_core",

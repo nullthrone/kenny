@@ -47,6 +47,11 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 # is NOT windows-gated (the ungated ureq/png/rusqlite precedent applies).
 sha2 = "0.11"
 
+# Build scripts run on the *host* (we cross-compile from Linux), so the manifest
+# embedder is an unconditional build-dependency, gated at runtime on the target.
+[build-dependencies]
+embed-manifest = "1"
+
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
     "Win32_Foundation",
@@ -61,6 +66,8 @@ windows = { version = "0.58", features = [
     "Win32_System_Console",
     "Win32_System_IO",
     "Win32_System_RemoteDesktop",
+    # ShellExecuteExW + SHELLEXECUTEINFOW (setup's UAC relaunch) live behind this feature.
+    "Win32_System_Registry",
     "Win32_Security",
 ] }
 # Windows service lifecycle (install/uninstall/run-service + SCM control handler).
