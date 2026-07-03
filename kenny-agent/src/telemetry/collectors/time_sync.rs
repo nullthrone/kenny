@@ -1,6 +1,12 @@
 //! `time_sync` section — system clock synchronization state.
 //!
-//! Real data from `w32tm /query /status` on Windows.
+//! Real data from `w32tm /query /status` on Windows. That command talks to the
+//! *running* Windows Time service (`W32Time`) over RPC, so it fails whenever the
+//! service is not currently up. On non-domain (home/family) Windows 10/11 the
+//! service defaults to **Manual (Trigger Start)**: it starts on demand, syncs the
+//! clock, and stops again when idle. A stopped-but-trigger-start service is the
+//! normal state — not a fault — so a failed query is classified against the actual
+//! service configuration instead of being reported as a blanket warning.
 
 use serde_json::json;
 
@@ -23,24 +29,27 @@ pub fn collect() -> Section {
     }
 }
 
-#[cfg(windows)]
-mod windows_impl {
-    use super::*;
-    use crate::telemetry::collectors::winps;
+/// Portable classification core — compiled and tested on every platform.
+///
+/// Splitting the decision logic out of the Windows probes keeps the "is the clock
+/// healthy?" rules under `cargo test` on Linux CI, where `w32tm` does not exist.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub mod core {
+    use crate::protocol::Status;
 
-    /// Parse `w32tm /query /status` for source and last-sync error (offset); `warn`
-    /// when the offset is large or the time service is not running.
-    pub fn collect() -> Section {
-        let Some(raw) = winps::run_command("w32tm", &["/query", "/status"]) else {
-            return Section::with_fields(
-                Status::Warn,
-                "time service not running",
-                json!({ "synchronized": false, "source": null, "offset_secs": null }),
-            );
-        };
+    /// Clock offset (seconds) above which we treat the skew as a warning.
+    pub const MAX_OFFSET_SECS: f64 = 5.0;
 
-        let mut source: Option<String> = None;
-        let mut offset_secs: Option<f64> = None;
+    /// Fields parsed from `w32tm /query /status`.
+    #[derive(Debug, Default, Clone, PartialEq)]
+    pub struct QueryStatus {
+        pub source: Option<String>,
+        pub offset_secs: Option<f64>,
+    }
+
+    /// Parse the `key: value` lines of `w32tm /query /status` output.
+    pub fn parse_query_status(raw: &str) -> QueryStatus {
+        let mut qs = QueryStatus::default();
         for line in raw.lines() {
             let Some((k, v)) = line.split_once(':') else {
                 continue;
@@ -48,42 +57,136 @@ mod windows_impl {
             let key = k.trim().to_lowercase();
             let val = v.trim();
             match key.as_str() {
-                "source" => source = Some(val.to_string()),
-                // e.g. "Last Successful Sync Time" or "Phase Offset: 0.0123456s"
+                "source" if !val.is_empty() => qs.source = Some(val.to_string()),
+                // e.g. "Phase Offset: 0.0123456s"
                 "phase offset" => {
-                    offset_secs = val.trim_end_matches('s').trim().parse::<f64>().ok();
+                    qs.offset_secs = val.trim_end_matches('s').trim().parse::<f64>().ok();
                 }
                 _ => {}
             }
         }
+        qs
+    }
 
-        // Treat large skew (>5s) or a missing source as a warning.
-        let big_skew = offset_secs.map(|o| o.abs() > 5.0).unwrap_or(false);
-        let synchronized = source
-            .as_deref()
-            .map(|s| !s.eq_ignore_ascii_case("Local CMOS Clock") && !s.is_empty())
+    /// A source that is a real network peer (not the fallback local hardware clock).
+    pub fn is_network_synchronized(source: Option<&str>) -> bool {
+        source
+            .map(|s| !s.is_empty() && !s.eq_ignore_ascii_case("Local CMOS Clock"))
+            .unwrap_or(false)
+    }
+
+    /// Classify a successful `w32tm /query /status`: large skew or a non-network
+    /// source is a warning; otherwise the clock is healthy.
+    ///
+    /// Returns `(status, summary, synchronized)`.
+    pub fn classify_query(qs: &QueryStatus) -> (Status, String, bool) {
+        let synchronized = is_network_synchronized(qs.source.as_deref());
+        let big_skew = qs
+            .offset_secs
+            .map(|o| o.abs() > MAX_OFFSET_SECS)
             .unwrap_or(false);
 
-        let (status, summary) = if big_skew {
+        if big_skew {
             (
                 Status::Warn,
-                format!("clock offset {:.2}s", offset_secs.unwrap_or(0.0)),
+                format!("clock offset {:.2}s", qs.offset_secs.unwrap_or(0.0)),
+                synchronized,
             )
         } else if !synchronized {
-            (Status::Warn, "clock not network-synchronized".to_string())
+            (
+                Status::Warn,
+                "clock not network-synchronized".to_string(),
+                synchronized,
+            )
         } else {
-            (Status::Ok, "clock synchronized".to_string())
-        };
+            (Status::Ok, "clock synchronized".to_string(), synchronized)
+        }
+    }
 
+    /// Classify when `w32tm /query /status` could not be reached, using the service's
+    /// running state and start mode (`Win32_Service.State` / `.StartMode`).
+    ///
+    /// A trigger-/manual-/auto-start service that is merely stopped is the normal
+    /// idle state on a family PC and must not warn — the clock is still kept in sync
+    /// on demand. Only a disabled or missing service (or a service that is running
+    /// yet still refuses the query) is a real fault.
+    pub fn classify_service(state: Option<&str>, start_mode: Option<&str>) -> (Status, String) {
+        let disabled = start_mode
+            .map(|m| m.eq_ignore_ascii_case("Disabled"))
+            .unwrap_or(false);
+        let running = state
+            .map(|s| s.eq_ignore_ascii_case("Running"))
+            .unwrap_or(false);
+
+        match (start_mode, disabled, running) {
+            // Service not present at all.
+            (None, _, _) => (Status::Warn, "time service not found".to_string()),
+            // Explicitly turned off — the clock will drift.
+            (_, true, _) => (Status::Warn, "time service disabled".to_string()),
+            // Running but the query still failed — a genuine anomaly worth surfacing.
+            (_, _, true) => (Status::Warn, "time service not responding".to_string()),
+            // Stopped but eligible to trigger-start: the normal idle state.
+            _ => (Status::Ok, "clock synchronized (service idle)".to_string()),
+        }
+    }
+}
+
+#[cfg(windows)]
+mod windows_impl {
+    use super::*;
+    use crate::telemetry::collectors::winps;
+    use serde_json::Value;
+
+    /// Collect `time_sync`. Prefer live status from `w32tm`; if the service is not
+    /// currently up, fall back to classifying its configuration so a trigger-start
+    /// service in its normal idle state does not raise a false warning.
+    pub fn collect() -> Section {
+        if let Some(raw) = winps::run_command("w32tm", &["/query", "/status"]) {
+            let qs = core::parse_query_status(&raw);
+            let (status, summary, synchronized) = core::classify_query(&qs);
+            return Section::with_fields(
+                status,
+                summary,
+                json!({
+                    "synchronized": synchronized,
+                    "source": qs.source,
+                    "offset_secs": qs.offset_secs,
+                }),
+            );
+        }
+
+        // `w32tm` could not reach the service — decide from the service config.
+        let (state, start_mode) = query_service();
+        let (status, summary) = core::classify_service(state.as_deref(), start_mode.as_deref());
         Section::with_fields(
             status,
             summary,
             json!({
-                "synchronized": synchronized,
-                "source": source,
-                "offset_secs": offset_secs,
+                // Unknown while the service is idle — reported as null, not a false "no".
+                "synchronized": Value::Null,
+                "source": Value::Null,
+                "offset_secs": Value::Null,
             }),
         )
+    }
+
+    /// Read `Win32_Service.State` / `.StartMode` for `W32Time`. Either may be `None`
+    /// if the probe fails or the service is absent.
+    fn query_service() -> (Option<String>, Option<String>) {
+        let script = "$s = Get-CimInstance Win32_Service -Filter \"Name='W32Time'\" \
+             -ErrorAction SilentlyContinue; \
+             if ($s) { [pscustomobject]@{ state = [string]$s.State; \
+             start = [string]$s.StartMode } | ConvertTo-Json -Compress }";
+        let Some(v) = winps::run_json(script) else {
+            return (None, None);
+        };
+        let field = |k: &str| {
+            v.get(k)
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .filter(|s| !s.is_empty())
+        };
+        (field("state"), field("start"))
     }
 }
 
@@ -94,5 +197,75 @@ mod tests {
     #[test]
     fn time_sync_section_is_valid() {
         assert!(collect().into_value()["status"].is_string());
+    }
+
+    #[test]
+    fn parses_source_and_offset() {
+        let raw = "Leap Indicator: 0(no warning)\n\
+                   Stratum: 3 (secondary reference - syncd by (S)NTP)\n\
+                   Source: time.windows.com,0x8\n\
+                   Poll Interval: 10 (1024s)\n\
+                   Phase Offset: 0.0123456s\n";
+        let qs = core::parse_query_status(raw);
+        assert_eq!(qs.source.as_deref(), Some("time.windows.com,0x8"));
+        assert_eq!(qs.offset_secs, Some(0.0123456));
+    }
+
+    #[test]
+    fn synced_source_is_ok() {
+        let qs = core::QueryStatus {
+            source: Some("time.windows.com,0x8".into()),
+            offset_secs: Some(0.01),
+        };
+        let (status, _, synced) = core::classify_query(&qs);
+        assert_eq!(status, Status::Ok);
+        assert!(synced);
+    }
+
+    #[test]
+    fn local_cmos_clock_is_not_synchronized() {
+        assert!(!core::is_network_synchronized(Some("Local CMOS Clock")));
+        assert!(!core::is_network_synchronized(Some("")));
+        assert!(!core::is_network_synchronized(None));
+        assert!(core::is_network_synchronized(Some("time.windows.com,0x8")));
+    }
+
+    #[test]
+    fn large_skew_warns() {
+        let qs = core::QueryStatus {
+            source: Some("time.windows.com,0x8".into()),
+            offset_secs: Some(-42.5),
+        };
+        let (status, summary, _) = core::classify_query(&qs);
+        assert_eq!(status, Status::Warn);
+        assert!(summary.contains("42.50"));
+    }
+
+    #[test]
+    fn trigger_start_idle_service_is_ok() {
+        // The regression: a stopped Manual/Auto (trigger-start) service is normal on a
+        // family PC and must not warn just because `w32tm` could not reach it.
+        let (status, _) = core::classify_service(Some("Stopped"), Some("Manual"));
+        assert_eq!(status, Status::Ok);
+
+        let (status, _) = core::classify_service(Some("Stopped"), Some("Auto"));
+        assert_eq!(status, Status::Ok);
+    }
+
+    #[test]
+    fn disabled_or_missing_service_warns() {
+        let (status, summary) = core::classify_service(Some("Stopped"), Some("Disabled"));
+        assert_eq!(status, Status::Warn);
+        assert!(summary.contains("disabled"));
+
+        let (status, summary) = core::classify_service(None, None);
+        assert_eq!(status, Status::Warn);
+        assert!(summary.contains("not found"));
+    }
+
+    #[test]
+    fn running_service_that_refuses_query_warns() {
+        let (status, _) = core::classify_service(Some("Running"), Some("Manual"));
+        assert_eq!(status, Status::Warn);
     }
 }
