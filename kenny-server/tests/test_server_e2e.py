@@ -165,6 +165,10 @@ class MockAgent:
             result = _fixture("response_powershell_exec.json")["result"]
         elif tool == "telemetry_collect":
             result = _fixture("telemetry_snapshot.json")["snapshot"]
+        elif tool == "screen_capture":
+            # A real full-screen PNG, base64-encoded, routinely runs a few MB —
+            # far past the telemetry cap but within the absolute frame ceiling.
+            result = {"image_b64": "A" * (4 * 1024 * 1024), "format": "png"}
         else:
             await self.ws.send(
                 json.dumps(
@@ -193,9 +197,21 @@ class MockAgent:
         assert self.ws is not None
         frame = _fixture("telemetry_snapshot.json")
         frame["agent_id"] = self.agent_id
-        # Inflate a section summary past KENNY_MAX_TELEMETRY_BYTES.
+        # Inflate a section summary past KENNY_MAX_TELEMETRY_BYTES (but well under
+        # the absolute frame ceiling, so it is parsed and then dropped by kind).
         section = next(iter(frame["snapshot"]))
         frame["snapshot"][section]["summary"] = "x" * (600 * 1024)
+        await self.ws.send(json.dumps(frame))
+
+    async def push_huge_telemetry(self) -> None:
+        """Send a telemetry frame past the absolute frame ceiling (dropped pre-parse)."""
+
+        assert self.ws is not None
+        frame = _fixture("telemetry_snapshot.json")
+        frame["agent_id"] = self.agent_id
+        # Exceed KENNY_MAX_FRAME_BYTES (8 MiB): rejected before parsing.
+        section = next(iter(frame["snapshot"]))
+        frame["snapshot"][section]["summary"] = "x" * (9 * 1024 * 1024)
         await self.ws.send(json.dumps(frame))
 
     async def push_log(self) -> None:
@@ -275,6 +291,63 @@ async def test_e2e_oversized_telemetry_dropped(tmp_path, monkeypatch) -> None:
 
         # Oversized frame: dropped, nothing stored.
         await agent.push_oversized_telemetry()
+        await asyncio.sleep(0.15)
+        assert await app.state.store.latest("dev") is None
+
+        # The socket is still alive: a normal push afterwards is persisted.
+        await agent.push_telemetry()
+        await asyncio.sleep(0.15)
+        assert await app.state.store.latest("dev") is not None
+
+        await agent.stop()
+
+
+@pytest.mark.asyncio
+async def test_e2e_large_screenshot_response_passes(tmp_path, monkeypatch) -> None:
+    """A large ``screen_capture`` response (past the telemetry cap, within the
+    absolute frame ceiling) is delivered — not dropped like an unsolicited push."""
+
+    monkeypatch.setenv("KENNY_SERVER_PRIVATE_KEY", SERVER_SEED_B64)
+    port = _free_port()
+    app = build_app(db_path=str(tmp_path / "screenshot.sqlite"))
+
+    async with _Server(app, port):
+        agent = MockAgent(f"ws://127.0.0.1:{port}/agent/ws", "dev")
+        await app.state.key_store.enroll("dev", agent.public_key_b64)
+        await agent.start()
+        await asyncio.sleep(0.1)
+
+        transport = StreamableHttpTransport(
+            f"http://127.0.0.1:{port}/mcp/mcp",
+            headers={"Authorization": f"Bearer {app.state.operator_token}"},
+        )
+        async with Client(transport) as client:
+            await client.call_tool("select_agent", {"id": "dev"})
+            res = await client.call_tool("screen_capture", {"args": {}})
+            # The multi-MB response frame round-trips instead of timing out.
+            assert res.data["format"] == "png"
+            assert len(res.data["image_b64"]) == 4 * 1024 * 1024
+
+        await agent.stop()
+
+
+@pytest.mark.asyncio
+async def test_e2e_huge_frame_dropped(tmp_path, monkeypatch) -> None:
+    """A frame past the absolute ceiling is dropped before parsing; the socket
+    survives so a following normal push is still persisted."""
+
+    monkeypatch.setenv("KENNY_SERVER_PRIVATE_KEY", SERVER_SEED_B64)
+    port = _free_port()
+    app = build_app(db_path=str(tmp_path / "huge.sqlite"))
+
+    async with _Server(app, port):
+        agent = MockAgent(f"ws://127.0.0.1:{port}/agent/ws", "dev")
+        await app.state.key_store.enroll("dev", agent.public_key_b64)
+        await agent.start()
+        await asyncio.sleep(0.1)
+
+        # Past the 8 MiB ceiling: dropped pre-parse, nothing stored.
+        await agent.push_huge_telemetry()
         await asyncio.sleep(0.15)
         assert await app.state.store.latest("dev") is None
 

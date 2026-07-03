@@ -55,10 +55,27 @@ HANDSHAKE_TIMEOUT_S = 10.0
 logger = logging.getLogger("kenny.tunnel")
 
 # Bound inbound frames so a compromised/malicious agent cannot exhaust server
-# memory/disk by pushing very large or section-heavy telemetry (CWE-400/770).
-# Generous defaults that fit normal snapshots; tune down per deployment. An
-# oversized frame is dropped + logged, never parsed-into-store.
-_MAX_FRAME_BYTES = int(os.environ.get("KENNY_MAX_TELEMETRY_BYTES", str(256 * 1024)))
+# memory/disk (CWE-400/770). Two limits, because the DoS surface differs by frame
+# kind:
+#
+# * ``_MAX_FRAME_BYTES`` — a generous *absolute* ceiling applied to every frame
+#   before parsing, so no single payload can force an unbounded JSON parse. It is
+#   large enough for legitimate ``response`` frames that carry bulk data, notably a
+#   ``screen_capture`` result (a full-screen PNG, base64-encoded, routinely runs a
+#   few MB). A ``response`` is only ever acted on when its ``id`` matches a request
+#   *this server* sent (one outstanding future per request, with a timeout), so it
+#   cannot be spammed unsolicited the way a push can — the ceiling is the only bound
+#   it needs.
+# * ``_MAX_TELEMETRY_BYTES`` / ``_MAX_SECTIONS`` — the strict caps for
+#   *unsolicited pushed* frames (``telemetry``, ``log``), applied after parsing once
+#   the frame type is known. These keep the tight DoS bound for exactly the frames
+#   an agent can push at will. Telemetry sections are sized to stay well within this
+#   (see docs/protocol.md).
+#
+# An offending frame is dropped + logged, never parsed-into-store (byte ceiling) or
+# never persisted (per-kind cap). Tune down per deployment.
+_MAX_FRAME_BYTES = int(os.environ.get("KENNY_MAX_FRAME_BYTES", str(8 * 1024 * 1024)))
+_MAX_TELEMETRY_BYTES = int(os.environ.get("KENNY_MAX_TELEMETRY_BYTES", str(256 * 1024)))
 _MAX_SECTIONS = int(os.environ.get("KENNY_MAX_TELEMETRY_SECTIONS", "128"))
 
 
@@ -357,8 +374,10 @@ class AgentTunnel:
     async def _serve(self, websocket: WebSocket, agent_id: str) -> None:
         while True:
             raw = await websocket.receive_text()
-            # Reject oversized frames before parsing/persisting them, so a
-            # compromised agent can't exhaust server memory/disk (CWE-400/770).
+            # Absolute ceiling: reject any frame too large to safely parse, before
+            # parsing/persisting it, so a compromised agent can't exhaust server
+            # memory (CWE-400/770). The strict per-kind caps for unsolicited pushes
+            # are applied after parsing, below.
             if len(raw) > _MAX_FRAME_BYTES:
                 logger.warning(
                     "dropping oversized frame from %s (%d bytes > %d cap)",
@@ -389,6 +408,17 @@ class AgentTunnel:
             if isinstance(frame, Response):
                 self._resolve(frame)
             elif isinstance(frame, Telemetry):
+                # Strict byte cap for unsolicited pushes (see the constants above):
+                # an agent can push telemetry at will, so keep the tight DoS bound
+                # here even though the frame already passed the absolute ceiling.
+                if len(raw) > _MAX_TELEMETRY_BYTES:
+                    logger.warning(
+                        "dropping oversized telemetry from %s (%d bytes > %d cap)",
+                        agent_id,
+                        len(raw),
+                        _MAX_TELEMETRY_BYTES,
+                    )
+                    continue
                 if len(frame.snapshot) > _MAX_SECTIONS:
                     logger.warning(
                         "dropping telemetry from %s: %d sections > %d cap",
@@ -417,6 +447,15 @@ class AgentTunnel:
                 )
                 logger.debug("telemetry from %s at %s", frame.agent_id, frame.collected_at)
             elif isinstance(frame, Log):
+                # Same strict push cap as telemetry: a log frame is unsolicited.
+                if len(raw) > _MAX_TELEMETRY_BYTES:
+                    logger.warning(
+                        "dropping oversized log from %s (%d bytes > %d cap)",
+                        agent_id,
+                        len(raw),
+                        _MAX_TELEMETRY_BYTES,
+                    )
+                    continue
                 await self.event_store.insert_log(
                     source="agent",
                     agent_id=frame.agent_id,
