@@ -774,6 +774,17 @@
     const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g,
       c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
+    // Safe interpolation of a dynamic value into an inline on* handler. Such a
+    // value lives in a JS string that itself sits inside an HTML attribute, so
+    // esc() alone is unsafe: the HTML parser decodes the entity esc() produced
+    // (e.g. &#39; -> ') before the attribute is parsed as JavaScript, letting the
+    // value break out of the JS string (stored XSS from agent-controlled fields
+    // like a telemetry section name). JSON.stringify handles the JS-string layer
+    // (adding its own surrounding quotes + escaping); esc() then neutralizes the
+    // HTML layer. Callers pass the BARE value, without surrounding quotes:
+    //   onclick="doThing(${jsArg(value)})"
+    const jsArg = s => esc(JSON.stringify(String(s == null ? "" : s)));
+
     async function getJSON(url, opts) {
       const r = await fetch(url, opts);
       if (r.status === 401) { location = "/login"; throw new Error("unauthorized"); }
@@ -1717,7 +1728,7 @@
         const crit = sev(a.overall) === "crit";
         const cls = (selected ? " is-selected" : "") + (selected && crit ? " is-crit" : "");
         const off = a.online ? "" : `<span class="kc-agent__off">offline</span>`;
-        return `<button class="kc-agent${cls}" onclick="selectAgent('${esc(a.agent_id)}')">
+        return `<button class="kc-agent${cls}" onclick="selectAgent(${jsArg(a.agent_id)})">
           <span class="k-dot k-dot--${sev(a.overall)}"></span>
           <span class="kc-agent__body">
             <span class="kc-agent__name">${esc(name)}</span>
@@ -1803,7 +1814,7 @@
       const os = meta.os || meta.os_name || "";
 
       const secs = Object.entries(h.sections || {}).map(([n, s]) =>
-        tileHtml(n, s.status, s.summary, s.reason, `openSectionDetail('${esc(n)}')`)
+        tileHtml(n, s.status, s.summary, s.reason, `openSectionDetail(${jsArg(n)})`)
       ).join("");
 
       det.innerHTML = `
@@ -1815,11 +1826,11 @@
             <span class="kc-detail__meta">${data.online ? "online" : "offline"}${os ? " · " + esc(os) : ""}</span>
           </div>
           <div class="k-row" style="gap:6px;flex-wrap:wrap">
-            <button class="k-btn k-btn--ghost k-btn--sm" onclick="refreshNow('${esc(data.agent_id)}')">${icon('refresh-cw', 13)}refresh</button>
-            <button class="k-btn k-btn--ghost k-btn--sm" onclick="remoteHelp('${esc(data.agent_id)}')" title="open Quick Assist on this PC for a remote-help session">${icon('life-buoy', 13)}remote help</button>
-            <button class="k-btn k-btn--ghost k-btn--sm" onclick="downloadInstaller('${esc(data.agent_id)}')" title="rebuild the installer for this PC (rotates its token)">${icon('download', 13)}reinstall</button>
-            <button class="k-btn k-btn--ghost k-btn--sm" onclick="shareInstaller('${esc(data.agent_id)}')" title="share a fresh installer link for this PC (rotates its token)">${icon('link', 13)}re-share</button>
-            <button class="k-btn k-btn--danger k-btn--sm" onclick="updateAgent('${esc(data.agent_id)}')">${icon('circle-arrow-up', 13)}update</button>
+            <button class="k-btn k-btn--ghost k-btn--sm" onclick="refreshNow(${jsArg(data.agent_id)})">${icon('refresh-cw', 13)}refresh</button>
+            <button class="k-btn k-btn--ghost k-btn--sm" onclick="remoteHelp(${jsArg(data.agent_id)})" title="open Quick Assist on this PC for a remote-help session">${icon('life-buoy', 13)}remote help</button>
+            <button class="k-btn k-btn--ghost k-btn--sm" onclick="downloadInstaller(${jsArg(data.agent_id)})" title="rebuild the installer for this PC (rotates its token)">${icon('download', 13)}reinstall</button>
+            <button class="k-btn k-btn--ghost k-btn--sm" onclick="shareInstaller(${jsArg(data.agent_id)})" title="share a fresh installer link for this PC (rotates its token)">${icon('link', 13)}re-share</button>
+            <button class="k-btn k-btn--danger k-btn--sm" onclick="updateAgent(${jsArg(data.agent_id)})">${icon('circle-arrow-up', 13)}update</button>
           </div>
         </div>
         <div class="k-card k-card--sunken kc-trend">
@@ -1840,7 +1851,7 @@
         <div class="k-card k-card--sunken kc-shotcard">
           <div class="k-row" style="justify-content:space-between">
             <span class="kc-section-lbl">last screenshot</span>
-            <button class="k-btn k-btn--ghost k-btn--sm" onclick="captureScreenshot('${esc(data.agent_id)}')">${icon('camera', 13)}recapture</button>
+            <button class="k-btn k-btn--ghost k-btn--sm" onclick="captureScreenshot(${jsArg(data.agent_id)})">${icon('camera', 13)}recapture</button>
           </div>
           <img class="kc-shot" id="kc-shot-${esc(data.agent_id)}"
             src="/api/agent/${encodeURIComponent(data.agent_id)}/screenshot?t=${Date.now()}"
@@ -2136,18 +2147,18 @@
       if (!panel) return;
       const c = d.config || {}, ext = d.external || {}, applied = d.applied || {};
       const on = v => v === true || v === 1;
-      const aid = esc(agentId);
+      const aid = jsArg(agentId);
       const tog = (key, label, val, hint) => `
         <label class="kwf-tog" title="${esc(hint || "")}">
           <input type="checkbox" ${on(val) ? "checked" : ""}
-            onchange="wfSetConfig('${aid}', '${key}', this.checked)"/><span>${esc(label)}</span></label>`;
+            onchange="wfSetConfig(${aid}, ${jsArg(key)}, this.checked)"/><span>${esc(label)}</span></label>`;
       const dohOn = (c.doh_policy || "disable") === "disable";
       const custom = d.custom || [];
       const customRows = custom.length ? custom.map(r => `
         <div class="kwf-row"><span class="k-mono">${esc(r.domain)}</span>${wfActionBadge(r.action)}
           ${r.note ? `<span class="k-muted">${esc(r.note)}</span>` : ""}
           <button class="k-btn k-btn--danger k-btn--sm" style="margin-left:auto"
-            title="remove" onclick="wfRemoveDomain('${aid}', '${esc(r.domain)}')">${icon('x', 12)}</button></div>`
+            title="remove" onclick="wfRemoveDomain(${aid}, ${jsArg(r.domain)})">${icon('x', 12)}</button></div>`
         ).join("") : `<div class="k-muted">no custom entries yet</div>`;
       const adultN = (ext.adult || {}).count || 0, bypassN = (ext.bypass || {}).count || 0;
       const appliedLine = applied.at
@@ -2163,22 +2174,22 @@
           ${tog("use_bypass_protection", "block VPN/proxy bypass", c.use_bypass_protection, "also block DoH/VPN/proxy domains (" + bypassN + " domains)")}
           <label class="kwf-tog" title="turn DNS-over-HTTPS off in browsers so the hosts block can't be bypassed">
             <input type="checkbox" ${dohOn ? "checked" : ""}
-              onchange="wfSetConfig('${aid}', 'doh_policy', this.checked ? 'disable' : 'leave')"/><span>disable browser DoH</span></label>
+              onchange="wfSetConfig(${aid}, 'doh_policy', this.checked ? 'disable' : 'leave')"/><span>disable browser DoH</span></label>
         </div>
         <div class="kwf-add">
           <input class="k-input" id="kwf-domain" autocomplete="off" placeholder="domain e.g. example.com"
-            onkeydown="if(event.key==='Enter')wfAddDomain('${aid}')"/>
+            onkeydown="if(event.key==='Enter')wfAddDomain(${aid})"/>
           <select class="k-input" id="kwf-action">
             <option value="block">block</option>
             <option value="watch">watch (alarm only)</option>
             <option value="allow">allow (exception)</option>
           </select>
-          <button class="k-btn k-btn--primary k-btn--sm" onclick="wfAddDomain('${aid}')">${icon('plus', 13)}add</button>
+          <button class="k-btn k-btn--primary k-btn--sm" onclick="wfAddDomain(${aid})">${icon('plus', 13)}add</button>
         </div>
         <div class="kwf-list">${customRows}</div>
         <div class="k-muted" style="margin-top:6px">seed: ${d.seed_count || 0} known adult domains · adult list: ${adultN} · bypass: ${bypassN}</div>
         <div class="kwf-apply">
-          <button class="k-btn k-btn--primary k-btn--sm" onclick="wfApply('${aid}')">${icon('refresh-cw', 13)}apply now</button>
+          <button class="k-btn k-btn--primary k-btn--sm" onclick="wfApply(${aid})">${icon('refresh-cw', 13)}apply now</button>
           <span class="k-muted">${esc(appliedLine)}</span> ${drift}
         </div>
         <div id="kwf-msg"></div>`;
@@ -2850,12 +2861,12 @@
     function historyListHtml(rows) {
       if (!rows.length) return `<div class="k-muted">No saved conversations yet.</div>`;
       return `<div class="kc-history-list">` + rows.map(row => `
-        <div class="kc-history-row" onclick="loadConversation('${esc(row.id)}')">
+        <div class="kc-history-row" onclick="loadConversation(${jsArg(row.id)})">
           <div class="kc-history-row__main">
             <div class="kc-history-row__title">${esc(row.title)}</div>
             <div class="kc-history-row__meta">${esc(new Date(row.updated_at).toLocaleString())}${row.agent_id ? " · " + esc(row.agent_id) : ""}</div>
           </div>
-          <button class="k-btn k-btn--ghost k-btn--sm" onclick="deleteConversation('${esc(row.id)}', event)" title="delete this conversation">${icon('x', 13)}</button>
+          <button class="k-btn k-btn--ghost k-btn--sm" onclick="deleteConversation(${jsArg(row.id)}, event)" title="delete this conversation">${icon('x', 13)}</button>
         </div>`).join("") + `</div>`;
     }
     async function loadConversation(id) {
