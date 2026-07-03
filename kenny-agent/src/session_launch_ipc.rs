@@ -7,26 +7,50 @@
 //! pipe (`\\.\pipe\kenny-agent-session-launch`). Unlike the screencap pipe this one is
 //! **duplex**: the service writes a launch request and reads back the result.
 //!
-//! **The allow-list is the trust boundary.** The tray launches *only* the executables in
-//! [`ALLOWED_EXECUTABLES`]; the session-0 service can never have it start an arbitrary
-//! program. See ADR-0022. Wire framing is shared with [`crate::ipc`].
+//! **The allow-list is the trust boundary.** The tray launches *only* the apps in
+//! [`ALLOWED_APPS`]; the session-0 service can never have it start an arbitrary program.
+//! See ADR-0022. Wire framing is shared with [`crate::ipc`].
 
 use serde::{Deserialize, Serialize};
 
-/// Executables the tray is permitted to launch on the service's behalf. This list IS the
-/// trust boundary — keep it to known interactive remote-help binaries. Quick Assist
-/// registers an app-execution alias (`quickassist.exe`) on the user's PATH. Room is left
-/// to add `msra.exe` / `mstsc.exe` here later (LAN/VPN scenarios) without widening the
-/// mechanism. See ADR-0022.
+/// An app the tray may launch on the session-0 service's behalf. The set of entries IS the
+/// trust boundary (ADR-0022): the service can never have the tray start anything not listed
+/// here. `aumid` decides *how* it is launched — a packaged (MSIX/Store) app is activated by
+/// its Application User Model ID, exactly the way the Start menu does it; a classic desktop
+/// binary is launched by a plain spawn.
 #[cfg_attr(not(windows), allow(dead_code))]
-pub const ALLOWED_EXECUTABLES: &[&str] = &["quickassist.exe"];
+struct AllowedApp {
+    /// Bare executable name the service names in its launch request (matched case-insensitively).
+    exe: &'static str,
+    /// `Some(aumid)` → activate this packaged app by AUMID; `None` → plain spawn by name.
+    aumid: Option<&'static str>,
+}
+
+/// Apps the tray is permitted to launch. Quick Assist ships as an MSIX package
+/// (`MicrosoftCorporationII.QuickAssist`) and **cannot** be launched by bare exe name: its
+/// app-execution-alias `quickassist.exe` is a reparse point that a plain `CreateProcess`
+/// does not resolve, and the packaged binary under `%ProgramFiles%\WindowsApps` denies
+/// direct execution (ACL). It is therefore activated by AUMID instead. Room is left to add
+/// classic desktop binaries later (`msra.exe` / `mstsc.exe` for LAN/VPN) with `aumid: None`,
+/// without widening the mechanism. See ADR-0022.
+#[cfg_attr(not(windows), allow(dead_code))]
+const ALLOWED_APPS: &[AllowedApp] = &[AllowedApp {
+    exe: "quickassist.exe",
+    aumid: Some("MicrosoftCorporationII.QuickAssist_8wekyb3d8bbwe!App"),
+}];
+
+/// The allow-list entry for `exe`, if any (case-insensitive; bare file name only).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn allowed_app(exe: &str) -> Option<&'static AllowedApp> {
+    ALLOWED_APPS
+        .iter()
+        .find(|a| a.exe.eq_ignore_ascii_case(exe))
+}
 
 /// Whether `exe` is on the launch allow-list (case-insensitive; bare file name only).
 #[cfg_attr(not(windows), allow(dead_code))]
 pub fn is_allowed(exe: &str) -> bool {
-    ALLOWED_EXECUTABLES
-        .iter()
-        .any(|a| a.eq_ignore_ascii_case(exe))
+    allowed_app(exe).is_some()
 }
 
 /// Request sent service → tray: which allow-listed executable to launch.
@@ -61,18 +85,24 @@ mod windows_impl {
 
     use serde_json::{json, Value};
     use tracing::{info, warn};
-    use windows::core::PCWSTR;
+    use windows::core::{HSTRING, PCWSTR};
     use windows::Win32::Foundation::{
         CloseHandle, GetLastError, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, HANDLE,
-        INVALID_HANDLE_VALUE,
+        INVALID_HANDLE_VALUE, RPC_E_CHANGED_MODE,
     };
     use windows::Win32::Storage::FileSystem::{
         CreateFileW, FlushFileBuffers, ReadFile, WriteFile, FILE_FLAGS_AND_ATTRIBUTES,
         FILE_SHARE_MODE, OPEN_EXISTING, PIPE_ACCESS_DUPLEX,
     };
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_APARTMENTTHREADED,
+    };
     use windows::Win32::System::Pipes::{
         ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, WaitNamedPipeW,
         PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_WAIT,
+    };
+    use windows::Win32::UI::Shell::{
+        ApplicationActivationManager, IApplicationActivationManager, AO_NONE,
     };
 
     use crate::ipc::{read_frame, write_frame};
@@ -208,24 +238,69 @@ mod windows_impl {
         let _ = unsafe { ReadFile(pipe, Some(&mut scratch), Some(&mut read), None) };
     }
 
-    /// Parse a request, refuse anything off the allow-list, and spawn it in this session.
+    /// Parse a request, refuse anything off the allow-list, and launch it in this session.
     fn handle_request(bytes: &[u8]) -> LaunchReply {
         let req: LaunchRequest = match serde_json::from_slice(bytes) {
             Ok(r) => r,
             Err(e) => return LaunchReply::err(format!("bad launch request: {e}")),
         };
-        if !is_allowed(&req.exe) {
+        let Some(app) = allowed_app(&req.exe) else {
             warn!(exe = %req.exe, "refusing to launch non-allow-listed executable");
             return LaunchReply::err(format!("'{}' is not on the launch allow-list", req.exe));
-        }
-        // The tray already runs in the interactive user session, so a plain spawn lands on
-        // the visible desktop — no token impersonation needed (cf. ADR-0018).
-        match std::process::Command::new(&req.exe).spawn() {
-            Ok(child) => {
-                info!(exe = %req.exe, pid = child.id(), "launched app in user session");
-                LaunchReply::ok(child.id())
+        };
+        // The tray already runs in the interactive user session, so the launch lands on the
+        // visible desktop — no token impersonation needed (cf. ADR-0018).
+        let launched = match app.aumid {
+            // Packaged (MSIX/Store) app: activate by AUMID, exactly as the Start menu does.
+            // A bare spawn cannot reach these (alias reparse point + WindowsApps ACL).
+            Some(aumid) => activate_packaged_app(aumid),
+            // Classic desktop binary on PATH: a plain spawn lands on the visible desktop.
+            None => std::process::Command::new(app.exe)
+                .spawn()
+                .map(|child| child.id())
+                .map_err(|e| e.to_string()),
+        };
+        match launched {
+            Ok(pid) => {
+                info!(exe = %app.exe, pid, "launched app in user session");
+                LaunchReply::ok(pid)
             }
-            Err(e) => LaunchReply::err(format!("failed to launch '{}': {e}", req.exe)),
+            Err(e) => LaunchReply::err(format!("failed to launch '{}': {e}", app.exe)),
+        }
+    }
+
+    /// Activate a packaged (MSIX/Store) app by its Application User Model ID and return the
+    /// activated process id — the same activation path the Start menu uses.
+    ///
+    /// This is why the launch is delegated to the tray at all: `IApplicationActivationManager`
+    /// must run in the interactive user session (it activates the app *on that desktop* and
+    /// needs the caller's foreground/activation rights), which the session-0 service lacks.
+    fn activate_packaged_app(aumid: &str) -> Result<u32, String> {
+        // SAFETY: COM one-call dance on this (tray serve) thread. We initialize COM,
+        // create the activation manager, activate, and balance the init with an uninit.
+        unsafe {
+            // Apartment-threaded: the serve loop handles one request at a time on this
+            // thread. S_OK/S_FALSE mean we own an init to balance; RPC_E_CHANGED_MODE means
+            // the thread is already initialized (a different mode) — use it, don't uninit.
+            let hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+            let owns_com = hr.is_ok();
+            if hr.is_err() && hr != RPC_E_CHANGED_MODE {
+                return Err(format!("CoInitializeEx failed: {hr:?}"));
+            }
+            let result = (|| {
+                let manager: IApplicationActivationManager =
+                    CoCreateInstance(&ApplicationActivationManager, None, CLSCTX_ALL).map_err(
+                        |e| format!("CoCreateInstance(ApplicationActivationManager): {e}"),
+                    )?;
+                let id = HSTRING::from(aumid);
+                manager
+                    .ActivateApplication(&id, PCWSTR::null(), AO_NONE)
+                    .map_err(|e| format!("ActivateApplication({aumid}): {e}"))
+            })();
+            if owns_com {
+                CoUninitialize();
+            }
+            result
         }
     }
 
@@ -457,6 +532,17 @@ mod tests {
         assert!(is_allowed("quickassist.exe"));
         assert!(is_allowed("QuickAssist.exe"));
         assert!(is_allowed("QUICKASSIST.EXE"));
+    }
+
+    #[test]
+    fn quickassist_is_activated_by_aumid() {
+        // Quick Assist is a packaged app, so it must carry an AUMID (activated like the
+        // Start menu) rather than being spawned by bare name. Matched case-insensitively.
+        let app = allowed_app("QuickAssist.exe").expect("quickassist is allow-listed");
+        assert_eq!(
+            app.aumid,
+            Some("MicrosoftCorporationII.QuickAssist_8wekyb3d8bbwe!App")
+        );
     }
 
     #[test]

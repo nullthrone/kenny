@@ -18,7 +18,8 @@ use serde_json::{json, Value};
 
 use crate::protocol::ErrorCode;
 
-/// Quick Assist's process name / app-execution alias.
+/// Quick Assist's process name — also its key in the tray launch allow-list
+/// (`session_launch_ipc::ALLOWED_APPS`), which maps it to the packaged app's AUMID.
 #[cfg_attr(not(windows), allow(dead_code))]
 const QUICK_ASSIST_EXE: &str = "quickassist.exe";
 
