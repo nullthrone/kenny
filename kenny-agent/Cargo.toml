@@ -69,6 +69,9 @@ windows = { version = "0.58", features = [
     # ShellExecuteExW + SHELLEXECUTEINFOW (setup's UAC relaunch) live behind this feature.
     "Win32_System_Registry",
     "Win32_Security",
+    # screen_capture pipe hardening (ADR-0018): explicit DACL from SDDL + verifying the
+    # pipe server's owning SID on connect (SID string conversion, SD from SDDL).
+    "Win32_Security_Authorization",
 ] }
 # Windows service lifecycle (install/uninstall/run-service + SCM control handler).
 windows-service = "0.7"

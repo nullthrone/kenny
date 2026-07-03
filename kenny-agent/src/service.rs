@@ -8,6 +8,9 @@
 //! JSON file next to the exe so `run-service` can read it. `run-service` registers
 //! the SCM control handler and runs the tunnel with a graceful stop signal.
 
+/// Re-exported for the screen-capture path, which relaunches a dead tray on demand.
+#[cfg(windows)]
+pub(crate) use windows_impl::launch_tray_in_active_session;
 #[cfg(windows)]
 pub use windows_impl::{install, run_service, uninstall};
 
@@ -248,9 +251,14 @@ mod windows_impl {
     /// The tray takes a single-instance mutex, so this is a no-op when one is already
     /// running and is therefore safe to call unconditionally on every service start. That
     /// is what brings the tray back after the user closes it (Task Manager) or it crashes:
-    /// a service restart relaunches it. Best-effort — before anyone logs in there is no
-    /// token, a normal non-fatal outcome that the logon autostart covers.
-    fn launch_tray_in_active_session() -> anyhow::Result<()> {
+    /// a service restart relaunches it, and the screen-capture path relaunches it on demand
+    /// when the tray's pipe is missing (see [`crate::screencap_ipc::capture_via_tray`]).
+    /// Best-effort — before anyone logs in there is no token, a normal non-fatal outcome
+    /// that the logon autostart covers.
+    ///
+    /// An `Err` whose message mentions no active console session / user token means nobody
+    /// is logged in; callers use that to distinguish "nobody there" from "tray crashed".
+    pub(crate) fn launch_tray_in_active_session() -> anyhow::Result<()> {
         use anyhow::Context as _;
         use windows::core::PWSTR;
         use windows::Win32::Foundation::{CloseHandle, FALSE, HANDLE};
