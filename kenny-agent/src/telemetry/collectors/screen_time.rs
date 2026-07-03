@@ -6,7 +6,7 @@
 //! recomputed statelessly on every push — the server's daily history provides
 //! longer trends.
 //!
-//! **Privacy (ADR-0031, hard rule):** no usernames, no per-user split, no app
+//! **Privacy (ADR-0032, hard rule):** no usernames, no per-user split, no app
 //! names, and no timestamps finer than the local-calendar-day bucket ever reach
 //! the payload; each day is clamped to [0, 1440]. The agent always reports
 //! `status: "ok"` — kenny reports, parents judge.

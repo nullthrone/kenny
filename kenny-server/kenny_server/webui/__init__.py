@@ -222,7 +222,7 @@ def build_api_routes(
         )
 
     async def api_agent_changes(request: Request) -> JSONResponse:
-        """Inventory changes between a ~N-day-old baseline snapshot and now (ADR-0029)."""
+        """Inventory changes between a ~N-day-old baseline snapshot and now (ADR-0030)."""
 
         from datetime import datetime, timedelta, timezone
 

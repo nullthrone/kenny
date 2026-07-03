@@ -1,4 +1,4 @@
-# 0031. Screen time as aggregated whole-machine session minutes
+# 0032. Screen time as aggregated whole-machine session minutes
 
 - Status: accepted
 - Date: 2026-07-02
@@ -30,7 +30,7 @@ section may and may not contain.
 
 ## Decision Outcome
 
-A `screen_time` telemetry section (part of the v0.10 batch, ADR-0030) reporting, for
+A `screen_time` telemetry section (part of the v0.10 batch, ADR-0031) reporting, for
 the whole machine, **aggregated interactive minutes per calendar day** over the last
 7 days — nothing else. Hard privacy rules, stated in the contract and enforced by the
 payload shape: **no usernames, no per-user split, no app names or titles, and no
@@ -44,7 +44,7 @@ free — no new storage, no agent-side accumulation.
 
 **No health rule judges screen time.** A number of hours is not "warn" or "crit" —
 kenny reports, parents judge. The section always carries `status: "ok"` and surfaces
-in the dashboard drill-down (7-day bars) and the weekly digest (ADR-0028), not in
+in the dashboard drill-down (7-day bars) and the weekly digest (ADR-0029), not in
 alerts.
 
 ### Consequences
@@ -64,8 +64,8 @@ alerts.
 ## More Information
 
 - Related: ADR-0026 (data-minimization precedent and "monitoring is the guarantee"
-  principle), ADR-0030 (the v0.10 section batch this ships with), ADR-0018 (session-0
-  isolation that rules out foreground-app timing), ADR-0028 (weekly digest surfacing).
+  principle), ADR-0031 (the v0.10 section batch this ships with), ADR-0018 (session-0
+  isolation that rules out foreground-app timing), ADR-0029 (weekly digest surfacing).
 - Contract: `docs/protocol.md` § Telemetry sections (v0.10 block, `screen_time`),
   `docs/fixtures/telemetry_snapshot.json`.
 - Code: `kenny-agent/src/telemetry/collectors/screen_time.rs`,

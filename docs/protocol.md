@@ -475,7 +475,7 @@ stub with `events: []`.
 
 ### Security-inventory, resilience, and parental-awareness sections (v0.10)
 
-Added at v0.10 (see ADR-0030, ADR-0031). All are additive; off Windows each is the
+Added at v0.10 (see ADR-0031, ADR-0032). All are additive; off Windows each is the
 standard `n/a on this platform` stub with empty lists. Inventory lists are deduplicated,
 sorted, and capped (with a `truncated` flag) so a section can never blow the frame-size
 cap. The agent reports `status: "ok"` for pure inventory sections — judgment (health
@@ -575,7 +575,7 @@ rules and cross-snapshot diffing) is server-side.
 
 - **`screen_time`** — aggregated interactive minutes per calendar day for the **whole
   machine** over the last 7 days, derived from logon/logoff (and, where readable,
-  lock/unlock) events. **Privacy (ADR-0031):** no usernames, no per-user split, no app
+  lock/unlock) events. **Privacy (ADR-0032):** no usernames, no per-user split, no app
   names, no timestamps finer than the day bucket; each day is clamped to [0, 1440].
   The agent recomputes the window on every push (stateless); the server's daily
   history provides longer trends. The agent always reports `status: "ok"` — kenny
@@ -607,7 +607,7 @@ agent puts it on the wire in `register.protocol` to select the mutual-auth hands
 - `0.10` — added the `installed_software`, `browser_extensions`, `listening_ports`,
   `scheduled_tasks`, `local_accounts`, `backup_status`, `net_quality`, and `screen_time`
   telemetry sections (security inventory, resilience, parental awareness); additive
-  sections only, no frame or tool changes. See ADR-0030, ADR-0031.
+  sections only, no frame or tool changes. See ADR-0031, ADR-0032.
 - `0.9` — added the `webfilter_status`, `webfilter_apply`, and `webfilter_clear` tools and
   the `web_activity` telemetry section for parental-controls observability and on-demand web
   filtering; additive tools + section, no frame changes. See ADR-0026.

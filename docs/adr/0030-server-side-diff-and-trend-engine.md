@@ -1,4 +1,4 @@
-# 0029. Server-side snapshot diff and trend engine
+# 0030. Server-side snapshot diff and trend engine
 
 - Status: accepted
 - Date: 2026-07-02
@@ -35,7 +35,7 @@ Two pure, I/O-free modules (patterned after `fleet_stats.py`):
 - **`diffs.py`** compares two snapshots via a data-driven per-section table
   (`SPECS`, extensible like `health_rules.RULES`): each entry names the section's list
   field, the identity key fields, and which fields count as "changed". Initially
-  covers `autostart`, `services`, `peripherals`; entries for the ADR-0030 inventory
+  covers `autostart`, `services`, `peripherals`; entries for the ADR-0031 inventory
   sections (`installed_software`, `browser_extensions`, `listening_ports`,
   `scheduled_tasks`, `local_accounts`) are already present and activate automatically
   when those sections ship. Sections absent from either snapshot are skipped, so a
@@ -48,7 +48,7 @@ Two pure, I/O-free modules (patterned after `fleet_stats.py`):
 **Surfacing:** two read-only endpoints (`GET /api/agent/{id}/changes?days=N`,
 `GET /api/agent/{id}/trends`) behind the existing operator auth; a "changes &
 forecast" panel in the agent drill-down; a "Disks filling <30d" Overview KPI; and a
-diff step in the alert loop (ADR-0028) that runs once per *new* snapshot (persisted
+diff step in the alert loop (ADR-0029) that runs once per *new* snapshot (persisted
 cursor scope `change:_cursor`), batches inventory changes into one notification per
 host, treats `local_accounts` changes as high priority, and raises a forecast alert
 when a volume is under 14 days from full (24 h cooldown).
@@ -79,8 +79,8 @@ thresholds, by design evaluated against one snapshot. Cross-snapshot judgments
 ## More Information
 
 - Related: ADR-0007 (stateless collectors, snapshot store), ADR-0026 (server-side
-  accumulation precedent), ADR-0028 (notification channel these findings ride on),
-  ADR-0030 (inventory sections that widen the diff surface).
+  accumulation precedent), ADR-0029 (notification channel these findings ride on),
+  ADR-0031 (inventory sections that widen the diff surface).
 - Code: `kenny-server/kenny_server/diffs.py`, `kenny-server/kenny_server/trends.py`,
   `kenny-server/kenny_server/alerting.py` (`_change_notifications`,
   `_forecast_alert`), `kenny-server/kenny_server/fleet_stats.py` (KPI),

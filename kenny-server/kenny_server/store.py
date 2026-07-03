@@ -268,7 +268,7 @@ class EventStore:
     ) -> None:
         """Store an emitted operator alert (kind='alert', source='server').
 
-        Alert history reuses the events table (ADR-0028): the Activity view and
+        Alert history reuses the events table (ADR-0029): the Activity view and
         the weekly digest read these back via ``query(kind='alert')``.
         """
 
@@ -361,7 +361,7 @@ class AlertStateStore:
     ``scope`` is ``'offline'``, ``'overall'``, ``'section:<name>'``,
     ``'change:<section>'`` or ``'digest'``. Persisting the state (rather than
     keeping it in memory) means a server restart does not re-fire alerts for
-    conditions that were already notified (ADR-0028). Rows are tiny and pruned
+    conditions that were already notified (ADR-0029). Rows are tiny and pruned
     implicitly by being overwritten, so there is no retention job.
     """
 

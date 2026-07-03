@@ -102,7 +102,7 @@ def build_app(db_path: str | None = None) -> Starlette:
     chat_history_store = ChatHistoryStore(db_path)
     chat_sessions = ChatSessions(store=chat_history_store)
     share_links = ShareLinks()
-    # Push alerting (ADR-0028): transition detection over the health rules,
+    # Push alerting (ADR-0029): transition detection over the health rules,
     # delivered best-effort via the env-configured channels (possibly none).
     alert_state = AlertStateStore(db_path)
     notifiers = load_notifiers()
@@ -160,7 +160,7 @@ def build_app(db_path: str | None = None) -> Starlette:
             webfilter_task = asyncio.create_task(
                 _webfilter_refresh_loop(webfilter_cache, refresh_secs, initial_delay)
             )
-        # Alert evaluation loop (ADR-0028). The initial delay keeps short-lived
+        # Alert evaluation loop (ADR-0029). The initial delay keeps short-lived
         # test app instances silent; KENNY_ALERT_INTERVAL_SECS=0 disables.
         alert_secs = int(os.environ.get("KENNY_ALERT_INTERVAL_SECS", "60"))
         alert_task: asyncio.Task | None = None

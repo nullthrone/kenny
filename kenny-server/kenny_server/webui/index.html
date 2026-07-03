@@ -1852,7 +1852,7 @@
     }
 
     // Inventory changes (vs. yesterday's snapshot) + disk/battery forecasts
-    // (ADR-0029). Loaded async after the detail view renders; a stale panel
+    // (ADR-0030). Loaded async after the detail view renders; a stale panel
     // (selection changed while loading) is a no-op.
     async function mountChangesPanel(agentId) {
       const panel = document.getElementById("kc-changes");
@@ -1942,7 +1942,7 @@
       screen_time: renderScreenTimeDetail,
     };
 
-    // Parental awareness (ADR-0031): whole-machine interactive minutes per day
+    // Parental awareness (ADR-0032): whole-machine interactive minutes per day
     // as simple horizontal bars — deliberately nothing finer than day buckets.
     function renderScreenTimeDetail(raw, s) {
       let body = "";

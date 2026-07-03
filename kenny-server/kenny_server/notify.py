@@ -1,6 +1,6 @@
 """Outbound operator notifications: ntfy and a generic JSON webhook.
 
-Alert delivery is best-effort by design (ADR-0028): a dead or slow
+Alert delivery is best-effort by design (ADR-0029): a dead or slow
 notification target must never stall or kill the evaluation loop, so every
 ``send`` swallows and logs transport errors. Channels are configured purely
 via environment variables (``KENNY_NTFY_URL``, ``KENNY_NTFY_TOKEN``,

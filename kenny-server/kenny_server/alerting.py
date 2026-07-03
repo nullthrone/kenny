@@ -1,4 +1,4 @@
-"""Server-side alert evaluation loop (ADR-0028).
+"""Server-side alert evaluation loop (ADR-0029).
 
 Periodically re-evaluates every known agent's latest snapshot with the
 authoritative health rules and notifies the operator on *transitions* only:
@@ -262,7 +262,7 @@ class AlertEngine:
             )
         return out
 
-    # -- inventory changes & forecasts (ADR-0029) --------------------------------
+    # -- inventory changes & forecasts (ADR-0030) --------------------------------
 
     async def _change_notifications(
         self,
@@ -441,7 +441,7 @@ class AlertEngine:
                 logger.exception("alert evaluation pass failed")
             await asyncio.sleep(interval_s)
 
-    # -- weekly digest (ADR-0028) -------------------------------------------------
+    # -- weekly digest (ADR-0029) -------------------------------------------------
 
     async def maybe_send_digest(self, now: datetime | None = None) -> bool:
         """Send the weekly digest when the scheduled slot has passed; True if sent.

@@ -1,7 +1,7 @@
 """Tests for :mod:`kenny_server.notify` (ntfy + webhook channels).
 
 Both channels are exercised against an ``httpx.MockTransport`` so no network
-is touched; delivery failures must be swallowed (best-effort per ADR-0028).
+is touched; delivery failures must be swallowed (best-effort per ADR-0029).
 """
 
 from __future__ import annotations

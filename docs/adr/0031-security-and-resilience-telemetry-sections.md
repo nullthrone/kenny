@@ -1,4 +1,4 @@
-# 0030. Security-inventory and resilience telemetry sections
+# 0031. Security-inventory and resilience telemetry sections
 
 - Status: accepted
 - Date: 2026-07-02
@@ -10,7 +10,7 @@ thermals) but barely its *attack and persistence surface*, and not at all whethe
 data would survive a dead disk. For a family fleet the recurring operator questions
 are: what got installed on this PC, which browser extensions did the kids add, what is
 listening on the network, which scheduled tasks and accounts exist (and who is an
-administrator) — and is any backup mechanism alive? With the diff engine (ADR-0029) in
+administrator) — and is any backup mechanism alive? With the diff engine (ADR-0030) in
 place, inventory sections become doubly valuable: the server can notify on "new since
 yesterday" without any agent-side state.
 
@@ -25,7 +25,7 @@ yesterday" without any agent-side state.
 
 ## Decision Outcome
 
-Seven additive sections (plus `screen_time`, decided separately in ADR-0031) enter the
+Seven additive sections (plus `screen_time`, decided separately in ADR-0032) enter the
 contract at **PROTOCOL_VERSION 0.10**: `installed_software`, `browser_extensions`,
 `listening_ports`, `scheduled_tasks`, `local_accounts` (security inventory) and
 `backup_status`, `net_quality` (resilience). Payload shapes live in
@@ -62,7 +62,7 @@ from the agent; judgment is server-side: health rules for `listening_ports`
 (non-loopback remote-access listener ⇒ warn), `local_accounts` (enabled built-in
 Administrator/Guest ⇒ warn; enabled admin without password requirement ⇒ crit),
 `backup_status` (no living mechanism ⇒ warn) and `net_quality` (poor gateway link ⇒
-warn, heavy reference loss ⇒ crit), plus the ADR-0029 diff specs that notify on new
+warn, heavy reference loss ⇒ crit), plus the ADR-0030 diff specs that notify on new
 software/extensions/tasks/ports/devices and admin-group changes.
 
 ### Consequences
@@ -81,8 +81,8 @@ software/extensions/tasks/ports/devices and admin-group changes.
 ## More Information
 
 - Related: ADR-0007 (stateless collectors, section status/summary), ADR-0026 (privacy
-  stance, profile enumeration), ADR-0029 (diff engine consuming these sections),
-  ADR-0031 (`screen_time`, the eighth v0.10 section).
+  stance, profile enumeration), ADR-0030 (diff engine consuming these sections),
+  ADR-0032 (`screen_time`, the eighth v0.10 section).
 - Contract: `docs/protocol.md` § Telemetry sections (v0.10 block),
   `docs/fixtures/telemetry_snapshot.json`.
 - Code: `kenny-agent/src/telemetry/collectors/{installed_software,browser_extensions,listening_ports,scheduled_tasks,local_accounts,backup_status,net_quality}.rs`,

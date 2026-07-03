@@ -1,4 +1,4 @@
-# 0028. Push alerting via ntfy/webhook and a weekly digest
+# 0029. Push alerting via ntfy/webhook and a weekly digest
 
 - Status: accepted
 - Date: 2026-07-02
@@ -85,7 +85,7 @@ the same loop and sent on the same channels at low priority.
   `KENNY_ALERT_INTERVAL_SECS`, `KENNY_ALERT_COOLDOWN_SECS`,
   `KENNY_ALERT_OFFLINE_AFTER_SECS` (see `kenny-server/.env.example`).
 - Related: ADR-0007 (server-side thresholds, push model), ADR-0017 (events table),
-  ADR-0029 (diff/trend engine feeding change notifications through this channel).
+  ADR-0030 (diff/trend engine feeding change notifications through this channel).
 - Code: `kenny-server/kenny_server/notify.py`, `kenny-server/kenny_server/alerting.py`,
   `kenny-server/kenny_server/store.py` (`AlertStateStore`, `EventStore.insert_alert`),
   `kenny-server/kenny_server/main.py` (lifespan wiring).

@@ -1,4 +1,4 @@
-"""Server-side snapshot diffing (ADR-0029).
+"""Server-side snapshot diffing (ADR-0030).
 
 Compares two telemetry snapshots and reports what appeared, disappeared or
 changed in inventory-style sections (autostart entries, services, USB devices,
