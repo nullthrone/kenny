@@ -78,8 +78,31 @@ Chosen option: **capture in the tray, deliver over a local named pipe.**
   frame. A local, less-privileged process could pre-create the well-known pipe name and
   feed the service a spoofed screenshot (pipe squatting); acceptable for the family-PC
   threat model, and could later be hardened by verifying the server endpoint's owner.
-- Follow-up (not in this ADR): multi-monitor / virtual-screen capture; verifying the
-  pipe server's owning SID on connect.
+- Follow-up (not in this ADR): multi-monitor / virtual-screen capture.
+
+## Update (2026-07-03): reliability + least-privilege hardening
+
+Two of the trade-offs above were addressed once the tool proved flaky in practice; the
+decision and wire contract are unchanged, only the tray/service coupling is tightened.
+
+- **Load-bearing tray now self-heals.** The tray was only (re)launched at service start
+  and at logon, so a tray the user closed or that crashed left every `screen_capture`
+  failing until the next service restart. The capture path now relaunches it on demand:
+  when the pipe is absent, the session-0 service calls its existing
+  `launch_tray_in_active_session()` once and retries, using the privilege it already holds
+  (no new privilege). The two failure paths are kept distinct — "nobody logged in" (no
+  console session / user token) vs. "tray relaunched but its pipe is still unavailable"
+  (a tray crashing on start) — so the field can tell them apart. The actual capture still
+  runs at the tray's standard-user, medium-integrity level: that is the least privilege
+  that does the job.
+- **Pipe squatting mitigated.** The pipe is created with an explicit DACL (SDDL
+  `D:P(A;;GA;;;SY)(A;;GA;;;<user>)`) admitting only LocalSystem and the interactive user,
+  replacing the loose default descriptor; if the descriptor cannot be built the tray falls
+  back to the default so capture still works. On connect the service verifies the pipe
+  server's owning SID equals the active console user's (`GetNamedPipeServerProcessId` →
+  token user SID vs. `WTSQueryUserToken`), and refuses a screenshot from any other
+  principal. This closes the follow-up "verifying the server endpoint's owner"; a squatter
+  in the *same* user session remains out of scope (same trust level as the tray).
 
 ## More Information
 
