@@ -407,7 +407,10 @@ Each section payload **must** include `status` ∈ {`ok`, `warn`, `crit`} and a 
 **Security & crypto:** `firewall`, `encryption`, `av_thirdparty`, `defender_quarantine`.
 **Update & stability:** `reboot_pending`, `os_support`, `reliability`, `app_updates`.
 **Operations & daily:** `uptime`, `time_sync`, `printers`, `wifi_quality`, `autostart`.
-**Parental controls:** `web_activity`.
+**Parental controls:** `web_activity`, `screen_time`.
+**Security inventory:** `installed_software`, `browser_extensions`, `listening_ports`,
+`scheduled_tasks`, `local_accounts`.
+**Resilience:** `backup_status`, `net_quality`.
 
 The `web_activity` section reports the **host names** a PC has been reaching in a rolling
 window (default 24 h), observed from the OS DNS client cache and per-user browser history
@@ -470,6 +473,123 @@ reliability heatmaps; that `category` is **server-internal and not part of this 
 the agent never sends it (see ADR-0028). Off Windows the section is the `n/a on this platform`
 stub with `events: []`.
 
+### Security-inventory, resilience, and parental-awareness sections (v0.10)
+
+Added at v0.10 (see ADR-0031, ADR-0032). All are additive; off Windows each is the
+standard `n/a on this platform` stub with empty lists. Inventory lists are deduplicated,
+sorted, and capped (with a `truncated` flag) so a section can never blow the frame-size
+cap. The agent reports `status: "ok"` for pure inventory sections — judgment (health
+rules and cross-snapshot diffing) is server-side.
+
+- **`installed_software`** — machine-wide program inventory from the registry Uninstall
+  keys (HKLM 64+32-bit; *not* `Win32_Product`, which triggers MSI reconfiguration, and
+  not `winget list`, which is too slow for the probe budget). System components are
+  filtered out; per-user (HKCU) installs are not visible to the session-0 service and
+  are a documented blind spot. Cap 300.
+
+  ```json
+  "installed_software": {
+    "status": "ok", "summary": "142 programs installed",
+    "apps": [ { "name": "7-Zip 24.08 (x64)", "version": "24.08", "publisher": "Igor Pavlov", "install_date": "2026-03-11" } ],
+    "count": 142, "truncated": false
+  }
+  ```
+
+- **`browser_extensions`** — extensions installed in Chromium-family browsers
+  (Chrome/Edge manifest dirs) and Firefox (`extensions.json`), read from the same
+  per-user profile locations as `web_activity`. **Privacy:** deduplicated across users
+  and profiles by `(browser, id)` — no per-user attribution on the wire. Cap 200.
+
+  ```json
+  "browser_extensions": {
+    "status": "ok", "summary": "9 extensions across 2 browsers",
+    "extensions": [ { "browser": "chrome", "id": "cjpalhdlnbpafiamejdnhcphjbkeiagm", "name": "uBlock Origin", "version": "1.58.0" } ],
+    "count": 9, "truncated": false, "profiles_read": 3, "errors": []
+  }
+  ```
+
+- **`listening_ports`** — TCP listeners and UDP endpoints joined with the owning
+  process image name, deduplicated by `(proto, port, process)`, wildcard binds first.
+  Cap 200.
+
+  ```json
+  "listening_ports": {
+    "status": "ok", "summary": "12 listening ports",
+    "ports": [ { "proto": "tcp", "port": 445, "address": "0.0.0.0", "pid": 4, "process": "System" } ],
+    "count": 12, "truncated": false
+  }
+  ```
+
+- **`scheduled_tasks`** — non-Microsoft scheduled tasks (`TaskPath` not under
+  `\Microsoft\`), i.e. the persistence surface an operator actually reviews;
+  `total_count` reports the full count for context. Cap 200.
+
+  ```json
+  "scheduled_tasks": {
+    "status": "ok", "summary": "4 non-Microsoft tasks (312 total)",
+    "tasks": [ { "path": "\\", "name": "OneDrive Update", "state": "Ready", "action": "%LocalAppData%\\OneDrive\\Update\\OneDriveSetup.exe", "run_as": "kid-pc\\kid", "last_result": 0, "next_run": "2026-06-05T03:00:00Z" } ],
+    "count": 4, "total_count": 312, "truncated": false
+  }
+  ```
+
+- **`local_accounts`** — local users plus Administrators-group membership, resolved by
+  SID (`S-1-5-32-544`, locale-proof). Built-ins are marked via the well-known RID
+  (`builtin_admin` -500, `builtin_guest` -501); **full SIDs never go on the wire**
+  (minimum identifying tokens, ADR-0026 stance).
+
+  ```json
+  "local_accounts": {
+    "status": "ok", "summary": "3 accounts, 1 admin",
+    "accounts": [ { "name": "kid", "enabled": true, "is_admin": false, "password_required": true, "last_logon": "2026-06-04T15:02:00Z", "builtin_admin": false, "builtin_guest": false } ],
+    "admins": ["papa"], "count": 3
+  }
+  ```
+
+- **`backup_status`** — evidence that *any* backup mechanism is alive: System Restore
+  (enabled + restore-point count/latest), the File History service state (per-user File
+  History *configuration* is unreadable from session 0, so `configured` may be `null`),
+  and OneDrive presence/running. All sub-objects are best-effort and nullable.
+
+  ```json
+  "backup_status": {
+    "status": "ok", "summary": "restore point 2d ago; OneDrive running",
+    "restore_points": { "enabled": true, "count": 5, "latest": "2026-06-02T11:30:00Z" },
+    "file_history": { "service_state": "stopped", "configured": null },
+    "onedrive": { "installed": true, "running": true }
+  }
+  ```
+
+- **`net_quality`** — a stateless probe of link quality at collection time: a handful
+  of ICMP echoes to the default gateway and to a reference host (default `1.1.1.1`,
+  agent-side override `KENNY_NET_QUALITY_REF_HOST`). `latency_ms` is the median and is
+  `null` at 100 % loss.
+
+  ```json
+  "net_quality": {
+    "status": "ok", "summary": "gateway 2ms, internet 14ms",
+    "gateway": { "host": "192.168.1.1", "latency_ms": 2.0, "loss_percent": 0 },
+    "reference": { "host": "1.1.1.1", "latency_ms": 14.0, "loss_percent": 0 },
+    "samples": 5, "errors": []
+  }
+  ```
+
+- **`screen_time`** — aggregated interactive minutes per calendar day for the **whole
+  machine** over the last 7 days, derived from logon/logoff (and, where readable,
+  lock/unlock) events. **Privacy (ADR-0032):** no usernames, no per-user split, no app
+  names, no timestamps finer than the day bucket; each day is clamped to [0, 1440].
+  The agent recomputes the window on every push (stateless); the server's daily
+  history provides longer trends. The agent always reports `status: "ok"` — kenny
+  reports, parents judge.
+
+  ```json
+  "screen_time": {
+    "status": "ok", "summary": "3.4h today, 24h over 7 days",
+    "window_days": 7,
+    "days": [ { "date": "2026-06-04", "active_minutes": 204 } ],
+    "source": "eventlog", "errors": []
+  }
+  ```
+
 Health thresholds (e.g. disk used > 80% ⇒ `warn` and ≥ 95% ⇒ `crit`; Defender
 real-time protection off ⇒ `crit`; Defender scan older than 14 days ⇒ `warn`) are
 evaluated **server-side** in `kenny-server/kenny_server/health_rules.py`. The agent
@@ -479,11 +599,15 @@ for fleet aggregation. These thresholds are illustrative of the data-driven rule
 
 ## Versioning
 
-`PROTOCOL_VERSION = "0.9"`. Both implementations expose this constant; from v0.8 the
+`PROTOCOL_VERSION = "0.10"`. Both implementations expose this constant; from v0.8 the
 agent puts it on the wire in `register.protocol` to select the mutual-auth handshake
-(the `>= "0.8"` comparison still holds at `"0.9"`). Bump on any breaking change to a frame
-or tool schema.
+(compare versions **numerically per component**, not lexically — `"0.10"` is newer than
+`"0.9"`). Bump on any breaking change to a frame or tool schema.
 
+- `0.10` — added the `installed_software`, `browser_extensions`, `listening_ports`,
+  `scheduled_tasks`, `local_accounts`, `backup_status`, `net_quality`, and `screen_time`
+  telemetry sections (security inventory, resilience, parental awareness); additive
+  sections only, no frame or tool changes. See ADR-0031, ADR-0032.
 - `0.9` — added the `webfilter_status`, `webfilter_apply`, and `webfilter_clear` tools and
   the `web_activity` telemetry section for parental-controls observability and on-demand web
   filtering; additive tools + section, no frame changes. See ADR-0026.

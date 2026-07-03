@@ -236,3 +236,70 @@ def test_asset_route_rejects_unknown_and_traversal(tmp_path):
         assert c.get("/assets/secret.txt").status_code == 404
         # path traversal cannot escape the assets dir
         assert c.get("/assets/..%2f..%2f__init__.py").status_code in (404, 400)
+
+
+def test_agent_changes_endpoint(tmp_path):
+    """/api/agent/{id}/changes diffs the daily baseline against the latest snapshot."""
+
+    from datetime import datetime, timedelta, timezone
+
+    app = build_app(db_path=str(tmp_path / "changes.sqlite"))
+    now = datetime.now(timezone.utc)
+    yesterday = (now - timedelta(days=1)).isoformat()
+    today = now.isoformat()
+    with TestClient(app) as c:
+        from functools import partial
+
+        store = app.state.store
+
+        def autostart(names):
+            return {
+                "autostart": {
+                    "status": "ok",
+                    "summary": "",
+                    "entries": [
+                        {"name": n, "location": "HKCU\\Run", "command": f"{n}.exe"}
+                        for n in names
+                    ],
+                }
+            }
+
+        c.portal.call(partial(store.insert, "example-pc", yesterday, autostart(["OneDrive"])))
+        c.portal.call(
+            partial(store.insert, "example-pc", today, autostart(["OneDrive", "Sketchy"]))
+        )
+        body = c.get("/api/agent/example-pc/changes?days=2", headers=_bearer(app)).json()
+        assert body["latest"] == today
+        assert body["baseline"] == yesterday
+        assert any(ch["kind"] == "added" and "Sketchy" in ch["key"] for ch in body["changes"])
+
+    # Unknown agent: empty, not an error.
+    with TestClient(app) as c:
+        body = c.get("/api/agent/nope/changes", headers=_bearer(app)).json()
+        assert body == {"agent_id": "nope", "days": 1, "baseline": None, "latest": None, "changes": []}
+
+
+def test_agent_trends_endpoint(tmp_path):
+    from datetime import datetime, timedelta, timezone
+
+    app = build_app(db_path=str(tmp_path / "trends.sqlite"))
+    now = datetime.now(timezone.utc)
+    with TestClient(app) as c:
+        from functools import partial
+
+        store = app.state.store
+        for i in range(6):
+            at = (now - timedelta(days=5 - i)).isoformat()
+            snap = {
+                "disk": {
+                    "status": "ok",
+                    "summary": "",
+                    "volumes": [{"mount": "C:", "percent_used": 70.0 + 2.0 * i}],
+                }
+            }
+            c.portal.call(partial(store.insert, "example-pc", at, snap))
+        body = c.get("/api/agent/example-pc/trends", headers=_bearer(app)).json()
+        assert body["battery"] is None
+        (forecast,) = body["disk"]
+        assert forecast["mount"] == "C:"
+        assert forecast["days_until_full"] == 10.0

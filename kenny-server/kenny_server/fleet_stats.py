@@ -45,12 +45,19 @@ def _num(value: Any) -> float | None:
 # --------------------------------------------------------------------------
 
 
-def aggregate_overview(agents: list[Agent], *, now: datetime | None = None) -> dict[str, Any]:
+def aggregate_overview(
+    agents: list[Agent],
+    *,
+    now: datetime | None = None,
+    disk_forecasts: dict[str, list[dict[str, Any]]] | None = None,
+) -> dict[str, Any]:
     """Verdichte the latest per-agent snapshots into chart-ready aggregates.
 
     Returns a JSON-serializable dict with one entry per Overview widget, each
     carrying ``members`` for drill-down. ``agents`` is the list assembled by the
-    web layer (see :data:`Agent`).
+    web layer (see :data:`Agent`). ``disk_forecasts`` is the optional per-agent
+    ``trends.disk_forecast`` output (this module stays pure — the web layer does
+    the store reads).
     """
 
     now = now or datetime.now(timezone.utc)
@@ -58,7 +65,7 @@ def aggregate_overview(agents: list[Agent], *, now: datetime | None = None) -> d
         "generated_at": now.isoformat(),
         "agent_count": len(agents),
         "online_count": sum(1 for a in agents if a.get("online")),
-        "kpis": _kpis(agents),
+        "kpis": _kpis(agents, disk_forecasts or {}),
         "health": _health_mix(agents),
         "sections": _section_severity(agents),
         "os": _os_inventory(agents),
@@ -126,10 +133,27 @@ def _reliability_categories(agents: list[Agent]) -> dict[str, Any]:
     }
 
 
-def _kpis(agents: list[Agent]) -> list[dict[str, Any]]:
+def _kpis(
+    agents: list[Agent], disk_forecasts: dict[str, list[dict[str, Any]]] | None = None
+) -> list[dict[str, Any]]:
     """Actionable fleet totals — each a single number not shown by any chart."""
 
+    from .trends import DISK_FULL_KPI_DAYS
+
     online = [a for a in agents if a.get("online")]
+    disk_forecasts = disk_forecasts or {}
+
+    filling_members: list[dict[str, Any]] = []
+    for aid, forecasts in sorted(disk_forecasts.items()):
+        filling = [
+            f
+            for f in forecasts
+            if f.get("days_until_full") is not None
+            and f["days_until_full"] < DISK_FULL_KPI_DAYS
+        ]
+        if filling:
+            detail = ", ".join(f"{f['mount']} ~{f['days_until_full']:.0f}d" for f in filling)
+            filling_members.append(_member(aid, len(filling), f"filling up: {detail}"))
 
     reboot_members: list[dict[str, Any]] = []
     updates_members: list[dict[str, Any]] = []
@@ -195,6 +219,12 @@ def _kpis(agents: list[Agent]) -> list[dict[str, Any]]:
         {"key": "failed_updates", "label": "Failed updates", "value": failed_total, "members": failed_members},
         {"key": "quarantine", "label": "Quarantined threats", "value": quarantine_total, "members": quarantine_members},
         {"key": "os_eol", "label": "OS end-of-life", "value": len(eol_members), "members": eol_members},
+        {
+            "key": "disk_forecast",
+            "label": "Disks filling <30d",
+            "value": len(filling_members),
+            "members": filling_members,
+        },
     ]
 
 

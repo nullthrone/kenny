@@ -1264,7 +1264,7 @@
     function buildKpis() {
       const host = document.getElementById("ov-kpis");
       if (!host) return;
-      const alertKeys = ["reboot", "failed_updates", "quarantine", "os_eol"];
+      const alertKeys = ["reboot", "failed_updates", "quarantine", "os_eol", "disk_forecast"];
       host.innerHTML = state.overview.kpis.map((k, i) => {
         const empty = !(k.members && k.members.length);
         const alert = alertKeys.includes(k.key) && k.value > 0;
@@ -1830,6 +1830,13 @@
           ${sparkline(data.history || [])}
         </div>
         <div class="kc-tiles">${secs || '<div class="k-muted">no telemetry yet</div>'}</div>
+        <div class="k-card k-card--sunken">
+          <div class="k-row" style="justify-content:space-between">
+            <span class="kc-section-lbl">changes &amp; forecast · 24 h</span>
+            <span class="k-mono" style="font-size:11px;color:var(--fg-faint)">vs. yesterday's snapshot</span>
+          </div>
+          <div id="kc-changes"><div class="k-muted" style="font-size:12px">loading…</div></div>
+        </div>
         <div class="k-card k-card--sunken kc-shotcard">
           <div class="k-row" style="justify-content:space-between">
             <span class="kc-section-lbl">last screenshot</span>
@@ -1841,6 +1848,50 @@
             onerror="this.style.display='none';this.nextElementSibling.style.display='block'">
           <div class="k-muted" style="display:none;font-size:12px">none yet</div>
         </div>`;
+      mountChangesPanel(data.agent_id);
+    }
+
+    // Inventory changes (vs. yesterday's snapshot) + disk/battery forecasts
+    // (ADR-0030). Loaded async after the detail view renders; a stale panel
+    // (selection changed while loading) is a no-op.
+    async function mountChangesPanel(agentId) {
+      const panel = document.getElementById("kc-changes");
+      if (!panel) return;
+      let changes, trends;
+      try {
+        [changes, trends] = await Promise.all([
+          getJSON("/api/agent/" + encodeURIComponent(agentId) + "/changes?days=1"),
+          getJSON("/api/agent/" + encodeURIComponent(agentId) + "/trends"),
+        ]);
+      } catch (e) {
+        panel.innerHTML = `<div class="k-muted" style="font-size:12px">error: ${esc(e.message)}</div>`;
+        return;
+      }
+      if (state.selected !== agentId || document.getElementById("kc-changes") !== panel) return;
+      let body = "";
+      const filling = (trends.disk || []).filter(f => f.days_until_full !== null);
+      if (filling.length) {
+        body += filling.map(f =>
+          `<div class="k-reason k-reason--${f.days_until_full < 14 ? "warn" : "ok"}" style="margin:4px 0">
+             <span>${esc(f.mount)} ~${Math.round(f.days_until_full)}d until full
+             (${Math.round(f.current_percent)}% now, +${f.slope_percent_per_day.toFixed(2)}%/day)</span>
+           </div>`).join("");
+      }
+      const bat = trends.battery;
+      if (bat && bat.percent_per_30d !== null && bat.percent_per_30d < 0) {
+        body += `<div class="k-muted" style="font-size:12px;margin:4px 0">
+          battery health ${Math.round(bat.current_percent)}% (${bat.percent_per_30d.toFixed(1)}%/30d)</div>`;
+      }
+      const rows = (changes.changes || []).map(c => `<tr>
+        <td>${esc(c.section)}</td>
+        <td><span class="k-pill k-pill--${c.kind === "removed" ? "ok" : "warn"}">${esc(c.kind)}</span></td>
+        <td class="k-mono">${esc(c.key)}</td>
+        <td class="k-mono">${esc(c.detail || "")}</td></tr>`).join("");
+      if (rows) {
+        body += `<table class="k-dtable"><thead><tr><th>section</th><th>change</th><th>what</th><th>detail</th></tr></thead>
+          <tbody>${rows}</tbody></table>`;
+      }
+      panel.innerHTML = body || `<div class="k-muted" style="font-size:12px">no inventory changes; no disks filling up</div>`;
     }
 
     function sparkline(history) {
@@ -1888,8 +1939,40 @@
     const SECTION_RENDERERS = {
       web_activity: renderWebActivityDetail,
       reliability: renderReliabilityDetail,
+      screen_time: renderScreenTimeDetail,
     };
 
+    // Parental awareness (ADR-0032): whole-machine interactive minutes per day
+    // as simple horizontal bars — deliberately nothing finer than day buckets.
+    function renderScreenTimeDetail(raw, s) {
+      let body = "";
+      if (s && s.summary) body += `<div class="k-modal__sum">${esc(s.summary)}</div>`;
+      const days = Array.isArray(raw.days) ? raw.days : [];
+      if (days.length) {
+        const max = Math.max(...days.map(d => d.active_minutes || 0), 60);
+        body += `<div class="k-detail-grp"><div class="k-detail-grp__lbl">interactive time per day</div>`
+          + days.map(d => {
+            const mins = d.active_minutes || 0;
+            const pct = Math.min(100, Math.round((mins / max) * 100));
+            return `<div class="k-row" style="gap:8px;align-items:center;margin:3px 0">
+              <span class="k-mono" style="font-size:11px;width:78px">${esc(d.date)}</span>
+              <div style="flex:1;background:rgba(128,128,128,.15);border-radius:4px;height:14px;overflow:hidden">
+                <div style="width:${pct}%;height:100%;background:var(--ok-dot)"></div>
+              </div>
+              <span class="k-mono" style="font-size:11px;width:44px;text-align:right">${(mins / 60).toFixed(1)}h</span>
+            </div>`;
+          }).join("") + `</div>`;
+      } else {
+        body += `<div class="k-muted">no session data in the window</div>`;
+      }
+      const scalars = [];
+      for (const k of ["window_days", "source"]) {
+        if (raw[k] !== undefined) scalars.push([k, fmtValue(k, raw[k])]);
+      }
+      if (Array.isArray(raw.errors) && raw.errors.length) scalars.push(["errors", raw.errors.join("; ")]);
+      if (scalars.length) body += defListGrp(null, scalars);
+      return body;
+    }
     // Reliability detail: WHAT is going wrong on this PC. A category × day heatmap
     // (built from the per-group `by_day` histograms) over the loudest problem
     // categories, then each category expands to the raw sources / event ids /
@@ -1988,7 +2071,6 @@
         series: [{ type: "heatmap", data, itemStyle: { borderColor: base._border, borderWidth: 1 } }],
       });
     }
-
     // Parental-controls detail: flagged hits + observed domains + the per-host
     // list editor (mounted async after the modal opens — see mountWebfilterPanel).
     function renderWebActivityDetail(raw, s) {

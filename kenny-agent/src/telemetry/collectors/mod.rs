@@ -8,14 +8,20 @@
 pub mod app_updates;
 pub mod autostart;
 pub mod av_thirdparty;
+pub mod backup_status;
 pub mod battery;
+pub mod browser_extensions;
 pub mod defender;
 pub mod defender_quarantine;
 pub mod disk;
 pub mod disk_smart;
 pub mod encryption;
 pub mod firewall;
+pub mod installed_software;
+pub mod listening_ports;
+pub mod local_accounts;
 pub mod memory;
+pub mod net_quality;
 pub mod network;
 pub mod os_support;
 pub mod peripherals;
@@ -24,6 +30,8 @@ pub mod processes;
 pub mod reboot_pending;
 pub mod reliability;
 pub mod routing;
+pub mod scheduled_tasks;
+pub mod screen_time;
 pub mod services;
 pub mod thermals;
 pub mod time_sync;
@@ -86,6 +94,16 @@ fn registry() -> Vec<(&'static str, Collector)> {
         ("autostart", autostart::collect),
         // Parental controls.
         ("web_activity", web_activity::collect),
+        ("screen_time", screen_time::collect),
+        // Security inventory.
+        ("installed_software", installed_software::collect),
+        ("browser_extensions", browser_extensions::collect),
+        ("listening_ports", listening_ports::collect),
+        ("scheduled_tasks", scheduled_tasks::collect),
+        ("local_accounts", local_accounts::collect),
+        // Resilience.
+        ("backup_status", backup_status::collect),
+        ("net_quality", net_quality::collect),
     ]
 }
 

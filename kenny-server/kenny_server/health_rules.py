@@ -222,6 +222,72 @@ def _rule_web_activity(payload: dict[str, Any], now: datetime) -> "tuple[Status,
     return "ok", "no flagged domains (24h)"
 
 
+# Well-known remote-access ports; a non-loopback listener here is worth a look
+# on a family PC (RDP, VNC, SSH, WinRM).
+_REMOTE_ACCESS_PORTS = {22, 3389, 5900, 5985, 5986}
+
+
+def _rule_listening_ports(payload: dict[str, Any], now: datetime) -> "tuple[Status, str] | None":
+    exposed = [
+        p
+        for p in payload.get("ports") or []
+        if p.get("port") in _REMOTE_ACCESS_PORTS
+        and not str(p.get("address", "")).startswith(("127.", "::1"))
+    ]
+    if exposed:
+        e = exposed[0]
+        example = f"{e.get('proto', '?')}/{e.get('port', '?')} {e.get('process', '?')}"
+        return "warn", f"{len(exposed)} remote-access port(s) listening (e.g. {example})"
+    return None
+
+
+def _rule_local_accounts(payload: dict[str, Any], now: datetime) -> "tuple[Status, str] | None":
+    warns: list[str] = []
+    for account in payload.get("accounts") or []:
+        if not account.get("enabled"):
+            continue
+        if account.get("is_admin") and account.get("password_required") is False:
+            return "crit", f"admin '{account.get('name', '?')}' requires no password"
+        if account.get("builtin_admin"):
+            warns.append("built-in Administrator enabled")
+        if account.get("builtin_guest"):
+            warns.append("Guest account enabled")
+    if warns:
+        return "warn", "; ".join(warns)
+    return None
+
+
+def _rule_backup_status(payload: dict[str, Any], now: datetime) -> "tuple[Status, str] | None":
+    restore = payload.get("restore_points") or {}
+    latest_age = _age_days(restore.get("latest"), now=now)
+    recent_restore_point = latest_age is not None and latest_age <= 30
+    fh_state = str((payload.get("file_history") or {}).get("service_state") or "").lower()
+    onedrive_running = (payload.get("onedrive") or {}).get("running") is True
+    if not recent_restore_point and fh_state != "running" and not onedrive_running:
+        return "warn", "no backup evidence (no restore point <=30d, File History off, OneDrive not running)"
+    return None
+
+
+def _rule_net_quality(payload: dict[str, Any], now: datetime) -> "tuple[Status, str] | None":
+    reference = payload.get("reference") or {}
+    ref_loss = reference.get("loss_percent")
+    if isinstance(ref_loss, (int, float)) and ref_loss >= 60:
+        return "crit", f"internet degraded ({ref_loss:.0f}% loss to {reference.get('host', '?')})"
+    gateway = payload.get("gateway") or {}
+    latency = gateway.get("latency_ms")
+    loss = gateway.get("loss_percent")
+    slow = isinstance(latency, (int, float)) and latency > 100
+    lossy = isinstance(loss, (int, float)) and loss > 20
+    if slow or lossy:
+        parts = []
+        if slow:
+            parts.append(f"{latency:.0f}ms latency")
+        if lossy:
+            parts.append(f"{loss:.0f}% loss")
+        return "warn", f"gateway link poor ({', '.join(parts)})"
+    return None
+
+
 # Section name -> rule. Easy to extend: add an entry.
 RULES: dict[str, Rule] = {
     "disk": _rule_disk,
@@ -234,6 +300,10 @@ RULES: dict[str, Rule] = {
     "os_support": _rule_os_support,
     "web_activity": _rule_web_activity,
     "reliability": _rule_reliability,
+    "listening_ports": _rule_listening_ports,
+    "local_accounts": _rule_local_accounts,
+    "backup_status": _rule_backup_status,
+    "net_quality": _rule_net_quality,
 }
 
 

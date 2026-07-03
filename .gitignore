@@ -28,3 +28,4 @@ kenny-server/*.sqlite*
 
 # mkdocs build output
 site/
+uv.lock
