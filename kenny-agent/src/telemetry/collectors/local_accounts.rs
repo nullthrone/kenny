@@ -42,6 +42,11 @@ pub mod core {
         pub enabled: bool,
         pub is_admin: bool,
         pub password_required: bool,
+        /// RFC3339 UTC of the last password change; `None` means a password was
+        /// never set (genuinely password-less). PowerShell `PasswordRequired`
+        /// reflects UF_PASSWD_NOTREQD ("blank password permitted"), NOT "has no
+        /// password" — this field disambiguates. See ADR-0031.
+        pub password_last_set: Option<String>,
         /// RFC3339 UTC, if the account ever logged on.
         pub last_logon: Option<String>,
         pub builtin_admin: bool,
@@ -57,6 +62,10 @@ pub mod core {
                 enabled: bool_field(row, "enabled"),
                 is_admin: bool_field(row, "is_admin"),
                 password_required: bool_field(row, "password_required"),
+                password_last_set: row
+                    .get("password_last_set")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
                 last_logon: row
                     .get("last_logon")
                     .and_then(Value::as_str)
@@ -89,6 +98,7 @@ pub mod core {
                     "enabled": a.enabled,
                     "is_admin": a.is_admin,
                     "password_required": a.password_required,
+                    "password_last_set": a.password_last_set,
                     "last_logon": a.last_logon,
                     "builtin_admin": a.builtin_admin,
                     "builtin_guest": a.builtin_guest,
@@ -108,6 +118,7 @@ pub mod core {
                 enabled,
                 is_admin,
                 password_required: true,
+                password_last_set: None,
                 last_logon: None,
                 builtin_admin: false,
                 builtin_guest: false,
@@ -119,6 +130,7 @@ pub mod core {
             let row = json!({
                 "name": "kid", "enabled": true, "is_admin": false,
                 "password_required": true, "last_logon": "2026-06-04T15:02:00Z",
+                "password_last_set": "2026-02-20T18:30:00Z",
                 "builtin_admin": false, "builtin_guest": false
             });
             let a = Account::from_row(&row).unwrap();
@@ -127,10 +139,12 @@ pub mod core {
             assert!(!a.is_admin);
             assert!(a.password_required);
             assert_eq!(a.last_logon.as_deref(), Some("2026-06-04T15:02:00Z"));
+            assert_eq!(a.password_last_set.as_deref(), Some("2026-02-20T18:30:00Z"));
             // Missing booleans default to false; missing name drops the row.
             let a = Account::from_row(&json!({ "name": "Guest" })).unwrap();
             assert!(!a.enabled);
             assert_eq!(a.last_logon, None);
+            assert_eq!(a.password_last_set, None);
             assert!(Account::from_row(&json!({ "enabled": true })).is_none());
         }
 
@@ -155,6 +169,8 @@ pub mod core {
                 assert!(a.get("sid").is_none());
                 assert!(!a.to_string().contains("S-1-5-"));
             }
+            // The nullable field serializes even when null (key present as null).
+            assert!(out[0].get("password_last_set").is_some());
         }
     }
 }
@@ -184,6 +200,7 @@ Get-LocalUser -ErrorAction SilentlyContinue | ForEach-Object {
     is_admin = ($adminSids -contains $sid)
     password_required = [bool]$_.PasswordRequired
     last_logon = if ($_.LastLogon) { (Get-Date $_.LastLogon).ToUniversalTime().ToString('o') } else { $null }
+    password_last_set = if ($_.PasswordLastSet) { (Get-Date $_.PasswordLastSet).ToUniversalTime().ToString('o') } else { $null }
     builtin_admin = $sid.EndsWith('-500')
     builtin_guest = $sid.EndsWith('-501')
   }
