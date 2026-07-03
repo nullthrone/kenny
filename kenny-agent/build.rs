@@ -15,4 +15,13 @@ fn main() {
         .unwrap_or_else(|| env::var("CARGO_PKG_VERSION").unwrap());
     println!("cargo:rustc-env=KENNY_BUILD_VERSION={version}");
     println!("cargo:rerun-if-env-changed=KENNY_AGENT_VERSION");
+
+    // Embed a Windows application manifest. asInvoker (NOT requireAdministrator) is
+    // deliberate: the same binary launches the tray in the standard-user session, which a
+    // require-admin manifest would block. `setup` elevates at runtime instead. See ADR-0033.
+    if std::env::var_os("CARGO_CFG_WINDOWS").is_some() {
+        use embed_manifest::{embed_manifest, new_manifest};
+        embed_manifest(new_manifest("Kenny.Agent")).expect("unable to embed manifest");
+    }
+    println!("cargo:rerun-if-changed=build.rs");
 }

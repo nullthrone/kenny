@@ -4,8 +4,8 @@ and trigger a server-side self-update (ADR-0012, ADR-0013).
 The server serves a **prebuilt** agent binary (``KENNY_AGENT_BINARY``) and injects
 per-install config — it does not build per download. Endpoints:
 
-* ``GET  /api/agents/{id}/installer``    (operator) -> a ZIP (exe + install.bat + README),
-  minting a fresh per-agent token via the token store.
+* ``GET  /api/agents/{id}/installer``    (operator) -> a ZIP (exe + setup.bat +
+  kenny-agent.setup.json + README), minting a fresh per-agent token via the token store.
 * ``POST /api/agents/{id}/share-link``   (operator) -> an expiring one-time ``/d/installer/{nonce}``
   link the target user can open without an operator login.
 * ``GET  /d/installer/{nonce}``          (public, nonce-gated) -> the installer ZIP, once.
@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import os
 import secrets
 import time
@@ -107,20 +108,30 @@ class ShareLinks:
         return entry.agent_id
 
 
-def _install_bat(
-    agent_id: str, token: str, wss: str, interval: int, server_pubkey: str
-) -> str:
+def _setup_bat() -> str:
     return (
         "@echo off\r\n"
-        "rem kenny-agent installer: registers the agent as an auto-starting Windows service.\r\n"
-        "rem Run as Administrator.\r\n"
-        "rem --enroll-token is the one-time enrollment secret; the agent generates its\r\n"
-        "rem own Ed25519 keypair and POSTs its public key to /api/agents/<id>/enroll.\r\n"
-        "rem --server-pubkey is the pinned server identity used to verify the challenge.\r\n"
-        f'"%~dp0kenny-agent.exe" install --server {wss} --agent-id {agent_id} '
-        f"--enroll-token {token} --server-pubkey {server_pubkey} "
-        f"--telemetry-interval-secs {interval}\r\n"
+        "rem kenny-agent installer. Double-click this file and approve the Windows security prompt.\r\n"
+        "rem The agent reads its connection settings from kenny-agent.setup.json (next to this file),\r\n"
+        "rem elevates via UAC, installs itself into %ProgramFiles%\\kenny as an auto-start service,\r\n"
+        "rem generates its Ed25519 keypair, and enrolls its public key with the server.\r\n"
+        '"%~dp0kenny-agent.exe" setup\r\n'
         "pause\r\n"
+    )
+
+
+def _setup_json(
+    agent_id: str, token: str, wss: str, interval: int, server_pubkey: str
+) -> str:
+    return json.dumps(
+        {
+            "server": wss,
+            "agent_id": agent_id,
+            "enroll_token": token,
+            "server_pubkey": server_pubkey,
+            "telemetry_interval_secs": interval,
+        },
+        indent=2,
     )
 
 
@@ -131,13 +142,14 @@ def _readme(agent_id: str, wss: str, server_pubkey: str) -> str:
         f"Agent id          : {agent_id}\r\n"
         f"Server            : {wss}\r\n"
         f"Server public key : {server_pubkey}\r\n\r\n"
-        "To install (as Administrator): run install.bat.\r\n"
-        "It registers kenny-agent.exe as an auto-starting Windows service.\r\n"
-        "On first run the agent generates its Ed25519 keypair and enrolls its public\r\n"
-        "key with the server using the one-time enrollment token. Thereafter only\r\n"
-        "signatures authenticate. The pinned server public key above lets the agent\r\n"
-        "verify the server's challenge (anti-spoofing).\r\n"
-        "To remove: kenny-agent.exe uninstall\r\n"
+        "To install: double-click setup.bat and approve the Windows security prompt.\r\n"
+        "Setup installs kenny-agent.exe as an auto-starting Windows service into\r\n"
+        "%ProgramFiles%\\kenny, reading its connection settings from the bundled\r\n"
+        "kenny-agent.setup.json. On first run the agent generates its Ed25519 keypair\r\n"
+        "and enrolls its public key with the server using the one-time enrollment token.\r\n"
+        "Thereafter only signatures authenticate. The pinned server public key above lets\r\n"
+        "the agent verify the server's challenge (anti-spoofing).\r\n"
+        "To remove (as Administrator): kenny-agent.exe uninstall\r\n"
     )
 
 
@@ -150,8 +162,10 @@ def _build_installer_zip(
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         with open(binary, "rb") as fh:
             zf.writestr("kenny-agent.exe", fh.read())
+        zf.writestr("setup.bat", _setup_bat())
         zf.writestr(
-            "install.bat", _install_bat(agent_id, token, wss, interval, server_pubkey)
+            "kenny-agent.setup.json",
+            _setup_json(agent_id, token, wss, interval, server_pubkey),
         )
         zf.writestr("README.txt", _readme(agent_id, wss, server_pubkey))
     return buf.getvalue()

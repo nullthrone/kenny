@@ -7,6 +7,8 @@
 //! Subcommands:
 //! * (none) / `run`  — foreground tunnel (reconnects forever). Default; the
 //!   historical `--server/--agent-id/--token` invocation maps here unchanged.
+//! * `setup`         — self-elevating bootstrap installer: elevate via UAC, copy the
+//!   binary into %ProgramFiles%\kenny, and run `install` from there (Windows only).
 //! * `install`       — register the Windows service (Windows only).
 //! * `uninstall`     — remove the Windows service (Windows only).
 //! * `run-service`   — SCM entry point with graceful stop (Windows only).
@@ -24,6 +26,7 @@ mod protocol;
 mod screencap_ipc;
 mod service;
 mod session_launch_ipc;
+mod setup;
 mod telemetry;
 mod tray;
 mod tunnel;
@@ -87,6 +90,13 @@ fn main() {
         Some(Command::Install(args)) => {
             if let Err(e) = service::install(args) {
                 error!(error = %e, "install failed");
+                std::process::exit(1);
+            }
+        }
+        Some(Command::Setup(args)) => {
+            if let Err(e) = setup::setup(args) {
+                error!(error = %e, "setup failed");
+                eprintln!("error: {e}");
                 std::process::exit(1);
             }
         }
