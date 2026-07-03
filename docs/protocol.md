@@ -416,7 +416,7 @@ The `web_activity` section reports the **host names** a PC has been reaching in 
 window (default 24 h), observed from the OS DNS client cache and per-user browser history
 (host names only — never full URLs, page titles, or which user visited). It is bounded:
 domains are deduplicated and capped (250, `last_seen` desc, `truncated` beyond), well inside
-the frame size cap. The agent always reports `status: "ok"` — it holds no list and does not
+the telemetry frame cap. The agent always reports `status: "ok"` — it holds no list and does not
 judge; the server matches observed domains against that host's per-host list and is
 authoritative (see ADR-0026). The section payload the agent sends:
 
@@ -477,8 +477,9 @@ stub with `events: []`.
 
 Added at v0.10 (see ADR-0031, ADR-0032). All are additive; off Windows each is the
 standard `n/a on this platform` stub with empty lists. Inventory lists are deduplicated,
-sorted, and capped (with a `truncated` flag) so a section can never blow the frame-size
-cap. The agent reports `status: "ok"` for pure inventory sections — judgment (health
+sorted, and capped (with a `truncated` flag) so a section can never blow the telemetry
+frame cap (unsolicited pushes are held to a tighter byte cap than correlated tool
+responses; see the tunnel's inbound limits). The agent reports `status: "ok"` for pure inventory sections — judgment (health
 rules and cross-snapshot diffing) is server-side.
 
 - **`installed_software`** — machine-wide program inventory from the registry Uninstall
