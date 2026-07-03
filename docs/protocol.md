@@ -535,12 +535,16 @@ rules and cross-snapshot diffing) is server-side.
 - **`local_accounts`** — local users plus Administrators-group membership, resolved by
   SID (`S-1-5-32-544`, locale-proof). Built-ins are marked via the well-known RID
   (`builtin_admin` -500, `builtin_guest` -501); **full SIDs never go on the wire**
-  (minimum identifying tokens, ADR-0026 stance).
+  (minimum identifying tokens, ADR-0026 stance). `password_required` mirrors the
+  `UF_PASSWD_NOTREQD` flag — it means *a blank password is permitted by policy*, **not**
+  *the account has no password*. `password_last_set` (nullable RFC3339 UTC) disambiguates:
+  it is set the moment a password is ever chosen, and `null` only for a genuinely
+  password-less account. Health rules must consult both, not `password_required` alone.
 
   ```json
   "local_accounts": {
     "status": "ok", "summary": "3 accounts, 1 admin",
-    "accounts": [ { "name": "kid", "enabled": true, "is_admin": false, "password_required": true, "last_logon": "2026-06-04T15:02:00Z", "builtin_admin": false, "builtin_guest": false } ],
+    "accounts": [ { "name": "kid", "enabled": true, "is_admin": false, "password_required": true, "password_last_set": "2026-02-20T18:30:00Z", "last_logon": "2026-06-04T15:02:00Z", "builtin_admin": false, "builtin_guest": false } ],
     "admins": ["papa"], "count": 3
   }
   ```
@@ -608,6 +612,10 @@ agent puts it on the wire in `register.protocol` to select the mutual-auth hands
   `scheduled_tasks`, `local_accounts`, `backup_status`, `net_quality`, and `screen_time`
   telemetry sections (security inventory, resilience, parental awareness); additive
   sections only, no frame or tool changes. See ADR-0031, ADR-0032.
+  - Refinement: `local_accounts` accounts gained a nullable `password_last_set` field so
+    health rules can tell a genuinely password-less admin from one that merely has the
+    `UF_PASSWD_NOTREQD` flag set (blank password permitted but a real password present).
+    Additive and backward compatible — no version bump.
 - `0.9` — added the `webfilter_status`, `webfilter_apply`, and `webfilter_clear` tools and
   the `web_activity` telemetry section for parental-controls observability and on-demand web
   filtering; additive tools + section, no frame changes. See ADR-0026.

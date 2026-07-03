@@ -246,7 +246,18 @@ def _rule_local_accounts(payload: dict[str, Any], now: datetime) -> "tuple[Statu
     for account in payload.get("accounts") or []:
         if not account.get("enabled"):
             continue
-        if account.get("is_admin") and account.get("password_required") is False:
+        # `password_required is False` reflects the Windows UF_PASSWD_NOTREQD flag
+        # ("a blank password is permitted"), NOT "this account has no password".
+        # OEM/sysprep'd machines set it on accounts that do have a password, so we
+        # only crit when the account has ALSO genuinely never had a password set
+        # (`password_last_set is None`). A real password means this is a benign
+        # OEM flag. Auth-probing to be certain is deliberately out of scope
+        # (account-lockout risk). See ADR-0031.
+        if (
+            account.get("is_admin")
+            and account.get("password_required") is False
+            and account.get("password_last_set") is None
+        ):
             return "crit", f"admin '{account.get('name', '?')}' requires no password"
         if account.get("builtin_admin"):
             warns.append("built-in Administrator enabled")

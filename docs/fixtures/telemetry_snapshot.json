@@ -146,9 +146,9 @@
       "status": "ok",
       "summary": "3 accounts, 1 admin",
       "accounts": [
-        { "name": "papa", "enabled": true, "is_admin": true, "password_required": true, "last_logon": "2026-06-04T08:10:00Z", "builtin_admin": false, "builtin_guest": false },
-        { "name": "kid", "enabled": true, "is_admin": false, "password_required": true, "last_logon": "2026-06-04T15:02:00Z", "builtin_admin": false, "builtin_guest": false },
-        { "name": "Guest", "enabled": false, "is_admin": false, "password_required": false, "last_logon": null, "builtin_admin": false, "builtin_guest": true }
+        { "name": "papa", "enabled": true, "is_admin": true, "password_required": true, "password_last_set": "2026-01-15T09:00:00Z", "last_logon": "2026-06-04T08:10:00Z", "builtin_admin": false, "builtin_guest": false },
+        { "name": "kid", "enabled": true, "is_admin": false, "password_required": true, "password_last_set": "2026-02-20T18:30:00Z", "last_logon": "2026-06-04T15:02:00Z", "builtin_admin": false, "builtin_guest": false },
+        { "name": "Guest", "enabled": false, "is_admin": false, "password_required": false, "password_last_set": null, "last_logon": null, "builtin_admin": false, "builtin_guest": true }
       ],
       "admins": ["papa"],
       "count": 3

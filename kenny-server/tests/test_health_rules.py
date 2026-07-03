@@ -171,6 +171,7 @@ def test_local_accounts_rules() -> None:
         base = {
             "name": "u", "enabled": True, "is_admin": False,
             "password_required": True, "builtin_admin": False, "builtin_guest": False,
+            "password_last_set": None,
         }
         base.update(kw)
         return base
@@ -181,6 +182,15 @@ def test_local_accounts_rules() -> None:
         now=NOW,
     )
     assert crit["status"] == "crit"
+
+    # Regression guard: the UF_PASSWD_NOTREQD flag is set, but the account has a
+    # real password (password_last_set present) -> benign OEM flag, no finding.
+    ok_has_pw = health_rules.evaluate_section(
+        "local_accounts",
+        {"status": "ok", "summary": "", "accounts": [account(is_admin=True, password_required=False, password_last_set="2026-01-01T00:00:00Z")]},
+        now=NOW,
+    )
+    assert ok_has_pw["status"] == "ok"
 
     warn_admin = health_rules.evaluate_section(
         "local_accounts",
