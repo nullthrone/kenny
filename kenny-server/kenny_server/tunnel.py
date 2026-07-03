@@ -370,6 +370,22 @@ class AgentTunnel:
             frame = parse_frame(raw)
             self.registry.mark_seen(agent_id)
 
+            # Bind pushed frames to the identity proven at the handshake. An agent
+            # can only speak for itself, so a frame whose ``agent_id`` differs from
+            # the authenticated connection is a spoofing attempt (an agent forging
+            # another agent's telemetry/logs/web-activity). Drop it rather than
+            # persist data under the forged id (CWE-346 Origin Validation Error).
+            frame_agent_id = getattr(frame, "agent_id", None)
+            if frame_agent_id is not None and frame_agent_id != agent_id:
+                logger.warning(
+                    "dropping %s frame from %s: agent_id %r does not match the "
+                    "authenticated connection",
+                    type(frame).__name__,
+                    agent_id,
+                    frame_agent_id,
+                )
+                continue
+
             if isinstance(frame, Response):
                 self._resolve(frame)
             elif isinstance(frame, Telemetry):

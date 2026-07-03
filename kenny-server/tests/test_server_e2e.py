@@ -469,3 +469,43 @@ async def test_e2e_rotation_grace_window_keeps_live_agent(tmp_path, monkeypatch)
         # Once the new installer is deployed and t2 is used, t1 is retired.
         assert await _register_once(ws_url, "example-pc-2", t2) is True
         assert await _register_once(ws_url, "example-pc-2", t1) is False
+
+
+@pytest.mark.asyncio
+async def test_e2e_spoofed_agent_id_is_dropped(tmp_path, monkeypatch) -> None:
+    """A frame whose agent_id != the authenticated connection is dropped, not
+    persisted under the forged id (kenny-sec:tunnel/frame-agent-id-spoofing)."""
+
+    monkeypatch.setenv("KENNY_SERVER_PRIVATE_KEY", SERVER_SEED_B64)
+    port = _free_port()
+    app = build_app(db_path=str(tmp_path / "spoof.sqlite"))
+
+    async with _Server(app, port):
+        # Authenticate ONLY as "dev" via the full Ed25519 mutual-auth handshake.
+        agent = MockAgent(f"ws://127.0.0.1:{port}/agent/ws", "dev")
+        await app.state.key_store.enroll("dev", agent.public_key_b64)
+        await agent.start()
+        await asyncio.sleep(0.1)
+
+        # Push telemetry + a log frame forged as another agent id.
+        telemetry = _fixture("telemetry_snapshot.json")
+        telemetry["agent_id"] = "victim-pc"
+        await agent.ws.send(json.dumps(telemetry))
+        logframe = _fixture("log.json")
+        logframe["agent_id"] = "victim-pc"
+        await agent.ws.send(json.dumps(logframe))
+        await asyncio.sleep(0.2)
+
+        # The forged id must have no stored telemetry or logs, and must not appear
+        # among known agents.
+        assert await app.state.store.latest("victim-pc") is None
+        assert "victim-pc" not in await app.state.store.known_agents()
+        assert await app.state.event_store.query(kind="log", agent_id="victim-pc") == []
+
+        # The socket survives: a correctly-attributed push still persists.
+        telemetry["agent_id"] = "dev"
+        await agent.ws.send(json.dumps(telemetry))
+        await asyncio.sleep(0.2)
+        assert await app.state.store.latest("dev") is not None
+
+        await agent.stop()
