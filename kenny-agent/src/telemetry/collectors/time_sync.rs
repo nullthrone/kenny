@@ -196,6 +196,9 @@ mod windows_impl {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // `Status` is only re-exported through `super` on the `#[cfg(not(windows))]` path,
+    // but the tests below reference it on every platform — import it here directly.
+    use crate::protocol::Status;
 
     #[test]
     fn time_sync_section_is_valid() {
