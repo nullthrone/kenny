@@ -64,11 +64,17 @@ launch delegated to the tray helper over an allow-listed named pipe.**
 - **User-session launch reuses the ADR-0018 pattern.** A second named pipe
   (`\\.\pipe\kenny-agent-session-launch`, **duplex**) is hosted by the tray helper; the
   session-0 service writes a launch request and reads the reply. Framing is shared with
-  the screencap pipe via `kenny-agent/src/ipc.rs`. The tray spawns the app with a plain
-  process spawn — it already runs in the interactive session, so no token impersonation is
-  needed.
+  the screencap pipe via `kenny-agent/src/ipc.rs`. Because the tray already runs in the
+  interactive session, launching needs no token impersonation. Quick Assist ships as an
+  **MSIX/Store package**, which cannot be launched by exe name (its app-execution-alias
+  `quickassist.exe` is a reparse point a plain `CreateProcess` does not resolve, and the
+  packaged binary under `%ProgramFiles%\WindowsApps` denies direct execution). The tray
+  therefore activates it by its **Application User Model ID** via
+  `IApplicationActivationManager` — the same activation path the Start menu uses, which
+  also yields the real process id for the `pid` field. Allow-list entries for classic
+  desktop binaries (a future `mstsc.exe` / `msra.exe`) carry no AUMID and use a plain spawn.
 - **The allow-list is the trust boundary.** The tray launches *only*
-  `session_launch_ipc::ALLOWED_EXECUTABLES` (initially `quickassist.exe`), enforced on both
+  `session_launch_ipc::ALLOWED_APPS` (initially `quickassist.exe`), enforced on both
   the tray and the service side. The session-0 service can never have the tray start an
   arbitrary program; widening the mechanism means adding a reviewed entry (e.g. `mstsc.exe`
   for a future LAN/VPN path), not changing the plumbing.
