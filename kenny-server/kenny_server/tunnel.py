@@ -440,11 +440,21 @@ class AgentTunnel:
                         logger.exception(
                             "webfilter record_activity failed for %s", frame.agent_id
                         )
-                await self.store.insert(
-                    frame.agent_id,
-                    frame.collected_at,
-                    snapshot,
-                )
+                try:
+                    await self.store.insert(
+                        frame.agent_id,
+                        frame.collected_at,
+                        snapshot,
+                    )
+                except Exception:  # noqa: BLE001 - a store hiccup must not drop the tunnel
+                    # A transient DB error (e.g. SQLite lock contention) on one
+                    # snapshot must not tear down the WebSocket: that turns a
+                    # momentary hiccup into a reconnect storm. Log and keep serving;
+                    # the agent re-pushes on its next interval.
+                    logger.exception(
+                        "telemetry insert failed for %s; keeping tunnel open", frame.agent_id
+                    )
+                    continue
                 logger.debug("telemetry from %s at %s", frame.agent_id, frame.collected_at)
             elif isinstance(frame, Log):
                 # Same strict push cap as telemetry: a log frame is unsolicited.

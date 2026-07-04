@@ -11,6 +11,7 @@ See ADR 0007 for the push-model + SQLite rationale.
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -18,6 +19,22 @@ import aiosqlite
 
 DEFAULT_DB_PATH = "kenny.sqlite"
 RETENTION_DAYS = 30
+
+# Every store opens its own aiosqlite connection to the *same* file. WAL lets
+# readers and writers proceed concurrently; ``busy_timeout`` makes a connection
+# wait up to N ms for a contended lock instead of failing immediately with
+# "database is locked" (SQLite's default busy_timeout is 0). Without it, any
+# momentary write contention on the shared file raised OperationalError out of a
+# telemetry INSERT and tore down the agent WebSocket tunnel (connection flapping).
+_BUSY_TIMEOUT_MS = int(os.environ.get("KENNY_SQLITE_BUSY_TIMEOUT_MS", "5000"))
+
+
+async def _configure_connection(db: aiosqlite.Connection) -> None:
+    """Apply the connection settings every store shares (row factory + pragmas)."""
+
+    db.row_factory = aiosqlite.Row
+    await db.execute("PRAGMA journal_mode=WAL")
+    await db.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS snapshots (
@@ -44,7 +61,7 @@ class TelemetryStore:
         if self._db is not None:
             return
         self._db = await aiosqlite.connect(self.db_path)
-        self._db.row_factory = aiosqlite.Row
+        await _configure_connection(self._db)
         await self._db.executescript(_SCHEMA)
         await self._db.commit()
 
@@ -193,9 +210,7 @@ class EventStore:
         if self._db is not None:
             return
         self._db = await aiosqlite.connect(self.db_path)
-        self._db.row_factory = aiosqlite.Row
-        # Two connections share one file; WAL keeps readers/writers from blocking.
-        await self._db.execute("PRAGMA journal_mode=WAL")
+        await _configure_connection(self._db)
         await self._db.executescript(_EVENTS_SCHEMA)
         await self._db.commit()
 
@@ -373,8 +388,7 @@ class AlertStateStore:
         if self._db is not None:
             return
         self._db = await aiosqlite.connect(self.db_path)
-        self._db.row_factory = aiosqlite.Row
-        await self._db.execute("PRAGMA journal_mode=WAL")
+        await _configure_connection(self._db)
         await self._db.executescript(_ALERT_STATE_SCHEMA)
         await self._db.commit()
 
@@ -459,8 +473,7 @@ class PolicyStore:
         if self._db is not None:
             return
         self._db = await aiosqlite.connect(self.db_path)
-        self._db.row_factory = aiosqlite.Row
-        await self._db.execute("PRAGMA journal_mode=WAL")
+        await _configure_connection(self._db)
         await self._db.executescript(_POLICY_SCHEMA)
         await self._db.commit()
 
@@ -586,8 +599,7 @@ class WebFilterStore:
         if self._db is not None:
             return
         self._db = await aiosqlite.connect(self.db_path)
-        self._db.row_factory = aiosqlite.Row
-        await self._db.execute("PRAGMA journal_mode=WAL")
+        await _configure_connection(self._db)
         await self._db.executescript(_WEBFILTER_SCHEMA)
         await self._db.commit()
 
@@ -851,8 +863,7 @@ class ChatHistoryStore:
         if self._db is not None:
             return
         self._db = await aiosqlite.connect(self.db_path)
-        self._db.row_factory = aiosqlite.Row
-        await self._db.execute("PRAGMA journal_mode=WAL")
+        await _configure_connection(self._db)
         await self._db.executescript(_CHAT_HISTORY_SCHEMA)
         await self._db.commit()
 
