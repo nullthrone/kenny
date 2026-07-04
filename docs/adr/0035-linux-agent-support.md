@@ -1,4 +1,4 @@
-# 0034. First-class Linux agent support
+# 0035. First-class Linux agent support
 
 - Status: accepted
 - Date: 2026-07-04

@@ -29,6 +29,7 @@ from ..chat import (
 )
 from ..policy import PolicyEngine
 from ..event_categories import annotate_events, categorize_events
+from ..forecast import build_facts, deterministic_summary, forecast_events
 from ..recommend import ai_available, recommend_events, warning_facts
 from ..registry import AgentRegistry
 from ..store import ChatHistoryStore, EventStore, PolicyStore, TelemetryStore
@@ -887,6 +888,70 @@ def build_chat_routes(
 
         return StreamingResponse(gen(), media_type="text/event-stream", headers=_STREAM_HEADERS)
 
+    async def api_forecast_stream(request: Request) -> Response:
+        """Stream one agent's near-term "AI Forecast" as SSE (ADR-0034).
+
+        Body: ``{agent_id}``. Synthesizes the disk/battery trends and the
+        inventory diff into a short prose outlook. Unlike the recommendation
+        route this *always* streams 200: with no API key it streams a
+        deterministic prose summary of the same facts, so the panel is never
+        empty. Inherits operator auth from the ``/api`` middleware.
+        """
+
+        from datetime import datetime, timedelta, timezone
+
+        from .. import diffs, trends
+
+        body = await request.json()
+        agent_id = str(body.get("agent_id", "")).strip()
+        if not agent_id:
+            return JSONResponse({"error": "agent_id is required"}, status_code=400)
+
+        def stream_text(text: str) -> Response:
+            async def gen_text() -> Any:
+                yield _sse({"type": "text_delta", "text": text})
+                yield _sse({"type": "done"})
+
+            return StreamingResponse(
+                gen_text(), media_type="text/event-stream", headers=_STREAM_HEADERS
+            )
+
+        latest = await store.latest(agent_id)
+        if latest is None:
+            return stream_text("No telemetry yet for this machine.")
+
+        snapshot = latest["snapshot"]
+        # 30-day daily history powers the disk/battery forecast; a ~1-day
+        # baseline powers the inventory diff — the same windows as the /trends
+        # and /changes endpoints this supersedes in the drill-down.
+        now = datetime.now(timezone.utc)
+        daily_30d = await store.daily_latest(
+            agent_id, (now - timedelta(days=30)).date().isoformat()
+        )
+        daily_1d = await store.daily_latest(agent_id, (now - timedelta(days=1)).isoformat())
+        baseline = daily_1d[0] if daily_1d else None
+        changes = diffs.diff_snapshots(baseline["snapshot"], snapshot) if baseline else []
+        facts = build_facts(
+            snapshot,
+            trends.disk_forecast(daily_30d),
+            trends.battery_trend(daily_30d),
+            changes,
+        )
+
+        if not ai_available():
+            return stream_text(deterministic_summary(facts))
+
+        client = client_factory()
+
+        async def gen() -> Any:
+            try:
+                async for ev in forecast_events(client, facts):
+                    yield _sse(ev)
+            except Exception as exc:  # noqa: BLE001 - surface to the UI in-band
+                yield _sse({"type": "error", "error": str(exc)})
+
+        return StreamingResponse(gen(), media_type="text/event-stream", headers=_STREAM_HEADERS)
+
     return [
         Route("/api/chat", api_chat, methods=["POST"]),
         Route("/api/chat/confirm", api_chat_confirm, methods=["POST"]),
@@ -896,6 +961,7 @@ def build_chat_routes(
         Route("/api/chat/history/{id}", api_chat_history_get, methods=["GET"]),
         Route("/api/chat/history/{id}", api_chat_history_delete, methods=["DELETE"]),
         Route("/api/recommendation/stream", api_recommendation_stream, methods=["POST"]),
+        Route("/api/forecast/stream", api_forecast_stream, methods=["POST"]),
     ]
 
 

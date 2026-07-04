@@ -78,8 +78,9 @@ rather than a scary made-up number:
 - **Battery drift** — health change as **percent per 30 days**; a meaningful decline
   appears in the digest.
 
-These same computations power the per-agent **"changes & forecast · 24h"** panel in the
-agent drill-down — see [`dashboard.md`](dashboard.md).
+These same computations feed the per-agent **AI Forecast** card at the top of the agent
+drill-down, which synthesizes them (with the inventory diff) into a short prose outlook —
+see [`dashboard.md`](dashboard.md).
 
 ## Weekly digest
 
@@ -128,7 +129,7 @@ Alerting environment variables (see [`setup.md`](setup.md) for the full list):
 ## See also
 
 - [`setup.md`](setup.md) — hosting, TLS, and the full environment-variable list
-- [`dashboard.md`](dashboard.md) — the Overview KPIs and the per-agent "changes & forecast" panel
+- [`dashboard.md`](dashboard.md) — the Overview KPIs and the per-agent AI Forecast card
 - [`telemetry.md`](telemetry.md) — the sections and health rules these alerts evaluate
 - [ADR-0029](adr/0029-push-alerting-ntfy-webhook-and-weekly-digest.md) — push alerting & weekly digest
 - [ADR-0030](adr/0030-server-side-diff-and-trend-engine.md) — server-side diff & trend engine
