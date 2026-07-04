@@ -34,6 +34,13 @@ docs = [
     "mkdocs-material>=9.5",
     "mkdocs-awesome-pages-plugin>=2.9",
 ]
+# Tooling to regenerate the dashboard screenshots in docs/assets/screenshots/
+# (scripts/screenshots/). Not needed for the server itself, tests, or CI —
+# install with `pip install -e ".[screenshots]"`. Chromium is provided by the
+# environment; do not run `playwright install`.
+screenshots = [
+    "playwright>=1.44",
+]
 
 [project.urls]
 Homepage = "https://github.com/t11z/kenny"

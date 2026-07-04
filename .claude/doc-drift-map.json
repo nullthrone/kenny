@@ -1,0 +1,92 @@
+{
+  "_comment": "Single source of truth for documentation drift: which source areas, when changed, require which docs (and which screenshots) to be updated. Read by .claude/hooks/doc-drift.py (the Stop hook) and by the /doc-sync command (.claude/commands/doc-sync.md). Source globs use fnmatch semantics against repo-relative POSIX paths; note that '*' also matches '/'. A rule is 'satisfied' for a session when at least one of its 'docs' files is in the changed set. Screenshots are listed for regeneration guidance (via scripts/screenshots/capture.py --only <names>); they do not themselves satisfy a rule. The contract (docs/protocol.md + docs/fixtures/) is intentionally NOT covered here - it is guarded by /contract-check and CI.",
+  "screenshots_dir": "docs/assets/screenshots",
+  "capture_cmd": "python scripts/screenshots/capture.py --only {names}",
+  "rules": [
+    {
+      "id": "dashboard-ui",
+      "why": "The single-page fleet console. Any visible change to tabs, widgets, KPI tiles, charts, action buttons, deep-link hashes, or themes drifts the widget-by-widget reference and its screenshots.",
+      "sources": ["kenny-server/kenny_server/webui/index.html"],
+      "docs": ["docs/dashboard.md"],
+      "screenshots": [
+        "header", "overview", "overview-light", "fleet-console", "agent-detail",
+        "drilldown", "flagged", "reliability", "screenshot-modal", "share-link",
+        "about", "chat-history"
+      ],
+      "adr": "Pure UI-layout tweaks need no ADR - record them in the commit message (CLAUDE.md)."
+    },
+    {
+      "id": "dashboard-api",
+      "why": "The /api/* routes that feed the dashboard. A change to their response shape changes what the dashboard renders and what the reference describes.",
+      "sources": ["kenny-server/kenny_server/webui/__init__.py"],
+      "docs": ["docs/dashboard.md", "docs/telemetry.md"],
+      "screenshots": ["overview", "agent-detail"],
+      "adr": "Route-shape changes are usually implementation detail; add an ADR only if a boundary moves."
+    },
+    {
+      "id": "health-rules",
+      "why": "Authoritative server-side health thresholds. The telemetry reference quotes exact thresholds and the Overview/Flagged/reliability views are driven by them.",
+      "sources": ["kenny-server/kenny_server/health_rules.py"],
+      "docs": ["docs/telemetry.md", "docs/dashboard.md"],
+      "screenshots": ["overview", "reliability", "flagged"],
+      "adr": "New health model / status semantics may warrant an ADR; a threshold tweak does not."
+    },
+    {
+      "id": "fleet-analytics",
+      "why": "Fleet aggregation, trends, forecasts, AI recommendations, and change diffs shown on Overview and Agent detail.",
+      "sources": [
+        "kenny-server/kenny_server/fleet_stats.py",
+        "kenny-server/kenny_server/trends.py",
+        "kenny-server/kenny_server/forecast.py",
+        "kenny-server/kenny_server/recommend.py",
+        "kenny-server/kenny_server/diffs.py"
+      ],
+      "docs": ["docs/dashboard.md", "docs/telemetry.md"],
+      "screenshots": ["overview", "agent-detail", "ai-recommendation"],
+      "adr": "Add an ADR only if the analytics model (not the numbers) changes."
+    },
+    {
+      "id": "parental-controls",
+      "why": "Web activity, the per-host web filter, and screen time.",
+      "sources": ["kenny-server/kenny_server/webfilter*"],
+      "docs": ["docs/parental-controls.md"],
+      "screenshots": ["parental-controls"],
+      "adr": "A change to the filter's trust/precedence model is architectural (see ADR-0026); the list editor UI is not."
+    },
+    {
+      "id": "alerting",
+      "why": "Push alerts on health transitions, inventory-change notifications, disk/battery forecasts, and the weekly digest.",
+      "sources": [
+        "kenny-server/kenny_server/alerting.py",
+        "kenny-server/kenny_server/notify.py",
+        "kenny-server/kenny_server/digest.py"
+      ],
+      "docs": ["docs/alerting.md"],
+      "screenshots": ["activity-events"],
+      "adr": "A change to the alert model (transitions/scopes) may warrant an ADR (see ADR-0029)."
+    },
+    {
+      "id": "tool-catalog",
+      "why": "The capability/orchestration tool catalog and the confirm-gate the tool reference documents.",
+      "sources": ["kenny-server/kenny_server/tools.py"],
+      "docs": ["docs/tools.md"],
+      "screenshots": ["copilot-confirm", "activity-audit"],
+      "adr": "Adding/renaming a tool is a CONTRACT change: change docs/protocol.md + docs/fixtures/ and run /contract-check first."
+    },
+    {
+      "id": "runtime-settings",
+      "why": "The runtime settings catalog exposed by the dashboard settings editor (ADR-0036) and documented in setup.",
+      "sources": ["kenny-server/kenny_server/config.py"],
+      "docs": ["docs/dashboard.md", "docs/setup.md"],
+      "screenshots": [],
+      "adr": "A new settings surface may warrant an ADR; adding one knob does not."
+    }
+  ],
+  "adr_rule": {
+    "why": "Every accepted ADR record must be linked from the index table so it is reachable (mkdocs keeps individual records not_in_nav).",
+    "sources": ["docs/adr/0*.md"],
+    "index": "docs/adr/README.md",
+    "ignore": ["docs/adr/0000-template.md"],
+    "note": "A newly added docs/adr/NNNN-*.md whose filename is not referenced in docs/adr/README.md is drift - add its index row."
+  }
+}
