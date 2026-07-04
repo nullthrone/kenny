@@ -88,9 +88,11 @@ The header shows the **worst-of** health across the whole fleet. Click a tile to
   fields (no raw JSON). For a *flagged* section, when an Anthropic API key is configured, an **AI
   Recommendation** (Diagnosis / Action / Urgency) streams in at the top, sometimes with an
   **Auto-Remediate** button that hands a fix prompt to the copilot.
+- **AI Forecast** — a short, plain-English outlook pinned at the top of the drill-down: what is
+  likely to need attention on this PC soon, drawn from the disk-fill and battery trends and the
+  inventory changes since yesterday. With an Anthropic API key the model writes it (marked ✦);
+  without a key the same card shows a concise deterministic summary.
 - **Health trend** — recent snapshots as a sparkline.
-- **Changes & forecast · 24 h** — what changed on this PC since yesterday (added/removed software,
-  services, accounts …) and disk-fill / battery forecasts.
 - **Last screenshot** — the most recent desktop capture, with a **recapture** button.
 - Action buttons: **refresh**, **remote help** (Quick Assist), **reinstall**, **re-share**,
   **update**. Onboarding a *new* PC uses the **Add a PC** panel (**installer** / **share link**);
