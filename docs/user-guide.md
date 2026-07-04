@@ -6,11 +6,20 @@ commands on them through kenny. For installing and hosting the server, see
 
 ## What kenny gives you
 
-- A **fleet dashboard** showing every PC's health at a glance (a traffic light per machine).
-- A **drill-down** per PC: telemetry sections, a health trend, and a tool-call log.
+- An **Overview dashboard** — the whole fleet at a glance (health mix, inventory, security
+  posture, the loudest problems), every figure drill-down-able to the hosts behind it.
+- A **fleet view** with a traffic light per machine, and a **drill-down** per PC: every
+  telemetry section, a health trend, inventory changes + forecasts, and the last screenshot.
 - Two ways to act on a PC: talk to **Claude** (which calls kenny's tools), either from a local
-  Claude client over MCP or from the **chat built into the dashboard** — no local client needed.
+  Claude client over MCP or from the **copilot chat built into the dashboard** — no local
+  client needed, with a confirm-gate on anything that changes state.
+- **Parental controls** (web activity + web filter, screen time) and **push alerts** with a
+  weekly digest.
 - One-click **agent installer download** (and a shareable link) plus **server-triggered updates**.
+
+!!! tip "Two guides"
+    This page is the **task-oriented** walkthrough. For an exhaustive, screenshot-by-screenshot
+    tour of **every** tab, widget, and popup, see the **[Dashboard reference](dashboard.md)**.
 
 ## The pieces
 
@@ -48,6 +57,17 @@ own per-agent token; you authenticate to the server with the **operator token**.
 > The same operator token is what a local Claude client sends as `Authorization: Bearer <token>` to
 > the `/mcp` endpoint.
 
+## The Overview tab
+
+The landing view is a high-level dashboard built from every PC's latest snapshot:
+KPI tiles (hosts online, reboots pending, open/failed updates, quarantine, EOL, disks filling),
+a fleet **health** donut, an **inventory** breakdown (OS + laptop/desktop), a **security
+posture** row (encryption, Defender real-time, firewall), a **problem sections** bar, a **top
+hosts** ranking, a **problem-flow** Sankey, a **reliability** heatmap, and a **fleet health
+trend**. Every segment, bar, node, cell, and KPI is clickable — it opens a table of the hosts
+behind that number, and clicking a host jumps straight to it. Full details in the
+[dashboard reference](dashboard.md#the-overview-tab).
+
 ## The fleet view
 
 Each PC is a tile with a status dot:
@@ -65,19 +85,30 @@ The header shows the **worst-of** health across the whole fleet. Click a tile to
 
 - **Sections** — each telemetry section with its status, a one-line summary, and the server's health
   rule reason. Click a section tile to open a popup with its details rendered as readable tables and
-  fields (no raw JSON).
-- **Health trend** — recent snapshots as colored bars.
-- **Tool-call log** — every tool run against this agent (ok / error), for audit. The fleet-wide log
-  below the cards is searchable (by time, PC, or tool) and paged.
-- Action buttons: **refresh now**, **reinstall**, **re-share**, **update agent**. Onboarding a *new*
-  PC uses the **Add a PC** panel (**installer** / **share link**); from a PC's drill-down,
-  **reinstall** / **re-share** re-provision that existing PC (rotating its token).
+  fields (no raw JSON). For a *flagged* section, when an Anthropic API key is configured, an **AI
+  Recommendation** (Diagnosis / Action / Urgency) streams in at the top, sometimes with an
+  **Auto-Remediate** button that hands a fix prompt to the copilot.
+- **Health trend** — recent snapshots as a sparkline.
+- **Changes & forecast · 24 h** — what changed on this PC since yesterday (added/removed software,
+  services, accounts …) and disk-fill / battery forecasts.
+- **Last screenshot** — the most recent desktop capture, with a **recapture** button.
+- Action buttons: **refresh**, **remote help** (Quick Assist), **reinstall**, **re-share**,
+  **update**. Onboarding a *new* PC uses the **Add a PC** panel (**installer** / **share link**);
+  from a PC's drill-down, **reinstall** / **re-share** re-provision that existing PC (rotating its
+  token).
 
-Telemetry sections cover: disk & SMART, memory, CPU/thermals, uptime, network & routing, Wi‑Fi,
-Defender (+ quarantine), third-party AV, firewall, BitLocker, Windows Update & app updates,
-reboot-pending, OS support/EOL, services, autostart, peripherals, printers, battery, reliability,
-and time sync. Health thresholds are evaluated **server-side** (authoritative); the agent also sets
-a reasonable per-section status.
+kenny reports around **30 telemetry sections** — disk & SMART, memory, CPU/thermals, uptime,
+network & routing, Wi‑Fi, Defender (+ quarantine), third-party AV, firewall, BitLocker, Windows
+Update & app updates, reboot-pending, OS support/EOL, services, autostart, scheduled tasks,
+peripherals, printers, local accounts, listening ports, backup status, battery, reliability, time
+sync, web activity, and screen time. Health thresholds are evaluated **server-side**
+(authoritative); the agent also sets a reasonable per-section status. See the
+[telemetry reference](telemetry.md) for every section and its rule.
+
+The **fleet-wide observability** lives on the **Activity** tab: a searchable, paged **tool-call
+audit log** (read-only vs state-changing, ok/err) and an **events & logs** stream (server + agent
+log lines and emitted [alerts](alerting.md)). The **Flagged** view — reached from the *warnings* /
+*critical* counts in the header — groups everything needing attention by PC for fast triage.
 
 ## Running commands on a PC
 
@@ -111,6 +142,12 @@ sequenceDiagram
 `agent_update` — pauses for your explicit confirmation before it runs. Every call is recorded in the
 tool-call log.
 
+The chat mirrors your fleet selection: the **context** chip shows whether it's scoped to the
+selected PC or the whole fleet. Conversations are **saved** — **new** starts a fresh one and
+**history** browses, resumes, or deletes past ones. See the
+[tool reference](tools.md) for the full catalog and the [dashboard reference](dashboard.md#the-copilot-chat-rail)
+for the copilot in detail.
+
 ### Option B — a local Claude client over MCP
 
 Point any MCP client at `https://<server>/mcp` with the operator token as a bearer credential. The
@@ -129,6 +166,10 @@ same tools are available; `select_agent` chooses the target PC.
 | Telemetry | `telemetry_collect` | read-only |
 | Agent mgmt | `agent_update` | ✅ |
 | Server-only | `list_agents` · `select_agent` · `fleet_overview` · `agent_health` · `agent_snapshot` | read-only |
+
+Parental-controls tools (`webfilter_apply/clear`, `webfilter_get/set/push`, `web_activity_query`)
+are covered in **[Parental controls](parental-controls.md)**. The **[tool reference](tools.md)** has
+the complete catalog with arguments and the state-changing classification.
 
 ### The local kill switch (endpoint user)
 
