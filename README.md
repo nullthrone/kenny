@@ -49,20 +49,39 @@ flowchart LR
 ### Fleet monitoring
 - **Push telemetry** from each PC (default every 15 min, plus an immediate first push),
   persisted in SQLite with ~30-day retention and a per-agent history.
-- **~25 telemetry sections**: disk + SMART, memory, processes, CPU/thermals, uptime,
+- **~30 telemetry sections**: disk + SMART, memory, processes, CPU/thermals, uptime,
   network + routing, Wi‑Fi quality, Defender (+ quarantine), third-party AV, firewall,
   BitLocker encryption, Windows Update + app updates, reboot-pending, OS support/EOL,
-  services, autostart, peripherals, printers, battery, reliability, time sync.
+  services, autostart, scheduled tasks, peripherals, printers, local accounts, listening
+  ports, backup status, battery, reliability, time sync, **web activity**, **screen time**.
 - **Server-side health rules** (authoritative): e.g. disk > 80 % ⇒ warn / ≥ 95 % ⇒ crit,
   Defender real-time off ⇒ crit, with worst-of roll-up per agent and across the fleet.
+- **Push alerting** on health transitions (ntfy / webhook), a **weekly digest**, and
+  server-side **diff + forecast** (inventory changes, disk-fill and battery forecasts).
 
 ### Operator dashboard (web UI)
-- Fleet view with a **traffic-light** per PC and the fleet's worst-of health.
-- Per-agent **drill-down**: each telemetry section with status + rule reason (click a section for a
-  structured detail popup), a **health trend**, and a searchable, paged **tool-call audit log**.
-- Action buttons: refresh now, **remote help** (Quick Assist), reinstall, re-share, update agent;
+- **Overview tab**: a high-level dashboard — KPIs, fleet-health & inventory donuts, a
+  security-posture row, problem-section bars, top-host rankings, a problem-flow Sankey, a
+  reliability heatmap, and a fleet health trend — every figure drill-down-able to its hosts.
+- **Fleet tab**: a traffic-light per PC and a per-agent **drill-down** — every telemetry
+  section (click for a structured detail popup, with an optional **AI recommendation** +
+  Auto-Remediate), a **health trend**, a **changes & forecast** panel, and the last screenshot.
+- **Copilot**: a server-hosted Claude chat docked in the console, with saved history and a
+  confirm-gate on state-changing tools.
+- **Activity tab**: a searchable, paged **tool-call audit log** and an **events & logs** stream;
+  a **Flagged** view groups everything needing attention by PC.
+- **Parental controls**: web-activity monitoring, a per-host web filter, and screen time.
+- Action buttons: refresh, **remote help** (Quick Assist), reinstall, re-share, update agent;
   onboard a new PC from **Add a PC** (installer / share link).
-- Single-page, dependency-light; cookie login at `/login`.
+- Single-page, dependency-light; dark & light themes; cookie login at `/login`.
+
+<div align="center">
+
+![The kenny fleet console](docs/assets/screenshots/overview.png)
+
+_The Overview dashboard — see the **[dashboard reference](docs/dashboard.md)** for the full tour._
+
+</div>
 
 ### Remote administration — capability tools
 - **Shell**: `powershell_exec`
@@ -73,6 +92,8 @@ flowchart LR
 - **Screen**: `screen_capture` · **Remote help**: `remotehelp_status` · `remotehelp_start` ·
   `remotehelp_stop` (Quick Assist concierge) · **Telemetry**: `telemetry_collect` ·
   **Agent mgmt**: `agent_update`
+- **Parental controls**: `webfilter_status` · `webfilter_apply` · `webfilter_clear` (+ server-only
+  `webfilter_get` · `webfilter_set` · `webfilter_push` · `web_activity_query`)
 - **Server-only orchestration**: `list_agents` · `select_agent` · `fleet_overview` ·
   `agent_health` · `agent_snapshot`
 - Windows-only tools have **portable Linux fallbacks**, so the agent builds and runs in CI/dev.
@@ -97,7 +118,7 @@ flowchart LR
 
 ### Transport & connectivity
 - Agent **dials out** over WSS (NAT/firewall friendly) and never listens.
-- **Frozen, versioned JSON wire contract** (`PROTOCOL_VERSION 0.7`) with golden fixtures
+- **Frozen, versioned JSON wire contract** (`PROTOCOL_VERSION 0.10`) with golden fixtures
   round-tripped by both sides; request/response correlation, ping/pong heartbeat, and
   exponential-backoff reconnect.
 
@@ -105,7 +126,9 @@ flowchart LR
 - **Operator bearer token** for MCP + API + UI (multiple operator tokens supported); cookie login
   with the `Secure` flag under TLS.
 - **Per-agent tokens** in a SQLite token store with a **rotation endpoint**; the agent authenticates
-  on `register`.
+  on `register`, and (from v0.8) with **mutual Ed25519** identities — the agent pins the server's
+  public key and signs its handshake, enrolled one-time at install (rotation grace windows for both).
+- A **shared policy catalog** + operator deny rules the server mirrors and the agent enforces.
 - A **local kill-switch** (tray) and a deterministic, always-on **agent-side safety guard** that
   refuses individually dangerous calls regardless of operator approval.
 - TLS server identity (`wss`), confirm-gate for destructive actions, and a tool-call audit log.
@@ -120,6 +143,11 @@ The full docs site: **<https://t11z.github.io/kenny/>** (built from `docs/` with
 
 - **[User guide](docs/user-guide.md)** — operator workflows: dashboard, chat, running tools,
   adding/updating agents (with diagrams).
+- **[Dashboard reference](docs/dashboard.md)** — every tab, widget, menu, and popup in the fleet
+  console, with screenshots.
+- **[Telemetry reference](docs/telemetry.md)** — every section and its server-side health rule.
+- **[Tool reference](docs/tools.md)** — the capability & orchestration tools, and the confirm-gate.
+- **[Parental controls](docs/parental-controls.md)** · **[Alerting & digests](docs/alerting.md)**.
 - **[Setup & operations](docs/setup.md)** — hosting, environment variables, TLS, building &
   distributing the agent, releases.
 - **[Wire protocol](docs/protocol.md)** + **[fixtures](docs/fixtures)** — the agent⇄server contract

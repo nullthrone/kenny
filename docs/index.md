@@ -7,6 +7,11 @@ kenny started as a way to look after the family's Windows PCs — keep an eye on
 Defender, fix things over the phone without "can you read me what it says" — operated through
 Claude instead of a clunky console. It works for any small fleet you administer with consent.
 
+<figure markdown>
+  ![The kenny fleet console](assets/screenshots/overview.png)
+  <figcaption>The fleet console — a high-level overview with drill-down into every host. See the <a href="dashboard.md">dashboard reference</a> for the full tour.</figcaption>
+</figure>
+
 ```mermaid
 flowchart LR
   Operator(("Operator"))
@@ -41,6 +46,16 @@ flowchart LR
   and environment, build & distribute the agent.
 - :material-book-open-variant: **[User guide](user-guide.md)** — operator workflows: dashboard,
   chat, running tools, onboarding and updating agents.
+- :material-view-dashboard-outline: **[Dashboard reference](dashboard.md)** — every tab, widget,
+  menu, and popup in the fleet console, with screenshots.
+- :material-chart-box-outline: **[Telemetry reference](telemetry.md)** — every section the agent
+  reports and the server-side health rule that grades it.
+- :material-tools: **[Tool reference](tools.md)** — the capability and orchestration tools Claude
+  can call, and the confirm-gate.
+- :material-shield-account-outline: **[Parental controls](parental-controls.md)** — web activity,
+  the web filter, and screen time.
+- :material-bell-alert-outline: **[Alerting & digests](alerting.md)** — push alerts, the weekly
+  digest, and disk/battery forecasts.
 - :material-file-document-outline: **[Wire protocol](protocol.md)** — the agent⇄server contract
   (single source of truth, round-tripped by both sides).
 - :material-sitemap: **[Architecture decisions](adr/README.md)** — MADR records for every significant choice.

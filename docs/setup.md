@@ -63,8 +63,43 @@ KENNY_DOMAIN=kenny.example.com KENNY_OPERATOR_TOKEN=... docker compose --profile
 | `KENNY_AGENT_BINARY_CACHE` | server | `<dir of KENNY_DB_PATH>/kenny-agent.exe` | Where the auto-fetched binary is cached (the `/data` volume in the container). |
 | `KENNY_AGENT_VERSION` | server | `0.2.0` | **Fallback** version label only — the GitHub release tag of the fetched binary leads (ADR-0015). Used when no tag is known (e.g. a manually-placed binary without a `.version` sidecar). |
 | `KENNY_HOST` / `KENNY_PORT` | server | `127.0.0.1` / `8000` | Bind address (container sets `0.0.0.0`). |
-| `KENNY_DB_PATH` | server | `kenny.sqlite` | SQLite telemetry store (container: `/data/kenny.sqlite`). |
+| `KENNY_DB_PATH` | server | `kenny.sqlite` | SQLite store (snapshots, events, tokens, keys, chat, web filter — one file). Container: `/data/kenny.sqlite`. |
 | `KENNY_TELEMETRY_INTERVAL_SECS` | agent / server | `900` | Agent push interval; also pre-filled into generated installers. |
+| `KENNY_SERVER_VERSION` | server | `0.0.0-dev` | Version string shown in the **About** box and `/api/about`. |
+| `KENNY_LOG_LEVEL` | server | `INFO` | Root log level. Server logs are also persisted to the event store (ADR-0017). |
+
+**Agent authentication & identity** (ADR-0023 mutual Ed25519 auth, token rotation):
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `KENNY_SERVER_PRIVATE_KEY` | *generated + logged* | Base64 32-byte Ed25519 seed — the server identity agents pin. If unset the server generates one at startup and logs the public key to pin in installers; set it (or `KENNY_SERVER_PRIVATE_KEY_FILE`) to keep identity stable across restarts. |
+| `KENNY_TOKEN_GRACE_SECS` | `604800` | Grace window (7 d) during which a rotated agent token still works; `0` = instant invalidation. |
+| `KENNY_KEY_GRACE_SECS` | `604800` | Grace window for a rotated agent public key. |
+| `KENNY_ALLOW_TOKEN_AUTH` | `1` | Accept the legacy bearer-token agent handshake during migration (disable once all agents are enrolled). |
+| `KENNY_MAX_FRAME_BYTES` | `8388608` | Absolute inbound frame ceiling (8 MiB). |
+| `KENNY_MAX_TELEMETRY_BYTES` | `262144` | Per-push byte cap (256 KiB). |
+| `KENNY_MAX_TELEMETRY_SECTIONS` | `128` | Max sections per snapshot. |
+
+**Alerting, digest & notifications** (see **[Alerting & digests](alerting.md)**):
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `KENNY_ALERT_INTERVAL_SECS` | `60` | Alert-evaluation loop interval; `0` disables alerting. |
+| `KENNY_ALERT_COOLDOWN_SECS` | `3600` | Per-scope flap-suppression cooldown for `warn` transitions. |
+| `KENNY_ALERT_OFFLINE_AFTER_SECS` | `2700` | Mark an agent offline after this long without a push (≈ three missed 15-min pushes). |
+| `KENNY_DIGEST_ENABLED` | `1` | Weekly digest on/off. |
+| `KENNY_DIGEST_DAY` / `KENNY_DIGEST_HOUR` | `mon` / `8` | When to send the weekly digest. |
+| `KENNY_NTFY_URL` / `KENNY_NTFY_TOKEN` | — | ntfy topic URL (+ optional bearer) for push alerts. |
+| `KENNY_WEBHOOK_URL` | — | Generic JSON webhook for alerts. |
+
+**Parental controls / web filter** (see **[Parental controls](parental-controls.md)**):
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `KENNY_WEBFILTER_REFRESH_SECS` | `86400` | External adult/bypass list refresh interval; `0` disables. |
+| `KENNY_WEBFILTER_ADULT_URL` | StevenBlack list | Source URL for the porn-only hosts list. |
+| `KENNY_WEBFILTER_BYPASS_URL` | hagezi list | Source URL for the DoH/VPN/proxy bypass list. |
+| `KENNY_WEBFILTER_MAX_BLOCK_DOMAINS` | `5000` | Cap on external-adult domains pushed to an agent (hard cap 10 000). |
 
 > **Security:** if `KENNY_OPERATOR_TOKEN` is unset the server uses a loud, insecure dev token. Always
 > set real tokens and serve over `wss`/`https` for anything non-local. See
