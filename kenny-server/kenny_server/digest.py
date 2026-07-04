@@ -64,7 +64,8 @@ async def build_digest(
         if latest is None:
             continue
         snapshot = latest["snapshot"]
-        evaluation = evaluate_snapshot(snapshot, now=now)
+        agent_os = getattr(agent, "os", "windows")
+        evaluation = evaluate_snapshot(snapshot, agent_os=agent_os, now=now)
         overall = evaluation["overall"]
         health_counts[overall] = health_counts.get(overall, 0) + 1
         if overall != "ok":

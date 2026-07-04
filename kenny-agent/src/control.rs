@@ -58,9 +58,41 @@ fn base_dir() -> PathBuf {
     PathBuf::from(program_data).join("kenny")
 }
 
-#[cfg(not(windows))]
+/// Linux base dir: `/var/lib/kenny` when it exists and is writable (the systemd install
+/// creates it), else the system temp dir so dev/CI single-user runs and tests stay
+/// simple. The gate is "dir exists & writable", **not** "am I root", so a root
+/// `cargo test` without `/var/lib/kenny` still uses `temp_dir()`.
+#[cfg(target_os = "linux")]
+fn base_dir() -> PathBuf {
+    let fhs = PathBuf::from("/var/lib/kenny");
+    if dir_is_writable(&fhs) {
+        fhs
+    } else {
+        std::env::temp_dir()
+    }
+}
+
+/// Portable base dir off Windows and Linux (macOS/BSD/etc): the system temp dir.
+#[cfg(all(not(windows), not(target_os = "linux")))]
 fn base_dir() -> PathBuf {
     std::env::temp_dir()
+}
+
+/// Whether `dir` exists and is writable by the current effective user, probed by
+/// creating and removing a temporary file. Used to gate the FHS state path.
+#[cfg(target_os = "linux")]
+fn dir_is_writable(dir: &std::path::Path) -> bool {
+    if !dir.is_dir() {
+        return false;
+    }
+    let probe = dir.join(format!(".kenny-write-probe-{}", std::process::id()));
+    match std::fs::File::create(&probe) {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
 }
 
 /// Read the current state. Fail-safe to **on** if the file is missing or unreadable.
@@ -168,6 +200,20 @@ mod tests {
                 "corrupt file must fail safe to on"
             );
         });
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_base_dir_falls_back_to_temp_without_fhs_dir() {
+        // When the FHS state dir is absent (CI/sandbox), the base dir must fall back to
+        // the portable temp path — independent of whether the test runs as root.
+        if !std::path::Path::new("/var/lib/kenny").exists() {
+            assert_eq!(base_dir(), std::env::temp_dir());
+        }
+        // A guaranteed-absent directory is never writable.
+        assert!(!dir_is_writable(std::path::Path::new(
+            "/var/lib/kenny-definitely-not-present"
+        )));
     }
 
     #[test]

@@ -154,9 +154,10 @@ def build_api_routes(
             {
                 "agent_id": agent_id,
                 "online": bool(agent and agent.online),
+                "os": agent.os if agent else "windows",
                 "meta": agent.meta if agent else {},
                 "snapshot": snapshot,
-                "health": build_health(snapshot),
+                "health": build_health(snapshot, agent_os=agent.os if agent else "windows"),
                 "collected_at": latest["collected_at"] if latest else None,
             }
             for agent_id, agent, snapshot, latest in rows
@@ -186,9 +187,14 @@ def build_api_routes(
         ids = await _known_ids(registry, store)
         points_by_agent: dict[str, list[dict[str, Any]]] = {}
         for agent_id in ids:
+            agent = registry.get(agent_id)
+            agent_os = agent.os if agent else "windows"
             daily = await store.daily_latest(agent_id, since)
             points_by_agent[agent_id] = [
-                {"collected_at": d["collected_at"], "overall": build_health(d["snapshot"])["overall"]}
+                {
+                    "collected_at": d["collected_at"],
+                    "overall": build_health(d["snapshot"], agent_os=agent_os)["overall"],
+                }
                 for d in daily
             ]
         return JSONResponse(fleet_stats.aggregate_trend(points_by_agent, days))
@@ -202,18 +208,23 @@ def build_api_routes(
         # Categorize the latest reliability events (for the detail heatmap + the
         # health reason). History points only carry `overall`, so they don't need it.
         await _annotate_reliability([snapshot])
+        agent_os = agent.os if agent else "windows"
         hist_points = [
-            {"collected_at": h["collected_at"], "overall": build_health(h["snapshot"])["overall"]}
+            {
+                "collected_at": h["collected_at"],
+                "overall": build_health(h["snapshot"], agent_os=agent_os)["overall"],
+            }
             for h in history
         ]
         return JSONResponse(
             {
                 "agent_id": agent_id,
                 "online": bool(agent and agent.online),
+                "os": agent_os,
                 "meta": agent.meta if agent else {},
                 "collected_at": latest["collected_at"] if latest else None,
                 "snapshot": snapshot,
-                "health": build_health(snapshot),
+                "health": build_health(snapshot, agent_os=agent_os),
                 # Whether the AI Recommendation block is offered for flagged
                 # sections (true only when an Anthropic API key is configured).
                 "ai_enabled": ai_available(),
@@ -1008,11 +1019,13 @@ def build_chat_routes(
         daily_1d = await store.daily_latest(agent_id, (now - timedelta(days=1)).isoformat())
         baseline = daily_1d[0] if daily_1d else None
         changes = diffs.diff_snapshots(baseline["snapshot"], snapshot) if baseline else []
+        agent = registry.get(agent_id)
         facts = build_facts(
             snapshot,
             trends.disk_forecast(daily_30d),
             trends.battery_trend(daily_30d),
             changes,
+            agent_os=agent.os if agent else "windows",
         )
 
         if not ai_available():
@@ -1054,7 +1067,7 @@ async def _overview(
     agent = registry.get(agent_id)
     latest = await store.latest(agent_id)
     snapshot = latest["snapshot"] if latest else None
-    health = build_health(snapshot)
+    health = build_health(snapshot, agent_os=agent.os if agent else "windows")
     sections = health["sections"]
     flagged = [n for n, s in sections.items() if s["status"] in ("warn", "crit")]
 
@@ -1069,6 +1082,7 @@ async def _overview(
     return {
         "agent_id": agent_id,
         "online": bool(agent and agent.online),
+        "os": agent.os if agent else "windows",
         "meta": agent.meta if agent else {},
         "overall": health["overall"],
         "flagged_sections": flagged,

@@ -557,11 +557,13 @@ class ChatExecutor:
         agent = self.registry.get(agent_id)
         latest = await self.store.latest(agent_id)
         snapshot = latest["snapshot"] if latest else None
-        health = build_health(snapshot)
+        agent_os = agent.os if agent else "windows"
+        health = build_health(snapshot, agent_os=agent_os)
         flagged = [n for n, s in health["sections"].items() if s["status"] in ("warn", "crit")]
         return {
             "agent_id": agent_id,
             "online": bool(agent and agent.online),
+            "os": agent_os,
             "meta": agent.meta if agent else {},
             "overall": health["overall"],
             "flagged_sections": flagged,
@@ -594,7 +596,8 @@ class ChatExecutor:
     async def _agent_health(self, agent_id: str) -> dict[str, Any]:
         latest = await self.store.latest(agent_id)
         snapshot = latest["snapshot"] if latest else None
-        health = build_health(snapshot)
+        agent = self.registry.get(agent_id)
+        health = build_health(snapshot, agent_os=agent.os if agent else "windows")
         return {
             "agent_id": agent_id,
             "collected_at": latest["collected_at"] if latest else None,

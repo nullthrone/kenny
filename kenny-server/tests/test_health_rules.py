@@ -251,6 +251,93 @@ def test_backup_status_no_evidence_warn() -> None:
     assert recent_rp["status"] == "ok"
 
 
+def test_backup_status_all_null_stub_defers() -> None:
+    # A non-Windows / stubbed collector emits an all-null backup shape. That is
+    # *absence of data*, not a missing backup, so the rule must defer (no warn).
+    stub = health_rules.evaluate_section(
+        "backup_status",
+        {
+            "status": "ok",
+            "summary": "n/a on this platform",
+            "restore_points": {"enabled": None, "count": None, "latest": None},
+            "file_history": {"service_state": None, "configured": None},
+            "onedrive": {"installed": None, "running": None},
+        },
+        now=NOW,
+    )
+    assert stub["status"] == "ok"
+    assert "reason" not in stub
+
+    # An empty section (no backup fields at all) likewise defers rather than warns.
+    empty = health_rules.evaluate_section(
+        "backup_status", {"status": "ok", "summary": ""}, now=NOW
+    )
+    assert empty["status"] == "ok"
+    assert "reason" not in empty
+
+    # Regression guard: a real Windows-shaped no-backup payload still warns.
+    real = health_rules.evaluate_section(
+        "backup_status",
+        {
+            "status": "ok",
+            "summary": "",
+            "restore_points": {"enabled": False, "count": 0, "latest": None},
+            "file_history": {"service_state": "stopped", "configured": None},
+            "onedrive": {"installed": False, "running": False},
+        },
+        now=NOW,
+    )
+    assert real["status"] == "warn"
+    assert "no backup evidence" in real["reason"]
+
+
+def test_evaluate_snapshot_skips_windows_only_sections_for_linux() -> None:
+    # A Linux agent reports "n/a on this platform" stubs for the Windows-only
+    # sections; scoring them would mislead, so they are skipped entirely.
+    snapshot = {
+        "disk": {"status": "ok", "summary": "", "volumes": [{"mount": "/", "percent_used": 40}]},
+        "defender": {"status": "ok", "summary": "n/a on this platform"},
+        "win_update": {"status": "ok", "summary": "n/a on this platform"},
+        "reboot_pending": {"status": "ok", "summary": "n/a on this platform"},
+        "backup_status": {"status": "ok", "summary": "n/a on this platform"},
+        "listening_ports": {"status": "ok", "summary": "", "ports": []},
+    }
+    linux = health_rules.evaluate_snapshot(snapshot, agent_os="linux", now=NOW)
+    assert set(linux["sections"]) == {"disk", "listening_ports"}
+    assert linux["overall"] == "ok"
+
+
+def test_evaluate_snapshot_scores_windows_only_sections_for_windows() -> None:
+    # The same Defender payload is scored for a Windows agent (default OS) but
+    # not for a Linux one.
+    snapshot = {
+        "defender": {"status": "ok", "summary": "", "enabled": False, "realtime_protection": False},
+    }
+    win = health_rules.evaluate_snapshot(snapshot, now=NOW)  # default os = windows
+    assert win["sections"]["defender"]["status"] == "crit"
+    assert win["overall"] == "crit"
+
+    lin = health_rules.evaluate_snapshot(snapshot, agent_os="linux", now=NOW)
+    assert "defender" not in lin["sections"]
+    assert lin["overall"] == "ok"
+
+
+def test_portable_sections_apply_for_every_os() -> None:
+    # listening_ports and local_accounts are portable and must score on Linux.
+    snapshot = {
+        "listening_ports": {
+            "status": "ok",
+            "summary": "",
+            "ports": [{"proto": "tcp", "port": 22, "address": "0.0.0.0", "pid": 1, "process": "sshd"}],
+        },
+        "defender": {"status": "ok", "summary": "n/a on this platform"},
+    }
+    out = health_rules.evaluate_snapshot(snapshot, agent_os="linux", now=NOW)
+    assert out["sections"]["listening_ports"]["status"] == "warn"
+    assert "defender" not in out["sections"]
+    assert out["overall"] == "warn"
+
+
 def test_net_quality_rules() -> None:
     crit = health_rules.evaluate_section(
         "net_quality",

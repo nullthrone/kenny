@@ -17,7 +17,11 @@ pub fn collect() -> Section {
     {
         windows_impl::collect()
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        linux_impl::collect()
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         Section::with_fields(
             Status::Ok,
@@ -217,6 +221,161 @@ ConvertTo-Json -Compress @($out)
     }
 }
 
+#[cfg(target_os = "linux")]
+mod linux_impl {
+    use super::*;
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
+    /// Decode a hex string into its raw bytes (even length required).
+    fn hex_bytes(hex: &str) -> Option<Vec<u8>> {
+        if !hex.len().is_multiple_of(2) {
+            return None;
+        }
+        (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).ok())
+            .collect()
+    }
+
+    /// Decode a `/proc/net/tcp` v4 address (little-endian hex) to dotted-quad.
+    fn decode_v4(hex: &str) -> Option<String> {
+        let mut bytes = hex_bytes(hex)?;
+        if bytes.len() != 4 {
+            return None;
+        }
+        bytes.reverse();
+        Some(Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3]).to_string())
+    }
+
+    /// Decode a `/proc/net/tcp6` v6 address (four little-endian 32-bit words),
+    /// best-effort, to a normal IPv6 string.
+    fn decode_v6(hex: &str) -> Option<String> {
+        let bytes = hex_bytes(hex)?;
+        if bytes.len() != 16 {
+            return None;
+        }
+        let mut out = [0u8; 16];
+        for word in 0..4 {
+            for i in 0..4 {
+                out[word * 4 + i] = bytes[word * 4 + (3 - i)];
+            }
+        }
+        Some(Ipv6Addr::from(out).to_string())
+    }
+
+    /// Parse one `/proc/net/{tcp,udp}[6]` table into ports.
+    ///
+    /// The header line is skipped. Column 2 is `local_address` as `ADDR:PORT`
+    /// (hex, little-endian addr); column 4 is `st` (hex socket state). For TCP
+    /// only `0A` (LISTEN) is kept; every UDP row is kept. inode→pid mapping is
+    /// out of scope, so `pid`/`process` stay `None`.
+    fn parse_proc_net(raw: &str, proto: &str, is_v6: bool) -> Vec<core::Port> {
+        let listen_only = proto == "tcp";
+        raw.lines()
+            .skip(1)
+            .filter_map(|line| {
+                let mut cols = line.split_whitespace();
+                let _sl = cols.next()?;
+                let local = cols.next()?;
+                let _rem = cols.next()?;
+                let st = cols.next()?;
+                if listen_only && st != "0A" {
+                    return None;
+                }
+                let (addr_hex, port_hex) = local.split_once(':')?;
+                let port = u16::from_str_radix(port_hex, 16).ok()?;
+                let address = if is_v6 {
+                    decode_v6(addr_hex)?
+                } else {
+                    decode_v4(addr_hex)?
+                };
+                Some(core::Port {
+                    proto: proto.to_string(),
+                    port,
+                    address,
+                    pid: None,
+                    process: None,
+                })
+            })
+            .collect()
+    }
+
+    /// Read the four `/proc/net` socket tables and shape them.
+    pub fn collect() -> Section {
+        let Ok(tcp4) = std::fs::read_to_string("/proc/net/tcp") else {
+            return Section::with_fields(
+                Status::Ok,
+                "n/a on this platform",
+                json!({ "ports": [], "count": 0, "truncated": false }),
+            );
+        };
+        let mut ports = parse_proc_net(&tcp4, "tcp", false);
+        if let Ok(raw) = std::fs::read_to_string("/proc/net/tcp6") {
+            ports.extend(parse_proc_net(&raw, "tcp", true));
+        }
+        if let Ok(raw) = std::fs::read_to_string("/proc/net/udp") {
+            ports.extend(parse_proc_net(&raw, "udp", false));
+        }
+        if let Ok(raw) = std::fs::read_to_string("/proc/net/udp6") {
+            ports.extend(parse_proc_net(&raw, "udp", true));
+        }
+        let (ports, count, truncated) = core::shape(ports);
+
+        Section::with_fields(
+            Status::Ok,
+            format!("{count} listening ports"),
+            json!({ "ports": ports, "count": count, "truncated": truncated }),
+        )
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn decode_addresses() {
+            assert_eq!(decode_v4("0100007F").as_deref(), Some("127.0.0.1"));
+            assert_eq!(decode_v4("00000000").as_deref(), Some("0.0.0.0"));
+            // ::1 in /proc/net/tcp6 word layout.
+            assert_eq!(
+                decode_v6("00000000000000000000000001000000").as_deref(),
+                Some("::1")
+            );
+            assert_eq!(
+                decode_v6("00000000000000000000000000000000").as_deref(),
+                Some("::")
+            );
+        }
+
+        #[test]
+        fn parse_proc_net_filters_tcp_listen_and_keeps_udp() {
+            // sl local_address rem_address st ...
+            let tcp = "\
+  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 00000000:0016 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 12345 1 0000 100
+   1: 0100007F:1538 0100007F:9C40 01 00000000:00000000 00:00000000 00000000  1000        0 67890 1 0000 20
+";
+            let ports = parse_proc_net(tcp, "tcp", false);
+            assert_eq!(ports.len(), 1, "only the LISTEN (0A) row is kept");
+            assert_eq!(ports[0].proto, "tcp");
+            assert_eq!(ports[0].port, 0x16);
+            assert_eq!(ports[0].address, "0.0.0.0");
+            assert_eq!(ports[0].pid, None);
+            assert_eq!(ports[0].process, None);
+
+            let udp = "\
+  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 0100007F:0035 00000000:0000 07 00000000:00000000 00:00000000 00000000     0        0 111 2 0000 0
+";
+            let ports = parse_proc_net(udp, "udp", false);
+            assert_eq!(ports.len(), 1, "every UDP row is kept");
+            assert_eq!(ports[0].proto, "udp");
+            assert_eq!(ports[0].port, 0x35);
+            assert_eq!(ports[0].address, "127.0.0.1");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,7 +390,20 @@ mod tests {
         assert!(v["truncated"].is_boolean());
     }
 
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_reports_real_ports() {
+        // The Linux arm reads /proc/net; assert the documented shape without
+        // pinning a machine-specific count.
+        let v = collect().into_value();
+        assert_eq!(v["status"], "ok");
+        assert!(v["summary"].is_string());
+        assert!(v["ports"].is_array());
+        assert!(v["count"].is_number());
+        assert!(v["truncated"].is_boolean());
+    }
+
+    #[cfg(all(not(windows), not(target_os = "linux")))]
     #[test]
     fn off_windows_is_ok_stub() {
         let v = collect().into_value();

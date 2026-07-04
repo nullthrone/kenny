@@ -11,8 +11,8 @@
 use serde_json::json;
 
 use crate::telemetry::Section;
-// Only the portable `#[cfg(not(windows))]` stub names `Status` at this level; the
-// Windows path routes through `core`/`windows_impl`, which import it themselves.
+// The Windows path routes through `core`/`windows_impl`, which import `Status`
+// themselves; the portable stub and the Linux arm name it at this level.
 #[cfg(not(windows))]
 use crate::protocol::Status;
 
@@ -22,7 +22,11 @@ pub fn collect() -> Section {
     {
         windows_impl::collect()
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        linux_impl::collect()
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         Section::with_fields(
             Status::Ok,
@@ -190,6 +194,123 @@ mod windows_impl {
                 .filter(|s| !s.is_empty())
         };
         (field("state"), field("start"))
+    }
+}
+
+#[cfg(target_os = "linux")]
+mod linux_impl {
+    use super::*;
+    use std::process::Command;
+
+    /// Parsed fields from `timedatectl show -p NTP -p NTPSynchronized -p Timezone`.
+    #[derive(Debug, Default, Clone, PartialEq)]
+    pub struct TimedatectlShow {
+        pub ntp: bool,
+        pub synchronized: bool,
+    }
+
+    /// Collect `time_sync` from systemd-timesyncd via `timedatectl`. When systemd
+    /// is absent (no D-Bus, container/CI sandbox), degrade to the portable null
+    /// stub rather than reporting a fault.
+    pub fn collect() -> Section {
+        let output = Command::new("timedatectl")
+            .args([
+                "show",
+                "-p",
+                "NTP",
+                "-p",
+                "NTPSynchronized",
+                "-p",
+                "Timezone",
+            ])
+            .output();
+
+        let Some(raw) = output.ok().filter(|o| o.status.success()).and_then(|o| {
+            let err = String::from_utf8_lossy(&o.stderr);
+            if bus_unavailable(&err) {
+                None
+            } else {
+                String::from_utf8(o.stdout).ok()
+            }
+        }) else {
+            return Section::with_fields(
+                Status::Ok,
+                "n/a on this platform",
+                json!({ "synchronized": null, "source": null, "offset_secs": null }),
+            );
+        };
+
+        let show = parse_show(&raw);
+        // Source is systemd-timesyncd when NTP handling is enabled; timedatectl
+        // does not expose the peer or a phase offset.
+        let source = show.ntp.then(|| "systemd-timesyncd".to_string());
+        let (status, summary) = if show.synchronized {
+            (Status::Ok, "clock synchronized".to_string())
+        } else {
+            (Status::Warn, "clock not network-synchronized".to_string())
+        };
+        Section::with_fields(
+            status,
+            summary,
+            json!({
+                "synchronized": show.synchronized,
+                "source": source,
+                "offset_secs": serde_json::Value::Null,
+            }),
+        )
+    }
+
+    /// Whether `timedatectl` stderr indicates the systemd bus is unreachable.
+    fn bus_unavailable(stderr: &str) -> bool {
+        let s = stderr.to_lowercase();
+        s.contains("has not been booted") || s.contains("failed to connect to bus")
+    }
+
+    /// Parse `KEY=VALUE` lines of `timedatectl show`. `yes` maps to `true`.
+    fn parse_show(raw: &str) -> TimedatectlShow {
+        let mut show = TimedatectlShow::default();
+        for line in raw.lines() {
+            let Some((k, v)) = line.split_once('=') else {
+                continue;
+            };
+            let yes = v.trim().eq_ignore_ascii_case("yes");
+            match k.trim() {
+                "NTP" => show.ntp = yes,
+                "NTPSynchronized" => show.synchronized = yes,
+                _ => {}
+            }
+        }
+        show
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn parses_synchronized_show() {
+            let raw = "NTP=yes\nNTPSynchronized=yes\nTimezone=Etc/UTC\n";
+            let show = parse_show(raw);
+            assert!(show.ntp);
+            assert!(show.synchronized);
+        }
+
+        #[test]
+        fn parses_unsynchronized_show() {
+            let raw = "NTP=no\nNTPSynchronized=no\nTimezone=Etc/UTC\n";
+            let show = parse_show(raw);
+            assert!(!show.ntp);
+            assert!(!show.synchronized);
+        }
+
+        #[test]
+        fn detects_bus_down_stderr() {
+            assert!(bus_unavailable(
+                "System has not been booted with systemd as init system"
+            ));
+            assert!(bus_unavailable("Failed to connect to bus: No such file"));
+            assert!(!bus_unavailable(""));
+        }
     }
 }
 

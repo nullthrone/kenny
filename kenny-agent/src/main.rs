@@ -193,10 +193,42 @@ pub fn log_dir() -> Option<std::path::PathBuf> {
     Some(base.join("kenny").join("logs"))
 }
 
-/// Portable log directory used off Windows.
-#[cfg(not(windows))]
+/// Log directory on Linux: `/var/log/kenny` when it exists and is writable (the
+/// systemd install creates it), else a portable temp-dir path so dev/CI runs work.
+///
+/// The gate is "dir exists & writable", **not** "am I root": a root `cargo test` in a
+/// sandbox without `/var/log/kenny` must still fall back to `temp_dir()`.
+#[cfg(target_os = "linux")]
+pub fn log_dir() -> Option<std::path::PathBuf> {
+    let fhs = std::path::PathBuf::from("/var/log/kenny");
+    if dir_is_writable(&fhs) {
+        Some(fhs)
+    } else {
+        Some(std::env::temp_dir().join("kenny").join("logs"))
+    }
+}
+
+/// Portable log directory used off Windows and Linux (macOS/BSD/etc).
+#[cfg(all(not(windows), not(target_os = "linux")))]
 pub fn log_dir() -> Option<std::path::PathBuf> {
     Some(std::env::temp_dir().join("kenny").join("logs"))
+}
+
+/// Whether `dir` exists and is writable by the current effective user, probed by
+/// creating and removing a temporary file. Used to gate the FHS log path.
+#[cfg(target_os = "linux")]
+fn dir_is_writable(dir: &std::path::Path) -> bool {
+    if !dir.is_dir() {
+        return false;
+    }
+    let probe = dir.join(format!(".kenny-write-probe-{}", std::process::id()));
+    match std::fs::File::create(&probe) {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
 }
 
 /// Declare per-monitor-v2 DPI awareness for the process (Windows only).
@@ -243,4 +275,28 @@ fn run_tunnel(config: config::Config) {
     };
     // `run` reconnects forever and never returns.
     runtime.block_on(async move { tunnel::run(config).await });
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn log_dir_falls_back_to_temp_without_fhs_dir() {
+        // In CI/sandbox the FHS log dir does not exist, so `log_dir` must fall back to
+        // the portable temp path regardless of whether the test runs as root.
+        if !std::path::Path::new("/var/log/kenny").exists() {
+            assert_eq!(
+                log_dir(),
+                Some(std::env::temp_dir().join("kenny").join("logs"))
+            );
+        }
+    }
+
+    #[test]
+    fn absent_dir_is_never_writable() {
+        assert!(!dir_is_writable(std::path::Path::new(
+            "/var/log/kenny-definitely-not-present"
+        )));
+    }
 }

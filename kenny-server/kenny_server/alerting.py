@@ -210,7 +210,8 @@ class AlertEngine:
         state: dict[str, dict[str, Any]],
         now: datetime,
     ) -> list[Notification]:
-        evaluation = evaluate_snapshot(latest["snapshot"], now=now)
+        agent_os = getattr(self._registry.get(agent_id), "os", "windows")
+        evaluation = evaluate_snapshot(latest["snapshot"], agent_os=agent_os, now=now)
         alert_lines: list[str] = []
         recovery_lines: list[str] = []
         alert_worst = "ok"

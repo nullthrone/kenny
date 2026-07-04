@@ -12,6 +12,14 @@ on the Linux build — see `_assert_windows_tools`. Set `KENNY_E2E_FULL=1` (inte
 for a self-hosted runner with an interactive desktop) to also exercise
 `screen_capture`.
 
+On a Linux runner it instead drives the real Linux paths (ADR-0035): the portable
+`diag_processes`/`net_config` tools, the boundary where a Windows-only tool
+(`winget_list`) returns `unsupported`, and the `#[cfg(target_os = "linux")]`
+collectors read back through the snapshot — `installed_software` from dpkg,
+`local_accounts` from `/etc/passwd`, `listening_ports` from `/proc/net` — plus the
+systemd-backed `services`/`time_sync` sections (structural only, since a sandbox may
+have no systemd bus). See `_assert_linux`.
+
 Skipped unless the agent binary is available: set ``KENNY_AGENT_BIN`` to its path,
 or build it (``cd kenny-agent && cargo build``) so the default debug path exists.
 Set ``KENNY_E2E=1`` to force-fail (instead of skip) when the binary is missing.
@@ -149,6 +157,8 @@ async def test_real_agent_end_to_end(tmp_path) -> None:
                 # `unsupported` on Linux against the genuine implementations.
                 if sys.platform == "win32":
                     await _assert_windows_tools(client)
+                elif sys.platform.startswith("linux"):
+                    await _assert_linux(client)
         finally:
             proc.terminate()
             try:
@@ -211,3 +221,67 @@ async def _assert_windows_tools(client) -> None:
         # deliberately NOT asserted automatically -- on a real family PC they
         # sever the network, install software, or replace the running binary.
         # Exercise those by hand on a throwaway box, not in unattended CI.
+
+
+async def _assert_linux(client) -> None:
+    """Drive the real Linux tool and collector paths (ADR-0035).
+
+    The portable tools (`diag_processes`, `net_config`) run their real
+    non-Windows arms; the Windows-only `winget_list` returns ``unsupported`` on the
+    Linux build; and the ``#[cfg(target_os = "linux")]`` collectors report genuine
+    data from dpkg, ``/etc/passwd`` and ``/proc/net``. These assertions are therefore
+    meaningful only on a Linux runner.
+    """
+    # Read-only diagnostics — real processes from the live machine (sysinfo).
+    procs = await _call(client, "diag_processes")
+    assert procs["processes"], "diag_processes returned no processes"
+    assert all("pid" in p and "name" in p for p in procs["processes"][:5])
+
+    # Interfaces from sysinfo; the `dns` key is always present (empty on the
+    # portable path, populated only by the Windows probe).
+    netcfg = await _call(client, "net_config")
+    assert isinstance(netcfg["interfaces"], list) and netcfg["interfaces"]
+    assert "dns" in netcfg
+
+    # Boundary: a Windows-only tool returns `unsupported` on the Linux build. The
+    # server forwarder surfaces that error frame as a raised exception.
+    winget_raised = False
+    try:
+        await _call(client, "winget_list")
+    except Exception:  # noqa: BLE001 - `unsupported` on Linux is the expected outcome
+        winget_raised = True
+    assert winget_raised, "winget_list must raise `unsupported` on the Linux build"
+
+    # Real Linux collectors, read back through the pushed snapshot.
+    async def _section(name: str) -> dict:
+        res = await client.call_tool("agent_snapshot", {"id": "dev", "section": name})
+        return res.data["payload"]
+
+    # dpkg inventory: an Ubuntu box always has packages installed (deterministic).
+    software = await _section("installed_software")
+    assert software["count"] > 0, "installed_software (dpkg) reported no packages"
+    assert software["summary"] != "n/a on this platform"
+
+    # /etc/passwd + /etc/group: root is uid 0 and therefore always an admin.
+    accounts = await _section("local_accounts")
+    assert accounts["count"] > 0, "local_accounts reported no accounts"
+    assert "root" in accounts["admins"], "root must be listed as an admin on Linux"
+
+    # /proc/net TCP/UDP listeners: real data, no systemd required.
+    ports = await _section("listening_ports")
+    assert isinstance(ports["ports"], list)
+    assert ports["summary"] != "n/a on this platform"
+
+    # systemd-backed sections: the sandbox may have no systemd bus reachable, so
+    # assert only structural validity (a string `status`), not real unit/clock data.
+    services = await _section("services")
+    assert isinstance(services["status"], str), "services section missing string status"
+    time_sync = await _section("time_sync")
+    assert isinstance(time_sync["status"], str), "time_sync section missing string status"
+
+    # The agent registered as a Linux host — Workstream D promoted `os` to a
+    # first-class field that fleet_overview surfaces per agent.
+    fleet = (await client.call_tool("fleet_overview", {})).data
+    dev = next((a for a in fleet["agents"] if a["agent_id"] == "dev"), None)
+    assert dev is not None, "agent 'dev' missing from fleet_overview"
+    assert dev["os"] == "linux", f"expected os=linux, got {dev['os']!r}"

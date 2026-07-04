@@ -76,6 +76,53 @@ def _fleet() -> list[dict]:
     ]
 
 
+def _linux_server(agent_id: str = "server-1", *, os_support: dict | None = None) -> dict:
+    """A headless, batteryless Linux host (no Windows-only telemetry)."""
+
+    snap: dict = {
+        "disk": {"status": "ok", "summary": "/ 30% full", "volumes": [{"mount": "/", "percent_used": 30}]},
+        "memory": {"status": "ok", "summary": "ok", "percent_used": 40, "total_bytes": 32 * 1024**3},
+        "uptime": {"status": "ok", "summary": "ok", "uptime_secs": 100 * 86400},
+    }
+    if os_support is not None:
+        snap["os_support"] = os_support
+    return _agent(agent_id, snap, meta={"os": "linux"})
+
+
+def test_os_inventory_buckets_linux_agent_without_telemetry():
+    # No os_support telemetry -> bucket by the declared OS family, never "Windows".
+    out = fleet_stats.aggregate_overview(_fleet() + [_linux_server()], now=NOW)
+    labels = {s["label"]: s["value"] for s in out["os"]["segments"]}
+    assert labels.get("Linux") == 1
+    assert "Unknown" not in labels
+
+
+def test_os_inventory_uses_linux_os_support_name():
+    fleet = [_linux_server(os_support={"status": "ok", "summary": "Ubuntu", "name": "Ubuntu", "version": "24.04"})]
+    out = fleet_stats.aggregate_overview(fleet, now=NOW)
+    assert {s["label"] for s in out["os"]["segments"]} == {"Ubuntu 24.04"}
+
+
+def test_device_mix_linux_batteryless_is_server():
+    out = fleet_stats.aggregate_overview(_fleet() + [_linux_server()], now=NOW)
+    dev = {s["label"]: s["value"] for s in out["device"]["segments"]}
+    assert dev.get("Server") == 1
+    # Batteryless *Windows* hosts still bucket as Desktop.
+    assert dev.get("Desktop") == 2
+    assert dev.get("Laptop") == 1
+
+
+def test_security_posture_marks_linux_na_not_unknown():
+    out = fleet_stats.aggregate_overview(_fleet() + [_linux_server()], now=NOW)
+    metrics = {m["key"]: m for m in out["posture"]["metrics"]}
+    for key in ("encryption", "defender_realtime", "firewall"):
+        m = metrics[key]
+        assert m["na"] == 1
+        assert [x["agent_id"] for x in m["members_na"]] == ["server-1"]
+    # The Linux host is excluded, so the Windows unknown counts are unchanged.
+    assert metrics["encryption"]["unknown"] == 1
+
+
 def test_overview_top_level_counts():
     out = fleet_stats.aggregate_overview(_fleet(), now=NOW)
     assert out["agent_count"] == 3
