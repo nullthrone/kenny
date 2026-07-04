@@ -516,6 +516,75 @@ class PolicyStore:
         return (cur.rowcount or 0) > 0
 
 
+_SETTINGS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS settings (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+"""
+
+
+class SettingsStore:
+    """Async SQLite-backed key/value store for operator setting overrides.
+
+    Stores only keys the operator has explicitly overridden; anything absent
+    falls back to the environment/default in :class:`~.config.Settings`. Values
+    are raw strings (typed by the catalog). Shares the DB file with the other
+    stores (own connection), following the :class:`PolicyStore` pattern.
+    """
+
+    def __init__(self, db_path: str = DEFAULT_DB_PATH) -> None:
+        self.db_path = db_path
+        self._db: aiosqlite.Connection | None = None
+
+    async def connect(self) -> None:
+        if self._db is not None:
+            return
+        self._db = await aiosqlite.connect(self.db_path)
+        self._db.row_factory = aiosqlite.Row
+        await self._db.execute("PRAGMA journal_mode=WAL")
+        await self._db.executescript(_SETTINGS_SCHEMA)
+        await self._db.commit()
+
+    async def close(self) -> None:
+        if self._db is not None:
+            await self._db.close()
+            self._db = None
+
+    @property
+    def _conn(self) -> aiosqlite.Connection:
+        if self._db is None:
+            raise RuntimeError("SettingsStore is not connected; call connect() first")
+        return self._db
+
+    async def all(self) -> dict[str, str]:
+        """Return every stored override as a ``{key: value}`` mapping."""
+
+        async with self._conn.execute("SELECT key, value FROM settings") as cur:
+            rows = await cur.fetchall()
+        return {r["key"]: r["value"] for r in rows}
+
+    async def set(self, key: str, value: str) -> None:
+        """Upsert one override, stamping ``updated_at``."""
+
+        updated_at = datetime.now(timezone.utc).isoformat()
+        await self._conn.execute(
+            "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value, "
+            "updated_at=excluded.updated_at",
+            (key, value, updated_at),
+        )
+        await self._conn.commit()
+
+    async def delete(self, key: str) -> bool:
+        """Remove one override. Returns True if a row was deleted."""
+
+        cur = await self._conn.execute("DELETE FROM settings WHERE key = ?", (key,))
+        await self._conn.commit()
+        return (cur.rowcount or 0) > 0
+
+
 _WEBFILTER_SCHEMA = """
 CREATE TABLE IF NOT EXISTS webfilter_config (
     agent_id              TEXT PRIMARY KEY,

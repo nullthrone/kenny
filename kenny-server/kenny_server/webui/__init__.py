@@ -17,6 +17,7 @@ from starlette.responses import FileResponse, JSONResponse, Response, StreamingR
 from starlette.routing import Route
 
 from .. import PROTOCOL_VERSION, __version__, agent_release, changelog
+from ..config import CATALOG, SettingNotWritable, Settings
 from ..chat import (
     ChatExecutor,
     ChatSessions,
@@ -63,6 +64,7 @@ def build_api_routes(
     policy_store: PolicyStore | None = None,
     policy_engine: PolicyEngine | None = None,
     webfilter: WebFilterService | None = None,
+    settings: Settings | None = None,
     client_factory: Any = None,
 ) -> list[Route]:
     """Build the dashboard's static + JSON routes.
@@ -453,6 +455,59 @@ def build_api_routes(
         await tunnel.broadcast_policy()
         return JSONResponse({"ok": True, "removed": removed, "operator": operator})
 
+    # -- runtime settings --------------------------------------------------
+
+    async def api_settings_list(_request: Request) -> JSONResponse:
+        """Grouped catalog with effective values + source badges for the UI."""
+
+        if settings is None:
+            return JSONResponse({"error": "settings not configured"}, status_code=503)
+        return JSONResponse({"groups": settings.describe()})
+
+    async def api_settings_set(request: Request) -> JSONResponse:
+        """Set one override. 400 unknown/invalid, 403 env-only, else apply."""
+
+        if settings is None:
+            return JSONResponse({"error": "settings not configured"}, status_code=503)
+        key = request.path_params["key"]
+        spec = CATALOG.get(key)
+        if spec is None:
+            return JSONResponse({"error": f"unknown setting {key}"}, status_code=400)
+        if not spec.writable:
+            return JSONResponse(
+                {"error": f"{key} is managed via the environment"}, status_code=403
+            )
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - malformed JSON
+            return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        if "value" not in body:
+            return JSONResponse({"error": "value is required"}, status_code=400)
+        raw = "" if body["value"] is None else str(body["value"])
+        try:
+            await settings.set(key, raw)
+        except SettingNotWritable as exc:
+            return JSONResponse({"error": str(exc)}, status_code=403)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        return JSONResponse(settings.describe_one(key))
+
+    async def api_settings_reset(request: Request) -> JSONResponse:
+        """Drop an override so the key falls back to env/default."""
+
+        if settings is None:
+            return JSONResponse({"error": "settings not configured"}, status_code=503)
+        key = request.path_params["key"]
+        spec = CATALOG.get(key)
+        if spec is None:
+            return JSONResponse({"error": f"unknown setting {key}"}, status_code=400)
+        if not spec.writable:
+            return JSONResponse(
+                {"error": f"{key} is managed via the environment"}, status_code=403
+            )
+        await settings.reset(key)
+        return JSONResponse(settings.describe_one(key))
+
     # -- parental controls (webfilter) ------------------------------------
 
     async def _webfilter_overview(agent_id: str) -> dict[str, Any]:
@@ -613,6 +668,9 @@ def build_api_routes(
         Route("/api/policy/rules", api_policy_list),
         Route("/api/policy/rules", api_policy_add, methods=["POST"]),
         Route("/api/policy/rules/{id}", api_policy_remove, methods=["DELETE"]),
+        Route("/api/settings", api_settings_list),
+        Route("/api/settings/{key}", api_settings_set, methods=["PUT"]),
+        Route("/api/settings/{key}", api_settings_reset, methods=["DELETE"]),
         Route("/api/fleet", api_fleet),
         Route("/api/fleet/overview", api_fleet_overview),
         Route("/api/fleet/trend", api_fleet_trend),
@@ -652,6 +710,17 @@ def _sse(event: dict[str, Any]) -> bytes:
     """Encode one chat event as a Server-Sent Events ``data:`` frame."""
 
     return f"data: {json.dumps(event, default=str)}\n\n".encode()
+
+
+def _chat_model(request: Request) -> str | None:
+    """Resolve the live chat model from settings (DB > env > default).
+
+    Returns ``None`` when settings are unavailable so ``chat.py`` falls back to
+    its own env/default resolution.
+    """
+
+    settings = getattr(request.app.state, "settings", None)
+    return settings.get("KENNY_CHAT_MODEL") if settings is not None else None
 
 
 def build_chat_routes(
@@ -718,7 +787,10 @@ def build_chat_routes(
                     registry._active_agent = agent_id  # noqa: SLF001 (matches chat.py dev path)
         session.agent_id = agent_id or None
         try:
-            result = await run_turn(session, message, executor=executor, client=client_factory())
+            result = await run_turn(
+                session, message, executor=executor, client=client_factory(),
+                model=_chat_model(request),
+            )
         except Exception as exc:  # noqa: BLE001 - surface to the UI
             return JSONResponse({"error": str(exc), "session_id": session.id}, status_code=502)
         await persist_session(history_store, session)
@@ -735,7 +807,8 @@ def build_chat_routes(
         approve = bool(body.get("approve", False))
         try:
             result = await confirm_pending(
-                session, approve=approve, executor=executor, client=client_factory()
+                session, approve=approve, executor=executor, client=client_factory(),
+                model=_chat_model(request),
             )
         except Exception as exc:  # noqa: BLE001 - surface to the UI
             return JSONResponse({"error": str(exc), "session_id": session.id}, status_code=502)
@@ -778,10 +851,13 @@ def build_chat_routes(
                     registry._active_agent = agent_id  # noqa: SLF001 (matches chat.py dev path)
         session.agent_id = agent_id or None
         client = client_factory()
+        model = _chat_model(request)
 
         async def gen() -> Any:
             try:
-                async for ev in run_turn_events(session, message, executor=executor, client=client):
+                async for ev in run_turn_events(
+                    session, message, executor=executor, client=client, model=model
+                ):
                     yield _sse(ev)
             except Exception as exc:  # noqa: BLE001 - surface to the UI in-band
                 yield _sse({"type": "error", "error": str(exc), "session_id": session.id})
@@ -805,11 +881,12 @@ def build_chat_routes(
             return JSONResponse({"error": "no pending confirmation"}, status_code=409)
         approve = bool(body.get("approve", False))
         client = client_factory()
+        model = _chat_model(request)
 
         async def gen() -> Any:
             try:
                 async for ev in confirm_pending_events(
-                    session, approve=approve, executor=executor, client=client
+                    session, approve=approve, executor=executor, client=client, model=model
                 ):
                     yield _sse(ev)
             except Exception as exc:  # noqa: BLE001 - surface to the UI in-band

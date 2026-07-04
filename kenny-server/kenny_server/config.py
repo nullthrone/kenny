@@ -1,0 +1,416 @@
+"""Runtime settings: a declarative catalog + a DB-over-env-over-default resolver.
+
+kenny was historically configured entirely through ``KENNY_*`` environment
+variables read via scattered ``os.environ.get`` calls. This module introduces a
+single, structured layer so the operator can change the runtime-safe knobs from
+the web dashboard without editing the environment and restarting.
+
+Three pieces:
+
+* :class:`SettingSpec` — one immutable descriptor per configurable value
+  (type, default, label, validation, and a ``lifecycle`` flag), plus
+* :data:`CATALOG` — the single source of truth listing every setting, driving
+  both API validation and UI rendering, and
+* :class:`Settings` — the resolver. Precedence is **DB override > env var >
+  coded default**. Reads (:meth:`Settings.get`) are synchronous, lock-free dict
+  lookups so per-request callers (e.g. the chat model) stay as cheap as the old
+  ``os.environ.get``. The in-memory override map is authoritative and the
+  SQLite ``settings`` table is only its durable mirror — the server is a single
+  process on one event loop, so there is no cross-process invalidation problem.
+
+``lifecycle`` is load-bearing:
+
+* ``live``     — the consumer reads through :meth:`Settings.get` on every use (or
+  an apply-hook re-applies on write), so an override takes effect immediately and
+  survives a restart once :meth:`Settings.load` runs.
+* ``restart``  — the consumer reads the value once, inside the app lifespan after
+  :meth:`Settings.load`; an override applies on the next restart.
+* ``env_only`` — never writable from the UI (secrets, wire-contract knobs, and
+  process-bind values read before settings load). Shown read-only for
+  transparency; ``sensitive`` specs never serialise their value.
+
+Anything touching the agent wire contract stays ``env_only`` and is deferred to a
+future ADR (see ADR for runtime settings).
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from typing import Any
+
+from .logging_config import apply_log_level
+
+logger = logging.getLogger("kenny.config")
+
+# Canonical boolean spellings (case-insensitive). Empty string counts as false.
+_BOOL_TRUE = {"1", "true", "yes", "on"}
+_BOOL_FALSE = {"0", "false", "no", "off", ""}
+
+# Kept in sync with webfilter._DEFAULT_ADULT_URL / _DEFAULT_BYPASS_URL. These are
+# the coded defaults; the live values now flow through this catalog.
+_DEFAULT_ADULT_URL = (
+    "https://raw.githubusercontent.com/StevenBlack/hosts/master/"
+    "alternates/porn-only/hosts"
+)
+_DEFAULT_BYPASS_URL = (
+    "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/"
+    "domains/doh-vpn-proxy-bypass.txt"
+)
+
+_DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+_LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+
+
+@dataclass(frozen=True)
+class SettingSpec:
+    """Immutable descriptor for one configurable setting.
+
+    ``parse`` coerces a stored/env raw string into the typed value; ``validate``
+    raises :class:`ValueError` for anything a write must reject (so an invalid
+    value can never reach the DB and poison later reads).
+    """
+
+    key: str
+    group: str
+    type: str  # "bool" | "int" | "float" | "str" | "enum" | "secret"
+    default_raw: str
+    label: str
+    help: str = ""
+    lifecycle: str = "live"  # "live" | "restart" | "env_only"
+    env: str | None = None  # env var name if different from key
+    choices: tuple[str, ...] | None = None
+    min: float | None = None
+    max: float | None = None
+    sensitive: bool = False
+
+    @property
+    def env_name(self) -> str:
+        return self.env or self.key
+
+    @property
+    def writable(self) -> bool:
+        return self.lifecycle != "env_only"
+
+    def parse(self, raw: str) -> Any:
+        if self.type == "bool":
+            return raw.strip().lower() in _BOOL_TRUE
+        if self.type == "int":
+            return int(raw)
+        if self.type == "float":
+            return float(raw)
+        # str, enum and secret are all raw strings to the consumer.
+        return raw
+
+    def validate(self, raw: str) -> None:
+        """Raise :class:`ValueError` if ``raw`` is not an acceptable value."""
+
+        if self.type == "bool":
+            if raw.strip().lower() not in (_BOOL_TRUE | _BOOL_FALSE):
+                raise ValueError(f"{self.key}: expected a boolean, got {raw!r}")
+            return
+        if self.type in ("int", "float"):
+            try:
+                value = int(raw) if self.type == "int" else float(raw)
+            except ValueError as exc:
+                raise ValueError(f"{self.key}: expected {self.type}, got {raw!r}") from exc
+            if self.min is not None and value < self.min:
+                raise ValueError(f"{self.key}: must be >= {self.min:g}")
+            if self.max is not None and value > self.max:
+                raise ValueError(f"{self.key}: must be <= {self.max:g}")
+            return
+        if self.type == "enum":
+            if self.choices is not None and raw not in self.choices:
+                raise ValueError(
+                    f"{self.key}: must be one of {', '.join(self.choices)}"
+                )
+            return
+        # str / secret: any string is acceptable.
+
+
+def _spec(key: str, group: str, type: str, default_raw: str, label: str, **kw: Any) -> SettingSpec:
+    return SettingSpec(key=key, group=group, type=type, default_raw=default_raw, label=label, **kw)
+
+
+# Group display order for the UI. Every spec's ``group`` must appear here.
+GROUP_ORDER: tuple[str, ...] = (
+    "Alerting & Digest",
+    "Web filter",
+    "Chat & AI",
+    "Logging",
+    "Network & Process",
+    "Operator & Agent Auth",
+    "Telemetry limits",
+    "Agent distribution",
+)
+
+_SPECS: list[SettingSpec] = [
+    # -- Alerting & Digest (live; consumed by AlertEngine each pass) -----------
+    _spec("KENNY_ALERT_COOLDOWN_SECS", "Alerting & Digest", "int", "3600",
+          "Alert cooldown (s)", lifecycle="live", min=0,
+          help="Per-scope suppression window bounding a flapping section to one "
+               "alert plus one recovery per window."),
+    _spec("KENNY_ALERT_OFFLINE_AFTER_SECS", "Alerting & Digest", "int", "2700",
+          "Offline threshold (s)", lifecycle="live", min=0,
+          help="An agent counts as offline when its newest snapshot is older "
+               "than this and no live connection exists."),
+    _spec("KENNY_ALERT_INTERVAL_SECS", "Alerting & Digest", "int", "60",
+          "Evaluation interval (s)", lifecycle="live", min=0,
+          help="Cadence of the alert loop. Changing it retimes the running "
+               "loop. Setting it to 0 disables the loop only after a restart."),
+    _spec("KENNY_ALERT_INITIAL_DELAY", "Alerting & Digest", "float", "10",
+          "Initial evaluation delay (s)", lifecycle="restart", min=0,
+          help="Delay before the first alert pass after startup."),
+    _spec("KENNY_DIGEST_ENABLED", "Alerting & Digest", "bool", "1",
+          "Weekly digest enabled", lifecycle="live"),
+    _spec("KENNY_DIGEST_DAY", "Alerting & Digest", "enum", "mon",
+          "Digest day", lifecycle="live", choices=_DAYS),
+    _spec("KENNY_DIGEST_HOUR", "Alerting & Digest", "int", "8",
+          "Digest hour (0-23)", lifecycle="live", min=0, max=23),
+    # -- Web filter (live; consumed by the refresh loop / ExternalListCache) ---
+    _spec("KENNY_WEBFILTER_REFRESH_SECS", "Web filter", "int", "86400",
+          "External list refresh (s)", lifecycle="live", min=0,
+          help="Cadence for refreshing the external adult/bypass lists. "
+               "Setting it to 0 disables the loop only after a restart."),
+    _spec("KENNY_WEBFILTER_INITIAL_REFRESH_DELAY", "Web filter", "float", "5",
+          "Initial refresh delay (s)", lifecycle="restart", min=0),
+    _spec("KENNY_WEBFILTER_ADULT_URL", "Web filter", "str", _DEFAULT_ADULT_URL,
+          "Adult blocklist URL", lifecycle="live",
+          help="Source list of adult domains. Applied on the next refresh."),
+    _spec("KENNY_WEBFILTER_BYPASS_URL", "Web filter", "str", _DEFAULT_BYPASS_URL,
+          "Bypass/VPN blocklist URL", lifecycle="live",
+          help="Source list of DoH/VPN/proxy bypass domains."),
+    _spec("KENNY_WEBFILTER_MAX_BLOCK_DOMAINS", "Web filter", "int", "5000",
+          "Max block domains", lifecycle="live", min=1, max=10000,
+          help="Cap on external adult domains pushed to an agent (hard cap 10000)."),
+    # -- Chat & AI -------------------------------------------------------------
+    _spec("KENNY_CHAT_MODEL", "Chat & AI", "str", "claude-sonnet-4-6",
+          "Chat model", lifecycle="live",
+          help="Anthropic model id used by the server-hosted copilot chat."),
+    _spec("ANTHROPIC_API_KEY", "Chat & AI", "secret", "",
+          "Anthropic API key", lifecycle="env_only", sensitive=True,
+          help="Gates the chat/recommendation features. Managed via environment."),
+    # -- Logging ---------------------------------------------------------------
+    _spec("KENNY_LOG_LEVEL", "Logging", "enum", "INFO",
+          "Log level", lifecycle="live", choices=_LOG_LEVELS,
+          help="Root/uvicorn/kenny log verbosity. Applied immediately."),
+    _spec("KENNY_POLICY_CATALOG", "Logging", "str", "",
+          "Policy catalog path", lifecycle="env_only",
+          help="Path to the shared policy catalog file, loaded once at startup."),
+    # -- Network & Process (read before settings load; read-only) --------------
+    _spec("KENNY_HOST", "Network & Process", "str", "127.0.0.1",
+          "Bind host", lifecycle="env_only"),
+    _spec("KENNY_PORT", "Network & Process", "int", "8000",
+          "Bind port", lifecycle="env_only"),
+    _spec("KENNY_PUBLIC_URL", "Network & Process", "str", "",
+          "Public base URL", lifecycle="env_only",
+          help="External base URL used to build agent download links."),
+    _spec("KENNY_DB_PATH", "Network & Process", "str", "kenny.sqlite",
+          "Database path", lifecycle="env_only"),
+    _spec("KENNY_TLS", "Network & Process", "bool", "0",
+          "TLS-terminated deployment", lifecycle="env_only",
+          help="Marks the deployment as behind TLS (secure cookie flag)."),
+    # -- Operator & Agent Auth (secrets / wire-contract; read-only) ------------
+    _spec("KENNY_OPERATOR_TOKEN", "Operator & Agent Auth", "secret", "",
+          "Operator token", lifecycle="env_only", sensitive=True),
+    _spec("KENNY_OPERATOR_TOKENS", "Operator & Agent Auth", "secret", "",
+          "Additional operator tokens", lifecycle="env_only", sensitive=True),
+    _spec("KENNY_AGENT_TOKENS", "Operator & Agent Auth", "secret", "",
+          "Seed agent tokens", lifecycle="env_only", sensitive=True),
+    _spec("KENNY_ALLOW_TOKEN_AUTH", "Operator & Agent Auth", "bool", "1",
+          "Allow legacy token auth", lifecycle="env_only",
+          help="Wire-contract knob for the agent handshake (deferred to a future ADR)."),
+    _spec("KENNY_LOGIN_MAX_ATTEMPTS", "Operator & Agent Auth", "int", "5",
+          "Login max attempts", lifecycle="env_only", min=1),
+    _spec("KENNY_LOGIN_LOCKOUT_SECS", "Operator & Agent Auth", "float", "60",
+          "Login lockout (s)", lifecycle="env_only", min=0),
+    _spec("KENNY_SERVER_PRIVATE_KEY", "Operator & Agent Auth", "secret", "",
+          "Server private key (seed)", lifecycle="env_only", sensitive=True),
+    _spec("KENNY_SERVER_PRIVATE_KEY_FILE", "Operator & Agent Auth", "str", "",
+          "Server private key file", lifecycle="env_only"),
+    _spec("KENNY_KEY_GRACE_SECS", "Operator & Agent Auth", "int", "604800",
+          "Rotated key grace (s)", lifecycle="env_only",
+          help="Wire-contract knob (deferred to a future ADR)."),
+    _spec("KENNY_TOKEN_GRACE_SECS", "Operator & Agent Auth", "int", "604800",
+          "Rotated token grace (s)", lifecycle="env_only",
+          help="Wire-contract knob (deferred to a future ADR)."),
+    # -- Telemetry limits (import-time framing guards; read-only) --------------
+    _spec("KENNY_MAX_FRAME_BYTES", "Telemetry limits", "int", "8388608",
+          "Max WS frame (bytes)", lifecycle="env_only"),
+    _spec("KENNY_MAX_TELEMETRY_BYTES", "Telemetry limits", "int", "262144",
+          "Max telemetry payload (bytes)", lifecycle="env_only"),
+    _spec("KENNY_MAX_TELEMETRY_SECTIONS", "Telemetry limits", "int", "128",
+          "Max telemetry sections", lifecycle="env_only"),
+    _spec("KENNY_TELEMETRY_INTERVAL_SECS", "Telemetry limits", "int", "900",
+          "Agent push interval (s)", lifecycle="env_only",
+          help="Advertised to agents at install time. Agent-facing "
+               "(deferred to a future ADR)."),
+    # -- Agent distribution (read-only this iteration) -------------------------
+    _spec("KENNY_GITHUB_REPO", "Agent distribution", "str", "t11z/kenny",
+          "Agent GitHub repo", lifecycle="env_only"),
+    _spec("KENNY_GITHUB_TOKEN", "Agent distribution", "secret", "",
+          "GitHub API token", lifecycle="env_only", sensitive=True),
+    _spec("KENNY_AGENT_VERSION", "Agent distribution", "str", "0.2.0",
+          "Agent version", lifecycle="env_only"),
+    _spec("KENNY_SERVER_VERSION", "Agent distribution", "str", "0.0.0-dev",
+          "Server version", lifecycle="env_only"),
+    _spec("KENNY_AGENT_BINARY", "Agent distribution", "str", "",
+          "Agent binary path", lifecycle="env_only"),
+    _spec("KENNY_AGENT_BINARY_CACHE", "Agent distribution", "str", "",
+          "Agent binary cache dir", lifecycle="env_only"),
+]
+
+CATALOG: dict[str, SettingSpec] = {spec.key: spec for spec in _SPECS}
+
+# Apply-hooks run after a live setting's value changes (on write, reset, and once
+# at startup for any DB override) so the change takes effect without a restart.
+APPLY_HOOKS: dict[str, Callable[[Any], None]] = {
+    "KENNY_LOG_LEVEL": apply_log_level,
+}
+
+
+class SettingNotWritable(Exception):
+    """Raised when a write targets an ``env_only`` setting."""
+
+
+class Settings:
+    """DB-over-env-over-default resolver over :data:`CATALOG`."""
+
+    def __init__(
+        self,
+        store: Any,
+        catalog: Mapping[str, SettingSpec] | None = None,
+        *,
+        env: Mapping[str, str] | None = None,
+        apply_hooks: Mapping[str, Callable[[Any], None]] | None = None,
+    ) -> None:
+        self._store = store
+        self._catalog = dict(catalog if catalog is not None else CATALOG)
+        self._env = env if env is not None else os.environ
+        self._apply_hooks = dict(apply_hooks if apply_hooks is not None else APPLY_HOOKS)
+        self._overrides: dict[str, str] = {}
+
+    # -- lifecycle -------------------------------------------------------------
+
+    async def load(self) -> None:
+        """Load DB overrides into memory and re-apply live apply-hooks once."""
+
+        self._overrides = await self._store.all()
+        for key in self._overrides:
+            self._run_hook(key)
+
+    # -- reads (hot path: synchronous, no I/O, no lock) ------------------------
+
+    def get(self, key: str) -> Any:
+        spec = self._catalog[key]
+        raw, source = self._resolve_raw(key, spec)
+        try:
+            return spec.parse(raw)
+        except (ValueError, TypeError):
+            logger.warning(
+                "invalid value for %s from %s (%r); falling back to default",
+                key, source, raw,
+            )
+            return spec.parse(spec.default_raw)
+
+    def effective(self, key: str) -> tuple[Any, str]:
+        """Return ``(typed_value, source)`` where source is db/env/default."""
+
+        spec = self._catalog[key]
+        _raw, source = self._resolve_raw(key, spec)
+        return self.get(key), source
+
+    def _resolve_raw(self, key: str, spec: SettingSpec) -> tuple[str, str]:
+        if key in self._overrides:
+            return self._overrides[key], "db"
+        env_val = self._env.get(spec.env_name)
+        if env_val is not None and env_val != "":
+            return env_val, "env"
+        return spec.default_raw, "default"
+
+    # -- writes (async; validate before persist) -------------------------------
+
+    async def set(self, key: str, raw: str) -> None:
+        spec = self._catalog[key]
+        if not spec.writable:
+            raise SettingNotWritable(f"{key} is managed via the environment")
+        spec.validate(raw)
+        await self._store.set(key, raw)
+        self._overrides[key] = raw
+        self._run_hook(key)
+
+    async def reset(self, key: str) -> None:
+        """Drop the DB override so ``key`` falls back to env/default."""
+
+        spec = self._catalog[key]
+        if not spec.writable:
+            raise SettingNotWritable(f"{key} is managed via the environment")
+        await self._store.delete(key)
+        self._overrides.pop(key, None)
+        self._run_hook(key)
+
+    def _run_hook(self, key: str) -> None:
+        hook = self._apply_hooks.get(key)
+        if hook is None:
+            return
+        try:
+            hook(self.get(key))
+        except Exception:  # noqa: BLE001 - an apply-hook must never break a write
+            logger.exception("apply-hook for %s failed", key)
+
+    # -- serialisation for the API --------------------------------------------
+
+    def describe(self) -> list[dict[str, Any]]:
+        """Grouped catalog with effective values for ``GET /api/settings``.
+
+        Secrets never expose their value: they report ``is_set`` instead.
+        """
+
+        by_group: dict[str, list[dict[str, Any]]] = {g: [] for g in GROUP_ORDER}
+        for key, spec in self._catalog.items():
+            value, source = self.effective(key)
+            row: dict[str, Any] = {
+                "key": key,
+                "group": spec.group,
+                "type": spec.type,
+                "label": spec.label,
+                "help": spec.help,
+                "lifecycle": spec.lifecycle,
+                "source": source,
+                "choices": list(spec.choices) if spec.choices else None,
+                "min": spec.min,
+                "max": spec.max,
+                "sensitive": spec.sensitive,
+            }
+            if spec.sensitive:
+                row["value"] = None
+                row["is_set"] = source != "default"
+                row["default"] = None
+            else:
+                row["value"] = value
+                row["default"] = spec.parse(spec.default_raw)
+            by_group.setdefault(spec.group, []).append(row)
+        return [
+            {"name": group, "settings": by_group[group]}
+            for group in GROUP_ORDER
+            if by_group.get(group)
+        ]
+
+    def describe_one(self, key: str) -> dict[str, Any]:
+        """Single-key effective view (used in write/reset responses)."""
+
+        spec = self._catalog[key]
+        value, source = self.effective(key)
+        row: dict[str, Any] = {
+            "key": key,
+            "source": source,
+            "lifecycle": spec.lifecycle,
+        }
+        if spec.sensitive:
+            row["value"] = None
+            row["is_set"] = source != "default"
+        else:
+            row["value"] = value
+        return row

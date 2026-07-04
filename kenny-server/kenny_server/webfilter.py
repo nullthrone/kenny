@@ -211,17 +211,35 @@ class ExternalListCache:
         cache_dir: str,
         *,
         client_factory: Callable[[], httpx.AsyncClient] | None = None,
+        settings: Any = None,
     ) -> None:
         self._cache_dir = Path(cache_dir) / "webfilter_cache"
         self._client_factory = client_factory
-        self._urls = {
-            "adult": os.environ.get("KENNY_WEBFILTER_ADULT_URL", _DEFAULT_ADULT_URL),
-            "bypass": os.environ.get("KENNY_WEBFILTER_BYPASS_URL", _DEFAULT_BYPASS_URL),
-        }
+        # When ``settings`` is provided the source URLs and the block-domain cap
+        # are read live from it (DB > env > default) on each fetch, so operator
+        # changes apply on the next refresh. Otherwise fall back to env/default.
+        self._settings = settings
         self._sets: dict[str, frozenset[str]] = {}
         self._last_fetch: dict[str, str | None] = {"adult": None, "bypass": None}
         self._warned: set[str] = set()
         self._load_disk()
+
+    def _url(self, source: str) -> str:
+        if self._settings is not None:
+            key = "KENNY_WEBFILTER_ADULT_URL" if source == "adult" else "KENNY_WEBFILTER_BYPASS_URL"
+            return self._settings.get(key)
+        default = _DEFAULT_ADULT_URL if source == "adult" else _DEFAULT_BYPASS_URL
+        env_key = "KENNY_WEBFILTER_ADULT_URL" if source == "adult" else "KENNY_WEBFILTER_BYPASS_URL"
+        return os.environ.get(env_key, default)
+
+    def max_block_domains(self) -> int:
+        """Live cap on external adult domains pushed to an agent (hard-capped)."""
+
+        if self._settings is not None:
+            value = int(self._settings.get("KENNY_WEBFILTER_MAX_BLOCK_DOMAINS"))
+        else:
+            value = _max_block_domains()
+        return max(0, min(value, _HARD_CAP))
 
     # -- disk cache --------------------------------------------------------
 
@@ -254,7 +272,7 @@ class ExternalListCache:
         return httpx.AsyncClient()
 
     async def _fetch_one(self, source: str) -> None:
-        url = self._urls[source]
+        url = self._url(source)
         try:
             async with self._make_client() as client:
                 resp = await client.get(url, timeout=30.0, follow_redirects=True)
@@ -390,7 +408,7 @@ def build_apply_args(
     }
     domains.update(load_seed())
     if config.get("use_external_adult"):
-        adult = sorted(cache.get("adult"))[: _max_block_domains()]
+        adult = sorted(cache.get("adult"))[: cache.max_block_domains()]
         domains.update(adult)
     if config.get("use_bypass_protection"):
         domains.update(cache.get("bypass"))

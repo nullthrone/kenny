@@ -61,6 +61,26 @@ def configure_logging() -> None:
     _configured = True
 
 
+# Loggers whose level tracks KENNY_LOG_LEVEL (see configure_logging).
+_LEVELLED_LOGGERS = ("uvicorn", "uvicorn.access", "uvicorn.error", "kenny")
+
+
+def apply_log_level(level: str) -> None:
+    """Set the root + uvicorn + kenny logger levels immediately.
+
+    Used as the ``KENNY_LOG_LEVEL`` apply-hook so a level change from the
+    settings UI takes effect without a restart. Unknown levels are ignored.
+    """
+
+    name = str(level).strip().upper()
+    if name not in logging.getLevelNamesMapping():
+        logging.getLogger("kenny.config").warning("ignoring unknown log level %r", level)
+        return
+    logging.getLogger().setLevel(name)
+    for logger_name in _LEVELLED_LOGGERS:
+        logging.getLogger(logger_name).setLevel(name)
+
+
 class StoreLogHandler(logging.Handler):
     """A ``logging.Handler`` that enqueues server records for async persistence.
 
