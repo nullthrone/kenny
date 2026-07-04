@@ -270,10 +270,22 @@ def _rule_local_accounts(payload: dict[str, Any], now: datetime) -> "tuple[Statu
 
 def _rule_backup_status(payload: dict[str, Any], now: datetime) -> "tuple[Status, str] | None":
     restore = payload.get("restore_points") or {}
+    file_history = payload.get("file_history") or {}
+    onedrive = payload.get("onedrive") or {}
+    # An all-null stub (e.g. the "n/a on this platform" shape a non-Windows agent
+    # emits) carries no backup evidence at all — that is *absence of data*, not a
+    # missing backup. Defer rather than warn against it.
+    if (
+        restore.get("enabled") is None
+        and restore.get("latest") is None
+        and file_history.get("service_state") is None
+        and onedrive.get("running") is None
+    ):
+        return None
     latest_age = _age_days(restore.get("latest"), now=now)
     recent_restore_point = latest_age is not None and latest_age <= 30
-    fh_state = str((payload.get("file_history") or {}).get("service_state") or "").lower()
-    onedrive_running = (payload.get("onedrive") or {}).get("running") is True
+    fh_state = str(file_history.get("service_state") or "").lower()
+    onedrive_running = onedrive.get("running") is True
     if not recent_restore_point and fh_state != "running" and not onedrive_running:
         return "warn", "no backup evidence (no restore point <=30d, File History off, OneDrive not running)"
     return None
@@ -318,6 +330,20 @@ RULES: dict[str, Rule] = {
 }
 
 
+# Rules whose section is a Windows-only concept (Microsoft Defender, Windows
+# Update / KB numbers, the registry reboot-pending flags, and System Restore /
+# File History / OneDrive backup evidence). A non-Windows agent emits an
+# "n/a on this platform" stub for these; scoring them would mislead. They are
+# skipped for agents whose OS is not Windows (see ADR-0035).
+WINDOWS_ONLY_SECTIONS: frozenset[str] = frozenset(
+    {"defender", "win_update", "reboot_pending", "backup_status"}
+)
+
+
+def _is_windows(agent_os: str | None) -> bool:
+    return str(agent_os or "windows").lower() == "windows"
+
+
 def evaluate_section(
     name: str, payload: dict[str, Any], *, now: datetime | None = None
 ) -> dict[str, Any]:
@@ -338,16 +364,29 @@ def evaluate_section(
 
 
 def evaluate_snapshot(
-    snapshot: dict[str, dict[str, Any]], *, now: datetime | None = None
+    snapshot: dict[str, dict[str, Any]],
+    *,
+    agent_os: str = "windows",
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     """Evaluate every section and roll up to an overall agent health.
+
+    ``agent_os`` is the agent's OS family (``windows`` | ``linux`` | ``macos``);
+    it defaults to ``windows`` so legacy/unknown agents keep their current
+    behavior. For non-Windows agents the Windows-only sections
+    (:data:`WINDOWS_ONLY_SECTIONS`) are skipped rather than scored against their
+    ``n/a`` stubs (see ADR-0035). Portable sections (e.g. ``listening_ports``,
+    ``local_accounts``) apply for every OS.
 
     Returns ``{"overall": status, "sections": {name: {status, summary, reason?}}}``.
     """
 
     now = now or datetime.now(timezone.utc)
+    is_windows = _is_windows(agent_os)
     sections: dict[str, Any] = {}
     for name, payload in snapshot.items():
+        if not is_windows and name in WINDOWS_ONLY_SECTIONS:
+            continue
         sections[name] = evaluate_section(name, dict(payload), now=now)
     overall = worst(*(s["status"] for s in sections.values())) if sections else "ok"
     return {"overall": overall, "sections": sections}

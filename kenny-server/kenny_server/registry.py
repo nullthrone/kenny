@@ -53,10 +53,22 @@ class Agent:
     connected_at: datetime | None = None
     last_seen: datetime | None = None
 
+    @property
+    def os(self) -> str:
+        """Agent OS family (``windows`` | ``linux`` | ``macos``), lower-cased.
+
+        Read-only view over ``meta["os"]`` (set from ``register.meta.os`` on the
+        wire). Legacy agents that never reported an OS default to ``windows`` so
+        OS-aware behavior stays backward-compatible (see ADR-0035).
+        """
+
+        return str(self.meta.get("os") or "windows").lower()
+
     def to_public(self) -> dict[str, Any]:
         return {
             "agent_id": self.agent_id,
             "online": self.online,
+            "os": self.os,
             "meta": self.meta,
             "connected_at": self.connected_at.isoformat() if self.connected_at else None,
             "last_seen": self.last_seen.isoformat() if self.last_seen else None,

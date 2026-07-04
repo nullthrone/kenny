@@ -129,12 +129,20 @@ class ScreenshotStore:
         return self._latest.get(agent_id)
 
 
-def build_health(snapshot: dict[str, Any] | None) -> dict[str, Any]:
-    """Run health rules over a stored snapshot (or empty when none)."""
+def build_health(
+    snapshot: dict[str, Any] | None, *, agent_os: str = "windows"
+) -> dict[str, Any]:
+    """Run health rules over a stored snapshot (or empty when none).
+
+    ``agent_os`` is the agent's OS family; it is forwarded to
+    :func:`health_rules.evaluate_snapshot` so a non-Windows agent's Windows-only
+    sections are not scored (ADR-0035). Defaults to ``windows`` for callers that
+    have no agent context, preserving prior behavior.
+    """
 
     if not snapshot:
         return {"overall": "unknown", "sections": {}}
-    return health_rules.evaluate_snapshot(snapshot)
+    return health_rules.evaluate_snapshot(snapshot, agent_os=agent_os)
 
 
 async def _agent_overview(
@@ -143,11 +151,13 @@ async def _agent_overview(
     agent = registry.get(agent_id)
     latest = await store.latest(agent_id)
     snapshot = latest["snapshot"] if latest else None
-    health = build_health(snapshot)
+    agent_os = agent.os if agent else "windows"
+    health = build_health(snapshot, agent_os=agent_os)
     flagged = [name for name, s in health["sections"].items() if s["status"] in ("warn", "crit")]
     return {
         "agent_id": agent_id,
         "online": bool(agent and agent.online),
+        "os": agent_os,
         "meta": agent.meta if agent else {},
         "overall": health["overall"],
         "flagged_sections": flagged,
@@ -234,7 +244,8 @@ def register_tools(
     async def agent_health(id: str) -> dict[str, Any]:
         latest = await store.latest(id)
         snapshot = latest["snapshot"] if latest else None
-        health = build_health(snapshot)
+        agent = registry.get(id)
+        health = build_health(snapshot, agent_os=agent.os if agent else "windows")
         return {
             "agent_id": id,
             "collected_at": latest["collected_at"] if latest else None,

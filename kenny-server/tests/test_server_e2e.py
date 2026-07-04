@@ -117,7 +117,7 @@ class MockAgent:
                         "type": "register",
                         "agent_id": self.agent_id,
                         "token": self.token,
-                        "meta": {"hostname": "DEV-PC", "os": "linux", "version": "0.1.0"},
+                        "meta": {"hostname": "DEV-PC", "os": "windows", "version": "0.1.0"},
                     }
                 )
             )
@@ -133,7 +133,7 @@ class MockAgent:
                     "agent_id": self.agent_id,
                     "protocol": "0.8",
                     "client_nonce": base64.b64encode(client_nonce).decode(),
-                    "meta": {"hostname": "DEV-PC", "os": "linux", "version": "0.1.0"},
+                    "meta": {"hostname": "DEV-PC", "os": "windows", "version": "0.1.0"},
                 }
             )
         )

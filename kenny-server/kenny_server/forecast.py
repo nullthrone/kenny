@@ -60,6 +60,8 @@ def build_facts(
     disk: list[dict[str, Any]],
     battery: dict[str, Any] | None,
     changes: list[dict[str, Any]],
+    *,
+    agent_os: str = "windows",
 ) -> dict[str, Any]:
     """Assemble the compact fact set the forecast is generated from.
 
@@ -67,9 +69,12 @@ def build_facts(
     output and a ``diffs.diff_snapshots`` list (the endpoint does the store I/O).
     Change rows are capped at ``_MAX_CHANGES`` so neither the prompt nor the
     summary can grow without bound.
+
+    ``agent_os`` is forwarded to :func:`tools.build_health` so a non-Windows
+    agent's Windows-only sections are not scored as flagged (ADR-0035).
     """
 
-    health = build_health(snapshot)
+    health = build_health(snapshot, agent_os=agent_os)
     flagged = [
         name
         for name, sec in health.get("sections", {}).items()

@@ -40,6 +40,19 @@ def _num(value: Any) -> float | None:
     return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
 
+def _agent_os(agent: Agent) -> str:
+    """The agent's OS family from its ``meta`` (registry ``Agent.os``), lower-cased.
+
+    Legacy agents that never reported an OS default to ``windows`` (see ADR-0035).
+    """
+
+    return str((agent.get("meta") or {}).get("os") or "windows").lower()
+
+
+# Display labels for an OS family with no ``os_support`` telemetry to name it.
+_OS_FAMILY_LABEL = {"windows": "Windows", "linux": "Linux", "macos": "macOS"}
+
+
 # --------------------------------------------------------------------------
 # Overview (single-snapshot fleet aggregates)
 # --------------------------------------------------------------------------
@@ -278,13 +291,21 @@ def _os_inventory(agents: list[Agent]) -> dict[str, Any]:
 
     buckets: dict[str, list[dict[str, Any]]] = {}
     for a in agents:
+        family = _agent_os(a)
         os = _section(a.get("snapshot"), "os_support")
         if os and (os.get("name") or os.get("version")):
-            name = str(os.get("name") or "Windows").strip()
+            # Never assume "Windows": if os_support carries no name, fall back to
+            # the agent's declared OS family, not a hardcoded Windows label.
+            name = str(os.get("name") or _OS_FAMILY_LABEL.get(family, "")).strip()
             version = str(os.get("version") or "").strip()
-            label = f"{name} {version}".strip()
+            label = f"{name} {version}".strip() or _OS_FAMILY_LABEL.get(family, "Unknown")
             build = os.get("build")
             detail = f"build {build}" if build else (os.get("summary") or label)
+        elif family in _OS_FAMILY_LABEL:
+            # No os_support telemetry (e.g. an early or stubbed agent): bucket by
+            # the OS family it registered with rather than "Unknown"/"Windows".
+            label = _OS_FAMILY_LABEL[family]
+            detail = f"{label} agent (no os_support telemetry)"
         else:
             label, detail = "Unknown", "no os_support telemetry"
         buckets.setdefault(label, []).append(_member(a["agent_id"], label, detail))
@@ -298,13 +319,16 @@ def _os_inventory(agents: list[Agent]) -> dict[str, Any]:
 def _device_mix(agents: list[Agent]) -> dict[str, Any]:
     """Pie: laptops (have a battery) vs desktops."""
 
-    buckets: dict[str, list[dict[str, Any]]] = {"Laptop": [], "Desktop": []}
+    buckets: dict[str, list[dict[str, Any]]] = {"Laptop": [], "Desktop": [], "Server": []}
     for a in agents:
         bat = _section(a.get("snapshot"), "battery")
         if bat and bat.get("present") is True:
             charge = _num(bat.get("charge_percent"))
             detail = f"battery {charge:.0f}%" if charge is not None else "battery present"
             buckets["Laptop"].append(_member(a["agent_id"], "laptop", detail))
+        elif _agent_os(a) == "linux":
+            # A batteryless Linux host is a server/appliance, not a desktop PC.
+            buckets["Server"].append(_member(a["agent_id"], "server", "Linux host, no battery"))
         else:
             buckets["Desktop"].append(_member(a["agent_id"], "desktop", "no battery"))
     return {
@@ -318,13 +342,22 @@ def _security_posture(agents: list[Agent]) -> dict[str, Any]:
     """Compliance ratios for three security controls (small-multiple donuts)."""
 
     metrics = {
-        "encryption": {"label": "System drive encrypted", "compliant": [], "noncompliant": [], "unknown": []},
-        "defender_realtime": {"label": "Defender real-time on", "compliant": [], "noncompliant": [], "unknown": []},
-        "firewall": {"label": "Firewall fully on", "compliant": [], "noncompliant": [], "unknown": []},
+        "encryption": {"label": "System drive encrypted", "compliant": [], "noncompliant": [], "unknown": [], "na": []},
+        "defender_realtime": {"label": "Defender real-time on", "compliant": [], "noncompliant": [], "unknown": [], "na": []},
+        "firewall": {"label": "Firewall fully on", "compliant": [], "noncompliant": [], "unknown": [], "na": []},
     }
 
     for a in agents:
         aid, snap = a["agent_id"], a.get("snapshot")
+
+        # These three controls are Windows concepts (BitLocker, Microsoft
+        # Defender, Windows Firewall profiles). For a non-Windows agent they do
+        # not apply — mark them "n/a"/excluded rather than counting them as
+        # "unknown", which would dilute the Windows compliance ratios (ADR-0035).
+        if _agent_os(a) == "linux":
+            for m in metrics.values():
+                m["na"].append(_member(aid, "n/a", "not applicable on Linux"))
+            continue
 
         enc = _section(snap, "encryption")
         sysvol = None
@@ -372,9 +405,11 @@ def _security_posture(agents: list[Agent]) -> dict[str, Any]:
                 "compliant": len(m["compliant"]),
                 "noncompliant": len(m["noncompliant"]),
                 "unknown": len(m["unknown"]),
+                "na": len(m["na"]),
                 "members_compliant": m["compliant"],
                 "members_noncompliant": m["noncompliant"],
                 "members_unknown": m["unknown"],
+                "members_na": m["na"],
             }
         )
     return {"metrics": out}

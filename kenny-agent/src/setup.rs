@@ -98,13 +98,103 @@ pub fn resolve_setup_config(args: &SetupArgs, sidecar_dir: &Path) -> anyhow::Res
     })
 }
 
-#[cfg(not(windows))]
+#[cfg(all(not(windows), not(target_os = "linux")))]
 pub fn setup(_args: crate::config::SetupArgs) -> anyhow::Result<()> {
-    anyhow::bail!("`setup` is only supported on Windows");
+    anyhow::bail!("`setup` is only supported on Windows and Linux");
 }
 
 #[cfg(windows)]
 pub use windows_impl::setup;
+
+#[cfg(target_os = "linux")]
+pub use linux_impl::setup;
+
+/// Linux bootstrap installer: copy the running binary into `/opt/kenny` and run
+/// `install` from there so the systemd unit's `ExecStart` points at the stable path.
+/// The parallel to the Windows UAC-elevated `%ProgramFiles%\kenny` copy (ADR-0035).
+#[cfg(target_os = "linux")]
+mod linux_impl {
+    use std::os::unix::fs::PermissionsExt as _;
+    use std::path::Path;
+
+    use anyhow::Context as _;
+    use tracing::info;
+
+    use super::{resolve_setup_config, ResolvedSetup};
+    use crate::config::SetupArgs;
+
+    /// Stable install directory for the agent binary.
+    const INSTALL_DIR: &str = "/opt/kenny";
+    /// Installed binary path (the systemd unit's `ExecStart`).
+    const INSTALL_BIN: &str = "/opt/kenny/kenny-agent";
+
+    /// `setup` — Linux bootstrap installer entry point.
+    pub fn setup(args: SetupArgs) -> anyhow::Result<()> {
+        // Requires root to write /opt, /etc/kenny, and the systemd unit.
+        crate::service::require_root()?;
+
+        let exe = std::env::current_exe()?;
+        let src_dir = exe
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("exe has no parent dir"))?
+            .to_path_buf();
+
+        let resolved = resolve_setup_config(&args, &src_dir)?;
+
+        std::fs::create_dir_all(INSTALL_DIR).with_context(|| format!("creating {INSTALL_DIR}"))?;
+        let dest = Path::new(INSTALL_BIN);
+        if same_file(&exe, dest) {
+            info!(path = %dest.display(), "already running from install dir; skipping copy");
+        } else {
+            std::fs::copy(&exe, dest)
+                .with_context(|| format!("copying agent binary to {}", dest.display()))?;
+            std::fs::set_permissions(dest, std::fs::Permissions::from_mode(0o755))
+                .with_context(|| format!("setting mode on {}", dest.display()))?;
+            info!(from = %exe.display(), to = %dest.display(), "copied agent binary");
+        }
+
+        // Run `install` from the copied binary: it persists the config to /etc/kenny and
+        // renders the unit with `ExecStart` = the copied path (its own `current_exe`).
+        run_install(dest, &resolved)?;
+        info!("setup complete");
+        Ok(())
+    }
+
+    /// Best-effort same-path check (normalizes via `canonicalize` when both exist).
+    fn same_file(a: &Path, b: &Path) -> bool {
+        match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => a == b,
+        }
+    }
+
+    /// Run `install` from the copied binary, forwarding the resolved config.
+    fn run_install(dest_exe: &Path, r: &ResolvedSetup) -> anyhow::Result<()> {
+        let mut cmd = std::process::Command::new(dest_exe);
+        cmd.arg("install")
+            .arg("--server")
+            .arg(&r.server)
+            .arg("--agent-id")
+            .arg(&r.agent_id)
+            .arg("--telemetry-interval-secs")
+            .arg(r.telemetry_interval_secs.to_string())
+            .arg("--service-name")
+            .arg(&r.service_name);
+        if let Some(t) = &r.enroll_token {
+            cmd.arg("--enroll-token").arg(t);
+        }
+        if let Some(k) = &r.server_pubkey {
+            cmd.arg("--server-pubkey").arg(k);
+        }
+        let status = cmd
+            .status()
+            .with_context(|| format!("running {} install", dest_exe.display()))?;
+        if !status.success() {
+            anyhow::bail!("`install` failed with {status}");
+        }
+        Ok(())
+    }
+}
 
 #[cfg(windows)]
 mod windows_impl {

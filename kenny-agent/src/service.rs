@@ -14,27 +14,36 @@ pub(crate) use windows_impl::launch_tray_in_active_session;
 #[cfg(windows)]
 pub use windows_impl::{install, run_service, uninstall};
 
-#[cfg(not(windows))]
+// Linux uses the systemd-unit lifecycle (parallel to the Windows SCM path, ADR-0035).
+// `require_root` is also reused by the Linux `setup` bootstrap.
+#[cfg(target_os = "linux")]
+pub(crate) use linux_impl::require_root;
+#[cfg(target_os = "linux")]
+pub use linux_impl::{install, run_service, uninstall};
+
+// Every remaining non-Windows target (other unix such as macOS/BSD, and any non-unix
+// non-windows target) keeps the `unsupported` stub so the crate still builds there.
+#[cfg(all(not(windows), not(target_os = "linux")))]
 mod stub {
     use crate::config::{InstallArgs, RunServiceArgs, UninstallArgs};
 
-    /// `install` is Windows-only.
+    /// `install` is supported on Windows and Linux only.
     pub fn install(_args: InstallArgs) -> anyhow::Result<()> {
-        anyhow::bail!("`install` is only supported on Windows");
+        anyhow::bail!("`install` is only supported on Windows and Linux");
     }
 
-    /// `uninstall` is Windows-only.
+    /// `uninstall` is supported on Windows and Linux only.
     pub fn uninstall(_args: UninstallArgs) -> anyhow::Result<()> {
-        anyhow::bail!("`uninstall` is only supported on Windows");
+        anyhow::bail!("`uninstall` is only supported on Windows and Linux");
     }
 
-    /// `run-service` is Windows-only.
+    /// `run-service` is supported on Windows and Linux only.
     pub fn run_service(_args: RunServiceArgs) -> anyhow::Result<()> {
-        anyhow::bail!("`run-service` is only supported on Windows");
+        anyhow::bail!("`run-service` is only supported on Windows and Linux");
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(all(not(windows), not(target_os = "linux")))]
 pub use stub::{install, run_service, uninstall};
 
 /// Persisted service configuration (written by `install`, read by `run-service`).
@@ -59,6 +68,312 @@ pub struct ServiceConfig {
 /// File name of the persisted config, stored next to the executable.
 #[cfg_attr(not(windows), allow(dead_code))]
 pub const CONFIG_FILE: &str = "kenny-agent.config.json";
+
+/// Linux systemd-unit lifecycle: the parallel to the Windows SCM path (ADR-0035).
+///
+/// `install` writes the connection config to `/etc/kenny`, renders a systemd unit into
+/// `/etc/systemd/system`, and `enable --now`s it. `run-service` reads the persisted
+/// config and runs the tunnel until `SIGTERM` (systemd stop). There is no SCM and no
+/// tray/session-0 model here (Linux has no session-0 construct — see ADR-0035).
+#[cfg(target_os = "linux")]
+mod linux_impl {
+    use anyhow::Context as _;
+    use tracing::info;
+
+    use super::{ServiceConfig, CONFIG_FILE};
+    use crate::config::{Config, InstallArgs, RunServiceArgs, UninstallArgs};
+
+    /// Connection config directory (persisted `ServiceConfig`).
+    const ETC_DIR: &str = "/etc/kenny";
+    /// Update-stable state directory (key + kill-switch control file).
+    const STATE_DIR: &str = "/var/lib/kenny";
+    /// Rolling-log directory.
+    const LOG_DIR: &str = "/var/log/kenny";
+    /// System unit directory for the rendered service file.
+    const SYSTEMD_DIR: &str = "/etc/systemd/system";
+
+    /// The systemd unit file name for `service_name` (e.g. `kenny-agent.service`).
+    fn unit_file_name(service_name: &str) -> String {
+        format!("{service_name}.service")
+    }
+
+    /// Absolute path of the rendered unit for `service_name`.
+    fn unit_path(service_name: &str) -> std::path::PathBuf {
+        std::path::Path::new(SYSTEMD_DIR).join(unit_file_name(service_name))
+    }
+
+    /// Render the systemd unit for the agent. Pure and unit-tested.
+    ///
+    /// `exec_path` is the absolute path to the installed `kenny-agent` binary. The unit
+    /// runs `run-service`, which reads the persisted config from `/etc/kenny`.
+    pub(crate) fn render_unit(cfg: &ServiceConfig, exec_path: &str) -> String {
+        format!(
+            "[Unit]\n\
+             Description=kenny agent ({agent_id} -> {server})\n\
+             After=network-online.target\n\
+             Wants=network-online.target\n\
+             \n\
+             [Service]\n\
+             Type=simple\n\
+             ExecStart={exec_path} run-service\n\
+             Restart=on-failure\n\
+             RestartSec=5\n\
+             User=root\n\
+             \n\
+             [Install]\n\
+             WantedBy=multi-user.target\n",
+            agent_id = cfg.agent_id,
+            server = cfg.server,
+            exec_path = exec_path,
+        )
+    }
+
+    /// The current process's effective uid, parsed from `/proc/self/status` (no libc
+    /// dependency). The `Uid:` line is `real  effective  saved  fs`.
+    fn effective_uid() -> anyhow::Result<u32> {
+        let status =
+            std::fs::read_to_string("/proc/self/status").context("reading /proc/self/status")?;
+        for line in status.lines() {
+            if let Some(rest) = line.strip_prefix("Uid:") {
+                let mut fields = rest.split_whitespace();
+                let _real = fields.next();
+                if let Some(euid) = fields.next() {
+                    return euid.parse::<u32>().context("parsing effective uid");
+                }
+            }
+        }
+        anyhow::bail!("could not determine effective uid from /proc/self/status");
+    }
+
+    /// Require root (euid 0); otherwise bail with a clear "run as root" message.
+    pub(crate) fn require_root() -> anyhow::Result<()> {
+        if effective_uid()? != 0 {
+            anyhow::bail!("this command must be run as root (try: sudo kenny-agent ...)");
+        }
+        Ok(())
+    }
+
+    /// Run `systemctl <args>`, turning a missing binary or a down system bus (no systemd
+    /// as PID 1) into a clear, non-panicking error.
+    fn systemctl(args: &[&str]) -> anyhow::Result<()> {
+        let output = std::process::Command::new("systemctl")
+            .args(args)
+            .output()
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    anyhow::anyhow!(
+                        "`systemctl` not found: kenny-agent's Linux service lifecycle requires \
+                         systemd"
+                    )
+                } else {
+                    anyhow::anyhow!("failed to run `systemctl {}`: {e}", args.join(" "))
+                }
+            })?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!(
+                "`systemctl {}` failed ({}): {} — systemd must be running as PID 1",
+                args.join(" "),
+                output.status,
+                stderr.trim(),
+            );
+        }
+        Ok(())
+    }
+
+    /// `install` — persist the config, render the unit, and enable it via systemd.
+    pub fn install(args: InstallArgs) -> anyhow::Result<()> {
+        require_root()?;
+
+        let cfg = ServiceConfig {
+            server: args.run.server.clone(),
+            agent_id: args.run.agent_id.clone(),
+            token: args.run.token.clone(),
+            server_pubkey: args.run.server_pubkey.clone(),
+            enroll_token: args.run.enroll_token.clone(),
+            telemetry_interval_secs: args.run.telemetry_interval_secs,
+        };
+
+        // Ensure the FHS directories exist: config in /etc, state/key/control in
+        // /var/lib, logs in /var/log. The latter two are best-effort so a locked-down
+        // host can still install (paths fall back to temp_dir at runtime if absent).
+        std::fs::create_dir_all(ETC_DIR).with_context(|| format!("creating {ETC_DIR}"))?;
+        let _ = std::fs::create_dir_all(STATE_DIR);
+        let _ = std::fs::create_dir_all(LOG_DIR);
+
+        let cfg_path = std::path::Path::new(ETC_DIR).join(CONFIG_FILE);
+        std::fs::write(&cfg_path, serde_json::to_vec_pretty(&cfg)?)
+            .with_context(|| format!("writing {}", cfg_path.display()))?;
+        info!(path = %cfg_path.display(), "wrote service config");
+
+        let exec = std::env::current_exe()?;
+        let exec_str = exec.to_string_lossy();
+        let unit = render_unit(&cfg, &exec_str);
+        let path = unit_path(&args.service_name);
+        std::fs::write(&path, unit)
+            .with_context(|| format!("writing systemd unit {}", path.display()))?;
+        info!(path = %path.display(), "wrote systemd unit");
+
+        systemctl(&["daemon-reload"])?;
+        let unit_name = unit_file_name(&args.service_name);
+        systemctl(&["enable", "--now", &unit_name])?;
+        info!(unit = %unit_name, "service installed and started");
+        Ok(())
+    }
+
+    /// `uninstall` — disable + stop the unit, remove the file, reload systemd. Best-effort.
+    pub fn uninstall(args: UninstallArgs) -> anyhow::Result<()> {
+        require_root()?;
+
+        let unit_name = unit_file_name(&args.service_name);
+        if let Err(e) = systemctl(&["disable", "--now", &unit_name]) {
+            tracing::warn!(error = %e, "systemctl disable --now failed; continuing with removal");
+        }
+
+        let path = unit_path(&args.service_name);
+        if path.exists() {
+            std::fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
+            info!(path = %path.display(), "removed systemd unit");
+        }
+
+        let _ = systemctl(&["daemon-reload"]);
+        info!(unit = %unit_name, "service removed");
+        Ok(())
+    }
+
+    /// `run-service` — read the persisted config and run the tunnel until `SIGTERM`.
+    ///
+    /// No SCM: systemd owns process lifecycle (auto-restart via `Restart=on-failure`).
+    /// A `SIGTERM` (systemctl stop) drives a graceful shutdown through `run_until`.
+    pub fn run_service(args: RunServiceArgs) -> anyhow::Result<()> {
+        let config = resolve_run_config(&args)?;
+        let runtime = tokio::runtime::Runtime::new()?;
+        runtime.block_on(async move {
+            let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+            tokio::spawn(async move {
+                use tokio::signal::unix::{signal, SignalKind};
+                if let Ok(mut term) = signal(SignalKind::terminate()) {
+                    term.recv().await;
+                    let _ = shutdown_tx.send(true);
+                }
+            });
+            crate::tunnel::run_until(config, shutdown_rx).await;
+        });
+        info!("service stopped cleanly");
+        Ok(())
+    }
+
+    /// Merge explicit flags over the persisted `/etc/kenny` config (flags win).
+    fn resolve_run_config(args: &RunServiceArgs) -> anyhow::Result<Config> {
+        let mut server = None;
+        let mut agent_id = None;
+        let mut token = None;
+        let mut server_pubkey = None;
+        let mut enroll_token = None;
+        let mut interval = None;
+
+        let cfg_path = std::path::Path::new(ETC_DIR).join(CONFIG_FILE);
+        if let Ok(bytes) = std::fs::read(&cfg_path) {
+            if let Ok(persisted) = serde_json::from_slice::<ServiceConfig>(&bytes) {
+                server = Some(persisted.server);
+                agent_id = Some(persisted.agent_id);
+                token = persisted.token;
+                server_pubkey = persisted.server_pubkey;
+                enroll_token = persisted.enroll_token;
+                interval = Some(persisted.telemetry_interval_secs);
+            }
+        }
+
+        if let Some(s) = &args.run.server {
+            server = Some(s.clone());
+        }
+        if let Some(a) = &args.run.agent_id {
+            agent_id = Some(a.clone());
+        }
+        if let Some(t) = &args.run.token {
+            token = Some(t.clone());
+        }
+        if let Some(k) = &args.run.server_pubkey {
+            server_pubkey = Some(k.clone());
+        }
+        if let Some(e) = &args.run.enroll_token {
+            enroll_token = Some(e.clone());
+        }
+        if let Some(i) = args.run.telemetry_interval_secs {
+            interval = Some(i);
+        }
+
+        Ok(Config {
+            server: server.ok_or_else(|| anyhow::anyhow!("no server in config file or flags"))?,
+            agent_id: agent_id
+                .ok_or_else(|| anyhow::anyhow!("no agent-id in config file or flags"))?,
+            token,
+            server_pubkey,
+            enroll_token,
+            telemetry_interval_secs: interval.unwrap_or(900),
+        })
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn sample_cfg() -> ServiceConfig {
+            ServiceConfig {
+                server: "wss://kenny.example.com/agent/ws".to_string(),
+                agent_id: "linux-box".to_string(),
+                token: None,
+                server_pubkey: Some("A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=".to_string()),
+                enroll_token: None,
+                telemetry_interval_secs: 900,
+            }
+        }
+
+        #[test]
+        fn render_unit_contains_required_directives() {
+            let unit = render_unit(&sample_cfg(), "/opt/kenny/kenny-agent");
+            assert!(
+                unit.contains("ExecStart=/opt/kenny/kenny-agent run-service"),
+                "unit must launch run-service from the exec path:\n{unit}"
+            );
+            assert!(
+                unit.contains("Restart=on-failure"),
+                "missing restart policy:\n{unit}"
+            );
+            assert!(
+                unit.contains("RestartSec=5"),
+                "missing restart delay:\n{unit}"
+            );
+            assert!(
+                unit.contains("Type=simple"),
+                "missing service type:\n{unit}"
+            );
+            assert!(unit.contains("User=root"), "missing User=root:\n{unit}");
+            assert!(
+                unit.contains("After=network-online.target"),
+                "missing network ordering:\n{unit}"
+            );
+            assert!(
+                unit.contains("WantedBy=multi-user.target"),
+                "missing install target:\n{unit}"
+            );
+            // The agent identity is surfaced in the description for operators.
+            assert!(
+                unit.contains("linux-box"),
+                "missing agent id in description:\n{unit}"
+            );
+        }
+
+        #[test]
+        fn unit_path_is_under_systemd_dir() {
+            let p = unit_path("kenny-agent");
+            assert_eq!(
+                p,
+                std::path::Path::new("/etc/systemd/system/kenny-agent.service")
+            );
+        }
+    }
+}
 
 #[cfg(windows)]
 mod windows_impl {

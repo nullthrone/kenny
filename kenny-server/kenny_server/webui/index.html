@@ -798,6 +798,19 @@
     const headerRight = document.getElementById("header-right");
     const tabsEl = document.getElementById("tabs");
     const sev = s => ["ok", "warn", "crit"].includes(s) ? s : "unknown";
+
+    // A tiny per-OS glyph so Linux hosts read at a glance next to Windows ones
+    // (ADR-0035). Inference is text-based so it also works on the OS pie labels
+    // (e.g. "Ubuntu 24.04", "Windows 11 23H2"). Returns "" with a trailing space
+    // when set, so callers can concatenate it unconditionally.
+    function osIcon(s) {
+      const t = String(s || "").toLowerCase();
+      if (/linux|ubuntu|debian|fedora|arch|raspbian|centos|suse|nixos/.test(t)) return "🐧 ";
+      if (/mac|darwin|osx/.test(t)) return "🍎 ";
+      if (/win/.test(t)) return "🪟 ";
+      return "";
+    }
+
     const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g,
       c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
@@ -1286,7 +1299,7 @@
 
       buildKpis();
       buildHealth();
-      buildPie("ov-os", o.os.segments, "OS", "box");
+      buildPie("ov-os", o.os.segments.map(s => ({ ...s, label: osIcon(s.label) + s.label })), "OS", "box");
       buildPie("ov-device", o.device.segments, "Device", "monitor");
       buildPosture();
       buildSections();
@@ -1950,7 +1963,9 @@
       const meta = data.meta || {};
       const name = meta.hostname || data.agent_id;
       const ver = meta.version ? " · v" + meta.version : "";
-      const os = meta.os || meta.os_name || "";
+      const osFamily = (data.os || meta.os || "").toLowerCase();
+      const os = meta.os || meta.os_name || osFamily || "";
+      const osGlyph = osIcon(osFamily);
 
       const secs = Object.entries(h.sections || {}).map(([n, s]) =>
         tileHtml(n, s.status, s.summary, s.reason, `openSectionDetail(${jsArg(n)})`)
@@ -1969,7 +1984,7 @@
             <span class="k-dot k-dot--${sev(h.overall)}"></span>
             <span class="kc-detail__name">${esc(name)}</span>
             <span class="k-mono kc-detail__meta">${esc(data.agent_id)}${esc(ver)}</span>
-            <span class="kc-detail__meta">${data.online ? "online" : "offline"}${os ? " · " + esc(os) : ""}</span>
+            <span class="kc-detail__meta">${data.online ? "online" : "offline"}${os ? " · " + osGlyph + esc(os) : ""}</span>
           </div>
           <div class="k-row" style="gap:6px;flex-wrap:wrap">
             <button class="k-btn k-btn--ghost k-btn--sm" onclick="refreshNow(${jsArg(data.agent_id)})">${icon('refresh-cw', 13)}refresh</button>

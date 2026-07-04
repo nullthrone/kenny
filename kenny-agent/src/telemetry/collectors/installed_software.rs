@@ -22,7 +22,11 @@ pub fn collect() -> Section {
     {
         windows_impl::collect()
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        linux_impl::collect()
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         Section::with_fields(
             Status::Ok,
@@ -264,6 +268,103 @@ ConvertTo-Json -Compress @($out)
     }
 }
 
+#[cfg(target_os = "linux")]
+mod linux_impl {
+    use super::*;
+    use std::process::Command;
+
+    /// Parse `Package\tVersion\tMaintainer` rows (one per line) into apps.
+    ///
+    /// Works for both the `dpkg-query` and `rpm` layouts: three tab-separated
+    /// columns where the third is a maintainer (dpkg) or vendor (rpm). Rows with
+    /// an empty package name are dropped; empty version/publisher become `None`.
+    fn parse_packages(raw: &str) -> Vec<core::App> {
+        raw.lines()
+            .filter_map(|line| {
+                let mut cols = line.split('\t');
+                let name = cols.next().unwrap_or("").trim();
+                if name.is_empty() {
+                    return None;
+                }
+                let version = cols.next().map(str::trim).filter(|s| !s.is_empty());
+                let publisher = cols.next().map(str::trim).filter(|s| !s.is_empty());
+                Some(core::App {
+                    name: name.to_string(),
+                    version: version.map(str::to_string),
+                    publisher: publisher.map(str::to_string),
+                    install_date: None,
+                })
+            })
+            .collect()
+    }
+
+    /// Run one package-database query, returning its stdout on success.
+    fn query(cmd: &str, args: &[&str]) -> Option<String> {
+        let out = Command::new(cmd).args(args).output().ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        Some(String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+
+    /// Query dpkg first, then rpm; `None` when neither package manager is present.
+    fn read_packages() -> Option<String> {
+        query(
+            "dpkg-query",
+            &["-W", "-f=${Package}\t${Version}\t${Maintainer}\n"],
+        )
+        .or_else(|| query("rpm", &["-qa", "--qf", "%{NAME}\t%{VERSION}\t%{VENDOR}\n"]))
+    }
+
+    /// Read the package database and shape it into the documented section.
+    pub fn collect() -> Section {
+        let Some(raw) = read_packages() else {
+            return Section::with_fields(
+                Status::Ok,
+                "n/a on this platform",
+                json!({ "apps": [], "count": 0, "truncated": false }),
+            );
+        };
+        let apps = parse_packages(&raw);
+        let (apps, count, truncated) = core::shape(apps);
+
+        Section::with_fields(
+            Status::Ok,
+            format!("{count} packages installed"),
+            json!({ "apps": apps, "count": count, "truncated": truncated }),
+        )
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn parse_packages_reads_tab_columns() {
+            let raw = "\
+7zip\t23.01+dfsg-1\tYSTV <ystv@example.org>
+bash\t5.2.21-2\tMatthias Klose <doko@debian.org>
+\t1.0\tNo Name
+coreutils\t\t
+";
+            let apps = parse_packages(raw);
+            assert_eq!(apps.len(), 3, "the nameless row is dropped");
+            assert_eq!(apps[0].name, "7zip");
+            assert_eq!(apps[0].version.as_deref(), Some("23.01+dfsg-1"));
+            assert_eq!(
+                apps[0].publisher.as_deref(),
+                Some("YSTV <ystv@example.org>")
+            );
+            assert_eq!(apps[0].install_date, None);
+            assert_eq!(apps[1].name, "bash");
+            // Empty version/publisher collapse to None.
+            assert_eq!(apps[2].name, "coreutils");
+            assert_eq!(apps[2].version, None);
+            assert_eq!(apps[2].publisher, None);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -278,7 +379,20 @@ mod tests {
         assert!(v["truncated"].is_boolean());
     }
 
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_reports_real_packages() {
+        // The Linux arm reads the package database; assert the documented shape
+        // without pinning a machine-specific count.
+        let v = collect().into_value();
+        assert_eq!(v["status"], "ok");
+        assert!(v["summary"].is_string());
+        assert!(v["apps"].is_array());
+        assert!(v["count"].is_number());
+        assert!(v["truncated"].is_boolean());
+    }
+
+    #[cfg(all(not(windows), not(target_os = "linux")))]
     #[test]
     fn off_windows_is_ok_stub() {
         let v = collect().into_value();
