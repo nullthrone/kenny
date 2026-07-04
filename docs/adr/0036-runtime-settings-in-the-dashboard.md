@@ -1,4 +1,4 @@
-# 0034. Runtime settings resolved DB-over-env, editable in the dashboard
+# 0036. Runtime settings resolved DB-over-env, editable in the dashboard
 
 - Status: accepted
 - Date: 2026-07-04
