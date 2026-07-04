@@ -71,6 +71,17 @@ pub mod core {
         qs
     }
 
+    /// Whether a parse of `w32tm /query /status` actually yielded a status we can
+    /// classify, as opposed to an error body (or nothing).
+    ///
+    /// `w32tm` prints its status to stdout even when it exits non-zero, but on failure
+    /// the body is an error message with no `Source:` / `Phase Offset:` lines — which
+    /// parses into an empty [`QueryStatus`]. A source or an offset means we got real
+    /// data and should trust the live-status path over the service-config fallback.
+    pub fn has_usable_status(qs: &QueryStatus) -> bool {
+        qs.source.is_some() || qs.offset_secs.is_some()
+    }
+
     /// A source that is a real network peer (not the fallback local hardware clock).
     pub fn is_network_synchronized(source: Option<&str>) -> bool {
         source
@@ -143,23 +154,36 @@ mod windows_impl {
     /// Collect `time_sync`. Prefer live status from `w32tm`; if the service is not
     /// currently up, fall back to classifying its configuration so a trigger-start
     /// service in its normal idle state does not raise a false warning.
+    ///
+    /// `w32tm /query /status` prints a usable status to stdout even when it exits
+    /// non-zero, and the act of calling it *trigger-starts* the (Manual/Trigger-Start)
+    /// Windows Time service. So we: read stdout regardless of exit code; if it parsed a
+    /// real status, classify it; otherwise inspect the service config, and if the
+    /// service is now `Running` (our probe just woke it) retry the query once before
+    /// concluding anything. Only a service that stays unreadable while confirmed running
+    /// — or one that is disabled/missing — is a genuine fault.
     pub fn collect() -> Section {
-        if let Some(raw) = winps::run_command("w32tm", &["/query", "/status"]) {
-            let qs = core::parse_query_status(&raw);
-            let (status, summary, synchronized) = core::classify_query(&qs);
-            return Section::with_fields(
-                status,
-                summary,
-                json!({
-                    "synchronized": synchronized,
-                    "source": qs.source,
-                    "offset_secs": qs.offset_secs,
-                }),
-            );
+        // First attempt: trust the output, not the exit code.
+        if let Some(qs) = query_w32tm() {
+            return query_section(&qs);
         }
 
-        // `w32tm` could not reach the service — decide from the service config.
+        // No usable live status — decide from the service config.
         let (state, start_mode) = query_service();
+        let running = state
+            .as_deref()
+            .map(|s| s.eq_ignore_ascii_case("Running"))
+            .unwrap_or(false);
+
+        // The first `w32tm` call trigger-starts W32Time; if it is now running, the
+        // service is up and simply was not ready a moment ago — retry once rather than
+        // punish it for the wake-up we caused.
+        if running {
+            if let Some(qs) = query_w32tm() {
+                return query_section(&qs);
+            }
+        }
+
         let (status, summary) = core::classify_service(state.as_deref(), start_mode.as_deref());
         Section::with_fields(
             status,
@@ -169,6 +193,28 @@ mod windows_impl {
                 "synchronized": Value::Null,
                 "source": Value::Null,
                 "offset_secs": Value::Null,
+            }),
+        )
+    }
+
+    /// Run `w32tm /query /status`, returning a parsed status only when the output
+    /// actually contains one (exit code ignored — see [`winps::run_command_output`]).
+    fn query_w32tm() -> Option<core::QueryStatus> {
+        let raw = winps::run_command_output("w32tm", &["/query", "/status"])?;
+        let qs = core::parse_query_status(&raw);
+        core::has_usable_status(&qs).then_some(qs)
+    }
+
+    /// Build the section from a parsed live `w32tm` status.
+    fn query_section(qs: &core::QueryStatus) -> Section {
+        let (status, summary, synchronized) = core::classify_query(qs);
+        Section::with_fields(
+            status,
+            summary,
+            json!({
+                "synchronized": synchronized,
+                "source": qs.source,
+                "offset_secs": qs.offset_secs,
             }),
         )
     }
@@ -271,7 +317,47 @@ mod tests {
 
     #[test]
     fn running_service_that_refuses_query_warns() {
+        // In the collector this arm is now reached only after a retry of `w32tm` has
+        // also failed while the service is confirmed running — a genuine anomaly — so
+        // the warn is meaningful rather than a trigger-start race artifact. In isolation
+        // the classifier still maps "running but unreadable" to a warning.
         let (status, _) = core::classify_service(Some("Running"), Some("Manual"));
         assert_eq!(status, Status::Warn);
+    }
+
+    #[test]
+    fn parsed_status_is_usable_only_with_source_or_offset() {
+        // A real status carries a source and/or an offset.
+        let with_source = core::QueryStatus {
+            source: Some("time.windows.com,0x8".into()),
+            offset_secs: None,
+        };
+        assert!(core::has_usable_status(&with_source));
+
+        let with_offset = core::QueryStatus {
+            source: None,
+            offset_secs: Some(0.01),
+        };
+        assert!(core::has_usable_status(&with_offset));
+
+        // An error body from a non-zero `w32tm` exit parses into an empty status, which
+        // must NOT be treated as live data (the collector falls back to the service).
+        let empty = core::parse_query_status(
+            "The following error occurred: The service has not been started. (0x80070426)",
+        );
+        assert_eq!(empty, core::QueryStatus::default());
+        assert!(!core::has_usable_status(&empty));
+    }
+
+    #[test]
+    fn usable_status_drives_query_classification() {
+        // When `w32tm` output parses to a real network source, the live-status path is
+        // used (OK) rather than the service-config fallback.
+        let raw = "Source: time.windows.com,0x8\nPhase Offset: 0.0123456s\n";
+        let qs = core::parse_query_status(raw);
+        assert!(core::has_usable_status(&qs));
+        let (status, _, synced) = core::classify_query(&qs);
+        assert_eq!(status, Status::Ok);
+        assert!(synced);
     }
 }

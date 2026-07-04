@@ -35,10 +35,35 @@ pub fn run_text(script: &str) -> Option<String> {
 }
 
 /// Run a program with raw arguments (e.g. `netsh`, `w32tm`) and return stdout.
+///
+/// Success-gated: returns `None` on a non-zero exit, discarding any stdout.
 pub fn run_command(program: &str, args: &[&str]) -> Option<String> {
     let mut cmd = Command::new(program);
     cmd.args(args);
     run_with_budget(cmd)
+}
+
+/// Run a program and return its stdout **regardless of exit code**, as long as it
+/// produced non-empty output.
+///
+/// Some tools (notably `w32tm /query /status`) print a perfectly usable status to
+/// stdout while still exiting non-zero — e.g. when the Windows Time service is not
+/// currently up. The success-gated [`run_command`] throws that stdout away, so the
+/// caller can never see the real status. This variant mirrors the defensive
+/// "inspect the output, don't trust the exit code" pattern used by
+/// `handlers::diagnostics::run_envelope`: it hands back whatever was printed and lets
+/// the caller decide whether it is usable. Returns `None` only on spawn failure,
+/// timeout, or genuinely empty output.
+pub fn run_command_output(program: &str, args: &[&str]) -> Option<String> {
+    let mut cmd = Command::new(program);
+    cmd.args(args);
+    let (_success, out) = run_capturing(cmd)?;
+    let trimmed = out.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
 }
 
 fn run_raw(script: &str) -> Option<String> {
@@ -56,7 +81,21 @@ fn run_raw(script: &str) -> Option<String> {
     run_with_budget(cmd)
 }
 
-/// Spawn `cmd` and return its stdout, but never block longer than [`PROBE_BUDGET`].
+/// Spawn `cmd` and return its stdout only when it exits successfully, but never block
+/// longer than [`PROBE_BUDGET`]. Non-zero exit → `None` (stdout discarded).
+///
+/// This is the success-gated wrapper most collectors want. Callers that need the
+/// output even on a non-zero exit use [`run_capturing`] directly (via
+/// [`run_command_output`]).
+fn run_with_budget(cmd: Command) -> Option<String> {
+    match run_capturing(cmd)? {
+        (true, out) => Some(out),
+        (false, _) => None,
+    }
+}
+
+/// Spawn `cmd` and capture its stdout with a `(success, stdout)` result, never
+/// blocking longer than [`PROBE_BUDGET`].
 ///
 /// A single hung probe (a wedged CIM/WMI query, a service stuck starting) must not
 /// stall the whole telemetry snapshot — collectors run on a bounded pool, but a
@@ -65,7 +104,11 @@ fn run_raw(script: &str) -> Option<String> {
 /// `stderr` is discarded (we only consume stdout JSON), which also rules out a
 /// stderr-pipe-buffer deadlock; telemetry stdout is small, so reading it after the
 /// child exits cannot block.
-fn run_with_budget(mut cmd: Command) -> Option<String> {
+///
+/// `Some((success, stdout))` is returned whenever the child ran to completion, so the
+/// exit-code decision is left to the caller. `None` means spawn failure, timeout, or
+/// an unreadable pipe — cases where there is no output to reason about at all.
+fn run_capturing(mut cmd: Command) -> Option<(bool, String)> {
     use std::io::Read;
     use std::process::Stdio;
     use std::time::Instant;
@@ -81,12 +124,9 @@ fn run_with_budget(mut cmd: Command) -> Option<String> {
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                if !status.success() {
-                    return None;
-                }
                 let mut buf = String::new();
                 child.stdout.take()?.read_to_string(&mut buf).ok()?;
-                return Some(buf);
+                return Some((status.success(), buf));
             }
             Ok(None) => {
                 if Instant::now() >= deadline {
