@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="Labrador avatar">
+  <circle cx="64" cy="64" r="64" fill="#CDE8C7"/>
+  <!-- floppy ears -->
+  <path d="M34 44 C22 46 20 70 30 84 C40 84 44 66 44 54 Z" fill="#C88A3A"/>
+  <path d="M94 44 C106 46 108 70 98 84 C88 84 84 66 84 54 Z" fill="#C88A3A"/>
+  <!-- head -->
+  <path d="M34 56 C34 40 46 32 64 32 C82 32 94 40 94 56 C94 80 82 98 64 98 C46 98 34 80 34 56 Z" fill="#E4A94E"/>
+  <!-- muzzle -->
+  <path d="M46 72 C46 64 54 60 64 60 C74 60 82 64 82 72 C82 86 74 94 64 94 C54 94 46 86 46 72 Z" fill="#F0C578"/>
+  <!-- eyes -->
+  <circle cx="51" cy="60" r="5.6" fill="#3A2A18"/>
+  <circle cx="77" cy="60" r="5.6" fill="#3A2A18"/>
+  <circle cx="53" cy="58" r="1.8" fill="#fff"/>
+  <circle cx="79" cy="58" r="1.8" fill="#fff"/>
+  <!-- nose -->
+  <ellipse cx="64" cy="72" rx="6.5" ry="5" fill="#2B2B2B"/>
+  <!-- mouth + tongue -->
+  <path d="M64 77 C64 83 58 86 54 84 M64 77 C64 83 70 86 74 84" fill="none" stroke="#2B2B2B" stroke-width="2.4" stroke-linecap="round"/>
+  <path d="M60 84 C60 92 68 92 68 84 Z" fill="#E86A6A"/>
+  <!-- amber collar -->
+  <path d="M48 96 C54 102 74 102 80 96" fill="none" stroke="#E8A33D" stroke-width="5" stroke-linecap="round"/>
+</svg>

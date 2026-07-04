@@ -370,7 +370,7 @@ fn frame_kind(frame: &Frame) -> &'static str {
 ///
 /// `wss://host/agent/ws` → `https://host`; `ws://host:port/...` → `http://host:port`.
 /// Only the scheme + authority are kept; the enrollment path is appended by the caller.
-fn http_base_from_ws(ws_url: &str) -> anyhow::Result<String> {
+pub(crate) fn http_base_from_ws(ws_url: &str) -> anyhow::Result<String> {
     let (scheme, rest) = if let Some(r) = ws_url.strip_prefix("wss://") {
         ("https", r)
     } else if let Some(r) = ws_url.strip_prefix("ws://") {

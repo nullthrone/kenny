@@ -226,6 +226,10 @@ _SPECS: list[SettingSpec] = [
           "Login max attempts", lifecycle="env_only", min=1),
     _spec("KENNY_LOGIN_LOCKOUT_SECS", "Operator & Agent Auth", "float", "60",
           "Login lockout (s)", lifecycle="env_only", min=0),
+    _spec("KENNY_SESSION_TTL_SECS", "Operator & Agent Auth", "int", "604800",
+          "Login session lifetime (s)", lifecycle="env_only", min=60,
+          help="How long a browser login session stays valid before re-login "
+               "(default 7 days). Read at login time (ADR-0037)."),
     _spec("KENNY_SERVER_PRIVATE_KEY", "Operator & Agent Auth", "secret", "",
           "Server private key (seed)", lifecycle="env_only", sensitive=True),
     _spec("KENNY_SERVER_PRIVATE_KEY_FILE", "Operator & Agent Auth", "str", "",

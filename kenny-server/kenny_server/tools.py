@@ -128,6 +128,11 @@ class ScreenshotStore:
     def get(self, agent_id: str) -> dict[str, Any] | None:
         return self._latest.get(agent_id)
 
+    def forget(self, agent_id: str) -> None:
+        """Drop the cached screenshot for a removed host (ADR-0037)."""
+
+        self._latest.pop(agent_id, None)
+
 
 def build_health(snapshot: dict[str, Any] | None) -> dict[str, Any]:
     """Run health rules over a stored snapshot (or empty when none)."""
@@ -161,6 +166,43 @@ async def _known_agent_ids(registry: AgentRegistry, store: TelemetryStore) -> li
     return sorted(ids)
 
 
+def _mcp_principal():
+    """The authenticated principal for the current MCP HTTP request, if any.
+
+    Returns ``None`` outside an HTTP request context (e.g. unit tests that call
+    tools directly), in which case enforcement is skipped — the auth middleware
+    still gates the real endpoint, and the shared-token principal is a superuser.
+    """
+
+    from fastmcp.server.dependencies import get_http_request
+
+    try:
+        request = get_http_request()
+    except Exception:  # noqa: BLE001 - no HTTP context (direct/in-proc call)
+        return None
+    return request.scope.get("kenny_principal") if request is not None else None
+
+
+def _require_scope(principal, agent_id: str) -> None:
+    """Raise if ``principal`` (a scoped ``user``) may not target ``agent_id``."""
+
+    if principal is not None and not principal.may_see(agent_id):
+        raise ToolError("forbidden", f"host {agent_id!r} is not in your scope")
+
+
+def _require_role(principal, min_role: str) -> None:
+    """Raise if ``principal`` lacks ``min_role`` (superuser > operator > user)."""
+
+    if principal is not None and not principal.at_least(min_role):
+        raise ToolError("forbidden", f"requires {min_role} role")
+
+
+def _active_key(principal) -> str | None:
+    """Per-caller active-agent key so concurrent MCP sessions don't collide."""
+
+    return principal.active_key if principal is not None else None
+
+
 def register_tools(
     mcp: FastMCP,
     *,
@@ -180,7 +222,11 @@ def register_tools(
         async def forward(args: dict[str, Any] | None = None) -> dict[str, Any]:
             """Forward this capability call to the active agent and return its result."""
             args = args or {}
-            agent_id = registry.require_active()
+            principal = _mcp_principal()
+            agent_id = registry.require_active(_active_key(principal))
+            # Defense in depth: the target is bound to this caller's selection, but
+            # re-check scope so a user can never operate outside their hosts.
+            _require_scope(principal, agent_id)
             timeout_s = float(args.get("timeout_s", 30))
             forward_logger.info("forward %s -> %s", tool_name, agent_id)
             try:
@@ -207,31 +253,44 @@ def register_tools(
 
     @mcp.tool(name="list_agents", description="List known agents with online state and health.")
     async def list_agents() -> dict[str, Any]:
+        principal = _mcp_principal()
         ids = await _known_agent_ids(registry, store)
+        if principal is not None and principal.scoped:
+            ids = [i for i in ids if i in principal.hosts]
         agents = [await _agent_overview(i, registry, store) for i in ids]
-        return {"active_agent": registry.active_agent, "agents": agents}
+        return {"active_agent": registry.active_for(_active_key(principal)), "agents": agents}
 
     @mcp.tool(name="select_agent", description="Set the active agent for forwarded tools.")
     async def select_agent(id: str) -> dict[str, Any]:
+        principal = _mcp_principal()
+        _require_scope(principal, id)
+        key = _active_key(principal)
         try:
-            agent = registry.select(id)
+            agent = registry.select(id, key=key)
         except KeyError:
             # Allow selecting an agent known only from stored telemetry.
             if id in await store.known_agents():
-                registry._active_agent = id  # noqa: SLF001 (intentional dev path)
+                if key is None:
+                    registry._active_agent = id  # noqa: SLF001 (intentional dev path)
+                else:
+                    registry._active_by_key[key] = id  # noqa: SLF001
                 return {"active_agent": id, "online": False}
             raise
         return {"active_agent": agent.agent_id, "online": agent.online}
 
     @mcp.tool(name="fleet_overview", description="Per-agent rolled-up health for the dashboard.")
     async def fleet_overview() -> dict[str, Any]:
+        principal = _mcp_principal()
         ids = await _known_agent_ids(registry, store)
+        if principal is not None and principal.scoped:
+            ids = [i for i in ids if i in principal.hosts]
         agents = [await _agent_overview(i, registry, store) for i in ids]
         overall = health_rules.worst(*(a["overall"] for a in agents if a["overall"] != "unknown"))
         return {"overall": overall or "unknown", "agents": agents}
 
     @mcp.tool(name="agent_health", description="Per-section status/summary for one agent.")
     async def agent_health(id: str) -> dict[str, Any]:
+        _require_scope(_mcp_principal(), id)
         latest = await store.latest(id)
         snapshot = latest["snapshot"] if latest else None
         health = build_health(snapshot)
@@ -243,6 +302,7 @@ def register_tools(
 
     @mcp.tool(name="agent_snapshot", description="Latest stored snapshot (or one section).")
     async def agent_snapshot(id: str, section: str | None = None) -> dict[str, Any]:
+        _require_scope(_mcp_principal(), id)
         latest = await store.latest(id)
         if latest is None:
             return {"agent_id": id, "snapshot": None}
@@ -285,6 +345,7 @@ def register_tools(
         description="Get the parental-controls config, custom list, and drift for an agent.",
     )
     async def webfilter_get(id: str) -> dict[str, Any]:
+        _require_scope(_mcp_principal(), id)
         return await _webfilter_overview(id)
 
     @mcp.tool(
@@ -306,6 +367,9 @@ def register_tools(
         remove_domain: str | None = None,
         action: str | None = None,
     ) -> dict[str, Any]:
+        principal = _mcp_principal()
+        _require_role(principal, "operator")
+        _require_scope(principal, id)
         await webfilter.set_config(
             id,
             enabled=enabled,
@@ -331,6 +395,9 @@ def register_tools(
         ),
     )
     async def webfilter_push(id: str) -> dict[str, Any]:
+        principal = _mcp_principal()
+        _require_role(principal, "operator")
+        _require_scope(principal, id)
         config = await webfilter.get_config(id)
         args = await webfilter.build_apply(id)
         block_mode = bool(config["block_mode"])
@@ -358,5 +425,6 @@ def register_tools(
     async def web_activity_query(
         id: str, hours: int = 24, flagged_only: bool = False
     ) -> dict[str, Any]:
+        _require_scope(_mcp_principal(), id)
         events = await webfilter.activity(id, hours=hours, flagged_only=flagged_only)
         return {"agent_id": id, "hours": hours, "events": events}

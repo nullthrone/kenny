@@ -30,26 +30,64 @@ def test_bad_bearer_rejected(tmp_path) -> None:
         assert r.status_code == 401
 
 
-def test_ui_redirects_to_login_then_works_after_login(tmp_path) -> None:
+def _create_first_user(c, username="admin", password="pw-123456", **data):
+    """Bootstrap the first (superuser) account via the first-run setup flow."""
+
+    return c.post(
+        "/setup",
+        data={"username": username, "password": password, **data},
+        follow_redirects=False,
+    )
+
+
+def test_ui_redirects_to_login_then_setup_then_works(tmp_path) -> None:
     app = _app(tmp_path)
-    token = app.state.operator_token
     with TestClient(app) as c:
         # Unauthenticated UI request redirects to the login page.
         r = c.get("/", follow_redirects=False)
         assert r.status_code == 302
         assert r.headers["location"] == "/login"
-        # The login page itself is public.
-        assert c.get("/login").status_code == 200
-        # Logging in sets the cookie; the client then reaches the UI and API.
-        r = c.post("/login", data={"token": token})  # follows 303 -> /
-        assert r.status_code == 200
-        assert c.get("/api/fleet").status_code == 200  # cookie now sent
+        # With no accounts yet, /login sends the browser to first-run setup.
+        r = c.get("/login", follow_redirects=False)
+        assert r.status_code == 302
+        assert r.headers["location"] == "/setup"
+        assert c.get("/setup").status_code == 200
+        # Creating the first account signs in (cookie) and reaches the API.
+        r = _create_first_user(c)
+        assert r.status_code == 303
+        assert c.get("/api/fleet").status_code == 200
+        # Setup is closed once an account exists.
+        r = _create_first_user(c, username="second")
+        assert r.status_code == 409
 
 
-def test_login_rejects_wrong_token(tmp_path) -> None:
+def test_login_with_username_password(tmp_path) -> None:
     app = _app(tmp_path)
     with TestClient(app) as c:
-        r = c.post("/login", data={"token": "wrong"}, follow_redirects=False)
+        _create_first_user(c)
+        c.get("/logout")
+        c.cookies.clear()
+        assert c.get("/api/fleet", follow_redirects=False).status_code == 401
+        r = c.post(
+            "/login",
+            data={"username": "admin", "password": "pw-123456"},
+            follow_redirects=False,
+        )
+        assert r.status_code == 303
+        assert c.get("/api/fleet").status_code == 200
+
+
+def test_login_rejects_wrong_credentials(tmp_path) -> None:
+    app = _app(tmp_path)
+    with TestClient(app) as c:
+        _create_first_user(c)
+        c.get("/logout")
+        c.cookies.clear()
+        r = c.post(
+            "/login",
+            data={"username": "admin", "password": "wrong"},
+            follow_redirects=False,
+        )
         assert r.status_code == 401
         # Still locked out.
         assert c.get("/api/fleet", follow_redirects=False).status_code == 401
@@ -58,18 +96,22 @@ def test_login_rejects_wrong_token(tmp_path) -> None:
 def test_login_rate_limited_after_repeated_failures(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("KENNY_LOGIN_MAX_ATTEMPTS", "3")
     app = _app(tmp_path)
-    token = app.state.operator_token
     with TestClient(app) as c:
+        _create_first_user(c)
+        c.get("/logout")
+        c.cookies.clear()
+        wrong = {"username": "admin", "password": "wrong"}
+        good = {"username": "admin", "password": "pw-123456"}
         # First three wrong attempts are rejected with 401 (not yet locked).
         for _ in range(3):
-            r = c.post("/login", data={"token": "wrong"}, follow_redirects=False)
+            r = c.post("/login", data=wrong, follow_redirects=False)
             assert r.status_code == 401
         # The next attempt is locked out with 429 + Retry-After.
-        r = c.post("/login", data={"token": "wrong"}, follow_redirects=False)
+        r = c.post("/login", data=wrong, follow_redirects=False)
         assert r.status_code == 429
         assert int(r.headers["retry-after"]) >= 1
-        # Even the correct token is refused while locked out.
-        r = c.post("/login", data={"token": token}, follow_redirects=False)
+        # Even correct credentials are refused while locked out.
+        r = c.post("/login", data=good, follow_redirects=False)
         assert r.status_code == 429
 
 
@@ -127,9 +169,8 @@ async def test_agent_auth_via_store(tmp_path) -> None:
 def test_secure_cookie_under_tls(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("KENNY_TLS", "1")
     app = _app(tmp_path)
-    token = app.state.operator_token
     with TestClient(app) as c:
-        r = c.post("/login", data={"token": token}, follow_redirects=False)
+        r = _create_first_user(c)
         assert r.status_code == 303
         set_cookie = r.headers["set-cookie"].lower()
         assert "secure" in set_cookie
@@ -139,8 +180,57 @@ def test_secure_cookie_under_tls(tmp_path, monkeypatch) -> None:
 def test_cookie_not_secure_without_tls(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("KENNY_TLS", raising=False)
     app = _app(tmp_path)
-    token = app.state.operator_token
     with TestClient(app) as c:
-        r = c.post("/login", data={"token": token}, follow_redirects=False)
+        r = _create_first_user(c)
         assert r.status_code == 303
         assert "secure" not in r.headers["set-cookie"].lower()
+
+
+def test_env_token_still_authorizes_as_back_compat(tmp_path) -> None:
+    """The legacy shared token keeps working after accounts exist (ADR-0037)."""
+
+    app = _app(tmp_path)
+    token = app.state.operator_token
+    with TestClient(app) as c:
+        _create_first_user(c)
+        c.cookies.clear()
+        # Bearer with the shared operator token is accepted (Claude/MCP path).
+        r = c.get("/api/fleet", headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code == 200
+
+
+def test_totp_required_when_enabled(tmp_path) -> None:
+    import sqlite3
+    import time
+
+    from kenny_server import security
+
+    db_path = str(tmp_path / "auth.sqlite")
+    app = build_app(db_path=db_path)
+    secret = security.generate_totp_secret()
+    with TestClient(app) as c:
+        _create_first_user(c)
+        # Enable TOTP on the admin account by writing the secret directly.
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "UPDATE users SET totp_secret = ? WHERE username = 'admin'", (secret,)
+        )
+        conn.commit()
+        conn.close()
+        c.get("/logout")
+        c.cookies.clear()
+        # Password alone is refused now.
+        r = c.post(
+            "/login",
+            data={"username": "admin", "password": "pw-123456"},
+            follow_redirects=False,
+        )
+        assert r.status_code == 401
+        # Password + a valid current code succeeds.
+        code = security.totp_at(secret, time.time())
+        r = c.post(
+            "/login",
+            data={"username": "admin", "password": "pw-123456", "totp": code},
+            follow_redirects=False,
+        )
+        assert r.status_code == 303

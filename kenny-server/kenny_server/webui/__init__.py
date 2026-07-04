@@ -38,6 +38,7 @@ from ..tokenstore import AgentTokenStore
 from ..tools import CallLog, ScreenshotStore, build_health
 from ..tunnel import AgentTunnel, ToolError
 from ..webfilter import WebFilterService, load_seed, normalize_domain
+from .authz import guard, principal_of, visible_ids
 
 _INDEX = Path(__file__).parent / "index.html"
 _ASSETS = Path(__file__).parent / "assets"
@@ -66,6 +67,10 @@ def build_api_routes(
     policy_engine: PolicyEngine | None = None,
     webfilter: WebFilterService | None = None,
     settings: Settings | None = None,
+    user_store: Any = None,
+    key_store: Any = None,
+    alert_state: Any = None,
+    webfilter_store: Any = None,
     client_factory: Any = None,
 ) -> list[Route]:
     """Build the dashboard's static + JSON routes.
@@ -117,20 +122,23 @@ def build_api_routes(
             if isinstance(rel, dict) and isinstance(rel.get("events"), list):
                 annotate_events(rel["events"], mapping)
 
-    async def api_fleet(_request: Request) -> JSONResponse:
+    async def api_fleet(request: Request) -> JSONResponse:
         ids = await _known_ids(registry, store)
+        principal = principal_of(request)
+        if principal is not None:
+            ids = visible_ids(principal, ids)
         agents = [await _overview(i, registry, store) for i in ids]
         from .. import health_rules
 
         overall = health_rules.worst(*(a["overall"] for a in agents if a["overall"] != "unknown"))
         return JSONResponse({"overall": overall or "unknown", "agents": agents})
 
-    async def api_fleet_overview(_request: Request) -> JSONResponse:
+    async def api_fleet_overview(request: Request) -> JSONResponse:
         """Fleet-wide aggregates for the high-level Overview dashboard.
 
         Loads the latest snapshot + rolled-up health for every agent and hands
-        them to :func:`fleet_stats.aggregate_overview`. Read-only; inherits
-        operator auth from the ``/api`` middleware.
+        them to :func:`fleet_stats.aggregate_overview`. Read-only; a ``user``-role
+        caller only sees their assigned hosts.
         """
 
         from datetime import datetime, timedelta, timezone
@@ -138,6 +146,9 @@ def build_api_routes(
         from .. import fleet_stats, trends
 
         ids = await _known_ids(registry, store)
+        principal = principal_of(request)
+        if principal is not None:
+            ids = visible_ids(principal, ids)
         forecast_since = (datetime.now(timezone.utc) - timedelta(days=30)).date().isoformat()
         snapshots = []
         rows = []
@@ -184,6 +195,9 @@ def build_api_routes(
         since = (datetime.now(timezone.utc) - timedelta(days=days)).date().isoformat()
 
         ids = await _known_ids(registry, store)
+        principal = principal_of(request)
+        if principal is not None:
+            ids = visible_ids(principal, ids)
         points_by_agent: dict[str, list[dict[str, Any]]] = {}
         for agent_id in ids:
             daily = await store.daily_latest(agent_id, since)
@@ -342,15 +356,17 @@ def build_api_routes(
         note = result.get("note") if isinstance(result, dict) else None
         return JSONResponse({"ok": True, "note": note})
 
-    async def api_audit(_request: Request) -> JSONResponse:
-        """Recent tool-call audit log across the whole fleet (for the dashboard).
+    async def api_audit(request: Request) -> JSONResponse:
+        """Recent tool-call audit log across the fleet (for the dashboard).
 
         Each entry is annotated ``state_changing`` (vs read-only) so the UI can
-        label confirm-gated calls without re-deriving the classification.
+        label confirm-gated calls without re-deriving the classification. A
+        ``user``-role caller only sees entries for their assigned hosts.
         """
 
         from ..chat import is_state_changing
 
+        principal = principal_of(request)
         entries = [
             {
                 "at": c["at"],
@@ -361,6 +377,7 @@ def build_api_routes(
                 "state_changing": is_state_changing(c["tool"]),
             }
             for c in await call_log.list()
+            if principal is None or principal.may_see(c["agent_id"])
         ]
         return JSONResponse({"entries": entries})
 
@@ -380,9 +397,20 @@ def build_api_routes(
         except ValueError:
             limit = 200
         limit = max(1, min(limit, 500))
+        principal = principal_of(request)
+        # A scoped user may not read events for hosts outside their scope. If they
+        # filter to a specific host, enforce it; otherwise restrict the whole set.
+        if principal is not None and principal.scoped:
+            if agent is not None and not principal.may_see(agent):
+                return JSONResponse(
+                    {"error": "forbidden", "detail": "host not in your scope"},
+                    status_code=403,
+                )
         entries = await event_store.query(
             agent_id=agent, level=level, kind=kind, limit=limit
         )
+        if principal is not None and principal.scoped:
+            entries = [e for e in entries if principal.may_see(e.get("agent_id"))]
         return JSONResponse({"entries": entries})
 
     async def api_rotate_token(request: Request) -> JSONResponse:
@@ -398,6 +426,47 @@ def build_api_routes(
         agent_id = request.path_params["id"]
         token = await token_store.create_or_rotate(agent_id)
         return JSONResponse({"agent_id": agent_id, "token": token})
+
+    async def api_remove_host(request: Request) -> JSONResponse:
+        """Remove a host from inventory: purge all of its data (ADR-0037).
+
+        Operator+ only (the route guard enforces this); a ``user`` role can never
+        reach it. Refuses hosts pinned via ``KENNY_AGENT_TOKENS`` since they would
+        be re-seeded on the next restart.
+        """
+
+        from .. import inventory
+
+        agent_id = request.path_params["id"]
+        if inventory.seeded_in_env(agent_id):
+            return JSONResponse(
+                {
+                    "error": "seeded",
+                    "detail": (
+                        "host is pinned in KENNY_AGENT_TOKENS; remove it there first"
+                    ),
+                },
+                status_code=409,
+            )
+        if None in (user_store, key_store, alert_state, webfilter_store):
+            return JSONResponse(
+                {"error": "unavailable", "detail": "inventory stores not configured"},
+                status_code=503,
+            )
+        result = await inventory.purge_agent(
+            agent_id,
+            registry=registry,
+            store=store,
+            event_store=event_store,
+            alert_state=alert_state,
+            token_store=token_store,
+            key_store=key_store,
+            webfilter_store=webfilter_store,
+            user_store=user_store,
+            screenshots=screenshots,
+        )
+        await call_log.record(agent_id, "remove_host", {}, ok=True)
+        return JSONResponse({"ok": True, "agent_id": agent_id, "purged": result})
 
     async def api_policy_list(_request: Request) -> JSONResponse:
         """Built-in (catalog) + operator deny rules for the policy view (ADR-0021)."""
@@ -661,41 +730,75 @@ def build_api_routes(
         releases = await changelog.fetch_releases(repo)
         return JSONResponse({"repo": repo, "releases": releases})
 
+    # Role/scope policy (ADR-0037), enforced by ``guard``:
+    #   - superuser only: core settings.
+    #   - operator+: fleet-wide config/provisioning (policy, webfilter mutation,
+    #     token rotation, host removal).
+    #   - user (host-scoped): reads and routine operations on assigned hosts.
+    op = {"min_role": "operator"}
+    su = {"min_role": "superuser"}
+    scoped = {"host_param": "id"}
+    op_scoped = {"min_role": "operator", "host_param": "id"}
     return [
         Route("/", index),
         Route("/assets/{name}", asset),
-        Route("/api/about", api_about),
-        Route("/api/changelog", api_changelog),
-        Route("/api/policy/rules", api_policy_list),
-        Route("/api/policy/rules", api_policy_add, methods=["POST"]),
-        Route("/api/policy/rules/{id}", api_policy_remove, methods=["DELETE"]),
-        Route("/api/settings", api_settings_list),
-        Route("/api/settings/{key}", api_settings_set, methods=["PUT"]),
-        Route("/api/settings/{key}", api_settings_reset, methods=["DELETE"]),
-        Route("/api/fleet", api_fleet),
-        Route("/api/fleet/overview", api_fleet_overview),
-        Route("/api/fleet/trend", api_fleet_trend),
-        Route("/api/digest/preview", api_digest_preview),
-        Route("/api/audit", api_audit),
-        Route("/api/events", api_events),
-        Route("/api/agent/{id}", api_agent),
-        Route("/api/agent/{id}/changes", api_agent_changes),
-        Route("/api/agent/{id}/trends", api_agent_trends),
-        Route("/api/agent/{id}/refresh", api_refresh, methods=["POST"]),
-        Route("/api/agent/{id}/remotehelp", api_remotehelp, methods=["POST"]),
-        Route("/api/agent/{id}/screenshot", api_screenshot),
-        Route("/api/agent/{id}/screenshot", api_capture, methods=["POST"]),
-        Route("/api/agent/{id}/webfilter", api_webfilter_get),
-        Route("/api/agent/{id}/webfilter/config", api_webfilter_config, methods=["PUT"]),
-        Route("/api/agent/{id}/webfilter/domains", api_webfilter_add_domain, methods=["POST"]),
+        Route("/api/about", guard(api_about)),
+        Route("/api/changelog", guard(api_changelog)),
+        Route("/api/policy/rules", guard(api_policy_list, **op)),
+        Route("/api/policy/rules", guard(api_policy_add, **op), methods=["POST"]),
         Route(
-            "/api/agent/{id}/webfilter/domains/{domain}",
-            api_webfilter_remove_domain,
+            "/api/policy/rules/{id}",
+            guard(api_policy_remove, **op),
             methods=["DELETE"],
         ),
-        Route("/api/agent/{id}/webfilter/apply", api_webfilter_apply, methods=["POST"]),
-        Route("/api/agent/{id}/webfilter/activity", api_webfilter_activity),
-        Route("/api/agents/{id}/token", api_rotate_token, methods=["POST"]),
+        Route("/api/settings", guard(api_settings_list, **su)),
+        Route("/api/settings/{key}", guard(api_settings_set, **su), methods=["PUT"]),
+        Route(
+            "/api/settings/{key}", guard(api_settings_reset, **su), methods=["DELETE"]
+        ),
+        Route("/api/fleet", guard(api_fleet)),
+        Route("/api/fleet/overview", guard(api_fleet_overview)),
+        Route("/api/fleet/trend", guard(api_fleet_trend)),
+        Route("/api/digest/preview", guard(api_digest_preview, **op)),
+        Route("/api/audit", guard(api_audit)),
+        Route("/api/events", guard(api_events)),
+        Route("/api/agent/{id}", guard(api_agent, **scoped)),
+        Route("/api/agent/{id}", guard(api_remove_host, **op), methods=["DELETE"]),
+        Route("/api/agent/{id}/changes", guard(api_agent_changes, **scoped)),
+        Route("/api/agent/{id}/trends", guard(api_agent_trends, **scoped)),
+        Route("/api/agent/{id}/refresh", guard(api_refresh, **scoped), methods=["POST"]),
+        Route(
+            "/api/agent/{id}/remotehelp",
+            guard(api_remotehelp, **scoped),
+            methods=["POST"],
+        ),
+        Route("/api/agent/{id}/screenshot", guard(api_screenshot, **scoped)),
+        Route(
+            "/api/agent/{id}/screenshot", guard(api_capture, **scoped), methods=["POST"]
+        ),
+        Route("/api/agent/{id}/webfilter", guard(api_webfilter_get, **scoped)),
+        Route(
+            "/api/agent/{id}/webfilter/config",
+            guard(api_webfilter_config, **op_scoped),
+            methods=["PUT"],
+        ),
+        Route(
+            "/api/agent/{id}/webfilter/domains",
+            guard(api_webfilter_add_domain, **op_scoped),
+            methods=["POST"],
+        ),
+        Route(
+            "/api/agent/{id}/webfilter/domains/{domain}",
+            guard(api_webfilter_remove_domain, **op_scoped),
+            methods=["DELETE"],
+        ),
+        Route(
+            "/api/agent/{id}/webfilter/apply",
+            guard(api_webfilter_apply, **op_scoped),
+            methods=["POST"],
+        ),
+        Route("/api/agent/{id}/webfilter/activity", guard(api_webfilter_activity, **scoped)),
+        Route("/api/agents/{id}/token", guard(api_rotate_token, **op), methods=["POST"]),
     ]
 
 

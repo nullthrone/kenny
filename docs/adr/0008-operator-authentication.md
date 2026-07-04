@@ -1,6 +1,6 @@
 # 0008. Operator authentication
 
-- Status: accepted
+- Status: superseded by [ADR-0037](0037-multi-user-authentication.md)
 - Date: 2026-06-04
 
 ## Context and Problem Statement

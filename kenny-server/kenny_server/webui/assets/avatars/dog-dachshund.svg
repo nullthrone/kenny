@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="Dachshund avatar">
+  <circle cx="64" cy="64" r="64" fill="#DED2F0"/>
+  <!-- long floppy ears -->
+  <path d="M40 46 C24 46 18 74 30 96 C42 94 46 68 46 54 Z" fill="#5A3A24"/>
+  <path d="M88 46 C104 46 110 74 98 96 C86 94 82 68 82 54 Z" fill="#5A3A24"/>
+  <!-- head (narrow) -->
+  <path d="M40 52 C40 38 50 32 64 32 C78 32 88 38 88 52 C88 70 82 82 74 90 L54 90 C46 82 40 70 40 52 Z" fill="#8A5A34"/>
+  <!-- long snout -->
+  <path d="M54 76 C54 70 58 66 64 66 C70 66 74 70 74 76 C74 92 70 104 64 108 C58 104 54 92 54 76 Z" fill="#A06E42"/>
+  <!-- eyes -->
+  <circle cx="53" cy="56" r="5" fill="#2B1B10"/>
+  <circle cx="75" cy="56" r="5" fill="#2B1B10"/>
+  <circle cx="55" cy="54" r="1.6" fill="#fff"/>
+  <circle cx="77" cy="54" r="1.6" fill="#fff"/>
+  <!-- nose at tip of snout -->
+  <ellipse cx="64" cy="98" rx="6" ry="4.6" fill="#2B2B2B"/>
+  <!-- mouth -->
+  <path d="M64 102.6 C64 107 60 109 57 108 M64 102.6 C64 107 68 109 71 108" fill="none" stroke="#5A3A24" stroke-width="2.2" stroke-linecap="round"/>
+  <!-- amber collar accent near neck -->
+  <path d="M44 46 C40 54 40 66 42 74" fill="none" stroke="#E8A33D" stroke-width="4" stroke-linecap="round" opacity="0.9"/>
+  <path d="M84 46 C88 54 88 66 86 74" fill="none" stroke="#E8A33D" stroke-width="4" stroke-linecap="round" opacity="0.9"/>
+</svg>

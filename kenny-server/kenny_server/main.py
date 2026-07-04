@@ -23,7 +23,7 @@ from typing import AsyncIterator
 from fastmcp import FastMCP
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
-from starlette.routing import Mount, WebSocketRoute
+from starlette.routing import Mount, Route, WebSocketRoute
 
 from . import agent_release
 from .alerting import AlertEngine
@@ -53,8 +53,11 @@ from .store import (
 from .tokenstore import AgentTokenStore
 from .tools import CallLog, ScreenshotStore, register_tools
 from .tunnel import AgentTunnel
+from .userstore import UserStore
 from .webfilter import ExternalListCache, WebFilterService
 from .webui import build_api_routes, build_chat_routes
+from .webui.authz import guard
+from .webui.users import build_user_routes
 
 
 async def _webfilter_refresh_loop(
@@ -86,6 +89,7 @@ def build_app(db_path: str | None = None) -> Starlette:
 
     token_store = AgentTokenStore(db_path)
     key_store = KeyStore(db_path)
+    user_store = UserStore(db_path)
     registry = AgentRegistry(token_store=token_store, key_store=key_store)
     store = TelemetryStore(db_path)
     event_store = EventStore(db_path)
@@ -148,6 +152,7 @@ def build_app(db_path: str | None = None) -> Starlette:
         await store.connect()
         await token_store.connect()
         await key_store.connect()
+        await user_store.connect()
         await event_store.connect()
         await policy_store.connect()
         await webfilter_store.connect()
@@ -215,6 +220,7 @@ def build_app(db_path: str | None = None) -> Starlette:
                     await alert_task
             await token_store.close()
             await key_store.close()
+            await user_store.close()
             await store.close()
             await event_store.close()
             await policy_store.close()
@@ -235,6 +241,13 @@ def build_app(db_path: str | None = None) -> Starlette:
         policy_engine=policy_engine,
         webfilter=webfilter,
         settings=settings,
+        user_store=user_store,
+        key_store=key_store,
+        alert_state=alert_state,
+        webfilter_store=webfilter_store,
+    )
+    user_routes = build_user_routes(
+        user_store=user_store, registry=registry, store=store
     )
     chat_routes = build_chat_routes(
         registry=registry,
@@ -245,6 +258,18 @@ def build_app(db_path: str | None = None) -> Starlette:
         screenshots=screenshots,
         history_store=chat_history_store,
     )
+    # The server-hosted copilot drives arbitrary capability tools over the
+    # process-global active agent, so it is gated to operator+ (ADR-0037). The
+    # scoped ``user`` role uses the structured, per-host dashboard instead.
+    chat_routes = [
+        Route(
+            r.path,
+            guard(r.endpoint, min_role="operator"),
+            methods=list(r.methods or []),
+            name=r.name,
+        )
+        for r in chat_routes
+    ]
     download_routes = build_download_routes(
         registry=registry,
         token_store=token_store,
@@ -261,14 +286,21 @@ def build_app(db_path: str | None = None) -> Starlette:
     routes = [
         WebSocketRoute("/agent/ws", tunnel.endpoint),
         Mount("/mcp", app=mcp_app),
-        *build_auth_routes(operator_tokens),
+        *build_auth_routes(operator_tokens, user_store=user_store),
         *chat_routes,
         *download_routes,
+        *user_routes,
         *api_routes,
     ]
 
     # Operator auth gates /mcp, /api, and the UI; /agent/ws (agent token) is exempt.
-    middleware = [Middleware(OperatorAuthMiddleware, token=operator_tokens)]
+    # The user store resolves per-user PATs and sessions; the shared token stays
+    # accepted as a back-compat superuser (ADR-0037).
+    middleware = [
+        Middleware(
+            OperatorAuthMiddleware, token=operator_tokens, user_store=user_store
+        )
+    ]
 
     app = Starlette(routes=routes, middleware=middleware, lifespan=lifespan)
     # Expose singletons for tests / introspection.
@@ -279,6 +311,7 @@ def build_app(db_path: str | None = None) -> Starlette:
     app.state.event_store = event_store
     app.state.token_store = token_store
     app.state.key_store = key_store
+    app.state.user_store = user_store
     app.state.policy_store = policy_store
     app.state.policy_engine = policy_engine
     app.state.webfilter_store = webfilter_store

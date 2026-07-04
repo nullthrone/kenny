@@ -60,6 +60,34 @@ fn newest_log_file(dir: &std::path::Path) -> Option<std::path::PathBuf> {
     newest.map(|(_, path)| path)
 }
 
+/// Resolve the browsable server console URL from the persisted service config that lives
+/// next to the executable (`kenny-agent.config.json`). The tray runs from the same install
+/// directory as the service exe, so the config is a sibling of `current_exe()`.
+///
+/// Kept platform-neutral (used by the Windows menu, unit-tested on Linux CI).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn server_console_url() -> anyhow::Result<String> {
+    let exe = std::env::current_exe()?;
+    let dir = exe
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("executable has no parent directory"))?;
+    let path = dir.join(crate::service::CONFIG_FILE);
+    let contents = std::fs::read_to_string(&path)?;
+    server_console_url_from_config(&contents)
+}
+
+/// Parse a [`crate::service::ServiceConfig`] JSON document and derive the browsable
+/// `https://host` (or `http://host:port`) base URL from its `server` WebSocket URL.
+///
+/// Reuses [`crate::tunnel::http_base_from_ws`] for the `wss://…/agent/ws` → `https://host`
+/// conversion so the mapping lives in exactly one place. Split out from
+/// [`server_console_url`] so it is testable without touching the filesystem.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn server_console_url_from_config(contents: &str) -> anyhow::Result<String> {
+    let config: crate::service::ServiceConfig = serde_json::from_str(contents)?;
+    crate::tunnel::http_base_from_ws(&config.server)
+}
+
 #[cfg(windows)]
 mod windows_impl {
     use std::cell::RefCell;
@@ -98,6 +126,8 @@ mod windows_impl {
     const TRAY_UID: u32 = 1;
     /// Menu command: toggle remote control on/off.
     const ID_TOGGLE: usize = 1001;
+    /// Menu command: open the kenny server console in the default browser.
+    const ID_OPEN_SERVER: usize = 1002;
     /// Menu command: open the newest local agent log in the default editor.
     const ID_OPEN_LOGS: usize = 1003;
     /// `CreateIconFromResourceEx` version word for modern (3.0) icon resources.
@@ -332,6 +362,37 @@ mod windows_impl {
         }
     }
 
+    /// Open the kenny server console in the user's default browser.
+    ///
+    /// Resolves the console URL from the persisted service config (the `server`
+    /// WebSocket URL converted to its `https://host` base). A `ShellExecute` "open" on an
+    /// https URL launches the default browser. Best-effort: failures are logged, never
+    /// fatal (e.g. when the config is missing or malformed before first install).
+    unsafe fn open_server() {
+        let url = match super::server_console_url() {
+            Ok(url) => url,
+            Err(e) => {
+                tracing::warn!(error = %e, "could not resolve server console URL");
+                return;
+            }
+        };
+        let wide = to_wide(&url);
+        // SAFETY: `wide` is a valid NUL-terminated wide string that outlives the call;
+        // the verb/dir/params are static or null.
+        let hinst = ShellExecuteW(
+            None,
+            w!("open"),
+            PCWSTR(wide.as_ptr()),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        );
+        // ShellExecuteW returns an HINSTANCE > 32 on success.
+        if hinst.0 as usize <= 32 {
+            tracing::warn!(url = %url, "could not open server console via ShellExecute");
+        }
+    }
+
     /// Pop up the context menu at the cursor.
     unsafe fn show_menu(hwnd: HWND) {
         let enabled = STATE.with(|s| s.borrow().as_ref().map(|st| st.enabled).unwrap_or(true));
@@ -360,8 +421,10 @@ mod windows_impl {
             };
         let _ = AppendMenuW(menu, toggle_flags, ID_TOGGLE, w!("Fernsteuerung aktiv"));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-        // Read-only convenience: open the local agent log so the person at the PC can see
-        // what kenny is doing. There is intentionally no "quit" — see the module docs.
+        // Convenience: open the server console in the browser, then the local agent log so
+        // the person at the PC can see what kenny is doing. There is intentionally no
+        // "quit" — see the module docs.
+        let _ = AppendMenuW(menu, MF_STRING, ID_OPEN_SERVER, w!("Konsole öffnen"));
         let _ = AppendMenuW(menu, MF_STRING, ID_OPEN_LOGS, w!("Protokoll anzeigen"));
 
         let mut pt = POINT::default();
@@ -397,6 +460,7 @@ mod windows_impl {
                 WM_COMMAND => {
                     match wparam.0 & 0xffff {
                         ID_TOGGLE => toggle(),
+                        ID_OPEN_SERVER => open_server(),
                         ID_OPEN_LOGS => open_logs(),
                         _ => {}
                     }
@@ -414,9 +478,41 @@ mod windows_impl {
 
 #[cfg(test)]
 mod tests {
-    use super::newest_log_file;
+    use super::{newest_log_file, server_console_url_from_config};
     use std::fs;
     use std::time::{Duration, SystemTime};
+
+    /// Build a minimal but valid `ServiceConfig` JSON document with the given `server`.
+    fn config_json(server: &str) -> String {
+        format!(r#"{{"server":"{server}","agent_id":"pc-01","telemetry_interval_secs":900}}"#)
+    }
+
+    #[test]
+    fn server_console_url_maps_wss_to_https() {
+        let json = config_json("wss://kenny.example.com/agent/ws");
+        assert_eq!(
+            server_console_url_from_config(&json).unwrap(),
+            "https://kenny.example.com"
+        );
+    }
+
+    #[test]
+    fn server_console_url_maps_ws_to_http_keeping_port() {
+        let json = config_json("ws://host:8000/agent/ws");
+        assert_eq!(
+            server_console_url_from_config(&json).unwrap(),
+            "http://host:8000"
+        );
+    }
+
+    #[test]
+    fn server_console_url_rejects_malformed_config() {
+        // Not valid JSON for a ServiceConfig (missing required fields).
+        assert!(server_console_url_from_config("{}").is_err());
+        // Valid config shape, but the server URL has no usable scheme.
+        let json = config_json("kenny.example.com");
+        assert!(server_console_url_from_config(&json).is_err());
+    }
 
     #[test]
     fn newest_log_file_picks_most_recent_match() {

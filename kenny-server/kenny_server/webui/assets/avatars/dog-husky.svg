@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="Husky avatar">
+  <circle cx="64" cy="64" r="64" fill="#CFE7F2"/>
+  <!-- pointy ears -->
+  <path d="M32 50 C28 26 38 22 48 32 C50 42 48 52 44 58 Z" fill="#5C6470"/>
+  <path d="M96 50 C100 26 90 22 80 32 C78 42 80 52 84 58 Z" fill="#5C6470"/>
+  <path d="M35 48 C32 32 39 29 46 36 C48 44 46 51 44 55 Z" fill="#F2ECE3"/>
+  <path d="M93 48 C96 32 89 29 82 36 C80 44 82 51 84 55 Z" fill="#F2ECE3"/>
+  <!-- head grey -->
+  <path d="M34 56 C34 40 46 34 64 34 C82 34 94 40 94 56 C94 80 82 98 64 98 C46 98 34 80 34 56 Z" fill="#6B7480"/>
+  <!-- white mask + muzzle -->
+  <path d="M64 40 C56 40 52 48 52 58 C46 60 42 66 42 74 C42 88 52 98 64 98 C76 98 86 88 86 74 C86 66 82 60 76 58 C76 48 72 40 64 40 Z" fill="#F4EFE7"/>
+  <!-- grey brow marks -->
+  <path d="M52 50 C50 56 50 60 52 62 C56 60 58 54 57 48 Z" fill="#6B7480"/>
+  <path d="M76 50 C78 56 78 60 76 62 C72 60 70 54 71 48 Z" fill="#6B7480"/>
+  <!-- blue eyes -->
+  <ellipse cx="52" cy="62" rx="5.6" ry="6" fill="#3F8FC4"/>
+  <ellipse cx="76" cy="62" rx="5.6" ry="6" fill="#3F8FC4"/>
+  <circle cx="52" cy="63" r="2.6" fill="#16324a"/>
+  <circle cx="76" cy="63" r="2.6" fill="#16324a"/>
+  <circle cx="54" cy="60" r="1.4" fill="#fff"/>
+  <circle cx="78" cy="60" r="1.4" fill="#fff"/>
+  <!-- nose -->
+  <ellipse cx="64" cy="74" rx="6.2" ry="4.8" fill="#2B2B2B"/>
+  <!-- mouth -->
+  <path d="M64 78.8 C64 85 58 88 54 86 M64 78.8 C64 85 70 88 74 86" fill="none" stroke="#5C6470" stroke-width="2.4" stroke-linecap="round"/>
+  <!-- amber collar -->
+  <path d="M48 96 C54 102 74 102 80 96" fill="none" stroke="#E8A33D" stroke-width="5" stroke-linecap="round"/>
+</svg>

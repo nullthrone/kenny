@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="Corgi avatar">
+  <circle cx="64" cy="64" r="64" fill="#FBE0C4"/>
+  <!-- big pointy ears -->
+  <path d="M30 52 C24 24 34 18 46 30 C50 40 48 50 44 56 Z" fill="#DE9042"/>
+  <path d="M98 52 C104 24 94 18 82 30 C78 40 80 50 84 56 Z" fill="#DE9042"/>
+  <path d="M33 50 C29 30 36 26 44 34 C47 42 45 49 43 53 Z" fill="#F5D6AE"/>
+  <path d="M95 50 C99 30 92 26 84 34 C81 42 83 49 85 53 Z" fill="#F5D6AE"/>
+  <!-- head orange -->
+  <path d="M34 56 C34 40 46 34 64 34 C82 34 94 40 94 56 C94 80 82 98 64 98 C46 98 34 80 34 56 Z" fill="#E89B45"/>
+  <!-- white lower face / cheeks -->
+  <path d="M40 68 C40 60 50 58 64 58 C78 58 88 60 88 68 C88 86 78 98 64 98 C50 98 40 86 40 68 Z" fill="#F7F1E8"/>
+  <!-- white blaze -->
+  <path d="M64 40 C60 40 57 44 57 52 C57 60 60 66 64 70 C68 66 71 60 71 52 C71 44 68 40 64 40 Z" fill="#F7F1E8"/>
+  <!-- eyes -->
+  <circle cx="51" cy="60" r="5.4" fill="#3A2A18"/>
+  <circle cx="77" cy="60" r="5.4" fill="#3A2A18"/>
+  <circle cx="53" cy="58" r="1.7" fill="#fff"/>
+  <circle cx="79" cy="58" r="1.7" fill="#fff"/>
+  <!-- nose -->
+  <ellipse cx="64" cy="72" rx="6" ry="4.6" fill="#2B2B2B"/>
+  <!-- mouth + tongue -->
+  <path d="M64 76.6 C64 82 58 85 55 83 M64 76.6 C64 82 70 85 73 83" fill="none" stroke="#8A5A2B" stroke-width="2.4" stroke-linecap="round"/>
+  <path d="M60 83 C60 91 68 91 68 83 Z" fill="#E86A6A"/>
+  <!-- amber collar -->
+  <path d="M49 95 C55 101 73 101 79 95" fill="none" stroke="#E8A33D" stroke-width="5" stroke-linecap="round"/>
+</svg>
