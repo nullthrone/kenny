@@ -48,4 +48,5 @@ implementation detail", see *When (not) to write an ADR* in the repository `CLAU
 | [0032](0032-screen-time-aggregated-session-minutes.md) | Screen time as aggregated whole-machine session minutes | accepted |
 | [0033](0033-agent-self-elevating-bootstrap-installer.md) | Agent self-elevating bootstrap installer + fixed install location | accepted |
 | [0034](0034-ai-forecast-panel.md) | AI Forecast panel for the agent drill-down | accepted |
+| [0035](0035-linux-agent-support.md) | First-class Linux agent support | accepted |
 | [0036](0036-runtime-settings-in-the-dashboard.md) | Runtime settings resolved DB-over-env, editable in the dashboard | accepted |
