@@ -1,12 +1,13 @@
 nav:
   - Home: index.md
-  - Setup & operations: setup.md
-  - User guide: user-guide.md
-  - Dashboard reference: dashboard.md
-  - Telemetry reference: telemetry.md
-  - Tool reference: tools.md
-  - Parental controls: parental-controls.md
-  - Alerting & digests: alerting.md
-  - Wire protocol: protocol.md
-  - Architecture decisions: adr
-  - ...
+  - Guides:
+    - Setup & operations: setup.md
+    - User guide: user-guide.md
+    - Dashboard reference: dashboard.md
+    - Telemetry reference: telemetry.md
+    - Tool reference: tools.md
+    - Parental controls: parental-controls.md
+    - Alerting & digests: alerting.md
+  - Developer:
+    - Wire protocol: protocol.md
+    - Architecture decisions: adr/README.md
