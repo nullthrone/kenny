@@ -67,6 +67,13 @@ pub fn run_command_output(program: &str, args: &[&str]) -> Option<String> {
 }
 
 fn run_raw(script: &str) -> Option<String> {
+    // Force stdout to UTF-8 before the script runs. PowerShell 5.1 otherwise emits
+    // in the console's OEM/ANSI code page, so any non-ASCII character (®, ™, an
+    // accented letter, a bullet in a program or publisher name) reaches us as bytes
+    // that `serde_json` cannot parse — corrupting an entire section's JSON. Setting
+    // `[Console]::OutputEncoding` transcodes chars→bytes as UTF-8 without emitting a
+    // BOM, so the JSON stays clean and non-ASCII names round-trip intact.
+    let script = format!("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\n{script}");
     // `-NonInteractive`/`-NoProfile` keep this fast and deterministic; the
     // ExecutionPolicy bypass avoids inheriting a locked-down machine policy.
     let mut cmd = Command::new("powershell.exe");
@@ -76,7 +83,7 @@ fn run_raw(script: &str) -> Option<String> {
         "-ExecutionPolicy",
         "Bypass",
         "-Command",
-        script,
+        &script,
     ]);
     run_with_budget(cmd)
 }
@@ -124,9 +131,16 @@ fn run_capturing(mut cmd: Command) -> Option<(bool, String)> {
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                let mut buf = String::new();
-                child.stdout.take()?.read_to_string(&mut buf).ok()?;
-                return Some((status.success(), buf));
+                // Decode stdout losslessly rather than with `read_to_string`: a probe
+                // may emit bytes that are not valid UTF-8 (PowerShell defaults to the
+                // console code page, and tools like `netsh`/`w32tm` use it too). A
+                // single stray byte from a vendor-supplied program name once dropped
+                // the entire probe to `None`; `from_utf8_lossy` keeps the row instead.
+                // The success flag is returned alongside so the caller — not this
+                // helper — decides whether a non-zero exit is fatal.
+                let mut buf = Vec::new();
+                child.stdout.take()?.read_to_end(&mut buf).ok()?;
+                return Some((status.success(), String::from_utf8_lossy(&buf).into_owned()));
             }
             Ok(None) => {
                 if Instant::now() >= deadline {
