@@ -405,6 +405,11 @@
     .k-airec__err { color: var(--crit-fg); margin-top: 6px; }
     .k-airec__foot { margin-top: 9px; }
     .k-airec__foot:empty { display: none; }
+    /* Forecast card: same spark/prose treatment as the AI Recommendation, but
+       pinned at the top of the drill-down (ADR-0034). A shorter reserved body —
+       the forecast is a few sentences, not a Diagnosis/Action/Urgency reply. */
+    .kc-forecast { margin-bottom: 16px; }
+    .kc-forecast .k-airec__body { min-height: 3.4em; }
     /* Parental-controls list editor (web_activity section detail). */
     .kwf-togs { display: flex; flex-wrap: wrap; gap: 8px 16px; margin: 8px 0 12px; }
     .kwf-tog { display: inline-flex; align-items: center; gap: 7px; font-size: var(--text-sm);
@@ -1817,6 +1822,13 @@
         tileHtml(n, s.status, s.summary, s.reason, `openSectionDetail(${jsArg(n)})`)
       ).join("");
 
+      // Forecast card, pinned above the health trend. The AI mode is made
+      // explicit with the sparkle + "AI Forecast"; without an API key the same
+      // card renders a deterministic prose summary under a plain "Forecast".
+      const fcHead = data.ai_enabled
+        ? `${icon('sparkles', 15)}<span>AI Forecast</span>`
+        : `${icon('activity', 15)}<span>Forecast</span>`;
+
       det.innerHTML = `
         <div class="kc-detail__head">
           <div class="k-row" style="gap:10px;flex-wrap:wrap">
@@ -1833,6 +1845,10 @@
             <button class="k-btn k-btn--danger k-btn--sm" onclick="updateAgent(${jsArg(data.agent_id)})">${icon('circle-arrow-up', 13)}update</button>
           </div>
         </div>
+        <section class="k-airec kc-forecast">
+          <div class="k-airec__head">${fcHead}</div>
+          <div class="k-airec__body" id="kc-forecast"><span class="k-airec__wait">thinking…</span></div>
+        </section>
         <div class="k-card k-card--sunken kc-trend">
           <div class="k-row" style="justify-content:space-between">
             <span class="kc-section-lbl">health trend · 30 d</span>
@@ -1841,13 +1857,6 @@
           ${sparkline(data.history || [])}
         </div>
         <div class="kc-tiles">${secs || '<div class="k-muted">no telemetry yet</div>'}</div>
-        <div class="k-card k-card--sunken">
-          <div class="k-row" style="justify-content:space-between">
-            <span class="kc-section-lbl">changes &amp; forecast · 24 h</span>
-            <span class="k-mono" style="font-size:11px;color:var(--fg-faint)">vs. yesterday's snapshot</span>
-          </div>
-          <div id="kc-changes"><div class="k-muted" style="font-size:12px">loading…</div></div>
-        </div>
         <div class="k-card k-card--sunken kc-shotcard">
           <div class="k-row" style="justify-content:space-between">
             <span class="kc-section-lbl">last screenshot</span>
@@ -1859,50 +1868,36 @@
             onerror="this.style.display='none';this.nextElementSibling.style.display='block'">
           <div class="k-muted" style="display:none;font-size:12px">none yet</div>
         </div>`;
-      mountChangesPanel(data.agent_id);
+      mountForecast(data.agent_id);
     }
 
-    // Inventory changes (vs. yesterday's snapshot) + disk/battery forecasts
-    // (ADR-0030). Loaded async after the detail view renders; a stale panel
-    // (selection changed while loading) is a no-op.
-    async function mountChangesPanel(agentId) {
-      const panel = document.getElementById("kc-changes");
-      if (!panel) return;
-      let changes, trends;
+    // Stream the near-term forecast into the top card (ADR-0034). The server
+    // synthesizes the disk/battery trends and inventory diff into a short prose
+    // outlook; with no API key it streams a deterministic prose summary of the
+    // same signals, so the card is never empty. Re-queries the target each event
+    // so a selection change mid-stream simply ends the loop (the node is gone).
+    async function mountForecast(agentId) {
+      let started = false, raw = "";
       try {
-        [changes, trends] = await Promise.all([
-          getJSON("/api/agent/" + encodeURIComponent(agentId) + "/changes?days=1"),
-          getJSON("/api/agent/" + encodeURIComponent(agentId) + "/trends"),
-        ]);
+        for await (const ev of streamSSE("/api/forecast/stream", { agent_id: agentId })) {
+          const panel = document.getElementById("kc-forecast");
+          if (!panel || state.selected !== agentId) return; // detail closed/changed
+          if (ev.type === "text_delta") {
+            if (!started) { panel.textContent = ""; started = true; }
+            raw += ev.text;
+            panel.textContent = raw;
+          } else if (ev.type === "error") {
+            if (!started) { panel.textContent = ""; started = true; }
+            const e = document.createElement("div");
+            e.className = "k-airec__err";
+            e.textContent = "forecast unavailable: " + ev.error;
+            panel.appendChild(e);
+          }
+        }
       } catch (e) {
-        panel.innerHTML = `<div class="k-muted" style="font-size:12px">error: ${esc(e.message)}</div>`;
-        return;
+        const panel = document.getElementById("kc-forecast");
+        if (panel && !started) panel.textContent = "forecast unavailable";
       }
-      if (state.selected !== agentId || document.getElementById("kc-changes") !== panel) return;
-      let body = "";
-      const filling = (trends.disk || []).filter(f => f.days_until_full !== null);
-      if (filling.length) {
-        body += filling.map(f =>
-          `<div class="k-reason k-reason--${f.days_until_full < 14 ? "warn" : "ok"}" style="margin:4px 0">
-             <span>${esc(f.mount)} ~${Math.round(f.days_until_full)}d until full
-             (${Math.round(f.current_percent)}% now, +${f.slope_percent_per_day.toFixed(2)}%/day)</span>
-           </div>`).join("");
-      }
-      const bat = trends.battery;
-      if (bat && bat.percent_per_30d !== null && bat.percent_per_30d < 0) {
-        body += `<div class="k-muted" style="font-size:12px;margin:4px 0">
-          battery health ${Math.round(bat.current_percent)}% (${bat.percent_per_30d.toFixed(1)}%/30d)</div>`;
-      }
-      const rows = (changes.changes || []).map(c => `<tr>
-        <td>${esc(c.section)}</td>
-        <td><span class="k-pill k-pill--${c.kind === "removed" ? "ok" : "warn"}">${esc(c.kind)}</span></td>
-        <td class="k-mono">${esc(c.key)}</td>
-        <td class="k-mono">${esc(c.detail || "")}</td></tr>`).join("");
-      if (rows) {
-        body += `<table class="k-dtable"><thead><tr><th>section</th><th>change</th><th>what</th><th>detail</th></tr></thead>
-          <tbody>${rows}</tbody></table>`;
-      }
-      panel.innerHTML = body || `<div class="k-muted" style="font-size:12px">no inventory changes; no disks filling up</div>`;
     }
 
     function sparkline(history) {
