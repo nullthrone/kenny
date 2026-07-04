@@ -26,7 +26,8 @@ from starlette.middleware import Middleware
 from starlette.routing import Mount, WebSocketRoute
 
 from . import agent_release
-from .alerting import DEFAULT_COOLDOWN_S, DEFAULT_OFFLINE_AFTER_S, AlertEngine
+from .alerting import AlertEngine
+from .config import Settings
 from .auth import (
     OperatorAuthMiddleware,
     build_auth_routes,
@@ -45,6 +46,7 @@ from .store import (
     ChatHistoryStore,
     EventStore,
     PolicyStore,
+    SettingsStore,
     TelemetryStore,
     WebFilterStore,
 )
@@ -56,7 +58,7 @@ from .webui import build_api_routes, build_chat_routes
 
 
 async def _webfilter_refresh_loop(
-    cache: ExternalListCache, interval_s: int, initial_delay_s: float
+    cache: ExternalListCache, settings: Settings, interval_s: int, initial_delay_s: float
 ) -> None:
     """Periodically refresh the external adult/bypass lists (best-effort)."""
 
@@ -66,13 +68,21 @@ async def _webfilter_refresh_loop(
             await cache.refresh_all()
         except Exception:  # noqa: BLE001 - never let the loop die
             logging.getLogger("kenny.webfilter").exception("external list refresh failed")
-        await asyncio.sleep(interval_s)
+        # Re-read the cadence each pass so a dashboard change retimes the loop.
+        interval = settings.get("KENNY_WEBFILTER_REFRESH_SECS")
+        await asyncio.sleep(interval if interval and interval > 0 else interval_s)
 
 
 def build_app(db_path: str | None = None) -> Starlette:
     """Build and return the composed ASGI application."""
 
     db_path = db_path or os.environ.get("KENNY_DB_PATH", "kenny.sqlite")
+
+    # Runtime settings: the operator's DB overrides resolve over env then coded
+    # defaults. Consumers below are handed ``settings`` so live knobs (alerting,
+    # web filter, chat model, log level) take effect without a restart.
+    settings_store = SettingsStore(db_path)
+    settings = Settings(settings_store)
 
     token_store = AgentTokenStore(db_path)
     key_store = KeyStore(db_path)
@@ -87,7 +97,7 @@ def build_app(db_path: str | None = None) -> Starlette:
     # dir derived from the DB path, wrapped in the service the tunnel/API/tools use.
     webfilter_store = WebFilterStore(db_path)
     cache_dir = os.path.dirname(os.path.abspath(db_path)) or "."
-    webfilter_cache = ExternalListCache(cache_dir)
+    webfilter_cache = ExternalListCache(cache_dir, settings=settings)
     webfilter = WebFilterService(webfilter_store, webfilter_cache)
     tunnel = AgentTunnel(
         registry,
@@ -106,20 +116,16 @@ def build_app(db_path: str | None = None) -> Starlette:
     # delivered best-effort via the env-configured channels (possibly none).
     alert_state = AlertStateStore(db_path)
     notifiers = load_notifiers()
+    # Cadence/cooldown/digest are read live from ``settings`` (DB > env >
+    # default) on every pass; no env snapshot is baked in here.
     alert_engine = AlertEngine(
         store=store,
         alert_state=alert_state,
         event_store=event_store,
         registry=registry,
         notifiers=notifiers,
-        cooldown_s=int(os.environ.get("KENNY_ALERT_COOLDOWN_SECS", str(DEFAULT_COOLDOWN_S))),
-        offline_after_s=int(
-            os.environ.get("KENNY_ALERT_OFFLINE_AFTER_SECS", str(DEFAULT_OFFLINE_AFTER_S))
-        ),
+        settings=settings,
         prunables=[store, event_store, webfilter_store],
-        digest_enabled=os.environ.get("KENNY_DIGEST_ENABLED", "1") not in ("0", "false", ""),
-        digest_day=os.environ.get("KENNY_DIGEST_DAY", "mon"),
-        digest_hour=int(os.environ.get("KENNY_DIGEST_HOUR", "8")),
     )
 
     mcp = FastMCP("kenny")
@@ -135,6 +141,10 @@ def build_app(db_path: str | None = None) -> Starlette:
 
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette) -> AsyncIterator[None]:
+        await settings_store.connect()
+        # Load operator overrides and re-apply live apply-hooks (e.g. log level)
+        # before anything else reads config.
+        await settings.load()
         await store.connect()
         await token_store.connect()
         await key_store.connect()
@@ -150,22 +160,22 @@ def build_app(db_path: str | None = None) -> Starlette:
         await webfilter_store.prune()
         # Periodically refresh the external adult/bypass lists (ADR-0026). The
         # initial fetch is delayed so short-lived test app instances never reach
-        # out; set KENNY_WEBFILTER_REFRESH_SECS=0 to disable entirely.
-        refresh_secs = int(os.environ.get("KENNY_WEBFILTER_REFRESH_SECS", str(24 * 3600)))
+        # out; set KENNY_WEBFILTER_REFRESH_SECS=0 to disable entirely. The
+        # enable/disable gate is decided here at startup (a "restart" decision);
+        # the cadence itself is re-read live inside the loop.
+        refresh_secs = int(settings.get("KENNY_WEBFILTER_REFRESH_SECS"))
         webfilter_task: asyncio.Task | None = None
         if refresh_secs > 0:
-            initial_delay = float(
-                os.environ.get("KENNY_WEBFILTER_INITIAL_REFRESH_DELAY", "5")
-            )
+            initial_delay = float(settings.get("KENNY_WEBFILTER_INITIAL_REFRESH_DELAY"))
             webfilter_task = asyncio.create_task(
-                _webfilter_refresh_loop(webfilter_cache, refresh_secs, initial_delay)
+                _webfilter_refresh_loop(webfilter_cache, settings, refresh_secs, initial_delay)
             )
         # Alert evaluation loop (ADR-0029). The initial delay keeps short-lived
         # test app instances silent; KENNY_ALERT_INTERVAL_SECS=0 disables.
-        alert_secs = int(os.environ.get("KENNY_ALERT_INTERVAL_SECS", "60"))
+        alert_secs = int(settings.get("KENNY_ALERT_INTERVAL_SECS"))
         alert_task: asyncio.Task | None = None
         if alert_secs > 0:
-            alert_delay = float(os.environ.get("KENNY_ALERT_INITIAL_DELAY", "10"))
+            alert_delay = float(settings.get("KENNY_ALERT_INITIAL_DELAY"))
             alert_task = asyncio.create_task(alert_engine.run(alert_secs, alert_delay))
         # Capture server-side log records onto a bounded queue and persist them
         # via a background drain task (source='server'). See ADR-0017.
@@ -211,6 +221,7 @@ def build_app(db_path: str | None = None) -> Starlette:
             await webfilter_store.close()
             await chat_history_store.close()
             await alert_state.close()
+            await settings_store.close()
 
     api_routes = build_api_routes(
         registry=registry,
@@ -223,6 +234,7 @@ def build_app(db_path: str | None = None) -> Starlette:
         policy_store=policy_store,
         policy_engine=policy_engine,
         webfilter=webfilter,
+        settings=settings,
     )
     chat_routes = build_chat_routes(
         registry=registry,
@@ -261,6 +273,8 @@ def build_app(db_path: str | None = None) -> Starlette:
     app = Starlette(routes=routes, middleware=middleware, lifespan=lifespan)
     # Expose singletons for tests / introspection.
     app.state.registry = registry
+    app.state.settings = settings
+    app.state.settings_store = settings_store
     app.state.store = store
     app.state.event_store = event_store
     app.state.token_store = token_store

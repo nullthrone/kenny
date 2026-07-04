@@ -75,6 +75,7 @@ class AlertEngine:
         event_store: EventStore,
         registry: AgentRegistry,
         notifiers: list[Notifier],
+        settings: Any = None,
         cooldown_s: int = DEFAULT_COOLDOWN_S,
         offline_after_s: int = DEFAULT_OFFLINE_AFTER_S,
         prunables: list[_Prunable] | None = None,
@@ -87,13 +88,33 @@ class AlertEngine:
         self._event_store = event_store
         self._registry = registry
         self._notifiers = notifiers
-        self._cooldown = timedelta(seconds=cooldown_s)
-        self._offline_after = timedelta(seconds=offline_after_s)
+        # When ``settings`` is provided the alerting knobs are read live from it
+        # (DB > env > default) on every pass, so an operator change from the
+        # dashboard takes effect without a restart. The scalar kwargs remain as
+        # fallbacks for direct construction in tests.
+        self._settings = settings
+        self._cooldown_s = cooldown_s
+        self._offline_after_s = offline_after_s
+        self._digest_enabled_fb = digest_enabled
+        self._digest_day_fb = digest_day
+        self._digest_hour_fb = digest_hour
         self._prunables = prunables or []
         self._last_prune: datetime | None = None
-        self._digest_enabled = digest_enabled
-        self._digest_day = _DAY_INDEX.get(digest_day.strip().lower()[:3], 0)
-        self._digest_hour = max(0, min(23, digest_hour))
+
+    # -- live config accessors -------------------------------------------------
+
+    def _cfg(self, key: str, fallback: Any) -> Any:
+        return self._settings.get(key) if self._settings is not None else fallback
+
+    @property
+    def _cooldown(self) -> timedelta:
+        return timedelta(seconds=self._cfg("KENNY_ALERT_COOLDOWN_SECS", self._cooldown_s))
+
+    @property
+    def _offline_after(self) -> timedelta:
+        return timedelta(
+            seconds=self._cfg("KENNY_ALERT_OFFLINE_AFTER_SECS", self._offline_after_s)
+        )
 
     # -- one evaluation pass -------------------------------------------------
 
@@ -439,7 +460,11 @@ class AlertEngine:
                 await self._maybe_prune()
             except Exception:  # noqa: BLE001 - never let the loop die
                 logger.exception("alert evaluation pass failed")
-            await asyncio.sleep(interval_s)
+            # Re-read the cadence each pass so a dashboard change retimes the
+            # running loop. A runtime 0/negative keeps the loop alive at the
+            # startup interval (disabling entirely stays a restart decision).
+            interval = self._cfg("KENNY_ALERT_INTERVAL_SECS", interval_s)
+            await asyncio.sleep(interval if interval and interval > 0 else interval_s)
 
     # -- weekly digest (ADR-0029) -------------------------------------------------
 
@@ -452,8 +477,13 @@ class AlertEngine:
         next scheduled slot instead of on install.
         """
 
-        if not self._digest_enabled or not self._notifiers:
+        digest_enabled = self._cfg("KENNY_DIGEST_ENABLED", self._digest_enabled_fb)
+        if not digest_enabled or not self._notifiers:
             return False
+        digest_day = _DAY_INDEX.get(
+            str(self._cfg("KENNY_DIGEST_DAY", self._digest_day_fb)).strip().lower()[:3], 0
+        )
+        digest_hour = max(0, min(23, int(self._cfg("KENNY_DIGEST_HOUR", self._digest_hour_fb))))
         now = now or datetime.now(timezone.utc)
         row = await self._alert_state.get("", "digest")
         if row is None:
@@ -462,9 +492,9 @@ class AlertEngine:
             )
             return False
         last_sent = _parse_ts(row["status"]) or now
-        days_back = (now.weekday() - self._digest_day) % 7
+        days_back = (now.weekday() - digest_day) % 7
         slot = (now - timedelta(days=days_back)).replace(
-            hour=self._digest_hour, minute=0, second=0, microsecond=0
+            hour=digest_hour, minute=0, second=0, microsecond=0
         )
         if slot > now:
             slot -= timedelta(days=7)

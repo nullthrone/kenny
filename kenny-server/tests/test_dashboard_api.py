@@ -85,6 +85,70 @@ def test_audit_requires_auth(tmp_path):
         assert c.get("/api/audit").status_code == 401
 
 
+# -- runtime settings API ------------------------------------------------------
+
+
+def test_settings_list_shape_and_secret_masking(tmp_path, monkeypatch):
+    monkeypatch.setenv("KENNY_OPERATOR_TOKEN", "op-secret")
+    monkeypatch.setenv("KENNY_DIGEST_HOUR", "9")
+    app = build_app(db_path=str(tmp_path / "settings.sqlite"))
+    with TestClient(app) as c:
+        r = c.get("/api/settings", headers=_bearer(app))
+        assert r.status_code == 200
+        groups = r.json()["groups"]
+        assert [g["name"] for g in groups][0] == "Alerting & Digest"
+        flat = {s["key"]: s for g in groups for s in g["settings"]}
+        # env source is reported
+        assert flat["KENNY_DIGEST_HOUR"]["value"] == 9
+        assert flat["KENNY_DIGEST_HOUR"]["source"] == "env"
+        # a default-valued live setting
+        assert flat["KENNY_ALERT_COOLDOWN_SECS"]["source"] == "default"
+        # the operator token (a secret) is never serialised
+        tok = flat["KENNY_OPERATOR_TOKEN"]
+        assert tok["value"] is None and tok["is_set"] is True
+        assert "op-secret" not in r.text
+
+
+def test_settings_put_and_reset_roundtrip(tmp_path):
+    app = build_app(db_path=str(tmp_path / "settings-put.sqlite"))
+    with TestClient(app) as c:
+        r = c.put("/api/settings/KENNY_ALERT_COOLDOWN_SECS",
+                  headers=_bearer(app), json={"value": 120})
+        assert r.status_code == 200
+        assert r.json() == {"key": "KENNY_ALERT_COOLDOWN_SECS", "source": "db",
+                            "lifecycle": "live", "value": 120}
+        # reflected in the list
+        flat = {s["key"]: s for g in c.get("/api/settings", headers=_bearer(app)).json()["groups"]
+                for s in g["settings"]}
+        assert flat["KENNY_ALERT_COOLDOWN_SECS"]["value"] == 120
+        # reset drops the override
+        r = c.delete("/api/settings/KENNY_ALERT_COOLDOWN_SECS", headers=_bearer(app))
+        assert r.status_code == 200 and r.json()["source"] == "default"
+        assert r.json()["value"] == 3600
+
+
+def test_settings_put_validation_and_guards(tmp_path):
+    app = build_app(db_path=str(tmp_path / "settings-guard.sqlite"))
+    with TestClient(app) as c:
+        h = _bearer(app)
+        # invalid value -> 400
+        assert c.put("/api/settings/KENNY_DIGEST_HOUR", headers=h, json={"value": 99}).status_code == 400
+        # env_only -> 403
+        r = c.put("/api/settings/KENNY_OPERATOR_TOKEN", headers=h, json={"value": "x"})
+        assert r.status_code == 403
+        # unknown key -> 400
+        assert c.put("/api/settings/NOPE", headers=h, json={"value": "x"}).status_code == 400
+        # missing value -> 400
+        assert c.put("/api/settings/KENNY_CHAT_MODEL", headers=h, json={}).status_code == 400
+
+
+def test_settings_requires_auth(tmp_path):
+    app = build_app(db_path=str(tmp_path / "settings-auth.sqlite"))
+    with TestClient(app) as c:
+        assert c.get("/api/settings").status_code == 401
+        assert c.put("/api/settings/KENNY_CHAT_MODEL", json={"value": "m"}).status_code == 401
+
+
 def test_events_endpoint_filters(tmp_path):
     app = build_app(db_path=str(tmp_path / "events.sqlite"))
     with TestClient(app) as c:

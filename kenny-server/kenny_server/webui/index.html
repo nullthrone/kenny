@@ -667,6 +667,27 @@
       border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 4px 8px; cursor: pointer; }
     .kc-ov__empty { color: var(--fg-muted); font-size: var(--text-sm); padding: var(--space-5);
       text-align: center; }
+
+    /* Settings tab: a single column of grouped panels. */
+    .kset { max-width: 920px; margin: 0 auto; display: flex; flex-direction: column; gap: var(--space-4); }
+    .kset__intro { font-size: var(--text-sm); padding: 2px 2px 0; }
+    .kset__grp { padding: var(--space-4) var(--space-5); }
+    .kset__row { display: flex; align-items: flex-start; gap: var(--space-4);
+      padding: var(--space-4) 0; border-top: 1px solid var(--border); }
+    .kset__grp .kset__row:first-of-type { border-top: none; }
+    .kset__meta { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+    .kset__label { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-weight: 600; }
+    .kset__help { font-size: var(--text-sm); }
+    .kset__key { font-size: 11px; opacity: 0.7; }
+    .kset__ctl { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+      justify-content: flex-end; max-width: 46%; }
+    .kset__input { width: 15ch; max-width: 100%; }
+    .kset__ro { font-size: var(--text-sm); color: var(--fg-muted); word-break: break-all; text-align: right; }
+    .k-pill--muted { background: transparent; color: var(--unk-fg); border-color: var(--border-strong); }
+    @media (max-width: 720px) {
+      .kset__row { flex-direction: column; }
+      .kset__ctl { max-width: 100%; justify-content: flex-start; }
+    }
   </style>
 </head>
 <body>
@@ -722,6 +743,7 @@
       'sparkles': '<path d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 0 0-2.456 2.456ZM16.894 20.567 16.5 21.75l-.394-1.183a2.25 2.25 0 0 0-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 0 0 1.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 0 0 1.423 1.423l1.183.394-1.183.394a2.25 2.25 0 0 0-1.423 1.423Z"/>',
       'refresh-cw': '<path d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99"/>',
       'life-buoy': '<path d="M16.712 4.33a9.027 9.027 0 0 1 1.652 1.306c.51.51.944 1.064 1.306 1.652M16.712 4.33l-3.448 4.138m3.448-4.138a9.014 9.014 0 0 0-9.424 0M19.67 7.288l-4.138 3.448m4.138-3.448a9.014 9.014 0 0 1 0 9.424m-4.138-5.976a3.736 3.736 0 0 0-.88-1.388 3.737 3.737 0 0 0-1.388-.88m2.268 2.268a3.765 3.765 0 0 1 0 2.528m-2.268-4.796a3.765 3.765 0 0 0-2.528 0m4.796 4.796c-.181.506-.475.96-.88 1.388a3.736 3.736 0 0 1-1.388.88m2.268-2.268 4.138 3.448m0 0a9.027 9.027 0 0 1-1.306 1.652c-.51.51-1.064.944-1.652 1.306m0 0-3.448-4.138m3.448 4.138a9.014 9.014 0 0 1-9.424 0m5.976-4.138a3.765 3.765 0 0 1-2.528 0m0 0a3.736 3.736 0 0 1-1.388-.88 3.737 3.737 0 0 1-.88-1.388m2.268 2.268L7.288 19.67m0 0a9.024 9.024 0 0 1-1.652-1.306 9.027 9.027 0 0 1-1.306-1.652m0 0 4.138-3.448M4.33 16.712a9.014 9.014 0 0 1 0-9.424m4.138 5.976a3.765 3.765 0 0 1 0-2.528m0 0c.181-.506.475-.96.88-1.388a3.736 3.736 0 0 1 1.388-.88m-2.268 2.268L4.33 7.288"/>',
+      'sliders': '<path d="M10.5 6h9.75M10.5 6a1.5 1.5 0 1 1-3 0m3 0a1.5 1.5 0 1 0-3 0M3.75 6H7.5m3 12h9.75m-9.75 0a1.5 1.5 0 0 1-3 0m3 0a1.5 1.5 0 0 0-3 0m-3.75 0H7.5m9-6h3.75m-3.75 0a1.5 1.5 0 0 1-3 0m3 0a1.5 1.5 0 0 0-3 0m-9.75 0h9.75"/>',
       'plus': '<path d="M12 4.5v15m7.5-7.5h-15"/>',
       'link': '<path d="M13.19 8.688a4.5 4.5 0 0 1 1.242 7.244l-4.5 4.5a4.5 4.5 0 0 1-6.364-6.364l1.757-1.757m13.35-.622 1.757-1.757a4.5 4.5 0 0 0-6.364-6.364l-4.5 4.5a4.5 4.5 0 0 0 1.242 7.244"/>',
       'send-horizontal': '<path d="M6 12 3.269 3.125A59.769 59.769 0 0 1 21.485 12 59.768 59.768 0 0 1 3.27 20.875L5.999 12Zm0 0h7.5"/>',
@@ -1062,6 +1084,9 @@
         return { tab: "flagged", flaggedSev: parts[1] === "crit" ? "crit" : "warn",
                  activityView: state.activityView };
       }
+      if (parts[0] === "settings") {
+        return { tab: "settings", activityView: state.activityView };
+      }
       // Overview is the default landing view (bare or unknown hash).
       return { tab: "overview", activityView: state.activityView };
     }
@@ -1072,7 +1097,8 @@
       tabsEl.innerHTML =
         tab("overview", "#/overview", "activity", "Overview") +
         tab("fleet", "#/fleet", "network", "Fleet") +
-        tab("activity", "#/activity/" + state.activityView, "activity", "Activity");
+        tab("activity", "#/activity/" + state.activityView, "activity", "Activity") +
+        tab("settings", "#/settings", "sliders", "Settings");
     }
 
     async function router() {
@@ -1085,6 +1111,7 @@
       if (tab === "overview") await renderOverview();
       else if (tab === "activity") await renderActivity();
       else if (tab === "flagged") await renderFlagged();
+      else if (tab === "settings") await renderSettings();
       else await renderFleet();
     }
 
@@ -1583,6 +1610,113 @@
          </div>`;
       if (view === "events") renderEvents();
       else renderAudit();
+    }
+
+    // ====================================================================
+    // SETTINGS TAB — structured view of the runtime configuration catalog.
+    // Values resolve DB override > environment > coded default. Editable
+    // (live/restart) settings are written back via /api/settings; env_only
+    // ones (secrets, wire-contract, process-bind) are shown read-only.
+    // ====================================================================
+    async function renderSettings() {
+      // The header metrics need fleet data in every tab; fetch it if missing.
+      if (!state.fleet) {
+        state.fleet = await getJSON("/api/fleet").catch(() => ({ agents: [] }));
+      }
+      renderHeaderRight(state.fleet, state.fleet.agents || []);
+      app.innerHTML = `<div class="kset"><div class="k-muted">loading…</div></div>`;
+      let data;
+      try {
+        data = await getJSON("/api/settings");
+      } catch (e) {
+        app.innerHTML = `<div class="kset"><div class="k-airec__err">could not load settings: ${esc(e.message)}</div></div>`;
+        return;
+      }
+      const groups = data.groups || [];
+      app.innerHTML = `<div class="kset">
+        <div class="kset__intro k-muted">Settings resolve <b>custom override → environment → default</b>.
+          Editable settings apply immediately; read-only ones are managed via the environment.</div>
+        ${groups.map(settingsGroupHtml).join("")}
+      </div>`;
+    }
+
+    function settingsGroupHtml(g) {
+      return `<div class="k-panel kset__grp">
+        <div class="k-detail-grp__lbl">${esc(g.name)}</div>
+        ${(g.settings || []).map(settingRowHtml).join("")}
+      </div>`;
+    }
+
+    function settingsSourceBadge(src) {
+      if (src === "db") return `<span class="k-pill k-pill--ok" title="operator override active">custom</span>`;
+      if (src === "env") return `<span class="k-pill" title="from the environment">env</span>`;
+      return `<span class="k-pill k-pill--muted" title="coded default">default</span>`;
+    }
+
+    function settingRowHtml(s) {
+      const writable = s.lifecycle !== "env_only";
+      const restart = s.lifecycle === "restart"
+        ? `<span class="k-pill k-pill--warn" title="stored now; applies after a server restart">restart</span>` : "";
+      const control = writable ? settingsControlHtml(s) : settingsReadonlyHtml(s);
+      const reset = (writable && s.source === "db")
+        ? `<button class="k-btn k-btn--sm" title="reset to environment/default" onclick="settingsReset(${jsArg(s.key)})">${icon('rotate-ccw', 12)}reset</button>` : "";
+      return `<div class="kset__row">
+        <div class="kset__meta">
+          <div class="kset__label">${esc(s.label)} ${settingsSourceBadge(s.source)} ${restart}</div>
+          ${s.help ? `<div class="k-muted kset__help">${esc(s.help)}</div>` : ""}
+          <div class="kset__key k-mono">${esc(s.key)}</div>
+        </div>
+        <div class="kset__ctl">${control}${reset}</div>
+      </div>`;
+    }
+
+    function settingsControlHtml(s) {
+      const key = jsArg(s.key);
+      if (s.type === "bool") {
+        return `<label class="kwf-tog"><input type="checkbox" ${s.value ? "checked" : ""}
+          onchange="settingsSet(${key}, this.checked)"/><span>${s.value ? "on" : "off"}</span></label>`;
+      }
+      if (s.type === "enum") {
+        const opts = (s.choices || []).map(c =>
+          `<option value="${esc(c)}" ${String(c) === String(s.value) ? "selected" : ""}>${esc(c)}</option>`).join("");
+        return `<select class="k-input" onchange="settingsSet(${key}, this.value)">${opts}</select>`;
+      }
+      // int / float / str: text/number input committed via Enter or the save button.
+      const numeric = s.type === "int" || s.type === "float";
+      const val = (s.value === null || s.value === undefined) ? "" : String(s.value);
+      return `<input class="k-input kset__input" id="set-${esc(s.key)}" value="${esc(val)}"
+          ${numeric ? 'inputmode="decimal"' : ""} autocomplete="off"
+          onkeydown="if(event.key==='Enter')settingsSetFromInput(${key})"/>
+        <button class="k-btn k-btn--primary k-btn--sm" onclick="settingsSetFromInput(${key})">save</button>`;
+    }
+
+    function settingsReadonlyHtml(s) {
+      let disp;
+      if (s.sensitive) disp = s.is_set ? "•••••• (set)" : "not set";
+      else disp = (s.value === "" || s.value === null || s.value === undefined) ? "(empty)" : String(s.value);
+      return `<span class="kset__ro k-mono">${esc(disp)}</span>`;
+    }
+
+    async function settingsSet(key, value) {
+      try {
+        await getJSON("/api/settings/" + encodeURIComponent(key), {
+          method: "PUT", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ value }),
+        });
+        notify("saved " + key, "ok");
+        await renderSettings();
+      } catch (e) { notify("could not save: " + e.message, "err"); }
+    }
+    function settingsSetFromInput(key) {
+      const el = document.getElementById("set-" + key);
+      if (el) settingsSet(key, el.value);
+    }
+    async function settingsReset(key) {
+      try {
+        await getJSON("/api/settings/" + encodeURIComponent(key), { method: "DELETE" });
+        notify("reset " + key, "ok");
+        await renderSettings();
+      } catch (e) { notify("could not reset: " + e.message, "err"); }
     }
 
     function worstOf(agents) {

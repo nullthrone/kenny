@@ -19,6 +19,7 @@ from kenny_server import health_rules, webfilter
 from kenny_server.store import WebFilterStore
 from kenny_server.webfilter import (
     ExternalListCache,
+    _max_block_domains,
     build_apply_args,
     classify,
     effective_list,
@@ -81,6 +82,9 @@ class _StubCache:
 
     def get(self, source: str) -> frozenset[str]:
         return self._data.get(source, frozenset())
+
+    def max_block_domains(self) -> int:
+        return _max_block_domains()
 
 
 def test_effective_list_layers() -> None:
