@@ -1,6 +1,6 @@
 # 0034. First-class Linux agent support
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-07-04
 
 ## Context and Problem Statement
