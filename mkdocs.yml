@@ -8,6 +8,12 @@ docs_dir: docs
 # The ADR template carries placeholder links (xxxx-…); keep it in the repo but out of the site.
 exclude_docs: |
   adr/0000-template.md
+# The individual ADR records are reached from the "Architecture decisions" index
+# page, not listed one-by-one in the sidebar — this keeps the nav to a single
+# Developer entry instead of dumping ~30 records into it. The files are still
+# built and linked from the index; not_in_nav just silences the strict warning.
+not_in_nav: |
+  adr/0*.md
 copyright: Copyright &copy; 2026 t11z and the kenny contributors · AGPL-3.0-only
 
 theme:
