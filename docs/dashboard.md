@@ -21,7 +21,7 @@ here when you want to know what a particular control does.
 
 <figure markdown>
   ![The console header](assets/screenshots/header.png)
-  <figcaption>The header: brand, tab nav, the fleet-metrics pill, and the global icon buttons.</figcaption>
+  <figcaption>The header: brand, tab nav, the fleet-metrics pill, and the user menu that holds the global controls.</figcaption>
 </figure>
 
 Every view shares one header:
@@ -35,12 +35,19 @@ Every view shares one header:
   On narrow screens the word labels collapse to icon + number.
 - **✨ Copilot toggle** *(Fleet tab only)* — show/hide the chat rail (see
   [The copilot](#the-copilot-chat-rail)).
-- **ⓘ About** — opens the [About box](#the-about-box).
-- **☀/☾ Theme toggle** — switches dark ↔ light; the choice is saved in `localStorage` and
-  applied before first paint (no flash). Charts repaint from the cached data on toggle.
 - **User menu** — your avatar (a selectable dog-breed image, or your initials when none is
-  set) and username, top-right. Clicking it opens a dropdown: **Profile**, **Users**
-  (superuser only), and **Log out** (`/logout`).
+  set) and username, top-right. Clicking it opens a dropdown that collects the global
+  controls:
+    - **Profile** and **Users** (superuser only) — see [Accounts & roles](#accounts-roles-the-user-menu).
+    - **Light mode / Dark mode** — the theme toggle; switches dark ↔ light in place (the menu
+      stays open, and the item names the theme it switches *to*). The choice is saved in
+      `localStorage` and applied before first paint (no flash); charts repaint from the cached
+      data on toggle.
+    - **Settings** *(superuser only)* — opens the [`#/settings`](#accounts-roles-the-user-menu)
+      config panel.
+    - **About** — opens the [About box](#the-about-box).
+    - **Documentation** — opens the project's docs site (this GitHub Pages site) in a new tab.
+    - **Log out** (`/logout`).
 
 ---
 
@@ -52,7 +59,7 @@ each surface shows:
 
 - **Superuser** — everything, including user management and core **Settings**.
 - **Operator** — the whole fleet (all hosts, all fleet operations) but *not* user
-  management and *not* the Settings tab.
+  management and *not* Settings.
 - **User** — only the hosts assigned to them: they see and can operate on those hosts, but
   cannot remove a host from inventory, and never see Settings or fleet-wide admin controls.
 
@@ -359,16 +366,18 @@ The full onboarding and update flows (with sequence diagrams) are in the
   <figcaption>Server, protocol, and staged-agent versions, the repository link, and a filterable changelog pulled from GitHub Releases.</figcaption>
 </figure>
 
-The **ⓘ** button shows the **server version**, **protocol version**, **staged agent version**,
-and a link to the repository, plus a live **changelog** filtered from the project's GitHub
-Releases (filter by version, or view the full list on GitHub).
+The **About** item in the [user menu](#the-shell-header-global-controls) shows the
+**server version**, **protocol version**, **staged agent version**, and a link to the
+repository, plus a live **changelog** filtered from the project's GitHub Releases (filter
+by version, or view the full list on GitHub).
 
 ---
 
 ## Themes, deep links & accessibility
 
-- **Dark & light** — the warm "border-collie" dark theme is the default; the toggle is
-  persisted and applied before first paint.
+- **Dark & light** — the warm "border-collie" dark theme is the default; the toggle lives in
+  the [user menu](#the-shell-header-global-controls), is persisted, and is applied before
+  first paint.
 
 <figure markdown>
   ![The Overview dashboard in the light theme](assets/screenshots/overview-light.png)
