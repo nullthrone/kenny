@@ -169,7 +169,11 @@
       font-size: var(--text-sm); font-weight: var(--weight-bold); color: var(--fg); }
     .k-tile__name svg { width: 16px; height: 16px; color: var(--fg-muted); flex: none; }
     .k-tile__name span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .k-tile__sum { font-size: var(--text-sm); color: var(--fg-muted); }
+    /* Clamp to two lines and break long unbroken tokens (e.g. a mount path)
+       so a summary can never overflow the fixed-width tile. */
+    .k-tile__sum { font-size: var(--text-sm); color: var(--fg-muted);
+      min-width: 0; overflow-wrap: anywhere; overflow: hidden;
+      display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
     .k-tile__more { font-size: 11px; color: var(--fg-faint); letter-spacing: var(--tracking-label);
       text-transform: uppercase; display: inline-flex; align-items: center; gap: 5px; }
     .k-tile__more svg { width: 13px; height: 13px; }
@@ -2587,6 +2591,18 @@
       </span>`;
     }
 
+    // Middle-truncate over-long path-like tokens in a section summary so a
+    // mount point (e.g. /var/lib/docker/.../<hash>) can't overflow the tile,
+    // keeping the trailing info (e.g. "82% full") visible. Non-path tokens and
+    // short tokens are left untouched; the raw value stays in the detail popup.
+    function shortenPaths(text, max = 30) {
+      return String(text).replace(/\S+/g, tok => {
+        if (tok.length <= max || !/[/\\]/.test(tok)) return tok;
+        const head = Math.ceil((max - 1) / 2), tail = max - 1 - head;
+        return tok.slice(0, head) + "…" + tok.slice(tok.length - tail);
+      });
+    }
+
     // A single telemetry section tile. Shared by the agent detail view and the
     // flagged (warnings/critical) view; onclick is the JS to run when tapped.
     function tileHtml(name, status, summary, reason, onclick) {
@@ -2595,7 +2611,7 @@
             <span class="k-tile__name">${icon(secIcon(name), 15)}<span>${esc(name)}</span></span>
             <span class="k-dot k-dot--${sev(status)}"></span>
           </div>
-          <div class="k-tile__sum">${esc(summary || "")}</div>
+          <div class="k-tile__sum">${esc(shortenPaths(summary || ""))}</div>
           ${reasonHtml(reason, status)}
           <span class="k-tile__more">${icon('search', 13)}details</span>
         </button>`;
