@@ -89,9 +89,7 @@ def test_fetch_no_token_returns_none(tmp_path, monkeypatch):
     def boom() -> httpx.Client:  # must not be called
         raise AssertionError("network must not be touched without a token")
 
-    res = agent_release.fetch_latest_agent_binary(
-        client_factory=boom, dest=str(tmp_path / "x.exe")
-    )
+    res = agent_release.fetch_latest_agent_binary(client_factory=boom, dest=str(tmp_path / "x.exe"))
     assert not res.ok
     assert res.source == "none"
     assert "KENNY_GITHUB_TOKEN" in res.message
@@ -194,3 +192,121 @@ def test_binary_status_manual(tmp_path, monkeypatch):
     assert st.ok
     assert st.source == "manual"
     assert st.sha256 == hashlib.sha256(EXE_BYTES).hexdigest()
+
+
+# -- Linux per-(os, arch) support (ADR-0035 Phase 4 / ADR-0038) --------------
+
+LINUX_X64_NAME = "kenny-agent-v0.2.4-x86_64-unknown-linux-musl"
+LINUX_ARM_NAME = "kenny-agent-v0.2.4-aarch64-unknown-linux-musl"
+LINUX_X64_URL = "https://cdn.example.com/linux-x64"
+LINUX_ARM_URL = "https://cdn.example.com/linux-arm"
+LINUX_X64_BYTES = b"\x7fELF fake linux x86_64 agent"
+LINUX_ARM_BYTES = b"\x7fELF fake linux aarch64 agent"
+
+
+def test_linux_asset_re_matches_musl_arches():
+    assert agent_release.LINUX_ASSET_RE.match(LINUX_X64_NAME)
+    assert agent_release.LINUX_ASSET_RE.match(LINUX_ARM_NAME)
+    # no extension, and windows exe must not match the linux regex
+    assert not agent_release.LINUX_ASSET_RE.match(ASSET_NAME)
+    assert not agent_release.LINUX_ASSET_RE.match(LINUX_X64_NAME + ".exe")
+    # per-(os, arch) regex is arch-specific
+    assert agent_release._asset_re("linux", "aarch64").match(LINUX_ARM_NAME)
+    assert not agent_release._asset_re("linux", "aarch64").match(LINUX_X64_NAME)
+
+
+def test_cache_path_per_os_arch(monkeypatch, tmp_path):
+    monkeypatch.delenv("KENNY_AGENT_BINARY_CACHE", raising=False)
+    monkeypatch.setenv("KENNY_DB_PATH", str(tmp_path / "kenny.sqlite"))
+    assert agent_release.cache_path("linux", "x86_64") == str(tmp_path / "kenny-agent-linux-x86_64")
+    assert agent_release.cache_path("linux", "aarch64") == str(
+        tmp_path / "kenny-agent-linux-aarch64"
+    )
+    # the windows cache override does not leak into the linux paths
+    monkeypatch.setenv("KENNY_AGENT_BINARY_CACHE", str(tmp_path / "override.exe"))
+    assert agent_release.cache_path() == str(tmp_path / "override.exe")
+    assert agent_release.cache_path("linux", "x86_64") == str(tmp_path / "kenny-agent-linux-x86_64")
+
+
+def _full_release_json() -> dict:
+    def sha(name, url):
+        return {"name": name + ".sha256", "browser_download_url": url + "-sha"}
+
+    return {
+        "tag_name": "v0.2.4",
+        "assets": [
+            {"name": ASSET_NAME, "browser_download_url": EXE_URL},
+            sha(ASSET_NAME, EXE_URL),
+            {"name": LINUX_X64_NAME, "browser_download_url": LINUX_X64_URL},
+            sha(LINUX_X64_NAME, LINUX_X64_URL),
+            {"name": LINUX_ARM_NAME, "browser_download_url": LINUX_ARM_URL},
+            sha(LINUX_ARM_NAME, LINUX_ARM_URL),
+        ],
+    }
+
+
+def _full_handler():
+    bodies = {
+        EXE_URL: EXE_BYTES,
+        LINUX_X64_URL: LINUX_X64_BYTES,
+        LINUX_ARM_URL: LINUX_ARM_BYTES,
+    }
+    names = {EXE_URL: ASSET_NAME, LINUX_X64_URL: LINUX_X64_NAME, LINUX_ARM_URL: LINUX_ARM_NAME}
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if url.endswith("/releases/latest"):
+            return httpx.Response(200, json=_full_release_json())
+        if url in bodies:
+            return httpx.Response(200, content=bodies[url])
+        if url.endswith("-sha"):
+            base = url[: -len("-sha")]
+            return httpx.Response(
+                200, text=f"{hashlib.sha256(bodies[base]).hexdigest()}  {names[base]}"
+            )
+        return httpx.Response(404)
+
+    return handle
+
+
+def test_fetch_caches_windows_and_all_linux_arches(tmp_path, token, monkeypatch):
+    monkeypatch.delenv("KENNY_AGENT_BINARY_CACHE", raising=False)
+    monkeypatch.setenv("KENNY_DB_PATH", str(tmp_path / "kenny.sqlite"))
+    res = agent_release.fetch_latest_agent_binary(client_factory=_factory(_full_handler()))
+    assert res.ok
+    # windows result leads the return value...
+    assert res.asset_name == ASSET_NAME
+    assert (tmp_path / "kenny-agent.exe").read_bytes() == EXE_BYTES
+    # ...and every linux musl arch is cached with its own .version sidecar
+    assert (tmp_path / "kenny-agent-linux-x86_64").read_bytes() == LINUX_X64_BYTES
+    assert (tmp_path / "kenny-agent-linux-aarch64").read_bytes() == LINUX_ARM_BYTES
+    assert (tmp_path / "kenny-agent-linux-x86_64.version").read_text() == "0.2.4"
+    assert (tmp_path / "kenny-agent-linux-aarch64.version").read_text() == "0.2.4"
+    # the aggregate message mentions the linux assets that were also fetched
+    assert "linux" in res.message
+
+
+def test_fetch_linux_only_release_returns_success(tmp_path, token, monkeypatch):
+    """A release with only linux assets still caches them and returns ok."""
+
+    monkeypatch.delenv("KENNY_AGENT_BINARY_CACHE", raising=False)
+    monkeypatch.setenv("KENNY_DB_PATH", str(tmp_path / "kenny.sqlite"))
+    rel = {
+        "tag_name": "v0.2.4",
+        "assets": [{"name": LINUX_X64_NAME, "browser_download_url": LINUX_X64_URL}],
+    }
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if url.endswith("/releases/latest"):
+            return httpx.Response(200, json=rel)
+        if url == LINUX_X64_URL:
+            return httpx.Response(200, content=LINUX_X64_BYTES)
+        return httpx.Response(404)
+
+    res = agent_release.fetch_latest_agent_binary(client_factory=_factory(handle))
+    assert res.ok
+    assert res.asset_name == LINUX_X64_NAME
+    assert (tmp_path / "kenny-agent-linux-x86_64").read_bytes() == LINUX_X64_BYTES
+    # no windows binary was produced
+    assert not (tmp_path / "kenny-agent.exe").exists()

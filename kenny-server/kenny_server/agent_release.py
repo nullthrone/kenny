@@ -25,8 +25,21 @@ import httpx
 
 GITHUB_API = "https://api.github.com"
 DEFAULT_REPO = "t11z/kenny"
+# Release asset naming (shared contract with the agent's release workflow):
+#   windows: kenny-agent-<tag>-x86_64-pc-windows-msvc.exe
+#   linux:   kenny-agent-<tag>-<arch>-unknown-linux-musl  (arch: x86_64 | aarch64)
 ASSET_RE = re.compile(r"^kenny-agent-.*-x86_64-pc-windows-msvc\.exe$")
+LINUX_ASSET_RE = re.compile(r"^kenny-agent-.*-(x86_64|aarch64)-unknown-linux-musl$")
+LINUX_ARCHES = ("x86_64", "aarch64")
 FETCH_TIMEOUT_S = 15.0
+
+
+def _asset_re(os_name: str, arch: str) -> re.Pattern[str]:
+    """The release-asset name regex for a given (os, arch)."""
+
+    if os_name == "linux":
+        return re.compile(rf"^kenny-agent-.*-{re.escape(arch)}-unknown-linux-musl$")
+    return ASSET_RE
 
 
 def github_repo() -> str:
@@ -48,19 +61,25 @@ def github_configured() -> bool:
     return github_token() is not None
 
 
-def cache_path() -> str:
-    """Where an auto-fetched binary is cached.
+def cache_path(os_name: str = "windows", arch: str = "x86_64") -> str:
+    """Where an auto-fetched binary is cached, per (os, arch).
 
-    Explicit ``KENNY_AGENT_BINARY_CACHE`` wins; otherwise it sits next to the
-    SQLite store (``<dir of KENNY_DB_PATH>/kenny-agent.exe``), which is the
-    persisted ``/data`` volume in the container.
+    Binaries sit next to the SQLite store (``<dir of KENNY_DB_PATH>/...``), the
+    persisted ``/data`` volume in the container:
+
+    * windows -> ``kenny-agent.exe`` (explicit ``KENNY_AGENT_BINARY_CACHE`` wins,
+      preserving the pre-Linux behavior).
+    * linux   -> ``kenny-agent-linux-<arch>`` (``x86_64`` | ``aarch64``).
     """
 
+    db = os.environ.get("KENNY_DB_PATH", "kenny.sqlite")
+    base_dir = os.path.dirname(os.path.abspath(db)) or "."
+    if os_name == "linux":
+        return os.path.join(base_dir, f"kenny-agent-linux-{arch}")
     override = os.environ.get("KENNY_AGENT_BINARY_CACHE", "").strip()
     if override:
         return override
-    db = os.environ.get("KENNY_DB_PATH", "kenny.sqlite")
-    return os.path.join(os.path.dirname(os.path.abspath(db)) or ".", "kenny-agent.exe")
+    return os.path.join(base_dir, "kenny-agent.exe")
 
 
 DEFAULT_VERSION = "0.2.0"
@@ -157,20 +176,22 @@ def _default_client() -> httpx.Client:
     return httpx.Client(timeout=FETCH_TIMEOUT_S, headers=headers, follow_redirects=True)
 
 
-def _pick_assets(release: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
-    """Return ``(exe_asset, sha256_asset|None)``; raise if no exe asset matches."""
+def _match_asset(
+    release: dict[str, Any], asset_re: re.Pattern[str]
+) -> tuple[dict[str, Any], dict[str, Any] | None] | None:
+    """Return ``(asset, sha256_asset|None)`` for ``asset_re``, or None if absent."""
 
     assets = release.get("assets") or []
-    exe_assets = sorted(
-        (a for a in assets if ASSET_RE.match(str(a.get("name", "")))),
+    matched = sorted(
+        (a for a in assets if asset_re.match(str(a.get("name", "")))),
         key=lambda a: str(a.get("name", "")),
     )
-    if not exe_assets:
-        raise ValueError("no kenny-agent .exe asset in the latest release")
-    exe = exe_assets[0]
-    sha_name = str(exe["name"]) + ".sha256"
+    if not matched:
+        return None
+    asset = matched[0]
+    sha_name = str(asset["name"]) + ".sha256"
     sha = next((a for a in assets if str(a.get("name", "")) == sha_name), None)
-    return exe, sha
+    return asset, sha
 
 
 def _parse_sha256(text: str) -> str:
@@ -183,81 +204,62 @@ def _parse_sha256(text: str) -> str:
     return token
 
 
-def fetch_latest_agent_binary(
-    *,
-    client_factory: Callable[[], httpx.Client] = _default_client,
-    dest: str | None = None,
-) -> FetchResult:
-    """Resolve the latest release, download + verify + atomically cache the exe.
+def _fetch_asset(
+    client: httpx.Client,
+    release: dict[str, Any],
+    asset_re: re.Pattern[str],
+    dest: str,
+    tag: str | None,
+) -> FetchResult | None:
+    """Download+verify+atomically cache the single asset matching ``asset_re``.
 
-    Best-effort: **never raises** — any failure returns ``FetchResult(ok=False)``.
-    ``client_factory`` is injected so tests use ``httpx.MockTransport`` (no network).
+    Returns ``None`` when no such asset exists in the release (nothing to do), a
+    failing :class:`FetchResult` when the download/verify fails (best-effort:
+    **never raises**), and a succeeding one when cached. Writes the release tag
+    to the binary's ``.version`` sidecar on success.
     """
 
-    if not github_configured():
-        return FetchResult(
-            ok=False,
-            source="none",
-            message="GitHub fetch not configured (set KENNY_GITHUB_TOKEN)",
-        )
-
-    dest = dest or cache_path()
-    repo = github_repo()
+    picked = _match_asset(release, asset_re)
+    if picked is None:
+        return None
+    asset, sha_asset = picked
+    asset_name = str(asset["name"])
+    norm = _normalize_version(tag) if tag else None
     try:
-        with client_factory() as client:
-            rel = client.get(f"{GITHUB_API}/repos/{repo}/releases/latest")
-            if rel.status_code == 404:
-                return FetchResult(
-                    ok=False, source="none", message=f"no releases found for {repo}"
-                )
-            if rel.status_code == 403:
-                return FetchResult(
-                    ok=False,
-                    source="none",
-                    message="GitHub API 403 (rate limited or token lacks access)",
-                )
-            rel.raise_for_status()
-            release = rel.json()
-            tag = release.get("tag_name")
+        os.makedirs(os.path.dirname(os.path.abspath(dest)) or ".", exist_ok=True)
+        fd, tmp = tempfile.mkstemp(
+            dir=os.path.dirname(os.path.abspath(dest)) or ".", suffix=".part"
+        )
+        try:
+            with os.fdopen(fd, "wb") as out:
+                with client.stream("GET", asset["browser_download_url"]) as resp:
+                    resp.raise_for_status()
+                    for chunk in resp.iter_bytes(1 << 20):
+                        out.write(chunk)
 
-            exe_asset, sha_asset = _pick_assets(release)
-            asset_name = str(exe_asset["name"])
+            digest = _sha256_file(tmp)
+            warning = ""
+            if sha_asset is not None:
+                sha_resp = client.get(sha_asset["browser_download_url"])
+                sha_resp.raise_for_status()
+                expected = _parse_sha256(sha_resp.text)
+                if digest != expected:
+                    return FetchResult(
+                        ok=False,
+                        source="none",
+                        message=f"sha256 verification failed for {asset_name}",
+                    )
+            else:
+                warning = " (no .sha256 asset to verify against)"
 
-            os.makedirs(os.path.dirname(os.path.abspath(dest)) or ".", exist_ok=True)
-            fd, tmp = tempfile.mkstemp(
-                dir=os.path.dirname(os.path.abspath(dest)) or ".", suffix=".part"
-            )
-            try:
-                with os.fdopen(fd, "wb") as out:
-                    with client.stream("GET", exe_asset["browser_download_url"]) as resp:
-                        resp.raise_for_status()
-                        for chunk in resp.iter_bytes(1 << 20):
-                            out.write(chunk)
-
-                digest = _sha256_file(tmp)
-                warning = ""
-                if sha_asset is not None:
-                    sha_resp = client.get(sha_asset["browser_download_url"])
-                    sha_resp.raise_for_status()
-                    expected = _parse_sha256(sha_resp.text)
-                    if digest != expected:
-                        return FetchResult(
-                            ok=False,
-                            source="none",
-                            message=f"sha256 verification failed for {asset_name}",
-                        )
-                else:
-                    warning = " (no .sha256 asset to verify against)"
-
-                os.replace(tmp, dest)
-                tmp = None  # consumed by os.replace
-            finally:
-                if tmp is not None and os.path.exists(tmp):
-                    os.unlink(tmp)
+            os.replace(tmp, dest)
+            tmp = None  # consumed by os.replace
+        finally:
+            if tmp is not None and os.path.exists(tmp):
+                os.unlink(tmp)
 
         # Persist the release tag next to the binary: it is the leading source
         # of the agent version (read back by resolve_agent_version).
-        norm = _normalize_version(tag) if tag else None
         try:
             with open(version_sidecar(dest), "w", encoding="utf-8") as fh:
                 fh.write(norm or "")
@@ -276,16 +278,92 @@ def fetch_latest_agent_binary(
         return FetchResult(ok=False, source="none", message=f"fetch failed: {exc}")
 
 
-def binary_status(*, manual_path: str | None) -> FetchResult:
+def fetch_latest_agent_binary(
+    *,
+    client_factory: Callable[[], httpx.Client] = _default_client,
+    dest: str | None = None,
+) -> FetchResult:
+    """Resolve the latest release, then download+verify+cache **every** known
+    asset it can match: the Windows exe plus each Linux musl arch present.
+
+    Each asset is best-effort/non-fatal, cached to its own ``cache_path`` with a
+    ``.version`` sidecar. The Windows result (to ``dest`` if given) leads the
+    return value for back-compat; when there is no Windows asset but a Linux one
+    cached, the first successful Linux result is returned instead. Best-effort:
+    **never raises** — any failure surfaces as ``FetchResult(ok=False)``.
+    ``client_factory`` is injected so tests use ``httpx.MockTransport`` (no network).
+    """
+
+    if not github_configured():
+        return FetchResult(
+            ok=False,
+            source="none",
+            message="GitHub fetch not configured (set KENNY_GITHUB_TOKEN)",
+        )
+
+    repo = github_repo()
+    try:
+        with client_factory() as client:
+            rel = client.get(f"{GITHUB_API}/repos/{repo}/releases/latest")
+            if rel.status_code == 404:
+                return FetchResult(ok=False, source="none", message=f"no releases found for {repo}")
+            if rel.status_code == 403:
+                return FetchResult(
+                    ok=False,
+                    source="none",
+                    message="GitHub API 403 (rate limited or token lacks access)",
+                )
+            rel.raise_for_status()
+            release = rel.json()
+            tag = release.get("tag_name")
+
+            win_dest = dest or cache_path("windows", "x86_64")
+            win_res = _fetch_asset(client, release, ASSET_RE, win_dest, tag)
+
+            linux_ok: list[FetchResult] = []
+            for arch in LINUX_ARCHES:
+                lres = _fetch_asset(
+                    client, release, _asset_re("linux", arch), cache_path("linux", arch), tag
+                )
+                if lres is not None and lres.ok:
+                    linux_ok.append(lres)
+    except Exception as exc:  # noqa: BLE001 - best-effort, surface as a result
+        return FetchResult(ok=False, source="none", message=f"fetch failed: {exc}")
+
+    if win_res is not None:
+        if win_res.ok and linux_ok:
+            extra = ", ".join(str(r.asset_name) for r in linux_ok)
+            win_res.message = f"{win_res.message} (+linux: {extra})"
+        return win_res
+    if linux_ok:
+        return linux_ok[0]
+    return FetchResult(
+        ok=False,
+        source="none",
+        message="fetch failed: no kenny-agent asset in the latest release",
+    )
+
+
+_EXPLICIT_ENV = {
+    ("windows", "x86_64"): "KENNY_AGENT_BINARY",
+    ("linux", "x86_64"): "KENNY_AGENT_BINARY_LINUX",
+    ("linux", "aarch64"): "KENNY_AGENT_BINARY_LINUX_AARCH64",
+}
+
+
+def binary_status(
+    *, manual_path: str | None, os_name: str = "windows", arch: str = "x86_64"
+) -> FetchResult:
     """Describe current availability **without** contacting GitHub.
 
     ``manual_path`` is the resolved binary path (``distribution.agent_binary_path``)
-    so precedence stays in one place. ``source`` distinguishes a manually-placed
-    binary from the GitHub cache.
+    so precedence stays in one place. ``source`` distinguishes an operator-placed
+    binary (via the per-(os, arch) env var) from the GitHub cache.
     """
 
     version = resolve_agent_version(manual_path)
-    explicit = os.environ.get("KENNY_AGENT_BINARY", "").strip()
+    env_name = _EXPLICIT_ENV.get((os_name, arch), "KENNY_AGENT_BINARY")
+    explicit = os.environ.get(env_name, "").strip()
     if manual_path:
         source = "manual" if explicit and os.path.exists(explicit) else "cache"
         return FetchResult(

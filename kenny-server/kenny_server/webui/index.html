@@ -1072,6 +1072,25 @@
       };
     }
 
+    // Linux variant: a root install one-liner (curl … | sudo sh) to run on the box.
+    function shareLinuxModal(id, oneliner, expiresIn) {
+      const titleHtml = `${icon('link', 20)}<span>Linux install command</span>`;
+      const bodyHtml = `<div class="k-modal__sum">One-time install command for <b>${esc(id)}</b>.
+          Run it on the Linux PC <b>as root</b> (it uses <code>sudo</code>). Expires in
+          ${esc(expiresIn)}s and rotates the PC's token.</div>
+        <div class="k-row" style="gap:8px">
+          <input class="k-input k-mono" id="km-share-url" readonly>
+          <button class="k-btn k-btn--primary" id="km-share-copy" style="flex:none">copy</button>
+        </div>`;
+      openModal(titleHtml, bodyHtml);
+      const input = document.getElementById("km-share-url");
+      input.value = oneliner; input.focus(); input.select();
+      document.getElementById("km-share-copy").onclick = async () => {
+        try { await navigator.clipboard.writeText(oneliner); notify("command copied to clipboard"); }
+        catch (e) { input.focus(); input.select(); notify("press Ctrl+C to copy the command"); }
+      };
+    }
+
     // -- documentation link ------------------------------------------------
     // The user menu links to the project's docs on GitHub Pages. The repo is
     // configurable server-side (GITHUB_REPO); we cache it from /api/about (see
@@ -2501,11 +2520,18 @@
     }
 
     function addPcHtml(bin) {
-      const dis = bin && !bin.available ? "disabled" : "";
+      // A missing binary for one OS must not block the other; only disable when
+      // neither OS has a binary available.
+      const anyAvail = !bin || bin.available || (bin.by_os && (bin.by_os.windows || bin.by_os.linux));
+      const dis = anyAvail ? "" : "disabled";
       return `<div class="kc-addpc">
         <div class="kc-addpc__head">${icon('plus', 14)}Add a PC</div>
         <input class="k-input" id="new-agent-id" placeholder="agent id (e.g. study-pc)" autocomplete="off" />
         <div class="k-row" style="margin-top:8px">
+          <select class="k-input" id="new-agent-os" style="flex:none;width:auto">
+            <option value="windows">Windows</option>
+            <option value="linux">Linux</option>
+          </select>
           <button class="k-btn k-btn--primary k-btn--sm" onclick="downloadNewInstaller()" ${dis}>${icon('download', 13)}installer</button>
           <button class="k-btn k-btn--ghost k-btn--sm" onclick="shareNewInstaller()" ${dis}>${icon('link', 13)}share link</button>
         </div>
@@ -2600,9 +2626,10 @@
             <button class="k-btn k-btn--ghost k-btn--sm" onclick="remoteHelp(${jsArg(data.agent_id)})" title="open Quick Assist on this PC for a remote-help session">${icon('life-buoy', 13)}remote help</button>` +
             // Token-rotation + fleet-admin actions are operator/superuser only;
             // a scoped `user` sees the read-only view above but not these.
-            (canOperate() ? `
+            (canOperate() ? (osFamily === "linux" ? `
+            <button class="k-btn k-btn--ghost k-btn--sm" onclick="shareLinuxInstaller(${jsArg(data.agent_id)})" title="share a fresh root install one-liner for this Linux PC (rotates its token)">${icon('link', 13)}install link</button>` : `
             <button class="k-btn k-btn--ghost k-btn--sm" onclick="downloadInstaller(${jsArg(data.agent_id)})" title="rebuild the installer for this PC (rotates its token)">${icon('download', 13)}reinstall</button>
-            <button class="k-btn k-btn--ghost k-btn--sm" onclick="shareInstaller(${jsArg(data.agent_id)})" title="share a fresh installer link for this PC (rotates its token)">${icon('link', 13)}re-share</button>
+            <button class="k-btn k-btn--ghost k-btn--sm" onclick="shareInstaller(${jsArg(data.agent_id)})" title="share a fresh installer link for this PC (rotates its token)">${icon('link', 13)}re-share</button>`) + `
             <button class="k-btn k-btn--danger k-btn--sm" onclick="updateAgent(${jsArg(data.agent_id)})">${icon('circle-arrow-up', 13)}update</button>
             <button class="k-btn k-btn--danger k-btn--sm" onclick="removeAgent(${jsArg(data.agent_id)}, ${jsArg(name)})" title="remove this PC from the inventory">${icon('trash-2', 13)}remove</button>` : "") + `
           </div>
@@ -3243,9 +3270,14 @@
 
     // -- agent distribution (installer / share / update) ------------------
     function downloadInstaller(id) { window.location = "/api/agents/" + encodeURIComponent(id) + "/installer"; }
+    function newAgentOs() {
+      const el = document.getElementById("new-agent-os");
+      return el ? el.value : "windows";
+    }
     function downloadNewInstaller() {
       const id = (document.getElementById("new-agent-id").value || "").trim();
       if (!id) return notify("enter an agent id", "err");
+      if (newAgentOs() === "linux") return shareLinuxInstaller(id);
       downloadInstaller(id);
     }
     async function shareInstaller(id) {
@@ -3254,9 +3286,17 @@
         shareLinkModal(id, r.url, r.expires_in);
       } catch (e) { notify("share failed: " + e.message, "err"); }
     }
+    // Linux install is a root one-liner (curl … | sudo sh) rather than a ZIP.
+    async function shareLinuxInstaller(id) {
+      try {
+        const r = await getJSON("/api/agents/" + encodeURIComponent(id) + "/share-link?os=linux", { method: "POST" });
+        shareLinuxModal(id, r.oneliner || r.url, r.expires_in);
+      } catch (e) { notify("share failed: " + e.message, "err"); }
+    }
     function shareNewInstaller() {
       const id = (document.getElementById("new-agent-id").value || "").trim();
       if (!id) return notify("enter an agent id", "err");
+      if (newAgentOs() === "linux") return shareLinuxInstaller(id);
       shareInstaller(id);
     }
     async function updateAgent(id) {
@@ -3293,7 +3333,9 @@
 
     // -- binary banner -----------------------------------------------------
     function bannerHtml(bin) {
-      if (!bin || bin.available) return "";
+      // Only warn when no OS has a binary; a Windows-only or Linux-only gap is fine.
+      const anyAvail = bin && (bin.available || (bin.by_os && (bin.by_os.windows || bin.by_os.linux)));
+      if (!bin || anyAvail) return "";
       const retry = bin.github_configured
         ? `<button class="k-btn k-btn--ghost k-btn--sm" onclick="retryFetch(this)">retry GitHub fetch</button>` : "";
       return `<div class="k-panel kc-banner">

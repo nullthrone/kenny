@@ -186,9 +186,12 @@ Each PC is a tile with a **status dot**, its hostname, and a one-line summary (t
 section's reason). Tiles are sorted worst-first; offline PCs carry an **offline** badge and a
 critical PC is outlined in red. Click a tile to select it.
 
-Below the list, the **Add a PC** panel onboards a *new* machine: type an agent id, then
-**installer** (download a ZIP) or **share link** (a one-time, expiring link the target user can
-open without your login). See [Adding & updating PCs](#adding-updating-pcs).
+Below the list, the **Add a PC** panel onboards a *new* machine: type an agent id, pick the
+target **OS** (Windows or Linux), then **installer** / **share link**. For **Windows** these are a
+downloadable ZIP or a one-time, expiring link the target user can open without your login. For
+**Linux** the panel produces a **one-line install command** (`curl -fsSL … | sudo sh`) in a
+copyable modal — the Docker/K3s convenience-script model (ADR-0038). See
+[Adding & updating PCs](#adding-updating-pcs).
 
 ### Agent detail (centre)
 
@@ -342,12 +345,17 @@ losing your spot. **Back to fleet** returns to the Fleet tab.
   <figcaption>A one-time installer link for a PC, with a copy button; it expires and rotates the PC's token.</figcaption>
 </figure>
 
-- **Add a PC** (Fleet list) onboards a *new* machine — **installer** downloads a ZIP (the agent
-  binary + a pre-filled `install.bat` + a freshly minted token), **share link** produces a
-  one-time, expiring link the target user opens without your login.
+- **Add a PC** (Fleet list) onboards a *new* machine. Pick the target **OS** first.
+  On **Windows**, **installer** downloads a ZIP (the agent binary + a pre-filled `setup.bat` +
+  a freshly minted token) and **share link** produces a one-time, expiring link the target user
+  opens without your login. On **Linux**, both produce the **one-line install command**
+  (`curl -fsSL … | sudo sh`) — a nonce-gated, single-use script carrying the same freshly minted
+  one-time enrollment token (ADR-0038).
 - On an existing PC, **reinstall** / **re-share** re-provision *that* agent id (rotating its
-  token, so the old install stops reporting), and **update** pushes a server-triggered
-  self-update.
+  token, so the old install stops reporting) — a ZIP/link on Windows, the one-line command on
+  Linux — and **update** pushes a server-triggered self-update. **Update works on both Windows
+  and Linux**: the agent downloads the new binary, verifies its SHA-256, swaps it in place, and
+  restarts its service (systemd on Linux, the Windows service on Windows).
 - **Remove** (operator/superuser only, on the agent drill-down) takes a host out of
   inventory: it purges that agent's snapshots, events, tokens, keys, web-filter state, and
   scope assignments. A host still pinned via `KENNY_AGENT_TOKENS` is refused (it would just

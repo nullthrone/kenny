@@ -4,14 +4,19 @@ and trigger a server-side self-update (ADR-0012, ADR-0013).
 The server serves a **prebuilt** agent binary (``KENNY_AGENT_BINARY``) and injects
 per-install config — it does not build per download. Endpoints:
 
-* ``GET  /api/agents/{id}/installer``    (operator) -> a ZIP (exe + setup.bat +
-  kenny-agent.setup.json + README), minting a fresh per-agent token via the token store.
-* ``POST /api/agents/{id}/share-link``   (operator) -> an expiring one-time ``/d/installer/{nonce}``
-  link the target user can open without an operator login.
-* ``GET  /d/installer/{nonce}``          (public, nonce-gated) -> the installer ZIP, once.
-* ``POST /api/agents/{id}/update``       (operator) -> compute the binary sha256, mint a
-  short-lived ``/d/binary/{nonce}`` URL, and send ``agent_update`` to the online agent.
-* ``GET  /d/binary/{nonce}``             (public, nonce-gated) -> the raw exe (for self-update).
+* ``GET  /api/agents/{id}/installer``    (operator) -> Windows: a ZIP (exe + setup.bat +
+  kenny-agent.setup.json + README); Linux (``?os=linux``): the install ``sh`` script
+  directly. Mints a fresh per-agent token via the token store.
+* ``POST /api/agents/{id}/share-link``   (operator) -> Windows: an expiring one-time
+  ``/d/installer/{nonce}`` link; Linux (``?os=linux``): a ``curl … | sudo sh`` one-liner
+  pointing at ``/d/install/{nonce}``.
+* ``GET  /d/installer/{nonce}``          (public, nonce-gated) -> the Windows installer ZIP, once.
+* ``GET  /d/install/{nonce}``            (public, nonce-gated) -> the Linux install script, once
+  (mints the token + a paired non-consumed ``/d/binary`` nonce baked into the script).
+* ``POST /api/agents/{id}/update``       (operator) -> compute the (OS-matched) binary sha256,
+  mint a short-lived ``/d/binary/{nonce}`` URL, and send ``agent_update`` to the online agent.
+* ``GET  /d/binary/{nonce}``             (public, nonce-gated) -> the raw binary (self-update /
+  Linux install download), served per the nonce's os/arch.
 
 ``/d/*`` is exempt from operator auth (the nonce is the credential); see ``auth.py``.
 """
@@ -39,15 +44,29 @@ from .tokenstore import AgentTokenStore
 from .tunnel import AgentTunnel, ToolError
 
 INSTALLER_TTL_S = 3600  # one hour for an operator-shared installer link
-BINARY_TTL_S = 600      # ten minutes for a self-update binary fetch
+BINARY_TTL_S = 600  # ten minutes for a self-update binary fetch
 
 
-def agent_binary_path() -> str | None:
-    """Path to the prebuilt agent binary, or None if unavailable.
+def agent_binary_path(os_name: str = "windows", arch: str = "x86_64") -> str | None:
+    """Path to the prebuilt agent binary for ``(os_name, arch)``, or None.
 
-    Operator-placed ``KENNY_AGENT_BINARY`` wins; otherwise the GitHub-fetched
-    cache (``agent_release.cache_path()``) is used if present (ADR-0015).
+    Operator-placed env override wins, otherwise the GitHub-fetched cache
+    (``agent_release.cache_path``) is used if present (ADR-0015). Overrides:
+
+    * windows/x86_64 -> ``KENNY_AGENT_BINARY`` (the default, pre-Linux behavior).
+    * linux/x86_64   -> ``KENNY_AGENT_BINARY_LINUX``.
+    * linux/aarch64  -> ``KENNY_AGENT_BINARY_LINUX_AARCH64``.
     """
+
+    if os_name == "linux":
+        env = (
+            "KENNY_AGENT_BINARY_LINUX_AARCH64" if arch == "aarch64" else "KENNY_AGENT_BINARY_LINUX"
+        )
+        override = os.environ.get(env, "").strip()
+        if override and os.path.exists(override):
+            return override
+        cache = agent_release.cache_path("linux", arch)
+        return cache if os.path.exists(cache) else None
 
     path = os.environ.get("KENNY_AGENT_BINARY", "").strip()
     if path and os.path.exists(path):
@@ -71,18 +90,24 @@ def _wss_url() -> str:
 
     base = _public_url()
     if base.startswith("https://"):
-        base = "wss://" + base[len("https://"):]
+        base = "wss://" + base[len("https://") :]
     elif base.startswith("http://"):
-        base = "ws://" + base[len("http://"):]
+        base = "ws://" + base[len("http://") :]
     return base.rstrip("/") + "/agent/ws"
 
 
 @dataclass
 class _Nonce:
     agent_id: str
-    kind: str  # "installer" | "binary"
+    kind: str  # "installer" | "install" | "binary"
     expires_at: float
     used: bool = False
+    os: str = "windows"
+    arch: str = "x86_64"
+    # For a Linux "install" nonce, the paired "binary" nonce it hands the target
+    # box (baked into the install script's download URL). It lives longer than
+    # the install nonce (which is consumed on fetch) so the fetch->run gap is OK.
+    binary_nonce: str | None = None
 
 
 @dataclass
@@ -91,12 +116,28 @@ class ShareLinks:
 
     _nonces: dict[str, _Nonce] = field(default_factory=dict)
 
-    def create(self, agent_id: str, kind: str, ttl_s: int) -> str:
+    def create(
+        self,
+        agent_id: str,
+        kind: str,
+        ttl_s: int,
+        *,
+        os_name: str = "windows",
+        arch: str = "x86_64",
+        binary_nonce: str | None = None,
+    ) -> str:
         nonce = secrets.token_urlsafe(24)
-        self._nonces[nonce] = _Nonce(agent_id, kind, time.time() + ttl_s)
+        self._nonces[nonce] = _Nonce(
+            agent_id,
+            kind,
+            time.time() + ttl_s,
+            os=os_name,
+            arch=arch,
+            binary_nonce=binary_nonce,
+        )
         return nonce
 
-    def resolve(self, nonce: str, kind: str, *, consume: bool) -> str | None:
+    def resolve_entry(self, nonce: str, kind: str, *, consume: bool) -> _Nonce | None:
         entry = self._nonces.get(nonce)
         if entry is None or entry.kind != kind or entry.used:
             return None
@@ -105,7 +146,11 @@ class ShareLinks:
             return None
         if consume:
             entry.used = True
-        return entry.agent_id
+        return entry
+
+    def resolve(self, nonce: str, kind: str, *, consume: bool) -> str | None:
+        entry = self.resolve_entry(nonce, kind, consume=consume)
+        return entry.agent_id if entry is not None else None
 
 
 def _setup_bat() -> str:
@@ -120,9 +165,7 @@ def _setup_bat() -> str:
     )
 
 
-def _setup_json(
-    agent_id: str, token: str, wss: str, interval: int, server_pubkey: str
-) -> str:
+def _setup_json(agent_id: str, token: str, wss: str, interval: int, server_pubkey: str) -> str:
     return json.dumps(
         {
             "server": wss,
@@ -153,9 +196,87 @@ def _readme(agent_id: str, wss: str, server_pubkey: str) -> str:
     )
 
 
-def _build_installer_zip(
-    binary: str, agent_id: str, token: str, server_pubkey: str
-) -> bytes:
+def _norm_arch(arch: str | None) -> str:
+    """Normalize a reported/queried arch onto our release naming (x86_64|aarch64)."""
+
+    a = (arch or "").strip().lower()
+    return "aarch64" if a in ("aarch64", "arm64") else "x86_64"
+
+
+def _sh_squote(value: str) -> str:
+    """POSIX single-quote a value (server-controlled, but quoted defensively)."""
+
+    return "'" + value.replace("'", "'\\''") + "'"
+
+
+def _install_sh(
+    agent_id: str,
+    token: str,
+    wss: str,
+    server_pubkey: str,
+    interval: int,
+    binary_url: str,
+) -> str:
+    """The Linux install script (POSIX ``sh``, LF line endings).
+
+    Downloads the arch-matched agent binary from ``binary_url`` (which already
+    carries ``?os=linux``; the script appends ``&arch=$arch``) and runs the exact
+    agent CLI contract:
+
+        <binary> setup --server <wss> --agent-id <id> \
+            [--server-pubkey <b64>] [--enroll-token <tok>] \
+            --telemetry-interval-secs <n>
+
+    The enrollment token lives only here (in argv) — never on disk.
+    """
+
+    setup = [
+        '"$BIN" setup \\',
+        f"  --server {_sh_squote(wss)} \\",
+        f"  --agent-id {_sh_squote(agent_id)} \\",
+    ]
+    if server_pubkey:
+        setup.append(f"  --server-pubkey {_sh_squote(server_pubkey)} \\")
+    if token:
+        setup.append(f"  --enroll-token {_sh_squote(token)} \\")
+    setup.append(f"  --telemetry-interval-secs {int(interval)}")
+    setup_block = "\n".join(setup)
+
+    return (
+        "#!/bin/sh\n"
+        "# kenny-agent Linux installer (generated by kenny-server).\n"
+        "# Run as root, e.g.:  curl -fsSL <this-url> | sudo sh\n"
+        "set -eu\n"
+        "\n"
+        'if [ "$(id -u)" -eq 0 ]; then\n'
+        "  :\n"
+        "else\n"
+        '  echo "kenny-agent install must run as root. Re-run with:" >&2\n'
+        '  echo "  curl -fsSL <install-url> | sudo sh" >&2\n'
+        "  exit 1\n"
+        "fi\n"
+        "\n"
+        "# Map the machine arch onto our release naming.\n"
+        'case "$(uname -m)" in\n'
+        "  aarch64|arm64) arch=aarch64 ;;\n"
+        "  *) arch=x86_64 ;;\n"
+        "esac\n"
+        "\n"
+        "tmp=$(mktemp -d)\n"
+        "trap 'rm -rf \"$tmp\"' EXIT\n"
+        'BIN="$tmp/kenny-agent"\n'
+        "\n"
+        'echo "Downloading kenny-agent ($arch)..."\n'
+        f'curl -fsSL "{binary_url}&arch=$arch" -o "$BIN"\n'
+        'chmod +x "$BIN"\n'
+        "\n"
+        f"{setup_block}\n"
+        "\n"
+        'echo "kenny-agent installed. Check status with: systemctl status kenny-agent"\n'
+    )
+
+
+def _build_installer_zip(binary: str, agent_id: str, token: str, server_pubkey: str) -> bytes:
     wss = _wss_url()
     interval = int(os.environ.get("KENNY_TELEMETRY_INTERVAL_SECS", "900") or 900)
     buf = io.BytesIO()
@@ -184,11 +305,37 @@ def build_download_routes(
     def _server_pubkey() -> str:
         return key_store.server_public_key_b64() if key_store is not None else ""
 
+    def _interval() -> int:
+        return int(os.environ.get("KENNY_TELEMETRY_INTERVAL_SECS", "900") or 900)
+
+    def _req_os(request: Request) -> str:
+        return (request.query_params.get("os") or "windows").strip().lower() or "windows"
+
+    async def _linux_install_script(agent_id: str) -> str:
+        """Mint a fresh token + a non-consumed Linux binary nonce, render the script.
+
+        The binary nonce lives as long as the install link (INSTALLER_TTL_S) so it
+        survives the fetch->run gap. The token rides only in the script argv.
+        """
+
+        token = await token_store.create_or_rotate(agent_id)
+        binary_nonce = share_links.create(agent_id, "binary", INSTALLER_TTL_S, os_name="linux")
+        binary_url = f"{_public_url()}/d/binary/{binary_nonce}?os=linux"
+        return _install_sh(agent_id, token, _wss_url(), _server_pubkey(), _interval(), binary_url)
+
     async def installer(request: Request) -> Response:
+        agent_id = request.path_params["id"]
+        if _req_os(request) == "linux":
+            # The operator brings this script to the Linux box and runs it as root.
+            script = await _linux_install_script(agent_id)
+            return Response(
+                script,
+                media_type="text/x-shellscript",
+                headers={"Content-Disposition": f'attachment; filename="install-{agent_id}.sh"'},
+            )
         binary = agent_binary_path()
         if binary is None:
             return JSONResponse({"error": "agent binary not configured"}, status_code=503)
-        agent_id = request.path_params["id"]
         token = await token_store.create_or_rotate(agent_id)
         data = _build_installer_zip(binary, agent_id, token, _server_pubkey())
         return Response(
@@ -199,9 +346,44 @@ def build_download_routes(
 
     async def share_link(request: Request) -> Response:
         agent_id = request.path_params["id"]
+        if _req_os(request) == "linux":
+            # A one-time install link + its paired (non-consumed) binary nonce. We
+            # store the binary nonce on the install nonce so /d/install can reach it.
+            binary_nonce = share_links.create(agent_id, "binary", INSTALLER_TTL_S, os_name="linux")
+            install_nonce = share_links.create(
+                agent_id,
+                "install",
+                INSTALLER_TTL_S,
+                os_name="linux",
+                binary_nonce=binary_nonce,
+            )
+            url = f"{_public_url()}/d/install/{install_nonce}"
+            return JSONResponse(
+                {
+                    "url": url,
+                    "oneliner": f"curl -fsSL {url} | sudo sh",
+                    "expires_in": INSTALLER_TTL_S,
+                }
+            )
         nonce = share_links.create(agent_id, "installer", INSTALLER_TTL_S)
         url = f"{_public_url()}/d/installer/{nonce}"
         return JSONResponse({"url": url, "expires_in": INSTALLER_TTL_S})
+
+    async def public_install(request: Request) -> Response:
+        """Serve the Linux install script once, minting the token at fetch time."""
+
+        nonce = request.path_params["nonce"]
+        entry = share_links.resolve_entry(nonce, "install", consume=True)
+        if entry is None:
+            return JSONResponse({"error": "link invalid or expired"}, status_code=404)
+        agent_id = entry.agent_id
+        token = await token_store.create_or_rotate(agent_id)
+        binary_nonce = entry.binary_nonce or share_links.create(
+            agent_id, "binary", INSTALLER_TTL_S, os_name="linux"
+        )
+        binary_url = f"{_public_url()}/d/binary/{binary_nonce}?os=linux"
+        script = _install_sh(agent_id, token, _wss_url(), _server_pubkey(), _interval(), binary_url)
+        return Response(script, media_type="text/x-shellscript")
 
     async def public_installer(request: Request) -> Response:
         binary = agent_binary_path()
@@ -259,13 +441,17 @@ def build_download_routes(
         return JSONResponse({"ok": True, "agent_id": agent_id})
 
     async def trigger_update(request: Request) -> Response:
-        binary = agent_binary_path()
+        agent_id = request.path_params["id"]
+        # Resolve the agent's OS/arch so we push (and serve) the matching binary.
+        agent = registry.get(agent_id)
+        os_name = agent.os if agent is not None else "windows"
+        arch = _norm_arch(agent.meta.get("arch") if agent is not None else None)
+        binary = agent_binary_path(os_name=os_name, arch=arch)
         if binary is None:
             return JSONResponse({"error": "agent binary not configured"}, status_code=503)
-        agent_id = request.path_params["id"]
         version = agent_release.resolve_agent_version(binary)
         sha256 = _sha256_file(binary)
-        nonce = share_links.create(agent_id, "binary", BINARY_TTL_S)
+        nonce = share_links.create(agent_id, "binary", BINARY_TTL_S, os_name=os_name, arch=arch)
         url = f"{_public_url()}/d/binary/{nonce}"
         try:
             result = await tunnel.send_request(
@@ -278,22 +464,36 @@ def build_download_routes(
         return JSONResponse({"ok": True, "version": version, "sha256": sha256, "result": result})
 
     async def public_binary(request: Request) -> Response:
-        binary = agent_binary_path()
+        nonce = request.path_params["nonce"]
+        # Not consumed: the agent's updater / installer may retry within the TTL.
+        entry = share_links.resolve_entry(nonce, "binary", consume=False)
+        if entry is None:
+            return JSONResponse({"error": "link invalid or expired"}, status_code=404)
+        os_name = entry.os
+        # The install script appends the box's real arch as a query param.
+        arch = _norm_arch(request.query_params.get("arch") or entry.arch)
+        binary = agent_binary_path(os_name=os_name, arch=arch)
         if binary is None:
             return JSONResponse({"error": "agent binary not configured"}, status_code=503)
-        nonce = request.path_params["nonce"]
-        # Not consumed: the agent's updater may retry within the TTL.
-        agent_id = share_links.resolve(nonce, "binary", consume=False)
-        if agent_id is None:
-            return JSONResponse({"error": "link invalid or expired"}, status_code=404)
-        return FileResponse(binary, filename="kenny-agent.exe", media_type="application/octet-stream")
+        filename = "kenny-agent" if os_name == "linux" else "kenny-agent.exe"
+        return FileResponse(binary, filename=filename, media_type="application/octet-stream")
 
     async def agent_binary_status(request: Request) -> Response:
         """Report binary availability + GitHub-fetch config for the dashboard (no network)."""
 
-        status = agent_release.binary_status(manual_path=agent_binary_path())
+        win = agent_binary_path()
+        status = agent_release.binary_status(manual_path=win)
         body = status.to_public()
-        body["available"] = agent_binary_path() is not None
+        # ``available`` keeps its historical (Windows) meaning; ``by_os`` lets the
+        # dashboard offer the Linux path even when the Windows binary is absent.
+        body["available"] = win is not None
+        body["by_os"] = {
+            "windows": win is not None,
+            "linux": (
+                agent_binary_path("linux", "x86_64") is not None
+                or agent_binary_path("linux", "aarch64") is not None
+            ),
+        }
         body["github_configured"] = agent_release.github_configured()
         body["repo"] = agent_release.github_repo()
         last = getattr(request.app.state, "last_fetch", None)
@@ -320,5 +520,6 @@ def build_download_routes(
         Route("/api/agent-binary", agent_binary_status),
         Route("/api/agent-binary/fetch", agent_binary_fetch, methods=["POST"]),
         Route("/d/installer/{nonce}", public_installer),
+        Route("/d/install/{nonce}", public_install),
         Route("/d/binary/{nonce}", public_binary),
     ]
