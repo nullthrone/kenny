@@ -841,6 +841,7 @@
       'pencil': '<path d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0 1 15.75 21H5.25A2.25 2.25 0 0 1 3 18.75V8.25A2.25 2.25 0 0 1 5.25 6H10"/>',
       'copy': '<path d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 0 1-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 0 1 1.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.876a9.06 9.06 0 0 0-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.375H9.375a1.125 1.125 0 0 1-1.125-1.125v-9.25m12 6.625v-1.875a3.375 3.375 0 0 0-3.375-3.375h-1.5a1.125 1.125 0 0 1-1.125-1.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H9.75"/>',
       'chevron-down': '<path d="m19.5 8.25-7.5 7.5-7.5-7.5"/>',
+      'book-open': '<path d="M12 6.042A8.967 8.967 0 0 0 6 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 0 1 6 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 0 1 6-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0 0 18 18a8.967 8.967 0 0 0-6 2.292m0-14.25v14.25"/>',
     };
     function icon(name, size) {
       const p = ICONS[name] || ICONS.box;
@@ -1090,6 +1091,19 @@
       };
     }
 
+    // -- documentation link ------------------------------------------------
+    // The user menu links to the project's docs on GitHub Pages. The repo is
+    // configurable server-side (GITHUB_REPO); we cache it from /api/about (see
+    // renderAboutModal and the boot fetch below) and fall back to the default
+    // so the link is correct even before the About modal is opened.
+    let serverRepo = "t11z/kenny";
+    function docsUrl() {
+      const [owner, name] = serverRepo.split("/");
+      return owner && name
+        ? `https://${owner}.github.io/${name}/`
+        : "https://t11z.github.io/kenny/";
+    }
+
     // -- about modal: server/agent identity + a live, filterable GitHub changelog --
     let aboutReleases = [];
 
@@ -1113,6 +1127,7 @@
 
     function renderAboutModal(about, bin, releases) {
       const repo = about.repo || "t11z/kenny";
+      serverRepo = repo;  // keep the docs link in sync with the real repo
       const repoUrl = `https://github.com/${repo}`;
       const current = String(about.server_version || "");
       const runningKnown = releases.some(r => r.version === current);
@@ -1191,13 +1206,19 @@
     const isMono = v => typeof v === "string" && (/[\\/]/.test(v) || ISO_RE.test(v));
 
     // -- theme toggle ------------------------------------------------------
+    // The toggle lives as an item in the user menu (see toggleUserMenu). Its
+    // label/icon advertise the theme it switches *to*; toggleTheme() flips the
+    // theme and refreshes that item in place so the menu can stay open.
     function currentTheme() { return document.documentElement.getAttribute("data-theme") || "dark"; }
+    function themeMenuItemInner(theme) {
+      return theme === "dark" ? `${icon('sun', 16)}Light mode` : `${icon('moon', 16)}Dark mode`;
+    }
     function toggleTheme() {
       const next = currentTheme() === "dark" ? "light" : "dark";
       document.documentElement.setAttribute("data-theme", next);
       try { localStorage.setItem("kenny-theme", next); } catch (e) {}
-      const btn = document.getElementById("theme-btn");
-      if (btn) btn.innerHTML = icon(next === "dark" ? "sun" : "moon", 16);
+      const item = document.getElementById("theme-menu-item");
+      if (item) item.innerHTML = themeMenuItemInner(next);
       // Overview charts read their colours from CSS tokens at build time, so
       // repaint them from the cached payload when the theme flips.
       if (state.tab === "overview" && state.overview) paintOverview();
@@ -1238,13 +1259,12 @@
     function renderTabs() {
       const tab = (name, href, ico, label) =>
         `<a class="kc-tab${state.tab === name ? " is-active" : ""}" href="${href}">${icon(ico, 16)}${label}</a>`;
+      // Settings has moved into the user menu (superuser only); it is no longer
+      // a top-level tab. The #/settings route still renders it (see router).
       tabsEl.innerHTML =
         tab("overview", "#/overview", "activity", "Overview") +
         tab("fleet", "#/fleet", "network", "Fleet") +
-        tab("activity", "#/activity/" + state.activityView, "activity", "Activity") +
-        // Settings mutate server-wide runtime config — superuser only. Lower
-        // roles never see the tab (the API would 403 them anyway).
-        (isSuperuser() ? tab("settings", "#/settings", "sliders", "Settings") : "");
+        tab("activity", "#/activity/" + state.activityView, "activity", "Activity");
     }
 
     async function router() {
@@ -1879,7 +1899,10 @@
       return best;
     }
 
-    // -- header right: fleet metrics + copilot + theme + operator ----------
+    // -- header right: fleet metrics + copilot + operator ------------------
+    // Theme, About and Settings live in the user menu (see toggleUserMenu);
+    // the header keeps only the fleet metrics, the copilot toggle and the
+    // identity control.
     function renderHeaderRight(fleet, agents) {
       // The copilot toggle only applies to the Fleet tab (the rail lives there).
       const copilotBtn = state.tab === "fleet"
@@ -1888,8 +1911,6 @@
       headerRight.innerHTML =
         fleetMetricsHtml(agents) +
         copilotBtn +
-        `<button class="kc-icon-btn" id="about-btn" onclick="openAboutModal()" title="about kenny" aria-label="about kenny">${icon('info', 16)}</button>
-         <button class="kc-icon-btn" id="theme-btn" onclick="toggleTheme()" title="toggle theme">${icon(currentTheme() === "dark" ? "sun" : "moon", 16)}</button>` +
         identityHtml();
     }
 
@@ -1930,12 +1951,23 @@
       if (open) { open.remove(); return; }
       const admin = isSuperuser()
         ? `<button class="kc-usermenu__item" onclick="closeUserMenu();openUsersModal()">${icon('users', 16)}Users</button>` : "";
+      // Settings mutate server-wide runtime config — superuser only (the API
+      // 403s lower roles anyway). The link drives the same #/settings route.
+      const settings = isSuperuser()
+        ? `<a class="kc-usermenu__item" href="#/settings" onclick="closeUserMenu()">${icon('sliders', 16)}Settings</a>` : "";
       const menu = document.createElement("div");
       menu.className = "kc-usermenu";
       menu.setAttribute("role", "menu");
       menu.innerHTML =
         `<button class="kc-usermenu__item" onclick="closeUserMenu();openProfileModal()">${icon('user-round', 16)}Profile</button>` +
         admin +
+        `<div class="kc-usermenu__sep"></div>` +
+        // Theme flips in place (menu stays open); the item advertises the
+        // theme it switches to.
+        `<button class="kc-usermenu__item" id="theme-menu-item" onclick="toggleTheme()">${themeMenuItemInner(currentTheme())}</button>` +
+        settings +
+        `<button class="kc-usermenu__item" onclick="closeUserMenu();openAboutModal()">${icon('info', 16)}About</button>` +
+        `<a class="kc-usermenu__item" href="${esc(docsUrl())}" target="_blank" rel="noopener">${icon('book-open', 16)}Documentation</a>` +
         `<div class="kc-usermenu__sep"></div>` +
         `<a class="kc-usermenu__item" href="/logout">${icon('log-out', 16)}Log out</a>`;
       host.appendChild(menu);
@@ -3837,6 +3869,9 @@
     // first so role gating and the identity control are correct on first paint.
     if (!location.hash) history.replaceState(null, "", "#/overview");
     loadMe().then(() => router()).catch(e => app.textContent = "error: " + e.message);
+    // Prime the docs link's target from the configured repo (non-blocking; the
+    // default is already correct for the stock deployment).
+    getJSON("/api/about").then(a => { if (a && a.repo) serverRepo = a.repo; }).catch(() => {});
   </script>
 </body>
 </html>
