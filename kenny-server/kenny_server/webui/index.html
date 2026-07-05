@@ -521,6 +521,15 @@
       border: 1px dashed var(--border-strong); border-radius: var(--radius-md); }
     .kc-addpc__head { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; margin-bottom: 8px; }
     .kc-addpc__head svg { width: 14px; height: 14px; }
+    /* The OS picker and the installer button read as one joined split-control so
+       the row fits inside the dashed box instead of the button overflowing it;
+       the row also wraps as a safety net on very narrow sidebars. */
+    .kc-addpc__row { flex-wrap: wrap; }
+    .kc-addpc__split { display: inline-flex; align-items: stretch; flex: none; }
+    .kc-addpc__split .kc-addpc__os {
+      width: auto; border-top-right-radius: 0; border-bottom-right-radius: 0; }
+    .kc-addpc__split .kc-addpc__go {
+      border-top-left-radius: 0; border-bottom-left-radius: 0; }
 
     .kc-detail { display: flex; flex-direction: column; gap: 12px; }
     .kc-detail__head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
@@ -2527,12 +2536,14 @@
       return `<div class="kc-addpc">
         <div class="kc-addpc__head">${icon('plus', 14)}Add a PC</div>
         <input class="k-input" id="new-agent-id" placeholder="agent id (e.g. study-pc)" autocomplete="off" />
-        <div class="k-row" style="margin-top:8px">
-          <select class="k-input" id="new-agent-os" style="flex:none;width:auto">
-            <option value="windows">Windows</option>
-            <option value="linux">Linux</option>
-          </select>
-          <button class="k-btn k-btn--primary k-btn--sm" onclick="downloadNewInstaller()" ${dis}>${icon('download', 13)}installer</button>
+        <div class="k-row kc-addpc__row" style="margin-top:8px">
+          <div class="kc-addpc__split">
+            <select class="k-input kc-addpc__os" id="new-agent-os">
+              <option value="windows">Windows</option>
+              <option value="linux">Linux</option>
+            </select>
+            <button class="k-btn k-btn--primary k-btn--sm kc-addpc__go" onclick="downloadNewInstaller()" ${dis}>${icon('download', 13)}installer</button>
+          </div>
           <button class="k-btn k-btn--ghost k-btn--sm" onclick="shareNewInstaller()" ${dis}>${icon('link', 13)}share link</button>
         </div>
       </div>`;
