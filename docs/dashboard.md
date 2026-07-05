@@ -215,7 +215,10 @@ The header line shows the status dot, hostname, agent id, version, and online/OS
 - **Health trend · 30 d** — a sparkline of the PC's worst-of health per snapshot.
 - **Section tiles** — one tile per telemetry section: icon, name, status dot, a one-line
   summary, and — when flagged — the server's **rule reason** as a `reason ⇒ status` chip.
-  Click a tile to open its [section detail](#section-detail-popups).
+  Click a tile to open its [section detail](#section-detail-popups). Sections a collector
+  can't report on the host OS (their summary reads *n/a on this platform*, e.g. the
+  Windows-only sections on a Linux host) carry no signal and are hidden from the grid;
+  they are still stored and remain reachable via the API.
 - **Last screenshot** — the most recent desktop capture, with a **recapture** button; click
   the image to enlarge it.
 
