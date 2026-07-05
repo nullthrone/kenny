@@ -114,6 +114,28 @@ def test_self_service_password_and_pats(tmp_path) -> None:
         assert c.delete(f"/api/me/pats/{pid}").json()["ok"] is True
 
 
+def test_password_change_revokes_other_sessions(tmp_path) -> None:
+    """A password change invalidates sibling sessions and keeps this one (#125)."""
+
+    from kenny_server.auth import COOKIE_NAME
+
+    app = _app(tmp_path)
+    with TestClient(app) as c:
+        _setup_admin(c)
+        old_sid = c.cookies.get(COOKIE_NAME)
+        assert old_sid
+        # Change the password on this device.
+        assert c.post("/api/me/password", json={
+            "current_password": "pw-123456", "new_password": "new-123456"}).status_code == 200
+        new_sid = c.cookies.get(COOKIE_NAME)
+        # This device got a fresh session and stays authorized.
+        assert new_sid and new_sid != old_sid
+        assert c.get("/api/fleet").status_code == 200
+        # The pre-change session (as held by any other device) is now rejected.
+        c.cookies.set(COOKIE_NAME, old_sid)
+        assert c.get("/api/fleet", follow_redirects=False).status_code == 401
+
+
 def test_self_service_totp_enable_disable(tmp_path) -> None:
     app = _app(tmp_path)
     with TestClient(app) as c:

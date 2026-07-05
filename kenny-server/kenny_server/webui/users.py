@@ -21,6 +21,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from .. import security
+from ..auth import COOKIE_NAME, _session_ttl_secs, _set_session_cookie
 from ..registry import AgentRegistry
 from ..store import TelemetryStore
 from ..userstore import UserExists, UserStore
@@ -98,6 +99,26 @@ def build_user_routes(
         )
         return JSONResponse(user)
 
+    async def _rotate_own_session(
+        request: Request, resp: JSONResponse, user_id: int
+    ) -> JSONResponse:
+        """Kill all of a user's sessions, then re-issue one for this device.
+
+        Used after a credential change (password / 2FA) so every other session is
+        invalidated (CWE-613) while the caller stays logged in on the current
+        browser — the response carries a fresh session cookie.
+        """
+
+        await user_store.delete_user_sessions(user_id)
+        sid = await user_store.create_session(
+            user_id,
+            ttl_secs=_session_ttl_secs(),
+            ip=request.client.host if request.client else None,
+            user_agent=request.headers.get("user-agent"),
+        )
+        _set_session_cookie(resp, COOKIE_NAME, sid)
+        return resp
+
     async def api_me_password(request: Request) -> JSONResponse:
         principal = require_user(request)
         if principal.user_id is None:
@@ -111,8 +132,10 @@ def build_user_routes(
         if row is None or not security.verify_password(current, row["password_hash"]):
             return _err("current password is incorrect", 403)
         await user_store.set_password(principal.user_id, new)
-        # Invalidate other sessions after a password change (keep this one).
-        return JSONResponse({"ok": True})
+        # Invalidate every other session after a password change; keep this one.
+        return await _rotate_own_session(
+            request, JSONResponse({"ok": True}), principal.user_id
+        )
 
     async def api_me_totp_setup(request: Request) -> JSONResponse:
         principal = require_user(request)
@@ -146,7 +169,12 @@ def build_user_routes(
         ):
             return _err("password is incorrect", 403)
         await user_store.set_totp_secret(principal.user_id, None)
-        return JSONResponse({"ok": True, "totp_enabled": False})
+        # Disabling 2FA is a credential change; drop other sessions too.
+        return await _rotate_own_session(
+            request,
+            JSONResponse({"ok": True, "totp_enabled": False}),
+            principal.user_id,
+        )
 
     async def api_me_pats(request: Request) -> JSONResponse:
         principal = require_user(request)

@@ -230,6 +230,11 @@ _SPECS: list[SettingSpec] = [
           "Login session lifetime (s)", lifecycle="env_only", min=60,
           help="How long a browser login session stays valid before re-login "
                "(default 7 days). Read at login time (ADR-0037)."),
+    _spec("KENNY_FORWARDED_ALLOW_IPS", "Operator & Agent Auth", "str", "127.0.0.1",
+          "Trusted proxy IPs (X-Forwarded-For)", lifecycle="env_only",
+          help="Upstream addresses allowed to set X-Forwarded-For so the login "
+               "rate-limiter sees the real client IP behind a reverse proxy. "
+               "Default: loopback only. Read by uvicorn at startup."),
     _spec("KENNY_SERVER_PRIVATE_KEY", "Operator & Agent Auth", "secret", "",
           "Server private key (seed)", lifecycle="env_only", sensitive=True),
     _spec("KENNY_SERVER_PRIVATE_KEY_FILE", "Operator & Agent Auth", "str", "",

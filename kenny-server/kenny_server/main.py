@@ -340,8 +340,19 @@ def run() -> None:
     configure_logging()
     host = os.environ.get("KENNY_HOST", "127.0.0.1")
     port = int(os.environ.get("KENNY_PORT", "8000"))
+    # Trust X-Forwarded-For from the reverse proxy so per-client logic (e.g. the
+    # login rate-limiter) sees the real client IP, not the proxy's. Restrict which
+    # upstreams may set it via KENNY_FORWARDED_ALLOW_IPS (default: loopback only).
+    forwarded_allow_ips = os.environ.get("KENNY_FORWARDED_ALLOW_IPS", "127.0.0.1")
     # ``log_config=None`` so our dictConfig owns formatting (not uvicorn's default).
-    uvicorn.run(build_app(), host=host, port=port, log_config=None)
+    uvicorn.run(
+        build_app(),
+        host=host,
+        port=port,
+        log_config=None,
+        proxy_headers=True,
+        forwarded_allow_ips=forwarded_allow_ips,
+    )
 
 
 if __name__ == "__main__":

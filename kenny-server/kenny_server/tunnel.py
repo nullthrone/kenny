@@ -387,6 +387,19 @@ class AgentTunnel:
                 )
                 continue
             frame = parse_frame(raw)
+
+            # The host may have been removed from inventory mid-connection
+            # (DELETE /api/agent/{id} → inventory.purge_agent → registry.remove).
+            # Its token/key are already gone so it can't reconnect; close this live
+            # socket too, otherwise it would keep re-populating snapshots and
+            # reappear in the fleet list (ADR-0037, fail-closed removal).
+            if self.registry.get(agent_id) is None:
+                logger.info(
+                    "closing connection for %s: removed from inventory", agent_id
+                )
+                await websocket.close(code=4400)
+                return
+
             self.registry.mark_seen(agent_id)
 
             # Bind pushed frames to the identity proven at the handshake. An agent

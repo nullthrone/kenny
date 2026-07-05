@@ -508,7 +508,17 @@ def build_auth_routes(
     async def login(request: Request) -> Response:
         if request.method == "POST":
             ip = request.client.host if request.client else "unknown"
-            retry = limiter.retry_after(ip)
+            form = await request.form()
+            username = str(form.get("username", "")).strip()
+            password = str(form.get("password", ""))
+            totp = str(form.get("totp", "")).strip()
+
+            # Throttle per (client IP, username): behind a shared NAT (a whole
+            # family on one public IP) one member's failures must not lock out the
+            # others (CWE-307). The real client IP requires uvicorn proxy-header
+            # trust in production (see main.run / KENNY_FORWARDED_ALLOW_IPS).
+            limiter_key = f"{ip}|{username}"
+            retry = limiter.retry_after(limiter_key)
             if retry is not None:
                 resp = HTMLResponse(
                     _LOGIN_HTML.format(
@@ -518,10 +528,6 @@ def build_auth_routes(
                 )
                 resp.headers["Retry-After"] = str(int(retry) + 1)
                 return resp
-            form = await request.form()
-            username = str(form.get("username", "")).strip()
-            password = str(form.get("password", ""))
-            totp = str(form.get("totp", "")).strip()
 
             row = None
             if user_store is not None:
@@ -529,7 +535,7 @@ def build_auth_routes(
             if row is not None:
                 secret = row["totp_secret"]
                 if secret and not security.verify_totp(secret, totp):
-                    limiter.record_failure(ip)
+                    limiter.record_failure(limiter_key)
                     logger.warning("failed 2FA for %s from %s", username, ip)
                     return HTMLResponse(
                         _LOGIN_HTML.format(
@@ -537,7 +543,7 @@ def build_auth_routes(
                         ),
                         status_code=401,
                     )
-                limiter.reset(ip)
+                limiter.reset(limiter_key)
                 sid = await user_store.create_session(
                     row["id"],
                     ttl_secs=_session_ttl_secs(),
@@ -547,7 +553,7 @@ def build_auth_routes(
                 resp = RedirectResponse(url="/", status_code=303)
                 _set_session_cookie(resp, cookie_name, sid)
                 return resp
-            limiter.record_failure(ip)
+            limiter.record_failure(limiter_key)
             logger.warning("failed login for %r from %s", username, ip)
             return HTMLResponse(
                 _LOGIN_HTML.format(msg='<p class="err">Invalid credentials.</p>'),

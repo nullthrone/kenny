@@ -115,6 +115,30 @@ def test_login_rate_limited_after_repeated_failures(tmp_path, monkeypatch) -> No
         assert r.status_code == 429
 
 
+def test_login_lockout_is_per_username(tmp_path, monkeypatch) -> None:
+    """One account's failures must not lock out another on the same IP (#126)."""
+
+    monkeypatch.setenv("KENNY_LOGIN_MAX_ATTEMPTS", "3")
+    app = _app(tmp_path)
+    with TestClient(app) as c:
+        _create_first_user(c, username="admin")
+        # A second account (created by the superuser) to share the client IP.
+        assert c.post("/api/users", json={
+            "username": "kid", "password": "pw-123456", "role": "user",
+        }).status_code == 201
+        c.get("/logout")
+        c.cookies.clear()
+        # Trip the limiter for admin.
+        for _ in range(3):
+            assert c.post("/login", data={
+                "username": "admin", "password": "wrong"}, follow_redirects=False).status_code == 401
+        assert c.post("/login", data={
+            "username": "admin", "password": "wrong"}, follow_redirects=False).status_code == 429
+        # kid, from the same client IP, is in a separate bucket and not locked out.
+        assert c.post("/login", data={
+            "username": "kid", "password": "wrong"}, follow_redirects=False).status_code == 401
+
+
 def test_mcp_endpoint_requires_token(tmp_path) -> None:
     app = _app(tmp_path)
     with TestClient(app) as c:
