@@ -1,4 +1,4 @@
-//! `agent_update` — server-triggered self-update (Windows only).
+//! `agent_update` — server-triggered self-update (Windows and Linux service builds).
 //!
 //! Flow (Windows):
 //! 1. Download `url` to a temp file.
@@ -10,7 +10,17 @@
 //! 5. Return `{ok, staged_version}` **before** triggering the restart, so the
 //!    connection drops and the agent reconnects on the new version.
 //!
-//! Off Windows (dev/Linux builds) the agent lacks this capability and returns
+//! Flow (Linux, ADR-0035 Phase 4 / ADR-0038):
+//! 1. Download + verify exactly as above, staged as `kenny-agent.new` next to the
+//!    running exe (`/opt/kenny/kenny-agent`).
+//! 2. `chmod 0o755`, then `rename` it over the running binary. This is atomic
+//!    (same dir) and legal on Linux: the live process keeps its open inode.
+//! 3. Return `{ok, staged_version}`, then trigger a **detached** systemd restart
+//!    (`systemd-run --on-active=2 systemctl restart <unit>`) so the response frame
+//!    flushes before systemd stops us. None of the Windows exe-lock / tray-mutex
+//!    dance applies here.
+//!
+//! On other Unixes (macOS/BSD) the agent lacks this capability and returns
 //! `error.code = "unsupported"` per the contract.
 
 use serde_json::Value;
@@ -37,14 +47,91 @@ pub async fn update(_args: Value) -> Result<Value, (ErrorCode, String)> {
             serde_json::from_value(_args).map_err(|e| (ErrorCode::BadArgs, e.to_string()))?;
         windows_impl::update(a).await
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        let a: UpdateArgs =
+            serde_json::from_value(_args).map_err(|e| (ErrorCode::BadArgs, e.to_string()))?;
+        linux_impl::update(a).await
+    }
+    #[cfg(all(not(windows), not(target_os = "linux")))]
     {
         // Validate args even on the stub so malformed calls are caught early.
         let _ = std::mem::size_of::<UpdateArgs>();
         Err((
             ErrorCode::Unsupported,
-            "agent_update is only available on the Windows service build".to_string(),
+            "agent_update is only available on the Windows and Linux service builds".to_string(),
         ))
+    }
+}
+
+/// Download + SHA-256 verification shared by the Windows and Linux update paths.
+///
+/// Kept in one place so both `windows_impl` and `linux_impl` stage binaries the
+/// same way (stream to disk, hash as we go, reject on mismatch).
+#[cfg(any(windows, target_os = "linux"))]
+mod common {
+    use crate::protocol::ErrorCode;
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    use std::path::Path;
+
+    /// Cap a download at 256 MiB to avoid unbounded memory use.
+    const MAX_DOWNLOAD_BYTES: u64 = 256 * 1024 * 1024;
+
+    /// Stream `url` to `dest`, computing SHA-256 as we go; verify against `expected`
+    /// (lowercase hex). Removes the staged file on any error, including a mismatch.
+    pub fn download_and_verify(
+        url: &str,
+        expected: &str,
+        dest: &Path,
+    ) -> Result<(), (ErrorCode, String)> {
+        let resp = ureq::get(url)
+            .call()
+            .map_err(|e| (ErrorCode::ExecFailed, format!("download failed: {e}")))?;
+
+        let mut reader = resp.into_reader().take(MAX_DOWNLOAD_BYTES);
+        let mut file = std::fs::File::create(dest).map_err(|e| {
+            (
+                ErrorCode::ExecFailed,
+                format!("cannot create staged file: {e}"),
+            )
+        })?;
+        let mut hasher = Sha256::new();
+        let mut buf = [0u8; 64 * 1024];
+        loop {
+            let n = reader
+                .read(&mut buf)
+                .map_err(|e| (ErrorCode::ExecFailed, format!("download read error: {e}")))?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+            use std::io::Write;
+            file.write_all(&buf[..n])
+                .map_err(|e| (ErrorCode::ExecFailed, format!("staged write error: {e}")))?;
+        }
+        file.sync_all().ok();
+
+        let got = hex_encode(&hasher.finalize());
+        if got != expected {
+            // Don't leave an unverified binary lying around.
+            let _ = std::fs::remove_file(dest);
+            return Err((
+                ErrorCode::ExecFailed,
+                format!("sha256 mismatch: expected {expected}, got {got}"),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Lowercase hex-encode a byte slice (avoids pulling in another crate).
+    pub fn hex_encode(bytes: &[u8]) -> String {
+        let mut s = String::with_capacity(bytes.len() * 2);
+        for b in bytes {
+            use std::fmt::Write;
+            let _ = write!(s, "{b:02x}");
+        }
+        s
     }
 }
 
@@ -145,8 +232,6 @@ fn wait_for_no_process_running(target: &std::path::Path, timeout: std::time::Dur
 mod windows_impl {
     use super::*;
     use serde_json::json;
-    use sha2::{Digest, Sha256};
-    use std::io::Read;
     use std::os::windows::process::CommandExt;
     use std::path::{Path, PathBuf};
     use std::process::Command;
@@ -158,8 +243,6 @@ mod windows_impl {
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     /// `DETACHED_PROCESS` — fully detach from the (dying) service process.
     const DETACHED_PROCESS: u32 = 0x0000_0008;
-    /// Cap a download at 256 MiB to avoid unbounded memory use.
-    const MAX_DOWNLOAD_BYTES: u64 = 256 * 1024 * 1024;
 
     pub async fn update(a: UpdateArgs) -> Result<Value, (ErrorCode, String)> {
         let exe = std::env::current_exe().map_err(|e| {
@@ -178,10 +261,11 @@ mod windows_impl {
         let url = a.url.clone();
         let expected = a.sha256.to_lowercase();
         let staged_path = staged.clone();
-        let result =
-            tokio::task::spawn_blocking(move || download_and_verify(&url, &expected, &staged_path))
-                .await
-                .map_err(|e| (ErrorCode::ExecFailed, format!("update task panicked: {e}")))?;
+        let result = tokio::task::spawn_blocking(move || {
+            super::common::download_and_verify(&url, &expected, &staged_path)
+        })
+        .await
+        .map_err(|e| (ErrorCode::ExecFailed, format!("update task panicked: {e}")))?;
         result?;
 
         // Hash verified and the new binary is staged. Spawn the detached helper that
@@ -192,61 +276,6 @@ mod windows_impl {
 
         info!(version = %a.version, "agent_update staged; restart helper launched");
         Ok(json!({ "ok": true, "staged_version": a.version }))
-    }
-
-    /// Stream `url` to `dest`, computing SHA-256 as we go; verify against `expected`.
-    fn download_and_verify(
-        url: &str,
-        expected: &str,
-        dest: &Path,
-    ) -> Result<(), (ErrorCode, String)> {
-        let resp = ureq::get(url)
-            .call()
-            .map_err(|e| (ErrorCode::ExecFailed, format!("download failed: {e}")))?;
-
-        let mut reader = resp.into_reader().take(MAX_DOWNLOAD_BYTES);
-        let mut file = std::fs::File::create(dest).map_err(|e| {
-            (
-                ErrorCode::ExecFailed,
-                format!("cannot create staged file: {e}"),
-            )
-        })?;
-        let mut hasher = Sha256::new();
-        let mut buf = [0u8; 64 * 1024];
-        loop {
-            let n = reader
-                .read(&mut buf)
-                .map_err(|e| (ErrorCode::ExecFailed, format!("download read error: {e}")))?;
-            if n == 0 {
-                break;
-            }
-            hasher.update(&buf[..n]);
-            use std::io::Write;
-            file.write_all(&buf[..n])
-                .map_err(|e| (ErrorCode::ExecFailed, format!("staged write error: {e}")))?;
-        }
-        file.sync_all().ok();
-
-        let got = hex_encode(&hasher.finalize());
-        if got != expected {
-            // Don't leave an unverified binary lying around.
-            let _ = std::fs::remove_file(dest);
-            return Err((
-                ErrorCode::ExecFailed,
-                format!("sha256 mismatch: expected {expected}, got {got}"),
-            ));
-        }
-        Ok(())
-    }
-
-    /// Lowercase hex-encode a byte slice (avoids pulling in another crate).
-    fn hex_encode(bytes: &[u8]) -> String {
-        let mut s = String::with_capacity(bytes.len() * 2);
-        for b in bytes {
-            use std::fmt::Write;
-            let _ = write!(s, "{b:02x}");
-        }
-        s
     }
 
     /// Launch the detached `finish-update` helper that swaps binaries and restarts
@@ -382,21 +411,205 @@ pub fn run_finish_update(service: &str, new: &str, target: &str) -> anyhow::Resu
     )
 }
 
+#[cfg(target_os = "linux")]
+mod linux_impl {
+    use super::*;
+    use serde_json::json;
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Command;
+    use tracing::{info, warn};
+
+    /// Linux self-update: download + verify, atomically swap the running binary,
+    /// then trigger a detached systemd restart.
+    pub async fn update(a: UpdateArgs) -> Result<Value, (ErrorCode, String)> {
+        let exe = std::env::current_exe().map_err(|e| {
+            (
+                ErrorCode::ExecFailed,
+                format!("cannot locate current exe: {e}"),
+            )
+        })?;
+        let dir = exe
+            .parent()
+            .ok_or((ErrorCode::ExecFailed, "exe has no parent dir".to_string()))?
+            .to_path_buf();
+        let staged = dir.join("kenny-agent.new");
+
+        // Download + verify on a blocking thread (ureq is synchronous; hashing is CPU).
+        let url = a.url.clone();
+        let expected = a.sha256.to_lowercase();
+        let staged_path = staged.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            super::common::download_and_verify(&url, &expected, &staged_path)
+        })
+        .await
+        .map_err(|e| (ErrorCode::ExecFailed, format!("update task panicked: {e}")))?;
+        result?;
+
+        // Make the staged binary executable before it becomes the live exe.
+        if let Err(e) = std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)) {
+            let _ = std::fs::remove_file(&staged);
+            return Err((
+                ErrorCode::ExecFailed,
+                format!("cannot chmod staged binary: {e}"),
+            ));
+        }
+
+        // Atomic swap: same-dir rename replaces the running binary in place. This is
+        // legal on Linux — the live process keeps its already-open inode, and the new
+        // image only takes effect on the next exec (the systemd restart below).
+        if let Err(e) = std::fs::rename(&staged, &exe) {
+            let _ = std::fs::remove_file(&staged);
+            return Err((
+                ErrorCode::ExecFailed,
+                format!("cannot replace running binary: {e}"),
+            ));
+        }
+
+        let unit = std::fs::read_to_string("/proc/self/cgroup")
+            .map(|c| unit_name_from_cgroup(&c))
+            .unwrap_or_else(|_| "kenny-agent.service".to_string());
+
+        info!(
+            version = %a.version,
+            unit = %unit,
+            "agent_update swapped binary; scheduling detached restart"
+        );
+
+        // Build the response BEFORE triggering the restart so we can hand it back to
+        // the tunnel to flush; the restart is delayed (2 s) to let that frame go out.
+        let response = json!({ "ok": true, "staged_version": a.version });
+        trigger_restart(&unit);
+        Ok(response)
+    }
+
+    /// Schedule a systemd restart of `unit` that survives our own SIGTERM.
+    ///
+    /// Preferred path: `systemd-run --on-active=2 systemctl restart <unit>` runs the
+    /// restart from a transient unit outside our cgroup, so stopping us cannot kill it.
+    /// Fallbacks (best-effort) shell out via `setsid`/`sh` with a short sleep.
+    fn trigger_restart(unit: &str) {
+        match Command::new("systemd-run")
+            .arg("--on-active=2")
+            .arg("systemctl")
+            .arg("restart")
+            .arg(unit)
+            .spawn()
+        {
+            Ok(_) => {
+                info!(unit, "scheduled restart via systemd-run");
+                return;
+            }
+            Err(e) => {
+                warn!(unit, error = %e, "systemd-run spawn failed; falling back to detached sh");
+            }
+        }
+
+        // Fallback: a detached shell that sleeps (so our response frame flushes) then
+        // restarts the unit. `setsid` puts it in its own session; if `setsid` is
+        // missing, spawn `sh` directly as a last resort.
+        let script = format!("sleep 2; systemctl restart {unit}");
+        match Command::new("setsid")
+            .arg("sh")
+            .arg("-c")
+            .arg(&script)
+            .spawn()
+        {
+            Ok(_) => info!(unit, "scheduled restart via setsid sh"),
+            Err(_) => match Command::new("sh").arg("-c").arg(&script).spawn() {
+                Ok(_) => info!(unit, "scheduled restart via sh"),
+                Err(e) => warn!(unit, error = %e, "failed to schedule restart"),
+            },
+        }
+    }
+
+    /// Extract the systemd unit name from `/proc/self/cgroup` contents.
+    ///
+    /// cgroup v2 lines look like `0::/system.slice/kenny-agent.service`; we take the
+    /// last path segment ending in `.service`. Pure function so it is unit-testable.
+    /// Falls back to `kenny-agent.service` when nothing parseable is found.
+    pub fn unit_name_from_cgroup(contents: &str) -> String {
+        for line in contents.lines() {
+            if let Some(seg) = line.rsplit('/').find(|s| s.ends_with(".service")) {
+                return seg.to_string();
+            }
+        }
+        "kenny-agent.service".to_string()
+    }
+}
+
 #[cfg(all(test, not(windows)))]
 mod tests {
     use super::*;
+    #[allow(unused_imports)]
     use serde_json::json;
 
+    #[cfg(all(not(windows), not(target_os = "linux")))]
     #[tokio::test]
-    async fn update_is_unsupported_off_windows() {
+    async fn update_is_unsupported_off_windows_and_linux() {
         let res = update(json!({
             "version": "0.2.0",
             "url": "https://example.com/kenny-agent.exe",
             "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         }))
         .await;
-        let (code, _msg) = res.expect_err("must be unsupported off Windows");
+        let (code, _msg) = res.expect_err("must be unsupported off Windows and Linux");
         assert_eq!(code, ErrorCode::Unsupported);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn cgroup_v2_service_line() {
+        assert_eq!(
+            super::linux_impl::unit_name_from_cgroup("0::/system.slice/kenny-agent.service\n"),
+            "kenny-agent.service"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn cgroup_custom_service_name() {
+        assert_eq!(
+            super::linux_impl::unit_name_from_cgroup("0::/system.slice/my-custom-agent.service"),
+            "my-custom-agent.service"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn cgroup_nested_slice_takes_deepest_service() {
+        assert_eq!(
+            super::linux_impl::unit_name_from_cgroup(
+                "0::/system.slice/kenny.slice/kenny-agent.service"
+            ),
+            "kenny-agent.service"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn cgroup_falls_back_when_no_service_segment() {
+        assert_eq!(
+            super::linux_impl::unit_name_from_cgroup(""),
+            "kenny-agent.service"
+        );
+        assert_eq!(
+            super::linux_impl::unit_name_from_cgroup(
+                "0::/user.slice/user-1000.slice/session-3.scope"
+            ),
+            "kenny-agent.service"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn hex_encode_matches_known_sha256() {
+        use sha2::{Digest, Sha256};
+        // SHA-256 of the empty input is a well-known constant.
+        let digest = Sha256::new().finalize();
+        assert_eq!(
+            super::common::hex_encode(&digest),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
     }
 
     #[test]

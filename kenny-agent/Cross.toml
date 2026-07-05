@@ -1,0 +1,8 @@
+# cross-rs configuration for release cross-compilation (see .github/workflows/release.yml).
+#
+# The Linux musl release binaries are built with `cross` so the toolchain (including the
+# C compiler for bundled rusqlite) lives in a target-matched Docker image. `cross` runs
+# the build in a container, so the release-version env the build script reads
+# (KENNY_AGENT_VERSION -> KENNY_BUILD_VERSION, ADR-0015) must be explicitly passed through.
+[build.env]
+passthrough = ["KENNY_AGENT_VERSION"]

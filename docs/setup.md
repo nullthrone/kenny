@@ -19,6 +19,7 @@ flowchart TB
   Op(("Operator<br/>browser / Claude")) -->|https| Proxy
   PC1["kenny-agent<br/>(Windows PC)"] -->|wss, dials out| Proxy
   PC2["kenny-agent<br/>(Windows PC)"] -->|wss, dials out| Proxy
+  LX["kenny-agent<br/>(Linux host)"] -->|wss, dials out| Proxy
   Anthropic["Anthropic API"] -. chat .- Srv
 ```
 
@@ -68,7 +69,9 @@ clients share one bucket). The bundled TLS profile sets this for you.
 | `KENNY_TLS` | server | unset | Set `1` behind TLS so the login cookie gets the `Secure` flag. |
 | `KENNY_FORWARDED_ALLOW_IPS` | server | `127.0.0.1` | Upstream proxy address(es) allowed to set `X-Forwarded-For`, so the login rate-limiter sees the real client IP behind a reverse proxy (not the proxy's). Set to your proxy's address when fronting kenny with the Caddy TLS profile. |
 | `KENNY_PUBLIC_URL` | server | `http://localhost:<port>` | External base URL; used to build installer/update links and the agent `--server` `wss://…/agent/ws`. |
-| `KENNY_AGENT_BINARY` | server | — | Path to the prebuilt `kenny-agent.exe` the server serves for installer download + self-update. Overrides the GitHub auto-fetch when set. |
+| `KENNY_AGENT_BINARY` | server | — | Path to the prebuilt `kenny-agent.exe` the server serves for **Windows** installer download + self-update. Overrides the GitHub auto-fetch when set. |
+| `KENNY_AGENT_BINARY_LINUX` | server | — | Path to the prebuilt **Linux** `x86_64` agent binary (static musl) the server serves for the Linux install script + self-update. Overrides the GitHub auto-fetch when set. |
+| `KENNY_AGENT_BINARY_LINUX_AARCH64` | server | — | As above for **Linux `aarch64`** (Raspberry Pi / ARM NAS). |
 | `KENNY_GITHUB_TOKEN` | server | — | GitHub token enabling auto-fetch of the agent binary from Releases (ADR-0015). When set (and `KENNY_AGENT_BINARY` is not), the server fetches `kenny-agent.exe` on startup. |
 | `KENNY_GITHUB_REPO` | server | `t11z/kenny` | Repo to fetch the agent binary release from. |
 | `KENNY_AGENT_BINARY_CACHE` | server | `<dir of KENNY_DB_PATH>/kenny-agent.exe` | Where the auto-fetched binary is cached (the `/data` volume in the container). |
@@ -153,6 +156,17 @@ relative double-clicks `setup.bat`; the agent self-elevates and installs itself 
 `%ProgramFiles%\kenny` (see
 [`adr/0033-agent-self-elevating-bootstrap-installer.md`](adr/0033-agent-self-elevating-bootstrap-installer.md)).
 
+The **Add a PC** panel has an OS selector. For a **Linux** target, point the server at a Linux
+binary as well and the panel produces a one-line install command instead of a ZIP (see
+[Installing the agent on Linux](#installing-the-agent-on-linux) and
+[`adr/0038-linux-agent-distribution-convenience-script.md`](adr/0038-linux-agent-distribution-convenience-script.md)):
+
+```yaml
+environment:
+  KENNY_AGENT_BINARY_LINUX: /data/kenny-agent-linux-x86_64          # static musl x86_64
+  KENNY_AGENT_BINARY_LINUX_AARCH64: /data/kenny-agent-linux-aarch64 # optional, Raspberry Pi / ARM NAS
+```
+
 ### Auto-fetch from GitHub (no manual binary placement)
 
 To avoid the first-agent chicken-and-egg (hand-placing the `.exe` into the volume before any
@@ -166,11 +180,12 @@ environment:
 ```
 
 On startup (and via the dashboard's **retry GitHub fetch** button) the server downloads the latest
-release's `kenny-agent-<tag>-x86_64-pc-windows-msvc.exe`, verifies it against the published
-`.sha256`, and caches it at `/data/kenny-agent.exe`. The fetch is **best-effort** — if the repo is
-unreachable or no token is set, the dashboard shows a banner with manual instructions instead. An
-operator-placed `KENNY_AGENT_BINARY` always wins over the fetched cache. The dashboard's **Add a
-PC** control lets you download an installer for the very first machine without a pre-existing agent.
+release's agent binaries — `kenny-agent-<tag>-x86_64-pc-windows-msvc.exe` and the Linux
+`…-<arch>-unknown-linux-musl` variants — verifies each against its published `.sha256`, and caches
+them on the `/data` volume. The fetch is **best-effort** and per-asset — if the repo is unreachable
+or no token is set, the dashboard shows a banner with manual instructions instead. Operator-placed
+`KENNY_AGENT_BINARY` / `KENNY_AGENT_BINARY_LINUX` always win over the fetched cache. The dashboard's
+**Add a PC** control lets you onboard the very first machine without a pre-existing agent.
 
 ## Installing the agent on Windows
 
@@ -200,7 +215,55 @@ kenny-agent.exe run                # foreground (default when no subcommand) —
 `kenny-agent.config.json` next to the exe and registers an auto-start service with
 restart-on-failure recovery. Updates are pushed from the server (no manual reinstall).
 
-## Releases (GHCR image + Windows binary)
+## Installing the agent on Linux
+
+kenny-agent runs on Linux hosts too — headless servers, a NAS, a Raspberry Pi, or a Linux desktop
+— reporting into the same fleet through the same server (ADR-0035). The agent is a **static musl
+binary** with no runtime dependencies, installed as a **systemd service**. Distribution follows the
+Docker/K3s convenience-script model (ADR-0038).
+
+The normal path is the dashboard's **one-line install command**. In **Add a PC**, pick *Linux*,
+enter an agent id, and copy the command it produces — then run it on the target host as root:
+
+```bash
+curl -fsSL https://kenny.example.com/d/install/<nonce> | sudo sh
+```
+
+The nonce-gated, single-use script carries the per-agent `--server`, `--agent-id`, a minted
+one-time `--enroll-token`, and the pinned `--server-pubkey`. It detects the CPU architecture
+(`x86_64` / `aarch64`), downloads the matching binary from the server, and runs `kenny-agent
+setup`, which copies the binary into `/opt/kenny`, writes its config to `/etc/kenny`, and enables
+an auto-start systemd unit. On first run the agent generates its Ed25519 keypair and enrolls its
+public key. Verify with:
+
+```bash
+systemctl status kenny-agent          # unit active, ExecStart=/opt/kenny/kenny-agent run-service
+journalctl -u kenny-agent -f          # follow the agent log
+```
+
+The single binary manages its own service. For a manual / air-gapped install, download
+`kenny-agent-<tag>-<arch>-unknown-linux-musl` from the
+[latest release](https://github.com/t11z/kenny/releases/latest), then (as root):
+
+```bash
+chmod +x kenny-agent-*-unknown-linux-musl
+sudo ./kenny-agent-*-unknown-linux-musl setup \
+  --server wss://kenny.example.com/agent/ws --agent-id study-pi \
+  --server-pubkey <base64> --enroll-token <token> [--telemetry-interval-secs 900]
+
+sudo kenny-agent uninstall             # disable + remove the systemd unit
+```
+
+Paths on Linux: binary in `/opt/kenny`, config in `/etc/kenny`, state/key in `/var/lib/kenny`,
+logs in `/var/log/kenny`. There is no tray kill-switch or session-0/desktop launch on Linux (those
+are Windows-only, ADR-0035); a headless server needs neither.
+
+**Upgrades are server-triggered, exactly like Windows** — click **update** on the agent in the
+dashboard (or `POST /api/agents/{id}/update`). The agent downloads the new binary, verifies its
+SHA-256, atomically swaps `/opt/kenny/kenny-agent`, and restarts its systemd unit; no manual step
+on the host (ADR-0038).
+
+## Releases (GHCR image + agent binaries)
 
 Tag a version to publish (`.github/workflows/release.yml`):
 
@@ -213,23 +276,31 @@ flowchart LR
   Tag["git tag v*"] --> RW["release.yml"]
   RW --> Img["server image →<br/>ghcr.io/&lt;owner&gt;/kenny-server:&lt;tag&gt;"]
   RW --> Exe["kenny-agent.exe<br/>(windows-latest)"]
+  RW --> Lnx["kenny-agent musl<br/>(x86_64 + aarch64)"]
   Exe --> Sha["+ SHA256"]
   Exe --> Sign["+ Authenticode<br/>(if cert secret set)"]
-  Sha & Sign --> Rel["GitHub Release asset"]
+  Lnx --> LSha["+ SHA256"]
+  Sha & Sign & LSha --> Rel["GitHub Release asset"]
 ```
 
 - The server image lands in GHCR (semver + `latest`, with provenance).
-- The agent binary is built on `windows-latest`, hashed, optionally code-signed when
+- The Windows agent binary is built on `windows-latest`, hashed, optionally code-signed when
   `WINDOWS_CERT_BASE64` / `WINDOWS_CERT_PASSWORD` repo secrets are set, and attached to the Release.
-- Pull the release `kenny-agent.exe` to the host and point `KENNY_AGENT_BINARY` at it to enable GUI
-  downloads/updates against that version.
+- The Linux agent binaries are cross-built as **static musl** artifacts (`cross`),
+  `kenny-agent-<tag>-x86_64-unknown-linux-musl` and `…-aarch64-unknown-linux-musl`, each hashed and
+  attached to the Release. The x86_64 build is e2e-gated before publish.
+- Pull the release binaries to the host and point `KENNY_AGENT_BINARY` (Windows) and
+  `KENNY_AGENT_BINARY_LINUX` / `KENNY_AGENT_BINARY_LINUX_AARCH64` (Linux) at them to enable GUI
+  downloads/updates against that version. When `KENNY_GITHUB_TOKEN` is set the server auto-fetches
+  all of them.
 
 ## Persistence, backups, upgrades
 
 - **Data**: the SQLite telemetry store lives on the `kenny-data` volume (`/data`). Back it up by
   snapshotting the volume / copying `kenny.sqlite`. Snapshots auto-prune after ~30 days.
 - **Server upgrade**: `docker compose pull && docker compose up -d` (or bump the image tag).
-- **Agent upgrade**: use **update agent** in the dashboard (server-triggered self-update).
+- **Agent upgrade**: use **update agent** in the dashboard (server-triggered self-update) — on both
+  Windows and Linux (ADR-0038).
 
 ## Dependencies & security automation
 
