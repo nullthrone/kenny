@@ -57,7 +57,10 @@ jobs:
           docker run -d --name kenny-smoke -p 8000:8000 "$image"
           ok=0
           for i in $(seq 1 30); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/login || true)
+            # A fresh image has no accounts yet, so GET /login redirects to the
+            # first-run /setup page (ADR-0037). Follow redirects (-L) and accept
+            # the final 200 as proof the web UI is served.
+            code=$(curl -sL -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/login || true)
             echo "attempt $i -> HTTP $code"
             if [ "$code" = "200" ]; then ok=1; break; fi
             sleep 1
@@ -65,7 +68,7 @@ jobs:
           docker logs kenny-smoke || true
           docker rm -f kenny-smoke >/dev/null 2>&1 || true
           if [ "$ok" != "1" ]; then
-            echo "::error::server image did not serve GET /login"
+            echo "::error::server image did not serve the auth UI (/login -> /setup)"
             exit 1
           fi
       - name: Log in to GHCR
