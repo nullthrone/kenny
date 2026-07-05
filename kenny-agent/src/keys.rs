@@ -7,8 +7,17 @@
 //! handshake transcript with this key and verifies the server's signature against a
 //! **pinned** server public key delivered at install time.
 //!
-//! Nothing here is Windows-gated: keygen, signing, and verification build and test on
-//! Linux CI. File-permission lockdown is best-effort and `#[cfg(unix)]`.
+//! Keygen, signing, and verification are not Windows-gated: they build and test on Linux
+//! CI. File-permission lockdown of the seed is best-effort and platform-specific: `0o600`
+//! on unix, and on Windows an `icacls` DACL restricting the file to LocalSystem +
+//! Administrators. The Windows lockdown matters because the seed lives in
+//! `%ProgramData%\kenny`, the directory whose DACL the installer widens to
+//! Authenticated Users : Modify (inheritable) so a standard user's tray can write the
+//! kill-switch control file (ADR-0011); without an explicit restriction the key file
+//! would inherit that grant and any local user could read or overwrite the agent's
+//! identity. The lockdown is re-asserted on every start (see [`AgentKey::load_or_generate`]),
+//! so the restart after a server-triggered self-update (ADR-0013) — which reuses the
+//! persisted seed — also repairs a key written by an older agent that lacked it.
 
 use std::path::PathBuf;
 
@@ -51,9 +60,16 @@ impl AgentKey {
     /// Load the persisted agent key, or generate and persist a fresh one on first run.
     ///
     /// The raw 32-byte seed is read/written verbatim. On unix the file is locked to
-    /// `0o600`. A corrupt/short key file is an error rather than being silently
-    /// overwritten, so a deployment problem is visible instead of rotating the agent's
-    /// identity (which would break server-side pinning).
+    /// `0o600`; on Windows its DACL is restricted to LocalSystem + Administrators. A
+    /// corrupt/short key file is an error rather than being silently overwritten, so a
+    /// deployment problem is visible instead of rotating the agent's identity (which would
+    /// break server-side pinning).
+    ///
+    /// The Windows lockdown runs on **both** paths — after first-run generation and after
+    /// loading an existing seed — so it is idempotently re-asserted on every start,
+    /// including the restart following a server-triggered self-update (ADR-0013). That
+    /// repairs a seed persisted by an older agent that predated the lockdown, or one that
+    /// inherited the widened `%ProgramData%\kenny` DACL (ADR-0011).
     pub fn load_or_generate() -> Result<Self> {
         let path = key_path();
         if path.exists() {
@@ -66,6 +82,11 @@ impl AgentKey {
                     bytes.len()
                 )
             })?;
+            // Re-assert the restrictive DACL on the persisted seed (Windows only; no-op
+            // elsewhere). This is what makes the lockdown take effect right after a
+            // server-triggered self-update, and repairs keys written by older agents.
+            #[cfg(windows)]
+            lock_down_key_file(&path);
             return Ok(Self {
                 signing: SigningKey::from_bytes(&seed),
             });
@@ -80,6 +101,10 @@ impl AgentKey {
         }
         write_locked_down(&path, &seed)
             .with_context(|| format!("writing agent key {}", path.display()))?;
+        // Strip the inherited Authenticated-Users grant a freshly created file picks up
+        // from `%ProgramData%\kenny` (Windows only; no-op elsewhere).
+        #[cfg(windows)]
+        lock_down_key_file(&path);
         Ok(Self { signing })
     }
 
@@ -185,6 +210,62 @@ pub fn random_nonce_b64() -> String {
     STANDARD.encode(buf)
 }
 
+/// The `icacls` arguments that restrict the key file to LocalSystem + Administrators and
+/// strip inherited ACEs (the Authenticated-Users grant it would pick up from
+/// `%ProgramData%\kenny`, ADR-0011).
+///
+/// Pure and platform-neutral so the exact ACL is unit-testable on Linux CI even though the
+/// invocation itself is Windows-only. Well-known SIDs are locale-proof, unlike the
+/// localized group names.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn key_lockdown_icacls_args(path: &std::path::Path) -> Vec<std::ffi::OsString> {
+    use std::ffi::OsString;
+    vec![
+        path.as_os_str().to_os_string(),
+        // Remove inherited ACEs — in particular the inheritable Authenticated Users grant
+        // the installer places on the parent directory.
+        OsString::from("/inheritance:r"),
+        // Replace grants with exactly these two principals, Full control.
+        OsString::from("/grant:r"),
+        // S-1-5-18 = LocalSystem (the service account that runs the agent).
+        OsString::from("*S-1-5-18:F"),
+        // S-1-5-32-544 = the built-in Administrators group (for maintenance).
+        OsString::from("*S-1-5-32-544:F"),
+    ]
+}
+
+/// Restrict the persisted key file to LocalSystem + Administrators (Windows only).
+///
+/// Best-effort: a missing `icacls` or a non-zero exit is logged, never fatal — the agent
+/// must still run, and a warning surfaces a lockdown that did not take. Idempotent, so it
+/// is safe to call on every start.
+#[cfg(windows)]
+fn lock_down_key_file(path: &std::path::Path) {
+    use std::os::windows::process::CommandExt;
+    /// `CREATE_NO_WINDOW` — keep the helper headless during a foreground `run`.
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    match std::process::Command::new("icacls")
+        .args(key_lockdown_icacls_args(path))
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+    {
+        Ok(o) if o.status.success() => {
+            tracing::debug!(path = %path.display(), "restricted agent key file to SYSTEM + Administrators");
+        }
+        Ok(o) => tracing::warn!(
+            path = %path.display(),
+            status = %o.status,
+            stderr = %String::from_utf8_lossy(&o.stderr).trim(),
+            "icacls could not lock down the agent key; it may be readable by other local users"
+        ),
+        Err(e) => tracing::warn!(
+            path = %path.display(),
+            error = %e,
+            "could not run icacls to lock down the agent key; it may be readable by other local users"
+        ),
+    }
+}
+
 /// Write `data` to `path`, restricting permissions to `0o600` on unix where supported.
 fn write_locked_down(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
     #[cfg(unix)]
@@ -263,6 +344,39 @@ mod tests {
         // Verify under the agent's own public key via the server-verify helper shape.
         let vk = key.verifying_key();
         verify_server_sig(&vk, &transcript, &sig_b64).expect("self-signed sig must verify");
+    }
+
+    #[test]
+    fn key_lockdown_grants_only_system_and_admins() {
+        // The exact DACL is security-critical: it must strip inheritance and grant Full
+        // control to LocalSystem + Administrators only, never to any interactive-user SID.
+        let path = std::path::Path::new(r"C:\ProgramData\kenny\kenny-agent.key");
+        let strs: Vec<String> = key_lockdown_icacls_args(path)
+            .iter()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+
+        assert_eq!(strs[0], r"C:\ProgramData\kenny\kenny-agent.key");
+        assert!(
+            strs.iter().any(|s| s == "/inheritance:r"),
+            "must strip inherited ACEs (the Authenticated-Users grant on the parent dir)"
+        );
+        assert!(
+            strs.iter().any(|s| s == "*S-1-5-18:F"),
+            "LocalSystem (the service) must keep full control"
+        );
+        assert!(
+            strs.iter().any(|s| s == "*S-1-5-32-544:F"),
+            "Administrators must keep full control"
+        );
+        // Must NOT grant any broad interactive principal: Authenticated Users (S-1-5-11),
+        // Users (S-1-5-32-545), or Everyone (S-1-1-0).
+        for forbidden in ["S-1-5-11", "S-1-5-32-545", "S-1-1-0"] {
+            assert!(
+                !strs.iter().any(|s| s.contains(forbidden)),
+                "must not grant the key to {forbidden}"
+            );
+        }
     }
 
     #[test]
