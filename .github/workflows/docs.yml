@@ -31,6 +31,13 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
+      # Provision GitHub Pages via the API before deploying. Without this, the
+      # first run after a merge can race a not-yet-provisioned Pages site and
+      # fail deploy-pages; a later manual re-run succeeds only because Pages has
+      # finished provisioning by then. enablement: true makes it idempotent.
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
       - name: Install MkDocs Material
         run: pip install mkdocs-material mkdocs-awesome-pages-plugin
       - name: Build (strict)
