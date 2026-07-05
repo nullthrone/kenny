@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="Border collie avatar">
+  <circle cx="64" cy="64" r="64" fill="#BFE3E0"/>
+  <!-- ears (black, folded) -->
+  <path d="M30 44 C22 26 34 20 44 30 C46 42 40 50 36 54 Z" fill="#2B2B2B"/>
+  <path d="M98 44 C106 26 94 20 84 30 C82 42 88 50 92 54 Z" fill="#2B2B2B"/>
+  <!-- head base black -->
+  <path d="M32 58 C32 40 44 30 64 30 C84 30 96 40 96 58 C96 82 82 100 64 100 C46 100 32 82 32 58 Z" fill="#2B2B2B"/>
+  <!-- white blaze down the middle -->
+  <path d="M64 30 C58 30 54 34 54 42 C54 60 58 74 64 92 C70 74 74 60 74 42 C74 34 70 30 64 30 Z" fill="#F7F4EF"/>
+  <!-- white muzzle -->
+  <path d="M46 74 C46 66 54 62 64 62 C74 62 82 66 82 74 C82 86 74 94 64 94 C54 94 46 86 46 74 Z" fill="#F7F4EF"/>
+  <!-- eyes -->
+  <circle cx="50" cy="62" r="6.5" fill="#F7F4EF"/>
+  <circle cx="78" cy="62" r="6.5" fill="#F7F4EF"/>
+  <circle cx="51" cy="63" r="3.6" fill="#3A2A18"/>
+  <circle cx="77" cy="63" r="3.6" fill="#3A2A18"/>
+  <!-- nose -->
+  <ellipse cx="64" cy="74" rx="6.5" ry="5" fill="#2B2B2B"/>
+  <!-- mouth -->
+  <path d="M64 79 C64 85 58 88 54 86 M64 79 C64 85 70 88 74 86" fill="none" stroke="#2B2B2B" stroke-width="2.4" stroke-linecap="round"/>
+  <!-- amber collar accent -->
+  <path d="M48 98 C54 104 74 104 80 98" fill="none" stroke="#E8A33D" stroke-width="5" stroke-linecap="round"/>
+</svg>

@@ -1,13 +1,20 @@
 """Operator authentication for the MCP endpoint, dashboard API, and web UI.
 
-A single shared **operator bearer token** (``KENNY_OPERATOR_TOKEN``) gates
-everything an operator can reach: the MCP Streamable-HTTP endpoint (``/mcp``),
-the dashboard JSON API (``/api``), and the web UI (``/``). Agents authenticate
-separately with their own per-agent token on ``/agent/ws`` (see ``registry.py``);
-that WebSocket path is intentionally **not** gated here.
+Multi-user (ADR-0037): every HTTP request is resolved to a :class:`Principal`
+(a user id, role, and host scope) and stashed on ``scope["kenny_principal"]`` so
+the API routes and MCP tools can enforce role/scope. Credentials resolve in this
+order:
 
-This is a deliberately simple single-token scheme for a family-scale deployment
-(see ADR-0008). Harden later (per-operator identities, Cloudflare Access/Tailscale).
+1. ``Authorization: Bearer <pat>`` — a per-user **personal access token** (how
+   Claude reaches ``/mcp``).
+2. A session cookie carrying an opaque **session id** (how the browser logs in).
+3. **Back-compat:** the legacy shared ``KENNY_OPERATOR_TOKEN`` /
+   ``KENNY_OPERATOR_TOKENS`` — accepted as a synthetic *superuser* so an existing
+   single-token install (and Claude's existing config) keeps working across the
+   upgrade with no manual steps. Deprecated; see ADR-0037.
+
+Agents authenticate separately with their own per-agent token on ``/agent/ws``;
+that WebSocket path is intentionally **not** gated here.
 """
 
 from __future__ import annotations
@@ -16,24 +23,90 @@ import hmac
 import logging
 import os
 import time
+from dataclasses import dataclass, field
 from http.cookies import SimpleCookie
+from typing import TYPE_CHECKING
 
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 
+from . import security
+
+if TYPE_CHECKING:
+    from .userstore import UserStore
+
 logger = logging.getLogger("kenny.auth")
 
 COOKIE_NAME = "kenny_op"
 _DEV_OPERATOR_TOKEN = "dev-operator-token"
+_DEFAULT_SESSION_TTL_SECS = 7 * 24 * 3600  # 7 days
+
+
+# -- principal ----------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Principal:
+    """The authenticated caller for one request.
+
+    ``hosts`` is only meaningful for the ``user`` role (the set of agents that
+    user may see/operate on); operators and superusers are unrestricted. The
+    synthetic env-token principal (``is_env_token``) is a superuser with no user
+    row, kept for back-compat during the single-token → accounts migration.
+    """
+
+    user_id: int | None
+    username: str
+    role: str
+    hosts: frozenset[str] = field(default_factory=frozenset)
+    email: str | None = None
+    avatar: str | None = None
+    session_id: str | None = None
+    pat_id: str | None = None
+    is_env_token: bool = False
+
+    @property
+    def scoped(self) -> bool:
+        """Whether this principal is limited to an explicit host set."""
+
+        return self.role == "user"
+
+    @property
+    def active_key(self) -> str | None:
+        """Per-caller key for the registry's active-agent slot (ADR-0037)."""
+
+        if self.session_id:
+            return f"s:{self.session_id}"
+        if self.pat_id:
+            return f"p:{self.pat_id}"
+        return None
+
+    def at_least(self, minimum: str) -> bool:
+        return security.role_at_least(self.role, minimum)
+
+    def may_see(self, agent_id: str) -> bool:
+        """Whether this principal may see/target ``agent_id``."""
+
+        return (not self.scoped) or (agent_id in self.hosts)
+
+
+def _env_principal() -> Principal:
+    """The back-compat superuser resolved from the shared operator token."""
+
+    return Principal(
+        user_id=None,
+        username="operator",
+        role="superuser",
+        is_env_token=True,
+    )
 
 
 def load_operator_token() -> str:
     """Primary operator token (``KENNY_OPERATOR_TOKEN``) or insecure dev fallback.
 
-    Kept for callers that want a single canonical token (e.g. the login cookie
-    value and tests). Additional accepted tokens live in
-    :func:`load_operator_tokens`.
+    Kept for callers that want a single canonical token (e.g. tests). Additional
+    accepted tokens live in :func:`load_operator_tokens`.
     """
 
     token = os.environ.get("KENNY_OPERATOR_TOKEN", "").strip()
@@ -113,23 +186,19 @@ def _cookie_token(scope: dict, cookie_name: str) -> str | None:
     return None
 
 
-def _credential(scope: dict, cookie_name: str) -> str | None:
-    return _bearer_from_headers(scope) or _cookie_token(scope, cookie_name)
-
-
 def _is_public(path: str) -> bool:
-    """Paths reachable without an operator token.
+    """Paths reachable without any authentication.
 
-    ``/d/*`` are nonce-gated agent-distribution downloads (the nonce in the URL is the
-    credential), so a target user / the agent self-updater can fetch without a login.
-    ``/assets/*`` are non-sensitive brand assets (logo, favicon) needed by the login
-    page itself, so they are served without a token. ``/api/agents/<id>/enroll`` is
-    gated by the agent's own one-time enrollment token (verified in the handler), so
-    it bypasses the operator gate like ``/agent/ws`` does (ADR-0023).
+    ``/setup`` bootstraps the first account (its handler is a no-op once a user
+    exists). ``/d/*`` are nonce-gated agent-distribution downloads. ``/assets/*``
+    are non-sensitive brand assets (logo, favicon, avatars) needed by the login
+    page. ``/api/agents/<id>/enroll`` is gated by the agent's own one-time
+    enrollment token (verified in the handler), so it bypasses the operator gate
+    like ``/agent/ws`` does (ADR-0023).
     """
 
     return (
-        path in ("/login", "/logout")
+        path in ("/login", "/logout", "/setup")
         or path.startswith("/d/")
         or path.startswith("/assets/")
         or _is_enroll(path)
@@ -151,12 +220,13 @@ def _is_api_or_mcp(path: str) -> bool:
 
 
 class OperatorAuthMiddleware:
-    """Pure-ASGI gate.
+    """Pure-ASGI gate that also resolves the request's :class:`Principal`.
 
     Websocket (``/agent/ws``) and lifespan scopes pass through untouched — agents
-    authenticate with their own token. For HTTP requests, a valid operator bearer
-    (header) or cookie is required; unauthenticated API/MCP requests get ``401``
-    and UI requests are redirected to ``/login``. On success the request passes
+    authenticate with their own token. For HTTP requests it resolves a principal
+    (PAT, session, or legacy shared token) and attaches it to
+    ``scope["kenny_principal"]``; unauthenticated API/MCP requests get ``401`` and
+    UI requests are redirected to ``/login``. On success the request passes
     through unbuffered, so MCP streaming/SSE is preserved.
     """
 
@@ -165,12 +235,53 @@ class OperatorAuthMiddleware:
         app,
         *,
         token: str | list[str],
+        user_store: "UserStore | None" = None,
         cookie_name: str = COOKIE_NAME,
     ) -> None:
         self.app = app
         # Accept a single token or a list; both flow through `_token_valid`.
         self.token = token
+        self.user_store = user_store
         self.cookie_name = cookie_name
+
+    async def _principal_from_row(
+        self, row, *, session_id: str | None = None, pat_token: str | None = None
+    ) -> Principal:
+        role = row["role"]
+        hosts: frozenset[str] = frozenset()
+        if role == "user" and self.user_store is not None:
+            hosts = frozenset(await self.user_store.get_user_hosts(row["id"]))
+        return Principal(
+            user_id=row["id"],
+            username=row["username"],
+            role=role,
+            hosts=hosts,
+            email=row["email"],
+            avatar=row["avatar"],
+            session_id=session_id,
+            pat_id=security.sha256_hex(pat_token) if pat_token else None,
+        )
+
+    async def _resolve_principal(self, scope: dict) -> Principal | None:
+        bearer = _bearer_from_headers(scope)
+        if bearer:
+            if self.user_store is not None:
+                row = await self.user_store.resolve_pat(bearer)
+                if row is not None:
+                    return await self._principal_from_row(row, pat_token=bearer)
+            if _token_valid(bearer, self.token):
+                return _env_principal()
+            return None
+        cookie = _cookie_token(scope, self.cookie_name)
+        if cookie:
+            if self.user_store is not None:
+                row = await self.user_store.resolve_session(cookie)
+                if row is not None:
+                    return await self._principal_from_row(row, session_id=cookie)
+            # Legacy cookie that carried the shared token (pre-ADR-0037).
+            if _token_valid(cookie, self.token):
+                return _env_principal()
+        return None
 
     async def __call__(self, scope, receive, send) -> None:
         if scope["type"] != "http":
@@ -178,15 +289,19 @@ class OperatorAuthMiddleware:
             return
 
         path = scope.get("path", "")
-        if _is_public(path) or _token_valid(
-            _credential(scope, self.cookie_name), self.token
-        ):
+        principal = await self._resolve_principal(scope)
+        if principal is not None:
+            scope["kenny_principal"] = principal
+            await self.app(scope, receive, send)
+            return
+
+        if _is_public(path):
             await self.app(scope, receive, send)
             return
 
         if _is_api_or_mcp(path):
             response: Response = JSONResponse(
-                {"error": "unauthorized", "detail": "operator token required"},
+                {"error": "unauthorized", "detail": "authentication required"},
                 status_code=401,
                 headers={"WWW-Authenticate": "Bearer"},
             )
@@ -195,12 +310,9 @@ class OperatorAuthMiddleware:
         await response(scope, receive, send)
 
 
-_LOGIN_HTML = """<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>kenny — sign in</title>
-<link rel="icon" href="/assets/kenny-favicon.png" />
-<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;600&display=swap" rel="stylesheet" />
+# -- login / setup pages ------------------------------------------------------
+
+_PAGE_STYLE = """
 <style>
   /* Warm border-collie palette (see kenny design system). Flat, hairline
      borders, amber accent. Inline hex (no shared token file on this page). */
@@ -220,33 +332,85 @@ _LOGIN_HTML = """<!DOCTYPE html>
   .brand .sub {{ font-size:11px; color:var(--muted); letter-spacing:.04em;
     text-transform:uppercase; margin-top:3px; }}
   label {{ font-size:11px; color:var(--muted); letter-spacing:.04em; text-transform:uppercase;
-    display:block; margin-bottom:6px; }}
+    display:block; margin-bottom:6px; margin-top:14px; }}
+  label:first-of-type {{ margin-top:0; }}
   input {{ width:100%; padding:9px 11px; border-radius:5px; border:1px solid var(--border);
     background:var(--sunken); color:var(--fg); font-size:14px; font-family:inherit;
     transition:border-color .16s cubic-bezier(.2,0,0,1), box-shadow .16s cubic-bezier(.2,0,0,1); }}
   input::placeholder {{ color:var(--faint); }}
   input:focus {{ outline:none; border-color:var(--amber); box-shadow:0 0 0 2px rgba(232,163,61,.12); }}
-  button {{ margin-top:16px; width:100%; background:var(--amber); color:#1A1917; border:0;
+  button {{ margin-top:20px; width:100%; background:var(--amber); color:#1A1917; border:0;
     padding:10px; border-radius:5px; font-size:14px; font-weight:600; font-family:inherit;
     cursor:pointer; transition:background .16s cubic-bezier(.2,0,0,1); }}
   button:hover {{ background:#F0B65C; }}
   button:active {{ background:var(--amber-deep); }}
   .err {{ color:var(--crit); margin:12px 0 0; font-size:13px; }}
   .muted {{ color:var(--muted); font-size:12px; margin-top:14px; }}
-</style></head>
+</style>
+"""
+
+_LOGIN_HTML = (
+    """<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>kenny — sign in</title>
+<link rel="icon" href="/assets/kenny-favicon.png" />
+"""
+    + _PAGE_STYLE
+    + """</head>
 <body>
   <form method="post" action="/login">
     <div class="brand">
       <img src="/assets/kenny-mark-64.png" alt="kenny" width="40" height="40" />
-      <div><div class="name">kenny</div><div class="sub">operator sign in</div></div>
+      <div><div class="name">kenny</div><div class="sub">sign in</div></div>
     </div>
-    <label for="token">operator token</label>
-    <input id="token" type="password" name="token" placeholder="operator token" autofocus />
+    <label for="username">Username</label>
+    <input id="username" type="text" name="username" placeholder="username" autofocus
+      autocomplete="username" />
+    <label for="password">Password</label>
+    <input id="password" type="password" name="password" placeholder="password"
+      autocomplete="current-password" />
+    <label for="totp">2FA code <span style="text-transform:none">(if enabled)</span></label>
+    <input id="totp" type="text" name="totp" placeholder="123456" inputmode="numeric"
+      autocomplete="one-time-code" />
     <button type="submit">Sign in</button>
     {msg}
-    <div class="muted">Token is set via KENNY_OPERATOR_TOKEN on the server.</div>
   </form>
 </body></html>"""
+)
+
+_SETUP_HTML = (
+    """<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>kenny — first-run setup</title>
+<link rel="icon" href="/assets/kenny-favicon.png" />
+"""
+    + _PAGE_STYLE
+    + """</head>
+<body>
+  <form method="post" action="/setup">
+    <div class="brand">
+      <img src="/assets/kenny-mark-64.png" alt="kenny" width="40" height="40" />
+      <div><div class="name">kenny</div><div class="sub">create administrator</div></div>
+    </div>
+    <p class="muted" style="margin-top:0">
+      Welcome. Create the first account — it becomes the superuser.
+    </p>
+    <label for="username">Username</label>
+    <input id="username" type="text" name="username" placeholder="username" autofocus
+      autocomplete="username" />
+    <label for="password">Password</label>
+    <input id="password" type="password" name="password" placeholder="password"
+      autocomplete="new-password" />
+    <label for="email">Email <span style="text-transform:none">(optional)</span></label>
+    <input id="email" type="email" name="email" placeholder="you@example.com"
+      autocomplete="email" />
+    <button type="submit">Create &amp; sign in</button>
+    {msg}
+  </form>
+</body></html>"""
+)
 
 
 def _tls_enabled() -> bool:
@@ -255,14 +419,24 @@ def _tls_enabled() -> bool:
     return os.environ.get("KENNY_TLS", "").strip() in ("1", "true", "True", "yes")
 
 
+def _session_ttl_secs() -> int:
+    raw = os.environ.get("KENNY_SESSION_TTL_SECS", "").strip()
+    if not raw:
+        return _DEFAULT_SESSION_TTL_SECS
+    try:
+        return max(60, int(raw))
+    except ValueError:
+        return _DEFAULT_SESSION_TTL_SECS
+
+
 class LoginRateLimiter:
     """In-memory per-IP login throttle (dev-grade, like ``ShareLinks``/``CallLog``).
 
-    ``/login`` is unauthenticated by design (ADR-0008), so without a limiter the
-    single shared operator token can be brute-forced online (CWE-307). After
-    ``max_attempts`` consecutive failures from one client IP, that IP is locked
-    out for ``lockout_secs``; a successful login clears its counter. Bounds are
-    read from the environment at construction so a deployment can tune them.
+    ``/login`` is unauthenticated by design, so without a limiter passwords can be
+    brute-forced online (CWE-307). After ``max_attempts`` consecutive failures
+    from one client IP, that IP is locked out for ``lockout_secs``; a successful
+    login clears its counter. Bounds are read from the environment at construction
+    so a deployment can tune them.
     """
 
     def __init__(
@@ -309,21 +483,42 @@ class LoginRateLimiter:
         self._locked_until.pop(ip, None)
 
 
-def build_auth_routes(
-    token: str | list[str], *, cookie_name: str = COOKIE_NAME
-) -> list[Route]:
-    """Login/logout routes (public; the middleware exempts them)."""
+def _set_session_cookie(resp: Response, cookie_name: str, sid: str) -> None:
+    resp.set_cookie(
+        cookie_name,
+        sid,
+        httponly=True,
+        samesite="lax",
+        secure=_tls_enabled(),
+        path="/",
+        max_age=_session_ttl_secs(),
+    )
 
-    # The cookie carries one canonical token (the first accepted one); any
-    # configured token is accepted at login.
-    cookie_value = token[0] if isinstance(token, list) else token
-    secure_cookie = _tls_enabled()
+
+def build_auth_routes(
+    token: str | list[str],
+    *,
+    user_store: "UserStore | None" = None,
+    cookie_name: str = COOKIE_NAME,
+) -> list[Route]:
+    """Login / setup / logout routes (public; the middleware exempts them)."""
+
     limiter = LoginRateLimiter()
 
     async def login(request: Request) -> Response:
         if request.method == "POST":
             ip = request.client.host if request.client else "unknown"
-            retry = limiter.retry_after(ip)
+            form = await request.form()
+            username = str(form.get("username", "")).strip()
+            password = str(form.get("password", ""))
+            totp = str(form.get("totp", "")).strip()
+
+            # Throttle per (client IP, username): behind a shared NAT (a whole
+            # family on one public IP) one member's failures must not lock out the
+            # others (CWE-307). The real client IP requires uvicorn proxy-header
+            # trust in production (see main.run / KENNY_FORWARDED_ALLOW_IPS).
+            limiter_key = f"{ip}|{username}"
+            retry = limiter.retry_after(limiter_key)
             if retry is not None:
                 resp = HTMLResponse(
                     _LOGIN_HTML.format(
@@ -333,36 +528,93 @@ def build_auth_routes(
                 )
                 resp.headers["Retry-After"] = str(int(retry) + 1)
                 return resp
-            form = await request.form()
-            provided = str(form.get("token", ""))
-            if _token_valid(provided, token):
-                limiter.reset(ip)
-                resp = RedirectResponse(url="/", status_code=303)
-                # Cookie carries the shared token; HttpOnly so page JS can't read it.
-                # `secure` is set behind TLS (KENNY_TLS=1) so it isn't sent over http.
-                resp.set_cookie(
-                    cookie_name,
-                    cookie_value,
-                    httponly=True,
-                    samesite="lax",
-                    secure=secure_cookie,
-                    path="/",
+
+            row = None
+            if user_store is not None:
+                row = await user_store.verify_login(username, password)
+            if row is not None:
+                secret = row["totp_secret"]
+                if secret and not security.verify_totp(secret, totp):
+                    limiter.record_failure(limiter_key)
+                    logger.warning("failed 2FA for %s from %s", username, ip)
+                    return HTMLResponse(
+                        _LOGIN_HTML.format(
+                            msg='<p class="err">Invalid 2FA code.</p>'
+                        ),
+                        status_code=401,
+                    )
+                limiter.reset(limiter_key)
+                sid = await user_store.create_session(
+                    row["id"],
+                    ttl_secs=_session_ttl_secs(),
+                    ip=ip,
+                    user_agent=request.headers.get("user-agent"),
                 )
+                resp = RedirectResponse(url="/", status_code=303)
+                _set_session_cookie(resp, cookie_name, sid)
                 return resp
-            limiter.record_failure(ip)
-            logger.warning("failed operator login attempt from %s", ip)
+            limiter.record_failure(limiter_key)
+            logger.warning("failed login for %r from %s", username, ip)
             return HTMLResponse(
-                _LOGIN_HTML.format(msg='<p class="err">Invalid token.</p>'),
+                _LOGIN_HTML.format(msg='<p class="err">Invalid credentials.</p>'),
                 status_code=401,
             )
+
+        # GET: first-run installs have no accounts yet → send to setup.
+        if user_store is not None and await user_store.count_users() == 0:
+            return RedirectResponse(url="/setup", status_code=302)
         return HTMLResponse(_LOGIN_HTML.format(msg=""))
 
-    async def logout(_request: Request) -> Response:
+    async def setup(request: Request) -> Response:
+        # Only usable to bootstrap the very first (superuser) account.
+        if user_store is None:
+            return RedirectResponse(url="/login", status_code=302)
+        if await user_store.count_users() > 0:
+            if request.method == "POST":
+                return JSONResponse(
+                    {"error": "already_configured"}, status_code=409
+                )
+            return RedirectResponse(url="/login", status_code=302)
+
+        if request.method == "POST":
+            form = await request.form()
+            username = str(form.get("username", "")).strip()
+            password = str(form.get("password", ""))
+            email = str(form.get("email", "")).strip() or None
+            if not username or not password:
+                return HTMLResponse(
+                    _SETUP_HTML.format(
+                        msg='<p class="err">Username and password are required.</p>'
+                    ),
+                    status_code=400,
+                )
+            user = await user_store.create_user(
+                username, password, "superuser", email=email
+            )
+            sid = await user_store.create_session(
+                user["id"],
+                ttl_secs=_session_ttl_secs(),
+                ip=request.client.host if request.client else None,
+                user_agent=request.headers.get("user-agent"),
+            )
+            resp = RedirectResponse(url="/", status_code=303)
+            _set_session_cookie(resp, cookie_name, sid)
+            logger.info("first-run setup created superuser %r", username)
+            return resp
+
+        return HTMLResponse(_SETUP_HTML.format(msg=""))
+
+    async def logout(request: Request) -> Response:
+        if user_store is not None:
+            sid = request.cookies.get(cookie_name)
+            if sid:
+                await user_store.delete_session(sid)
         resp = RedirectResponse(url="/login", status_code=303)
         resp.delete_cookie(cookie_name, path="/")
         return resp
 
     return [
         Route("/login", login, methods=["GET", "POST"]),
+        Route("/setup", setup, methods=["GET", "POST"]),
         Route("/logout", logout),
     ]

@@ -159,6 +159,15 @@ class TelemetryStore:
         await self._conn.commit()
         return cur.rowcount or 0
 
+    async def delete_agent(self, agent_id: str) -> int:
+        """Delete all snapshots for ``agent_id`` (host removed from inventory)."""
+
+        cur = await self._conn.execute(
+            "DELETE FROM snapshots WHERE agent_id = ?", (agent_id,)
+        )
+        await self._conn.commit()
+        return cur.rowcount or 0
+
     @staticmethod
     def _row_to_record(row: aiosqlite.Row) -> dict[str, Any]:
         return {
@@ -341,6 +350,15 @@ class EventStore:
         await self._conn.commit()
         return cur.rowcount or 0
 
+    async def delete_agent(self, agent_id: str) -> int:
+        """Delete all events for ``agent_id`` (host removed from inventory)."""
+
+        cur = await self._conn.execute(
+            "DELETE FROM events WHERE agent_id = ?", (agent_id,)
+        )
+        await self._conn.commit()
+        return cur.rowcount or 0
+
     @staticmethod
     def _row_to_event(row: aiosqlite.Row) -> dict[str, Any]:
         return {
@@ -441,6 +459,15 @@ class AlertStateStore:
             (agent_id, scope, status, since, last_notified_at),
         )
         await self._conn.commit()
+
+    async def delete_agent(self, agent_id: str) -> int:
+        """Delete all alert state for ``agent_id`` (host removed from inventory)."""
+
+        cur = await self._conn.execute(
+            "DELETE FROM alert_state WHERE agent_id = ?", (agent_id,)
+        )
+        await self._conn.commit()
+        return cur.rowcount or 0
 
 
 _POLICY_SCHEMA = """
@@ -898,6 +925,15 @@ class WebFilterStore:
         )
         await self._conn.commit()
         return cur.rowcount or 0
+
+    async def delete_agent(self, agent_id: str) -> None:
+        """Delete all web-filter state for ``agent_id`` (host removed from inventory)."""
+
+        for table in ("webfilter_config", "webfilter_domains", "web_activity_events"):
+            await self._conn.execute(
+                f"DELETE FROM {table} WHERE agent_id = ?", (agent_id,)
+            )
+        await self._conn.commit()
 
 
 _CHAT_HISTORY_SCHEMA = """

@@ -261,6 +261,18 @@ class KeyStore:
         ) as cur:
             return await cur.fetchone() is not None
 
+    async def delete(self, agent_id: str) -> None:
+        """Forget an agent's public key (host removed from inventory, ADR-0037).
+
+        Only the per-agent ``agent_keys`` row is removed; the server identity is
+        left untouched.
+        """
+
+        await self._conn.execute(
+            "DELETE FROM agent_keys WHERE agent_id = ?", (agent_id,)
+        )
+        await self._conn.commit()
+
     # -- server identity ---------------------------------------------------
 
     async def _load_server_key(self) -> None:

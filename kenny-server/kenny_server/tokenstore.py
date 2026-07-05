@@ -205,3 +205,11 @@ class AgentTokenStore:
             }
             for r in rows
         ]
+
+    async def delete(self, agent_id: str) -> None:
+        """Forget an agent's token (host removed from inventory, ADR-0037)."""
+
+        await self._conn.execute(
+            "DELETE FROM agent_tokens WHERE agent_id = ?", (agent_id,)
+        )
+        await self._conn.commit()

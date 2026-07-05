@@ -39,23 +39,34 @@ ANTHROPIC_API_KEY="sk-ant-..." \
 docker compose up --build -d
 ```
 
-The server is now on `http://localhost:8000` (data persists on the `kenny-data` volume). Open `/`,
-sign in with the operator token. For TLS in front (port 443, `wss`), enable the Caddy profile:
+The server is now on `http://localhost:8000` (data persists on the `kenny-data` volume). Open `/`
+and complete **first-run setup**: the first account you create becomes the **superuser**
+(ADR-0037). From there a superuser manages accounts under the header user menu → *Users*
+(roles `superuser` / `operator` / `user`, per-user host scope, and personal access tokens).
+Claude authenticates to `/mcp` with a per-user access token (`Authorization: Bearer <pat>`);
+the `KENNY_OPERATOR_TOKEN(S)` below stay accepted as a back-compat superuser so existing
+installs upgrade with no manual steps. For TLS in front (port 443, `wss`), enable the Caddy profile:
 
 ```bash
 KENNY_DOMAIN=kenny.example.com KENNY_OPERATOR_TOKEN=... docker compose --profile tls up -d
 ```
 
+Behind a reverse proxy, set `KENNY_FORWARDED_ALLOW_IPS` to the proxy's address so the
+login rate-limiter throttles by the real client IP rather than the proxy's (otherwise all
+clients share one bucket). The bundled TLS profile sets this for you.
+
 ## Environment variables
 
 | Variable | Used by | Default | Purpose |
 |----------|---------|---------|---------|
-| `KENNY_OPERATOR_TOKEN` | server | *insecure dev fallback* | Operator bearer token (MCP + `/api` + UI login). **Set this.** |
-| `KENNY_OPERATOR_TOKENS` | server | — | Optional comma-separated set of accepted operator tokens (multi-operator). |
+| `KENNY_OPERATOR_TOKEN` | server | *insecure dev fallback* | Legacy shared bearer token; still accepted as a **back-compat superuser** for MCP + `/api` after the upgrade to accounts (ADR-0037). Deprecated in favour of per-user access tokens. |
+| `KENNY_OPERATOR_TOKENS` | server | — | Optional comma-separated set of additional accepted shared tokens (each a back-compat superuser). |
+| `KENNY_SESSION_TTL_SECS` | server | `604800` | Browser login session lifetime in seconds (default 7 days). |
 | `KENNY_AGENT_TOKENS` | server | dev map | `id=token,id2=token2` — per-agent tokens (the token store is seeded from this). |
 | `ANTHROPIC_API_KEY` | server | — | Enables the dashboard chat. |
 | `KENNY_CHAT_MODEL` | server | `claude-sonnet-4-6` | Model for the chat loop. |
 | `KENNY_TLS` | server | unset | Set `1` behind TLS so the login cookie gets the `Secure` flag. |
+| `KENNY_FORWARDED_ALLOW_IPS` | server | `127.0.0.1` | Upstream proxy address(es) allowed to set `X-Forwarded-For`, so the login rate-limiter sees the real client IP behind a reverse proxy (not the proxy's). Set to your proxy's address when fronting kenny with the Caddy TLS profile. |
 | `KENNY_PUBLIC_URL` | server | `http://localhost:<port>` | External base URL; used to build installer/update links and the agent `--server` `wss://…/agent/ws`. |
 | `KENNY_AGENT_BINARY` | server | — | Path to the prebuilt `kenny-agent.exe` the server serves for installer download + self-update. Overrides the GitHub auto-fetch when set. |
 | `KENNY_GITHUB_TOKEN` | server | — | GitHub token enabling auto-fetch of the agent binary from Releases (ADR-0015). When set (and `KENNY_AGENT_BINARY` is not), the server fetches `kenny-agent.exe` on startup. |

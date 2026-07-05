@@ -93,6 +93,11 @@ class AgentRegistry:
         self._key_store = key_store
         self._agents: dict[str, Agent] = {}
         self._active_agent: str | None = None
+        # Per-caller active-agent slots keyed by session/PAT id, so concurrent
+        # principals don't clobber each other's selection (ADR-0037). The global
+        # ``_active_agent`` remains the fallback for keyless (single-operator /
+        # back-compat) callers.
+        self._active_by_key: dict[str, str] = {}
 
     @property
     def token_store(self) -> "AgentTokenStore | None":
@@ -231,14 +236,54 @@ class AgentRegistry:
     def active_agent(self) -> str | None:
         return self._active_agent
 
-    def select(self, agent_id: str) -> Agent:
+    def active_for(self, key: str | None) -> str | None:
+        """The active agent for ``key`` (per-caller slot), else the global one."""
+
+        if key is None:
+            return self._active_agent
+        return self._active_by_key.get(key)
+
+    def select(self, agent_id: str, *, key: str | None = None) -> Agent:
+        """Select the active agent. With ``key`` the selection is per-caller;
+        without it the process-global slot is set (keyless back-compat)."""
+
         agent = self._agents.get(agent_id)
         if agent is None:
             raise KeyError(f"unknown agent {agent_id!r}")
-        self._active_agent = agent_id
+        if key is None:
+            self._active_agent = agent_id
+        else:
+            self._active_by_key[key] = agent_id
         return agent
 
-    def require_active(self) -> str:
-        if self._active_agent is None:
+    def require_active(self, key: str | None = None) -> str:
+        """The active agent for ``key`` (or the global slot when ``key`` is None).
+
+        Keyed callers are isolated: a key with no selection raises rather than
+        falling back to another caller's global selection.
+        """
+
+        active = self._active_agent if key is None else self._active_by_key.get(key)
+        if active is None:
             raise RuntimeError("no active agent selected; call select_agent first")
-        return self._active_agent
+        return active
+
+    def clear(self, key: str) -> None:
+        """Drop a per-caller selection (e.g. on logout / session end)."""
+
+        self._active_by_key.pop(key, None)
+
+    def remove(self, agent_id: str) -> bool:
+        """Forget an agent entirely (host removed from inventory, ADR-0037).
+
+        Pops it from the registry and evicts it from the global and every
+        per-caller active slot. Returns whether it was present.
+        """
+
+        existed = self._agents.pop(agent_id, None) is not None
+        if self._active_agent == agent_id:
+            self._active_agent = None
+        for key, selected in list(self._active_by_key.items()):
+            if selected == agent_id:
+                del self._active_by_key[key]
+        return existed

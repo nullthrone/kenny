@@ -688,6 +688,80 @@
       .kset__row { flex-direction: column; }
       .kset__ctl { max-width: 100%; justify-content: flex-start; }
     }
+
+    /* ====================================================================
+       IDENTITY — header control, dropdown menu, avatars, account modals
+       ==================================================================== */
+    .kc-identity { position: relative; display: inline-flex; }
+    .kc-identity__btn { display: inline-flex; align-items: center; gap: 8px; padding: 4px 10px 4px 4px;
+      border-radius: var(--radius-pill); border: 1px solid var(--border); background: var(--surface);
+      color: var(--fg); font-family: var(--font-sans); font-size: var(--text-sm); cursor: pointer;
+      transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease); }
+    .kc-identity__btn:hover { background: var(--surface-raised); border-color: var(--border-strong); }
+    .kc-identity__btn svg.kc-chev { width: 14px; height: 14px; color: var(--fg-faint); }
+    .kc-identity__name { font-weight: var(--weight-bold); white-space: nowrap; }
+    .kc-avatar { width: 28px; height: 28px; border-radius: 50%; object-fit: cover; flex: none;
+      background: var(--bg-sunken); border: 1px solid var(--border); display: inline-flex;
+      align-items: center; justify-content: center; overflow: hidden; }
+    .kc-avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .kc-avatar svg { width: 16px; height: 16px; color: var(--fg-muted); }
+    .kc-avatar--init { font-size: 12px; font-weight: var(--weight-bold); color: var(--accent-fg);
+      background: var(--accent); border-color: transparent; }
+    .kc-avatar--lg { width: 52px; height: 52px; }
+    .kc-avatar--lg svg { width: 26px; height: 26px; }
+    .kc-avatar--lg.kc-avatar--init { font-size: 20px; }
+    .kc-usermenu { position: absolute; top: calc(100% + 8px); right: 0; z-index: 55; min-width: 172px;
+      background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius-md);
+      padding: 6px; display: flex; flex-direction: column; gap: 2px;
+      box-shadow: 0 8px 28px rgba(0,0,0,0.28); }
+    .kc-usermenu__item { display: flex; align-items: center; gap: 9px; width: 100%; text-align: left;
+      padding: 8px 10px; border-radius: var(--radius-sm); border: none; background: transparent;
+      color: var(--fg); font-family: var(--font-sans); font-size: var(--text-sm); cursor: pointer;
+      text-decoration: none; }
+    .kc-usermenu__item:hover { background: var(--surface-raised); text-decoration: none; }
+    .kc-usermenu__item svg { width: 16px; height: 16px; color: var(--fg-muted); flex: none; }
+    .kc-usermenu__sep { height: 1px; background: var(--border); margin: 4px 2px; }
+
+    .k-modal--wide { max-width: 760px; }
+    .kacc-sec { border-top: 1px solid var(--border); padding-top: 16px; margin-top: 16px; }
+    .kacc-sec:first-child { border-top: none; padding-top: 0; margin-top: 0; }
+    .kacc-sec__lbl { font-size: var(--text-xs); color: var(--fg-muted); letter-spacing: var(--tracking-label);
+      text-transform: uppercase; margin-bottom: 10px; }
+    .kacc-head { display: flex; align-items: center; gap: 14px; }
+    .kacc-head__name { font-size: var(--text-md); font-weight: var(--weight-bold); }
+    .kfield { display: flex; flex-direction: column; gap: 5px; margin-bottom: 10px; }
+    .kfield__lbl { font-size: var(--text-sm); color: var(--fg-muted); }
+    .kfield__row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .kfield__row .k-input { flex: 1 1 180px; min-width: 0; }
+    .kfield__row .k-btn { flex: none; }
+    .kacc-avgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(72px, 1fr)); gap: 10px; }
+    .kacc-av { display: flex; align-items: center; justify-content: center; padding: 6px; cursor: pointer;
+      background: var(--bg-sunken); border: 2px solid var(--border); border-radius: var(--radius-md);
+      transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease); }
+    .kacc-av:hover { border-color: var(--border-strong); }
+    .kacc-av.is-sel { border-color: var(--accent); background: var(--accent-wash); }
+    .kacc-av img { width: 100%; height: auto; border-radius: var(--radius-sm); display: block; }
+    .kacc-av--none { color: var(--fg-muted); font-size: var(--text-xs); min-height: 60px; }
+    .kacc-totp { display: flex; flex-direction: column; gap: 6px; margin: 8px 0;
+      padding: 10px 12px; background: var(--bg-sunken); border: 1px solid var(--border);
+      border-radius: var(--radius-sm); }
+    .kacc-totp .k-mono { word-break: break-all; user-select: all; font-size: var(--text-sm); }
+
+    .kacc-tbl { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
+    .kacc-tbl th { text-align: left; color: var(--fg-muted); font-weight: var(--weight-normal);
+      font-size: var(--text-xs); text-transform: uppercase; letter-spacing: var(--tracking-label);
+      padding: 6px 10px; border-bottom: 1px solid var(--border); }
+    .kacc-tbl td { padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+    .kacc-tbl tr:last-child td { border-bottom: none; }
+    .kacc-tbl .kacc-cell { display: inline-flex; align-items: center; gap: 8px; }
+    .kacc-tbl__actions { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
+    .kacc-hostgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+      gap: 6px; max-height: 220px; overflow-y: auto; padding: 4px; border: 1px solid var(--border);
+      border-radius: var(--radius-sm); background: var(--bg-sunken); }
+    .kacc-hostgrid label { display: flex; align-items: center; gap: 8px; font-size: var(--text-sm);
+      padding: 4px 6px; cursor: pointer; }
+    .kacc-empty { color: var(--fg-muted); font-size: var(--text-sm); padding: 6px 2px; }
+    .k-pill--role { background: var(--accent-wash); color: var(--accent); border-color: color-mix(in oklab, var(--accent) 35%, transparent); }
   </style>
 </head>
 <body>
@@ -759,6 +833,14 @@
       'chevron-left': '<path d="M15.75 19.5 8.25 12l7.5-7.5"/>',
       'chevron-right': '<path d="m8.25 4.5 7.5 7.5-7.5 7.5"/>',
       'info': '<path d="M11.25 11.25l.041-.02a.75.75 0 0 1 1.063.853l-.708 2.836a.75.75 0 0 0 1.063.853l.041-.021M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9-3.75h.008v.008H12V8.25Z"/>',
+      // identity / account management
+      'users': '<path d="M18 18.72a9.094 9.094 0 0 0 3.741-.479 3 3 0 0 0-4.682-2.72m.94 3.198.001.031c0 .225-.012.447-.037.666A11.944 11.944 0 0 1 12 21c-2.17 0-4.207-.576-5.963-1.584A6.062 6.062 0 0 1 6 18.719m12 0a5.971 5.971 0 0 0-.941-3.197m0 0A5.995 5.995 0 0 0 12 12.75a5.995 5.995 0 0 0-5.058 2.772m0 0a3 3 0 0 0-4.681 2.72 8.986 8.986 0 0 0 3.74.477m.94-3.197a5.971 5.971 0 0 0-.94 3.197M15 6.75a3 3 0 1 1-6 0 3 3 0 0 1 6 0Zm6 3a2.25 2.25 0 1 1-4.5 0 2.25 2.25 0 0 1 4.5 0Zm-13.5 0a2.25 2.25 0 1 1-4.5 0 2.25 2.25 0 0 1 4.5 0Z"/>',
+      'log-out': '<path d="M15.75 9V5.25A2.25 2.25 0 0 0 13.5 3h-6a2.25 2.25 0 0 0-2.25 2.25v13.5A2.25 2.25 0 0 0 7.5 21h6a2.25 2.25 0 0 0 2.25-2.25V15m3 0 3-3m0 0-3-3m3 3H9"/>',
+      'key': '<path d="M15.75 5.25a3 3 0 0 1 3 3m3 0a6 6 0 0 1-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H9v1.5H7.5v1.5H6a1.5 1.5 0 0 1-1.5-1.5v-2.379c0-.398.158-.779.44-1.06l5.652-5.652c.404-.404.527-1 .43-1.563A6 6 0 1 1 21.75 8.25Z"/>',
+      'trash-2': '<path d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0"/>',
+      'pencil': '<path d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0 1 15.75 21H5.25A2.25 2.25 0 0 1 3 18.75V8.25A2.25 2.25 0 0 1 5.25 6H10"/>',
+      'copy': '<path d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 0 1-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 0 1 1.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.876a9.06 9.06 0 0 0-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.375H9.375a1.125 1.125 0 0 1-1.125-1.125v-9.25m12 6.625v-1.875a3.375 3.375 0 0 0-3.375-3.375h-1.5a1.125 1.125 0 0 1-1.125-1.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H9.75"/>',
+      'chevron-down': '<path d="m19.5 8.25-7.5 7.5-7.5-7.5"/>',
     };
     function icon(name, size) {
       const p = ICONS[name] || ICONS.box;
@@ -836,6 +918,36 @@
         throw new Error(msg);
       }
       return r.json();
+    }
+
+    // JSON request helper for the identity/account surfaces. Like getJSON but
+    // sends a JSON body for non-GET verbs and surfaces the server's `detail`
+    // (FastAPI-style, e.g. the 409 "last superuser" guard) or `error` message.
+    async function api(url, method = "GET", body) {
+      const opts = { method };
+      if (body !== undefined) {
+        opts.headers = { "Content-Type": "application/json" };
+        opts.body = JSON.stringify(body);
+      }
+      const r = await fetch(url, opts);
+      if (r.status === 401) { location = "/login"; throw new Error("unauthorized"); }
+      let data = null;
+      try { data = await r.json(); } catch (e) {}
+      if (!r.ok) {
+        const msg = (data && (data.detail || data.error)) || (url + " -> " + r.status);
+        throw new Error(msg);
+      }
+      return data;
+    }
+
+    // -- current user / role gating ---------------------------------------
+    // state.me (loaded once at bootstrap) drives every identity-aware surface.
+    function meRole() { return (state.me && state.me.role) || null; }
+    function isSuperuser() { return meRole() === "superuser"; }
+    function canOperate() { return meRole() === "superuser" || meRole() === "operator"; }
+    async function loadMe() {
+      try { state.me = await api("/api/me"); }
+      catch (e) { state.me = null; }
     }
 
     // POST a JSON body and yield parsed Server-Sent Events ({type, ...}) as they
@@ -1111,7 +1223,9 @@
         tab("overview", "#/overview", "activity", "Overview") +
         tab("fleet", "#/fleet", "network", "Fleet") +
         tab("activity", "#/activity/" + state.activityView, "activity", "Activity") +
-        tab("settings", "#/settings", "sliders", "Settings");
+        // Settings mutate server-wide runtime config — superuser only. Lower
+        // roles never see the tab (the API would 403 them anyway).
+        (isSuperuser() ? tab("settings", "#/settings", "sliders", "Settings") : "");
     }
 
     async function router() {
@@ -1124,7 +1238,11 @@
       if (tab === "overview") await renderOverview();
       else if (tab === "activity") await renderActivity();
       else if (tab === "flagged") await renderFlagged();
-      else if (tab === "settings") await renderSettings();
+      else if (tab === "settings") {
+        // Guard direct navigation (typed/bookmarked #/settings) for non-superusers.
+        if (!isSuperuser()) { history.replaceState(null, "", "#/overview"); state.tab = "overview"; renderTabs(); await renderOverview(); }
+        else await renderSettings();
+      }
       else await renderFleet();
     }
 
@@ -1752,8 +1870,467 @@
         fleetMetricsHtml(agents) +
         copilotBtn +
         `<button class="kc-icon-btn" id="about-btn" onclick="openAboutModal()" title="about kenny" aria-label="about kenny">${icon('info', 16)}</button>
-         <button class="kc-icon-btn" id="theme-btn" onclick="toggleTheme()" title="toggle theme">${icon(currentTheme() === "dark" ? "sun" : "moon", 16)}</button>
-         <span class="kc-operator">${icon('user-round', 15)}operator</span>`;
+         <button class="kc-icon-btn" id="theme-btn" onclick="toggleTheme()" title="toggle theme">${icon(currentTheme() === "dark" ? "sun" : "moon", 16)}</button>` +
+        identityHtml();
+    }
+
+    // -- identity control: avatar + username + dropdown -------------------
+    // Renders the current user's avatar (or an initials/icon fallback) followed
+    // by their name; clicking toggles a small menu (Profile / Users / Log out).
+    function avatarHtml(user, cls) {
+      const u = user || {};
+      const extra = cls ? " " + cls : "";
+      if (u.avatar) {
+        return `<span class="kc-avatar${extra}"><img src="/assets/${encodeURIComponent(u.avatar)}.png" alt="" width="128" height="128"></span>`;
+      }
+      const name = (u.username || "").trim();
+      if (name) {
+        const initials = name.split(/[\s._-]+/).filter(Boolean).slice(0, 2).map(p => p[0].toUpperCase()).join("") || name[0].toUpperCase();
+        return `<span class="kc-avatar kc-avatar--init${extra}">${esc(initials)}</span>`;
+      }
+      return `<span class="kc-avatar${extra}">${icon('user-round', 16)}</span>`;
+    }
+
+    function identityHtml() {
+      const u = state.me;
+      if (!u) return `<span class="kc-operator">${icon('user-round', 15)}operator</span>`;
+      const name = u.username || (u.is_shared_token ? "shared token" : "account");
+      return `<div class="kc-identity" id="kc-identity">
+        <button class="kc-identity__btn" onclick="toggleUserMenu(event)" aria-haspopup="menu" aria-label="account menu">
+          ${avatarHtml(u)}<span class="kc-identity__name">${esc(name)}</span>${icon('chevron-down', 14).replace('<svg', '<svg class="kc-chev"')}
+        </button>
+      </div>`;
+    }
+
+    let userMenuBound = false;
+    function toggleUserMenu(ev) {
+      if (ev) ev.stopPropagation();
+      const host = document.getElementById("kc-identity");
+      if (!host) return;
+      const open = host.querySelector(".kc-usermenu");
+      if (open) { open.remove(); return; }
+      const admin = isSuperuser()
+        ? `<button class="kc-usermenu__item" onclick="closeUserMenu();openUsersModal()">${icon('users', 16)}Users</button>` : "";
+      const menu = document.createElement("div");
+      menu.className = "kc-usermenu";
+      menu.setAttribute("role", "menu");
+      menu.innerHTML =
+        `<button class="kc-usermenu__item" onclick="closeUserMenu();openProfileModal()">${icon('user-round', 16)}Profile</button>` +
+        admin +
+        `<div class="kc-usermenu__sep"></div>` +
+        `<a class="kc-usermenu__item" href="/logout">${icon('log-out', 16)}Log out</a>`;
+      host.appendChild(menu);
+      if (!userMenuBound) {
+        // Dismiss on any outside click (bound once; the handler is a no-op when
+        // no menu is open).
+        document.addEventListener("mousedown", e => {
+          const h = document.getElementById("kc-identity");
+          const m = h && h.querySelector(".kc-usermenu");
+          if (m && !h.contains(e.target)) m.remove();
+        });
+        userMenuBound = true;
+      }
+    }
+    function closeUserMenu() {
+      const m = document.querySelector("#kc-identity .kc-usermenu");
+      if (m) m.remove();
+    }
+
+    // ====================================================================
+    // ACCOUNT / IDENTITY MODALS — Profile (self-service) and Users (admin).
+    // Both reuse the single-modal system: destructive actions route through
+    // confirmModal() (which replaces the modal) and then re-open their parent,
+    // so the operator always lands back where they were.
+    // ====================================================================
+    function modalBody() { return document.querySelector("#modal-overlay .k-modal__body"); }
+    function refreshHeader() {
+      renderHeaderRight(state.fleet || { agents: [] }, (state.fleet && state.fleet.agents) || []);
+    }
+    function copyText(text) {
+      navigator.clipboard.writeText(text)
+        .then(() => notify("copied to clipboard"))
+        .catch(() => notify("press Ctrl+C to copy", "err"));
+    }
+    function rolePill(role) { return `<span class="k-pill k-pill--role">${esc(role)}</span>`; }
+
+    // Show a freshly minted secret (PAT) exactly once in a copyable field. On
+    // dismissal the caller's `reopen` restores the parent modal.
+    function tokenOnceModal(title, token, reopen) {
+      const body = `<div class="k-modal__sum">Copy this now — for security it will not be shown again.</div>
+        <div class="kfield__row">
+          <input class="k-input k-mono" id="km-token" readonly>
+          <button class="k-btn k-btn--primary" id="km-token-copy" style="flex:none">${icon('copy', 14)}copy</button>
+        </div>`;
+      openModal(`${icon('key', 20)}<span>${esc(title)}</span>`, body, null, reopen);
+      const inp = document.getElementById("km-token");
+      inp.value = token; inp.focus(); inp.select();
+      document.getElementById("km-token-copy").onclick = () => { copyText(token); inp.focus(); inp.select(); };
+    }
+
+    // -- shared avatar picker (used by profile + user create/edit) --------
+    const avatarPick = {}; // pickerId -> selected avatar id (or null)
+    function avatarPickerHtml(pickerId, avatars, selected) {
+      avatarPick[pickerId] = selected || null;
+      const none = `<button type="button" class="kacc-av kacc-av--none${selected ? "" : " is-sel"}"
+        onclick="pickAvatar('${pickerId}', this, null)">none</button>`;
+      const opts = (avatars || []).map(a =>
+        `<button type="button" class="kacc-av${a === selected ? " is-sel" : ""}"
+          onclick="pickAvatar('${pickerId}', this, ${jsArg(a)})"><img src="/assets/${encodeURIComponent(a)}.png" alt="${esc(a)}"></button>`
+      ).join("");
+      return `<div class="kacc-avgrid" id="${pickerId}">${none}${opts}</div>`;
+    }
+    function pickAvatar(pickerId, btn, val) {
+      avatarPick[pickerId] = val;
+      const grid = document.getElementById(pickerId);
+      if (grid) grid.querySelectorAll(".kacc-av").forEach(b => b.classList.remove("is-sel"));
+      btn.classList.add("is-sel");
+    }
+    // Host-scope checkbox grid (used by user create/edit). `hosts` = all known
+    // host ids; `selected` = the subset assigned to the user.
+    function hostGridHtml(gridId, hosts, selected) {
+      const sel = new Set((selected || []).map(String));
+      if (!hosts || !hosts.length) return `<div class="kacc-empty">no hosts in inventory yet</div>`;
+      return `<div class="kacc-hostgrid" id="${gridId}">` + hosts.map(h =>
+        `<label><input type="checkbox" value="${esc(h)}" ${sel.has(String(h)) ? "checked" : ""}>${esc(h)}</label>`
+      ).join("") + `</div>`;
+    }
+    function checkedHosts(gridId) {
+      return [...document.querySelectorAll("#" + gridId + " input:checked")].map(c => c.value);
+    }
+
+    // ---------------------------------------------------------------- PROFILE
+    let pendingTotp = null; // {secret, uri} while a 2FA enrolment is mid-flight
+    async function openProfileModal() {
+      pendingTotp = null;
+      openModal(`${icon('user-round', 20)}<span>Profile</span>`, `<div class="k-muted">loading…</div>`, "k-modal--wide");
+      await refreshProfileModal();
+    }
+    async function refreshProfileModal() {
+      let me, avatars = [], pats = [];
+      try {
+        me = await api("/api/me");
+        state.me = me;
+        refreshHeader();
+      } catch (e) {
+        const b = modalBody(); if (b) b.innerHTML = `<div class="k-airec__err">${esc(e.message)}</div>`;
+        return;
+      }
+      if (!me.is_shared_token) {
+        avatars = ((await api("/api/avatars").catch(() => ({ avatars: [] }))) || {}).avatars || [];
+        pats = ((await api("/api/me/pats").catch(() => ({ pats: [] }))) || {}).pats || [];
+      }
+      const b = modalBody(); if (b) b.innerHTML = profileBodyHtml(me, avatars, pats);
+    }
+    function profileBodyHtml(me, avatars, pats) {
+      const head = `<div class="kacc-head">
+        ${avatarHtml(me, "kc-avatar--lg")}
+        <div><div class="kacc-head__name">${esc(me.username || "account")}</div>
+          <div class="k-row" style="gap:8px;margin-top:4px">${rolePill(me.role || "user")}
+            ${me.email ? `<span class="k-muted">${esc(me.email)}</span>` : ""}</div></div>
+      </div>`;
+      if (me.is_shared_token) {
+        return head + `<div class="kacc-sec"><div class="k-muted">You are signed in with a legacy shared
+          token, which has no editable account. Create a per-user account to manage a profile,
+          two-factor, and personal access tokens.</div></div>`;
+      }
+      const profileSec = `<div class="kacc-sec">
+        <div class="kacc-sec__lbl">Profile</div>
+        <div class="kfield"><span class="kfield__lbl">Email</span>
+          <input class="k-input" id="prof-email" type="email" autocomplete="off" value="${esc(me.email || "")}" placeholder="name@example.com"></div>
+        <div class="kfield"><span class="kfield__lbl">Avatar</span>
+          ${avatarPickerHtml("prof-av", avatars, me.avatar || null)}</div>
+        <button class="k-btn k-btn--primary" onclick="profileSaveProfile()">${icon('check', 14)}Save profile</button>
+      </div>`;
+      const pwSec = `<div class="kacc-sec">
+        <div class="kacc-sec__lbl">Password</div>
+        <div class="kfield"><span class="kfield__lbl">Current password</span>
+          <input class="k-input" id="prof-cur" type="password" autocomplete="current-password"></div>
+        <div class="kfield"><span class="kfield__lbl">New password</span>
+          <input class="k-input" id="prof-new" type="password" autocomplete="new-password"></div>
+        <button class="k-btn k-btn--ghost" onclick="profileChangePassword()">${icon('key', 14)}Change password</button>
+      </div>`;
+      const totpSec = `<div class="kacc-sec">
+        <div class="kacc-sec__lbl">Two-factor authentication</div>
+        ${profileTotpHtml(me)}
+      </div>`;
+      const patSec = `<div class="kacc-sec">
+        <div class="kacc-sec__lbl">Personal access tokens</div>
+        ${patsTableHtml(pats, "profileRevokePat")}
+        <div class="kfield__row" style="margin-top:10px">
+          <input class="k-input" id="prof-pat-label" placeholder="label (optional), e.g. laptop-cli" autocomplete="off">
+          <button class="k-btn k-btn--primary" onclick="profileCreatePat()">${icon('plus', 14)}New token</button>
+        </div>
+      </div>`;
+      return head + profileSec + pwSec + totpSec + patSec;
+    }
+    function profileTotpHtml(me) {
+      if (pendingTotp) {
+        return `<div class="k-muted">Scan or paste this secret into your authenticator app, then enter the 6-digit code to finish.</div>
+          <div class="kacc-totp">
+            <div><span class="k-muted">secret</span> <span class="k-mono">${esc(pendingTotp.secret)}</span></div>
+            <div><span class="k-muted">uri</span> <span class="k-mono">${esc(pendingTotp.uri)}</span></div>
+          </div>
+          <div class="kfield__row">
+            <input class="k-input" id="prof-totp-code" inputmode="numeric" autocomplete="one-time-code" placeholder="123456" style="max-width:140px">
+            <button class="k-btn k-btn--primary" onclick="profileVerifyTotp()">${icon('check', 14)}Verify &amp; enable</button>
+            <button class="k-btn k-btn--quiet" onclick="profileCancelTotp()">Cancel</button>
+          </div>`;
+      }
+      if (me.totp_enabled) {
+        return `<div class="k-row" style="gap:8px;margin-bottom:8px">${icon('shield-check', 16)}<span>Two-factor is <b>on</b>.</span></div>
+          <div class="kfield__row">
+            <input class="k-input" id="prof-totp-pw" type="password" autocomplete="current-password" placeholder="confirm with your password" style="max-width:260px">
+            <button class="k-btn k-btn--danger" onclick="profileDisableTotp()">Disable</button>
+          </div>`;
+      }
+      return `<div class="k-muted" style="margin-bottom:8px">Add a time-based one-time code from an authenticator app.</div>
+        <button class="k-btn k-btn--primary" onclick="profileEnableTotp()">${icon('shield-check', 14)}Enable two-factor</button>`;
+    }
+    function patsTableHtml(pats, revokeFn) {
+      const rows = (pats || []).filter(p => !p.revoked);
+      if (!rows.length) return `<div class="kacc-empty">no active tokens</div>`;
+      return `<table class="kacc-tbl"><thead><tr>
+          <th>Label</th><th>Created</th><th>Last used</th><th></th></tr></thead><tbody>` +
+        rows.map(p => `<tr>
+          <td>${esc(p.label || "—")}</td>
+          <td class="k-muted">${p.created_at ? esc(fmtValue("at", p.created_at)) : "—"}</td>
+          <td class="k-muted">${p.last_used ? esc(fmtValue("at", p.last_used)) : "never"}</td>
+          <td class="kacc-tbl__actions"><button class="k-btn k-btn--danger k-btn--sm" onclick="${revokeFn}(${jsArg(p.id)})">${icon('trash-2', 13)}revoke</button></td>
+        </tr>`).join("") + `</tbody></table>`;
+    }
+    async function profileSaveProfile() {
+      const email = document.getElementById("prof-email").value.trim();
+      const avatar = avatarPick["prof-av"] || null;
+      try { await api("/api/me", "PATCH", { email, avatar }); notify("profile saved"); await refreshProfileModal(); }
+      catch (e) { notify(e.message, "err"); }
+    }
+    async function profileChangePassword() {
+      const current_password = document.getElementById("prof-cur").value;
+      const new_password = document.getElementById("prof-new").value;
+      if (!new_password) { notify("enter a new password", "err"); return; }
+      try { await api("/api/me/password", "POST", { current_password, new_password }); notify("password changed"); await refreshProfileModal(); }
+      catch (e) { notify(e.message, "err"); }
+    }
+    async function profileEnableTotp() {
+      try { pendingTotp = await api("/api/me/totp", "POST"); await refreshProfileModal(); }
+      catch (e) { notify(e.message, "err"); }
+    }
+    async function profileVerifyTotp() {
+      const code = document.getElementById("prof-totp-code").value.trim();
+      try {
+        await api("/api/me/totp", "PUT", { secret: pendingTotp.secret, code });
+        pendingTotp = null; notify("two-factor enabled"); await refreshProfileModal();
+      } catch (e) { notify(e.message, "err"); }
+    }
+    function profileCancelTotp() { pendingTotp = null; refreshProfileModal(); }
+    async function profileDisableTotp() {
+      const password = document.getElementById("prof-totp-pw").value;
+      try { await api("/api/me/totp", "DELETE", { password }); notify("two-factor disabled"); await refreshProfileModal(); }
+      catch (e) { notify(e.message, "err"); }
+    }
+    async function profileCreatePat() {
+      const label = document.getElementById("prof-pat-label").value.trim();
+      try {
+        const r = await api("/api/me/pats", "POST", label ? { label } : {});
+        tokenOnceModal("Personal access token", r.token, openProfileModal);
+      } catch (e) { notify(e.message, "err"); }
+    }
+    async function profileRevokePat(pid) {
+      const ok = await confirmModal({ title: "Revoke token", ico: "key",
+        body: "This token will stop working immediately.", confirmLabel: "Revoke", confirmClass: "k-btn--danger" });
+      if (ok) { try { await api("/api/me/pats/" + encodeURIComponent(pid), "DELETE"); notify("token revoked"); } catch (e) { notify(e.message, "err"); } }
+      await openProfileModal();
+    }
+
+    // ------------------------------------------------------------ USERS (admin)
+    async function openUsersModal() {
+      if (!isSuperuser()) return;
+      openModal(`${icon('users', 20)}<span>Users</span>`, `<div class="k-muted">loading…</div>`, "k-modal--wide");
+      await refreshUsersModal();
+    }
+    async function refreshUsersModal() {
+      let users = [];
+      try { users = ((await api("/api/users")) || {}).users || []; }
+      catch (e) { const b = modalBody(); if (b) b.innerHTML = `<div class="k-airec__err">${esc(e.message)}</div>`; return; }
+      const b = modalBody(); if (b) b.innerHTML = usersBodyHtml(users);
+    }
+    function usersBodyHtml(users) {
+      const rows = users.map(u => `<tr>
+        <td><span class="kacc-cell">${avatarHtml(u)}<b>${esc(u.username)}</b></span></td>
+        <td>${rolePill(u.role)}</td>
+        <td>${u.email ? esc(u.email) : '<span class="k-muted">—</span>'}</td>
+        <td>${u.totp_enabled ? `<span class="k-row" style="gap:5px">${icon('shield-check', 15)}on</span>` : '<span class="k-muted">off</span>'}</td>
+        <td>${u.disabled ? '<span class="k-pill k-pill--crit">disabled</span>' : '<span class="k-pill k-pill--ok">active</span>'}</td>
+        <td class="kacc-tbl__actions">
+          <button class="k-btn k-btn--ghost k-btn--sm" onclick="openUserDetail(${jsArg(u.id)})">${icon('sliders', 13)}manage</button>
+          <button class="k-btn k-btn--danger k-btn--sm" title="delete" onclick="deleteUser(${jsArg(u.id)}, ${jsArg(u.username)})">${icon('trash-2', 13)}</button>
+        </td></tr>`).join("");
+      return `<div class="k-row" style="justify-content:space-between;margin-bottom:12px">
+          <span class="k-muted">${users.length} user${users.length === 1 ? "" : "s"}</span>
+          <button class="k-btn k-btn--primary" onclick="openCreateUserModal()">${icon('plus', 14)}Create user</button>
+        </div>
+        <table class="kacc-tbl"><thead><tr>
+          <th>User</th><th>Role</th><th>Email</th><th>2FA</th><th>Status</th><th></th></tr></thead>
+          <tbody>${rows || `<tr><td colspan="6" class="kacc-empty">no users</td></tr>`}</tbody></table>`;
+    }
+    function roleSelectHtml(id, selected) {
+      return `<select class="k-input" id="${id}">` +
+        ["superuser", "operator", "user"].map(r =>
+          `<option value="${r}" ${r === selected ? "selected" : ""}>${r}</option>`).join("") + `</select>`;
+    }
+    async function openCreateUserModal() {
+      const avatars = ((await api("/api/avatars").catch(() => ({ avatars: [] }))) || {}).avatars || [];
+      const fleet = (await api("/api/fleet").catch(() => ({ agents: [] }))) || { agents: [] };
+      const hosts = (fleet.agents || []).map(a => a.agent_id);
+      const body = `
+        <div class="kfield"><span class="kfield__lbl">Username</span>
+          <input class="k-input" id="nu-username" autocomplete="off"></div>
+        <div class="kfield"><span class="kfield__lbl">Password</span>
+          <input class="k-input" id="nu-password" type="password" autocomplete="new-password"></div>
+        <div class="kfield"><span class="kfield__lbl">Role</span>
+          ${roleSelectHtml("nu-role", "user")}</div>
+        <div class="kfield"><span class="kfield__lbl">Email (optional)</span>
+          <input class="k-input" id="nu-email" type="email" autocomplete="off"></div>
+        <div class="kfield"><span class="kfield__lbl">Avatar (optional)</span>
+          ${avatarPickerHtml("newuser-av", avatars, null)}</div>
+        <div class="kfield" id="nu-hostsec"><span class="kfield__lbl">Host scope</span>
+          ${hostGridHtml("newuser-hosts", hosts, [])}</div>
+        <div class="k-modal__actions">
+          <button class="k-btn k-btn--ghost" onclick="openUsersModal()">Back</button>
+          <button class="k-btn k-btn--primary" onclick="createUser()">${icon('check', 14)}Create</button>
+        </div>`;
+      openModal(`${icon('plus', 20)}<span>Create user</span>`, body, "k-modal--wide");
+      const roleSel = document.getElementById("nu-role");
+      const toggle = () => { document.getElementById("nu-hostsec").style.display = roleSel.value === "user" ? "block" : "none"; };
+      roleSel.addEventListener("change", toggle); toggle();
+    }
+    async function createUser() {
+      const username = document.getElementById("nu-username").value.trim();
+      const password = document.getElementById("nu-password").value;
+      const role = document.getElementById("nu-role").value;
+      const email = document.getElementById("nu-email").value.trim();
+      const avatar = avatarPick["newuser-av"] || null;
+      if (!username || !password) { notify("username and password are required", "err"); return; }
+      const body = { username, password, role };
+      if (email) body.email = email;
+      if (avatar) body.avatar = avatar;
+      if (role === "user") body.hosts = checkedHosts("newuser-hosts");
+      try { await api("/api/users", "POST", body); notify("user created"); await openUsersModal(); }
+      catch (e) { notify(e.message, "err"); }
+    }
+    async function openUserDetail(uid) {
+      openModal(`${icon('user-round', 20)}<span>User</span>`, `<div class="k-muted">loading…</div>`, "k-modal--wide");
+      let user, avatars = [], hosts = [];
+      try {
+        user = await api("/api/users/" + encodeURIComponent(uid));
+        avatars = ((await api("/api/avatars").catch(() => ({ avatars: [] }))) || {}).avatars || [];
+        const fleet = (await api("/api/fleet").catch(() => ({ agents: [] }))) || { agents: [] };
+        hosts = (fleet.agents || []).map(a => a.agent_id);
+      } catch (e) {
+        const b = modalBody(); if (b) b.innerHTML = `<div class="k-airec__err">${esc(e.message)}</div>`;
+        return;
+      }
+      const b = modalBody(); if (b) b.innerHTML = userDetailHtml(user, avatars, hosts);
+    }
+    function userDetailHtml(u, avatars, hosts) {
+      const uid = u.id;
+      const head = `<div class="k-row" style="justify-content:space-between;margin-bottom:14px">
+        <span class="kacc-cell">${avatarHtml(u, "kc-avatar--lg")}<b style="font-size:var(--text-md)">${esc(u.username)}</b>${rolePill(u.role)}</span>
+        <button class="k-btn k-btn--ghost k-btn--sm" onclick="openUsersModal()">${icon('chevron-left', 13)}All users</button>
+      </div>`;
+      const accountSec = `<div class="kacc-sec">
+        <div class="kacc-sec__lbl">Account</div>
+        <div class="kfield"><span class="kfield__lbl">Username</span>
+          <input class="k-input" id="eu-username" value="${esc(u.username)}" autocomplete="off"></div>
+        <div class="kfield"><span class="kfield__lbl">Email</span>
+          <input class="k-input" id="eu-email" type="email" value="${esc(u.email || "")}" autocomplete="off"></div>
+        <div class="kfield"><span class="kfield__lbl">Role</span>${roleSelectHtml("eu-role", u.role)}</div>
+        <div class="kfield"><span class="kfield__lbl">Avatar</span>${avatarPickerHtml("edituser-av", avatars, u.avatar || null)}</div>
+        <label class="kwf-tog" style="margin:4px 0 12px"><input type="checkbox" id="eu-disabled" ${u.disabled ? "checked" : ""}><span>account disabled</span></label>
+        <button class="k-btn k-btn--primary" onclick="saveUser(${jsArg(uid)})">${icon('check', 14)}Save changes</button>
+      </div>`;
+      const pwSec = `<div class="kacc-sec">
+        <div class="kacc-sec__lbl">Reset password</div>
+        <div class="kfield__row">
+          <input class="k-input" id="eu-newpw" type="password" autocomplete="new-password" placeholder="new password">
+          <button class="k-btn k-btn--ghost" onclick="resetUserPassword(${jsArg(uid)})">${icon('key', 14)}Set password</button>
+        </div>
+      </div>`;
+      const totpSec = `<div class="kacc-sec">
+        <div class="kacc-sec__lbl">Two-factor authentication</div>
+        ${u.totp_enabled
+          ? `<div class="k-row" style="gap:8px;margin-bottom:8px">${icon('shield-check', 16)}<span>enabled</span></div>
+             <button class="k-btn k-btn--danger" onclick="resetUserTotp(${jsArg(uid)})">Reset two-factor</button>`
+          : `<div class="k-muted">not enabled</div>`}
+      </div>`;
+      const hostsSec = `<div class="kacc-sec">
+        <div class="kacc-sec__lbl">Host scope</div>
+        <div class="k-muted" style="margin-bottom:8px">Applies to scoped <b>user</b> accounts — the hosts they can see.</div>
+        ${hostGridHtml("edituser-hosts", hosts, u.hosts || [])}
+        <button class="k-btn k-btn--ghost" style="margin-top:10px" onclick="saveUserHosts(${jsArg(uid)})">${icon('check', 14)}Save host scope</button>
+      </div>`;
+      const patSec = `<div class="kacc-sec">
+        <div class="kacc-sec__lbl">Personal access tokens</div>
+        ${patsTableHtml(u.pats, "revokeUserPat_" + cssId(uid))}
+        <div class="kfield__row" style="margin-top:10px">
+          <input class="k-input" id="eu-pat-label" placeholder="label (optional)" autocomplete="off">
+          <button class="k-btn k-btn--primary" onclick="createUserPat(${jsArg(uid)})">${icon('plus', 14)}New token</button>
+        </div>
+      </div>`;
+      // Bind the row-scoped revoke handler for this user's PAT table.
+      window["revokeUserPat_" + cssId(uid)] = pid => revokeUserPat(uid, pid);
+      return head + accountSec + pwSec + totpSec + hostsSec + patSec;
+    }
+    // A stable identifier fragment for building a per-user handler name.
+    function cssId(uid) { return String(uid).replace(/[^A-Za-z0-9]/g, "_"); }
+    async function saveUser(uid) {
+      const body = {
+        username: document.getElementById("eu-username").value.trim(),
+        email: document.getElementById("eu-email").value.trim(),
+        role: document.getElementById("eu-role").value,
+        avatar: avatarPick["edituser-av"] || null,
+        disabled: document.getElementById("eu-disabled").checked,
+      };
+      try { await api("/api/users/" + encodeURIComponent(uid), "PATCH", body); notify("user updated"); await openUserDetail(uid); }
+      catch (e) { notify(e.message, "err"); }
+    }
+    async function resetUserPassword(uid) {
+      const new_password = document.getElementById("eu-newpw").value;
+      if (!new_password) { notify("enter a new password", "err"); return; }
+      try { await api("/api/users/" + encodeURIComponent(uid) + "/password", "POST", { new_password }); notify("password reset"); await openUserDetail(uid); }
+      catch (e) { notify(e.message, "err"); }
+    }
+    async function saveUserHosts(uid) {
+      const hosts = checkedHosts("edituser-hosts");
+      try { await api("/api/users/" + encodeURIComponent(uid) + "/hosts", "PUT", { hosts }); notify("host scope saved"); await openUserDetail(uid); }
+      catch (e) { notify(e.message, "err"); }
+    }
+    async function resetUserTotp(uid) {
+      const ok = await confirmModal({ title: "Reset two-factor", ico: "shield-alert",
+        body: "This removes the user's two-factor enrolment. They will sign in with just their password until they re-enable it.",
+        confirmLabel: "Reset", confirmClass: "k-btn--danger" });
+      if (ok) { try { await api("/api/users/" + encodeURIComponent(uid) + "/totp", "DELETE"); notify("two-factor reset"); } catch (e) { notify(e.message, "err"); } }
+      await openUserDetail(uid);
+    }
+    async function createUserPat(uid) {
+      const label = document.getElementById("eu-pat-label").value.trim();
+      try {
+        const r = await api("/api/users/" + encodeURIComponent(uid) + "/pats", "POST", label ? { label } : {});
+        tokenOnceModal("Personal access token", r.token, () => openUserDetail(uid));
+      } catch (e) { notify(e.message, "err"); }
+    }
+    async function revokeUserPat(uid, pid) {
+      const ok = await confirmModal({ title: "Revoke token", ico: "key",
+        body: "This token will stop working immediately.", confirmLabel: "Revoke", confirmClass: "k-btn--danger" });
+      if (ok) { try { await api("/api/users/" + encodeURIComponent(uid) + "/pats/" + encodeURIComponent(pid), "DELETE"); notify("token revoked"); } catch (e) { notify(e.message, "err"); } }
+      await openUserDetail(uid);
+    }
+    async function deleteUser(uid, name) {
+      const ok = await confirmModal({ title: "Delete user", ico: "trash-2",
+        body: `Permanently delete "${name}"? Their sessions and tokens are revoked.`,
+        confirmLabel: "Delete", confirmClass: "k-btn--danger" });
+      if (ok) { try { await api("/api/users/" + encodeURIComponent(uid), "DELETE"); notify("user deleted"); } catch (e) { notify(e.message, "err"); } }
+      await openUsersModal();
     }
 
     // Total number of flagged sections of a given severity across the fleet
@@ -1988,10 +2565,14 @@
           </div>
           <div class="k-row" style="gap:6px;flex-wrap:wrap">
             <button class="k-btn k-btn--ghost k-btn--sm" onclick="refreshNow(${jsArg(data.agent_id)})">${icon('refresh-cw', 13)}refresh</button>
-            <button class="k-btn k-btn--ghost k-btn--sm" onclick="remoteHelp(${jsArg(data.agent_id)})" title="open Quick Assist on this PC for a remote-help session">${icon('life-buoy', 13)}remote help</button>
+            <button class="k-btn k-btn--ghost k-btn--sm" onclick="remoteHelp(${jsArg(data.agent_id)})" title="open Quick Assist on this PC for a remote-help session">${icon('life-buoy', 13)}remote help</button>` +
+            // Token-rotation + fleet-admin actions are operator/superuser only;
+            // a scoped `user` sees the read-only view above but not these.
+            (canOperate() ? `
             <button class="k-btn k-btn--ghost k-btn--sm" onclick="downloadInstaller(${jsArg(data.agent_id)})" title="rebuild the installer for this PC (rotates its token)">${icon('download', 13)}reinstall</button>
             <button class="k-btn k-btn--ghost k-btn--sm" onclick="shareInstaller(${jsArg(data.agent_id)})" title="share a fresh installer link for this PC (rotates its token)">${icon('link', 13)}re-share</button>
             <button class="k-btn k-btn--danger k-btn--sm" onclick="updateAgent(${jsArg(data.agent_id)})">${icon('circle-arrow-up', 13)}update</button>
+            <button class="k-btn k-btn--danger k-btn--sm" onclick="removeAgent(${jsArg(data.agent_id)}, ${jsArg(name)})" title="remove this PC from the inventory">${icon('trash-2', 13)}remove</button>` : "") + `
           </div>
         </div>
         <section class="k-airec kc-forecast">
@@ -2292,34 +2873,27 @@
       const c = d.config || {}, ext = d.external || {}, applied = d.applied || {};
       const on = v => v === true || v === 1;
       const aid = jsArg(agentId);
+      // Web-filter mutations are operator/superuser only; a scoped `user` sees the
+      // list and status read-only (the mutating endpoints would 403 them anyway).
+      const rw = canOperate();
       const tog = (key, label, val, hint) => `
         <label class="kwf-tog" title="${esc(hint || "")}">
-          <input type="checkbox" ${on(val) ? "checked" : ""}
+          <input type="checkbox" ${on(val) ? "checked" : ""} ${rw ? "" : "disabled"}
             onchange="wfSetConfig(${aid}, ${jsArg(key)}, this.checked)"/><span>${esc(label)}</span></label>`;
       const dohOn = (c.doh_policy || "disable") === "disable";
       const custom = d.custom || [];
       const customRows = custom.length ? custom.map(r => `
         <div class="kwf-row"><span class="k-mono">${esc(r.domain)}</span>${wfActionBadge(r.action)}
           ${r.note ? `<span class="k-muted">${esc(r.note)}</span>` : ""}
-          <button class="k-btn k-btn--danger k-btn--sm" style="margin-left:auto"
-            title="remove" onclick="wfRemoveDomain(${aid}, ${jsArg(r.domain)})">${icon('x', 12)}</button></div>`
+          ${rw ? `<button class="k-btn k-btn--danger k-btn--sm" style="margin-left:auto"
+            title="remove" onclick="wfRemoveDomain(${aid}, ${jsArg(r.domain)})">${icon('x', 12)}</button>` : ""}</div>`
         ).join("") : `<div class="k-muted">no custom entries yet</div>`;
       const adultN = (ext.adult || {}).count || 0, bypassN = (ext.bypass || {}).count || 0;
       const appliedLine = applied.at
         ? `applied ${esc(fmtValue("at", applied.at))}${applied.ok === false ? " — agent reported failure" : ""}`
         : "not yet applied";
       const drift = d.drift ? `<span class="k-pill k-pill--warn">list changed since last apply</span>` : "";
-      panel.innerHTML = `
-        <div class="k-detail-grp__lbl">parental-controls list</div>
-        <div class="kwf-togs">
-          ${tog("enabled", "monitor this PC", c.enabled, "observe web activity and match it against this list")}
-          ${tog("block_mode", "block listed sites", c.block_mode, "push the block list to the agent (hosts file + DoH off)")}
-          ${tog("use_external_adult", "use adult blocklist", c.use_external_adult, "reference the StevenBlack porn-only list (" + adultN + " domains)")}
-          ${tog("use_bypass_protection", "block VPN/proxy bypass", c.use_bypass_protection, "also block DoH/VPN/proxy domains (" + bypassN + " domains)")}
-          <label class="kwf-tog" title="turn DNS-over-HTTPS off in browsers so the hosts block can't be bypassed">
-            <input type="checkbox" ${dohOn ? "checked" : ""}
-              onchange="wfSetConfig(${aid}, 'doh_policy', this.checked ? 'disable' : 'leave')"/><span>disable browser DoH</span></label>
-        </div>
+      const addRow = rw ? `
         <div class="kwf-add">
           <input class="k-input" id="kwf-domain" autocomplete="off" placeholder="domain e.g. example.com"
             onkeydown="if(event.key==='Enter')wfAddDomain(${aid})"/>
@@ -2329,13 +2903,27 @@
             <option value="allow">allow (exception)</option>
           </select>
           <button class="k-btn k-btn--primary k-btn--sm" onclick="wfAddDomain(${aid})">${icon('plus', 13)}add</button>
-        </div>
-        <div class="kwf-list">${customRows}</div>
-        <div class="k-muted" style="margin-top:6px">seed: ${d.seed_count || 0} known adult domains · adult list: ${adultN} · bypass: ${bypassN}</div>
+        </div>` : "";
+      const applyRow = rw ? `
         <div class="kwf-apply">
           <button class="k-btn k-btn--primary k-btn--sm" onclick="wfApply(${aid})">${icon('refresh-cw', 13)}apply now</button>
           <span class="k-muted">${esc(appliedLine)}</span> ${drift}
+        </div>` : `<div class="kwf-apply"><span class="k-muted">${esc(appliedLine)}</span> ${drift}</div>`;
+      panel.innerHTML = `
+        <div class="k-detail-grp__lbl">parental-controls list</div>
+        <div class="kwf-togs">
+          ${tog("enabled", "monitor this PC", c.enabled, "observe web activity and match it against this list")}
+          ${tog("block_mode", "block listed sites", c.block_mode, "push the block list to the agent (hosts file + DoH off)")}
+          ${tog("use_external_adult", "use adult blocklist", c.use_external_adult, "reference the StevenBlack porn-only list (" + adultN + " domains)")}
+          ${tog("use_bypass_protection", "block VPN/proxy bypass", c.use_bypass_protection, "also block DoH/VPN/proxy domains (" + bypassN + " domains)")}
+          <label class="kwf-tog" title="turn DNS-over-HTTPS off in browsers so the hosts block can't be bypassed">
+            <input type="checkbox" ${dohOn ? "checked" : ""} ${rw ? "" : "disabled"}
+              onchange="wfSetConfig(${aid}, 'doh_policy', this.checked ? 'disable' : 'leave')"/><span>disable browser DoH</span></label>
         </div>
+        ${addRow}
+        <div class="kwf-list">${customRows}</div>
+        <div class="k-muted" style="margin-top:6px">seed: ${d.seed_count || 0} known adult domains · adult list: ${adultN} · bypass: ${bypassN}</div>
+        ${applyRow}
         <div id="kwf-msg"></div>`;
     }
     async function wfSetConfig(agentId, key, value) {
@@ -2651,6 +3239,24 @@
         const r = await getJSON("/api/agents/" + encodeURIComponent(id) + "/update", { method: "POST" });
         notify("update triggered: v" + r.version);
       } catch (e) { notify("update failed: " + e.message, "err"); }
+    }
+    // Remove a host from inventory (operator/superuser). A 409 means the host is
+    // pinned via the environment — surface the server's `detail` and keep it.
+    async function removeAgent(id, name) {
+      const ok = await confirmModal({
+        title: "Remove from inventory",
+        ico: "trash-2",
+        body: `Remove "${name || id}" from the inventory? Its telemetry history is dropped; if the agent is still installed it will re-register on its next check-in.`,
+        confirmLabel: "Remove", confirmClass: "k-btn--danger",
+      });
+      if (!ok) return;
+      try {
+        await api("/api/agent/" + encodeURIComponent(id), "DELETE");
+        notify("removed " + (name || id));
+        state.selected = null;
+        state.detail = null;
+        await renderFleet();
+      } catch (e) { notify(e.message, "err"); }
     }
 
     // -- binary banner -----------------------------------------------------
@@ -3185,9 +3791,10 @@
       router().catch(e => app.textContent = "error: " + e.message);
     });
     // Normalize a bare URL to the default tab (replaceState does not fire
-    // hashchange, so router() runs exactly once below).
+    // hashchange, so router() runs exactly once below). Load the current user
+    // first so role gating and the identity control are correct on first paint.
     if (!location.hash) history.replaceState(null, "", "#/overview");
-    router().catch(e => app.textContent = "error: " + e.message);
+    loadMe().then(() => router()).catch(e => app.textContent = "error: " + e.message);
   </script>
 </body>
 </html>

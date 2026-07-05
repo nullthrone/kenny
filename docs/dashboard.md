@@ -2,7 +2,8 @@
 
 The kenny **fleet console** is a single-page web app served by the server at `/`. It is
 deliberately dependency-light (one vendored charting library, no build step), works in dark
-and light themes, and is driven entirely by the operator cookie you get at `/login`.
+and light themes, and is driven by the login session you get at `/login` (multi-user
+accounts, roles, and per-user host scope — see [Accounts & roles](#accounts-roles-the-user-menu)).
 
 This page is the exhaustive tour: every tab, widget, menu, popup, and interaction. If you
 just want the common workflows, start with the **[User guide](user-guide.md)**; come back
@@ -37,7 +38,36 @@ Every view shares one header:
 - **ⓘ About** — opens the [About box](#the-about-box).
 - **☀/☾ Theme toggle** — switches dark ↔ light; the choice is saved in `localStorage` and
   applied before first paint (no flash). Charts repaint from the cached data on toggle.
-- **Operator** — a reminder that you are signed in as the operator. Sign out at `/logout`.
+- **User menu** — your avatar (a selectable dog-breed image, or your initials when none is
+  set) and username, top-right. Clicking it opens a dropdown: **Profile**, **Users**
+  (superuser only), and **Log out** (`/logout`).
+
+---
+
+## Accounts & roles (the user menu)
+
+kenny is multi-user (ADR-0037). On first run the console shows a one-time **setup** page;
+the first account you create becomes the **superuser**. After that, three roles gate what
+each surface shows:
+
+- **Superuser** — everything, including user management and core **Settings**.
+- **Operator** — the whole fleet (all hosts, all fleet operations) but *not* user
+  management and *not* the Settings tab.
+- **User** — only the hosts assigned to them: they see and can operate on those hosts, but
+  cannot remove a host from inventory, and never see Settings or fleet-wide admin controls.
+
+**Profile** (all roles) lets you set your email, pick an avatar from the dog-breed grid,
+change your password, enable/disable **two-factor (TOTP)** (scan the shown `otpauth://`
+secret into an authenticator, then confirm a code), and mint/revoke **personal access
+tokens** — the Bearer tokens Claude uses to reach `/mcp` as you (shown once at creation).
+
+**Users** (superuser only) lists every account and lets you create, edit (role, email,
+avatar, enable/disable), delete, reset a password, reset 2FA, assign the host scope for a
+`user`-role account, and manage that user's access tokens.
+
+Existing single-token installs keep working across the upgrade: the legacy
+`KENNY_OPERATOR_TOKEN` is still accepted as a back-compat superuser while you create real
+accounts.
 
 ---
 
@@ -311,6 +341,11 @@ losing your spot. **Back to fleet** returns to the Fleet tab.
 - On an existing PC, **reinstall** / **re-share** re-provision *that* agent id (rotating its
   token, so the old install stops reporting), and **update** pushes a server-triggered
   self-update.
+- **Remove** (operator/superuser only, on the agent drill-down) takes a host out of
+  inventory: it purges that agent's snapshots, events, tokens, keys, web-filter state, and
+  scope assignments. A host still pinned via `KENNY_AGENT_TOKENS` is refused (it would just
+  re-appear on the next restart). The provisioning/reinstall actions above are gated to
+  operator+ too; a scoped `user` sees only refresh and remote-help on its assigned hosts.
 
 The full onboarding and update flows (with sequence diagrams) are in the
 **[User guide](user-guide.md#adding-a-pc-to-the-fleet)**.
