@@ -2613,9 +2613,14 @@
       const os = meta.os || meta.os_name || osFamily || "";
       const osGlyph = osIcon(osFamily);
 
-      const secs = Object.entries(h.sections || {}).map(([n, s]) =>
-        tileHtml(n, s.status, s.summary, s.reason, `openSectionDetail(${jsArg(n)})`)
-      ).join("");
+      // Sections a collector can't report on this OS come back as an
+      // "n/a on this platform" stub (see ADR-0035). They carry no signal, so
+      // hide their tiles rather than filling the grid with dead cards.
+      const secs = Object.entries(h.sections || {})
+        .filter(([, s]) => (s.summary || "").trim().toLowerCase() !== "n/a on this platform")
+        .map(([n, s]) =>
+          tileHtml(n, s.status, s.summary, s.reason, `openSectionDetail(${jsArg(n)})`)
+        ).join("");
 
       // Forecast card, pinned above the health trend. The AI mode is made
       // explicit with the sparkle + "AI Forecast"; without an API key the same
