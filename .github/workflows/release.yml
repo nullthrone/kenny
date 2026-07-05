@@ -179,8 +179,12 @@ jobs:
       - name: Build release binary
         working-directory: kenny-agent
         # The release tag leads the agent version (ADR-0015): build.rs stamps it.
+        # KENNY_DENY_RULES_DIR points build.rs at the shared deny-rule catalog
+        # (docs/policy/, ADR-0021), which lives outside the crate; Cross.toml mounts this
+        # directory into the build container so the cross build can embed it.
         env:
           KENNY_AGENT_VERSION: ${{ github.ref_name }}
+          KENNY_DENY_RULES_DIR: ${{ github.workspace }}/docs/policy
         run: cross build --release --target ${{ matrix.target }}
       # Gate the x86_64 publish on a real round-trip against the EXACT release binary
       # (LTO/stripped --release profile). The static musl binary runs on the glibc runner.

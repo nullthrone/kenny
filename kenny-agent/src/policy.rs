@@ -36,8 +36,11 @@ static SERVER_HOST: OnceLock<String> = OnceLock::new();
 const GITHUB_HOSTS: &[&str] = &["github.com", "objects.githubusercontent.com"];
 
 /// The shared deny-rule catalog, embedded at build time so the binary stays
-/// self-contained. Path is relative to this source file → repo `docs/policy/deny_rules.json`.
-const CATALOG_JSON: &str = include_str!("../../docs/policy/deny_rules.json");
+/// self-contained. `build.rs` copies the repo's `docs/policy/deny_rules.json` into
+/// `OUT_DIR` and we embed that copy. The indirection is what lets the `cross`
+/// release build (which mounts only the crate directory, not the repo root) reach the
+/// catalog — build.rs is handed its location via `KENNY_DENY_RULES_DIR`. See build.rs.
+const CATALOG_JSON: &str = include_str!(concat!(env!("OUT_DIR"), "/deny_rules.json"));
 
 /// Record the configured server's host for the `agent_update` allowlist. Called once at
 /// startup with the `--server` URL (e.g. `wss://kenny.example.com/agent/ws`).
