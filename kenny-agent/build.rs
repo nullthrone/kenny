@@ -6,6 +6,7 @@
 //! version, so the binary always reports a sensible version.
 
 use std::env;
+use std::path::{Path, PathBuf};
 
 fn main() {
     let version = env::var("KENNY_AGENT_VERSION")
@@ -16,6 +17,8 @@ fn main() {
     println!("cargo:rustc-env=KENNY_BUILD_VERSION={version}");
     println!("cargo:rerun-if-env-changed=KENNY_AGENT_VERSION");
 
+    embed_deny_rules();
+
     // Embed a Windows application manifest. asInvoker (NOT requireAdministrator) is
     // deliberate: the same binary launches the tray in the standard-user session, which a
     // require-admin manifest would block. `setup` elevates at runtime instead. See ADR-0033.
@@ -24,4 +27,27 @@ fn main() {
         embed_manifest(new_manifest("Kenny.Agent")).expect("unable to embed manifest");
     }
     println!("cargo:rerun-if-changed=build.rs");
+}
+
+/// Copy the shared deny-rule catalog (`docs/policy/deny_rules.json`, the single source of
+/// truth shared with the Python server, ADR-0021) into `OUT_DIR` so `src/policy.rs` can
+/// embed it with `include_str!` without reaching outside the crate.
+///
+/// A raw `include_str!("../../docs/policy/deny_rules.json")` works for native builds (the
+/// whole repo is checked out) but breaks the Linux release build: `cross` compiles inside a
+/// container that mounts only the crate directory, so the repo-root `docs/` is not visible.
+/// The release workflow therefore hands us the catalog's directory in `KENNY_DENY_RULES_DIR`
+/// (mounted into the container via `Cross.toml`); everywhere else we fall back to the path
+/// relative to the crate manifest.
+fn embed_deny_rules() {
+    let src = match env::var_os("KENNY_DENY_RULES_DIR") {
+        Some(dir) => PathBuf::from(dir).join("deny_rules.json"),
+        None => Path::new(&env::var("CARGO_MANIFEST_DIR").unwrap())
+            .join("../docs/policy/deny_rules.json"),
+    };
+    let dst = Path::new(&env::var("OUT_DIR").unwrap()).join("deny_rules.json");
+    std::fs::copy(&src, &dst)
+        .unwrap_or_else(|e| panic!("failed to copy deny-rule catalog from {src:?}: {e}"));
+    println!("cargo:rerun-if-changed={}", src.display());
+    println!("cargo:rerun-if-env-changed=KENNY_DENY_RULES_DIR");
 }
