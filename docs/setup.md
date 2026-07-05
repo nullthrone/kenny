@@ -51,6 +51,10 @@ installs upgrade with no manual steps. For TLS in front (port 443, `wss`), enabl
 KENNY_DOMAIN=kenny.example.com KENNY_OPERATOR_TOKEN=... docker compose --profile tls up -d
 ```
 
+Behind a reverse proxy, set `KENNY_FORWARDED_ALLOW_IPS` to the proxy's address so the
+login rate-limiter throttles by the real client IP rather than the proxy's (otherwise all
+clients share one bucket). The bundled TLS profile sets this for you.
+
 ## Environment variables
 
 | Variable | Used by | Default | Purpose |
@@ -62,6 +66,7 @@ KENNY_DOMAIN=kenny.example.com KENNY_OPERATOR_TOKEN=... docker compose --profile
 | `ANTHROPIC_API_KEY` | server | — | Enables the dashboard chat. |
 | `KENNY_CHAT_MODEL` | server | `claude-sonnet-4-6` | Model for the chat loop. |
 | `KENNY_TLS` | server | unset | Set `1` behind TLS so the login cookie gets the `Secure` flag. |
+| `KENNY_FORWARDED_ALLOW_IPS` | server | `127.0.0.1` | Upstream proxy address(es) allowed to set `X-Forwarded-For`, so the login rate-limiter sees the real client IP behind a reverse proxy (not the proxy's). Set to your proxy's address when fronting kenny with the Caddy TLS profile. |
 | `KENNY_PUBLIC_URL` | server | `http://localhost:<port>` | External base URL; used to build installer/update links and the agent `--server` `wss://…/agent/ws`. |
 | `KENNY_AGENT_BINARY` | server | — | Path to the prebuilt `kenny-agent.exe` the server serves for installer download + self-update. Overrides the GitHub auto-fetch when set. |
 | `KENNY_GITHUB_TOKEN` | server | — | GitHub token enabling auto-fetch of the agent binary from Releases (ADR-0015). When set (and `KENNY_AGENT_BINARY` is not), the server fetches `kenny-agent.exe` on startup. |
