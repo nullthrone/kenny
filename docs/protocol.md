@@ -54,11 +54,14 @@ Every frame has a `type` field. Known types:
   "agent_id": "example-pc",
   "protocol": "0.8",
   "client_nonce": "<base64, 32 random bytes>",
-  "meta": { "hostname": "EXAMPLE-PC", "os": "windows", "version": "0.1.0" }
+  "meta": { "hostname": "EXAMPLE-PC", "os": "windows", "version": "0.1.0", "arch": "x86_64" }
 }
 ```
 
-`os` ∈ {`windows`, `linux`, `macos`}. `protocol` is the agent's `PROTOCOL_VERSION`;
+`os` ∈ {`windows`, `linux`, `macos`}. `arch` ∈ {`x86_64`, `aarch64`} is the agent's
+normalized CPU architecture (from `std::env::consts::ARCH`, collapsing `arm64` to
+`aarch64`); the server uses it to select the matching self-update binary. Legacy agents
+that omit it are treated as `x86_64`. `protocol` is the agent's `PROTOCOL_VERSION`;
 `client_nonce` is 32 fresh random bytes (base64) that the server must sign in the
 `challenge`. The server looks up `agent_id` and replies with a `challenge` (it never
 registers the connection until the agent's `auth` verifies).
@@ -604,11 +607,18 @@ for fleet aggregation. These thresholds are illustrative of the data-driven rule
 
 ## Versioning
 
-`PROTOCOL_VERSION = "0.10"`. Both implementations expose this constant; from v0.8 the
+`PROTOCOL_VERSION = "0.11"`. Both implementations expose this constant; from v0.8 the
 agent puts it on the wire in `register.protocol` to select the mutual-auth handshake
 (compare versions **numerically per component**, not lexically — `"0.10"` is newer than
 `"0.9"`). Bump on any breaking change to a frame or tool schema.
 
+- `0.11` — added `register.meta.arch` (∈ `x86_64`/`aarch64`) so server-triggered
+  `agent_update` selects the binary matching the agent's CPU, fixing aarch64 Linux
+  agents being bricked by a mis-routed x86_64 push (#139). Additive and backward
+  compatible: legacy agents that omit `arch` still register and default to `x86_64`.
+  The Linux updater also now verifies the downloaded binary's ELF `e_machine` matches
+  the host before the atomic swap, so a mis-routed binary is rejected instead of
+  overwriting the working exe.
 - `0.10` — added the `installed_software`, `browser_extensions`, `listening_ports`,
   `scheduled_tasks`, `local_accounts`, `backup_status`, `net_quality`, and `screen_time`
   telemetry sections (security inventory, resilience, parental awareness); additive

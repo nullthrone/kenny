@@ -1,4 +1,4 @@
-//! Wire-protocol types mirroring `../docs/protocol.md` (v0.9).
+//! Wire-protocol types mirroring `../docs/protocol.md` (v0.11).
 //!
 //! These serde models are the Rust side of the contract between `kenny-server`
 //! (Python) and `kenny-agent`. They are round-tripped against `../docs/fixtures/`
@@ -12,7 +12,7 @@ use serde_json::{Map, Value};
 ///
 /// From v0.8 this is placed on the wire in `register.protocol` to select the
 /// mutual-auth handshake.
-pub const PROTOCOL_VERSION: &str = "0.10";
+pub const PROTOCOL_VERSION: &str = "0.11";
 
 /// One WebSocket text message. Tagged by the `type` field.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -81,6 +81,8 @@ pub struct RegisterMeta {
     /// One of `windows`, `linux`, `macos`.
     pub os: String,
     pub version: String,
+    /// Normalized CPU architecture: `x86_64` or `aarch64`.
+    pub arch: String,
 }
 
 /// `request` frame body.

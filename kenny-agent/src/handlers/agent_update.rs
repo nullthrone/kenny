@@ -419,6 +419,71 @@ mod linux_impl {
     use std::process::Command;
     use tracing::{info, warn};
 
+    /// ELF `e_machine` values for our two supported release targets (see
+    /// `/usr/include/elf.h`: `EM_X86_64`, `EM_AARCH64`).
+    const EM_X86_64: u16 = 62;
+    const EM_AARCH64: u16 = 183;
+
+    /// Read the ELF `e_machine` field (u16, little-endian, offset 18) from `path`.
+    ///
+    /// Both supported targets (`x86_64`, `aarch64`) are little-endian, so we don't
+    /// need to branch on `EI_DATA`. Split out from [`verify_elf_matches_host`] so the
+    /// byte-parsing is unit-testable on synthetic headers.
+    pub fn read_e_machine(path: &std::path::Path) -> Result<u16, (ErrorCode, String)> {
+        use std::io::Read;
+        let mut f = std::fs::File::open(path).map_err(|e| {
+            (
+                ErrorCode::ExecFailed,
+                format!("cannot open staged binary: {e}"),
+            )
+        })?;
+        let mut hdr = [0u8; 20];
+        f.read_exact(&mut hdr).map_err(|e| {
+            (
+                ErrorCode::ExecFailed,
+                format!("staged binary too short to be ELF: {e}"),
+            )
+        })?;
+        if hdr[0..4] != *b"\x7fELF" {
+            return Err((
+                ErrorCode::ExecFailed,
+                "staged binary is not an ELF file".to_string(),
+            ));
+        }
+        Ok(u16::from_le_bytes([hdr[18], hdr[19]]))
+    }
+
+    /// Expected ELF `e_machine` for a normalized `std::env::consts::ARCH`-style string.
+    pub fn machine_for_arch(arch: &str) -> u16 {
+        match arch {
+            "aarch64" => EM_AARCH64,
+            _ => EM_X86_64,
+        }
+    }
+
+    /// Reject a staged binary whose ELF machine type doesn't match this host.
+    ///
+    /// Defense in depth for #139: the server resolves which binary to push from the
+    /// agent's *reported* arch, so a routing bug (or an old agent that never reported
+    /// one) could still hand us a wrong-arch download. The sha256 check only proves
+    /// the bytes match what the server *served* — it says nothing about whether those
+    /// bytes are runnable here. This check runs before the atomic rename, so a
+    /// mismatched binary is rejected and the working exe is never touched.
+    fn verify_elf_matches_host(path: &std::path::Path) -> Result<(), (ErrorCode, String)> {
+        let machine = read_e_machine(path)?;
+        let expected = machine_for_arch(std::env::consts::ARCH);
+        if machine != expected {
+            return Err((
+                ErrorCode::ExecFailed,
+                format!(
+                    "arch mismatch: staged binary e_machine={machine}, host ({}) expects {expected}",
+                    std::env::consts::ARCH
+                ),
+            ));
+        }
+        Ok(())
+    }
+
     /// Linux self-update: download + verify, atomically swap the running binary,
     /// then trigger a detached systemd restart.
     pub async fn update(a: UpdateArgs) -> Result<Value, (ErrorCode, String)> {
@@ -444,6 +509,14 @@ mod linux_impl {
         .await
         .map_err(|e| (ErrorCode::ExecFailed, format!("update task panicked: {e}")))?;
         result?;
+
+        // Defense in depth: never let a wrong-arch binary reach the atomic rename
+        // below, even if routing was wrong (#139). Checked before chmod so a bad
+        // download is rejected as early as possible.
+        if let Err(e) = verify_elf_matches_host(&staged) {
+            let _ = std::fs::remove_file(&staged);
+            return Err(e);
+        }
 
         // Make the staged binary executable before it becomes the live exe.
         if let Err(e) = std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)) {
@@ -598,6 +671,72 @@ mod tests {
             ),
             "kenny-agent.service"
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn elf_guard_accepts_matching_machine() {
+        use super::linux_impl::{machine_for_arch, read_e_machine};
+        let path = write_synthetic_elf(machine_for_arch("aarch64"));
+        assert_eq!(read_e_machine(&path).unwrap(), machine_for_arch("aarch64"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn elf_guard_rejects_mismatched_machine() {
+        use super::linux_impl::machine_for_arch;
+        assert_ne!(machine_for_arch("aarch64"), machine_for_arch("x86_64"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn elf_guard_rejects_non_elf_file() {
+        use super::linux_impl::read_e_machine;
+        let path = std::env::temp_dir().join(format!(
+            "kenny-agent-not-elf-{}-{}",
+            std::process::id(),
+            "a"
+        ));
+        std::fs::write(
+            &path,
+            b"not an elf file at all, just text padding out to 20+",
+        )
+        .unwrap();
+        let err = read_e_machine(&path).expect_err("must reject non-ELF content");
+        assert_eq!(err.0, ErrorCode::ExecFailed);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn elf_guard_rejects_truncated_file() {
+        use super::linux_impl::read_e_machine;
+        let path = std::env::temp_dir().join(format!(
+            "kenny-agent-short-elf-{}-{}",
+            std::process::id(),
+            "b"
+        ));
+        std::fs::write(&path, b"\x7fELF\x02\x01").unwrap(); // fewer than 20 bytes
+        let err = read_e_machine(&path).expect_err("must reject a too-short file");
+        assert_eq!(err.0, ErrorCode::ExecFailed);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Write a minimal synthetic ELF header (magic + padding + `e_machine` at offset
+    /// 18) so the byte-parsing can be tested without a real binary on disk.
+    #[cfg(target_os = "linux")]
+    fn write_synthetic_elf(machine: u16) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "kenny-agent-synthetic-elf-{}-{}",
+            std::process::id(),
+            machine
+        ));
+        let mut hdr = [0u8; 20];
+        hdr[0..4].copy_from_slice(b"\x7fELF");
+        hdr[18..20].copy_from_slice(&machine.to_le_bytes());
+        std::fs::write(&path, hdr).unwrap();
+        path
     }
 
     #[cfg(target_os = "linux")]

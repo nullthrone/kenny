@@ -383,6 +383,69 @@ def test_update_503_for_linux_agent_without_linux_binary(tmp_path, binary):
         assert r.status_code == 503
 
 
+def test_update_picks_aarch64_binary_for_aarch64_agent(tmp_path, monkeypatch):
+    """Coverage gap named in #139: no test asserted that an agent reporting
+    ``arch: aarch64`` in ``register.meta`` actually gets the aarch64 binary.
+
+    Only an aarch64 binary is configured (no x86_64 binary at all), so a wrong
+    selection surfaces as 503 (binary missing) instead of 502 (agent offline).
+    Note this test alone does not reproduce the historical bug: `trigger_update`
+    already read `meta.get("arch")` correctly before this fix (see
+    `Agent.arch` in registry.py) — the actual bug was that no real agent ever
+    put `arch` on the wire in the first place (kenny-agent's `RegisterMeta` had
+    no such field). That part is covered by the Rust `fixtures_round_trip` test
+    and `tunnel.rs` sending `util::arch()`. This test guards the server-side
+    selection logic against a future regression once arch *is* reported.
+    """
+
+    arm = tmp_path / "linux-arm"
+    arm.write_bytes(LINUX_BYTES)
+    monkeypatch.delenv("KENNY_AGENT_BINARY", raising=False)
+    monkeypatch.delenv("KENNY_AGENT_BINARY_LINUX", raising=False)
+    monkeypatch.setenv("KENNY_AGENT_BINARY_LINUX_AARCH64", str(arm))
+    monkeypatch.setenv("KENNY_AGENT_BINARY_CACHE", str(tmp_path / "nope.exe"))
+    monkeypatch.setenv("KENNY_PUBLIC_URL", "https://kenny.example.com")
+    app = _app(tmp_path)
+    reg = app.state.registry
+
+    async def _noop(_frame):
+        return None
+
+    reg.register_signed_async("arm-pc", {"os": "linux", "arch": "aarch64"}, _noop)
+    reg.mark_offline("arm-pc")
+    with TestClient(app) as c:
+        r = c.post("/api/agents/arm-pc/update", headers=_bearer(app))
+        # 502 (agent offline) not 503 (binary missing) => the aarch64 binary was
+        # selected.
+        assert r.status_code == 502
+
+
+def test_update_defaults_to_x86_64_for_legacy_agent_without_arch(tmp_path, monkeypatch):
+    """A legacy agent that predates #139 and never reports `arch` must still
+    resolve to x86_64 (the documented backward-compat default), not fail to
+    resolve at all. Only an aarch64 binary is configured, so this proves arch
+    actually gates selection rather than matching anything."""
+
+    arm = tmp_path / "linux-arm"
+    arm.write_bytes(LINUX_BYTES)
+    monkeypatch.delenv("KENNY_AGENT_BINARY", raising=False)
+    monkeypatch.delenv("KENNY_AGENT_BINARY_LINUX", raising=False)
+    monkeypatch.setenv("KENNY_AGENT_BINARY_LINUX_AARCH64", str(arm))
+    monkeypatch.setenv("KENNY_AGENT_BINARY_CACHE", str(tmp_path / "nope.exe"))
+    monkeypatch.setenv("KENNY_PUBLIC_URL", "https://kenny.example.com")
+    app = _app(tmp_path)
+    reg = app.state.registry
+
+    async def _noop(_frame):
+        return None
+
+    reg.register_signed_async("legacy-pc", {"os": "linux"}, _noop)
+    reg.mark_offline("legacy-pc")
+    with TestClient(app) as c:
+        r = c.post("/api/agents/legacy-pc/update", headers=_bearer(app))
+        assert r.status_code == 503
+
+
 def test_agent_binary_status_by_os(tmp_path, linux_binary, monkeypatch):
     monkeypatch.delenv("KENNY_AGENT_BINARY", raising=False)
     monkeypatch.setenv("KENNY_AGENT_BINARY_CACHE", str(tmp_path / "nope.exe"))
