@@ -445,7 +445,7 @@ def build_download_routes(
         # Resolve the agent's OS/arch so we push (and serve) the matching binary.
         agent = registry.get(agent_id)
         os_name = agent.os if agent is not None else "windows"
-        arch = _norm_arch(agent.meta.get("arch") if agent is not None else None)
+        arch = agent.arch if agent is not None else "x86_64"
         binary = agent_binary_path(os_name=os_name, arch=arch)
         if binary is None:
             return JSONResponse({"error": "agent binary not configured"}, status_code=503)

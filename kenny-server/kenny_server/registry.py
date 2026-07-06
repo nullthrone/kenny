@@ -64,6 +64,21 @@ class Agent:
 
         return str(self.meta.get("os") or "windows").lower()
 
+    @property
+    def arch(self) -> str:
+        """Normalized CPU arch (``x86_64`` | ``aarch64``).
+
+        Read-only view over ``meta["arch"]`` (set from ``register.meta.arch`` on
+        the wire, added in protocol 0.11 to fix #139). Legacy agents that never
+        reported one default to ``x86_64``, matching the pre-existing behavior of
+        ``distribution._norm_arch``. Imported lazily: ``distribution`` imports
+        ``AgentRegistry`` from this module, so a top-level import here would cycle.
+        """
+
+        from .distribution import _norm_arch
+
+        return _norm_arch(self.meta.get("arch"))
+
     def to_public(self) -> dict[str, Any]:
         return {
             "agent_id": self.agent_id,

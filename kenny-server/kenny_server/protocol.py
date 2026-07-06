@@ -60,6 +60,10 @@ class RegisterMeta(BaseModel):
     hostname: str
     os: OS
     version: str
+    # Normalized CPU arch (``x86_64``/``aarch64``); optional so legacy agents that
+    # predate #139 still register. Absent -> `_norm_arch` in distribution.py
+    # defaults to x86_64.
+    arch: str | None = None
 
 
 # ---------------------------------------------------------------------------
