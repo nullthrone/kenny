@@ -35,7 +35,7 @@ jobs:
       # first run after a merge can race a not-yet-provisioned Pages site and
       # fail deploy-pages; a later manual re-run succeeds only because Pages has
       # finished provisioning by then. enablement: true makes it idempotent.
-      - uses: actions/configure-pages@v5
+      - uses: actions/configure-pages@v6
         with:
           enablement: true
       - name: Install MkDocs Material
