@@ -29,7 +29,7 @@ regex = "1"
 sysinfo = "0.39"
 # Per-agent mutual-auth (ADR-0023): Ed25519 keypair + signatures over the handshake
 # transcript. NOT windows-gated so keygen/signing/verification build and test on Linux CI.
-ed25519-dalek = { version = "2", features = ["rand_core"] }
+ed25519-dalek = { version = "3", features = ["rand_core"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 # Synchronous HTTP client, reused for the one-time enrollment POST (ADR-0023) and the
 # self-update download. Not windows-gated: enrollment runs on every platform's tunnel.
