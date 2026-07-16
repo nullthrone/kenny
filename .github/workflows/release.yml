@@ -72,7 +72,7 @@ jobs:
             exit 1
           fi
       - name: Log in to GHCR
-        uses: docker/login-action@c99871dec2022cc055c062a10cc1a1310835ceb4 # v4
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -148,7 +148,7 @@ jobs:
           $name = "${{ steps.stage.outputs.artifact }}"
           (Get-FileHash $name -Algorithm SHA256).Hash.ToLower() + "  " + $name | Out-File "$name.sha256" -Encoding ascii
       - name: Publish to the Release
-        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
         with:
           files: |
             kenny-agent/${{ steps.stage.outputs.artifact }}
@@ -213,7 +213,7 @@ jobs:
           sha256sum "$name" > "$name.sha256"
           echo "artifact=$name" >> "$GITHUB_OUTPUT"
       - name: Publish to the Release
-        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
         with:
           files: |
             kenny-agent/${{ steps.stage.outputs.artifact }}
