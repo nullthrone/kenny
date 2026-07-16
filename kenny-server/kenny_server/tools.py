@@ -27,6 +27,8 @@ from .store import EventStore, TelemetryStore
 from .tunnel import AgentTunnel, ToolError
 from .webfilter import WebFilterService, load_seed
 
+logger = logging.getLogger("kenny.tools")
+
 # Forwarding capability tools: name -> ordered arg keys (optional keys end "?").
 CAPABILITY_TOOLS: dict[str, list[str]] = {
     "powershell_exec": ["script", "timeout_s"],
@@ -81,9 +83,21 @@ class CallLog:
         error: str | None = None,
     ) -> None:
         if self.event_store is not None:
-            await self.event_store.insert_audit(
-                agent_id=agent_id, tool=tool, ok=ok, error=error
-            )
+            # Audit logging is a side effect of the call, not the call itself: a
+            # transient write failure here (e.g. sqlite "database is locked" under
+            # concurrent agent pushes) must not fail the tool call that already
+            # succeeded against the agent. Log and swallow instead of propagating.
+            try:
+                await self.event_store.insert_audit(
+                    agent_id=agent_id, tool=tool, ok=ok, error=error
+                )
+            except Exception:
+                logger.warning(
+                    "failed to persist audit log entry for %s -> %s",
+                    tool,
+                    agent_id,
+                    exc_info=True,
+                )
             return
         self._entries.appendleft(
             {
