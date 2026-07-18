@@ -1,0 +1,6 @@
+{
+  "type": "response",
+  "id": "7a1b2c3d-4e5f-6a7b-8c9d-0e1f2a3b4c5d",
+  "ok": false,
+  "error": { "code": "paused", "message": "screen_capture is paused while a protected game is running (EasyAntiCheat.exe)" }
+}

@@ -25,8 +25,31 @@ fn main() {
     if std::env::var_os("CARGO_CFG_WINDOWS").is_some() {
         use embed_manifest::{embed_manifest, new_manifest};
         embed_manifest(new_manifest("Kenny.Agent")).expect("unable to embed manifest");
+
+        // Embed a Windows VERSIONINFO resource + the exe icon so AV/anti-cheat heuristics
+        // and the user see identifiable publisher software instead of an anonymous binary
+        // (ADR-0039). We do NOT set a manifest on `winresource` — `embed_manifest` above
+        // owns the (asInvoker) manifest, and `winresource` only emits a manifest when
+        // `set_manifest`/`set_manifest_file` is called, so there is no duplicate resource.
+        let mut res = winresource::WindowsResource::new();
+        res.set("CompanyName", "kenny contributors");
+        res.set("ProductName", "Kenny Agent");
+        res.set(
+            "FileDescription",
+            "kenny outbound-tunnel remote-admin and telemetry agent",
+        );
+        res.set("OriginalFilename", "kenny-agent.exe");
+        res.set("LegalCopyright", "kenny contributors — AGPL-3.0-only");
+        // Reuse the same version string that leads `KENNY_BUILD_VERSION` (ADR-0015), so the
+        // PE version matches what the agent reports on the wire.
+        res.set("FileVersion", &version);
+        res.set("ProductVersion", &version);
+        res.set_icon("assets/kenny-on.ico");
+        res.compile()
+            .expect("unable to embed Windows version resource");
     }
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=assets/kenny-on.ico");
 }
 
 /// Copy the shared deny-rule catalog (`docs/policy/deny_rules.json`, the single source of

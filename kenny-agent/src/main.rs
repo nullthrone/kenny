@@ -14,6 +14,7 @@
 //! * `run-service`   — SCM entry point with graceful stop (Windows only).
 //! * `finish-update` — hidden updater helper that swaps the binary (Windows only).
 
+mod coexist;
 mod config;
 mod control;
 mod dispatch;

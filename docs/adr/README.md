@@ -52,3 +52,4 @@ implementation detail", see *When (not) to write an ADR* in the repository `CLAU
 | [0036](0036-runtime-settings-in-the-dashboard.md) | Runtime settings resolved DB-over-env, editable in the dashboard | accepted |
 | [0037](0037-multi-user-authentication.md) | Multi-user authentication: accounts, roles, sessions, and per-user access tokens | accepted |
 | [0038](0038-linux-agent-distribution-convenience-script.md) | Linux agent distribution: convenience install script + server-triggered self-update | accepted |
+| [0039](0039-anti-cheat-coexistence-and-publisher-legitimacy.md) | Anti-cheat coexistence and publisher legitimacy | accepted |

@@ -165,7 +165,7 @@ Error:
 ```
 
 `error.code` ∈ {`timeout`, `not_found`, `exec_failed`, `unsupported`, `bad_args`,
-`internal`, `disabled`, `blocked`}. `unsupported` is returned by an agent that lacks the
+`internal`, `disabled`, `blocked`, `paused`}. `unsupported` is returned by an agent that lacks the
 capability on its platform (e.g. `winget_list` on a Linux dev build). `disabled` is
 returned when the agent is online but the person at the endpoint has switched remote
 control **off** locally (via the agent's tray menu): the agent then refuses every
@@ -173,6 +173,16 @@ control **off** locally (via the agent's tray menu): the agent then refuses ever
 `net_dns_flush`, `net_adapter_reset`, `agent_update`, `webfilter_apply|clear`) while
 telemetry and read-only diagnostics keep working. Remote control is **on** by default and the choice persists
 across restarts. See ADR-0011.
+
+`paused` is returned when the agent is online but has **voluntarily stepped back** because a
+protected game is running on the endpoint (the agent detected the game's anti-cheat process).
+To avoid being mistaken for cheating software, the agent suspends its most anti-cheat-visible
+tools — today `screen_capture` — while the game runs, and relaxes the periodic process/port
+enumeration (those telemetry sections report a `paused` summary and stop listing processes).
+Unlike `disabled`, this is automatic and game-scoped rather than an operator toggle, and it
+clears the moment the game exits. The step-back is transparent by design: the agent genuinely
+stops the visible action and reports it — it never hides, renames, or disguises what it does.
+See ADR-0039.
 
 `blocked` is returned by the agent's **deterministic, always-on safety guard**: a
 compiled-in policy that refuses individually dangerous calls (e.g. a `powershell_exec`
@@ -607,11 +617,15 @@ for fleet aggregation. These thresholds are illustrative of the data-driven rule
 
 ## Versioning
 
-`PROTOCOL_VERSION = "0.11"`. Both implementations expose this constant; from v0.8 the
+`PROTOCOL_VERSION = "0.12"`. Both implementations expose this constant; from v0.8 the
 agent puts it on the wire in `register.protocol` to select the mutual-auth handshake
 (compare versions **numerically per component**, not lexically — `"0.10"` is newer than
 `"0.9"`). Bump on any breaking change to a frame or tool schema.
 
+- `0.12` — added the `paused` error code for anti-cheat coexistence: while a protected game
+  is running on the endpoint, the agent voluntarily suspends its most anti-cheat-visible tools
+  (today `screen_capture`) and relaxes the process/port telemetry sections, returning `paused`
+  instead of acting. Additive to the error-code set, no frame or tool-schema changes. See ADR-0039.
 - `0.11` — added `register.meta.arch` (∈ `x86_64`/`aarch64`) so server-triggered
   `agent_update` selects the binary matching the agent's CPU, fixing aarch64 Linux
   agents being bricked by a mis-routed x86_64 push (#139). Additive and backward

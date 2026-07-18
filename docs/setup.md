@@ -79,6 +79,10 @@ clients share one bucket). The bundled TLS profile sets this for you.
 | `KENNY_HOST` / `KENNY_PORT` | server | `127.0.0.1` / `8000` | Bind address (container sets `0.0.0.0`). |
 | `KENNY_DB_PATH` | server | `kenny.sqlite` | SQLite store (snapshots, events, tokens, keys, chat, web filter — one file). Container: `/data/kenny.sqlite`. |
 | `KENNY_TELEMETRY_INTERVAL_SECS` | agent / server | `900` | Agent push interval; also pre-filled into generated installers. |
+| `KENNY_COEXIST_ENABLED` | agent | `1` | Anti-cheat coexistence (ADR-0039): while a protected game runs, the agent suspends `screen_capture` (returns `paused`) and relaxes process/port telemetry. Set `0` to disable. |
+| `KENNY_COEXIST_PROCESSES` | agent | anti-cheat set | Comma-separated extra process names to treat as "a protected game is running", extending the built-in anti-cheat list (`EasyAntiCheat.exe`, `BEService*.exe`, …). Add game exes here, e.g. `ARC-Raiders.exe`. Matched case- and `.exe`-insensitively. |
+| `KENNY_COEXIST_POLL_SECS` | agent | `5` | How often the agent checks whether a watched process is running. |
+| `KENNY_COEXIST_TELEMETRY_INTERVAL_SECS` | agent | `3600` | Telemetry push interval while a protected game is running (never shorter than `KENNY_TELEMETRY_INTERVAL_SECS`). |
 | `KENNY_SERVER_VERSION` | server | `0.0.0-dev` | Version string shown in the **About** box and `/api/about`. |
 | `KENNY_LOG_LEVEL` | server | `INFO` | Root log level. Server logs are also persisted to the event store (ADR-0017). |
 
@@ -293,6 +297,25 @@ flowchart LR
   `KENNY_AGENT_BINARY_LINUX` / `KENNY_AGENT_BINARY_LINUX_AARCH64` (Linux) at them to enable GUI
   downloads/updates against that version. When `KENNY_GITHUB_TOKEN` is set the server auto-fetches
   all of them.
+
+### Code signing (Authenticode)
+
+An unsigned agent binary is more likely to be flagged by AV and game anti-cheat heuristics, and
+carries no verifiable publisher identity. The Windows build already carries PE identity metadata
+(CompanyName/ProductName/version + icon, ADR-0039); **signing it is the complementary step** and
+is wired but off by default:
+
+- Set the `WINDOWS_CERT_BASE64` (base64 of the signing cert) and `WINDOWS_CERT_PASSWORD` repo
+  secrets; `release.yml` then Authenticode-signs `kenny-agent.exe` with a timestamp. The server
+  ships the exe **unmodified** (ADR-0033/0012), so the signature survives distribution and
+  self-update.
+- Use a real **OV or EV** code-signing certificate whose subject matches the VERSIONINFO
+  CompanyName. Since the 2023 CA/Browser-Forum change, code-signing keys must live on
+  FIPS-140-2 hardware, so a plain PFX-in-secret may need swapping for a cloud-signing service
+  (e.g. Azure Trusted Signing, DigiCert KeyLocker, SSL.com eSigner) invoked via `signtool`.
+- A formal anti-cheat *allowlist* is generally not available to a self-hosted family tool;
+  signing + the coexistence back-off (ADR-0039) are the practical levers. Never attempt to
+  evade an anti-cheat — that risks banning the player's game account.
 
 ## Persistence, backups, upgrades
 
