@@ -30,6 +30,9 @@ ErrorCode = Literal[
     "internal",
     "disabled",
     "blocked",
+    # Agent voluntarily stepped back while a protected game is running on the
+    # endpoint (anti-cheat coexistence); today only `screen_capture`. See ADR-0039.
+    "paused",
 ]
 
 

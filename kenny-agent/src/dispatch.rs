@@ -6,6 +6,7 @@
 use serde_json::{json, Value};
 use tracing::{debug, warn};
 
+use crate::coexist;
 use crate::control;
 use crate::handlers;
 use crate::policy;
@@ -39,6 +40,14 @@ async fn run(tool: &str, args: Value) -> Result<Value, (ErrorCode, String)> {
     // ADR-0017/0021) naming the matched rule, then refuse the call.
     if let Err((code, message)) = policy::check(tool, &args) {
         warn!(tool = %tool, reason = %message, "tool call refused by safety guard");
+        return Err((code, message));
+    }
+
+    // Anti-cheat coexistence (ADR-0039): while a protected game is running, voluntarily
+    // step back from the most anti-cheat-visible tools (today `screen_capture`) and
+    // report `paused`. Transparent, not evasive — see `coexist`.
+    if let Err((code, message)) = coexist::gate(tool) {
+        debug!(tool = %tool, reason = %message, "tool paused for anti-cheat coexistence");
         return Err((code, message));
     }
 
@@ -250,6 +259,29 @@ mod tests {
         .await;
         assert!(resp.ok, "status is read-only and must work while disabled");
         assert!(resp.result.unwrap()["doh_policy"].is_object());
+    }
+
+    #[allow(clippy::await_holding_lock)] // single-threaded test runtime; lock guards global state
+    #[tokio::test]
+    async fn screen_capture_paused_while_protected_game_runs() {
+        // Force the coexistence flag on (as if an anti-cheat process were running); the
+        // gate must refuse `screen_capture` with `paused` before reaching the handler
+        // (which would otherwise return `unsupported` off Windows). Serialized via the
+        // shared env lock so the forced global never races other tests.
+        let _g = crate::control::TEST_ENV_LOCK.lock().unwrap();
+        crate::coexist::force_active_for_test(true, Some("EasyAntiCheat.exe"));
+        let resp = handle(Request {
+            id: "10".to_string(),
+            tool: "screen_capture".to_string(),
+            args: json!({}),
+        })
+        .await;
+        crate::coexist::force_active_for_test(false, None);
+        assert!(
+            !resp.ok,
+            "screen_capture must be refused while a game is active"
+        );
+        assert_eq!(resp.error.unwrap().code, ErrorCode::Paused);
     }
 
     #[tokio::test]

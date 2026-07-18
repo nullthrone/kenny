@@ -23,6 +23,7 @@ Adding/altering a fixture is a contract change — see `docs/protocol.md` § Ver
 | `response_error_timeout.json`   | error `response` frame                           |
 | `response_error_blocked.json`   | error `response` frame (safety-guard `blocked`)  |
 | `response_error_disabled.json`  | error `response` frame (kill-switch `disabled`)  |
+| `response_error_paused.json`    | error `response` frame (anti-cheat coexistence `paused`) |
 | `ping.json` / `pong.json`       | heartbeat frames                                 |
 | `telemetry_snapshot.json`       | `telemetry` frame with a representative snapshot |
 | `request_agent_update.json`     | `request` frame (`agent_update`)                 |

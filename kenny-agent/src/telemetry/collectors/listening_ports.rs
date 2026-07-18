@@ -12,7 +12,14 @@ use crate::protocol::Status;
 use crate::telemetry::Section;
 
 /// Collect the `listening_ports` section.
+///
+/// While a protected game is running (anti-cheat coexistence, ADR-0039) this reports a
+/// "paused" section with no port/PID→image data instead of enumerating listeners — the
+/// port→process join is one of the behaviours a kernel anti-cheat flags.
 pub fn collect() -> Section {
+    if crate::coexist::game_active() {
+        return paused_section();
+    }
     #[cfg(windows)]
     {
         windows_impl::collect()
@@ -29,6 +36,16 @@ pub fn collect() -> Section {
             json!({ "ports": [], "count": 0, "truncated": false }),
         )
     }
+}
+
+/// Shape-compatible "paused" section: same `ports`/`count`/`truncated` fields (empty) so
+/// the snapshot stays contract-valid, plus a `paused` flag and summary.
+fn paused_section() -> Section {
+    Section::with_fields(
+        Status::Ok,
+        crate::coexist::paused_summary(),
+        json!({ "ports": [], "count": 0, "truncated": false, "paused": true }),
+    )
 }
 
 /// Portable shaping core — compiled and tested on every platform.
@@ -388,6 +405,17 @@ mod tests {
         assert!(v["ports"].is_array());
         assert!(v["count"].is_number());
         assert!(v["truncated"].is_boolean());
+    }
+
+    #[test]
+    fn paused_section_is_shape_compatible_and_empty() {
+        let v = paused_section().into_value();
+        assert_eq!(v["status"], "ok");
+        assert_eq!(v["paused"], true);
+        assert_eq!(v["ports"].as_array().unwrap().len(), 0);
+        assert_eq!(v["count"], 0);
+        assert_eq!(v["truncated"], false);
+        assert!(v["summary"].as_str().unwrap().contains("paused"));
     }
 
     #[cfg(target_os = "linux")]
