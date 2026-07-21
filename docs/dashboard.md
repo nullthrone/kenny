@@ -66,7 +66,10 @@ each surface shows:
 **Profile** (all roles) lets you set your email, pick an avatar from the dog-breed grid,
 change your password, enable/disable **two-factor (TOTP)** (scan the shown `otpauth://`
 secret into an authenticator, then confirm a code), and mint/revoke **personal access
-tokens** — the Bearer tokens Claude uses to reach `/mcp` as you (shown once at creation).
+tokens**. Claude Desktop normally connects with the built-in **OAuth flow**
+([ADR-0041](adr/0041-oauth2-authorization-server-for-mcp.md)) — no token needed; personal
+access tokens are the Bearer credential for scripts and other MCP clients that can't do OAuth,
+sent as `Authorization: Bearer <pat>` to `/mcp` and shown once at creation.
 
 **Users** (superuser only) lists every account and lets you create, edit (role, email,
 avatar, enable/disable), delete, reset a password, reset 2FA, assign the host scope for a
