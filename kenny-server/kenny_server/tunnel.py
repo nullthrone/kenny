@@ -441,6 +441,14 @@ class AgentTunnel:
                     )
                     continue
                 snapshot = {k: v.model_dump() for k, v in frame.snapshot.items()}
+                # Periodic arch reconfirmation (ADR-0040, protocol 0.13): mirror a
+                # strictly-recognized os_support.arch into the registry so a
+                # long-lived connection stays correct even if register.meta.arch
+                # were ever missing or stale. Deliberately not `_norm_arch`-normalized
+                # — an unrecognized value must never clobber good data with a guess.
+                reported_arch = snapshot.get("os_support", {}).get("arch")
+                if reported_arch in ("x86_64", "aarch64"):
+                    self.registry.note_arch(frame.agent_id, reported_arch)
                 # Parental controls (ADR-0026): enrich the web_activity section
                 # with server-computed `flagged` before persisting. A webfilter
                 # bug must never drop the whole snapshot.

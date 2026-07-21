@@ -225,6 +225,21 @@ class AgentRegistry:
         if agent is not None:
             agent.last_seen = datetime.now(timezone.utc)
 
+    def note_arch(self, agent_id: str, arch: str) -> None:
+        """Merge a telemetry-reported ``arch`` into the agent's stored meta.
+
+        A periodic reconfirmation of ``register.meta.arch`` (ADR-0040, protocol
+        0.13): telemetry pushes every interval for the life of the connection, so
+        this self-heals if the registry's copy of ``arch`` were ever missing or
+        stale, without waiting for a reconnect. Merges into the existing ``meta``
+        dict in place (unlike ``_mark_online``, which replaces it wholesale) so
+        other reported fields are untouched. No-op if the agent isn't known.
+        """
+
+        agent = self._agents.get(agent_id)
+        if agent is not None:
+            agent.meta["arch"] = arch
+
     def mark_offline(self, agent_id: str) -> None:
         agent = self._agents.get(agent_id)
         if agent is not None:

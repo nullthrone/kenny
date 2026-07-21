@@ -1,8 +1,9 @@
-"""Agent registry: the typed, OS-aware ``Agent.os`` view (ADR-0035)."""
+"""Agent registry: the typed, OS-aware ``Agent.os`` view (ADR-0035) and the
+telemetry-reported arch mirror (ADR-0040)."""
 
 from __future__ import annotations
 
-from kenny_server.registry import Agent
+from kenny_server.registry import Agent, AgentRegistry
 
 
 def test_agent_os_defaults_to_windows_for_legacy_meta() -> None:
@@ -24,3 +25,27 @@ def test_to_public_surfaces_os() -> None:
     assert pub["agent_id"] == "a"
     # Legacy agent without meta.os still exposes an explicit "os" key.
     assert Agent("b").to_public()["os"] == "windows"
+
+
+async def _noop(_frame: object) -> None:
+    return None
+
+
+def test_note_arch_merges_without_wiping_other_meta() -> None:
+    reg = AgentRegistry()
+    reg.register_signed_async("legacy-pc", {"os": "linux", "hostname": "PC"}, _noop)
+    reg.note_arch("legacy-pc", "aarch64")
+    agent = reg.get("legacy-pc")
+    assert agent is not None
+    assert agent.arch == "aarch64"
+    # The rest of meta (set at register time) survives the merge.
+    assert agent.meta["hostname"] == "PC"
+    assert agent.meta["os"] == "linux"
+
+
+def test_note_arch_is_a_noop_for_an_unknown_agent() -> None:
+    # A telemetry push for an agent the registry doesn't (yet, or anymore) know
+    # about must never raise — the caller doesn't gate on this.
+    reg = AgentRegistry()
+    reg.note_arch("ghost-pc", "aarch64")
+    assert reg.get("ghost-pc") is None

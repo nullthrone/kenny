@@ -31,6 +31,13 @@ DEFAULT_REPO = "t11z/kenny"
 ASSET_RE = re.compile(r"^kenny-agent-.*-x86_64-pc-windows-msvc\.exe$")
 LINUX_ASSET_RE = re.compile(r"^kenny-agent-.*-(x86_64|aarch64)-unknown-linux-musl$")
 LINUX_ARCHES = ("x86_64", "aarch64")
+# The (os, arch) combinations we actually ship a binary for — the authoritative list
+# behind the dashboard's "Add a PC" arch dropdown (ADR-0040) and its availability
+# check. Windows has only ever shipped one target; `agent_binary_path` doesn't
+# consult `arch` for windows at all.
+SUPPORTED_TARGETS: tuple[tuple[str, str], ...] = (("windows", "x86_64"),) + tuple(
+    ("linux", arch) for arch in LINUX_ARCHES
+)
 FETCH_TIMEOUT_S = 15.0
 
 
