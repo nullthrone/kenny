@@ -103,7 +103,11 @@ class _Nonce:
     expires_at: float
     used: bool = False
     os: str = "windows"
-    arch: str = "x86_64"
+    # None means "not pinned" — the arch is unresolved until something else decides
+    # it (the Linux script's own `uname -m` detection). ``public_binary``'s fallback
+    # (``_norm_arch(query_param or entry.arch)``) treats None identically to the old
+    # literal "x86_64" default, so this is behavior-preserving.
+    arch: str | None = None
     # For a Linux "install" nonce, the paired "binary" nonce it hands the target
     # box (baked into the install script's download URL). It lives longer than
     # the install nonce (which is consumed on fetch) so the fetch->run gap is OK.
@@ -123,7 +127,7 @@ class ShareLinks:
         ttl_s: int,
         *,
         os_name: str = "windows",
-        arch: str = "x86_64",
+        arch: str | None = None,
         binary_nonce: str | None = None,
     ) -> str:
         nonce = secrets.token_urlsafe(24)
@@ -216,6 +220,7 @@ def _install_sh(
     server_pubkey: str,
     interval: int,
     binary_url: str,
+    arch: str | None = None,
 ) -> str:
     """The Linux install script (POSIX ``sh``, LF line endings).
 
@@ -228,7 +233,23 @@ def _install_sh(
             --telemetry-interval-secs <n>
 
     The enrollment token lives only here (in argv) — never on disk.
+
+    ``arch``, when given, is an operator-pinned target (ADR-0040): the script
+    skips ``uname -m`` detection and uses the pinned value literally — the
+    operator is preparing a package for a specific, already-known host. When
+    None (the default), the script auto-detects at curl-time exactly as before.
     """
+
+    arch_detect = (
+        "# Arch pinned by the operator when this install link was prepared.\n"
+        f"arch={arch}\n"
+        if arch is not None
+        else "# Map the machine arch onto our release naming.\n"
+        'case "$(uname -m)" in\n'
+        "  aarch64|arm64) arch=aarch64 ;;\n"
+        "  *) arch=x86_64 ;;\n"
+        "esac\n"
+    )
 
     setup = [
         '"$BIN" setup \\',
@@ -256,11 +277,7 @@ def _install_sh(
         "  exit 1\n"
         "fi\n"
         "\n"
-        "# Map the machine arch onto our release naming.\n"
-        'case "$(uname -m)" in\n'
-        "  aarch64|arm64) arch=aarch64 ;;\n"
-        "  *) arch=x86_64 ;;\n"
-        "esac\n"
+        f"{arch_detect}"
         "\n"
         "tmp=$(mktemp -d)\n"
         "trap 'rm -rf \"$tmp\"' EXIT\n"
@@ -311,23 +328,44 @@ def build_download_routes(
     def _req_os(request: Request) -> str:
         return (request.query_params.get("os") or "windows").strip().lower() or "windows"
 
-    async def _linux_install_script(agent_id: str) -> str:
+    def _req_arch(request: Request) -> str | None:
+        """An operator-pinned ``?arch=`` for a not-yet-existing host, or None.
+
+        Unlike ``_norm_arch``, an absent/unrecognized value returns None rather
+        than guessing — None means "not pinned", letting the Linux install script
+        fall back to its own ``uname -m`` auto-detection (ADR-0040).
+        """
+
+        raw = (request.query_params.get("arch") or "").strip().lower()
+        if raw in ("aarch64", "arm64"):
+            return "aarch64"
+        if raw in ("x86_64", "amd64"):
+            return "x86_64"
+        return None
+
+    async def _linux_install_script(agent_id: str, arch: str | None = None) -> str:
         """Mint a fresh token + a non-consumed Linux binary nonce, render the script.
 
         The binary nonce lives as long as the install link (INSTALLER_TTL_S) so it
-        survives the fetch->run gap. The token rides only in the script argv.
+        survives the fetch->run gap. The token rides only in the script argv. ``arch``
+        (ADR-0040) pins the target CPU arch when the operator already knows it;
+        None preserves the existing ``uname -m`` auto-detection.
         """
 
         token = await token_store.create_or_rotate(agent_id)
-        binary_nonce = share_links.create(agent_id, "binary", INSTALLER_TTL_S, os_name="linux")
+        binary_nonce = share_links.create(
+            agent_id, "binary", INSTALLER_TTL_S, os_name="linux", arch=arch
+        )
         binary_url = f"{_public_url()}/d/binary/{binary_nonce}?os=linux"
-        return _install_sh(agent_id, token, _wss_url(), _server_pubkey(), _interval(), binary_url)
+        return _install_sh(
+            agent_id, token, _wss_url(), _server_pubkey(), _interval(), binary_url, arch=arch
+        )
 
     async def installer(request: Request) -> Response:
         agent_id = request.path_params["id"]
         if _req_os(request) == "linux":
             # The operator brings this script to the Linux box and runs it as root.
-            script = await _linux_install_script(agent_id)
+            script = await _linux_install_script(agent_id, arch=_req_arch(request))
             return Response(
                 script,
                 media_type="text/x-shellscript",
@@ -349,12 +387,19 @@ def build_download_routes(
         if _req_os(request) == "linux":
             # A one-time install link + its paired (non-consumed) binary nonce. We
             # store the binary nonce on the install nonce so /d/install can reach it.
-            binary_nonce = share_links.create(agent_id, "binary", INSTALLER_TTL_S, os_name="linux")
+            # `arch` (ADR-0040), when pinned, rides on BOTH nonces: the install
+            # nonce so `public_install` can recover it at fetch time (across the
+            # mint->fetch gap), the binary nonce as `public_binary`'s own fallback.
+            arch = _req_arch(request)
+            binary_nonce = share_links.create(
+                agent_id, "binary", INSTALLER_TTL_S, os_name="linux", arch=arch
+            )
             install_nonce = share_links.create(
                 agent_id,
                 "install",
                 INSTALLER_TTL_S,
                 os_name="linux",
+                arch=arch,
                 binary_nonce=binary_nonce,
             )
             url = f"{_public_url()}/d/install/{install_nonce}"
@@ -379,10 +424,18 @@ def build_download_routes(
         agent_id = entry.agent_id
         token = await token_store.create_or_rotate(agent_id)
         binary_nonce = entry.binary_nonce or share_links.create(
-            agent_id, "binary", INSTALLER_TTL_S, os_name="linux"
+            agent_id, "binary", INSTALLER_TTL_S, os_name="linux", arch=entry.arch
         )
         binary_url = f"{_public_url()}/d/binary/{binary_nonce}?os=linux"
-        script = _install_sh(agent_id, token, _wss_url(), _server_pubkey(), _interval(), binary_url)
+        script = _install_sh(
+            agent_id,
+            token,
+            _wss_url(),
+            _server_pubkey(),
+            _interval(),
+            binary_url,
+            arch=entry.arch,
+        )
         return Response(script, media_type="text/x-shellscript")
 
     async def public_installer(request: Request) -> Response:
@@ -494,6 +547,12 @@ def build_download_routes(
                 or agent_binary_path("linux", "aarch64") is not None
             ),
         }
+        # Per-(os,arch) availability (ADR-0040): the dashboard's "Add a PC" arch
+        # dropdown offers only combinations we actually have a binary for.
+        body["targets"] = [
+            {"os": os_name, "arch": arch, "available": agent_binary_path(os_name, arch) is not None}
+            for os_name, arch in agent_release.SUPPORTED_TARGETS
+        ]
         body["github_configured"] = agent_release.github_configured()
         body["repo"] = agent_release.github_repo()
         last = getattr(request.app.state, "last_fetch", None)

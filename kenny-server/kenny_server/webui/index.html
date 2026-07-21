@@ -2532,20 +2532,38 @@
         <div class="kc-fleet__list">${items || '<div class="k-muted">No agents yet.</div>'}</div>`;
     }
 
+    // Human label for an (os,arch) target. Only Linux distinguishes arch today
+    // (Windows has ever only shipped one target) — see ADR-0040.
+    function targetLabel(os, arch) {
+      if (os === "windows") return "Windows";
+      return arch === "aarch64" ? "Linux (ARM64)" : "Linux (x86_64)";
+    }
+    // Options for the "Add a PC" target picker, built from the server's actual
+    // binary availability (`bin.targets`, ADR-0040) so the dropdown can never
+    // offer a combination we don't ship. Falls back to a static Windows/Linux
+    // pair if `bin.targets` isn't present yet (e.g. a stale cached page hitting
+    // an older API during rollout).
+    function targetOptionsHtml(bin) {
+      const targets = (bin && bin.targets) || [
+        { os: "windows", arch: "x86_64", available: true },
+        { os: "linux", arch: "x86_64", available: true },
+      ];
+      const avail = targets.filter(t => t.available);
+      const list = avail.length ? avail : targets; // never render an empty select
+      return list.map(t => `<option value="${t.os}:${t.arch}">${targetLabel(t.os, t.arch)}</option>`).join("");
+    }
+
     function addPcHtml(bin) {
-      // A missing binary for one OS must not block the other; only disable when
-      // neither OS has a binary available.
-      const anyAvail = !bin || bin.available || (bin.by_os && (bin.by_os.windows || bin.by_os.linux));
+      // A missing binary for one target must not block the others; only disable
+      // when nothing is available at all.
+      const anyAvail = !bin || (bin.targets ? bin.targets.some(t => t.available) : bin.available || (bin.by_os && (bin.by_os.windows || bin.by_os.linux)));
       const dis = anyAvail ? "" : "disabled";
       return `<div class="kc-addpc">
         <div class="kc-addpc__head">${icon('plus', 14)}Add a PC</div>
         <input class="k-input" id="new-agent-id" placeholder="agent id (e.g. study-pc)" autocomplete="off" />
         <div class="k-row kc-addpc__row" style="margin-top:8px">
           <div class="kc-addpc__split">
-            <select class="k-input kc-addpc__os" id="new-agent-os">
-              <option value="windows">Windows</option>
-              <option value="linux">Linux</option>
-            </select>
+            <select class="k-input kc-addpc__os" id="new-agent-os">${targetOptionsHtml(bin)}</select>
             <button class="k-btn k-btn--primary k-btn--sm kc-addpc__go" onclick="downloadNewInstaller()" ${dis}>${icon('download', 13)}installer</button>
           </div>
           <button class="k-btn k-btn--ghost k-btn--sm" onclick="shareNewInstaller()" ${dis}>${icon('link', 13)}share link</button>
@@ -3301,16 +3319,26 @@
     }
 
     // -- agent distribution (installer / share / update) ------------------
-    function downloadInstaller(id) { window.location = "/api/agents/" + encodeURIComponent(id) + "/installer"; }
-    function newAgentOs() {
+    // `arch` (ADR-0040) is only ever passed from the "Add a PC" flow, where the
+    // operator picked a specific target from the dropdown; the per-agent detail
+    // "reinstall"/"re-share" buttons call these with just `id` (arch is already
+    // known for an enrolled host) and get today's unpinned behavior unchanged.
+    function downloadInstaller(id, arch) {
+      const q = arch ? ("?arch=" + encodeURIComponent(arch)) : "";
+      window.location = "/api/agents/" + encodeURIComponent(id) + "/installer" + q;
+    }
+    function newAgentTarget() {
       const el = document.getElementById("new-agent-os");
-      return el ? el.value : "windows";
+      const v = el ? el.value : "windows:x86_64";
+      const [os, arch] = v.split(":");
+      return { os: os || "windows", arch: arch || "x86_64" };
     }
     function downloadNewInstaller() {
       const id = (document.getElementById("new-agent-id").value || "").trim();
       if (!id) return notify("enter an agent id", "err");
-      if (newAgentOs() === "linux") return shareLinuxInstaller(id);
-      downloadInstaller(id);
+      const { os, arch } = newAgentTarget();
+      if (os === "linux") return shareLinuxInstaller(id, arch);
+      downloadInstaller(id, arch);
     }
     async function shareInstaller(id) {
       try {
@@ -3319,16 +3347,18 @@
       } catch (e) { notify("share failed: " + e.message, "err"); }
     }
     // Linux install is a root one-liner (curl … | sudo sh) rather than a ZIP.
-    async function shareLinuxInstaller(id) {
+    async function shareLinuxInstaller(id, arch) {
       try {
-        const r = await getJSON("/api/agents/" + encodeURIComponent(id) + "/share-link?os=linux", { method: "POST" });
+        const q = arch ? ("&arch=" + encodeURIComponent(arch)) : "";
+        const r = await getJSON("/api/agents/" + encodeURIComponent(id) + "/share-link?os=linux" + q, { method: "POST" });
         shareLinuxModal(id, r.oneliner || r.url, r.expires_in);
       } catch (e) { notify("share failed: " + e.message, "err"); }
     }
     function shareNewInstaller() {
       const id = (document.getElementById("new-agent-id").value || "").trim();
       if (!id) return notify("enter an agent id", "err");
-      if (newAgentOs() === "linux") return shareLinuxInstaller(id);
+      const { os, arch } = newAgentTarget();
+      if (os === "linux") return shareLinuxInstaller(id, arch);
       shareInstaller(id);
     }
     async function updateAgent(id) {

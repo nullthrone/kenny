@@ -617,11 +617,20 @@ for fleet aggregation. These thresholds are illustrative of the data-driven rule
 
 ## Versioning
 
-`PROTOCOL_VERSION = "0.12"`. Both implementations expose this constant; from v0.8 the
+`PROTOCOL_VERSION = "0.13"`. Both implementations expose this constant; from v0.8 the
 agent puts it on the wire in `register.protocol` to select the mutual-auth handshake
 (compare versions **numerically per component**, not lexically — `"0.10"` is newer than
 `"0.9"`). Bump on any breaking change to a frame or tool schema.
 
+- `0.13` — added `arch` to the `os_support` telemetry section, mirroring
+  `register.meta.arch`. The server merges a reported value into the agent's stored
+  `arch` on every telemetry push, giving it a periodic, self-refreshing signal in
+  addition to the one-time value from `register` — so a long-lived connection stays
+  correct even if the initial `register.meta.arch` were ever missing or stale. Additive:
+  no frame/tool-schema changes, `Section` already accepts arbitrary fields. See
+  ADR-0040. This does not retroactively fix an already-deployed pre-0.11 agent that
+  never reports `arch` on either channel — only updating/reinstalling to an
+  arch-reporting build does.
 - `0.12` — added the `paused` error code for anti-cheat coexistence: while a protected game
   is running on the endpoint, the agent voluntarily suspends its most anti-cheat-visible tools
   (today `screen_capture`) and relaxes the process/port telemetry sections, returning `paused`

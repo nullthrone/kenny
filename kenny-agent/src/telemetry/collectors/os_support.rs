@@ -1,7 +1,9 @@
 //! `os_support` section — OS edition/build and end-of-support posture.
 //!
 //! Portable basics (name/version) via `sysinfo`; Windows enriches with build and
-//! support lifecycle.
+//! support lifecycle. Also carries `arch` (protocol 0.13), mirroring
+//! `register.meta.arch` — a periodic, self-refreshing reconfirmation of the CPU
+//! architecture the update-serving path relies on (see ADR-0040).
 
 use serde_json::json;
 use sysinfo::System;
@@ -24,7 +26,10 @@ pub fn collect() -> Section {
         Section::with_fields(
             Status::Ok,
             long,
-            json!({ "name": name, "version": version, "build": null, "eol": null, "eol_date": null }),
+            json!({
+                "name": name, "version": version, "build": null, "eol": null, "eol_date": null,
+                "arch": crate::util::arch(),
+            }),
         )
     }
 }
@@ -83,6 +88,7 @@ mod windows_impl {
                 "build": build,
                 "eol": eol,
                 "eol_date": eol_date,
+                "arch": crate::util::arch(),
             }),
         )
     }
@@ -117,5 +123,15 @@ mod tests {
     fn os_support_section_is_valid() {
         let v = collect().into_value();
         assert!(v["name"].is_string());
+    }
+
+    #[test]
+    fn os_support_section_reports_arch() {
+        let v = collect().into_value();
+        assert!(matches!(
+            v["arch"].as_str(),
+            Some("x86_64") | Some("aarch64")
+        ));
+        assert_eq!(v["arch"].as_str().unwrap(), crate::util::arch());
     }
 }
