@@ -184,6 +184,18 @@ class UserStore:
         ) as cur:
             return await cur.fetchone()
 
+    async def get_enabled_row(self, user_id: int) -> aiosqlite.Row | None:
+        """The account row for ``user_id`` iff it exists and is enabled.
+
+        Used to resolve an OAuth access token (which stores only ``user_id``) back
+        to the account, mirroring the enabled-user guard in :meth:`resolve_pat`.
+        """
+
+        row = await self._get_row(user_id)
+        if row is None or row["disabled"]:
+            return None
+        return row
+
     async def list_users(self) -> list[dict]:
         async with self._conn.execute(
             "SELECT * FROM users ORDER BY username"

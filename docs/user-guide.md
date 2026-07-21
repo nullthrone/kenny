@@ -37,7 +37,7 @@ flowchart LR
 
   Operator -->|"https + login"| UI
   Operator -->|"chat"| UI
-  Operator --> Claude -->|"MCP (Bearer token)"| MCP
+  Operator --> Claude -->|"MCP (OAuth)"| MCP
   UI --> Tunnel
   MCP --> Tunnel
   Tunnel <-->|"WSS, agent dials out"| Agent
@@ -54,8 +54,10 @@ own per-agent token; you authenticate to the server with the **operator token**.
 2. You are redirected to `/login`. Enter the **operator token** (set by whoever runs the server as
    `KENNY_OPERATOR_TOKEN`). A cookie keeps you signed in; `/logout` clears it.
 
-> The same operator token is what a local Claude client sends as `Authorization: Bearer <token>` to
-> the `/mcp` endpoint.
+> The web UI and a local Claude client are two separate front doors to the same account. The
+> browser uses this login cookie; Claude Desktop uses the **OAuth flow** (see
+> [Option B](#option-b--a-local-claude-client-over-mcp) below), signing in with these same
+> credentials and approving the connection once.
 
 ## The Overview tab
 
@@ -152,8 +154,23 @@ for the copilot in detail.
 
 ### Option B — a local Claude client over MCP
 
-Point any MCP client at `https://<server>/mcp` with the operator token as a bearer credential. The
-same tools are available; `select_agent` chooses the target PC.
+kenny is a remote MCP server with a built-in **OAuth 2.1** authorization flow ([ADR-0041](adr/0041-oauth2-authorization-server-for-mcp.md)),
+so connecting Claude Desktop takes no token copy-paste:
+
+1. In Claude Desktop, open **Settings → Connectors → Add custom connector**.
+2. Enter the server's MCP URL — `https://<server>/mcp` — and continue.
+3. Claude opens kenny's sign-in page. Log in with your kenny **username and password** (and 2FA
+   code if you enabled it), the same credentials as the web dashboard.
+4. Approve the one-time **"Allow this connection?"** consent screen. Claude stores the resulting
+   token and reconnects automatically from then on.
+
+The connection acts as **your** account: the same tools are available and `select_agent` chooses
+the target PC, all within your role and host scope. Revoke it any time by disabling the grant (or
+resetting your password) — see the [dashboard reference](dashboard.md).
+
+> **Scripts and other MCP clients** that can't do the OAuth handshake can still authenticate with a
+> **personal access token**: mint one under *Profile → personal access tokens* and send it as
+> `Authorization: Bearer <pat>` to `https://<server>/mcp`.
 
 ### Tool catalog
 

@@ -42,6 +42,7 @@ from .keystore import KeyStore
 from .registry import AgentRegistry
 from .tokenstore import AgentTokenStore
 from .tunnel import AgentTunnel, ToolError
+from .urls import public_base_url
 
 INSTALLER_TTL_S = 3600  # one hour for an operator-shared installer link
 BINARY_TTL_S = 600  # ten minutes for a self-update binary fetch
@@ -78,11 +79,7 @@ def agent_binary_path(os_name: str = "windows", arch: str = "x86_64") -> str | N
 def _public_url() -> str:
     """Externally reachable base URL of this server (for links the agent/user open)."""
 
-    base = os.environ.get("KENNY_PUBLIC_URL", "").strip()
-    if base:
-        return base.rstrip("/")
-    port = os.environ.get("KENNY_PORT", "8000")
-    return f"http://localhost:{port}"
+    return public_base_url()
 
 
 def _wss_url() -> str:
