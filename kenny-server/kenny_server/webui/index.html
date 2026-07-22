@@ -2838,8 +2838,9 @@
         body += `<div class="k-detail-grp"><div class="k-muted">No error or critical events in the window — nothing to break down.</div></div>`;
         return body;
       }
-      body += `<div class="k-detail-grp"><div class="k-detail-grp__lbl">what's going wrong · by day</div>
-        <div class="kc-chart" id="k-reliab-heat" style="height:200px"></div></div>`;
+      body += `<div class="k-detail-grp"><div class="k-detail-grp__lbl">what's going wrong · by day — click a cell for its events</div>
+        <div class="kc-chart" id="k-reliab-heat" style="height:200px"></div>
+        <div id="k-reliab-cell" style="display:none"></div></div>`;
 
       // Group the raw events by friendly category for the expandable breakdown.
       const byCat = {};
@@ -2850,12 +2851,7 @@
       const cats = Object.keys(byCat).sort((a, b) =>
         catTotal(byCat[b]) - catTotal(byCat[a]));
       const groups = cats.map(cat => {
-        const rows = byCat[cat].slice().sort((a, b) => (b.count || 0) - (a.count || 0)).map(e => `<tr>
-          <td class="k-mono">${esc(e.source || "?")}${e.event_id != null ? " / " + esc(String(e.event_id)) : ""}</td>
-          <td>${relLevelBadge(e.level)}</td>
-          <td class="k-mono">${esc(String(e.count ?? "—"))}</td>
-          <td>${esc(fmtValue("last_seen", e.last_seen))}</td>
-          <td class="k-muted">${esc(e.sample || "")}</td></tr>`).join("");
+        const rows = byCat[cat].slice().sort((a, b) => (b.count || 0) - (a.count || 0)).map(e => reliabEventRow(e)).join("");
         return `<details class="k-relcat">
           <summary><span class="k-relcat__name">${esc(cat)}</span>
             <span class="k-relcat__count">${catTotal(byCat[cat])} event(s)</span></summary>
@@ -2869,6 +2865,41 @@
     function relLevelBadge(level) {
       const cls = level === "critical" ? "crit" : "warn";
       return `<span class="k-pill k-pill--${cls}">${esc(level || "error")}</span>`;
+    }
+    // One event row for the reliability tables. With `dayKey` the count column shows
+    // that day's contribution (used by the clicked-cell panel); without it, the
+    // window total (used by the per-category breakdown).
+    function reliabEventRow(e, dayKey) {
+      const cnt = dayKey ? ((e.by_day || {})[dayKey] || 0) : (e.count ?? "—");
+      return `<tr>
+        <td class="k-mono">${esc(e.source || "?")}${e.event_id != null ? " / " + esc(String(e.event_id)) : ""}</td>
+        <td>${relLevelBadge(e.level)}</td>
+        <td class="k-mono">${esc(String(cnt))}</td>
+        <td>${esc(fmtValue("last_seen", e.last_seen))}</td>
+        <td class="k-muted">${esc(e.sample || "")}</td></tr>`;
+    }
+    // Fill the inline panel under the by-day heatmap with the exact events behind a
+    // clicked cell — that friendly category, on that day. Same grouping expression as
+    // the heatmap so the selection matches the cell; count column shows the day's share.
+    function renderReliabCell(cat, day, events) {
+      const panel = document.getElementById("k-reliab-cell");
+      if (!panel) return;
+      const hits = (events || [])
+        .filter(e => (e.category || e.source || "Other") === cat && ((e.by_day || {})[day] || 0) > 0)
+        .sort((a, b) => ((b.by_day || {})[day] || 0) - ((a.by_day || {})[day] || 0));
+      const total = hits.reduce((n, e) => n + ((e.by_day || {})[day] || 0), 0);
+      const lbl = `${esc(cat)} · ${esc(day)} — ${total} event(s)`;
+      if (!hits.length) {
+        panel.innerHTML = `<div class="k-detail-grp__lbl">${lbl}</div>
+          <div class="k-muted">no events recorded for this cell.</div>`;
+      } else {
+        const rows = hits.map(e => reliabEventRow(e, day)).join("");
+        panel.innerHTML = `<div class="k-detail-grp__lbl">${lbl}</div>
+          <table class="k-dtable"><thead><tr><th>source / id</th><th>level</th><th>count</th><th>last seen</th><th>sample</th></tr></thead>
+            <tbody>${rows}</tbody></table>`;
+      }
+      panel.style.display = "";
+      panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
     }
 
     // Draw the category × day heatmap into the reliability popup from the events'
@@ -2913,7 +2944,12 @@
                  axisLabel: { color: base._fg }, axisLine: { lineStyle: { color: base._border } } },
         visualMap: { min: 0, max, calculable: false, show: false,
                      inRange: { color: [cssVar("--surface-raised"), cssVar("--amber-deep") || cssVar("--accent"), statusColor("crit")] } },
-        series: [{ type: "heatmap", data, itemStyle: { borderColor: base._border, borderWidth: 1 } }],
+        series: [{ type: "heatmap", data, itemStyle: { borderColor: base._border, borderWidth: 1 },
+                   emphasis: { itemStyle: { borderColor: base._fg } } }],
+      });
+      inst.on("click", p => {
+        if (!p.data) return;
+        renderReliabCell(p.data._cat, p.data._day, events);
       });
     }
     // Parental-controls detail: flagged hits + observed domains + the per-host
