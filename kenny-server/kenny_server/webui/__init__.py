@@ -887,19 +887,15 @@ def build_chat_routes(
                 },
                 status_code=409,
             )
-        # Context-aware chat: if the dashboard has an agent selected, scope the
-        # active agent to it so forwarded capability tools target that machine,
-        # and remember it on the session so the model is told about it too (see
-        # chat._context_note). Always sync, including clearing back to None when
-        # the dashboard switches to fleet-wide — otherwise the session would
-        # keep pointing (and telling the model) at a stale agent.
+        # Context-aware chat: remember the dashboard's selected agent on the
+        # session so forwarded capability tools target that machine (ADR-0042)
+        # and the model is told about it too (see chat._context_note). This is
+        # session-local state, not a shared registry slot — concurrent chat
+        # sessions never clobber each other's selection. Always sync, including
+        # clearing back to None when the dashboard switches to fleet-wide —
+        # otherwise the session would keep pointing (and telling the model) at
+        # a stale agent.
         agent_id = str(body.get("agent_id", "")).strip()
-        if agent_id:
-            try:
-                registry.select(agent_id)
-            except KeyError:
-                if agent_id in await store.known_agents():
-                    registry._active_agent = agent_id  # noqa: SLF001 (matches chat.py dev path)
         session.agent_id = agent_id or None
         try:
             result = await run_turn(
@@ -958,12 +954,6 @@ def build_chat_routes(
         # See api_chat above: always sync session.agent_id (including clearing
         # it back to None) so it never lags the dashboard's current selection.
         agent_id = str(body.get("agent_id", "")).strip()
-        if agent_id:
-            try:
-                registry.select(agent_id)
-            except KeyError:
-                if agent_id in await store.known_agents():
-                    registry._active_agent = agent_id  # noqa: SLF001 (matches chat.py dev path)
         session.agent_id = agent_id or None
         client = client_factory()
         model = _chat_model(request)
