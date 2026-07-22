@@ -1,16 +1,16 @@
 //! `powershell_exec` — run a script and return stdout/stderr/exit_code.
 //!
-//! On Windows this shells out to `powershell.exe -NoProfile -Command <script>`.
-//! Off Windows (dev/CI) it falls back to `sh -c <script>` so e2e flows work.
+//! On Windows this shells out to `powershell.exe -NoProfile -Command <script>`. It is
+//! `unsupported` off Windows — this tool's OS-scoped mirror is `shell_exec`
+//! (`handlers::shell`), which runs the POSIX equivalent via `sh -c` there.
 
 use serde::Deserialize;
-use serde_json::{json, Value};
-use std::time::Duration;
-use tokio::process::Command;
+use serde_json::Value;
 
 use crate::protocol::ErrorCode;
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(not(windows), allow(dead_code))] // fields unused by the `unsupported` off-Windows stub
 struct Args {
     script: String,
     #[serde(default)]
@@ -26,7 +26,17 @@ pub async fn exec(args: Value) -> Result<Value, (ErrorCode, String)> {
         )
     })?;
 
-    let mut cmd = build_command(&args.script);
+    run(&args).await
+}
+
+#[cfg(windows)]
+async fn run(args: &Args) -> Result<Value, (ErrorCode, String)> {
+    use serde_json::json;
+    use std::time::Duration;
+    use tokio::process::Command;
+
+    let mut cmd = Command::new("powershell.exe");
+    cmd.args(["-NoProfile", "-NonInteractive", "-Command", &args.script]);
     let fut = cmd.output();
 
     let output = match args.timeout_s {
@@ -45,31 +55,18 @@ pub async fn exec(args: Value) -> Result<Value, (ErrorCode, String)> {
     }))
 }
 
-#[cfg(windows)]
-fn build_command(script: &str) -> Command {
-    let mut cmd = Command::new("powershell.exe");
-    cmd.args(["-NoProfile", "-NonInteractive", "-Command", script]);
-    cmd
-}
-
 #[cfg(not(windows))]
-fn build_command(script: &str) -> Command {
-    let mut cmd = Command::new("sh");
-    cmd.args(["-c", script]);
-    cmd
+async fn run(_args: &Args) -> Result<Value, (ErrorCode, String)> {
+    Err((
+        ErrorCode::Unsupported,
+        "powershell_exec is not supported off Windows; use shell_exec instead".to_string(),
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[tokio::test]
-    async fn echoes_stdout_via_fallback() {
-        // On non-Windows CI this runs `sh -c 'printf hi'`.
-        let result = exec(json!({"script": "printf hi"})).await.unwrap();
-        assert_eq!(result["stdout"], "hi");
-        assert_eq!(result["exit_code"], 0);
-    }
+    use serde_json::json;
 
     #[tokio::test]
     async fn rejects_bad_args() {
@@ -77,11 +74,27 @@ mod tests {
         assert_eq!(err.0, ErrorCode::BadArgs);
     }
 
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn echoes_stdout() {
+        let result = exec(json!({"script": "Write-Output hi"})).await.unwrap();
+        assert_eq!(result["stdout"].as_str().unwrap().trim(), "hi");
+        assert_eq!(result["exit_code"], 0);
+    }
+
+    #[cfg(windows)]
     #[tokio::test]
     async fn times_out() {
-        let err = exec(json!({"script": "sleep 5", "timeout_s": 1}))
+        let err = exec(json!({"script": "Start-Sleep -Seconds 5", "timeout_s": 1}))
             .await
             .unwrap_err();
         assert_eq!(err.0, ErrorCode::Timeout);
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn unsupported_off_windows() {
+        let err = exec(json!({"script": "echo hi"})).await.unwrap_err();
+        assert_eq!(err.0, ErrorCode::Unsupported);
     }
 }

@@ -89,6 +89,7 @@ def _compile_group(rules: list[Any]) -> dict[str, list[tuple[str, re.Pattern[str
 
     groups: dict[str, list[tuple[str, re.Pattern[str]]]] = {
         "powershell": [],
+        "posix": [],
         "self_protection": [],
         "path": [],
     }
@@ -189,6 +190,12 @@ class PolicyEngine:
             if not isinstance(script, str):
                 script = ""
             return self._match("powershell", script) or self._match("self_protection", script)
+
+        if tool == "shell_exec":
+            command = args.get("command", "")
+            if not isinstance(command, str):
+                command = ""
+            return self._match("posix", command) or self._match("self_protection", command)
 
         if tool in _SELF_PROTECTION_TOOLS:
             # These tools forward their string args into a shell/exec on the agent

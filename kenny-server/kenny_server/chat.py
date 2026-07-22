@@ -89,6 +89,7 @@ SERVER_TOOLS: dict[str, dict[str, Any]] = {
 STATE_CHANGING_TOOLS: frozenset[str] = frozenset(
     {
         "powershell_exec",
+        "shell_exec",
         "winget_install",
         "winget_uninstall",
         "winget_update",

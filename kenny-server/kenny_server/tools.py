@@ -41,9 +41,33 @@ from .webfilter import WebFilterService, load_seed
 
 logger = logging.getLogger("kenny.tools")
 
+# OS-scoped capability tools: name -> required agent OS family ("windows" or
+# "posix", the latter covering both "linux" and "macos" agents). Each has an
+# exact mirror on the other family. Enforced in ``make_forwarder`` so a
+# wrong-OS call is refused with an actionable message before ever reaching the
+# tunnel (see docs/protocol.md § "OS-scoped tools").
+_OS_SCOPED_TOOLS: dict[str, str] = {
+    "powershell_exec": "windows",
+    "shell_exec": "posix",
+}
+
+# The OS-scoped mirror of each key in ``_OS_SCOPED_TOOLS``, for error messages.
+_OS_SCOPED_MIRROR: dict[str, str] = {
+    "powershell_exec": "shell_exec",
+    "shell_exec": "powershell_exec",
+}
+
+
+def _os_family(agent_os: str) -> str:
+    """Collapse an agent's reported OS into the two shell-tool families."""
+
+    return "windows" if agent_os == "windows" else "posix"
+
+
 # Forwarding capability tools: name -> ordered arg keys (optional keys end "?").
 CAPABILITY_TOOLS: dict[str, list[str]] = {
     "powershell_exec": ["script", "timeout_s"],
+    "shell_exec": ["command", "timeout_s"],
     "fs_list": ["path"],
     "fs_search": ["root", "pattern"],
     "fs_read": ["path"],
@@ -282,11 +306,31 @@ def register_tools(
     forward_logger = logging.getLogger("kenny.tools")
 
     def make_forwarder(tool_name: str):
+        required_os = _OS_SCOPED_TOOLS.get(tool_name)
+
         async def forward(args: dict[str, Any] | None = None) -> dict[str, Any]:
             """Forward this capability call to the named agent and return its result."""
             args = args or {}
             principal = _mcp_principal()
             agent_id = _resolve_target(principal, args)
+
+            # OS-scoped shell tools (powershell_exec/shell_exec): refuse the wrong
+            # one for this agent's OS before ever forwarding, with a message naming
+            # the correct tool (docs/protocol.md § "OS-scoped tools").
+            # Skipped when the agent isn't in the registry (e.g. named only from
+            # stored telemetry) — the tunnel send fails as offline in that case.
+            if required_os is not None:
+                agent = registry.get(agent_id)
+                if agent is not None and _os_family(agent.os) != required_os:
+                    mirror = _OS_SCOPED_MIRROR[tool_name]
+                    message = (
+                        f"agent {agent_id!r} is {agent.os}; {tool_name} requires "
+                        f"{required_os}, use {mirror} instead"
+                    )
+                    forward_logger.info("refused %s -> %s: %s", tool_name, agent_id, message)
+                    await call_log.record(agent_id, tool_name, args, ok=False, error=message)
+                    raise ToolError("unsupported", message)
+
             timeout_s = float(args.get("timeout_s", 30))
             forward_logger.info("forward %s -> %s", tool_name, agent_id)
             try:

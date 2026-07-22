@@ -84,7 +84,7 @@ _The Overview dashboard — see the **[dashboard reference](docs/dashboard.md)**
 </div>
 
 ### Remote administration — capability tools
-- **Shell**: `powershell_exec`
+- **Shell**: `powershell_exec` (Windows) · `shell_exec` (Linux/macOS)
 - **Packages**: `winget_list` · `winget_install` · `winget_uninstall` · `winget_update`
 - **Files**: `fs_list` · `fs_search` · `fs_read` · `fs_disk_usage`
 - **Diagnostics**: `diag_processes` · `diag_services` · `diag_eventlog` · `diag_autostart`
@@ -105,9 +105,9 @@ _The Overview dashboard — see the **[dashboard reference](docs/dashboard.md)**
 - **Server-hosted chat** in the dashboard (no local client): a Claude tool-use loop bridged to the
   same tools, with prompt-cached system + tool schemas; model configurable (default
   `claude-sonnet-4-6`).
-- **Confirm-gate**: read-only tools auto-run; state-changing tools (`powershell_exec`, `winget`
-  writes, `net_dns_flush`/`adapter_reset`, `remotehelp_start`/`_stop`, `agent_update`) require
-  explicit operator confirmation.
+- **Confirm-gate**: read-only tools auto-run; state-changing tools (`powershell_exec`/
+  `shell_exec`, `winget` writes, `net_dns_flush`/`adapter_reset`, `remotehelp_start`/`_stop`,
+  `agent_update`) require explicit operator confirmation.
 
 ### Agent distribution & lifecycle
 - **One-click installer download** from the GUI: a prebuilt binary + a generated `install.bat`

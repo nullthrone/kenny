@@ -12,6 +12,8 @@ Adding/altering a fixture is a contract change — see `docs/protocol.md` § Ver
 | `register.json`                 | `register` frame                                 |
 | `request_powershell_exec.json`  | `request` frame (`powershell_exec`)              |
 | `response_powershell_exec.json` | successful `response` frame                      |
+| `request_shell_exec.json`       | `request` frame (`shell_exec`)                   |
+| `response_shell_exec.json`      | successful `response` frame (`shell_exec`)       |
 | `request_winget_list.json`      | `request` frame (`winget_list`)                  |
 | `response_winget_list.json`     | successful `response` frame (`winget_list`)      |
 | `request_remotehelp_status.json`  | `request` frame (`remotehelp_status`)          |

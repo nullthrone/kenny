@@ -11,5 +11,6 @@ pub mod network;
 pub mod powershell;
 pub mod remotehelp;
 pub mod screenshot;
+pub mod shell;
 pub mod webfilter;
 pub mod winget;

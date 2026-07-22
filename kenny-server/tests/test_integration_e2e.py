@@ -1,10 +1,12 @@
 """Real Rust<->Python end-to-end test (no mock agent).
 
 Runs the composed server on uvicorn and spawns the **actual** compiled
-`kenny-agent` binary, which dials `/agent/ws`, registers, serves a forwarded
-`powershell_exec` (the agent's `sh` fallback on Linux, real `powershell.exe` on
-Windows), and pushes a telemetry snapshot. Asserts the round-trip through the real
-wire protocol on both sides.
+`kenny-agent` binary, which dials `/agent/ws`, registers, serves a forwarded shell
+call — `shell_exec` via real `sh` on Linux, `powershell_exec` via real
+`powershell.exe` on Windows (each is `unsupported` on the other OS, and the
+server's OS guard refuses the wrong one before ever forwarding it, see
+docs/protocol.md § "OS-scoped tools") — and pushes a telemetry
+snapshot. Asserts the round-trip through the real wire protocol on both sides.
 
 On a Windows runner the test additionally drives the real `#[cfg(windows)]` tool
 paths (CIM/WMI diagnostics, `ipconfig /flushdns`, winget) that return `unsupported`
@@ -127,11 +129,18 @@ async def test_real_agent_end_to_end(tmp_path) -> None:
                 # select_agent is advisory only (ADR-0042); forwarded capability
                 # calls require their own agent_id naming the target host.
                 await client.call_tool("select_agent", {"id": "dev"})
-                res = await client.call_tool(
-                    "powershell_exec",
-                    {"args": {"script": "echo hi", "timeout_s": 20, "agent_id": "dev"}},
-                )
-                # `sh -c "echo hi"` on Linux; real `powershell.exe` on Windows.
+                if sys.platform == "win32":
+                    res = await client.call_tool(
+                        "powershell_exec",
+                        {"args": {"script": "echo hi", "timeout_s": 20, "agent_id": "dev"}},
+                    )
+                else:
+                    # shell_exec is powershell_exec's OS-scoped mirror; the real
+                    # agent runs it via `sh -c "echo hi"` on Linux.
+                    res = await client.call_tool(
+                        "shell_exec",
+                        {"args": {"command": "echo hi", "timeout_s": 20, "agent_id": "dev"}},
+                    )
                 assert res.data["exit_code"] == 0
                 assert "hi" in res.data["stdout"]
 
@@ -208,6 +217,15 @@ async def _assert_windows_tools(client) -> None:
     flush = await _call(client, "net_dns_flush")
     assert flush["ok"] is True
 
+    # Boundary: shell_exec is OS-scoped to Linux/macOS. On a Windows agent the
+    # server's OS guard refuses it before ever forwarding.
+    shell_exec_raised = False
+    try:
+        await _call(client, "shell_exec", {"command": "echo hi"})
+    except Exception:  # noqa: BLE001 - `unsupported` on Windows is the expected outcome
+        shell_exec_raised = True
+    assert shell_exec_raised, "shell_exec must be refused for a Windows agent"
+
     # winget/App Installer is not reliably preinstalled on hosted Server images
     # (notably windows-2022). Run it for real where present; skip cleanly when the
     # agent reports it unavailable (an `unsupported`/`exec_failed` ToolError).
@@ -258,6 +276,15 @@ async def _assert_linux(client) -> None:
     except Exception:  # noqa: BLE001 - `unsupported` on Linux is the expected outcome
         winget_raised = True
     assert winget_raised, "winget_list must raise `unsupported` on the Linux build"
+
+    # Boundary: powershell_exec is OS-scoped to Windows. On a Linux agent the
+    # server's OS guard refuses it before ever forwarding.
+    powershell_raised = False
+    try:
+        await _call(client, "powershell_exec", {"script": "echo hi"})
+    except Exception:  # noqa: BLE001 - `unsupported` on Linux is the expected outcome
+        powershell_raised = True
+    assert powershell_raised, "powershell_exec must be refused for a Linux agent"
 
     # Real Linux collectors, read back through the pushed snapshot.
     async def _section(name: str) -> dict:

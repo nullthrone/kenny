@@ -9,11 +9,13 @@ where each call is recorded. For the operator workflow around these tools, see
 
 kenny splits its tools into two families:
 
-- **Capability tools** run on a single Windows PC. Every call names its target with an
-  `agent_id` argument, forwards a `request` frame to that agent through the tunnel, and
-  returns the agent's `response`. `powershell_exec`, the `fs_*`, `winget_*`, `diag_*`,
-  `net_*` tools, `screen_capture`, `remotehelp_*`, `telemetry_collect`, and `agent_update`
-  are all capability tools.
+- **Capability tools** run on a single agent PC (Windows, Linux, or macOS). Every call names
+  its target with an `agent_id` argument, forwards a `request` frame to that agent through
+  the tunnel, and returns the agent's `response`. `powershell_exec`, `shell_exec`, the
+  `fs_*`, `winget_*`, `diag_*`, `net_*` tools, `screen_capture`, `remotehelp_*`,
+  `telemetry_collect`, and `agent_update` are all capability tools. `powershell_exec` and
+  `shell_exec` are OS-scoped mirrors of each other (Windows vs. Linux/macOS) — the server's
+  **OS guard** (below) refuses to forward the wrong one for a given agent's OS.
 - **Server-only orchestration tools** read the registry, telemetry store, and health rules
   on the server. They are **never forwarded** to an agent: `list_agents`, `select_agent`,
   `fleet_overview`, `agent_health`, `agent_snapshot` (plus the server-side web-filter
@@ -57,6 +59,7 @@ what each layer guarantees:
 | **Confirm-gate** | Dashboard chat loop (server) | Pauses every state-changing tool for explicit operator approval; default deny. |
 | **Role & host scope** ([ADR-0037](adr/0037-multi-user-authentication.md)) | Auth middleware + tool layer (server) | The access token — an OAuth token ([ADR-0041](adr/0041-oauth2-authorization-server-for-mcp.md)) or a personal access token — identifies a user; a `user`-role caller only sees/targets its assigned hosts (`select_agent`, `agent_*`, forwarders, and `list_agents`/`fleet_overview` are scope-filtered), and parental-controls mutation tools require `operator`+. The legacy shared token acts as a superuser. |
 | **Agent-side safety guard** ([ADR-0020](adr/0020-agent-side-deterministic-tool-guard.md)) | Compiled into the agent | Deterministically refuses individually catastrophic calls (disk wipes, shadow-copy deletion, event-log clearing, Defender disable, sensitive-path `fs_*`, unlisted `agent_update` hosts) regardless of operator approval — and it cannot be turned off from the server. |
+| **OS guard** | Server (forwarder) | Refuses `powershell_exec`/`shell_exec` for the wrong agent OS — e.g. `shell_exec` on a Windows agent — before ever forwarding, naming the correct tool. |
 | **Local kill-switch** ([ADR-0011](adr/0011-local-remote-control-kill-switch.md)) | Agent + tray, at the PC | The person at the PC turns **all** state-changing tools off. Forwarded calls then return `error.code = "disabled"`; telemetry and read-only tools keep working. |
 
 !!! warning "A raw MCP client is not confirm-gated"
@@ -78,9 +81,15 @@ server consumes and never puts on the wire (ADR-0042).
 
 ### Shell
 
+`powershell_exec` and `shell_exec` are OS-scoped mirrors: each runs only on its matching
+agent OS (Windows / Linux+macOS) and is `unsupported` on the other. The server's **OS
+guard** (see the confirm-gate table above) refuses to forward the wrong one before it ever
+reaches the agent.
+
 | Tool | Arguments | State-changing? |
 |------|-----------|-----------------|
 | `powershell_exec` | `script`, `timeout_s` | ✅ |
+| `shell_exec` | `command`, `timeout_s` | ✅ |
 
 ### Files
 

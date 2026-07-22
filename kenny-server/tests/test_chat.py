@@ -172,6 +172,7 @@ def test_classification() -> None:
     assert not is_state_changing("remotehelp_status")
     assert is_state_changing("winget_install")
     assert is_state_changing("powershell_exec")
+    assert is_state_changing("shell_exec")
     assert is_state_changing("net_dns_flush")
     # remotehelp_start/_stop are mutating on the agent (control.rs); the chat
     # confirm-gate must agree so they aren't auto-invoked (ADR-0022, issue #55).

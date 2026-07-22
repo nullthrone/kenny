@@ -148,6 +148,13 @@ pinned server public key. See ADR-0023.
 `id` is a server-generated UUID. `tool` is one of the names in the tool catalog
 below. `args` matches the per-tool schema.
 
+`powershell_exec` and `shell_exec` are OS-specific mirrors of each other — the former
+runs a script via `powershell.exe` on Windows, the latter a command via `sh -c` on
+Linux/macOS. Each is `unsupported` on the other OS (see below), and the server refuses
+to even forward the wrong one for a given agent (see "OS-scoped tools" below); Claude
+picks the right one from the agent's `os`, which `list_agents`/`select_agent` already
+report.
+
 ### `response` (agent → server)
 
 Success:
@@ -166,13 +173,29 @@ Error:
 
 `error.code` ∈ {`timeout`, `not_found`, `exec_failed`, `unsupported`, `bad_args`,
 `internal`, `disabled`, `blocked`, `paused`}. `unsupported` is returned by an agent that lacks the
-capability on its platform (e.g. `winget_list` on a Linux dev build). `disabled` is
+capability on its platform (e.g. `winget_list` on a Linux dev build, `powershell_exec` on
+Linux/macOS, or `shell_exec` on Windows). `disabled` is
 returned when the agent is online but the person at the endpoint has switched remote
 control **off** locally (via the agent's tray menu): the agent then refuses every
-**mutating** tool (`powershell_exec`, `winget_install|uninstall|update`,
+**mutating** tool (`powershell_exec`, `shell_exec`, `winget_install|uninstall|update`,
 `net_dns_flush`, `net_adapter_reset`, `agent_update`, `webfilter_apply|clear`) while
 telemetry and read-only diagnostics keep working. Remote control is **on** by default and the choice persists
 across restarts. See ADR-0011.
+
+#### OS-scoped tools
+
+`powershell_exec` and `shell_exec` each require a specific agent OS family (`windows`
+and `linux`/`macos` respectively). Before forwarding either tool, the **server**
+compares the requested tool's required family against the target agent's known `os`
+(from `register.meta.os`, see "Frames" above) and, on a mismatch, refuses the call
+itself with `error.code = "unsupported"` and a message naming the correct tool —
+without ever sending a `request` frame to the agent. This is a deterministic,
+server-side routing guard, not a security boundary: it exists so a wrong-OS call fails
+fast with an actionable message instead of round-tripping to the agent (which would
+also refuse it, per the paragraph above, once code reaches `dispatch::run`). An agent
+unknown to the registry (e.g. selected from stored telemetry only) skips this
+pre-check; the call still fails once attempted, either at the tunnel (agent offline) or
+at the agent's own OS-gated handler.
 
 `paused` is returned when the agent is online but has **voluntarily stepped back** because a
 protected game is running on the endpoint (the agent detected the game's anti-cheat process).
@@ -186,7 +209,8 @@ See ADR-0039.
 
 `blocked` is returned by the agent's **deterministic, always-on safety guard**: a
 compiled-in policy that refuses individually dangerous calls (e.g. a `powershell_exec`
-script that deletes volume shadow copies, clears event logs, or disables Defender; an
+script that deletes volume shadow copies, clears event logs, or disables Defender; a
+`shell_exec` command that runs `rm -rf /` or a fork bomb; an
 `fs_read` of the SAM hive; an `agent_update` from a non-allowlisted host) regardless of
 operator approval or kill-switch state. Unlike `disabled`, the guard cannot be turned off
 remotely and is **not** a substitute for the operator confirm-gate (ADR-0009) or the
@@ -218,7 +242,7 @@ intact.
 }
 ```
 
-Each rule has `id` (stable identifier), `applies_to` ∈ {`powershell`, `self_protection`,
+Each rule has `id` (stable identifier), `applies_to` ∈ {`powershell`, `posix`, `self_protection`,
 `path`}, a `pattern` (regex in the portable subset common to Rust `regex` and Python `re` —
 no backreferences/lookaround), and a human-readable `reason`. The agent recompiles its rule
 set on each `policy` frame; a rule whose pattern fails to compile is skipped (logged), never
@@ -322,6 +346,7 @@ forwarded call lands.
 | tool                 | args                          | result (sketch)                              |
 |----------------------|-------------------------------|----------------------------------------------|
 | `powershell_exec`    | `{script, timeout_s}`         | `{stdout, stderr, exit_code}`                |
+| `shell_exec`         | `{command, timeout_s}`       | `{stdout, stderr, exit_code}`                |
 | `fs_list`            | `{path}`                      | `{entries:[{name,is_dir,bytes}]}`            |
 | `fs_search`          | `{root, pattern}`             | `{matches:[path]}`                           |
 | `fs_read`            | `{path}`                      | `{content, truncated}`                       |
@@ -629,11 +654,24 @@ for fleet aggregation. These thresholds are illustrative of the data-driven rule
 
 ## Versioning
 
-`PROTOCOL_VERSION = "0.13"`. Both implementations expose this constant; from v0.8 the
+`PROTOCOL_VERSION = "0.14"`. Both implementations expose this constant; from v0.8 the
 agent puts it on the wire in `register.protocol` to select the mutual-auth handshake
 (compare versions **numerically per component**, not lexically — `"0.10"` is newer than
 `"0.9"`). Bump on any breaking change to a frame or tool schema.
 
+- `0.14` — added the `shell_exec` tool, a POSIX mirror of `powershell_exec` for
+  Linux/macOS agents (`{command, timeout_s}` → `{stdout, stderr, exit_code}`, run via
+  `sh -c`). `powershell_exec` now returns `unsupported` on non-Windows agents instead of
+  falling back to `sh` — the two tools are now a clean OS-scoped pair, and the server
+  refuses to forward either to the wrong agent OS before it ever reaches the agent (see
+  "OS-scoped tools" above). The shared deny-rule catalog gained a `posix` `applies_to`
+  group with POSIX-destructive rules (`rm -rf /`, `mkfs`, `dd`/`shred`/`wipefs` device
+  writes, fork bombs, recursive `chmod`/`chown` on `/`) alongside POSIX
+  self-protection rules (`systemctl stop/disable kenny-agent`, `kill`/`pkill
+  kenny-agent`), mirroring the existing PowerShell/self-protection groups (ADR-0020/0021).
+  Breaking change for `powershell_exec`'s off-Windows behavior (dev/CI scripts relying on
+  the old `sh` fallback must switch to `shell_exec`); additive new tool otherwise. See
+  ADR-0035 (Linux agent support), which flagged this as future work.
 - `0.13` — added `arch` to the `os_support` telemetry section, mirroring
   `register.meta.arch`. The server merges a reported value into the agent's stored
   `arch` on every telemetry push, giving it a periodic, self-refreshing signal in

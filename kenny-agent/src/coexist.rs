@@ -323,6 +323,7 @@ mod tests {
         // Other tools (including diag_processes) are unaffected.
         assert!(gate("diag_processes").is_ok());
         assert!(gate("powershell_exec").is_ok());
+        assert!(gate("shell_exec").is_ok());
         // When no game is active, nothing is suspended.
         force_active_for_test(false, None);
         assert!(gate("screen_capture").is_ok());

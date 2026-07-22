@@ -53,6 +53,7 @@ async fn run(tool: &str, args: Value) -> Result<Value, (ErrorCode, String)> {
 
     match tool {
         "powershell_exec" => handlers::powershell::exec(args).await,
+        "shell_exec" => handlers::shell::exec(args).await,
 
         "fs_list" => handlers::fs::list(args),
         "fs_search" => handlers::fs::search(args),
@@ -140,20 +141,61 @@ mod tests {
         assert_eq!(resp.error.unwrap().code, ErrorCode::Unsupported);
     }
 
+    #[cfg(not(windows))]
     #[tokio::test]
-    async fn powershell_echo_round_trips() {
-        // powershell_exec is mutating, so this also exercises the "enabled" gate path.
-        let resp = with_remote_control(true, "kenny-dispatch-ps-on.control.json", async {
+    async fn shell_echo_round_trips() {
+        // shell_exec is mutating, so this also exercises the "enabled" gate path.
+        let resp = with_remote_control(true, "kenny-dispatch-shell-on.control.json", async {
             handle(Request {
                 id: "2".to_string(),
-                tool: "powershell_exec".to_string(),
-                args: json!({"script": "printf hi"}),
+                tool: "shell_exec".to_string(),
+                args: json!({"command": "printf hi"}),
             })
             .await
         })
         .await;
         assert!(resp.ok, "expected ok, got {:?}", resp.error);
         assert_eq!(resp.result.unwrap()["stdout"], "hi");
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn powershell_exec_unsupported_off_windows_when_enabled() {
+        // With remote control ON, the mutating gate passes and the handler reports
+        // `unsupported` on a non-Windows build; shell_exec is its OS-scoped mirror.
+        let resp = with_remote_control(true, "kenny-dispatch-ps-unsupported.control.json", async {
+            handle(Request {
+                id: "2b".to_string(),
+                tool: "powershell_exec".to_string(),
+                args: json!({"script": "echo hi"}),
+            })
+            .await
+        })
+        .await;
+        assert!(!resp.ok);
+        assert_eq!(resp.error.unwrap().code, ErrorCode::Unsupported);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn shell_exec_unsupported_on_windows_when_enabled() {
+        // With remote control ON, the mutating gate passes and the handler reports
+        // `unsupported` on Windows; powershell_exec is its OS-scoped mirror.
+        let resp = with_remote_control(
+            true,
+            "kenny-dispatch-shell-unsupported.control.json",
+            async {
+                handle(Request {
+                    id: "2c".to_string(),
+                    tool: "shell_exec".to_string(),
+                    args: json!({"command": "echo hi"}),
+                })
+                .await
+            },
+        )
+        .await;
+        assert!(!resp.ok);
+        assert_eq!(resp.error.unwrap().code, ErrorCode::Unsupported);
     }
 
     #[tokio::test]
@@ -199,6 +241,24 @@ mod tests {
         })
         .await;
         assert!(!resp.ok, "dangerous script must be refused");
+        assert_eq!(resp.error.unwrap().code, ErrorCode::Blocked);
+    }
+
+    #[tokio::test]
+    async fn dangerous_shell_is_blocked_even_when_enabled() {
+        // Mirrors dangerous_powershell_is_blocked_even_when_enabled for the POSIX side:
+        // the safety guard refuses a destructive command independently of the
+        // kill-switch, which is ON here.
+        let resp = with_remote_control(true, "kenny-dispatch-shell-blocked.control.json", async {
+            handle(Request {
+                id: "6b".to_string(),
+                tool: "shell_exec".to_string(),
+                args: json!({"command": "rm -rf /"}),
+            })
+            .await
+        })
+        .await;
+        assert!(!resp.ok, "destructive command must be refused");
         assert_eq!(resp.error.unwrap().code, ErrorCode::Blocked);
     }
 
