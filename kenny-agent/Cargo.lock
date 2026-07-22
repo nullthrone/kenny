@@ -551,6 +551,7 @@ dependencies = [
  "cfg-if",
  "libc",
  "r-efi",
+ "rand_core 0.10.1",
 ]
 
 [[package]]
@@ -779,8 +780,9 @@ dependencies = [
  "ed25519-dalek",
  "embed-manifest",
  "futures-util",
+ "getrandom 0.4.3",
  "png",
- "rand_core 0.6.4",
+ "rand_core 0.10.1",
  "regex",
  "rusqlite",
  "serde",

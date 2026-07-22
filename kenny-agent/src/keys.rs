@@ -93,7 +93,12 @@ impl AgentKey {
         }
 
         // First run: generate a fresh keypair from the OS RNG and persist the seed.
-        let signing = SigningKey::generate(&mut rand_core::OsRng);
+        // getrandom 0.4 / rand_core 0.10 moved the OS RNG out of rand_core::OsRng into
+        // getrandom::SysRng, which is fallible (TryRng); UnwrapErr adapts it to the
+        // infallible CryptoRng that SigningKey::generate requires.
+        use getrandom::SysRng;
+        use rand_core::UnwrapErr;
+        let signing = SigningKey::generate(&mut UnwrapErr(SysRng));
         let seed = signing.to_bytes();
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
@@ -204,9 +209,10 @@ pub fn verify_server_sig(
 
 /// Generate `n` fresh random bytes from the OS RNG and return them base64-encoded.
 pub fn random_nonce_b64() -> String {
-    use rand_core::RngCore as _;
+    use getrandom::SysRng;
+    use rand_core::{Rng as _, UnwrapErr};
     let mut buf = [0u8; 32];
-    rand_core::OsRng.fill_bytes(&mut buf);
+    UnwrapErr(SysRng).fill_bytes(&mut buf);
     STANDARD.encode(buf)
 }
 
