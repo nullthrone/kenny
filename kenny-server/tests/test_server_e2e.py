@@ -320,7 +320,8 @@ async def test_e2e_shell_exec_forwards_on_linux_agent(tmp_path, monkeypatch) -> 
         async with Client(transport) as client:
             await client.call_tool("select_agent", {"id": "dev"})
             res = await client.call_tool(
-                "shell_exec", {"args": {"command": "uname -a", "timeout_s": 30}}
+                "shell_exec",
+                {"args": {"command": "uname -a", "timeout_s": 30, "agent_id": "dev"}},
             )
             assert res.data["exit_code"] == 0
 
@@ -359,15 +360,17 @@ async def test_e2e_os_guard_refuses_wrong_shell_tool(tmp_path, monkeypatch) -> N
         )
         async with Client(transport) as client:
             # shell_exec on a Windows agent is refused, naming powershell_exec.
-            await client.call_tool("select_agent", {"id": "win-pc"})
             with pytest.raises(ToolError, match="shell_exec"):
-                await client.call_tool("shell_exec", {"args": {"command": "echo hi"}})
+                await client.call_tool(
+                    "shell_exec",
+                    {"args": {"command": "echo hi", "agent_id": "win-pc"}},
+                )
 
             # powershell_exec on a Linux agent is refused, naming shell_exec.
-            await client.call_tool("select_agent", {"id": "linux-pc"})
             with pytest.raises(ToolError, match="powershell_exec"):
                 await client.call_tool(
-                    "powershell_exec", {"args": {"script": "Get-Process"}}
+                    "powershell_exec",
+                    {"args": {"script": "Get-Process", "agent_id": "linux-pc"}},
                 )
 
         await windows_agent.stop()
