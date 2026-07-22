@@ -136,10 +136,11 @@ def test_stream_confirm_gate_round_trip(tmp_path):
         return {"installed": True}
 
     app.state.tunnel.send_request = fake_send_request  # type: ignore[assignment]
-    app.state.registry._active_agent = "dev"
 
     with TestClient(app) as c:
-        frames = c.post("/api/chat/stream", json={"message": "install git"}).text
+        frames = c.post(
+            "/api/chat/stream", json={"message": "install git", "agent_id": "dev"}
+        ).text
         f1 = _frames(frames)
         pending = [f for f in f1 if f["type"] == "pending"]
         assert pending and pending[0]["tool"] == "winget_install"
@@ -249,10 +250,13 @@ def test_stream_confirm_gate_persists_and_heals_cleanly_on_reload(tmp_path):
         return {"installed": True}
 
     app.state.tunnel.send_request = fake_send_request  # type: ignore[assignment]
-    app.state.registry._active_agent = "dev"
 
     with TestClient(app) as c:
-        f1 = _frames(c.post("/api/chat/stream", json={"message": "install git"}).text)
+        f1 = _frames(
+            c.post(
+                "/api/chat/stream", json={"message": "install git", "agent_id": "dev"}
+            ).text
+        )
         sid = f1[-1]["session_id"]
 
         row = asyncio.run(app.state.history_store.get(sid))

@@ -29,7 +29,7 @@ from ..chat import (
     run_turn_events,
 )
 from ..policy import PolicyEngine
-from ..event_categories import annotate_events, categorize_events
+from ..event_categories import annotate_snapshots
 from ..forecast import build_facts, deterministic_summary, forecast_events
 from ..recommend import ai_available, recommend_events, warning_facts
 from ..registry import AgentRegistry
@@ -99,28 +99,13 @@ def build_api_routes(
         return FileResponse(path, media_type=media)
 
     async def _annotate_reliability(snapshots: list[dict[str, Any] | None]) -> None:
-        """Stamp a friendly ``category`` onto every reliability event across the
-        given snapshots (mutating the in-memory copies loaded from the store).
-
-        One batched LLM call for the whole set, cached and deduped by
-        :func:`event_categories.categorize_events`; a no-op when there are no
-        events, and — with no API key — every event resolves to ``"Other"``.
+        """Stamp category/severity/suspected_cause onto every reliability event
+        across the given snapshots (mutating the in-memory copies loaded from the
+        store). Thin wrapper around :func:`event_categories.annotate_snapshots`
+        using this route module's injected ``client_factory`` (ADR-0028).
         """
 
-        groups: list[dict[str, Any]] = []
-        for snap in snapshots:
-            rel = snap.get("reliability") if isinstance(snap, dict) else None
-            if isinstance(rel, dict):
-                groups.extend(e for e in (rel.get("events") or []) if isinstance(e, dict))
-        if not groups:
-            return
-        factory = client_factory or _anthropic_client
-        client = factory() if ai_available() else None
-        mapping = await categorize_events(client, groups)
-        for snap in snapshots:
-            rel = snap.get("reliability") if isinstance(snap, dict) else None
-            if isinstance(rel, dict) and isinstance(rel.get("events"), list):
-                annotate_events(rel["events"], mapping)
+        await annotate_snapshots(snapshots, client_factory=client_factory or _anthropic_client)
 
     async def api_fleet(request: Request) -> JSONResponse:
         ids = await _known_ids(registry, store)
@@ -887,19 +872,15 @@ def build_chat_routes(
                 },
                 status_code=409,
             )
-        # Context-aware chat: if the dashboard has an agent selected, scope the
-        # active agent to it so forwarded capability tools target that machine,
-        # and remember it on the session so the model is told about it too (see
-        # chat._context_note). Always sync, including clearing back to None when
-        # the dashboard switches to fleet-wide — otherwise the session would
-        # keep pointing (and telling the model) at a stale agent.
+        # Context-aware chat: remember the dashboard's selected agent on the
+        # session so forwarded capability tools target that machine (ADR-0042)
+        # and the model is told about it too (see chat._context_note). This is
+        # session-local state, not a shared registry slot — concurrent chat
+        # sessions never clobber each other's selection. Always sync, including
+        # clearing back to None when the dashboard switches to fleet-wide —
+        # otherwise the session would keep pointing (and telling the model) at
+        # a stale agent.
         agent_id = str(body.get("agent_id", "")).strip()
-        if agent_id:
-            try:
-                registry.select(agent_id)
-            except KeyError:
-                if agent_id in await store.known_agents():
-                    registry._active_agent = agent_id  # noqa: SLF001 (matches chat.py dev path)
         session.agent_id = agent_id or None
         try:
             result = await run_turn(
@@ -958,12 +939,6 @@ def build_chat_routes(
         # See api_chat above: always sync session.agent_id (including clearing
         # it back to None) so it never lags the dashboard's current selection.
         agent_id = str(body.get("agent_id", "")).strip()
-        if agent_id:
-            try:
-                registry.select(agent_id)
-            except KeyError:
-                if agent_id in await store.known_agents():
-                    registry._active_agent = agent_id  # noqa: SLF001 (matches chat.py dev path)
         session.agent_id = agent_id or None
         client = client_factory()
         model = _chat_model(request)

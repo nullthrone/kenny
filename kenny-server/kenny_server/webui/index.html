@@ -2855,7 +2855,7 @@
         return `<details class="k-relcat">
           <summary><span class="k-relcat__name">${esc(cat)}</span>
             <span class="k-relcat__count">${catTotal(byCat[cat])} event(s)</span></summary>
-          <table class="k-dtable"><thead><tr><th>source / id</th><th>level</th><th>count</th><th>last seen</th><th>sample</th></tr></thead>
+          <table class="k-dtable"><thead><tr><th>source / id</th><th>level</th><th>severity</th><th>count</th><th>last seen</th><th>sample / suspected cause</th></tr></thead>
             <tbody>${rows}</tbody></table></details>`;
       }).join("");
       body += `<div class="k-detail-grp"><div class="k-detail-grp__lbl">details — click a category to expand</div>${groups}</div>`;
@@ -2866,17 +2866,28 @@
       const cls = level === "critical" ? "crit" : "warn";
       return `<span class="k-pill k-pill--${cls}">${esc(level || "error")}</span>`;
     }
+    // Severity badge from the read-path LLM annotation (ADR-0028) — how
+    // much this *pattern* matters, independent of how often it repeats. Absent on
+    // events from before annotation ran (e.g. no API key yet), in which case we
+    // show nothing rather than guess.
+    function relSeverityBadge(severity) {
+      if (!severity) return `<span class="k-muted">—</span>`;
+      const cls = { serious: "crit", notable: "warn", unknown: "warn", benign: "ok" }[severity] || "warn";
+      return `<span class="k-pill k-pill--${cls}">${esc(severity)}</span>`;
+    }
     // One event row for the reliability tables. With `dayKey` the count column shows
     // that day's contribution (used by the clicked-cell panel); without it, the
     // window total (used by the per-category breakdown).
     function reliabEventRow(e, dayKey) {
       const cnt = dayKey ? ((e.by_day || {})[dayKey] || 0) : (e.count ?? "—");
+      const sample = [e.suspected_cause, e.sample].filter(Boolean).join(" — ");
       return `<tr>
         <td class="k-mono">${esc(e.source || "?")}${e.event_id != null ? " / " + esc(String(e.event_id)) : ""}</td>
         <td>${relLevelBadge(e.level)}</td>
+        <td>${relSeverityBadge(e.severity)}</td>
         <td class="k-mono">${esc(String(cnt))}</td>
         <td>${esc(fmtValue("last_seen", e.last_seen))}</td>
-        <td class="k-muted">${esc(e.sample || "")}</td></tr>`;
+        <td class="k-muted">${esc(sample)}</td></tr>`;
     }
     // Fill the inline panel under the by-day heatmap with the exact events behind a
     // clicked cell — that friendly category, on that day. Same grouping expression as
@@ -2895,7 +2906,7 @@
       } else {
         const rows = hits.map(e => reliabEventRow(e, day)).join("");
         panel.innerHTML = `<div class="k-detail-grp__lbl">${lbl}</div>
-          <table class="k-dtable"><thead><tr><th>source / id</th><th>level</th><th>count</th><th>last seen</th><th>sample</th></tr></thead>
+          <table class="k-dtable"><thead><tr><th>source / id</th><th>level</th><th>severity</th><th>count</th><th>last seen</th><th>sample / suspected cause</th></tr></thead>
             <tbody>${rows}</tbody></table>`;
       }
       panel.style.display = "";

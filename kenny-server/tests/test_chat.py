@@ -23,6 +23,7 @@ from kenny_server.chat import (
     ChatExecutor,
     ChatSession,
     ChatSessions,
+    _resolve_chat_target,
     build_tool_schemas,
     confirm_pending,
     confirm_pending_events,
@@ -35,7 +36,7 @@ from kenny_server.chat import (
 from kenny_server.registry import AgentRegistry
 from kenny_server.store import ChatHistoryStore, EventStore, TelemetryStore
 from kenny_server.tools import CallLog, ScreenshotStore
-from kenny_server.tunnel import AgentTunnel
+from kenny_server.tunnel import AgentTunnel, ToolError
 
 
 # -- fake Anthropic client ------------------------------------------------
@@ -293,7 +294,7 @@ async def test_run_turn_heals_aborted_tool_use(store: TelemetryStore) -> None:
 
 
 async def test_state_changing_tool_requires_confirmation(store: TelemetryStore) -> None:
-    executor, registry, tunnel = _executor(store)
+    executor, _registry, tunnel = _executor(store)
     session = ChatSession(id="s2")
 
     # Stub the capability path so no real agent is needed.
@@ -304,7 +305,7 @@ async def test_state_changing_tool_requires_confirmation(store: TelemetryStore) 
         return {"installed": True, "id": args.get("id")}
 
     tunnel.send_request = fake_send_request  # type: ignore[assignment]
-    registry._active_agent = "dev"  # an active agent is selected
+    session.agent_id = "dev"  # an agent is selected for this chat session
 
     # Turn 1: model selects nothing new but asks to install. Turn 2 (after
     # confirm): model summarises.
@@ -341,7 +342,7 @@ async def test_state_changing_tool_requires_confirmation(store: TelemetryStore) 
 
 
 async def test_state_changing_tool_denied(store: TelemetryStore) -> None:
-    executor, registry, tunnel = _executor(store)
+    executor, _registry, tunnel = _executor(store)
     session = ChatSession(id="s3")
 
     sent: list[dict[str, Any]] = []
@@ -351,7 +352,7 @@ async def test_state_changing_tool_denied(store: TelemetryStore) -> None:
         return {}
 
     tunnel.send_request = fake_send_request  # type: ignore[assignment]
-    registry._active_agent = "dev"
+    session.agent_id = "dev"
 
     client = FakeAnthropic(
         [
@@ -389,7 +390,7 @@ async def test_screen_capture_fed_back_as_image(store: TelemetryStore) -> None:
     """A screen_capture result is fed to Claude as an image content block (not a
     base64 JSON string) and the tool_event carries the image for the UI."""
 
-    executor, registry, tunnel = _executor(store)
+    executor, _registry, tunnel = _executor(store)
     session = ChatSession(id="s4")
 
     tiny_b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="  # noqa: E501
@@ -398,7 +399,7 @@ async def test_screen_capture_fed_back_as_image(store: TelemetryStore) -> None:
         return {"image_b64": tiny_b64, "format": "png"}
 
     tunnel.send_request = fake_send_request  # type: ignore[assignment]
-    registry._active_agent = "dev"  # noqa: SLF001
+    session.agent_id = "dev"
 
     client = FakeAnthropic(
         [
@@ -489,7 +490,7 @@ async def test_stream_emits_tool_result_before_text(store: TelemetryStore) -> No
 
 
 async def test_stream_confirm_gate(store: TelemetryStore) -> None:
-    executor, registry, tunnel = _executor(store)
+    executor, _registry, tunnel = _executor(store)
     session = ChatSession(id="se3")
 
     sent: list[str] = []
@@ -499,7 +500,7 @@ async def test_stream_confirm_gate(store: TelemetryStore) -> None:
         return {"installed": True}
 
     tunnel.send_request = fake_send_request  # type: ignore[assignment]
-    registry._active_agent = "dev"
+    session.agent_id = "dev"
 
     client = FakeAnthropic(
         [
@@ -708,3 +709,109 @@ def test_public_transcript_flattens_text_and_tool_result_and_omits_pending() -> 
     assert denied["tool"] == "winget_install" and denied["args"] == {"id": "Git.Git"}
 
     assert events[-1]["text"] == "Understood, I won't install it."
+
+
+# -- session-scoped agent targeting (ADR-0042) -----------------------------
+#
+# The chat path used to forward every capability call to the process-global
+# ``registry.active_agent`` slot (``require_active()`` with no key) — shared by
+# every concurrent chat session. Two overlapping conversations (or a stale
+# selection left by an earlier one) could silently retarget each other's calls.
+# ``run_capability`` now takes its target as an explicit argument, resolved per
+# call from the session's own ``agent_id`` (see ``_resolve_chat_target``), so
+# the global slot is never consulted for routing.
+
+
+async def test_run_capability_uses_passed_target_not_global_slot(
+    store: TelemetryStore,
+) -> None:
+    executor, registry, tunnel = _executor(store)
+
+    sent: list[str] = []
+
+    async def fake_send_request(agent_id, tool, args, timeout_s):  # type: ignore[no-untyped-def]
+        sent.append(agent_id)
+        return {}
+
+    tunnel.send_request = fake_send_request  # type: ignore[assignment]
+    # Poison the global slot the old code path would have read.
+    registry._active_agent = "gamma"  # noqa: SLF001
+
+    await executor.run_capability("diag_processes", {}, agent_id="alpha")
+    await executor.run_capability("diag_processes", {}, agent_id="beta")
+
+    assert sent == ["alpha", "beta"]  # never "gamma"
+
+
+async def test_run_capability_fails_closed_without_a_target(
+    store: TelemetryStore,
+) -> None:
+    executor, _registry, _tunnel = _executor(store)
+
+    with pytest.raises(ToolError) as excinfo:
+        await executor.run_capability("diag_processes", {}, agent_id="")
+    assert excinfo.value.code == "no_agent"
+
+
+def test_resolve_chat_target_prefers_explicit_override_over_session() -> None:
+    session = ChatSession(id="s", agent_id="alpha")
+    args = {"agent_id": "beta", "path": "C:\\"}
+
+    assert _resolve_chat_target(session, args) == "beta"
+    # Popped off — routing metadata, not forwarded to the tool.
+    assert args == {"path": "C:\\"}
+
+
+def test_resolve_chat_target_falls_back_to_session_selection() -> None:
+    session = ChatSession(id="s", agent_id="alpha")
+
+    assert _resolve_chat_target(session, {}) == "alpha"
+
+
+def test_resolve_chat_target_fails_closed_without_either() -> None:
+    session = ChatSession(id="s")
+
+    with pytest.raises(ToolError) as excinfo:
+        _resolve_chat_target(session, {})
+    assert excinfo.value.code == "no_agent"
+
+
+async def test_two_sessions_route_independently_despite_shared_executor(
+    store: TelemetryStore,
+) -> None:
+    """Two concurrent chat sessions (sharing one executor/registry, exactly as
+    the dashboard's chat routes do) each target a different agent and never
+    cross-contaminate — the reported race, reproduced at the chat layer."""
+
+    executor, registry, tunnel = _executor(store)
+
+    sent: list[tuple[str, str]] = []
+
+    async def fake_send_request(agent_id, tool, args, timeout_s):  # type: ignore[no-untyped-def]
+        sent.append((agent_id, tool))
+        return {"processes": []}
+
+    tunnel.send_request = fake_send_request  # type: ignore[assignment]
+    # A stale/foreign selection sitting in the global slot must have no effect.
+    registry._active_agent = "gamma"  # noqa: SLF001
+
+    session_a = ChatSession(id="a", agent_id="alpha")
+    session_b = ChatSession(id="b", agent_id="beta")
+
+    client_a = FakeAnthropic(
+        [
+            _Response([tool_use_block("tu1", "diag_processes", {})], "tool_use"),
+            _Response([text_block("done")], "end_turn"),
+        ]
+    )
+    client_b = FakeAnthropic(
+        [
+            _Response([tool_use_block("tu2", "diag_processes", {})], "tool_use"),
+            _Response([text_block("done")], "end_turn"),
+        ]
+    )
+
+    await run_turn(session_a, "list processes", executor=executor, client=client_a)
+    await run_turn(session_b, "list processes", executor=executor, client=client_b)
+
+    assert sent == [("alpha", "diag_processes"), ("beta", "diag_processes")]

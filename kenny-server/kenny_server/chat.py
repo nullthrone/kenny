@@ -170,8 +170,13 @@ def _capability_schema(tool: str, arg_keys: list[str]) -> dict[str, Any]:
             properties[key] = {"type": "string"}
         if not optional:
             required.append(key)
-    # Every forwarded call accepts an optional per-call timeout.
+    # Every forwarded call accepts an optional per-call timeout, and an optional
+    # agent_id override (ADR-0042): the chat session already tracks a selected
+    # agent (the dashboard's "context" pill), so this is only needed to target a
+    # different host for one call; omitted, it falls back to the session's
+    # selection and fails closed if neither is set.
     properties.setdefault("timeout_s", {"type": "integer"})
+    properties.setdefault("agent_id", {"type": "string"})
     return {"type": "object", "properties": properties, "required": required}
 
 
@@ -203,10 +208,14 @@ def build_tool_schemas() -> list[dict[str, Any]]:
             " (state-changing — requires operator confirmation)" if is_state_changing(name) else ""
         )
         arg_note = f" (args: {', '.join(arg_keys)})" if arg_keys else ""
+        desc = (
+            f"Run `{name}` on the currently selected agent{arg_note}. "
+            f"Pass agent_id to target a different host for this one call.{gated}"
+        )
         schemas.append(
             {
                 "name": name,
-                "description": f"Run `{name}` on the active agent{arg_note}.{gated}",
+                "description": desc,
                 "input_schema": _capability_schema(name, arg_keys),
             }
         )
@@ -519,11 +528,19 @@ class ChatExecutor:
         self.call_log = call_log
         self.screenshots = screenshots
 
-    async def run_server_tool(self, tool: str, args: dict[str, Any]) -> dict[str, Any]:
+    async def run_server_tool(
+        self, tool: str, args: dict[str, Any], *, session: "ChatSession | None" = None
+    ) -> dict[str, Any]:
         if tool == "list_agents":
-            return await self._list_agents()
+            return await self._list_agents(session)
         if tool == "select_agent":
-            return await self._select_agent(str(args["id"]))
+            result = await self._select_agent(str(args["id"]))
+            if session is not None:
+                # The session's own selection is the only state this changes
+                # (ADR-0042) — no shared registry slot is written, so concurrent
+                # sessions can never clobber each other's target.
+                session.agent_id = result.get("active_agent") or session.agent_id
+            return result
         if tool == "fleet_overview":
             return await self._fleet_overview()
         if tool == "agent_health":
@@ -532,10 +549,20 @@ class ChatExecutor:
             return await self._agent_snapshot(str(args["id"]), args.get("section"))
         raise ToolError("unknown_tool", f"unknown server tool {tool!r}")
 
-    async def run_capability(self, tool: str, args: dict[str, Any]) -> dict[str, Any]:
-        """Forward a capability tool to the active agent (read-only or confirmed)."""
+    async def run_capability(
+        self, tool: str, args: dict[str, Any], *, agent_id: str
+    ) -> dict[str, Any]:
+        """Forward a capability tool to ``agent_id`` (read-only or confirmed).
 
-        agent_id = self.registry.require_active()
+        ``agent_id`` is resolved by the caller (:func:`_resolve_chat_target`) —
+        the session's selected agent or an explicit per-call override — never
+        the process-global registry slot, which is shared by every concurrent
+        chat session and would let one session's selection bleed into another's
+        forwarded call (ADR-0042).
+        """
+
+        if not agent_id:
+            raise ToolError("no_agent", "no target agent for this call")
         timeout_s = float(args.get("timeout_s", 30))
         try:
             result = await self.tunnel.send_request(agent_id, tool, args, timeout_s)
@@ -571,20 +598,28 @@ class ChatExecutor:
             "collected_at": latest["collected_at"] if latest else None,
         }
 
-    async def _list_agents(self) -> dict[str, Any]:
+    async def _list_agents(self, session: "ChatSession | None" = None) -> dict[str, Any]:
         ids = await self._known_ids()
         agents = [await self._overview(i) for i in ids]
-        return {"active_agent": self.registry.active_agent, "agents": agents}
+        active = session.agent_id if session is not None else None
+        return {"active_agent": active, "agents": agents}
 
     async def _select_agent(self, agent_id: str) -> dict[str, Any]:
-        try:
-            agent = self.registry.select(agent_id)
-        except KeyError:
-            if agent_id in await self.store.known_agents():
-                self.registry._active_agent = agent_id  # noqa: SLF001 (matches tools.py dev path)
-                return {"active_agent": agent_id, "online": False}
-            raise ToolError("unknown_agent", f"unknown agent {agent_id!r}")
-        return {"active_agent": agent.agent_id, "online": agent.online}
+        """Validate ``agent_id`` and report it.
+
+        Deliberately does **not** write any registry slot (ADR-0042): the
+        session's own ``agent_id`` (set by the caller in :meth:`run_server_tool`)
+        is the only state that carries this selection forward, so it can never
+        be shared with — or clobbered by — another concurrent session.
+        """
+
+        agent = self.registry.get(agent_id)
+        if agent is not None:
+            return {"active_agent": agent.agent_id, "online": agent.online}
+        if agent_id in await self.store.known_agents():
+            # Known only from stored telemetry (currently offline/unregistered).
+            return {"active_agent": agent_id, "online": False}
+        raise ToolError("unknown_agent", f"unknown agent {agent_id!r}")
 
     async def _fleet_overview(self) -> dict[str, Any]:
         from . import health_rules
@@ -664,15 +699,49 @@ def _tool_result_block(tool_use_id: str, payload: Any, *, is_error: bool = False
     return block
 
 
+def _resolve_chat_target(session: ChatSession, args: dict[str, Any]) -> str:
+    """Routing target for a chat-forwarded capability call (ADR-0042).
+
+    An explicit ``agent_id`` in ``args`` overrides for this one call; otherwise
+    falls back to the session's own selection (safe — each :class:`ChatSession`
+    is a distinct conversation, unlike the process-global registry slot). Pops
+    ``agent_id`` off ``args`` so it is routing metadata only and never reaches
+    the forwarded tool call. Fails closed when neither is set.
+    """
+
+    explicit = args.pop("agent_id", None)
+    target = (str(explicit).strip() if explicit else "") or (session.agent_id or "")
+    if not target:
+        raise ToolError(
+            "no_agent",
+            "no agent selected for this chat; select an agent in the dashboard "
+            "or pass agent_id",
+        )
+    return target
+
+
 async def _execute_one(
-    executor: ChatExecutor, tool: str, args: dict[str, Any]
+    executor: ChatExecutor,
+    tool: str,
+    args: dict[str, Any],
+    *,
+    session: ChatSession,
+    agent_id: str | None = None,
 ) -> tuple[dict[str, Any], bool]:
-    """Run one tool, returning (result_payload, is_error)."""
+    """Run one tool, returning (result_payload, is_error).
+
+    ``agent_id``, when given, is an already-resolved target — used when
+    resuming a confirmed state-changing call so the target frozen at gate time
+    (:class:`PendingCall.agent_id`) is reused rather than re-resolved (the
+    original ``args`` no longer carry any explicit override by then, since
+    :func:`_resolve_chat_target` already popped it).
+    """
 
     try:
         if tool in SERVER_TOOLS:
-            return await executor.run_server_tool(tool, args), False
-        return await executor.run_capability(tool, args), False
+            return await executor.run_server_tool(tool, args, session=session), False
+        target = agent_id or _resolve_chat_target(session, args)
+        return await executor.run_capability(tool, args, agent_id=target), False
     except ToolError as exc:
         return {"error": {"code": exc.code, "message": exc.message}}, True
 
@@ -715,16 +784,31 @@ async def _drive_events(
             tool = block["name"]
             args = dict(block.get("input") or {})
 
+            # Resolve + freeze the routing target now, before any confirm-gate
+            # pause, so a dashboard agent switch that happens while a
+            # state-changing call awaits confirmation can't retarget it
+            # (ADR-0042). Server-only tools name their own host via `id`, if any.
+            target: str | None = None
+            if tool not in SERVER_TOOLS:
+                try:
+                    target = _resolve_chat_target(session, args)
+                except ToolError as exc:
+                    payload = {"error": {"code": exc.code, "message": exc.message}}
+                    yield {"type": "tool_result", "tool": tool, "args": args, "ok": False}
+                    session._staged_results.append(
+                        _tool_result_block(block["id"], payload, is_error=True)
+                    )
+                    continue
+
             if is_state_changing(tool):
-                agent_id = executor.registry.active_agent
                 session.pending = PendingCall(
                     id=uuid.uuid4().hex,
                     tool_use_id=block["id"],
                     tool=tool,
                     args=args,
-                    agent_id=agent_id,
+                    agent_id=target,
                 )
-                yield {"type": "pending", "tool": tool, "args": args, "agent_id": agent_id}
+                yield {"type": "pending", "tool": tool, "args": args, "agent_id": target}
                 # Pause: hold the remaining queue + staged results for resume.
                 yield {
                     "type": "done",
@@ -735,7 +819,9 @@ async def _drive_events(
                 }
                 return
 
-            payload, is_error = await _execute_one(executor, tool, args)
+            payload, is_error = await _execute_one(
+                executor, tool, args, session=session, agent_id=target
+            )
             event: dict[str, Any] = {
                 "type": "tool_result",
                 "tool": tool,
@@ -1017,7 +1103,9 @@ async def _apply_confirmation(
     session.pending = None
 
     if approve:
-        payload, is_error = await _execute_one(executor, pending.tool, pending.args)
+        payload, is_error = await _execute_one(
+            executor, pending.tool, pending.args, session=session, agent_id=pending.agent_id
+        )
         session._staged_results.append(
             _tool_result_block(pending.tool_use_id, payload, is_error=is_error)
         )

@@ -124,6 +124,107 @@ def test_reliability_falls_back_to_source_without_category() -> None:
     assert "Ntfs ×20" in result["reason"]
 
 
+def test_reliability_benign_repetition_scores_ok() -> None:
+    # Headline case: 300 repeats of ONE known-benign pattern (the
+    # DistributedCOM-timeout symptom from the user story) must not crit a host
+    # on volume alone once the pattern has been annotated as benign.
+    events = [
+        {"source": "DistributedCOM", "event_id": 10016, "level": "error", "count": 304,
+         "category": "Windows service", "severity": "benign",
+         "suspected_cause": "two apps colliding over a stale COM permission"},
+    ]
+    result = health_rules.evaluate_section(
+        "reliability", {"status": "ok", "summary": "", "recent_crashes": 304, "events": events}, now=NOW
+    )
+    assert result["status"] == "ok"
+    assert "known-benign" in result["reason"]
+
+
+def test_reliability_diverse_significant_patterns_score_crit() -> None:
+    # Many DISTINCT non-benign patterns -> crit, even if no single one repeats
+    # often — novel-error diversity, not volume, is what should escalate here.
+    events = [
+        {"source": f"App{i}", "event_id": i, "level": "error", "count": 2,
+         "category": "App crash / hang", "severity": "notable"}
+        for i in range(5)
+    ]
+    result = health_rules.evaluate_section(
+        "reliability", {"status": "ok", "summary": "", "recent_crashes": 10, "events": events}, now=NOW
+    )
+    assert result["status"] == "crit"
+
+
+def test_reliability_recurring_serious_pattern_scores_crit() -> None:
+    # A single 'serious' pattern that recurs meaningfully escalates to crit on
+    # its own, independent of the distinct-pattern count.
+    events = [
+        {"source": "disk", "event_id": 51, "level": "error", "count": 12,
+         "category": "Disk & storage", "severity": "serious",
+         "suspected_cause": "failing sectors on the boot drive"},
+    ]
+    result = health_rules.evaluate_section(
+        "reliability", {"status": "ok", "summary": "", "recent_crashes": 12, "events": events}, now=NOW
+    )
+    assert result["status"] == "crit"
+    assert "disk/51" in result["reason"]
+    assert "failing sectors" in result["reason"]
+
+
+def test_reliability_unknown_severity_is_treated_as_sensitive() -> None:
+    # An "unknown" severity (no key, or the model genuinely unsure) must never
+    # be silently treated as benign -> at least warn, even at low count.
+    events = [
+        {"source": "Mystery", "event_id": 1, "level": "error", "count": 2,
+         "category": "Other", "severity": "unknown"},
+    ]
+    result = health_rules.evaluate_section(
+        "reliability", {"status": "ok", "summary": "", "recent_crashes": 2, "events": events}, now=NOW
+    )
+    assert result["status"] == "warn"
+
+
+def test_reliability_annotated_stability_index_still_applies() -> None:
+    # The Windows Reliability Index is an independent signal that still
+    # applies even once events carry severity annotations.
+    result = health_rules.evaluate_section(
+        "reliability",
+        {"status": "ok", "summary": "", "recent_crashes": 0, "events": [], "stability_index": 2.0},
+        now=NOW,
+    )
+    assert result["status"] == "crit"
+
+
+def test_reliability_falls_back_by_volume_without_severity_annotation() -> None:
+    # DOD/regression guard: unannotated payloads (LLM categorization never ran)
+    # keep the exact original volume-based behavior. This mirrors the
+    # golden fixture, which is a raw (unannotated) agent payload.
+    events = [
+        {"source": "Application Error", "event_id": 1000, "level": "error", "count": 30,
+         "category": "App crash / hang"},
+        {"source": "disk", "event_id": 51, "level": "error", "count": 18,
+         "category": "Disk & storage"},
+    ]
+    result = health_rules.evaluate_section(
+        "reliability", {"status": "ok", "summary": "", "recent_crashes": 48, "events": events}, now=NOW
+    )
+    assert result["status"] == "warn"
+    assert result["reason"].startswith("App crash / hang ×30")
+
+
+def test_reliability_fallback_distinct_patterns_warn_even_below_volume_threshold() -> None:
+    # No-LLM fallback addition: many distinct low-count
+    # patterns are themselves a signal, even though their sum stays under the
+    # old bare-count warn threshold. Strictly widens sensitivity, never narrows.
+    events = [
+        {"source": f"App{i}", "event_id": i, "level": "error", "count": 1}
+        for i in range(8)
+    ]
+    result = health_rules.evaluate_section(
+        "reliability", {"status": "ok", "summary": "", "recent_crashes": 8, "events": events}, now=NOW
+    )
+    assert result["status"] == "warn"
+
+
 def test_reliability_defers_when_no_fields() -> None:
     result = health_rules.evaluate_section(
         "reliability", {"status": "warn", "summary": "collector unavailable"}, now=NOW

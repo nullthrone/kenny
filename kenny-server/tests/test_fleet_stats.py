@@ -259,6 +259,19 @@ def test_reliability_categories_aggregate():
     assert by[("pc1", "Disk & storage")]["members"][0]["agent_id"] == "pc1"
 
 
+def test_reliability_categories_flags_crit_on_serious_severity():
+    # A group the LLM classified "serious" flags the heatmap cell
+    # crit even though the agent-reported Windows level is plain "error", not
+    # "critical" — content, not just the raw Windows level, drives the flag.
+    a1 = _agent("pc1", {"reliability": {
+        "status": "warn", "summary": "", "recent_crashes": 3, "events": [
+            {"source": "Ntfs", "event_id": 55, "level": "error", "count": 3,
+             "category": "Disk & storage", "severity": "serious"}]}})
+    out = fleet_stats.aggregate_overview([a1], now=NOW)["reliability_categories"]
+    cell = next(c for c in out["cells"] if c["category"] == "Disk & storage")
+    assert cell["crit"] is True
+
+
 def test_reliability_categories_empty_without_events():
     # The baseline fleet's reliability sections carry only a count, no breakdown.
     out = fleet_stats.aggregate_overview(_fleet(), now=NOW)["reliability_categories"]

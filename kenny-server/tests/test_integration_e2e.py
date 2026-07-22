@@ -126,18 +126,20 @@ async def test_real_agent_end_to_end(tmp_path) -> None:
                 headers={"Authorization": f"Bearer {token}"},
             )
             async with Client(transport) as client:
+                # select_agent is advisory only (ADR-0042); forwarded capability
+                # calls require their own agent_id naming the target host.
                 await client.call_tool("select_agent", {"id": "dev"})
                 if sys.platform == "win32":
                     res = await client.call_tool(
                         "powershell_exec",
-                        {"args": {"script": "echo hi", "timeout_s": 20}},
+                        {"args": {"script": "echo hi", "timeout_s": 20, "agent_id": "dev"}},
                     )
                 else:
                     # shell_exec is powershell_exec's OS-scoped mirror; the real
                     # agent runs it via `sh -c "echo hi"` on Linux.
                     res = await client.call_tool(
                         "shell_exec",
-                        {"args": {"command": "echo hi", "timeout_s": 20}},
+                        {"args": {"command": "echo hi", "timeout_s": 20, "agent_id": "dev"}},
                     )
                 assert res.data["exit_code"] == 0
                 assert "hi" in res.data["stdout"]
@@ -178,8 +180,13 @@ async def test_real_agent_end_to_end(tmp_path) -> None:
 
 
 async def _call(client, tool: str, args: dict | None = None):
-    """Forward a capability tool and return its result payload."""
-    return (await client.call_tool(tool, {"args": args or {}})).data
+    """Forward a capability tool to the single "dev" agent and return its result.
+
+    Forwarded calls require an explicit agent_id (ADR-0042); every test in this
+    module targets the one real agent it spawned, so it's injected here once.
+    """
+    call_args = {"agent_id": "dev", **(args or {})}
+    return (await client.call_tool(tool, {"args": call_args})).data
 
 
 async def _assert_windows_tools(client) -> None:

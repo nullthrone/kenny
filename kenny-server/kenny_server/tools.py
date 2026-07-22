@@ -2,14 +2,26 @@
 
 Two kinds of tools (names match ``docs/protocol.md`` § Tool catalog exactly):
 
-* **Forwarding capability tools** — require an active agent (via
-  ``select_agent``) and forward a ``request`` frame to it through the tunnel.
+* **Forwarding capability tools** — require an explicit ``agent_id`` argument
+  naming the target host, and forward a ``request`` frame to it through the
+  tunnel (see ADR-0042). ``agent_id`` is routing metadata: it is popped off the
+  call's ``args`` before the wire frame is built, so it never reaches the agent
+  and the wire contract is untouched.
 * **Server-only tools** — ``list_agents``, ``select_agent``, ``fleet_overview``,
   ``agent_health``, ``agent_snapshot`` — read from the registry, store, and
   health rules; they are not forwarded to a single agent.
 
 Every forwarded call is appended to an in-memory ``call_log`` for the dashboard
 tool-call log.
+
+``select_agent``/the registry's active-agent slot (ADR-0037) remain as an
+advisory discovery/back-compat helper only — they no longer decide where a
+forwarded MCP call lands (ADR-0042). Remote MCP clients (Claude Desktop,
+claude.ai) send no reliable per-conversation identifier, so two concurrent
+sessions authenticated with the same credential (PAT/OAuth token) would
+otherwise share one sticky slot and silently clobber each other's selection.
+Requiring ``agent_id`` on every forwarded call makes that race structurally
+impossible: a call either names its host or fails closed.
 """
 
 from __future__ import annotations
@@ -251,6 +263,33 @@ def _active_key(principal) -> str | None:
     return principal.active_key if principal is not None else None
 
 
+def _resolve_target(principal, args: dict[str, Any]) -> str:
+    """Routing target for a forwarded MCP call (ADR-0042).
+
+    Requires an explicit ``agent_id`` in ``args`` and pops it off — it is
+    routing metadata consumed here, never forwarded to the agent, so the wire
+    ``request`` frame (and ``docs/protocol.md``'s "argument keys are exact")
+    is unaffected. Fails closed (``ToolError``) rather than falling back to any
+    shared/sticky selection: remote MCP clients carry no reliable
+    per-conversation identifier, so a sticky slot keyed only by credential
+    (PAT/OAuth token/session) can be shared by two unrelated concurrent
+    conversations and silently clobbered (the reported race). The resolved
+    target is always scope-checked since ``agent_id`` is unvalidated client
+    input.
+    """
+
+    explicit = args.pop("agent_id", None)
+    target = str(explicit).strip() if explicit else ""
+    if not target:
+        raise ToolError(
+            "no_agent",
+            "agent_id is required: name the target host for this call "
+            "(call list_agents/select_agent to find it)",
+        )
+    _require_scope(principal, target)
+    return target
+
+
 def register_tools(
     mcp: FastMCP,
     *,
@@ -270,18 +309,15 @@ def register_tools(
         required_os = _OS_SCOPED_TOOLS.get(tool_name)
 
         async def forward(args: dict[str, Any] | None = None) -> dict[str, Any]:
-            """Forward this capability call to the active agent and return its result."""
+            """Forward this capability call to the named agent and return its result."""
             args = args or {}
             principal = _mcp_principal()
-            agent_id = registry.require_active(_active_key(principal))
-            # Defense in depth: the target is bound to this caller's selection, but
-            # re-check scope so a user can never operate outside their hosts.
-            _require_scope(principal, agent_id)
+            agent_id = _resolve_target(principal, args)
 
             # OS-scoped shell tools (powershell_exec/shell_exec): refuse the wrong
             # one for this agent's OS before ever forwarding, with a message naming
             # the correct tool (docs/protocol.md § "OS-scoped tools").
-            # Skipped when the agent isn't in the registry (e.g. selected only from
+            # Skipped when the agent isn't in the registry (e.g. named only from
             # stored telemetry) — the tunnel send fails as offline in that case.
             if required_os is not None:
                 agent = registry.get(agent_id)
@@ -312,8 +348,9 @@ def register_tools(
         forwarder = make_forwarder(tool_name)
         keys = CAPABILITY_TOOLS[tool_name]
         desc = (
-            f"Forward `{tool_name}` to the active agent "
-            f"(args: {', '.join(keys) if keys else 'none'}). Requires select_agent."
+            f"Forward `{tool_name}` to a specific agent "
+            f"(args: {', '.join(keys) if keys else 'none'}, plus a required `agent_id` "
+            "naming the target host — call list_agents/select_agent first to find it)."
         )
         mcp.tool(name=tool_name, description=desc)(forwarder)
 
@@ -328,7 +365,14 @@ def register_tools(
         agents = [await _agent_overview(i, registry, store) for i in ids]
         return {"active_agent": registry.active_for(_active_key(principal)), "agents": agents}
 
-    @mcp.tool(name="select_agent", description="Set the active agent for forwarded tools.")
+    @mcp.tool(
+        name="select_agent",
+        description=(
+            "Validate an agent id and remember it as your default (advisory only — "
+            "every forwarded capability tool still requires its own `agent_id` "
+            "argument naming the target host; this does not route calls for you)."
+        ),
+    )
     async def select_agent(id: str) -> dict[str, Any]:
         principal = _mcp_principal()
         _require_scope(principal, id)
@@ -361,6 +405,16 @@ def register_tools(
         _require_scope(_mcp_principal(), id)
         latest = await store.latest(id)
         snapshot = latest["snapshot"] if latest else None
+        if snapshot is not None:
+            # Annotate reliability events (category/severity/suspected_cause,
+            # ADR-0028) before scoring, so the reliability reason names
+            # the dominant pattern here too — not just in the dashboard — and a
+            # caller never needs a manual diag_eventlog to judge it. Deferred
+            # import avoids a module-load cycle (tools -> chat -> ... -> tools);
+            # graceful no-key/failure fallback means this never blocks the tool.
+            from .event_categories import annotate_snapshots
+
+            await annotate_snapshots([snapshot])
         agent = registry.get(id)
         health = build_health(snapshot, agent_os=agent.os if agent else "windows")
         return {

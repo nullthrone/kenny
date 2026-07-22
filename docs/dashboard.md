@@ -150,10 +150,11 @@ read "*this PC is critical because of these two sections*" at a glance.
 ### Reliability — what's going wrong
 
 A heatmap of **hosts × friendly problem category** over the last 7 days; each cell's colour is
-the event count. Categories come from the server-side reliability categorizer
-(App crash / hang, Disk & storage, Power & boot, …; see
-[Telemetry reference](telemetry.md#reliability-categorization)). Click a cell to inspect the
-loudest sources behind it.
+the event count, and a cell is flagged **crit** if any of its events is agent-reported
+`level: critical` **or** was classified `severity: serious` by the reliability categorizer.
+Categories come from that same server-side categorizer (App crash / hang, Disk & storage,
+Power & boot, …; see [Telemetry reference](telemetry.md#reliability-categorization)). Click a
+cell to inspect the loudest sources behind it.
 
 ### Fleet health trend
 
@@ -247,11 +248,13 @@ rule-reason chip.
   the issue fixable with kenny's tools it adds an **Auto-Remediate** button that hands a
   suggested prompt to the copilot (state-changing steps still hit the confirm-gate). See
   [ADR-0019](adr/0019-ai-recommendations-and-auto-remediation.md).
-- **Reliability** has a custom renderer — a category × day heatmap plus expandable event groups:
+- **Reliability** has a custom renderer — a category × day heatmap plus expandable event
+  groups, each row showing a **severity badge** (`benign`/`notable`/`serious`/`unknown`) and
+  the categorizer's plain-language **suspected cause** alongside the raw sample message:
 
   <figure markdown>
     ![The reliability section detail](assets/screenshots/reliability.png)
-    <figcaption>Reliability: what is going wrong, as a category×day heatmap, with each category expanding to the raw sources, event ids, and sample messages.</figcaption>
+    <figcaption>Reliability: what is going wrong, as a category×day heatmap, with each category expanding to the raw sources, event ids, severity, suspected cause, and sample messages.</figcaption>
   </figure>
 
 - **Web activity** has the **parental-controls list editor** (toggles, custom domains,

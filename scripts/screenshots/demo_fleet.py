@@ -35,16 +35,42 @@ _FIXTURE = (
 # and the per-agent sparkline / disk-fill + battery forecasts).
 HISTORY_DAYS = 30
 
-# Reliability (source, event_id) -> friendly category. Pre-seeded into the
-# server's categorization cache by :mod:`seed` so the heatmaps show varied
-# categories without an Anthropic API key (which would otherwise coerce every
-# group to "Other"; see event_categories.categorize_events).
-RELIABILITY_CATEGORIES: dict[tuple[str, int], str] = {
-    ("Application Error", 1000): "App crash / hang",
-    ("disk", 51): "Disk & storage",
-    ("Microsoft-Windows-Kernel-Power", 41): "Power & boot",
-    ("Service Control Manager", 7034): "Windows service",
-    ("Microsoft-Windows-WindowsUpdateClient", 20): "Windows Update",
+# Reliability (source, event_id) -> classification (category/severity/cause).
+# Pre-seeded into the server's categorization cache by :mod:`seed` so the
+# heatmaps *and* the health rule's pattern-severity scoring show
+# varied, deliberate results without an Anthropic API key (which would
+# otherwise coerce every group to category="Other", severity="unknown"; see
+# event_categories.categorize_events). Severities are chosen to preserve each
+# host's documented health mix (above) while still demonstrating the range:
+# an occasional app crash and background update-client noise are benign
+# nuisances (kept off the crit/warn path regardless of count), a disk I/O
+# error and a recurring critical-level power event are serious.
+RELIABILITY_CLASSIFICATIONS: dict[tuple[str, int], dict[str, str]] = {
+    ("Application Error", 1000): {
+        "category": "App crash / hang",
+        "severity": "benign",
+        "cause": "an occasional app crash, not a systemic pattern",
+    },
+    ("disk", 51): {
+        "category": "Disk & storage",
+        "severity": "serious",
+        "cause": "possible failing sectors on the disk",
+    },
+    ("Microsoft-Windows-Kernel-Power", 41): {
+        "category": "Power & boot",
+        "severity": "serious",
+        "cause": "unexpected shutdown, possible power or hardware issue",
+    },
+    ("Service Control Manager", 7034): {
+        "category": "Windows service",
+        "severity": "benign",
+        "cause": "a service restarting itself, usually self-resolves",
+    },
+    ("Microsoft-Windows-WindowsUpdateClient", 20): {
+        "category": "Windows Update",
+        "severity": "benign",
+        "cause": "background update-client retry noise",
+    },
 }
 
 

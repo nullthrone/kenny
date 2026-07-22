@@ -274,10 +274,13 @@ async def test_e2e_forward_and_telemetry(tmp_path, monkeypatch) -> None:
             assert "select_agent" in tools
             assert "fleet_overview" in tools
 
-            # Select the agent and forward a powershell_exec call.
+            # Select the agent (advisory) and forward a powershell_exec call.
+            # Forwarded capability tools require an explicit agent_id (ADR-0042) —
+            # select_agent no longer pins routing, so it's passed on every call.
             await client.call_tool("select_agent", {"id": "dev"})
             res = await client.call_tool(
-                "powershell_exec", {"args": {"script": "Get-Process", "timeout_s": 30}}
+                "powershell_exec",
+                {"args": {"script": "Get-Process", "timeout_s": 30, "agent_id": "dev"}},
             )
             assert res.data["exit_code"] == 0
             assert "Handles" in res.data["stdout"]
@@ -447,7 +450,7 @@ async def test_e2e_large_screenshot_response_passes(tmp_path, monkeypatch) -> No
         )
         async with Client(transport) as client:
             await client.call_tool("select_agent", {"id": "dev"})
-            res = await client.call_tool("screen_capture", {"args": {}})
+            res = await client.call_tool("screen_capture", {"args": {"agent_id": "dev"}})
             # The multi-MB response frame round-trips instead of timing out.
             assert res.data["format"] == "png"
             assert len(res.data["image_b64"]) == 4 * 1024 * 1024
