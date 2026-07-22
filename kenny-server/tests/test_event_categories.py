@@ -1,4 +1,4 @@
-"""LLM event categorization (ADR-0028, ADR-0042) with an injected fake client."""
+"""LLM event categorization (ADR-0028) with an injected fake client."""
 
 from __future__ import annotations
 

@@ -164,8 +164,10 @@ so connecting Claude Desktop takes no token copy-paste:
 4. Approve the one-time **"Allow this connection?"** consent screen. Claude stores the resulting
    token and reconnects automatically from then on.
 
-The connection acts as **your** account: the same tools are available and `select_agent` chooses
-the target PC, all within your role and host scope. Revoke it any time by disabling the grant (or
+The connection acts as **your** account: the same tools are available, all within your role and
+host scope. Every capability call names its own target PC with an `agent_id` argument —
+`select_agent` is still there for discovery, but each call must say which host it means (see the
+[tool reference](tools.md) for why). Revoke the connection any time by disabling the grant (or
 resetting your password) — see the [dashboard reference](dashboard.md).
 
 > **Scripts and other MCP clients** that can't do the OAuth handshake can still authenticate with a

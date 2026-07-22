@@ -15,7 +15,7 @@ It populates, per host:
 plus a few fleet-wide Activity rows (an audit call, an alert, a log line) and a
 couple of persisted copilot conversations, and it pre-seeds the reliability
 categorization cache so the heatmaps and health scoring show friendly
-categories/severities (ADR-0028, ADR-0042) without an API key.
+categories/severities (ADR-0028) without an API key.
 """
 
 from __future__ import annotations
@@ -69,7 +69,7 @@ async def seed_app(app: Any, base: datetime | None = None) -> list[str]:
 
 def _seed_reliability_categories() -> None:
     """Pre-fill the categorization cache so heatmaps + health scoring show
-    friendly categories/severities (ADR-0028, ADR-0042) without an API key.
+    friendly categories/severities (ADR-0028) without an API key.
 
     With no ANTHROPIC_API_KEY the categorizer coerces every group to the safe
     default (``category="Other"``, ``severity="unknown"``); priming the module

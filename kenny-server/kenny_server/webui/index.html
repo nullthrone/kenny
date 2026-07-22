@@ -2866,7 +2866,7 @@
       const cls = level === "critical" ? "crit" : "warn";
       return `<span class="k-pill k-pill--${cls}">${esc(level || "error")}</span>`;
     }
-    // Severity badge from the read-path LLM annotation (ADR-0028, ADR-0042) — how
+    // Severity badge from the read-path LLM annotation (ADR-0028) — how
     // much this *pattern* matters, independent of how often it repeats. Absent on
     // events from before annotation ran (e.g. no API key yet), in which case we
     // show nothing rather than guess.

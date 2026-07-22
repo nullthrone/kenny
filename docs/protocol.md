@@ -306,8 +306,18 @@ offline if no frame (any type) arrives within 3 missed intervals.
 
 ## Tool catalog
 
-The server exposes each tool as an MCP tool (after `select_agent`); the agent
-implements a handler with the same name. Argument keys are exact.
+The server exposes each tool as an MCP tool; the agent implements a handler with the same
+name. Argument keys below are exact and are exactly what reaches the agent in the `request`
+frame's `args`.
+
+On the MCP surface, every forwarded capability tool additionally accepts an `agent_id`
+argument naming the target host (ADR-0042). It is **server-consumed routing metadata**: the
+server pops it off the call's arguments to pick which agent connection to send the `request`
+frame down, so it is never included in the wire `args` and the agent never sees it — the
+table below is unaffected and unchanged. `agent_id` is required on this path (two concurrent
+MCP sessions authenticated with the same credential have no other reliable way to stay
+isolated); `select_agent` remains available for discovery but no longer decides where a
+forwarded call lands.
 
 | tool                 | args                          | result (sketch)                              |
 |----------------------|-------------------------------|----------------------------------------------|
@@ -396,7 +406,7 @@ Linux CI. See ADR-0026.
 | tool              | args            | purpose                                            |
 |-------------------|-----------------|----------------------------------------------------|
 | `list_agents`     | `{}`            | known agents + online state + overall health       |
-| `select_agent`    | `{id}`          | set the active agent for subsequent forwarded tools |
+| `select_agent`    | `{id}`          | validate an agent id and report it as a default (advisory only — does not route forwarded calls, see ADR-0042) |
 | `fleet_overview`  | `{}`            | per-agent rolled-up health for the dashboard        |
 | `agent_health`    | `{id}`          | per-section status/summary for one agent            |
 | `agent_snapshot`  | `{id, section?}`| latest stored snapshot (or one section) for an agent|
@@ -485,7 +495,7 @@ group with a friendly `category`, a `severity` (`benign`/`notable`/`serious`/`un
 short `suspected_cause` (via the connected LLM, cached) — used both for the dashboard's
 reliability heatmaps and to drive the health rule's crit/warn scoring by pattern, not raw
 volume. These three fields are **server-internal and not part of this wire contract** — the
-agent never sends them (see ADR-0028, ADR-0042). Off Windows the section is the
+agent never sends them (see ADR-0028). Off Windows the section is the
 `n/a on this platform` stub with `events: []`.
 
 ### Security-inventory, resilience, and parental-awareness sections (v0.10)
