@@ -12,7 +12,7 @@ use serde_json::{Map, Value};
 ///
 /// From v0.8 this is placed on the wire in `register.protocol` to select the
 /// mutual-auth handshake.
-pub const PROTOCOL_VERSION: &str = "0.13";
+pub const PROTOCOL_VERSION: &str = "0.14";
 
 /// One WebSocket text message. Tagged by the `type` field.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -213,6 +213,7 @@ pub struct PolicyRule {
 #[serde(rename_all = "snake_case")]
 pub enum PolicyTarget {
     Powershell,
+    Posix,
     SelfProtection,
     Path,
 }

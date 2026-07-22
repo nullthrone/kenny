@@ -142,9 +142,10 @@ sequenceDiagram
 
 **Confirm-gate:** read-only tools (diagnostics, `fs_read`/`list`/`search`, `telemetry_collect`,
 `*_list`, `screen_capture`) run automatically. Anything **state-changing** —
-`powershell_exec`, `winget_install/uninstall/update`, `net_dns_flush`, `net_adapter_reset`,
+`powershell_exec`, `shell_exec`, `winget_install/uninstall/update`, `net_dns_flush`, `net_adapter_reset`,
 `agent_update` — pauses for your explicit confirmation before it runs. Every call is recorded in the
-tool-call log.
+tool-call log. `powershell_exec` (Windows) and `shell_exec` (Linux/macOS) are OS-scoped mirrors of
+each other — kenny refuses the wrong one for a given PC's OS before it ever runs.
 
 The chat mirrors your fleet selection: the **context** chip shows whether it's scoped to the
 selected PC or the whole fleet. Conversations are **saved** — **new** starts a fresh one and
@@ -176,7 +177,7 @@ resetting your password) — see the [dashboard reference](dashboard.md).
 
 | Family | Tools | Changes state? |
 |--------|-------|----------------|
-| Shell | `powershell_exec` | ✅ |
+| Shell | `powershell_exec` (Windows) · `shell_exec` (Linux/macOS) | ✅ |
 | Packages | `winget_list` · `winget_install` · `winget_uninstall` · `winget_update` | install/uninstall/update ✅ |
 | Files | `fs_list` · `fs_search` · `fs_read` · `fs_disk_usage` | read-only |
 | Diagnostics | `diag_processes` · `diag_services` · `diag_eventlog` · `diag_autostart` | read-only |
@@ -251,8 +252,8 @@ sequenceDiagram
 
 ## Good habits for operators
 
-- Treat `powershell_exec` and the `winget`/`net` write tools as real admin power — confirm
-  deliberately. Screenshots and `fs_read` can expose private content; use them sparingly.
+- Treat `powershell_exec`/`shell_exec` and the `winget`/`net` write tools as real admin power —
+  confirm deliberately. Screenshots and `fs_read` can expose private content; use them sparingly.
 - Telemetry summaries come from the agent; the dashboard is for **your** family's machines only.
 - If a PC shows `crit`, open it and read the section reason before acting.
 - Rotate a PC's token (re-download the installer) if you suspect a leaked token.

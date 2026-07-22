@@ -5,7 +5,7 @@ See ../docs/protocol.md for the wire contract and ../docs/adr/ for architecture 
 
 import os
 
-PROTOCOL_VERSION = "0.13"
+PROTOCOL_VERSION = "0.14"
 
 # The release image stamps its real version into KENNY_SERVER_VERSION at build time
 # (release.yml passes the git tag as a docker build-arg, mirroring how the agent

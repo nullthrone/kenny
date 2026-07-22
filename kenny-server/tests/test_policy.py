@@ -31,6 +31,22 @@ def test_engine_blocks_destructive_powershell() -> None:
     assert "Format-Volume" in reason
 
 
+def test_engine_blocks_destructive_shell() -> None:
+    engine = PolicyEngine()
+    hit = engine.check("shell_exec", {"command": "rm -rf /"})
+    assert hit is not None
+    code, reason = hit
+    assert code == "blocked"
+    assert "rm -rf" in reason
+
+
+def test_engine_blocks_posix_self_protection() -> None:
+    engine = PolicyEngine()
+    hit = engine.check("shell_exec", {"command": "systemctl stop kenny-agent"})
+    assert hit is not None
+    assert hit[0] == "blocked"
+
+
 def test_engine_blocks_sam_hive_fs_read() -> None:
     engine = PolicyEngine()
     hit = engine.check(
@@ -53,6 +69,7 @@ def test_engine_permits_benign_call() -> None:
         "powershell_exec", {"script": "Get-Process | Select-Object -First 5"}
     ) is None
     assert engine.check("fs_read", {"path": r"C:\Users\testuser\notes.txt"}) is None
+    assert engine.check("shell_exec", {"command": "uname -a"}) is None
 
 
 def test_engine_does_not_mirror_agent_update() -> None:
@@ -168,6 +185,7 @@ def test_policy_api_add_list_remove(tmp_path) -> None:
         # GET shows built-ins from the catalog and no operator rules yet.
         body = c.get("/api/policy/rules", headers=_bearer(app)).json()
         assert any(r["id"] == "ps_format_volume" for r in body["builtin"])
+        assert any(r["id"] == "posix_rm_rf_root" for r in body["builtin"])
         assert body["operator"] == []
 
         # POST adds an operator rule.

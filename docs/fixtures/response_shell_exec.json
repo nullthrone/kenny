@@ -1,0 +1,6 @@
+{
+  "type": "response",
+  "id": "9f1c0e2a-2b3c-4d5e-8f90-1234567890ac",
+  "ok": true,
+  "result": { "stdout": "Linux example-pc 6.8.0 x86_64\nFilesystem  Size  Used Avail Use% Mounted on\n/dev/sda1   100G   42G   58G  42% /\n", "stderr": "", "exit_code": 0 }
+}

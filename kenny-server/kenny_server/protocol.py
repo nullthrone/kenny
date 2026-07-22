@@ -165,7 +165,7 @@ class PolicyRule(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str
-    applies_to: Literal["powershell", "self_protection", "path"]
+    applies_to: Literal["powershell", "posix", "self_protection", "path"]
     pattern: str
     reason: str
 

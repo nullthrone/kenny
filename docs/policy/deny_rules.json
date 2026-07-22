@@ -1,6 +1,6 @@
 {
-  "catalog_version": 1,
-  "comment": "Shared deny-rule catalog for the deterministic agent-side safety guard (ADR-0020/0021). Single source of truth: the Rust agent embeds this via include_str! and the Python server loads it for its best-effort mirror. applies_to is one of powershell|self_protection|path. Patterns must use the portable regex subset common to Rust `regex` and Python `re` (no backreferences/lookaround). Path rules are matched after normalising / to \\.",
+  "catalog_version": 2,
+  "comment": "Shared deny-rule catalog for the deterministic agent-side safety guard (ADR-0020/0021). Single source of truth: the Rust agent embeds this via include_str! and the Python server loads it for its best-effort mirror. applies_to is one of powershell|posix|self_protection|path. Patterns must use the portable regex subset common to Rust `regex` and Python `re` (no backreferences/lookaround). Path rules are matched after normalising / to \\.",
   "rules": [
     {
       "id": "ps_format_drive",
@@ -163,6 +163,84 @@
       "applies_to": "powershell",
       "pattern": "(?i)\\bAdd-LocalGroupMember\\b.*administrators",
       "reason": "Add-LocalGroupMember Administrators (privilege escalation)"
+    },
+    {
+      "id": "posix_rm_rf_root",
+      "applies_to": "posix",
+      "pattern": "(?i)\\brm\\s+(-[a-z]*\\s+)*-([a-z]*r[a-z]*f[a-z]*|[a-z]*f[a-z]*r[a-z]*)(\\s+-[a-z]+)*\\s+/(\\s|$)",
+      "reason": "rm -rf / (recursive delete of root)"
+    },
+    {
+      "id": "posix_rm_no_preserve_root",
+      "applies_to": "posix",
+      "pattern": "(?i)--no-preserve-root",
+      "reason": "rm --no-preserve-root (recursive delete of root)"
+    },
+    {
+      "id": "posix_mkfs",
+      "applies_to": "posix",
+      "pattern": "(?i)\\bmkfs(\\.\\w+)?\\b",
+      "reason": "mkfs (reformat a filesystem)"
+    },
+    {
+      "id": "posix_dd_to_device",
+      "applies_to": "posix",
+      "pattern": "(?i)\\bdd\\b.*\\bof=/dev/",
+      "reason": "dd of=/dev/... (raw device write)"
+    },
+    {
+      "id": "posix_redirect_to_device",
+      "applies_to": "posix",
+      "pattern": "(?i)>\\s*/dev/(sd|nvme|hd|xvd|vd)",
+      "reason": "shell redirect onto a block device"
+    },
+    {
+      "id": "posix_shred",
+      "applies_to": "posix",
+      "pattern": "(?i)\\bshred\\b",
+      "reason": "shred (secure wipe)"
+    },
+    {
+      "id": "posix_wipefs",
+      "applies_to": "posix",
+      "pattern": "(?i)\\bwipefs\\b",
+      "reason": "wipefs (wipe filesystem signatures)"
+    },
+    {
+      "id": "posix_fork_bomb",
+      "applies_to": "posix",
+      "pattern": "(?i):\\(\\)\\s*\\{\\s*:\\s*\\|\\s*:\\s*&?\\s*\\}\\s*;\\s*:",
+      "reason": "fork bomb"
+    },
+    {
+      "id": "posix_chmod_root",
+      "applies_to": "posix",
+      "pattern": "(?i)\\bchmod\\b\\s+-R\\s+\\d+\\s+/(\\s|$)",
+      "reason": "chmod -R on / (recursive permission change on root)"
+    },
+    {
+      "id": "posix_chown_root",
+      "applies_to": "posix",
+      "pattern": "(?i)\\bchown\\b\\s+-R\\b.*\\s+/(\\s|$)",
+      "reason": "chown -R on / (recursive ownership change on root)"
+    },
+    {
+      "id": "sp_systemctl_kenny",
+      "applies_to": "self_protection",
+      "pattern": "(?i)\\bsystemctl\\b\\s+(stop|disable|mask|kill)\\b.*kenny\\-agent",
+      "reason": "stop/disable the kenny agent systemd unit"
+    },
+    {
+      "id": "sp_kill_kenny",
+      "applies_to": "self_protection",
+      "pattern": "(?i)\\b(kill|pkill|killall)\\b.*kenny\\-agent",
+      "reason": "kill the kenny agent process"
+    },
+    {
+      "id": "sp_rm_kenny_binary",
+      "applies_to": "self_protection",
+      "pattern": "(?i)\\brm\\b.*kenny\\-agent\\b",
+      "reason": "delete the kenny agent binary"
     },
     {
       "id": "sp_stop_service",

@@ -67,6 +67,7 @@ struct Rule {
 #[derive(Default)]
 struct Grouped {
     powershell: Vec<Rule>,
+    posix: Vec<Rule>,
     self_protection: Vec<Rule>,
     path: Vec<Rule>,
 }
@@ -97,6 +98,7 @@ impl Grouped {
             };
             match r.applies_to {
                 PolicyTarget::Powershell => g.powershell.push(compiled),
+                PolicyTarget::Posix => g.posix.push(compiled),
                 PolicyTarget::SelfProtection => g.self_protection.push(compiled),
                 PolicyTarget::Path => g.path.push(compiled),
             }
@@ -145,6 +147,11 @@ pub fn check(tool: &str, args: &Value) -> Result<(), (ErrorCode, String)> {
             let script = str_arg(args, "script").unwrap_or_default();
             match_group(|g| &g.powershell, script)?;
             match_group(|g| &g.self_protection, script)?;
+        }
+        "shell_exec" => {
+            let command = str_arg(args, "command").unwrap_or_default();
+            match_group(|g| &g.posix, command)?;
+            match_group(|g| &g.self_protection, command)?;
         }
         // These mutating tools forward their string args into a shell/exec (e.g.
         // net_adapter_reset interpolates the adapter name into a PowerShell command).
@@ -282,6 +289,10 @@ mod tests {
         check("powershell_exec", &json!({ "script": script }))
     }
 
+    fn sh(command: &str) -> Result<(), (ErrorCode, String)> {
+        check("shell_exec", &json!({ "command": command }))
+    }
+
     #[test]
     fn catalog_patterns_all_compile() {
         let catalog: Catalog =
@@ -290,9 +301,10 @@ mod tests {
             Regex::new(&r.pattern)
                 .unwrap_or_else(|e| panic!("rule {} has uncompilable pattern: {e}", r.id));
         }
-        // And the built-ins compiled into all three groups.
+        // And the built-ins compiled into all four groups.
         let g = builtins();
         assert!(!g.powershell.is_empty());
+        assert!(!g.posix.is_empty());
         assert!(!g.self_protection.is_empty());
         assert!(!g.path.is_empty());
     }
@@ -327,6 +339,37 @@ mod tests {
     }
 
     #[test]
+    fn benign_shell_passes() {
+        sh("uname -a").unwrap();
+        sh("printf hi").unwrap();
+        sh("ls -la /home/user").unwrap();
+        // `chmod`/`chown` on an ordinary path (not recursive on `/`) must not trip
+        // the root-only posix rules.
+        sh("chmod 644 notes.txt").unwrap();
+        sh("chown user:user notes.txt").unwrap();
+    }
+
+    #[test]
+    fn destructive_shell_is_blocked() {
+        for command in [
+            "rm -rf /",
+            "rm -fr /",
+            "rm -rf --no-preserve-root /",
+            "mkfs.ext4 /dev/sda1",
+            "dd if=/dev/zero of=/dev/sda",
+            "echo pwned > /dev/sda",
+            "shred -u /dev/sda",
+            "wipefs -a /dev/sda",
+            ":(){ :|:& };:",
+            "chmod -R 777 /",
+            "chown -R user:user /",
+        ] {
+            let err = sh(command).unwrap_err();
+            assert_eq!(err.0, ErrorCode::Blocked, "expected block for: {command}");
+        }
+    }
+
+    #[test]
     fn self_protection_blocks_agent_tampering() {
         ps("Stop-Service kenny-agent").unwrap_err();
         ps("sc.exe delete kenny-agent").unwrap_err();
@@ -334,6 +377,15 @@ mod tests {
         ps("Remove-Item 'C:\\Program Files\\kenny\\kenny-agent.exe'").unwrap_err();
         // Self-protection also applies to other mutating tools' string args.
         check("winget_install", &json!({ "id": "stop kenny-agent.exe" })).unwrap_err();
+    }
+
+    #[test]
+    fn self_protection_blocks_posix_agent_tampering() {
+        sh("systemctl stop kenny-agent").unwrap_err();
+        sh("systemctl disable kenny-agent").unwrap_err();
+        sh("pkill -f kenny-agent").unwrap_err();
+        sh("rm /usr/local/bin/kenny-agent").unwrap_err();
+        sh("rm /var/lib/kenny/kenny-agent.control.json").unwrap_err();
     }
 
     #[test]

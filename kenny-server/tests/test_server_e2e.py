@@ -86,12 +86,14 @@ class MockAgent:
         private_key: Ed25519PrivateKey | None = None,
         server_public_key_b64: str = SERVER_PUBLIC_KEY_B64,
         bad_sig: bool = False,
+        os: str = "windows",
     ) -> None:
         self.ws_url = ws_url
         self.agent_id = agent_id
         self.token = token
         self.signed = signed
         self.bad_sig = bad_sig
+        self.os = os
         self._private_key = private_key or Ed25519PrivateKey.generate()
         self._server_pub = Ed25519PublicKey.from_public_bytes(
             base64.b64decode(server_public_key_b64)
@@ -117,7 +119,7 @@ class MockAgent:
                         "type": "register",
                         "agent_id": self.agent_id,
                         "token": self.token,
-                        "meta": {"hostname": "DEV-PC", "os": "windows", "version": "0.1.0"},
+                        "meta": {"hostname": "DEV-PC", "os": self.os, "version": "0.1.0"},
                     }
                 )
             )
@@ -133,7 +135,7 @@ class MockAgent:
                     "agent_id": self.agent_id,
                     "protocol": "0.8",
                     "client_nonce": base64.b64encode(client_nonce).decode(),
-                    "meta": {"hostname": "DEV-PC", "os": "windows", "version": "0.1.0"},
+                    "meta": {"hostname": "DEV-PC", "os": self.os, "version": "0.1.0"},
                 }
             )
         )
@@ -163,6 +165,8 @@ class MockAgent:
         tool = frame["tool"]
         if tool == "powershell_exec":
             result = _fixture("response_powershell_exec.json")["result"]
+        elif tool == "shell_exec":
+            result = _fixture("response_shell_exec.json")["result"]
         elif tool == "telemetry_collect":
             result = _fixture("telemetry_snapshot.json")["snapshot"]
         elif tool == "screen_capture":
@@ -266,6 +270,7 @@ async def test_e2e_forward_and_telemetry(tmp_path, monkeypatch) -> None:
         async with Client(transport) as client:
             tools = {t.name for t in await client.list_tools()}
             assert "powershell_exec" in tools
+            assert "shell_exec" in tools
             assert "select_agent" in tools
             assert "fleet_overview" in tools
 
@@ -289,6 +294,81 @@ async def test_e2e_forward_and_telemetry(tmp_path, monkeypatch) -> None:
             assert "defender" in dev["flagged_sections"]
 
         await agent.stop()
+
+
+@pytest.mark.asyncio
+async def test_e2e_shell_exec_forwards_on_linux_agent(tmp_path, monkeypatch) -> None:
+    """``shell_exec`` forwards normally to a Linux-registered agent (ADR-0042)."""
+
+    monkeypatch.setenv("KENNY_SERVER_PRIVATE_KEY", SERVER_SEED_B64)
+    port = _free_port()
+    app = build_app(db_path=str(tmp_path / "shell.sqlite"))
+
+    async with _Server(app, port):
+        agent = MockAgent(f"ws://127.0.0.1:{port}/agent/ws", "dev", os="linux")
+        await app.state.key_store.enroll("dev", agent.public_key_b64)
+        await agent.start()
+        await asyncio.sleep(0.1)
+
+        transport = StreamableHttpTransport(
+            f"http://127.0.0.1:{port}/mcp",
+            headers={"Authorization": f"Bearer {app.state.operator_token}"},
+        )
+        async with Client(transport) as client:
+            await client.call_tool("select_agent", {"id": "dev"})
+            res = await client.call_tool(
+                "shell_exec", {"args": {"command": "uname -a", "timeout_s": 30}}
+            )
+            assert res.data["exit_code"] == 0
+
+        await agent.stop()
+
+
+@pytest.mark.asyncio
+async def test_e2e_os_guard_refuses_wrong_shell_tool(tmp_path, monkeypatch) -> None:
+    """The server's OS guard refuses the wrong shell tool for the agent's OS
+    before ever forwarding a `request` frame (docs/protocol.md § "OS-scoped
+    tools", ADR-0042): `shell_exec` on a Windows agent, `powershell_exec` on a
+    Linux agent."""
+
+    from fastmcp.exceptions import ToolError
+
+    monkeypatch.setenv("KENNY_SERVER_PRIVATE_KEY", SERVER_SEED_B64)
+    port = _free_port()
+    app = build_app(db_path=str(tmp_path / "os_guard.sqlite"))
+
+    async with _Server(app, port):
+        windows_agent = MockAgent(
+            f"ws://127.0.0.1:{port}/agent/ws", "win-pc", os="windows"
+        )
+        await app.state.key_store.enroll("win-pc", windows_agent.public_key_b64)
+        await windows_agent.start()
+
+        linux_agent = MockAgent(f"ws://127.0.0.1:{port}/agent/ws", "linux-pc", os="linux")
+        await app.state.key_store.enroll("linux-pc", linux_agent.public_key_b64)
+        await linux_agent.start()
+
+        await asyncio.sleep(0.1)
+
+        transport = StreamableHttpTransport(
+            f"http://127.0.0.1:{port}/mcp",
+            headers={"Authorization": f"Bearer {app.state.operator_token}"},
+        )
+        async with Client(transport) as client:
+            # shell_exec on a Windows agent is refused, naming powershell_exec.
+            await client.call_tool("select_agent", {"id": "win-pc"})
+            with pytest.raises(ToolError, match="shell_exec"):
+                await client.call_tool("shell_exec", {"args": {"command": "echo hi"}})
+
+            # powershell_exec on a Linux agent is refused, naming shell_exec.
+            await client.call_tool("select_agent", {"id": "linux-pc"})
+            with pytest.raises(ToolError, match="powershell_exec"):
+                await client.call_tool(
+                    "powershell_exec", {"args": {"script": "Get-Process"}}
+                )
+
+        await windows_agent.stop()
+        await linux_agent.stop()
 
 
 @pytest.mark.asyncio

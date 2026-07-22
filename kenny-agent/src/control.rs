@@ -140,6 +140,7 @@ pub fn is_mutating(tool: &str) -> bool {
     matches!(
         tool,
         "powershell_exec"
+            | "shell_exec"
             | "winget_install"
             | "winget_uninstall"
             | "winget_update"
@@ -219,6 +220,7 @@ mod tests {
     #[test]
     fn classifies_mutating_vs_readonly() {
         assert!(is_mutating("powershell_exec"));
+        assert!(is_mutating("shell_exec"));
         assert!(is_mutating("winget_install"));
         assert!(is_mutating("agent_update"));
         assert!(is_mutating("remotehelp_start"));
