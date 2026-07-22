@@ -491,10 +491,12 @@ payload the agent sends:
 
 `stability_index` (Windows Reliability Index, 0–10, or `null`) and `recent_crashes` (the total
 count = sum of the groups' counts) are retained. On the read path the server annotates each
-group with a friendly `category` (via the connected LLM, cached) for the dashboard's
-reliability heatmaps; that `category` is **server-internal and not part of this wire contract** —
-the agent never sends it (see ADR-0028). Off Windows the section is the `n/a on this platform`
-stub with `events: []`.
+group with a friendly `category`, a `severity` (`benign`/`notable`/`serious`/`unknown`), and a
+short `suspected_cause` (via the connected LLM, cached) — used both for the dashboard's
+reliability heatmaps and to drive the health rule's crit/warn scoring by pattern, not raw
+volume. These three fields are **server-internal and not part of this wire contract** — the
+agent never sends them (see ADR-0028, ADR-0042). Off Windows the section is the
+`n/a on this platform` stub with `events: []`.
 
 ### Security-inventory, resilience, and parental-awareness sections (v0.10)
 

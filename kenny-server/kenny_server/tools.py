@@ -361,6 +361,16 @@ def register_tools(
         _require_scope(_mcp_principal(), id)
         latest = await store.latest(id)
         snapshot = latest["snapshot"] if latest else None
+        if snapshot is not None:
+            # Annotate reliability events (category/severity/suspected_cause,
+            # ADR-0028 + ADR-0042) before scoring, so the reliability reason names
+            # the dominant pattern here too — not just in the dashboard — and a
+            # caller never needs a manual diag_eventlog to judge it. Deferred
+            # import avoids a module-load cycle (tools -> chat -> ... -> tools);
+            # graceful no-key/failure fallback means this never blocks the tool.
+            from .event_categories import annotate_snapshots
+
+            await annotate_snapshots([snapshot])
         agent = registry.get(id)
         health = build_health(snapshot, agent_os=agent.os if agent else "windows")
         return {

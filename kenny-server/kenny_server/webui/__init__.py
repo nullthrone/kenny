@@ -29,7 +29,7 @@ from ..chat import (
     run_turn_events,
 )
 from ..policy import PolicyEngine
-from ..event_categories import annotate_events, categorize_events
+from ..event_categories import annotate_snapshots
 from ..forecast import build_facts, deterministic_summary, forecast_events
 from ..recommend import ai_available, recommend_events, warning_facts
 from ..registry import AgentRegistry
@@ -99,28 +99,13 @@ def build_api_routes(
         return FileResponse(path, media_type=media)
 
     async def _annotate_reliability(snapshots: list[dict[str, Any] | None]) -> None:
-        """Stamp a friendly ``category`` onto every reliability event across the
-        given snapshots (mutating the in-memory copies loaded from the store).
-
-        One batched LLM call for the whole set, cached and deduped by
-        :func:`event_categories.categorize_events`; a no-op when there are no
-        events, and — with no API key — every event resolves to ``"Other"``.
+        """Stamp category/severity/suspected_cause onto every reliability event
+        across the given snapshots (mutating the in-memory copies loaded from the
+        store). Thin wrapper around :func:`event_categories.annotate_snapshots`
+        using this route module's injected ``client_factory`` (ADR-0028, ADR-0042).
         """
 
-        groups: list[dict[str, Any]] = []
-        for snap in snapshots:
-            rel = snap.get("reliability") if isinstance(snap, dict) else None
-            if isinstance(rel, dict):
-                groups.extend(e for e in (rel.get("events") or []) if isinstance(e, dict))
-        if not groups:
-            return
-        factory = client_factory or _anthropic_client
-        client = factory() if ai_available() else None
-        mapping = await categorize_events(client, groups)
-        for snap in snapshots:
-            rel = snap.get("reliability") if isinstance(snap, dict) else None
-            if isinstance(rel, dict) and isinstance(rel.get("events"), list):
-                annotate_events(rel["events"], mapping)
+        await annotate_snapshots(snapshots, client_factory=client_factory or _anthropic_client)
 
     async def api_fleet(request: Request) -> JSONResponse:
         ids = await _known_ids(registry, store)

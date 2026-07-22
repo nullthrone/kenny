@@ -156,8 +156,41 @@ def _number(value: Any) -> float | None:
     return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
 
+# -- reliability: volume-based fallback (no severity annotation present) ----
+#
+# Used only when events carry no `severity` field at all — i.e. the read-path
+# LLM categorization (ADR-0028) has never run over this payload (a raw agent
+# snapshot, or a test payload built by hand). Kept as today's thresholds, plus
+# one addition (a distinct-pattern escalation) so this path is never *less*
+# sensitive than before ADR-0042 — see _rule_reliability_by_volume.
+_RELIABILITY_FALLBACK_CRIT_TOTAL = 50
+_RELIABILITY_FALLBACK_WARN_TOTAL = 15
+# This many distinct (source, event_id) patterns, even if each is individually
+# low-count, is itself a signal worth a look when there's no severity info to
+# tell benign repetition from real diversity.
+_RELIABILITY_FALLBACK_WARN_DISTINCT = 8
+
+# -- reliability: weighted-pattern scoring (severity annotation present) ----
+#
+# ADR-0042: score on WHAT is recurring, not how often. A single benign pattern
+# repeating hundreds of times must not out-rank a handful of distinct,
+# unclassified or serious ones.
+_RELIABILITY_SERIOUS_RECURRENCE_CRIT = 10  # one 'serious' pattern this often -> crit alone
+_RELIABILITY_SIGNIFICANT_PATTERNS_CRIT = 5  # this many distinct non-benign patterns -> crit
+
+# Shared by both scoring paths: the Windows Reliability Index (0-10) is an
+# independent, agent-computed signal that content-based pattern scoring can't
+# see into, so it always applies on top.
+_RELIABILITY_SI_CRIT = 3
+_RELIABILITY_SI_WARN = 6
+
+
 def _reliability_reason(events: list[Any], total: int) -> str:
-    """A content reason: the biggest problem groups by category (or raw source)."""
+    """A content reason: the biggest problem groups by category (or raw source).
+
+    Used for the volume-based fallback path, where there is no severity/cause
+    to name — see :func:`_reliability_pattern_reason` for the annotated path.
+    """
 
     tally: dict[str, int] = {}
     for e in events or []:
@@ -171,30 +204,145 @@ def _reliability_reason(events: list[Any], total: int) -> str:
     return ", ".join(f"{label} ×{count}" for label, count in top)
 
 
-def _rule_reliability(payload: dict[str, Any], now: datetime) -> "tuple[Status, str] | None":
-    # Judge on the *content* of the error breakdown, not a bare count. `events` is
-    # the grouped breakdown (each with count/level, and a server-annotated
-    # `category`); `stability_index` is the Windows Reliability Index (0-10).
-    events = payload.get("events")
-    si = _number(payload.get("stability_index"))
-    total = _number(payload.get("recent_crashes"))
-    if events is None and total is None and si is None:
-        return None
-    if total is None:
-        total = sum(int(_number(e.get("count")) or 0) for e in (events or []) if isinstance(e, dict))
-    total_i = int(total)
-    has_critical = any(
-        isinstance(e, dict) and e.get("level") == "critical" for e in (events or [])
-    )
+def _cadence_label(count: int, window_days: Any) -> str:
+    """A short, deterministic cadence label from count/window (e.g. '~43/day')."""
 
-    if total_i >= 50 or (si is not None and si < 3):
+    days = _number(window_days) or 7.0
+    if days <= 0 or count <= 0:
+        return f"{count} total"
+    per_day = count / days
+    if per_day >= 1:
+        return f"~{per_day:.0f}/day"
+    return f"~{per_day * 7:.1f}/week"
+
+
+def _reliability_pattern_reason(patterns: list[dict[str, Any]], total: int, window_days: Any) -> str:
+    """Name the dominant *significant* pattern — source/event id, cadence, and
+    the LLM's suspected cause — so a reader can judge severity from
+    ``agent_health`` alone, without a manual ``diag_eventlog`` call. A host
+    whose events are all known-benign says so explicitly instead of hiding the
+    count behind a scary number.
+    """
+
+    significant = [p for p in patterns if p["severity"] != "benign"]
+    if not significant:
+        if not patterns:
+            return f"{total} error/critical events in 7d"
+        by_category: dict[str, int] = {}
+        for p in patterns:
+            label = p.get("category") or "?"
+            by_category[label] = by_category.get(label, 0) + p["count"]
+        top_cat = max(by_category, key=lambda c: by_category[c])
+        return f"{total} events, all known-benign ({top_cat})"
+
+    significant.sort(key=lambda p: p["count"], reverse=True)
+    top = significant[0]
+    label = str(top.get("source") or "?")
+    if top.get("event_id") is not None:
+        label += f"/{top['event_id']}"
+    cadence = _cadence_label(top["count"], window_days)
+    cause = top.get("cause") or top.get("category") or "cause unclear"
+    reason = f"{label} ×{top['count']} ({cadence}) — {cause}"
+    extra = len(significant) - 1
+    if extra > 0:
+        reason += f", +{extra} more pattern(s)"
+    return reason
+
+
+def _rule_reliability_by_volume(
+    events: list[dict[str, Any]], total_i: int, si: float | None
+) -> "tuple[Status, str]":
+    """Fallback scoring when events carry no severity annotation (see module
+    comment above). Strictly at least as sensitive as the pre-ADR-0042 rule.
+    """
+
+    has_critical = any(e.get("level") == "critical" for e in events)
+    distinct = len({(e.get("source"), e.get("event_id")) for e in events})
+
+    if total_i >= _RELIABILITY_FALLBACK_CRIT_TOTAL or (si is not None and si < _RELIABILITY_SI_CRIT):
         status: Status = "crit"
-    elif total_i >= 15 or has_critical or (si is not None and si < 6):
+    elif (
+        total_i >= _RELIABILITY_FALLBACK_WARN_TOTAL
+        or has_critical
+        or distinct >= _RELIABILITY_FALLBACK_WARN_DISTINCT
+        or (si is not None and si < _RELIABILITY_SI_WARN)
+    ):
         status = "warn"
     else:
         status = "ok"
 
-    return status, _reliability_reason(events if isinstance(events, list) else [], total_i)
+    return status, _reliability_reason(events, total_i)
+
+
+def _rule_reliability_by_severity(
+    events: list[dict[str, Any]], total_i: int, si: float | None, window_days: Any
+) -> "tuple[Status, str]":
+    """Weighted-pattern scoring once events carry a server-annotated severity
+    (ADR-0028 read-path categorization, extended by ADR-0042). Distinct
+    *patterns* drive escalation, not raw volume — see the module comment above.
+    """
+
+    patterns: list[dict[str, Any]] = []
+    for e in events:
+        severity = e.get("severity")
+        if severity not in ("benign", "notable", "serious", "unknown"):
+            severity = "unknown"
+        if e.get("level") == "critical":
+            # A Windows-critical entry always counts as serious, regardless of
+            # what the LLM made of the message.
+            severity = "serious"
+        patterns.append(
+            {
+                "source": e.get("source"),
+                "event_id": e.get("event_id"),
+                "count": int(_number(e.get("count")) or 0),
+                "severity": severity,
+                "category": e.get("category"),
+                "cause": e.get("suspected_cause"),
+            }
+        )
+
+    serious = [p for p in patterns if p["severity"] == "serious"]
+    # "unknown" is deliberately included here — never silently treated as
+    # benign — so genuinely novel/unclassifiable errors keep surfacing.
+    significant = [p for p in patterns if p["severity"] != "benign"]
+    worst_serious_count = max((p["count"] for p in serious), default=0)
+
+    if (
+        worst_serious_count >= _RELIABILITY_SERIOUS_RECURRENCE_CRIT
+        or len(significant) >= _RELIABILITY_SIGNIFICANT_PATTERNS_CRIT
+        or (si is not None and si < _RELIABILITY_SI_CRIT)
+    ):
+        status: Status = "crit"
+    elif significant or (si is not None and si < _RELIABILITY_SI_WARN):
+        status = "warn"
+    else:
+        status = "ok"
+
+    return status, _reliability_pattern_reason(patterns, total_i, window_days)
+
+
+def _rule_reliability(payload: dict[str, Any], now: datetime) -> "tuple[Status, str] | None":
+    # `events` is the grouped Error/Critical breakdown; `stability_index` is the
+    # Windows Reliability Index (0-10). Once the read path has annotated each
+    # group with a `severity` (ADR-0028 categorization, extended by ADR-0042),
+    # score on WHAT is recurring — see _rule_reliability_by_severity. Without
+    # that annotation (e.g. a raw payload in a unit test) fall back to the
+    # original volume-based thresholds — see _rule_reliability_by_volume.
+    events_raw = payload.get("events")
+    events = [e for e in events_raw if isinstance(e, dict)] if isinstance(events_raw, list) else []
+    si = _number(payload.get("stability_index"))
+    total = _number(payload.get("recent_crashes"))
+    if events_raw is None and total is None and si is None:
+        return None
+    if total is None:
+        total = sum(int(_number(e.get("count")) or 0) for e in events)
+    total_i = int(total)
+
+    annotated = any("severity" in e for e in events)
+    if annotated:
+        return _rule_reliability_by_severity(events, total_i, si, payload.get("window_days"))
+    return _rule_reliability_by_volume(events, total_i, si)
 
 
 _WEB_ACTIVITY_SERIOUS = {"custom", "seed", "external_adult"}
