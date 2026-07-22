@@ -144,7 +144,13 @@ def build_app(db_path: str | None = None) -> Starlette:
         call_log=call_log,
         webfilter=webfilter,
     )
-    mcp_app = mcp.http_app(path="/mcp")
+    # The Streamable-HTTP handler lives at the root of ``mcp_app``; it is exposed
+    # publicly at ``/mcp`` by the ``Mount("/mcp", ...)`` below. Using ``path="/mcp"``
+    # here as well would double the prefix and serve the real endpoint at
+    # ``/mcp/mcp`` while OAuth discovery, the audience-bound resource URL, the 401
+    # challenge, and the docs all advertise ``/mcp`` — leaving a connector unable to
+    # reach the session handler after a successful OAuth handshake.
+    mcp_app = mcp.http_app(path="/")
 
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette) -> AsyncIterator[None]:

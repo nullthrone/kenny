@@ -143,7 +143,7 @@ def test_mcp_endpoint_requires_token(tmp_path) -> None:
     app = _app(tmp_path)
     with TestClient(app) as c:
         # Gated before reaching the MCP app.
-        r = c.get("/mcp/mcp", follow_redirects=False)
+        r = c.get("/mcp", follow_redirects=False)
         assert r.status_code == 401
 
 

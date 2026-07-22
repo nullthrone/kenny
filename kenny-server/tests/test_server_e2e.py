@@ -260,7 +260,7 @@ async def test_e2e_forward_and_telemetry(tmp_path, monkeypatch) -> None:
 
         # The MCP endpoint now requires the operator bearer token.
         transport = StreamableHttpTransport(
-            f"http://127.0.0.1:{port}/mcp/mcp",
+            f"http://127.0.0.1:{port}/mcp",
             headers={"Authorization": f"Bearer {app.state.operator_token}"},
         )
         async with Client(transport) as client:
@@ -362,7 +362,7 @@ async def test_e2e_large_screenshot_response_passes(tmp_path, monkeypatch) -> No
         await asyncio.sleep(0.1)
 
         transport = StreamableHttpTransport(
-            f"http://127.0.0.1:{port}/mcp/mcp",
+            f"http://127.0.0.1:{port}/mcp",
             headers={"Authorization": f"Bearer {app.state.operator_token}"},
         )
         async with Client(transport) as client:
