@@ -4,12 +4,12 @@
 //! this tool's OS-scoped mirror is `powershell_exec` (`handlers::powershell`).
 
 use serde::Deserialize;
-use serde_json::{json, Value};
-use std::time::Duration;
+use serde_json::Value;
 
 use crate::protocol::ErrorCode;
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(windows, allow(dead_code))] // fields unused by the `unsupported` on-Windows stub
 struct Args {
     command: String,
     #[serde(default)]
@@ -26,6 +26,8 @@ pub async fn exec(args: Value) -> Result<Value, (ErrorCode, String)> {
 
 #[cfg(not(windows))]
 async fn run(args: &Args) -> Result<Value, (ErrorCode, String)> {
+    use serde_json::json;
+    use std::time::Duration;
     use tokio::process::Command;
 
     let mut cmd = Command::new("sh");
@@ -59,6 +61,7 @@ async fn run(_args: &Args) -> Result<Value, (ErrorCode, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[cfg(not(windows))]
     #[tokio::test]
