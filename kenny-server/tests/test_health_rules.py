@@ -125,7 +125,7 @@ def test_reliability_falls_back_to_source_without_category() -> None:
 
 
 def test_reliability_benign_repetition_scores_ok() -> None:
-    # ADR-0042 headline case: 300 repeats of ONE known-benign pattern (the
+    # Headline case: 300 repeats of ONE known-benign pattern (the
     # DistributedCOM-timeout symptom from the user story) must not crit a host
     # on volume alone once the pattern has been annotated as benign.
     events = [
@@ -196,7 +196,7 @@ def test_reliability_annotated_stability_index_still_applies() -> None:
 
 def test_reliability_falls_back_by_volume_without_severity_annotation() -> None:
     # DOD/regression guard: unannotated payloads (LLM categorization never ran)
-    # keep the exact pre-ADR-0042 volume-based behavior. This mirrors the
+    # keep the exact original volume-based behavior. This mirrors the
     # golden fixture, which is a raw (unannotated) agent payload.
     events = [
         {"source": "Application Error", "event_id": 1000, "level": "error", "count": 30,
@@ -212,7 +212,7 @@ def test_reliability_falls_back_by_volume_without_severity_annotation() -> None:
 
 
 def test_reliability_fallback_distinct_patterns_warn_even_below_volume_threshold() -> None:
-    # ADR-0042 addition to the no-LLM fallback: many distinct low-count
+    # No-LLM fallback addition: many distinct low-count
     # patterns are themselves a signal, even though their sum stays under the
     # old bare-count warn threshold. Strictly widens sensitivity, never narrows.
     events = [

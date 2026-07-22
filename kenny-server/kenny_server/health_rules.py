@@ -162,7 +162,7 @@ def _number(value: Any) -> float | None:
 # LLM categorization (ADR-0028) has never run over this payload (a raw agent
 # snapshot, or a test payload built by hand). Kept as today's thresholds, plus
 # one addition (a distinct-pattern escalation) so this path is never *less*
-# sensitive than before ADR-0042 — see _rule_reliability_by_volume.
+# sensitive than the original volume-based rule — see _rule_reliability_by_volume.
 _RELIABILITY_FALLBACK_CRIT_TOTAL = 50
 _RELIABILITY_FALLBACK_WARN_TOTAL = 15
 # This many distinct (source, event_id) patterns, even if each is individually
@@ -172,7 +172,7 @@ _RELIABILITY_FALLBACK_WARN_DISTINCT = 8
 
 # -- reliability: weighted-pattern scoring (severity annotation present) ----
 #
-# ADR-0042: score on WHAT is recurring, not how often. A single benign pattern
+# Score on WHAT is recurring, not how often. A single benign pattern
 # repeating hundreds of times must not out-rank a handful of distinct,
 # unclassified or serious ones.
 _RELIABILITY_SERIOUS_RECURRENCE_CRIT = 10  # one 'serious' pattern this often -> crit alone
@@ -253,7 +253,7 @@ def _rule_reliability_by_volume(
     events: list[dict[str, Any]], total_i: int, si: float | None
 ) -> "tuple[Status, str]":
     """Fallback scoring when events carry no severity annotation (see module
-    comment above). Strictly at least as sensitive as the pre-ADR-0042 rule.
+    comment above). Strictly at least as sensitive as the original volume-based rule.
     """
 
     has_critical = any(e.get("level") == "critical" for e in events)
@@ -278,8 +278,8 @@ def _rule_reliability_by_severity(
     events: list[dict[str, Any]], total_i: int, si: float | None, window_days: Any
 ) -> "tuple[Status, str]":
     """Weighted-pattern scoring once events carry a server-annotated severity
-    (ADR-0028 read-path categorization, extended by ADR-0042). Distinct
-    *patterns* drive escalation, not raw volume — see the module comment above.
+    (ADR-0028 read-path categorization). Distinct *patterns* drive escalation,
+    not raw volume — see the module comment above.
     """
 
     patterns: list[dict[str, Any]] = []
@@ -325,7 +325,7 @@ def _rule_reliability_by_severity(
 def _rule_reliability(payload: dict[str, Any], now: datetime) -> "tuple[Status, str] | None":
     # `events` is the grouped Error/Critical breakdown; `stability_index` is the
     # Windows Reliability Index (0-10). Once the read path has annotated each
-    # group with a `severity` (ADR-0028 categorization, extended by ADR-0042),
+    # group with a `severity` (ADR-0028 categorization),
     # score on WHAT is recurring — see _rule_reliability_by_severity. Without
     # that annotation (e.g. a raw payload in a unit test) fall back to the
     # original volume-based thresholds — see _rule_reliability_by_volume.

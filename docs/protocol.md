@@ -495,7 +495,7 @@ group with a friendly `category`, a `severity` (`benign`/`notable`/`serious`/`un
 short `suspected_cause` (via the connected LLM, cached) — used both for the dashboard's
 reliability heatmaps and to drive the health rule's crit/warn scoring by pattern, not raw
 volume. These three fields are **server-internal and not part of this wire contract** — the
-agent never sends them (see ADR-0028, ADR-0042). Off Windows the section is the
+agent never sends them (see ADR-0028). Off Windows the section is the
 `n/a on this platform` stub with `events: []`.
 
 ### Security-inventory, resilience, and parental-awareness sections (v0.10)

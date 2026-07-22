@@ -37,7 +37,7 @@ HISTORY_DAYS = 30
 
 # Reliability (source, event_id) -> classification (category/severity/cause).
 # Pre-seeded into the server's categorization cache by :mod:`seed` so the
-# heatmaps *and* the health rule's pattern-severity scoring (ADR-0042) show
+# heatmaps *and* the health rule's pattern-severity scoring show
 # varied, deliberate results without an Anthropic API key (which would
 # otherwise coerce every group to category="Other", severity="unknown"; see
 # event_categories.categorize_events). Severities are chosen to preserve each

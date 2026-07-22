@@ -1,8 +1,8 @@
-"""Server-side LLM categorization of reliability events (ADR-0028, ADR-0042).
+"""Server-side LLM categorization of reliability events (ADR-0028).
 
 The agent reports raw Windows event groups (``source`` + ``event_id`` + a sample
-message). To draw the reliability heatmaps — and, since ADR-0042, to *score*
-health — the server needs a **friendly category**, a **severity**, and a short
+message). To draw the reliability heatmaps — and to *score* health — the server
+needs a **friendly category**, a **severity**, and a short
 **suspected cause** per group. The space of Windows event sources is large and
 open-ended, so instead of a hand-maintained table we ask the connected LLM (the
 same Haiku model + API key the AI Recommendation uses, see ``recommend.py``).
@@ -17,8 +17,8 @@ Two things keep this cheap and safe, mirroring ``recommend.py``:
   tests pass a fake and no real key is required, and every result is validated
   against fixed enums (unknown / no key / API error -> ``category="Other"``,
   ``severity="unknown"``), so categorization degrades gracefully and never
-  becomes a hard dependency — and, per ADR-0042, "unknown" is scored as at least
-  notable rather than silently trusted as benign.
+  becomes a hard dependency — and "unknown" is scored as at least notable
+  rather than silently trusted as benign.
 """
 
 from __future__ import annotations
@@ -64,8 +64,8 @@ CATEGORIES: list[str] = [
 _CATEGORY_SET = set(CATEGORIES)
 FALLBACK = "Other"
 
-# Severity of a *recurring pattern*, independent of how many times it repeats
-# (ADR-0042) — this is what lets the health rule tell "300 benign repeats" apart
+# Severity of a *recurring pattern*, independent of how many times it repeats —
+# this is what lets the health rule tell "300 benign repeats" apart
 # from "300 distinct novel errors". The model may also answer "unknown"
 # (:data:`SEVERITY_FALLBACK`) when genuinely unsure; unlike category, an unknown
 # severity is deliberately treated as at least notable by the health rule, never
@@ -283,7 +283,7 @@ async def annotate_snapshots(
 
     One batched LLM call for the whole set, cached and deduped by
     :func:`categorize_events`; a no-op when there are no events, and — with no
-    API key — every event resolves to the safe defaults (ADR-0028, ADR-0042).
+    API key — every event resolves to the safe defaults (ADR-0028).
     ``client_factory`` defaults to :func:`default_client`.
     """
 

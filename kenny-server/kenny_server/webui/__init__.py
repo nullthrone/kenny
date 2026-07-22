@@ -102,7 +102,7 @@ def build_api_routes(
         """Stamp category/severity/suspected_cause onto every reliability event
         across the given snapshots (mutating the in-memory copies loaded from the
         store). Thin wrapper around :func:`event_categories.annotate_snapshots`
-        using this route module's injected ``client_factory`` (ADR-0028, ADR-0042).
+        using this route module's injected ``client_factory`` (ADR-0028).
         """
 
         await annotate_snapshots(snapshots, client_factory=client_factory or _anthropic_client)

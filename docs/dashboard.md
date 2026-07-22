@@ -250,8 +250,7 @@ rule-reason chip.
   [ADR-0019](adr/0019-ai-recommendations-and-auto-remediation.md).
 - **Reliability** has a custom renderer — a category × day heatmap plus expandable event
   groups, each row showing a **severity badge** (`benign`/`notable`/`serious`/`unknown`) and
-  the categorizer's plain-language **suspected cause** alongside the raw sample message (see
-  [ADR-0042](adr/0042-semantic-reliability-scoring.md)):
+  the categorizer's plain-language **suspected cause** alongside the raw sample message:
 
   <figure markdown>
     ![The reliability section detail](assets/screenshots/reliability.png)

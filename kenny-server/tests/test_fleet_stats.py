@@ -260,7 +260,7 @@ def test_reliability_categories_aggregate():
 
 
 def test_reliability_categories_flags_crit_on_serious_severity():
-    # ADR-0042: a group the LLM classified "serious" flags the heatmap cell
+    # A group the LLM classified "serious" flags the heatmap cell
     # crit even though the agent-reported Windows level is plain "error", not
     # "critical" — content, not just the raw Windows level, drives the flag.
     a1 = _agent("pc1", {"reliability": {

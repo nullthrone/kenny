@@ -363,7 +363,7 @@ def register_tools(
         snapshot = latest["snapshot"] if latest else None
         if snapshot is not None:
             # Annotate reliability events (category/severity/suspected_cause,
-            # ADR-0028 + ADR-0042) before scoring, so the reliability reason names
+            # ADR-0028) before scoring, so the reliability reason names
             # the dominant pattern here too — not just in the dashboard — and a
             # caller never needs a manual diag_eventlog to judge it. Deferred
             # import avoids a module-load cycle (tools -> chat -> ... -> tools);
