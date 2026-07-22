@@ -68,7 +68,7 @@ rule column).
 | `memory` | RAM usage | `percent_used` > 95 → **crit**; > 85 → **warn** |
 | `thermals` | Temperature sensors | hottest sensor ≥ 95 °C → **crit**; ≥ 85 °C → **warn** |
 | `battery` | Battery health and charge (laptops) | `health_percent` < 50 → **crit**; < 70 → **warn**. Laptops only; `battery.present` drives the device (laptop/desktop) pie |
-| `reliability` | Grouped Error/Critical event-log breakdown, stability index | `recent_crashes` ≥ 50 **or** `stability_index` < 3 → **crit**; ≥ 15 events, any critical-level group, **or** `stability_index` < 6 → **warn**. Reason names the top-3 problem categories |
+| `reliability` | Grouped Error/Critical event-log breakdown, stability index | Scored on **pattern severity**, not raw count, once the read-path categorizer has annotated each group (ADR-0042): a `serious` pattern recurring ≥ 10×, **or** ≥ 5 distinct non-`benign` patterns, **or** `stability_index` < 3 → **crit**; any non-`benign` (`notable`/`unknown`/`serious`) pattern **or** `stability_index` < 6 → **warn**; all-`benign` → **ok** regardless of count. Reason names the dominant pattern (source/event id, cadence, suspected cause), or says so explicitly when everything is benign. Without annotation (no API key yet, or a raw payload) falls back to `recent_crashes` ≥ 50 **or** `stability_index` < 3 → **crit**; ≥ 15 events, ≥ 8 distinct patterns, any critical-level group, **or** `stability_index` < 6 → **warn** |
 | `web_activity` | Observed domains (parental controls) | a serious flagged hit (`custom` / `seed` / `external_adult`) in 24 h → **crit**; a `bypass` hit in 24 h → **warn** (see [`parental-controls.md`](parental-controls.md)) |
 | `listening_ports` | Listening TCP/UDP ports | a non-loopback listener on **22 / 3389 / 5900 / 5985 / 5986** → **warn** |
 | `local_accounts` | Local users and administrators | an enabled admin with `password_required` false **and** no password ever set → **crit**; built-in Administrator or Guest enabled → **warn** |
@@ -102,28 +102,37 @@ rule column).
 
 The `reliability` section reports a **breakdown** of Error/Critical Windows event-log
 entries — grouped by `source` + `event_id`, each with a sample message and per-day counts
-— rather than a single number. To make those groups legible, the server sorts each
-distinct group into one **friendly category**:
+— rather than a single number. To make those groups legible (and to score them
+meaningfully, see below), the server sorts each distinct group into one **friendly
+category**:
 
 *Disk & storage · App crash / hang · Bluescreen / bugcheck · Driver & hardware · Power &
 boot · Windows service · Windows Update · Network · Security · Other.*
 
-The mapping is done by the **connected LLM (Haiku)** on the telemetry **read path**,
-validated against that fixed enum, and **cached** by `(source, event_id)` — so after
-warm-up it is effectively a no-op. The category is a server-side annotation; the agent
-never sends it. Without an `ANTHROPIC_API_KEY` (or on an API error) every group **degrades
-gracefully to _Other_**, and the heatmaps and expandable raw groups still work.
+— plus a **severity** (`benign` / `notable` / `serious`, or `unknown` when the model is
+genuinely unsure) and a short plain-language **suspected cause** for the pattern.
 
-This categorization drives the reliability heatmaps: hosts × category across the fleet, and
-category × day for one PC.
+The classification is done by the **connected LLM (Haiku)** on the telemetry **read path**,
+validated against fixed enums, and **cached** by `(source, event_id)` — so after warm-up it
+is effectively a no-op. Category/severity/suspected-cause are server-side annotations; the
+agent never sends them. Without an `ANTHROPIC_API_KEY` (or on an API error) every group
+**degrades gracefully to `category="Other"`, `severity="unknown"`** — never to `benign` —
+and the heatmaps, health scoring, and expandable raw groups still work.
+
+This drives both the reliability heatmaps — hosts × category across the fleet, and
+category × day for one PC — and, since ADR-0042, the health rule itself: a pattern's
+`severity` is what tells "300 repeats of one known-benign timeout" apart from "300 distinct
+novel errors" (see the `reliability` row in the section table above). A group with
+`severity="serious"` also flags its heatmap cell **crit**, even when the agent-reported
+Windows `level` is plain `"error"`.
 
 <figure markdown>
 ![The reliability section detail: a category-by-day heatmap above expandable event groups.](assets/screenshots/reliability.png)
-<figcaption>The reliability section detail — a category × day heatmap plus expandable event groups down to sample messages.</figcaption>
+<figcaption>The reliability section detail — a category × day heatmap plus expandable event groups down to sample messages, each with a severity badge and suspected cause.</figcaption>
 </figure>
 
 See [ADR-0028](adr/0028-llm-categorization-of-reliability-events.md) for the categorization
-decision.
+decision and [ADR-0042](adr/0042-semantic-reliability-scoring.md) for scoring by severity.
 
 ## Screen time
 
@@ -162,5 +171,6 @@ See [`setup.md`](setup.md) for these and other environment variables, and
 - [`protocol.md`](protocol.md) — the agent ⇄ server wire contract
 - [ADR-0007](adr/0007-telemetry-push-model-and-sqlite-storage.md) — push model & SQLite storage
 - [ADR-0028](adr/0028-llm-categorization-of-reliability-events.md) — LLM reliability categorization
+- [ADR-0042](adr/0042-semantic-reliability-scoring.md) — scoring reliability by pattern severity
 - [ADR-0031](adr/0031-security-and-resilience-telemetry-sections.md) — security & resilience sections
 - [ADR-0032](adr/0032-screen-time-aggregated-session-minutes.md) — screen-time aggregation

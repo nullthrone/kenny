@@ -14,7 +14,8 @@ It populates, per host:
 
 plus a few fleet-wide Activity rows (an audit call, an alert, a log line) and a
 couple of persisted copilot conversations, and it pre-seeds the reliability
-category cache so the heatmaps show friendly categories without an API key.
+categorization cache so the heatmaps and health scoring show friendly
+categories/severities (ADR-0028, ADR-0042) without an API key.
 """
 
 from __future__ import annotations
@@ -67,16 +68,18 @@ async def seed_app(app: Any, base: datetime | None = None) -> list[str]:
 
 
 def _seed_reliability_categories() -> None:
-    """Pre-fill the categorization cache so heatmaps show friendly categories.
+    """Pre-fill the categorization cache so heatmaps + health scoring show
+    friendly categories/severities (ADR-0028, ADR-0042) without an API key.
 
-    With no ANTHROPIC_API_KEY the categorizer coerces every group to "Other";
-    priming the module cache by ``(source, event_id)`` makes ``categorize_events``
-    return our intended categories from cache (it checks the cache before the
+    With no ANTHROPIC_API_KEY the categorizer coerces every group to the safe
+    default (``category="Other"``, ``severity="unknown"``); priming the module
+    cache by ``(source, event_id)`` makes ``categorize_events`` return our
+    intended classifications from cache (it checks the cache before the
     client, so ``client is None`` still yields the primed values).
     """
 
-    for (source, event_id), category in demo_fleet.RELIABILITY_CATEGORIES.items():
-        event_categories._cache_put((source, event_id), category)  # noqa: SLF001
+    for key, classification in demo_fleet.RELIABILITY_CLASSIFICATIONS.items():
+        event_categories._cache_put(key, classification)  # noqa: SLF001
 
 
 async def _seed_webfilter(store: Any, agent_id: str, wf: dict[str, Any]) -> None:
