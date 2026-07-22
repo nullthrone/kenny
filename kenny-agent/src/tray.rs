@@ -95,7 +95,7 @@ mod windows_impl {
     use anyhow::Context;
     use windows::core::{w, PCWSTR};
     use windows::Win32::Foundation::{
-        GetLastError, ERROR_ALREADY_EXISTS, HINSTANCE, HWND, LPARAM, LRESULT, POINT, TRUE, WPARAM,
+        GetLastError, ERROR_ALREADY_EXISTS, HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM,
     };
     use windows::Win32::System::Console::FreeConsole;
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -108,9 +108,9 @@ mod windows_impl {
         AppendMenuW, CreateIconFromResourceEx, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
         DestroyIcon, DestroyMenu, DispatchMessageW, GetCursorPos, GetMessageW, GetSystemMetrics,
         LoadCursorW, LookupIconIdFromDirectoryEx, PostMessageW, PostQuitMessage, RegisterClassW,
-        SetForegroundWindow, TrackPopupMenu, TranslateMessage, CW_USEDEFAULT, HICON, HMENU,
-        IDC_ARROW, IMAGE_FLAGS, MENU_ITEM_FLAGS, MF_CHECKED, MF_DISABLED, MF_GRAYED, MF_SEPARATOR,
-        MF_STRING, MSG, SM_CXSMICON, SM_CYSMICON, SW_SHOWNORMAL, TPM_BOTTOMALIGN, TPM_RIGHTBUTTON,
+        SetForegroundWindow, TrackPopupMenu, TranslateMessage, CW_USEDEFAULT, HICON, IDC_ARROW,
+        IMAGE_FLAGS, MENU_ITEM_FLAGS, MF_CHECKED, MF_DISABLED, MF_GRAYED, MF_SEPARATOR, MF_STRING,
+        MSG, SM_CXSMICON, SM_CYSMICON, SW_SHOWNORMAL, TPM_BOTTOMALIGN, TPM_RIGHTBUTTON,
         WINDOW_EX_STYLE, WM_APP, WM_COMMAND, WM_DESTROY, WM_LBUTTONUP, WM_RBUTTONUP, WNDCLASSW,
         WS_OVERLAPPEDWINDOW,
     };
@@ -197,9 +197,9 @@ mod windows_impl {
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
-                HWND::default(),
-                HMENU::default(),
-                hinstance,
+                None,
+                None,
+                Some(hinstance),
                 None,
             )
             .context("CreateWindowExW")?;
@@ -231,7 +231,7 @@ mod windows_impl {
 
             // Pump messages until WM_QUIT (posted by the Quit menu item / WM_DESTROY).
             let mut msg = MSG::default();
-            while GetMessageW(&mut msg, HWND::default(), 0, 0).as_bool() {
+            while GetMessageW(&mut msg, None, 0, 0).as_bool() {
                 let _ = TranslateMessage(&msg);
                 DispatchMessageW(&msg);
             }
@@ -290,7 +290,7 @@ mod windows_impl {
     unsafe fn load_icon(ico: &[u8], cx: i32, cy: i32) -> anyhow::Result<HICON> {
         // Find the offset of the directory entry that best matches the desired size.
         let offset =
-            LookupIconIdFromDirectoryEx(ico.as_ptr(), TRUE, cx, cy, IMAGE_FLAGS(0)) as usize;
+            LookupIconIdFromDirectoryEx(ico.as_ptr(), true, cx, cy, IMAGE_FLAGS(0)) as usize;
         if offset == 0 || offset >= ico.len() {
             anyhow::bail!("no matching icon image in .ico");
         }
@@ -298,7 +298,7 @@ mod windows_impl {
         // best-fit entry the lookup pointed us at.
         let icon = CreateIconFromResourceEx(
             &ico[offset..],
-            TRUE,
+            true,
             ICON_RESOURCE_VERSION,
             cx,
             cy,
@@ -436,12 +436,12 @@ mod windows_impl {
             TPM_RIGHTBUTTON | TPM_BOTTOMALIGN,
             pt.x,
             pt.y,
-            0,
+            Some(0),
             hwnd,
             None,
         );
         // MSDN workaround so the menu closes reliably.
-        let _ = PostMessageW(hwnd, 0, WPARAM(0), LPARAM(0));
+        let _ = PostMessageW(Some(hwnd), 0, WPARAM(0), LPARAM(0));
         let _ = DestroyMenu(menu);
     }
 
