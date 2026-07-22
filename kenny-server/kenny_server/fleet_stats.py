@@ -96,8 +96,11 @@ def _reliability_categories(agents: list[Agent]) -> dict[str, Any]:
     (see ADR-0028); an unannotated event falls back to its raw ``source``.
 
     Returns ``{agents, categories, cells:[{agent_id, category, count, crit, detail,
-    members}]}`` — cells sum event counts per host+category, ``crit`` flags any
-    critical-level group, and ``detail`` names the loudest sources for the tooltip.
+    members}]}`` — cells sum event counts per host+category. ``crit`` flags any
+    critical-level group, OR (ADR-0042) any group the read-path LLM classified
+    as ``severity="serious"`` — a pattern can be worth flagging even when the
+    agent didn't mark the Windows event itself "critical". ``detail`` names the
+    loudest sources for the tooltip.
     """
 
     # (agent_id, category) -> {count, crit, sources: {source: count}}
@@ -119,7 +122,7 @@ def _reliability_categories(agents: list[Agent]) -> dict[str, Any]:
             categories.add(category)
             cell = cells.setdefault((aid, category), {"count": 0, "crit": False, "sources": {}})
             cell["count"] += count
-            if e.get("level") == "critical":
+            if e.get("level") == "critical" or e.get("severity") == "serious":
                 cell["crit"] = True
             src = str(e.get("source") or "?")
             cell["sources"][src] = cell["sources"].get(src, 0) + count
