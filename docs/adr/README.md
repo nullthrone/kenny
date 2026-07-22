@@ -55,4 +55,3 @@ implementation detail", see *When (not) to write an ADR* in the repository `CLAU
 | [0039](0039-anti-cheat-coexistence-and-publisher-legitimacy.md) | Anti-cheat coexistence and publisher legitimacy | accepted |
 | [0040](0040-report-cpu-arch-via-telemetry.md) | Report CPU arch via telemetry; pin arch for fresh Linux installs | accepted |
 | [0041](0041-oauth2-authorization-server-for-mcp.md) | OAuth 2.1 authorization server for the MCP connector | accepted |
-| [0042](0042-shell-exec-for-linux-agents.md) | `shell_exec` for Linux/macOS agents, with a POSIX policy group and a server-side OS guard | proposed |

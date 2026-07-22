@@ -5,7 +5,7 @@ Runs the composed server on uvicorn and spawns the **actual** compiled
 call — `shell_exec` via real `sh` on Linux, `powershell_exec` via real
 `powershell.exe` on Windows (each is `unsupported` on the other OS, and the
 server's OS guard refuses the wrong one before ever forwarding it, see
-docs/protocol.md § "OS-scoped tools", ADR-0042) — and pushes a telemetry
+docs/protocol.md § "OS-scoped tools") — and pushes a telemetry
 snapshot. Asserts the round-trip through the real wire protocol on both sides.
 
 On a Windows runner the test additionally drives the real `#[cfg(windows)]` tool
@@ -211,7 +211,7 @@ async def _assert_windows_tools(client) -> None:
     assert flush["ok"] is True
 
     # Boundary: shell_exec is OS-scoped to Linux/macOS. On a Windows agent the
-    # server's OS guard refuses it before ever forwarding (ADR-0042).
+    # server's OS guard refuses it before ever forwarding.
     shell_exec_raised = False
     try:
         await _call(client, "shell_exec", {"command": "echo hi"})
@@ -271,7 +271,7 @@ async def _assert_linux(client) -> None:
     assert winget_raised, "winget_list must raise `unsupported` on the Linux build"
 
     # Boundary: powershell_exec is OS-scoped to Windows. On a Linux agent the
-    # server's OS guard refuses it before ever forwarding (ADR-0042).
+    # server's OS guard refuses it before ever forwarding.
     powershell_raised = False
     try:
         await _call(client, "powershell_exec", {"script": "echo hi"})

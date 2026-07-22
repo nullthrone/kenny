@@ -9,8 +9,8 @@ Run kenny end-to-end on this machine (a Linux dev agent is fine):
    in the background.
 3. Drive the MCP endpoint (MCP client or HTTP): `list_agents` → `select_agent("dev")` →
    `shell_exec {command:"echo hi"}` (the agent registers as `os: linux` on a Linux dev
-   machine, and `powershell_exec` is now `unsupported` there — see ADR-0042); assert the
-   result contains `hi`.
+   machine, and `powershell_exec` is now `unsupported` there); assert the result contains
+   `hi`.
 4. Trigger `telemetry_collect` and confirm a snapshot is stored and `fleet_overview()`
    shows the agent with a health status.
 5. Tear down both background processes. Report pass/fail with the captured output.

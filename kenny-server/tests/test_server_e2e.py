@@ -298,7 +298,7 @@ async def test_e2e_forward_and_telemetry(tmp_path, monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_e2e_shell_exec_forwards_on_linux_agent(tmp_path, monkeypatch) -> None:
-    """``shell_exec`` forwards normally to a Linux-registered agent (ADR-0042)."""
+    """``shell_exec`` forwards normally to a Linux-registered agent."""
 
     monkeypatch.setenv("KENNY_SERVER_PRIVATE_KEY", SERVER_SEED_B64)
     port = _free_port()
@@ -328,8 +328,8 @@ async def test_e2e_shell_exec_forwards_on_linux_agent(tmp_path, monkeypatch) -> 
 async def test_e2e_os_guard_refuses_wrong_shell_tool(tmp_path, monkeypatch) -> None:
     """The server's OS guard refuses the wrong shell tool for the agent's OS
     before ever forwarding a `request` frame (docs/protocol.md § "OS-scoped
-    tools", ADR-0042): `shell_exec` on a Windows agent, `powershell_exec` on a
-    Linux agent."""
+    tools"): `shell_exec` on a Windows agent, `powershell_exec` on a Linux
+    agent."""
 
     from fastmcp.exceptions import ToolError
 

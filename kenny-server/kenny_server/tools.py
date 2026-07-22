@@ -33,7 +33,7 @@ logger = logging.getLogger("kenny.tools")
 # "posix", the latter covering both "linux" and "macos" agents). Each has an
 # exact mirror on the other family. Enforced in ``make_forwarder`` so a
 # wrong-OS call is refused with an actionable message before ever reaching the
-# tunnel (see docs/protocol.md § "OS-scoped tools", ADR-0042).
+# tunnel (see docs/protocol.md § "OS-scoped tools").
 _OS_SCOPED_TOOLS: dict[str, str] = {
     "powershell_exec": "windows",
     "shell_exec": "posix",
@@ -280,7 +280,7 @@ def register_tools(
 
             # OS-scoped shell tools (powershell_exec/shell_exec): refuse the wrong
             # one for this agent's OS before ever forwarding, with a message naming
-            # the correct tool (docs/protocol.md § "OS-scoped tools", ADR-0042).
+            # the correct tool (docs/protocol.md § "OS-scoped tools").
             # Skipped when the agent isn't in the registry (e.g. selected only from
             # stored telemetry) — the tunnel send fails as offline in that case.
             if required_os is not None:

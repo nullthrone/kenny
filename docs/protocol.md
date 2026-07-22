@@ -659,7 +659,7 @@ agent puts it on the wire in `register.protocol` to select the mutual-auth hands
   kenny-agent`), mirroring the existing PowerShell/self-protection groups (ADR-0020/0021).
   Breaking change for `powershell_exec`'s off-Windows behavior (dev/CI scripts relying on
   the old `sh` fallback must switch to `shell_exec`); additive new tool otherwise. See
-  ADR-0042, and ADR-0035 (Linux agent support) which flagged this as future work.
+  ADR-0035 (Linux agent support), which flagged this as future work.
 - `0.13` — added `arch` to the `os_support` telemetry section, mirroring
   `register.meta.arch`. The server merges a reported value into the agent's stored
   `arch` on every telemetry push, giving it a periodic, self-refreshing signal in
