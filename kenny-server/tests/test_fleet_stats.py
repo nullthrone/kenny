@@ -296,15 +296,21 @@ def test_fleet_overview_requires_auth(tmp_path):
 def test_fleet_trend_route(tmp_path):
     app = build_app(db_path=str(tmp_path / "trend.sqlite"))
     snap = {"disk": {"status": "warn", "summary": "C: 88% full", "volumes": [{"mount": "C:", "percent_used": 88}]}}
+    # The route aggregates against the real wall-clock "now" (fleet_stats.aggregate_trend
+    # has no way to inject one via HTTP), so the fixture snapshots must be anchored to
+    # actual today rather than a hardcoded date, or this falls outside the 30-day window
+    # and flakes out from under any date the suite happens to run on.
+    today = datetime.now(timezone.utc).date()
+    date_str = today.isoformat()
     with TestClient(app) as c:
         store = app.state.store
-        c.portal.call(partial(store.insert, "laptop-1", "2026-06-06T09:00:00Z", snap))
-        c.portal.call(partial(store.insert, "laptop-1", "2026-06-06T21:00:00Z", snap))
+        c.portal.call(partial(store.insert, "laptop-1", f"{date_str}T09:00:00Z", snap))
+        c.portal.call(partial(store.insert, "laptop-1", f"{date_str}T21:00:00Z", snap))
         r = c.get("/api/fleet/trend?days=30", headers=_bearer(app))
         assert r.status_code == 200
         days = r.json()["days"]
         assert len(days) == 1
-        assert days[0]["date"] == "2026-06-06"
+        assert days[0]["date"] == date_str
         assert days[0]["warn"] == 1
 
 

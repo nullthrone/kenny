@@ -30,7 +30,7 @@ flowchart LR
   Agent["kenny-agent (Windows PC)<br/>PowerShell · Win32 · winget<br/>filesystem · screenshot · collectors"]
 
   Operator -->|https dashboard + chat| UI
-  Operator --> Claude -->|MCP, Bearer token| MCP
+  Operator --> Claude -->|MCP, OAuth| MCP
   UI --> Tunnel
   MCP --> Tunnel
   Tunnel <-->|WSS, agent dials out| Agent
@@ -99,7 +99,9 @@ _The Overview dashboard — see the **[dashboard reference](docs/dashboard.md)**
 - Windows-only tools have **portable Linux fallbacks**, so the agent builds and runs in CI/dev.
 
 ### Two ways to drive it with Claude
-- **Local MCP client** → `/mcp` (FastMCP Streamable HTTP), operator token as bearer.
+- **Local MCP client** → `/mcp` (FastMCP Streamable HTTP), connected via the built-in **OAuth 2.1**
+  flow (add-custom-connector → sign in → consent); a per-user access token works for clients that
+  can't do OAuth.
 - **Server-hosted chat** in the dashboard (no local client): a Claude tool-use loop bridged to the
   same tools, with prompt-cached system + tool schemas; model configurable (default
   `claude-sonnet-4-6`).
@@ -123,8 +125,11 @@ _The Overview dashboard — see the **[dashboard reference](docs/dashboard.md)**
   exponential-backoff reconnect.
 
 ### Security & auth
-- **Operator bearer token** for MCP + API + UI (multiple operator tokens supported); cookie login
-  with the `Secure` flag under TLS.
+- **Accounts, roles & host scope** (superuser / operator / user); cookie login with the `Secure`
+  flag under TLS, optional TOTP 2FA.
+- **OAuth 2.1 for the MCP connector** — kenny is its own authorization server (RFC 9728 / 8414 /
+  7591, PKCE, RFC 8707 audience binding); Claude Desktop connects with sign-in + consent. Per-user
+  bearer tokens (PATs) and a legacy shared operator token remain accepted.
 - **Per-agent tokens** in a SQLite token store with a **rotation endpoint**; the agent authenticates
   on `register`, and (from v0.8) with **mutual Ed25519** identities — the agent pins the server's
   public key and signs its handshake, enrolled one-time at install (rotation grace windows for both).

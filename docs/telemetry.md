@@ -64,7 +64,7 @@ rule column).
 | `win_update` | Recent Windows Update results | any `recent[].result == "failed"` → **warn** |
 | `app_updates` | Available third-party app updates | *no rule — agent-reported* |
 | `reboot_pending` | Pending-reboot flag and reasons | `pending` true → **warn** (reasons joined into the reason string) |
-| `os_support` | Windows edition and end-of-life date | `eol` true **or** `eol_date` in the past → **crit**; `eol_date` within 90 days → **warn** |
+| `os_support` | OS edition/end-of-life date, plus `arch` (`x86_64`/`aarch64`, mirrors `register.meta.arch`, protocol 0.13) | `eol` true **or** `eol_date` in the past → **crit**; `eol_date` within 90 days → **warn** |
 | `memory` | RAM usage | `percent_used` > 95 → **crit**; > 85 → **warn** |
 | `thermals` | Temperature sensors | hottest sensor ≥ 95 °C → **crit**; ≥ 85 °C → **warn** |
 | `battery` | Battery health and charge (laptops) | `health_percent` < 50 → **crit**; < 70 → **warn**. Laptops only; `battery.present` drives the device (laptop/desktop) pie |

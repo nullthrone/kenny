@@ -39,6 +39,8 @@ from .distribution import ShareLinks, build_download_routes
 from .keystore import KeyStore
 from .logging_config import StoreLogHandler, configure_logging, drain_log_queue
 from .notify import load_notifiers
+from .oauth import build_oauth_routes
+from .oauthstore import OAuthStore
 from .policy import PolicyEngine
 from .registry import AgentRegistry
 from .store import (
@@ -90,6 +92,7 @@ def build_app(db_path: str | None = None) -> Starlette:
     token_store = AgentTokenStore(db_path)
     key_store = KeyStore(db_path)
     user_store = UserStore(db_path)
+    oauth_store = OAuthStore(db_path)
     registry = AgentRegistry(token_store=token_store, key_store=key_store)
     store = TelemetryStore(db_path)
     event_store = EventStore(db_path)
@@ -141,7 +144,13 @@ def build_app(db_path: str | None = None) -> Starlette:
         call_log=call_log,
         webfilter=webfilter,
     )
-    mcp_app = mcp.http_app(path="/mcp")
+    # The Streamable-HTTP handler lives at the root of ``mcp_app``; it is exposed
+    # publicly at ``/mcp`` by the ``Mount("/mcp", ...)`` below. Using ``path="/mcp"``
+    # here as well would double the prefix and serve the real endpoint at
+    # ``/mcp/mcp`` while OAuth discovery, the audience-bound resource URL, the 401
+    # challenge, and the docs all advertise ``/mcp`` — leaving a connector unable to
+    # reach the session handler after a successful OAuth handshake.
+    mcp_app = mcp.http_app(path="/")
 
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette) -> AsyncIterator[None]:
@@ -153,6 +162,7 @@ def build_app(db_path: str | None = None) -> Starlette:
         await token_store.connect()
         await key_store.connect()
         await user_store.connect()
+        await oauth_store.connect()
         await event_store.connect()
         await policy_store.connect()
         await webfilter_store.connect()
@@ -163,6 +173,7 @@ def build_app(db_path: str | None = None) -> Starlette:
         await store.prune()
         await event_store.prune()
         await webfilter_store.prune()
+        await oauth_store.prune_expired()
         # Periodically refresh the external adult/bypass lists (ADR-0026). The
         # initial fetch is delayed so short-lived test app instances never reach
         # out; set KENNY_WEBFILTER_REFRESH_SECS=0 to disable entirely. The
@@ -221,6 +232,7 @@ def build_app(db_path: str | None = None) -> Starlette:
             await token_store.close()
             await key_store.close()
             await user_store.close()
+            await oauth_store.close()
             await store.close()
             await event_store.close()
             await policy_store.close()
@@ -247,7 +259,7 @@ def build_app(db_path: str | None = None) -> Starlette:
         webfilter_store=webfilter_store,
     )
     user_routes = build_user_routes(
-        user_store=user_store, registry=registry, store=store
+        user_store=user_store, registry=registry, store=store, oauth_store=oauth_store
     )
     chat_routes = build_chat_routes(
         registry=registry,
@@ -287,6 +299,7 @@ def build_app(db_path: str | None = None) -> Starlette:
         WebSocketRoute("/agent/ws", tunnel.endpoint),
         Mount("/mcp", app=mcp_app),
         *build_auth_routes(operator_tokens, user_store=user_store),
+        *build_oauth_routes(oauth_store=oauth_store, user_store=user_store),
         *chat_routes,
         *download_routes,
         *user_routes,
@@ -294,11 +307,15 @@ def build_app(db_path: str | None = None) -> Starlette:
     ]
 
     # Operator auth gates /mcp, /api, and the UI; /agent/ws (agent token) is exempt.
-    # The user store resolves per-user PATs and sessions; the shared token stays
-    # accepted as a back-compat superuser (ADR-0037).
+    # The user store resolves per-user PATs and sessions; the OAuth store resolves
+    # audience-bound OAuth access tokens (ADR-0041); the shared token stays accepted
+    # as a back-compat superuser (ADR-0037).
     middleware = [
         Middleware(
-            OperatorAuthMiddleware, token=operator_tokens, user_store=user_store
+            OperatorAuthMiddleware,
+            token=operator_tokens,
+            user_store=user_store,
+            oauth_store=oauth_store,
         )
     ]
 
@@ -312,6 +329,7 @@ def build_app(db_path: str | None = None) -> Starlette:
     app.state.token_store = token_store
     app.state.key_store = key_store
     app.state.user_store = user_store
+    app.state.oauth_store = oauth_store
     app.state.policy_store = policy_store
     app.state.policy_engine = policy_engine
     app.state.webfilter_store = webfilter_store

@@ -1,4 +1,4 @@
-//! Wire-protocol types mirroring `../docs/protocol.md` (v0.11).
+//! Wire-protocol types mirroring `../docs/protocol.md` (v0.13).
 //!
 //! These serde models are the Rust side of the contract between `kenny-server`
 //! (Python) and `kenny-agent`. They are round-tripped against `../docs/fixtures/`
@@ -12,7 +12,7 @@ use serde_json::{Map, Value};
 ///
 /// From v0.8 this is placed on the wire in `register.protocol` to select the
 /// mutual-auth handshake.
-pub const PROTOCOL_VERSION: &str = "0.11";
+pub const PROTOCOL_VERSION: &str = "0.13";
 
 /// One WebSocket text message. Tagged by the `type` field.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -158,6 +158,11 @@ pub enum ErrorCode {
     /// policy that blocks individually dangerous calls regardless of operator approval
     /// or kill-switch state. Cannot be turned off remotely. See ADR-0020.
     Blocked,
+    /// The agent is online but voluntarily stepped back because a protected game is
+    /// running on the endpoint: it suspends its most anti-cheat-visible tools (today
+    /// `screen_capture`) while the game runs, to avoid being mistaken for cheating
+    /// software. Automatic and game-scoped; clears when the game exits. See ADR-0039.
+    Paused,
 }
 
 /// `telemetry` frame body (also the shape returned by `telemetry_collect`).
@@ -359,6 +364,10 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&ErrorCode::Blocked).unwrap(),
             "\"blocked\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ErrorCode::Paused).unwrap(),
+            "\"paused\""
         );
     }
 
