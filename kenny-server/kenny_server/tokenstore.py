@@ -62,6 +62,12 @@ def _grace_secs() -> int:
 
 
 def _sha256_hex(token: str) -> str:
+    """Hash a high-entropy agent token for at-rest storage/lookup.
+
+    Mirrors ``security.sha256_hex``; see that docstring (and ADR-0014) for why
+    a fast unsalted digest — not a password KDF — is the right primitive here.
+    """
+
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 

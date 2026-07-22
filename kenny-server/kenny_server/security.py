@@ -208,6 +208,18 @@ def generate_token() -> str:
 
 
 def sha256_hex(value: str) -> str:
-    """Hex sha256 of ``value`` (PAT hashing at rest, mirrors tokenstore)."""
+    """Hex sha256 of ``value``; token-at-rest hashing for PATs and OAuth
+    codes/tokens (mirrors ``tokenstore._sha256_hex`` for agent tokens).
+
+    Deliberately a fast, unsalted digest rather than a password KDF (scrypt,
+    see ``hash_password`` above): every caller only ever passes a
+    high-entropy random token from ``generate_token()`` (or an OAuth token of
+    equivalent entropy), never a low-entropy user secret. A slow KDF buys
+    nothing against a 256-bit search space, would turn every token-auth
+    request into a CPU/memory cost, and — since the digest is stored as an
+    indexed primary/unique key looked up by equality (``token_sha256``
+    columns in oauthstore/userstore/tokenstore) — a per-value salt would
+    break that O(1) lookup outright. See ADR-0014 and ADR-0037.
+    """
 
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
