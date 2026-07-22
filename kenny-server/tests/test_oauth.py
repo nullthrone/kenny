@@ -180,6 +180,47 @@ def test_full_authcode_flow_and_token_reaches_api(app) -> None:
         assert api.status_code == 200
 
 
+def test_oauth_token_reaches_mcp_endpoint(app) -> None:
+    """The issued OAuth token must actually reach the ``/mcp`` session handler.
+
+    Regression guard: the MCP app was mounted so the real Streamable-HTTP endpoint
+    lived at ``/mcp/mcp`` while OAuth discovery, the audience-bound resource URL,
+    the 401 challenge, and the docs all advertise ``/mcp`` — so an authorized client
+    failed to connect right after consent. The rest of the suite only ever exercised
+    the token against ``/api``; this drives an actual MCP ``initialize`` at ``/mcp``.
+    """
+
+    with TestClient(app) as c:
+        _first_user(c)
+        client_id = _register(c)
+        tokens = _run_authcode_flow(c, client_id)
+        c.cookies.clear()
+        # Without a bearer, the operator gate answers /mcp with a 401 challenge.
+        assert c.post("/mcp", json={}).status_code == 401
+        # With the OAuth bearer, a proper MCP initialize reaches the FastMCP handler
+        # at /mcp (not 401 from auth, not 404 from a mis-mounted path).
+        init = c.post(
+            "/mcp",
+            headers={
+                "Authorization": f"Bearer {tokens['access_token']}",
+                "Accept": "application/json, text/event-stream",
+                "Content-Type": "application/json",
+            },
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {},
+                    "clientInfo": {"name": "kenny-test", "version": "1"},
+                },
+            },
+        )
+        assert init.status_code == 200, init.text
+        assert "mcp-session-id" in init.headers
+
+
 def test_authorize_redirects_to_login_when_signed_out(app) -> None:
     with TestClient(app) as c:
         _first_user(c)

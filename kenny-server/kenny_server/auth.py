@@ -302,7 +302,21 @@ class OperatorAuthMiddleware:
         if self.oauth_store is None or self.user_store is None:
             return None
         row = await self.oauth_store.resolve_access_token(bearer)
-        if row is None or row["resource"] != mcp_resource_url():
+        if row is None:
+            return None
+        expected = mcp_resource_url()
+        if row["resource"] != expected:
+            # A known, unexpired token bound to a different audience than this
+            # server currently advertises — almost always a KENNY_PUBLIC_URL
+            # mismatch (scheme/host/trailing slash). Log it so the operator can see
+            # why an authorized client still fails to connect, instead of a silent
+            # 401 (the token value itself is never logged).
+            logger.warning(
+                "oauth: rejecting token bound to resource %r; this server expects %r "
+                "(check KENNY_PUBLIC_URL)",
+                row["resource"],
+                expected,
+            )
             return None
         account = await self.user_store.get_enabled_row(row["user_id"])
         if account is None:
