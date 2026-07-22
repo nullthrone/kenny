@@ -32,8 +32,10 @@ from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Re
 from starlette.routing import Route
 
 from . import security
+from .urls import mcp_resource_url, public_base_url
 
 if TYPE_CHECKING:
+    from .oauthstore import OAuthStore
     from .userstore import UserStore
 
 logger = logging.getLogger("kenny.auth")
@@ -64,6 +66,8 @@ class Principal:
     avatar: str | None = None
     session_id: str | None = None
     pat_id: str | None = None
+    oauth_token_id: str | None = None
+    oauth_client_id: str | None = None
     is_env_token: bool = False
 
     @property
@@ -80,6 +84,8 @@ class Principal:
             return f"s:{self.session_id}"
         if self.pat_id:
             return f"p:{self.pat_id}"
+        if self.oauth_token_id:
+            return f"o:{self.oauth_token_id}"
         return None
 
     def at_least(self, minimum: str) -> bool:
@@ -195,14 +201,26 @@ def _is_public(path: str) -> bool:
     page. ``/api/agents/<id>/enroll`` is gated by the agent's own one-time
     enrollment token (verified in the handler), so it bypasses the operator gate
     like ``/agent/ws`` does (ADR-0023).
+
+    The OAuth endpoints (``/.well-known/oauth-*``, ``/authorize``, ``/token``,
+    ``/register``, ``/revoke``) are the handshake by which a client *obtains* a
+    credential, so they must be reachable without one; ``/authorize`` resolves the
+    session cookie itself and redirects to ``/login`` when signed out (ADR-0041).
     """
 
     return (
         path in ("/login", "/logout", "/setup")
+        or path in _OAUTH_PUBLIC_PATHS
+        or path.startswith("/.well-known/oauth-")
         or path.startswith("/d/")
         or path.startswith("/assets/")
         or _is_enroll(path)
     )
+
+
+_OAUTH_PUBLIC_PATHS = frozenset(
+    {"/authorize", "/authorize/consent", "/token", "/register", "/revoke"}
+)
 
 
 def _is_enroll(path: str) -> bool:
@@ -236,16 +254,24 @@ class OperatorAuthMiddleware:
         *,
         token: str | list[str],
         user_store: "UserStore | None" = None,
+        oauth_store: "OAuthStore | None" = None,
         cookie_name: str = COOKIE_NAME,
     ) -> None:
         self.app = app
         # Accept a single token or a list; both flow through `_token_valid`.
         self.token = token
         self.user_store = user_store
+        self.oauth_store = oauth_store
         self.cookie_name = cookie_name
 
     async def _principal_from_row(
-        self, row, *, session_id: str | None = None, pat_token: str | None = None
+        self,
+        row,
+        *,
+        session_id: str | None = None,
+        pat_token: str | None = None,
+        oauth_token: str | None = None,
+        oauth_client_id: str | None = None,
     ) -> Principal:
         role = row["role"]
         hosts: frozenset[str] = frozenset()
@@ -260,6 +286,43 @@ class OperatorAuthMiddleware:
             avatar=row["avatar"],
             session_id=session_id,
             pat_id=security.sha256_hex(pat_token) if pat_token else None,
+            oauth_token_id=security.sha256_hex(oauth_token) if oauth_token else None,
+            oauth_client_id=oauth_client_id,
+        )
+
+    async def _resolve_oauth_bearer(self, bearer: str) -> Principal | None:
+        """Resolve an OAuth access token to its account principal, or ``None``.
+
+        The token must be known, unexpired, unrevoked *and* audience-bound to this
+        server's MCP resource URL (RFC 8707): kenny must only accept tokens issued
+        specifically for it. The account's role/host scope becomes the principal's,
+        so the same RBAC as PATs applies.
+        """
+
+        if self.oauth_store is None or self.user_store is None:
+            return None
+        row = await self.oauth_store.resolve_access_token(bearer)
+        if row is None:
+            return None
+        expected = mcp_resource_url()
+        if row["resource"] != expected:
+            # A known, unexpired token bound to a different audience than this
+            # server currently advertises — almost always a KENNY_PUBLIC_URL
+            # mismatch (scheme/host/trailing slash). Log it so the operator can see
+            # why an authorized client still fails to connect, instead of a silent
+            # 401 (the token value itself is never logged).
+            logger.warning(
+                "oauth: rejecting token bound to resource %r; this server expects %r "
+                "(check KENNY_PUBLIC_URL)",
+                row["resource"],
+                expected,
+            )
+            return None
+        account = await self.user_store.get_enabled_row(row["user_id"])
+        if account is None:
+            return None
+        return await self._principal_from_row(
+            account, oauth_token=bearer, oauth_client_id=row["client_id"]
         )
 
     async def _resolve_principal(self, scope: dict) -> Principal | None:
@@ -269,6 +332,9 @@ class OperatorAuthMiddleware:
                 row = await self.user_store.resolve_pat(bearer)
                 if row is not None:
                     return await self._principal_from_row(row, pat_token=bearer)
+            oauth_principal = await self._resolve_oauth_bearer(bearer)
+            if oauth_principal is not None:
+                return oauth_principal
             if _token_valid(bearer, self.token):
                 return _env_principal()
             return None
@@ -300,10 +366,18 @@ class OperatorAuthMiddleware:
             return
 
         if _is_api_or_mcp(path):
+            # RFC 9728: point MCP clients at the protected-resource metadata so
+            # they can discover the authorization server and start the OAuth flow
+            # (ADR-0041). Plain API callers keep the bare Bearer challenge.
+            if path.startswith("/mcp"):
+                prm = f'{public_base_url()}/.well-known/oauth-protected-resource'
+                www_auth = f'Bearer resource_metadata="{prm}"'
+            else:
+                www_auth = "Bearer"
             response: Response = JSONResponse(
                 {"error": "unauthorized", "detail": "authentication required"},
                 status_code=401,
-                headers={"WWW-Authenticate": "Bearer"},
+                headers={"WWW-Authenticate": www_auth},
             )
         else:
             response = RedirectResponse(url="/login", status_code=302)
@@ -373,11 +447,40 @@ _LOGIN_HTML = (
     <label for="totp">2FA code <span style="text-transform:none">(if enabled)</span></label>
     <input id="totp" type="text" name="totp" placeholder="123456" inputmode="numeric"
       autocomplete="one-time-code" />
+    {next_field}
     <button type="submit">Sign in</button>
     {msg}
   </form>
 </body></html>"""
 )
+
+
+def _safe_next(raw: str | None) -> str:
+    """Sanitize a ``next`` redirect target to a safe in-app path.
+
+    Only a relative path that begins the OAuth authorize flow is allowed;
+    absolute URLs and protocol-relative ``//host`` values are rejected so the
+    login form can never be turned into an open redirect.
+    """
+
+    if not raw:
+        return ""
+    if raw.startswith("/authorize") and not raw.startswith("//"):
+        return raw
+    return ""
+
+
+def _login_page(msg: str = "", next_val: str = "") -> str:
+    """Render the login page, carrying a validated ``next`` target through POST."""
+
+    from html import escape
+
+    field = (
+        f'<input type="hidden" name="next" value="{escape(next_val)}" />'
+        if next_val
+        else ""
+    )
+    return _LOGIN_HTML.format(msg=msg, next_field=field)
 
 _SETUP_HTML = (
     """<!DOCTYPE html>
@@ -512,6 +615,9 @@ def build_auth_routes(
             username = str(form.get("username", "")).strip()
             password = str(form.get("password", ""))
             totp = str(form.get("totp", "")).strip()
+            # Carry a validated OAuth ``next`` target through the POST so a signed-out
+            # /authorize request resumes after login (ADR-0041).
+            next_val = _safe_next(str(form.get("next", "")))
 
             # Throttle per (client IP, username): behind a shared NAT (a whole
             # family on one public IP) one member's failures must not lock out the
@@ -521,8 +627,9 @@ def build_auth_routes(
             retry = limiter.retry_after(limiter_key)
             if retry is not None:
                 resp = HTMLResponse(
-                    _LOGIN_HTML.format(
-                        msg='<p class="err">Too many attempts. Try again later.</p>'
+                    _login_page(
+                        msg='<p class="err">Too many attempts. Try again later.</p>',
+                        next_val=next_val,
                     ),
                     status_code=429,
                 )
@@ -538,8 +645,9 @@ def build_auth_routes(
                     limiter.record_failure(limiter_key)
                     logger.warning("failed 2FA for %s from %s", username, ip)
                     return HTMLResponse(
-                        _LOGIN_HTML.format(
-                            msg='<p class="err">Invalid 2FA code.</p>'
+                        _login_page(
+                            msg='<p class="err">Invalid 2FA code.</p>',
+                            next_val=next_val,
                         ),
                         status_code=401,
                     )
@@ -550,20 +658,22 @@ def build_auth_routes(
                     ip=ip,
                     user_agent=request.headers.get("user-agent"),
                 )
-                resp = RedirectResponse(url="/", status_code=303)
+                resp = RedirectResponse(url=next_val or "/", status_code=303)
                 _set_session_cookie(resp, cookie_name, sid)
                 return resp
             limiter.record_failure(limiter_key)
             logger.warning("failed login for %r from %s", username, ip)
             return HTMLResponse(
-                _LOGIN_HTML.format(msg='<p class="err">Invalid credentials.</p>'),
+                _login_page(
+                    msg='<p class="err">Invalid credentials.</p>', next_val=next_val
+                ),
                 status_code=401,
             )
 
         # GET: first-run installs have no accounts yet → send to setup.
         if user_store is not None and await user_store.count_users() == 0:
             return RedirectResponse(url="/setup", status_code=302)
-        return HTMLResponse(_LOGIN_HTML.format(msg=""))
+        return HTMLResponse(_login_page(next_val=_safe_next(request.query_params.get("next"))))
 
     async def setup(request: Request) -> Response:
         # Only usable to bootstrap the very first (superuser) account.
