@@ -9,15 +9,28 @@ where each call is recorded. For the operator workflow around these tools, see
 
 kenny splits its tools into two families:
 
-- **Capability tools** run on a single Windows PC. They require an **active agent** (set
-  with `select_agent`) and forward a `request` frame to that agent through the tunnel,
-  returning the agent's `response`. `powershell_exec`, the `fs_*`, `winget_*`, `diag_*`,
+- **Capability tools** run on a single Windows PC. Every call names its target with an
+  `agent_id` argument, forwards a `request` frame to that agent through the tunnel, and
+  returns the agent's `response`. `powershell_exec`, the `fs_*`, `winget_*`, `diag_*`,
   `net_*` tools, `screen_capture`, `remotehelp_*`, `telemetry_collect`, and `agent_update`
   are all capability tools.
 - **Server-only orchestration tools** read the registry, telemetry store, and health rules
   on the server. They are **never forwarded** to an agent: `list_agents`, `select_agent`,
   `fleet_overview`, `agent_health`, `agent_snapshot` (plus the server-side web-filter
   tools).
+
+!!! note "`agent_id` targeting, and what `select_agent` actually does now ([ADR-0042](adr/0042-explicit-per-call-agent-targeting.md))"
+    A remote MCP client (Claude Desktop, claude.ai) gives the server no reliable
+    per-conversation identifier, so **every capability tool call over MCP must include its
+    own `agent_id`** naming the target host — there is no server-side "current agent" a raw
+    MCP call can rely on. `select_agent` still validates an id and is useful for discovery,
+    but it no longer routes anything; passing it once and then omitting `agent_id` on a later
+    call fails with an explicit `no_agent` error rather than guessing a host.
+
+    The **dashboard chat** is the one place a sticky selection is still safe, because each
+    conversation is a genuinely separate, non-shared session: it forwards to whichever agent
+    is selected in the dashboard's context pill, and the model can pass `agent_id` to target
+    a different host for one call without changing that selection.
 
 !!! note "Windows-only capabilities stay green on Linux CI"
     Capability tools that touch Windows internals have portable fallbacks in the agent, so
@@ -51,11 +64,17 @@ what each layer guarantees:
     surface. A raw external MCP client (e.g. Claude Desktop) pointed at `/mcp` is **not**
     confirm-gated by the server. The agent-side guard and the local kill-switch still apply
     — they are enforced at the agent, the boundary that actually runs the command — so they
-    hold no matter who calls the tool.
+    hold no matter who calls the tool. It also must name its target explicitly: every
+    forwarded call takes its own `agent_id` (see the note above), so a raw MCP client can
+    never fall back onto whatever host another concurrent session happened to select.
 
 ## Capability tools
 
-Names are exactly as they appear on the wire, over MCP, and in the chat.
+Names are exactly as they appear on the wire, over MCP, and in the chat. The **Arguments**
+column lists only each tool's own parameters — every capability tool additionally takes
+`agent_id` naming the target host (required over MCP; optional in the dashboard chat, where
+it overrides the session's selection for one call). `agent_id` is routing metadata the
+server consumes and never puts on the wire (ADR-0042).
 
 ### Shell
 
@@ -151,7 +170,7 @@ These read server state and are never forwarded. All are read-only.
 | Tool | Arguments | Purpose |
 |------|-----------|---------|
 | `list_agents` | — | Known agents with online state and rolled-up health. |
-| `select_agent` | `id` | Set the active agent that capability tools forward to. |
+| `select_agent` | `id` | Validate an agent id and set the dashboard chat's default (advisory only over MCP — it does not route forwarded calls there; see the note above). |
 | `fleet_overview` | — | Per-agent rolled-up health for the whole fleet. |
 | `agent_health` | `id` | Per-section health status/summary for one agent. |
 | `agent_snapshot` | `id`, `section?` | Latest stored telemetry snapshot (optionally one section). |
