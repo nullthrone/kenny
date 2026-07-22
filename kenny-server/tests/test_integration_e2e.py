@@ -120,7 +120,7 @@ async def test_real_agent_end_to_end(tmp_path) -> None:
                 raise AssertionError("real agent did not register within 10s")
 
             transport = StreamableHttpTransport(
-                f"http://127.0.0.1:{port}/mcp/mcp",
+                f"http://127.0.0.1:{port}/mcp",
                 headers={"Authorization": f"Bearer {token}"},
             )
             async with Client(transport) as client:

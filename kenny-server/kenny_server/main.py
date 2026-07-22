@@ -285,12 +285,17 @@ def build_app(db_path: str | None = None) -> Starlette:
 
     routes = [
         WebSocketRoute("/agent/ws", tunnel.endpoint),
-        Mount("/mcp", app=mcp_app),
         *build_auth_routes(operator_tokens, user_store=user_store),
         *chat_routes,
         *download_routes,
         *user_routes,
         *api_routes,
+        # mcp_app already owns "/mcp" internally (mcp.http_app(path="/mcp")
+        # above); mount it at root instead of re-prefixing with "/mcp" again,
+        # which used to require a client-followed redirect to reach a route
+        # that doesn't exist (double "/mcp/mcp" prefix). Keep this last so it
+        # only catches what the routes above don't.
+        Mount("/", app=mcp_app),
     ]
 
     # Operator auth gates /mcp, /api, and the UI; /agent/ws (agent token) is exempt.
