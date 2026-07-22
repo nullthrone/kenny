@@ -198,7 +198,13 @@ def test_oauth_token_reaches_mcp_endpoint(app) -> None:
         # Without a bearer, the operator gate answers /mcp with a 401 challenge.
         assert c.post("/mcp", json={}).status_code == 401
         # With the OAuth bearer, a proper MCP initialize reaches the FastMCP handler
-        # at /mcp (not 401 from auth, not 404 from a mis-mounted path).
+        # directly at /mcp — not 401 from auth, not 404 from a mis-mounted path, and
+        # not a redirect a client has to follow to get there. ``follow_redirects``
+        # is explicit: TestClient follows redirects by default, which is exactly
+        # what let a Mount("/mcp", ...) that 307-redirected the bare "/mcp" URL to
+        # "/mcp/" slip through this same test previously — the assertion below
+        # would still have shown 200 even though real MCP clients that don't
+        # replay the redirect (like the Claude connector) never got there.
         init = c.post(
             "/mcp",
             headers={
@@ -216,6 +222,7 @@ def test_oauth_token_reaches_mcp_endpoint(app) -> None:
                     "clientInfo": {"name": "kenny-test", "version": "1"},
                 },
             },
+            follow_redirects=False,
         )
         assert init.status_code == 200, init.text
         assert "mcp-session-id" in init.headers

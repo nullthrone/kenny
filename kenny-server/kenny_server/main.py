@@ -144,13 +144,14 @@ def build_app(db_path: str | None = None) -> Starlette:
         call_log=call_log,
         webfilter=webfilter,
     )
-    # The Streamable-HTTP handler lives at the root of ``mcp_app``; it is exposed
-    # publicly at ``/mcp`` by the ``Mount("/mcp", ...)`` below. Using ``path="/mcp"``
-    # here as well would double the prefix and serve the real endpoint at
-    # ``/mcp/mcp`` while OAuth discovery, the audience-bound resource URL, the 401
-    # challenge, and the docs all advertise ``/mcp`` — leaving a connector unable to
-    # reach the session handler after a successful OAuth handshake.
-    mcp_app = mcp.http_app(path="/")
+    # mcp_app owns "/mcp" internally and is mounted at the app root below (not
+    # re-prefixed with another "/mcp"). A Mount always requires a trailing slash
+    # to match its bare prefix (Starlette redirects "/mcp" -> "/mcp/" otherwise,
+    # via a 307 that MCP clients are not guaranteed to follow/replay correctly);
+    # mounting the already-self-pathed app at root avoids that redirect entirely
+    # so a bare POST /mcp — what OAuth discovery, the resource URL, and the 401
+    # challenge all advertise — resolves directly on the first request.
+    mcp_app = mcp.http_app(path="/mcp")
 
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette) -> AsyncIterator[None]:
@@ -297,13 +298,14 @@ def build_app(db_path: str | None = None) -> Starlette:
 
     routes = [
         WebSocketRoute("/agent/ws", tunnel.endpoint),
-        Mount("/mcp", app=mcp_app),
         *build_auth_routes(operator_tokens, user_store=user_store),
         *build_oauth_routes(oauth_store=oauth_store, user_store=user_store),
         *chat_routes,
         *download_routes,
         *user_routes,
         *api_routes,
+        # Mounted last so it only catches what nothing above matched.
+        Mount("/", app=mcp_app),
     ]
 
     # Operator auth gates /mcp, /api, and the UI; /agent/ws (agent token) is exempt.
