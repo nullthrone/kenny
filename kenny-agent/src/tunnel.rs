@@ -69,6 +69,12 @@ pub async fn run_until(config: Config, mut shutdown: tokio::sync::watch::Receive
     if *shutdown.borrow() {
         return;
     }
+
+    // Anti-cheat coexistence poller (ADR-0039): watch for a protected game's anti-cheat
+    // process and flip the process-global "game active" flag. Spawned once here (not per
+    // session) so its state survives tunnel reconnects; it exits when shutdown fires.
+    spawn_coexist_poller(shutdown.clone());
+
     let mut backoff = BACKOFF_MIN;
     loop {
         // Use a separate watcher clone for the select arm so `serve_once` can hold
@@ -112,6 +118,40 @@ pub async fn run_until(config: Config, mut shutdown: tokio::sync::watch::Receive
         }
         backoff = (backoff * 2).min(BACKOFF_MAX);
     }
+}
+
+/// Spawn the anti-cheat coexistence poller (ADR-0039).
+///
+/// On a timer it refreshes the process **name list** (the cheapest `sysinfo` refresh, so
+/// it opens no handle against the game) and updates the global "protected game running"
+/// flag consulted by the dispatch gate, the telemetry scheduler, and the process/port
+/// collectors. A no-op when the feature is disabled. The refresh runs on the blocking
+/// pool so it never stalls the async runtime, and the task exits when `shutdown` fires.
+fn spawn_coexist_poller(mut shutdown: tokio::sync::watch::Receiver<bool>) {
+    if !crate::coexist::enabled() {
+        return;
+    }
+    let poll = crate::coexist::poll_interval();
+    tokio::spawn(async move {
+        loop {
+            // Prime immediately on the first iteration so the flag is correct before the
+            // first tool call arrives, then re-poll every `poll`.
+            let _ = tokio::task::spawn_blocking(|| {
+                let mut sys = sysinfo::System::new();
+                crate::coexist::poll_once(&mut sys);
+            })
+            .await;
+            tokio::select! {
+                biased;
+                _ = shutdown.changed() => {
+                    if *shutdown.borrow() {
+                        return;
+                    }
+                }
+                _ = tokio::time::sleep(poll) => {}
+            }
+        }
+    });
 }
 
 /// One full session: connect, register, serve until the socket drops or shutdown.

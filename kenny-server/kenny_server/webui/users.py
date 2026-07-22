@@ -22,6 +22,7 @@ from starlette.routing import Route
 
 from .. import security
 from ..auth import COOKIE_NAME, _session_ttl_secs, _set_session_cookie
+from ..oauthstore import OAuthStore
 from ..registry import AgentRegistry
 from ..store import TelemetryStore
 from ..userstore import UserExists, UserStore
@@ -56,8 +57,19 @@ def build_user_routes(
     user_store: UserStore,
     registry: AgentRegistry,
     store: TelemetryStore,
+    oauth_store: OAuthStore | None = None,
 ) -> list[Route]:
     """Routes for ``/api/me*`` (self) and ``/api/users*`` (superuser)."""
+
+    async def _revoke_oauth(user_id: int) -> None:
+        """Revoke a user's OAuth tokens alongside their sessions (ADR-0041).
+
+        A credential change / disable / delete must not leave a live OAuth grant
+        that keeps reaching ``/mcp`` as that account.
+        """
+
+        if oauth_store is not None:
+            await oauth_store.revoke_for_user(user_id)
 
     # -- self-service (/api/me) ----------------------------------------------
 
@@ -110,6 +122,7 @@ def build_user_routes(
         """
 
         await user_store.delete_user_sessions(user_id)
+        await _revoke_oauth(user_id)
         sid = await user_store.create_session(
             user_id,
             ttl_secs=_session_ttl_secs(),
@@ -277,6 +290,10 @@ def build_user_routes(
             return _err("username already taken", 409)
         except ValueError as exc:
             return _err(str(exc))
+        # A disabled account must lose any live OAuth grant (its sessions/PATs are
+        # already gated by the enabled-user check on resolve).
+        if disabled is True:
+            await _revoke_oauth(uid)
         return JSONResponse(user)
 
     async def api_user_delete(request: Request) -> JSONResponse:
@@ -290,6 +307,7 @@ def build_user_routes(
         ):
             return _err("cannot delete the last superuser", 409)
         await user_store.delete_user(uid)
+        await _revoke_oauth(uid)
         return JSONResponse({"ok": True})
 
     async def api_user_password(request: Request) -> JSONResponse:
@@ -302,6 +320,7 @@ def build_user_routes(
             return _err("new_password required")
         await user_store.set_password(uid, new)
         await user_store.delete_user_sessions(uid)
+        await _revoke_oauth(uid)
         return JSONResponse({"ok": True})
 
     async def api_user_hosts(request: Request) -> JSONResponse:

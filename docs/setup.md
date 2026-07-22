@@ -44,8 +44,11 @@ The server is now on `http://localhost:8000` (data persists on the `kenny-data` 
 and complete **first-run setup**: the first account you create becomes the **superuser**
 (ADR-0037). From there a superuser manages accounts under the header user menu → *Users*
 (roles `superuser` / `operator` / `user`, per-user host scope, and personal access tokens).
-Claude authenticates to `/mcp` with a per-user access token (`Authorization: Bearer <pat>`);
-the `KENNY_OPERATOR_TOKEN(S)` below stay accepted as a back-compat superuser so existing
+Claude Desktop connects to `/mcp` through kenny's built-in **OAuth 2.1** flow
+([ADR-0041](adr/0041-oauth2-authorization-server-for-mcp.md)): add a custom connector with the
+`https://<server>/mcp` URL, sign in with your kenny account, and approve once — no token to paste.
+Scripts and other MCP clients can still send a per-user access token (`Authorization: Bearer <pat>`)
+instead. The `KENNY_OPERATOR_TOKEN(S)` below stay accepted as a back-compat superuser so existing
 installs upgrade with no manual steps. For TLS in front (port 443, `wss`), enable the Caddy profile:
 
 ```bash
@@ -63,12 +66,14 @@ clients share one bucket). The bundled TLS profile sets this for you.
 | `KENNY_OPERATOR_TOKEN` | server | *insecure dev fallback* | Legacy shared bearer token; still accepted as a **back-compat superuser** for MCP + `/api` after the upgrade to accounts (ADR-0037). Deprecated in favour of per-user access tokens. |
 | `KENNY_OPERATOR_TOKENS` | server | — | Optional comma-separated set of additional accepted shared tokens (each a back-compat superuser). |
 | `KENNY_SESSION_TTL_SECS` | server | `604800` | Browser login session lifetime in seconds (default 7 days). |
+| `KENNY_OAUTH_ACCESS_TTL_SECS` | server | `3600` | Lifetime of an OAuth access token issued to a connected MCP client (default 1 hour). |
+| `KENNY_OAUTH_REFRESH_TTL_SECS` | server | `2592000` | Lifetime of a rotating OAuth refresh token (default 30 days); reuse of a rotated token revokes the whole grant. |
 | `KENNY_AGENT_TOKENS` | server | dev map | `id=token,id2=token2` — per-agent tokens (the token store is seeded from this). |
 | `ANTHROPIC_API_KEY` | server | — | Enables the dashboard chat. |
 | `KENNY_CHAT_MODEL` | server | `claude-sonnet-4-6` | Model for the chat loop. |
 | `KENNY_TLS` | server | unset | Set `1` behind TLS so the login cookie gets the `Secure` flag. |
 | `KENNY_FORWARDED_ALLOW_IPS` | server | `127.0.0.1` | Upstream proxy address(es) allowed to set `X-Forwarded-For`, so the login rate-limiter sees the real client IP behind a reverse proxy (not the proxy's). Set to your proxy's address when fronting kenny with the Caddy TLS profile. |
-| `KENNY_PUBLIC_URL` | server | `http://localhost:<port>` | External base URL; used to build installer/update links and the agent `--server` `wss://…/agent/ws`. |
+| `KENNY_PUBLIC_URL` | server | `http://localhost:<port>` | External base URL; used to build installer/update links, the agent `--server` `wss://…/agent/ws`, and the **OAuth** issuer / discovery-metadata / resource URLs. Set it to your public `https://…` origin so Claude Desktop's OAuth flow advertises reachable endpoints. |
 | `KENNY_AGENT_BINARY` | server | — | Path to the prebuilt `kenny-agent.exe` the server serves for **Windows** installer download + self-update. Overrides the GitHub auto-fetch when set. |
 | `KENNY_AGENT_BINARY_LINUX` | server | — | Path to the prebuilt **Linux** `x86_64` agent binary (static musl) the server serves for the Linux install script + self-update. Overrides the GitHub auto-fetch when set. |
 | `KENNY_AGENT_BINARY_LINUX_AARCH64` | server | — | As above for **Linux `aarch64`** (Raspberry Pi / ARM NAS). |
@@ -79,6 +84,10 @@ clients share one bucket). The bundled TLS profile sets this for you.
 | `KENNY_HOST` / `KENNY_PORT` | server | `127.0.0.1` / `8000` | Bind address (container sets `0.0.0.0`). |
 | `KENNY_DB_PATH` | server | `kenny.sqlite` | SQLite store (snapshots, events, tokens, keys, chat, web filter — one file). Container: `/data/kenny.sqlite`. |
 | `KENNY_TELEMETRY_INTERVAL_SECS` | agent / server | `900` | Agent push interval; also pre-filled into generated installers. |
+| `KENNY_COEXIST_ENABLED` | agent | `1` | Anti-cheat coexistence (ADR-0039): while a protected game runs, the agent suspends `screen_capture` (returns `paused`) and relaxes process/port telemetry. Set `0` to disable. |
+| `KENNY_COEXIST_PROCESSES` | agent | anti-cheat set | Comma-separated extra process names to treat as "a protected game is running", extending the built-in anti-cheat list (`EasyAntiCheat.exe`, `BEService*.exe`, …). Add game exes here, e.g. `ARC-Raiders.exe`. Matched case- and `.exe`-insensitively. |
+| `KENNY_COEXIST_POLL_SECS` | agent | `5` | How often the agent checks whether a watched process is running. |
+| `KENNY_COEXIST_TELEMETRY_INTERVAL_SECS` | agent | `3600` | Telemetry push interval while a protected game is running (never shorter than `KENNY_TELEMETRY_INTERVAL_SECS`). |
 | `KENNY_SERVER_VERSION` | server | `0.0.0-dev` | Version string shown in the **About** box and `/api/about`. |
 | `KENNY_LOG_LEVEL` | server | `INFO` | Root log level. Server logs are also persisted to the event store (ADR-0017). |
 
@@ -293,6 +302,25 @@ flowchart LR
   `KENNY_AGENT_BINARY_LINUX` / `KENNY_AGENT_BINARY_LINUX_AARCH64` (Linux) at them to enable GUI
   downloads/updates against that version. When `KENNY_GITHUB_TOKEN` is set the server auto-fetches
   all of them.
+
+### Code signing (Authenticode)
+
+An unsigned agent binary is more likely to be flagged by AV and game anti-cheat heuristics, and
+carries no verifiable publisher identity. The Windows build already carries PE identity metadata
+(CompanyName/ProductName/version + icon, ADR-0039); **signing it is the complementary step** and
+is wired but off by default:
+
+- Set the `WINDOWS_CERT_BASE64` (base64 of the signing cert) and `WINDOWS_CERT_PASSWORD` repo
+  secrets; `release.yml` then Authenticode-signs `kenny-agent.exe` with a timestamp. The server
+  ships the exe **unmodified** (ADR-0033/0012), so the signature survives distribution and
+  self-update.
+- Use a real **OV or EV** code-signing certificate whose subject matches the VERSIONINFO
+  CompanyName. Since the 2023 CA/Browser-Forum change, code-signing keys must live on
+  FIPS-140-2 hardware, so a plain PFX-in-secret may need swapping for a cloud-signing service
+  (e.g. Azure Trusted Signing, DigiCert KeyLocker, SSL.com eSigner) invoked via `signtool`.
+- A formal anti-cheat *allowlist* is generally not available to a self-hosted family tool;
+  signing + the coexistence back-off (ADR-0039) are the practical levers. Never attempt to
+  evade an anti-cheat — that risks banning the player's game account.
 
 ## Persistence, backups, upgrades
 

@@ -25,7 +25,7 @@ flowchart LR
   Agent["kenny-agent (Windows PC)<br/>PowerShell · Win32 · winget<br/>filesystem · screenshot · collectors"]
 
   Operator -->|https dashboard + chat| UI
-  Operator --> Claude -->|MCP, Bearer token| MCP
+  Operator --> Claude -->|MCP, OAuth| MCP
   UI --> Tunnel
   MCP --> Tunnel
   Tunnel <-->|WSS, agent dials out| Agent

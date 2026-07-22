@@ -277,6 +277,25 @@ def test_install_sh_omits_absent_pubkey_and_token():
     assert "--telemetry-interval-secs 60" in script
 
 
+def test_install_sh_pinned_arch_skips_uname_detection():
+    """An operator-pinned arch (ADR-0040) is emitted literally; the script never
+    shells out to `uname -m` to decide it."""
+
+    script = _install_sh(
+        agent_id="study-pc",
+        token="tok-abc123",
+        wss="wss://kenny.example.com/agent/ws",
+        server_pubkey="PUBKEYb64==",
+        interval=900,
+        binary_url="https://kenny.example.com/d/binary/NONCE?os=linux",
+        arch="aarch64",
+    )
+    assert "uname -m" not in script
+    assert "case " not in script
+    assert "arch=aarch64\n" in script
+    assert 'curl -fsSL "https://kenny.example.com/d/binary/NONCE?os=linux&arch=$arch"' in script
+
+
 def test_agent_binary_path_per_os_arch(tmp_path, monkeypatch):
     # windows default is bit-identical to today
     monkeypatch.delenv("KENNY_AGENT_BINARY", raising=False)
@@ -342,6 +361,58 @@ def test_share_link_linux_oneliner_and_install_flow(tmp_path, linux_binary):
         b = c.get(f"/d/binary/{binary_nonce}?os=linux&arch=x86_64")
         assert b.status_code == 200
         assert b.content == LINUX_BYTES
+
+
+def test_share_link_pinned_arch_survives_mint_to_fetch_gap(tmp_path, monkeypatch):
+    """An operator-pinned ``?arch=`` (ADR-0040) rides on both the install and the
+    binary nonce, so `public_install` recovers it at fetch time and the script it
+    renders skips `uname -m` detection — proving the pin, not `uname`, decided it."""
+
+    arm = tmp_path / "linux-arm"
+    arm.write_bytes(LINUX_BYTES)
+    monkeypatch.delenv("KENNY_AGENT_BINARY", raising=False)
+    monkeypatch.delenv("KENNY_AGENT_BINARY_LINUX", raising=False)
+    monkeypatch.setenv("KENNY_AGENT_BINARY_LINUX_AARCH64", str(arm))
+    monkeypatch.setenv("KENNY_AGENT_BINARY_CACHE", str(tmp_path / "nope.exe"))
+    monkeypatch.setenv("KENNY_PUBLIC_URL", "https://kenny.example.com")
+    app = _app(tmp_path)
+    with TestClient(app) as c:
+        r = c.post(
+            "/api/agents/study-pc/share-link?os=linux&arch=aarch64", headers=_bearer(app)
+        )
+        assert r.status_code == 200
+        path = r.json()["url"].split("kenny.example.com", 1)[1]
+
+        script = c.get(path).text
+        assert "uname -m" not in script
+        assert "arch=aarch64\n" in script
+
+        marker = "/d/binary/"
+        start = script.index(marker) + len(marker)
+        end = script.index("?os=linux", start)
+        binary_nonce = script[start:end]
+        # No arch on this request either — only the aarch64 binary is configured,
+        # so a wrong (x86_64-default) fallback would 503 instead of serving it.
+        b = c.get(f"/d/binary/{binary_nonce}?os=linux")
+        assert b.status_code == 200
+        assert b.content == LINUX_BYTES
+
+
+def test_installer_pinned_arch_query_param_reaches_the_script(tmp_path, monkeypatch):
+    lx = tmp_path / "linux-x64"
+    lx.write_bytes(LINUX_BYTES)
+    monkeypatch.delenv("KENNY_AGENT_BINARY", raising=False)
+    monkeypatch.setenv("KENNY_AGENT_BINARY_LINUX", str(lx))
+    monkeypatch.setenv("KENNY_AGENT_BINARY_CACHE", str(tmp_path / "nope.exe"))
+    monkeypatch.setenv("KENNY_PUBLIC_URL", "https://kenny.example.com")
+    app = _app(tmp_path)
+    with TestClient(app) as c:
+        r = c.get(
+            "/api/agents/study-pc/installer?os=linux&arch=x86_64", headers=_bearer(app)
+        )
+        assert r.status_code == 200
+        assert "uname -m" not in r.text
+        assert "arch=x86_64\n" in r.text
 
 
 def test_update_picks_linux_binary_for_linux_agent(tmp_path, monkeypatch):
@@ -456,6 +527,28 @@ def test_agent_binary_status_by_os(tmp_path, linux_binary, monkeypatch):
         assert body["available"] is False
         assert body["by_os"]["windows"] is False
         assert body["by_os"]["linux"] is True
+
+
+def test_agent_binary_status_targets_reflect_per_arch_availability(tmp_path, monkeypatch):
+    """The dashboard's arch dropdown (ADR-0040) is driven by ``targets``: every
+    combination we could ever ship, each flagged by whether a binary is actually
+    configured for it right now."""
+
+    lx = tmp_path / "linux-x64"
+    lx.write_bytes(LINUX_BYTES)
+    monkeypatch.delenv("KENNY_AGENT_BINARY", raising=False)
+    monkeypatch.delenv("KENNY_AGENT_BINARY_LINUX_AARCH64", raising=False)
+    monkeypatch.setenv("KENNY_AGENT_BINARY_LINUX", str(lx))
+    monkeypatch.setenv("KENNY_AGENT_BINARY_CACHE", str(tmp_path / "nope.exe"))
+    app = _app(tmp_path)
+    with TestClient(app) as c:
+        targets = c.get("/api/agent-binary", headers=_bearer(app)).json()["targets"]
+        by_combo = {(t["os"], t["arch"]): t["available"] for t in targets}
+        assert by_combo == {
+            ("windows", "x86_64"): False,
+            ("linux", "x86_64"): True,
+            ("linux", "aarch64"): False,
+        }
 
 
 def test_agent_binary_status_requires_auth(tmp_path, binary):

@@ -1,6 +1,7 @@
 # 0037. Multi-user authentication: accounts, roles, sessions, and per-user access tokens
 
 - Status: accepted
+- Amended by: [ADR-0041](0041-oauth2-authorization-server-for-mcp.md)
 - Date: 2026-07-04
 
 ## Context and Problem Statement

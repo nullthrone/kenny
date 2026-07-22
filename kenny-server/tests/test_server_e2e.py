@@ -191,6 +191,23 @@ class MockAgent:
         frame["agent_id"] = self.agent_id
         await self.ws.send(json.dumps(frame))
 
+    async def push_telemetry_with_arch(self, arch: str) -> None:
+        """Push telemetry carrying an ``os_support.arch`` field (ADR-0040).
+
+        The golden fixture has no ``os_support`` section, so inject a minimal one
+        — only ``status``/``summary``/``arch`` matter for this path.
+        """
+
+        assert self.ws is not None
+        frame = _fixture("telemetry_snapshot.json")
+        frame["agent_id"] = self.agent_id
+        frame["snapshot"]["os_support"] = {
+            "status": "ok",
+            "summary": "test",
+            "arch": arch,
+        }
+        await self.ws.send(json.dumps(frame))
+
     async def push_oversized_telemetry(self) -> None:
         """Send a telemetry frame whose payload exceeds the server's size cap."""
 
@@ -243,7 +260,7 @@ async def test_e2e_forward_and_telemetry(tmp_path, monkeypatch) -> None:
 
         # The MCP endpoint now requires the operator bearer token.
         transport = StreamableHttpTransport(
-            f"http://127.0.0.1:{port}/mcp/mcp",
+            f"http://127.0.0.1:{port}/mcp",
             headers={"Authorization": f"Bearer {app.state.operator_token}"},
         )
         async with Client(transport) as client:
@@ -270,6 +287,33 @@ async def test_e2e_forward_and_telemetry(tmp_path, monkeypatch) -> None:
             assert dev["online"] is True
             assert dev["overall"] == "crit"
             assert "defender" in dev["flagged_sections"]
+
+        await agent.stop()
+
+
+@pytest.mark.asyncio
+async def test_e2e_telemetry_arch_mirrors_into_registry(tmp_path, monkeypatch) -> None:
+    """A telemetry push carrying ``os_support.arch`` (ADR-0040, protocol 0.13)
+    updates the registry's stored arch for that agent — the periodic second
+    channel alongside the one-time ``register.meta.arch``."""
+
+    monkeypatch.setenv("KENNY_SERVER_PRIVATE_KEY", SERVER_SEED_B64)
+    port = _free_port()
+    app = build_app(db_path=str(tmp_path / "arch.sqlite"))
+
+    async with _Server(app, port):
+        agent = MockAgent(f"ws://127.0.0.1:{port}/agent/ws", "dev")
+        await app.state.key_store.enroll("dev", agent.public_key_b64)
+        await agent.start()
+        await asyncio.sleep(0.1)
+
+        # register (v0.8 handshake, no arch field on this fixture) leaves the
+        # backward-compat default in place.
+        assert app.state.registry.get("dev").arch == "x86_64"
+
+        await agent.push_telemetry_with_arch("aarch64")
+        await asyncio.sleep(0.15)
+        assert app.state.registry.get("dev").arch == "aarch64"
 
         await agent.stop()
 
@@ -318,7 +362,7 @@ async def test_e2e_large_screenshot_response_passes(tmp_path, monkeypatch) -> No
         await asyncio.sleep(0.1)
 
         transport = StreamableHttpTransport(
-            f"http://127.0.0.1:{port}/mcp/mcp",
+            f"http://127.0.0.1:{port}/mcp",
             headers={"Authorization": f"Bearer {app.state.operator_token}"},
         )
         async with Client(transport) as client:

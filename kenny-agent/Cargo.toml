@@ -51,6 +51,11 @@ sha2 = "0.11"
 # embedder is an unconditional build-dependency, gated at runtime on the target.
 [build-dependencies]
 embed-manifest = "1"
+# Embed a Windows VERSIONINFO resource (CompanyName/ProductName/FileVersion/…) and the
+# exe icon so AV/anti-cheat heuristics and the user see identifiable publisher software
+# (ADR-0039). Unconditional build-dep like embed-manifest; only invoked inside the
+# `CARGO_CFG_WINDOWS` guard in build.rs, so it never runs for Linux/musl targets.
+winresource = "0.1"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [

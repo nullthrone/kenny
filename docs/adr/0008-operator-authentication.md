@@ -1,6 +1,7 @@
 # 0008. Operator authentication
 
 - Status: superseded by [ADR-0037](0037-multi-user-authentication.md)
+- Amended by: [ADR-0041](0041-oauth2-authorization-server-for-mcp.md)
 - Date: 2026-06-04
 
 ## Context and Problem Statement
