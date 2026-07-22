@@ -141,6 +141,7 @@ mod tests {
         assert_eq!(resp.error.unwrap().code, ErrorCode::Unsupported);
     }
 
+    #[cfg(not(windows))]
     #[tokio::test]
     async fn shell_echo_round_trips() {
         // shell_exec is mutating, so this also exercises the "enabled" gate path.
@@ -170,6 +171,28 @@ mod tests {
             })
             .await
         })
+        .await;
+        assert!(!resp.ok);
+        assert_eq!(resp.error.unwrap().code, ErrorCode::Unsupported);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn shell_exec_unsupported_on_windows_when_enabled() {
+        // With remote control ON, the mutating gate passes and the handler reports
+        // `unsupported` on Windows; powershell_exec is its OS-scoped mirror.
+        let resp = with_remote_control(
+            true,
+            "kenny-dispatch-shell-unsupported.control.json",
+            async {
+                handle(Request {
+                    id: "2c".to_string(),
+                    tool: "shell_exec".to_string(),
+                    args: json!({"command": "echo hi"}),
+                })
+                .await
+            },
+        )
         .await;
         assert!(!resp.ok);
         assert_eq!(resp.error.unwrap().code, ErrorCode::Unsupported);
