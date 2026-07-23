@@ -34,6 +34,7 @@ from .auth import (
     load_operator_token,
     load_operator_tokens,
 )
+from .backup import BackupManager, apply_pending_restore
 from .chat import ChatSessions
 from .distribution import ShareLinks, build_download_routes
 from .keystore import KeyStore
@@ -45,6 +46,7 @@ from .policy import PolicyEngine
 from .registry import AgentRegistry
 from .store import (
     AlertStateStore,
+    BackupTargetStore,
     ChatHistoryStore,
     EventStore,
     PolicyStore,
@@ -78,6 +80,22 @@ async def _webfilter_refresh_loop(
         await asyncio.sleep(interval if interval and interval > 0 else interval_s)
 
 
+async def _backup_loop(
+    backup_mgr: BackupManager, settings: Settings, interval_s: int, initial_delay_s: float
+) -> None:
+    """Periodically create a fresh DB snapshot and fan it out (best-effort)."""
+
+    await asyncio.sleep(initial_delay_s)
+    while True:
+        try:
+            await backup_mgr.create("auto")
+        except Exception:  # noqa: BLE001 - never let the loop die
+            logging.getLogger("kenny.backup").exception("periodic backup failed")
+        # Re-read the cadence each pass so a dashboard change retimes the loop.
+        interval = settings.get("KENNY_BACKUP_INTERVAL_SECS")
+        await asyncio.sleep(interval if interval and interval > 0 else interval_s)
+
+
 def build_app(db_path: str | None = None) -> Starlette:
     """Build and return the composed ASGI application."""
 
@@ -106,6 +124,13 @@ def build_app(db_path: str | None = None) -> Starlette:
     cache_dir = os.path.dirname(os.path.abspath(db_path)) or "."
     webfilter_cache = ExternalListCache(cache_dir, settings=settings)
     webfilter = WebFilterService(webfilter_store, webfilter_cache)
+    # Backup/restore (ADR: server DB backup/restore): a local snapshot dir is
+    # always active (that's what solves the Syncthing lock-contention problem);
+    # remote fan-out targets are operator-configured via backup_target_store.
+    backup_target_store = BackupTargetStore(db_path)
+    backup_mgr = BackupManager(
+        db_path, backup_target_store, backup_dir=settings.get("KENNY_BACKUP_DIR") or None
+    )
     tunnel = AgentTunnel(
         registry,
         store,
@@ -155,6 +180,12 @@ def build_app(db_path: str | None = None) -> Starlette:
 
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette) -> AsyncIterator[None]:
+        # Apply any staged restore *before* any store opens a connection to the
+        # DB file (see backup.py: ~11 stores hold open aiosqlite connections
+        # once running, so the swap can only happen here, at the very start).
+        applied = apply_pending_restore(db_path)
+        if applied:
+            logging.getLogger("kenny.backup").info("restored from backup: %s", applied)
         await settings_store.connect()
         # Load operator overrides and re-apply live apply-hooks (e.g. log level)
         # before anything else reads config.
@@ -169,6 +200,14 @@ def build_app(db_path: str | None = None) -> Starlette:
         await webfilter_store.connect()
         await chat_history_store.connect()
         await alert_state.connect()
+        await backup_target_store.connect()
+        if applied:
+            await event_store.insert_alert(
+                agent_id=None,
+                message=f"database restored from backup {applied} on boot",
+                level="warning",
+                fields={"name": applied},
+            )
         # Load persisted operator rules into the mirror engine at startup.
         policy_engine.set_operator_rules(await policy_store.list())
         await store.prune()
@@ -194,6 +233,16 @@ def build_app(db_path: str | None = None) -> Starlette:
         if alert_secs > 0:
             alert_delay = float(settings.get("KENNY_ALERT_INITIAL_DELAY"))
             alert_task = asyncio.create_task(alert_engine.run(alert_secs, alert_delay))
+        # Periodic DB backup loop (see backup.py). KENNY_BACKUP_INTERVAL_SECS=0
+        # disables entirely (a "restart" decision, like the loops above); the
+        # cadence itself is re-read live inside the loop.
+        backup_secs = int(settings.get("KENNY_BACKUP_INTERVAL_SECS"))
+        backup_task: asyncio.Task | None = None
+        if backup_secs > 0:
+            backup_delay = float(settings.get("KENNY_BACKUP_INITIAL_DELAY"))
+            backup_task = asyncio.create_task(
+                _backup_loop(backup_mgr, settings, backup_secs, backup_delay)
+            )
         # Capture server-side log records onto a bounded queue and persist them
         # via a background drain task (source='server'). See ADR-0017.
         log_handler = StoreLogHandler()
@@ -230,6 +279,10 @@ def build_app(db_path: str | None = None) -> Starlette:
                 alert_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await alert_task
+            if backup_task is not None:
+                backup_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await backup_task
             await token_store.close()
             await key_store.close()
             await user_store.close()
@@ -240,6 +293,7 @@ def build_app(db_path: str | None = None) -> Starlette:
             await webfilter_store.close()
             await chat_history_store.close()
             await alert_state.close()
+            await backup_target_store.close()
             await settings_store.close()
 
     api_routes = build_api_routes(
@@ -258,6 +312,8 @@ def build_app(db_path: str | None = None) -> Starlette:
         key_store=key_store,
         alert_state=alert_state,
         webfilter_store=webfilter_store,
+        backup_mgr=backup_mgr,
+        backup_target_store=backup_target_store,
     )
     user_routes = build_user_routes(
         user_store=user_store, registry=registry, store=store, oauth_store=oauth_store
@@ -336,6 +392,8 @@ def build_app(db_path: str | None = None) -> Starlette:
     app.state.policy_engine = policy_engine
     app.state.webfilter_store = webfilter_store
     app.state.webfilter = webfilter
+    app.state.backup_mgr = backup_mgr
+    app.state.backup_target_store = backup_target_store
     app.state.tunnel = tunnel
     app.state.call_log = call_log
     app.state.screenshots = screenshots

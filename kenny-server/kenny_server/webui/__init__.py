@@ -6,17 +6,22 @@ The dashboard is a single vanilla-JS page (``index.html``) that calls the
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
+import os
 import re
+import signal
 from pathlib import Path
 from typing import Any
 
+from starlette.background import BackgroundTask
 from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
 from .. import PROTOCOL_VERSION, __version__, agent_release, changelog
+from ..backup_targets import build_destination
 from ..config import CATALOG, SettingNotWritable, Settings
 from ..chat import (
     ChatExecutor,
@@ -71,6 +76,8 @@ def build_api_routes(
     key_store: Any = None,
     alert_state: Any = None,
     webfilter_store: Any = None,
+    backup_mgr: Any = None,
+    backup_target_store: Any = None,
     client_factory: Any = None,
 ) -> list[Route]:
     """Build the dashboard's static + JSON routes.
@@ -574,6 +581,205 @@ def build_api_routes(
         await settings.reset(key)
         return JSONResponse(settings.describe_one(key))
 
+    # -- DB backup/restore ---------------------------------------------------
+    # Superuser-only (**su below): destructive (restore overwrites the live DB
+    # and restarts the process) and secret-bearing (remote target credentials).
+
+    _TARGET_KINDS = {"http", "scp", "ftp"}
+    _SECRET_CONFIG_KEYS = ("password", "private_key", "token")
+
+    def _mask_target(row: dict[str, Any]) -> dict[str, Any]:
+        """Shallow-copy ``row`` with secret config values replaced by an is_set flag.
+
+        Mirrors the "never echo the secret, say whether one is set" principle
+        ``config.py``'s ``Settings.describe`` uses for sensitive settings.
+        """
+
+        masked = dict(row)
+        config = dict(row.get("config") or {})
+        for key in _SECRET_CONFIG_KEYS:
+            if config.get(key):
+                config[key] = None
+                config[f"{key}_set"] = True
+        masked["config"] = config
+        return masked
+
+    async def _optional_json_body(request: Request) -> dict[str, Any]:
+        """Best-effort JSON body parse; an empty/absent body is treated as ``{}``."""
+
+        try:
+            data = await request.json()
+        except Exception:  # noqa: BLE001 - no body / not JSON is fine here
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    async def api_backups_list(request: Request) -> JSONResponse:
+        if backup_mgr is None or backup_target_store is None:
+            return JSONResponse({"error": "backups not configured"}, status_code=503)
+        backups = await backup_mgr.list()
+        targets = [_mask_target(t) for t in await backup_target_store.list()]
+        config = {
+            "interval_secs": settings.get("KENNY_BACKUP_INTERVAL_SECS") if settings else None,
+            "retention": settings.get("KENNY_BACKUP_RETENTION") if settings else None,
+            "backup_dir": backup_mgr.backup_dir,
+        }
+        return JSONResponse({"backups": backups, "config": config, "targets": targets})
+
+    async def api_backups_create(request: Request) -> JSONResponse:
+        if backup_mgr is None:
+            return JSONResponse({"error": "backups not configured"}, status_code=503)
+        try:
+            result = await backup_mgr.create("manual")
+        except Exception as exc:  # noqa: BLE001 - surface to the UI
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=502)
+        return JSONResponse({"ok": True, **result})
+
+    async def api_backups_download(request: Request) -> Response:
+        if backup_mgr is None:
+            return JSONResponse({"error": "backups not configured"}, status_code=503)
+        name = request.path_params["name"]
+        source = request.query_params.get("source", "local")
+        try:
+            path = await backup_mgr.retrieve(name, source)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        except Exception as exc:  # noqa: BLE001 - surface transport failures to the UI
+            return JSONResponse({"error": str(exc)}, status_code=502)
+        return FileResponse(
+            path,
+            filename=name,
+            media_type="application/octet-stream",
+            background=BackgroundTask(os.remove, path),
+        )
+
+    async def api_backups_verify(request: Request) -> JSONResponse:
+        if backup_mgr is None:
+            return JSONResponse({"error": "backups not configured"}, status_code=503)
+        name = request.path_params["name"]
+        body = await _optional_json_body(request)
+        source = body.get("source", "local")
+        try:
+            result = await backup_mgr.verify(name, source)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        return JSONResponse(result)
+
+    async def api_backups_delete(request: Request) -> JSONResponse:
+        if backup_mgr is None:
+            return JSONResponse({"error": "backups not configured"}, status_code=503)
+        name = request.path_params["name"]
+        target = request.query_params.get("target")
+        try:
+            results = await backup_mgr.delete(name, target)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        return JSONResponse({"ok": True, "results": results})
+
+    async def api_backups_restore(request: Request) -> JSONResponse:
+        if backup_mgr is None:
+            return JSONResponse({"error": "backups not configured"}, status_code=503)
+        name = request.path_params["name"]
+        body = await _optional_json_body(request)
+        source = body.get("source", "local")
+        try:
+            await backup_mgr.stage_restore(name, source)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        if event_store is not None:
+            await event_store.insert_alert(
+                agent_id=None,
+                message=f"database restore staged from backup {name!r} (source={source}); "
+                "server restarting to apply it",
+                level="warning",
+                fields={"name": name, "source": source},
+            )
+        response = JSONResponse({"ok": True, "restarting": True})
+        # Give the response a moment to flush before exiting; the container's
+        # restart policy brings the process back up, and apply_pending_restore
+        # (main.py) applies the staged file at the very start of the next boot.
+        asyncio.get_running_loop().call_later(
+            1.0, lambda: os.kill(os.getpid(), signal.SIGTERM)
+        )
+        return response
+
+    async def api_backup_targets_list(request: Request) -> JSONResponse:
+        if backup_target_store is None:
+            return JSONResponse({"error": "backups not configured"}, status_code=503)
+        targets = [_mask_target(t) for t in await backup_target_store.list()]
+        return JSONResponse({"targets": targets})
+
+    async def api_backup_targets_create(request: Request) -> JSONResponse:
+        if backup_target_store is None:
+            return JSONResponse({"error": "backups not configured"}, status_code=503)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - malformed JSON
+            return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        kind = str(body.get("kind", ""))
+        label = str(body.get("label", "")).strip()
+        config = body.get("config")
+        if kind not in _TARGET_KINDS:
+            return JSONResponse(
+                {"error": f"kind must be one of {sorted(_TARGET_KINDS)}"}, status_code=400
+            )
+        if not label:
+            return JSONResponse({"error": "label is required"}, status_code=400)
+        if not isinstance(config, dict):
+            return JSONResponse({"error": "config is required"}, status_code=400)
+        target_id = await backup_target_store.add(kind=kind, label=label, config=config)
+        row = await backup_target_store.get(target_id)
+        return JSONResponse(_mask_target(row), status_code=201)
+
+    async def api_backup_targets_update(request: Request) -> JSONResponse:
+        if backup_target_store is None:
+            return JSONResponse({"error": "backups not configured"}, status_code=503)
+        target_id = request.path_params["id"]
+        existing = await backup_target_store.get(target_id)
+        if existing is None:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - malformed JSON
+            return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        label = str(body["label"]).strip() if body.get("label") else None
+        config = body.get("config")
+        merged_config: dict[str, Any] | None = None
+        if config is not None:
+            if not isinstance(config, dict):
+                return JSONResponse({"error": "config must be an object"}, status_code=400)
+            # Empty/omitted secret fields mean "leave unchanged", not "clear it".
+            merged_config = dict(config)
+            existing_config = existing.get("config") or {}
+            for key in _SECRET_CONFIG_KEYS:
+                if not merged_config.get(key):
+                    merged_config[key] = existing_config.get(key)
+        ok = await backup_target_store.update(target_id, label=label, config=merged_config)
+        if not ok:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        row = await backup_target_store.get(target_id)
+        return JSONResponse(_mask_target(row))
+
+    async def api_backup_targets_delete(request: Request) -> JSONResponse:
+        if backup_target_store is None:
+            return JSONResponse({"error": "backups not configured"}, status_code=503)
+        ok = await backup_target_store.delete(request.path_params["id"])
+        if not ok:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        return JSONResponse({"ok": True})
+
+    async def api_backup_targets_test(request: Request) -> JSONResponse:
+        if backup_target_store is None:
+            return JSONResponse({"error": "backups not configured"}, status_code=503)
+        row = await backup_target_store.get(request.path_params["id"])
+        if row is None:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        try:
+            dest = build_destination(row["kind"], row["config"])
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        result = await dest.test()
+        return JSONResponse(result)
+
     # -- parental controls (webfilter) ------------------------------------
 
     async def _webfilter_overview(agent_id: str) -> dict[str, Any]:
@@ -751,6 +957,35 @@ def build_api_routes(
         Route("/api/settings/{key}", guard(api_settings_set, **su), methods=["PUT"]),
         Route(
             "/api/settings/{key}", guard(api_settings_reset, **su), methods=["DELETE"]
+        ),
+        Route("/api/backups", guard(api_backups_list, **su)),
+        Route("/api/backups", guard(api_backups_create, **su), methods=["POST"]),
+        Route("/api/backups/{name}/download", guard(api_backups_download, **su)),
+        Route(
+            "/api/backups/{name}/verify", guard(api_backups_verify, **su), methods=["POST"]
+        ),
+        Route("/api/backups/{name}", guard(api_backups_delete, **su), methods=["DELETE"]),
+        Route(
+            "/api/backups/{name}/restore", guard(api_backups_restore, **su), methods=["POST"]
+        ),
+        Route("/api/backup-targets", guard(api_backup_targets_list, **su)),
+        Route(
+            "/api/backup-targets", guard(api_backup_targets_create, **su), methods=["POST"]
+        ),
+        Route(
+            "/api/backup-targets/{id}",
+            guard(api_backup_targets_update, **su),
+            methods=["PUT"],
+        ),
+        Route(
+            "/api/backup-targets/{id}",
+            guard(api_backup_targets_delete, **su),
+            methods=["DELETE"],
+        ),
+        Route(
+            "/api/backup-targets/{id}/test",
+            guard(api_backup_targets_test, **su),
+            methods=["POST"],
         ),
         Route("/api/fleet", guard(api_fleet)),
         Route("/api/fleet/overview", guard(api_fleet_overview)),

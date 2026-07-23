@@ -1265,6 +1265,9 @@
       if (parts[0] === "settings") {
         return { tab: "settings", activityView: state.activityView };
       }
+      if (parts[0] === "backup") {
+        return { tab: "backup", activityView: state.activityView };
+      }
       // Overview is the default landing view (bare or unknown hash).
       return { tab: "overview", activityView: state.activityView };
     }
@@ -1294,6 +1297,11 @@
         // Guard direct navigation (typed/bookmarked #/settings) for non-superusers.
         if (!isSuperuser()) { history.replaceState(null, "", "#/overview"); state.tab = "overview"; renderTabs(); await renderOverview(); }
         else await renderSettings();
+      }
+      else if (tab === "backup") {
+        // Same guard as #/settings: direct navigation for non-superusers bounces home.
+        if (!isSuperuser()) { history.replaceState(null, "", "#/overview"); state.tab = "overview"; renderTabs(); await renderOverview(); }
+        else await renderBackup();
       }
       else await renderFleet();
     }
@@ -1902,6 +1910,375 @@
       } catch (e) { notify("could not reset: " + e.message, "err"); }
     }
 
+    // ====================================================================
+    // BACKUP TAB — DB snapshot list/create/verify/restore/delete + the
+    // operator-configured remote fan-out targets (http/scp/ftp). Superuser
+    // only (the API 403s lower roles anyway). The local `backups/` directory
+    // reported here is what an external sync tool (e.g. Syncthing) should
+    // watch instead of the live database file.
+    // ====================================================================
+    let backupState = { data: null, restoring: false, targetForm: null };
+
+    function relTime(iso) {
+      if (!iso) return "never";
+      const ms = Date.now() - new Date(iso).getTime();
+      if (!isFinite(ms)) return esc(iso);
+      const s = Math.max(0, Math.round(ms / 1000));
+      if (s < 60) return s + "s ago";
+      const m = Math.round(s / 60);
+      if (m < 60) return m + "m ago";
+      const h = Math.round(m / 60);
+      if (h < 48) return h + "h ago";
+      return Math.round(h / 24) + "d ago";
+    }
+
+    function integrityPillHtml(integrity) {
+      if (integrity === "ok") return `<span class="k-pill k-pill--ok">ok</span>`;
+      return `<span class="k-pill k-pill--crit" title="${esc(integrity || "unknown")}">bad</span>`;
+    }
+
+    async function renderBackup() {
+      if (!state.fleet) {
+        state.fleet = await getJSON("/api/fleet").catch(() => ({ agents: [] }));
+      }
+      renderHeaderRight(state.fleet, state.fleet.agents || []);
+      app.innerHTML = `<div class="kset"><div class="k-muted">loading…</div></div>`;
+      let data;
+      try {
+        data = await getJSON("/api/backups");
+      } catch (e) {
+        app.innerHTML = `<div class="kset"><div class="k-airec__err">could not load backups: ${esc(e.message)}</div></div>`;
+        return;
+      }
+      backupState.data = data;
+      app.innerHTML = backupPageHtml(data);
+    }
+
+    function backupPageHtml(data) {
+      const backups = data.backups || [];
+      const cfg = data.config || {};
+      const totalSize = backups.reduce((a, b) => a + (b.size || 0), 0);
+      const last = backups[0];
+      const restoringBanner = backupState.restoring
+        ? `<div class="k-panel" style="border-color:var(--warn-dot)">
+             ${icon('triangle-alert', 15)}<b>server is restarting…</b>
+             the database was replaced from a backup; the server process is
+             restarting to apply it and should be back within a few seconds.
+           </div>` : "";
+      return `<div class="kset">
+        ${restoringBanner}
+        <div class="k-panel kset__grp">
+          <div class="k-detail-grp__lbl">status</div>
+          <div class="k-deflist">
+            <div class="k-deflist__k">last backup</div>
+            <div class="k-deflist__v">${last ? esc(relTime(last.created_at)) + " · " + esc(fmtValue("at", last.created_at)) : "never"}</div>
+            <div class="k-deflist__k">count</div>
+            <div class="k-deflist__v">${backups.length}</div>
+            <div class="k-deflist__k">total size</div>
+            <div class="k-deflist__v">${fmtBytes(totalSize)}</div>
+            <div class="k-deflist__k">local directory</div>
+            <div class="k-deflist__v k-mono">${esc(cfg.backup_dir || "")}</div>
+          </div>
+          <div class="k-muted" style="margin-top:8px">
+            Point your sync tool (e.g. Syncthing) at this directory instead of the
+            live database file — it only ever holds finished, static snapshots, so
+            syncing it never causes lock contention on the running server.
+          </div>
+          <div class="k-row" style="gap:16px;margin-top:14px;flex-wrap:wrap">
+            <div class="kfield" style="margin-bottom:0">
+              <span class="kfield__lbl">backup interval (s)</span>
+              <div class="k-row" style="gap:6px">
+                <input class="k-input" id="bk-interval" style="width:110px" value="${esc(cfg.interval_secs ?? "")}"
+                  onkeydown="if(event.key==='Enter')backupSaveSetting('KENNY_BACKUP_INTERVAL_SECS','bk-interval')"/>
+                <button class="k-btn k-btn--sm" onclick="backupSaveSetting('KENNY_BACKUP_INTERVAL_SECS','bk-interval')">save</button>
+              </div>
+            </div>
+            <div class="kfield" style="margin-bottom:0">
+              <span class="kfield__lbl">retention (count)</span>
+              <div class="k-row" style="gap:6px">
+                <input class="k-input" id="bk-retention" style="width:90px" value="${esc(cfg.retention ?? "")}"
+                  onkeydown="if(event.key==='Enter')backupSaveSetting('KENNY_BACKUP_RETENTION','bk-retention')"/>
+                <button class="k-btn k-btn--sm" onclick="backupSaveSetting('KENNY_BACKUP_RETENTION','bk-retention')">save</button>
+              </div>
+            </div>
+            <button class="k-btn k-btn--primary" style="align-self:flex-end" onclick="backupNow()" ${backupState.restoring ? "disabled" : ""}>${icon('hard-drive', 14)}Backup now</button>
+          </div>
+        </div>
+
+        <div class="k-panel kset__grp">
+          <div class="k-detail-grp__lbl">remote targets</div>
+          ${backupTargetsHtml(data.targets || [])}
+        </div>
+
+        <div class="k-panel kset__grp">
+          <div class="k-detail-grp__lbl">backups</div>
+          ${backupTableHtml(backups)}
+        </div>
+      </div>`;
+    }
+
+    async function backupSaveSetting(key, inputId) {
+      const el = document.getElementById(inputId);
+      if (!el) return;
+      await settingsApiSet(key, el.value);
+    }
+    // A thin local twin of settingsSet() that posts the same /api/settings/{key}
+    // write but re-renders the Backup page afterward instead of the Settings
+    // page — settingsSet() itself always re-renders renderSettings(), which
+    // would otherwise swap the visible tab out from under the operator.
+    async function settingsApiSet(key, value) {
+      try {
+        await getJSON("/api/settings/" + encodeURIComponent(key), {
+          method: "PUT", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ value }),
+        });
+        notify("saved " + key, "ok");
+        await renderBackup();
+      } catch (e) { notify("could not save: " + e.message, "err"); }
+    }
+
+    async function backupNow() {
+      try {
+        await getJSON("/api/backups", { method: "POST" });
+        notify("backup created", "ok");
+        await renderBackup();
+      } catch (e) { notify("backup failed: " + e.message, "err"); }
+    }
+
+    function backupTargetsHtml(targets) {
+      const rows = targets.map(t => {
+        const cfgLine = t.kind === "http" ? (t.config.url || "")
+          : t.kind === "scp" ? `${t.config.username || ""}@${t.config.host || ""}:${t.config.remote_dir || ""}`
+          : `${t.config.host || ""}:${t.config.remote_dir || ""}`;
+        return `<tr>
+          <td>${esc(t.label)}</td>
+          <td><span class="k-pill">${esc(t.kind)}</span></td>
+          <td class="k-mono">${esc(cfgLine)}</td>
+          <td>${t.enabled ? `<span class="k-pill k-pill--ok">enabled</span>` : `<span class="k-pill k-pill--muted">disabled</span>`}</td>
+          <td class="kacc-tbl__actions">
+            <button class="k-btn k-btn--ghost k-btn--sm" onclick="backupTargetTest(${jsArg(t.id)})">${icon('refresh-cw', 12)}test</button>
+            <button class="k-btn k-btn--ghost k-btn--sm" onclick="backupTargetEditForm(${jsArg(t.id)})">${icon('pencil', 12)}edit</button>
+            <button class="k-btn k-btn--danger k-btn--sm" onclick="backupTargetDelete(${jsArg(t.id)}, ${jsArg(t.label)})">${icon('trash-2', 12)}</button>
+          </td>
+        </tr>`;
+      }).join("");
+      const table = `<table class="kacc-tbl"><thead><tr>
+          <th>Label</th><th>Kind</th><th>Destination</th><th>Status</th><th></th></tr></thead>
+          <tbody>${rows || `<tr><td colspan="5" class="kacc-empty">no remote targets configured — backups still go to the local directory above</td></tr>`}</tbody></table>`;
+      const addBtn = backupState.targetForm
+        ? "" : `<div class="k-row" style="justify-content:flex-end;margin-top:10px">
+            <button class="k-btn k-btn--primary k-btn--sm" onclick="backupTargetAddForm()">${icon('plus', 13)}Add target</button>
+          </div>`;
+      const form = backupState.targetForm ? backupTargetFormHtml(backupState.targetForm) : "";
+      return table + addBtn + form;
+    }
+
+    function backupTargetAddForm() {
+      backupState.targetForm = { mode: "add", kind: "http", id: null, label: "", config: {} };
+      app.innerHTML = backupPageHtml(backupState.data);
+    }
+    function backupTargetEditForm(id) {
+      const t = (backupState.data.targets || []).find(x => x.id === id);
+      if (!t) return;
+      backupState.targetForm = { mode: "edit", kind: t.kind, id: t.id, label: t.label, config: t.config || {} };
+      app.innerHTML = backupPageHtml(backupState.data);
+    }
+    function backupTargetFormCancel() {
+      backupState.targetForm = null;
+      app.innerHTML = backupPageHtml(backupState.data);
+    }
+    function backupTargetFormKindChanged(kind) {
+      backupState.targetForm.kind = kind;
+      app.innerHTML = backupPageHtml(backupState.data);
+    }
+
+    function backupTargetFieldsHtml(kind, c) {
+      c = c || {};
+      const secretHint = `<span class="k-muted" style="font-size:var(--text-sm)"> (leave blank to keep unchanged)</span>`;
+      if (kind === "http") {
+        return `
+          <div class="kfield"><span class="kfield__lbl">URL</span>
+            <input class="k-input" id="bt-url" value="${esc(c.url || "")}" placeholder="https://backup.example.test"></div>
+          <div class="kfield"><span class="kfield__lbl">Token${secretHint}</span>
+            <input class="k-input" id="bt-token" type="password" autocomplete="new-password"></div>`;
+      }
+      if (kind === "scp") {
+        return `
+          <div class="kfield"><span class="kfield__lbl">Host</span>
+            <input class="k-input" id="bt-host" value="${esc(c.host || "")}"></div>
+          <div class="kfield"><span class="kfield__lbl">Port</span>
+            <input class="k-input" id="bt-port" value="${esc(c.port || 22)}" style="width:100px"></div>
+          <div class="kfield"><span class="kfield__lbl">Username</span>
+            <input class="k-input" id="bt-username" value="${esc(c.username || "")}"></div>
+          <div class="kfield"><span class="kfield__lbl">Password${secretHint}</span>
+            <input class="k-input" id="bt-password" type="password" autocomplete="new-password"></div>
+          <div class="kfield"><span class="kfield__lbl">Private key (PEM)${secretHint}</span>
+            <textarea class="k-input" id="bt-private_key" rows="3" autocomplete="new-password"></textarea></div>
+          <div class="kfield"><span class="kfield__lbl">Remote directory</span>
+            <input class="k-input" id="bt-remote_dir" value="${esc(c.remote_dir || "")}"></div>`;
+      }
+      // ftp
+      return `
+        <div class="kfield"><span class="kfield__lbl">Host</span>
+          <input class="k-input" id="bt-host" value="${esc(c.host || "")}"></div>
+        <div class="kfield"><span class="kfield__lbl">Port</span>
+          <input class="k-input" id="bt-port" value="${esc(c.port || 21)}" style="width:100px"></div>
+        <div class="kfield"><span class="kfield__lbl">Username</span>
+          <input class="k-input" id="bt-username" value="${esc(c.username || "")}"></div>
+        <div class="kfield"><span class="kfield__lbl">Password${secretHint}</span>
+          <input class="k-input" id="bt-password" type="password" autocomplete="new-password"></div>
+        <div class="kfield"><span class="kfield__lbl">Remote directory</span>
+          <input class="k-input" id="bt-remote_dir" value="${esc(c.remote_dir || "")}"></div>
+        <label class="kwf-tog"><input type="checkbox" id="bt-use_tls" ${c.use_tls === false ? "" : "checked"}/><span>use TLS (FTPS)</span></label>`;
+    }
+
+    function backupTargetFormHtml(f) {
+      const kindOpts = ["http", "scp", "ftp"].map(k =>
+        `<option value="${k}" ${k === f.kind ? "selected" : ""}>${k}</option>`).join("");
+      return `<div class="k-panel" style="margin-top:12px">
+        <div class="k-row" style="gap:10px;flex-wrap:wrap">
+          <div class="kfield" style="margin-bottom:0">
+            <span class="kfield__lbl">Kind</span>
+            <select class="k-input" id="bt-kind" onchange="backupTargetFormKindChanged(this.value)" ${f.mode === "edit" ? "disabled" : ""}>${kindOpts}</select>
+          </div>
+          <div class="kfield" style="margin-bottom:0;flex:1 1 200px">
+            <span class="kfield__lbl">Label</span>
+            <input class="k-input" id="bt-label" value="${esc(f.label || "")}" placeholder="e.g. Offsite NAS">
+          </div>
+        </div>
+        ${backupTargetFieldsHtml(f.kind, f.config)}
+        <div class="k-modal__actions" style="padding:0;border:none">
+          <button class="k-btn k-btn--ghost" onclick="backupTargetFormCancel()">Cancel</button>
+          <button class="k-btn k-btn--primary" onclick="backupTargetFormSubmit()">${icon('check', 14)}${f.mode === "edit" ? "Save" : "Add"}</button>
+        </div>
+      </div>`;
+    }
+
+    function backupTargetFormCollect(kind) {
+      const val = id => { const el = document.getElementById(id); return el ? el.value : ""; };
+      if (kind === "http") {
+        return { url: val("bt-url"), token: val("bt-token") };
+      }
+      if (kind === "scp") {
+        return {
+          host: val("bt-host"), port: Number(val("bt-port")) || 22,
+          username: val("bt-username"), password: val("bt-password"),
+          private_key: val("bt-private_key"), remote_dir: val("bt-remote_dir"),
+        };
+      }
+      const tlsEl = document.getElementById("bt-use_tls");
+      return {
+        host: val("bt-host"), port: Number(val("bt-port")) || 21,
+        username: val("bt-username"), password: val("bt-password"),
+        remote_dir: val("bt-remote_dir"), use_tls: tlsEl ? tlsEl.checked : true,
+      };
+    }
+
+    async function backupTargetFormSubmit() {
+      const f = backupState.targetForm;
+      if (!f) return;
+      const kind = document.getElementById("bt-kind") ? document.getElementById("bt-kind").value : f.kind;
+      const label = (document.getElementById("bt-label") || {}).value || "";
+      if (!label.trim()) return notify("label is required", "err");
+      const config = backupTargetFormCollect(kind);
+      try {
+        if (f.mode === "add") {
+          await api("/api/backup-targets", "POST", { kind, label, config });
+          notify("target added", "ok");
+        } else {
+          await api("/api/backup-targets/" + encodeURIComponent(f.id), "PUT", { label, config });
+          notify("target saved", "ok");
+        }
+        backupState.targetForm = null;
+        await renderBackup();
+      } catch (e) { notify("could not save target: " + e.message, "err"); }
+    }
+
+    async function backupTargetTest(id) {
+      try {
+        const r = await api("/api/backup-targets/" + encodeURIComponent(id) + "/test", "POST");
+        notify(r.message || (r.ok ? "connection ok" : "connection failed"), r.ok ? "ok" : "err");
+      } catch (e) { notify("test failed: " + e.message, "err"); }
+    }
+
+    async function backupTargetDelete(id, label) {
+      const ok = await confirmModal({
+        title: "Remove backup target",
+        ico: "trash-2",
+        body: `Remove "${label || id}" from the backup targets? Existing copies already stored there are left in place.`,
+        confirmLabel: "Remove", confirmClass: "k-btn--danger",
+      });
+      if (!ok) return;
+      try {
+        await api("/api/backup-targets/" + encodeURIComponent(id), "DELETE");
+        notify("target removed");
+        await renderBackup();
+      } catch (e) { notify(e.message, "err"); }
+    }
+
+    function backupTableHtml(backups) {
+      const rows = backups.map(b => {
+        const targetsLine = (b.targets || []).map(t =>
+          `<span class="k-pill ${t.ok === false ? "k-pill--crit" : "k-pill--ok"}" title="${t.ok === false ? esc(t.error || "failed") : "ok"}">${esc(t.target)}</span>`
+        ).join(" ") || `<span class="k-muted">—</span>`;
+        const disabled = backupState.restoring ? "disabled" : "";
+        return `<tr>
+          <td>${esc(fmtValue("at", b.created_at))}</td>
+          <td>${fmtBytes(b.size || 0)}</td>
+          <td><span class="k-pill">${esc(b.trigger || "?")}</span></td>
+          <td>${integrityPillHtml(b.integrity)}</td>
+          <td>${targetsLine}</td>
+          <td class="kacc-tbl__actions">
+            <a class="k-btn k-btn--ghost k-btn--sm" href="/api/backups/${encodeURIComponent(b.name)}/download?source=local">${icon('download', 12)}download</a>
+            <button class="k-btn k-btn--ghost k-btn--sm" ${disabled} onclick="backupVerify(${jsArg(b.name)})">${icon('shield-check', 12)}verify</button>
+            <button class="k-btn k-btn--ghost k-btn--sm" ${disabled} onclick="backupRestore(${jsArg(b.name)})">${icon('rotate-ccw', 12)}restore</button>
+            <button class="k-btn k-btn--danger k-btn--sm" ${disabled} onclick="backupDelete(${jsArg(b.name)})">${icon('trash-2', 12)}</button>
+          </td>
+        </tr>`;
+      }).join("");
+      return `<table class="kacc-tbl"><thead><tr>
+          <th>Created</th><th>Size</th><th>Trigger</th><th>Integrity</th><th>Targets</th><th></th></tr></thead>
+          <tbody>${rows || `<tr><td colspan="6" class="kacc-empty">no backups yet</td></tr>`}</tbody></table>`;
+    }
+
+    async function backupVerify(name) {
+      try {
+        const r = await api("/api/backups/" + encodeURIComponent(name) + "/verify", "POST", { source: "local" });
+        notify(`integrity: ${r.integrity}`, r.integrity === "ok" ? "ok" : "err");
+      } catch (e) { notify("verify failed: " + e.message, "err"); }
+    }
+
+    async function backupDelete(name) {
+      const ok = await confirmModal({
+        title: "Delete backup",
+        ico: "trash-2",
+        body: `Delete "${name}" from every target? This cannot be undone.`,
+        confirmLabel: "Delete", confirmClass: "k-btn--danger",
+      });
+      if (!ok) return;
+      try {
+        await api("/api/backups/" + encodeURIComponent(name), "DELETE");
+        notify("backup deleted");
+        await renderBackup();
+      } catch (e) { notify(e.message, "err"); }
+    }
+
+    async function backupRestore(name) {
+      const ok = await confirmModal({
+        title: "Restore database",
+        ico: "triangle-alert",
+        body: `This overwrites the current database with "${name}" and restarts the server. This cannot be undone.`,
+        confirmLabel: "Restore", confirmClass: "k-btn--danger",
+      });
+      if (!ok) return;
+      try {
+        await api("/api/backups/" + encodeURIComponent(name) + "/restore", "POST", { source: "local" });
+        backupState.restoring = true;
+        notify("restore staged — server is restarting…", "ok");
+        app.innerHTML = backupPageHtml(backupState.data);
+      } catch (e) { notify("restore failed: " + e.message, "err"); }
+    }
+
     function worstOf(agents) {
       const rank = { crit: 3, warn: 2, unknown: 1, ok: 0 };
       let best = null, score = -1;
@@ -1968,6 +2345,10 @@
       // 403s lower roles anyway). The link drives the same #/settings route.
       const settings = isSuperuser()
         ? `<a class="kc-usermenu__item" href="#/settings" onclick="closeUserMenu()">${icon('sliders', 16)}Settings</a>` : "";
+      // Backup/restore mutates the live DB and carries secrets (remote target
+      // credentials) — superuser only, same gating as Settings.
+      const backupLink = isSuperuser()
+        ? `<a class="kc-usermenu__item" href="#/backup" onclick="closeUserMenu()">${icon('hard-drive', 16)}Backup</a>` : "";
       const menu = document.createElement("div");
       menu.className = "kc-usermenu";
       menu.setAttribute("role", "menu");
@@ -1979,6 +2360,7 @@
         // theme it switches to.
         `<button class="kc-usermenu__item" id="theme-menu-item" onclick="toggleTheme()">${themeMenuItemInner(currentTheme())}</button>` +
         settings +
+        backupLink +
         `<button class="kc-usermenu__item" onclick="closeUserMenu();openAboutModal()">${icon('info', 16)}About</button>` +
         `<a class="kc-usermenu__item" href="${esc(docsUrl())}" target="_blank" rel="noopener">${icon('book-open', 16)}Documentation</a>` +
         `<div class="kc-usermenu__sep"></div>` +

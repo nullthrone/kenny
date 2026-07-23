@@ -144,6 +144,7 @@ GROUP_ORDER: tuple[str, ...] = (
     "Operator & Agent Auth",
     "Telemetry limits",
     "Agent distribution",
+    "Backup",
 )
 
 _SPECS: list[SettingSpec] = [
@@ -269,6 +270,23 @@ _SPECS: list[SettingSpec] = [
           "Agent binary path", lifecycle="env_only"),
     _spec("KENNY_AGENT_BINARY_CACHE", "Agent distribution", "str", "",
           "Agent binary cache dir", lifecycle="env_only"),
+    # -- Backup (live; consumed by the backup loop / BackupManager) ------------
+    _spec("KENNY_BACKUP_INTERVAL_SECS", "Backup", "int", "21600",
+          "Backup interval (s)", lifecycle="live", min=0,
+          help="Cadence of the automatic backup loop. Changing it retimes the "
+               "running loop. Setting it to 0 disables the loop only after a "
+               "restart."),
+    _spec("KENNY_BACKUP_INITIAL_DELAY", "Backup", "float", "30",
+          "Initial backup delay (s)", lifecycle="restart", min=0,
+          help="Delay before the first automatic backup after startup."),
+    _spec("KENNY_BACKUP_RETENTION", "Backup", "int", "7",
+          "Backup retention (count)", lifecycle="live", min=1,
+          help="Number of newest backups kept per target; older ones are pruned "
+               "after each run."),
+    _spec("KENNY_BACKUP_DIR", "Backup", "str", "",
+          "Backup directory (env only)", lifecycle="env_only",
+          help="Overrides the local backup directory. Empty derives it from "
+               "KENNY_DB_PATH (a sibling 'backups' directory)."),
 ]
 
 CATALOG: dict[str, SettingSpec] = {spec.key: spec for spec in _SPECS}
