@@ -345,9 +345,41 @@ is wired but off by default:
   fan snapshots out to a remote **HTTP/SCP-SFTP/FTP(S)** target too, configured from the same
   page. Restore stages a chosen backup and restarts the server to apply it (see the
   [Backup page reference](dashboard.md#the-backup-page)).
-- **Server upgrade**: `docker compose pull && docker compose up -d` (or bump the image tag).
-- **Agent upgrade**: use **update agent** in the dashboard (server-triggered self-update) — on both
-  Windows and Linux (ADR-0038).
+- **Server upgrade**: `docker compose pull && docker compose up -d` (or bump the image tag). The
+  **Updates** page (below) tells you when a newer tag exists and gives you the exact,
+  digest-pinned command — it never pulls or restarts the container for you.
+- **Agent upgrade**: click **update** on one agent in the dashboard (server-triggered
+  self-update, unchanged) — or approve a fleet-wide **update campaign** from the **Updates** page
+  to roll a pinned version out to every agent, on both Windows and Linux (ADR-0038, ADR-0044).
+
+### Scheduled updates (ADR-0044)
+
+kenny checks for newer agent releases (GitHub Releases) and a newer server image (GHCR tags,
+read-only) on a schedule, and surfaces both from the dashboard's **Updates** page (operator role
+or higher). Detection never applies anything by itself:
+
+- **Server**: GHCR is polled for a newer semver tag than the one running; the page shows it with
+  the exact, digest-pinned `docker pull …@sha256:… && docker compose up -d` for you to run. A
+  container cannot replace its own running image, so this stays a shown command rather than an
+  automated pull in this iteration (a docker-socket-holding auto-apply sidecar is a deferred,
+  additive follow-up — see the ADR).
+- **Agents**: approving a rollout **pins one exact version** — the operator's approval names an
+  artifact, not a subscription, so a release found by a *later* check never ships under an
+  already-approved campaign. From the pinned campaign you can push to every currently-online agent
+  with **apply now**, and/or turn on **auto-apply on connect** so agents get the pinned version as
+  they reconnect while the campaign is active. A campaign auto-expires once every known agent is
+  updated (or after a configurable max age) and can be revoked at any time — revoking stops future
+  pushes only, an update already in flight to an agent cannot be recalled. An agent that keeps
+  refusing (e.g. its local remote-control kill switch is off, ADR-0011) is marked **held** after a
+  few attempts instead of being retried forever.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `KENNY_UPDATE_CHECK_INTERVAL_SECS` | `86400` (24 h) | Scheduled update-check loop interval; `0` disables (restart to re-enable). Re-read live. |
+| `KENNY_UPDATE_CHECK_INITIAL_DELAY` | `30` | Delay before the first check after startup. |
+| `KENNY_SERVER_IMAGE_REF` | `ghcr.io/t11z/kenny-server` | GHCR image polled for a newer server tag. |
+| `KENNY_AGENT_ROLLOUT_ON_CONNECT` | `0` | Auto-apply an active, approved campaign to agents as they connect. Off by default — a campaign must still be approved first either way. |
+| `KENNY_UPDATE_CAMPAIGN_MAX_AGE_SECS` | `1209600` (14 d) | A campaign auto-expires after this long even if not every agent was reached. |
 
 ## Dependencies & security automation
 

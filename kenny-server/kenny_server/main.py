@@ -52,11 +52,13 @@ from .store import (
     PolicyStore,
     SettingsStore,
     TelemetryStore,
+    UpdateStore,
     WebFilterStore,
 )
 from .tokenstore import AgentTokenStore
 from .tools import CallLog, ScreenshotStore, register_tools
 from .tunnel import AgentTunnel
+from .update_manager import UpdateManager, update_check_loop
 from .userstore import UserStore
 from .webfilter import ExternalListCache, WebFilterService
 from .webui import build_api_routes, build_chat_routes
@@ -144,6 +146,21 @@ def build_app(db_path: str | None = None) -> Starlette:
     chat_history_store = ChatHistoryStore(db_path)
     chat_sessions = ChatSessions(store=chat_history_store)
     share_links = ShareLinks()
+    # Scheduled update detection + operator-approved rollout (ADR-0044). Built
+    # after `tunnel`/`share_links` (it calls through both) but `tunnel` needs
+    # its on-connect hook wired the other way around, so the tunnel is
+    # patched with the manager's bound method right after construction —
+    # avoids a constructor-level cycle between the two.
+    update_store = UpdateStore(db_path)
+    update_mgr = UpdateManager(
+        db_path=db_path,
+        store=update_store,
+        registry=registry,
+        tunnel=tunnel,
+        share_links=share_links,
+        settings=settings,
+    )
+    tunnel.on_agent_online = update_mgr.on_agent_connect
     # Push alerting (ADR-0029): transition detection over the health rules,
     # delivered best-effort via the env-configured channels (possibly none).
     alert_state = AlertStateStore(db_path)
@@ -201,6 +218,7 @@ def build_app(db_path: str | None = None) -> Starlette:
         await chat_history_store.connect()
         await alert_state.connect()
         await backup_target_store.connect()
+        await update_store.connect()
         if applied:
             await event_store.insert_alert(
                 agent_id=None,
@@ -243,6 +261,17 @@ def build_app(db_path: str | None = None) -> Starlette:
             backup_task = asyncio.create_task(
                 _backup_loop(backup_mgr, settings, backup_secs, backup_delay)
             )
+        # Scheduled update-detection loop (ADR-0044). KENNY_UPDATE_CHECK_INTERVAL_SECS=0
+        # disables entirely (a "restart" decision, like the loops above); the
+        # cadence itself is re-read live inside the loop. Detection only records
+        # what's available — it never rolls anything out on its own.
+        update_check_secs = int(settings.get("KENNY_UPDATE_CHECK_INTERVAL_SECS"))
+        update_check_task: asyncio.Task | None = None
+        if update_check_secs > 0:
+            update_check_delay = float(settings.get("KENNY_UPDATE_CHECK_INITIAL_DELAY"))
+            update_check_task = asyncio.create_task(
+                update_check_loop(update_mgr, settings, update_check_secs, update_check_delay)
+            )
         # Capture server-side log records onto a bounded queue and persist them
         # via a background drain task (source='server'). See ADR-0017.
         log_handler = StoreLogHandler()
@@ -283,6 +312,10 @@ def build_app(db_path: str | None = None) -> Starlette:
                 backup_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await backup_task
+            if update_check_task is not None:
+                update_check_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await update_check_task
             await token_store.close()
             await key_store.close()
             await user_store.close()
@@ -294,6 +327,7 @@ def build_app(db_path: str | None = None) -> Starlette:
             await chat_history_store.close()
             await alert_state.close()
             await backup_target_store.close()
+            await update_store.close()
             await settings_store.close()
 
     api_routes = build_api_routes(
@@ -314,6 +348,7 @@ def build_app(db_path: str | None = None) -> Starlette:
         webfilter_store=webfilter_store,
         backup_mgr=backup_mgr,
         backup_target_store=backup_target_store,
+        update_mgr=update_mgr,
     )
     user_routes = build_user_routes(
         user_store=user_store, registry=registry, store=store, oauth_store=oauth_store
@@ -394,6 +429,8 @@ def build_app(db_path: str | None = None) -> Starlette:
     app.state.webfilter = webfilter
     app.state.backup_mgr = backup_mgr
     app.state.backup_target_store = backup_target_store
+    app.state.update_store = update_store
+    app.state.update_mgr = update_mgr
     app.state.tunnel = tunnel
     app.state.call_log = call_log
     app.state.screenshots = screenshots

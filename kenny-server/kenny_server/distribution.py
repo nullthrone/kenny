@@ -93,6 +93,37 @@ def _wss_url() -> str:
     return base.rstrip("/") + "/agent/ws"
 
 
+async def perform_agent_update(
+    tunnel: AgentTunnel,
+    share_links: "ShareLinks",
+    agent_id: str,
+    *,
+    os_name: str,
+    arch: str,
+    version: str,
+    binary_path: str,
+    sha256: str,
+    timeout_s: float = 120,
+) -> dict:
+    """Mint a fresh nonce for ``binary_path`` and send ``agent_update`` to ``agent_id``.
+
+    The one place that actually calls the wire tool, shared by the manual
+    per-agent "update now" route (below, resolves the live agent-binary cache)
+    and the update-campaign machinery (``update_manager.py``, resolves a
+    durable, pinned per-campaign artifact — ADR-0044) so both paths mint
+    nonces and call ``agent_update`` identically. Raises :class:`ToolError` on
+    an agent-side error or timeout, same as ``tunnel.send_request``.
+    """
+
+    nonce = share_links.create(
+        agent_id, "binary", BINARY_TTL_S, os_name=os_name, arch=arch, path=binary_path
+    )
+    url = f"{_public_url()}/d/binary/{nonce}"
+    return await tunnel.send_request(
+        agent_id, "agent_update", {"version": version, "url": url, "sha256": sha256}, timeout_s
+    )
+
+
 @dataclass
 class _Nonce:
     agent_id: str
@@ -109,6 +140,13 @@ class _Nonce:
     # box (baked into the install script's download URL). It lives longer than
     # the install nonce (which is consumed on fetch) so the fetch->run gap is OK.
     binary_nonce: str | None = None
+    # An explicit file path this nonce must serve, overriding the live
+    # agent_binary_path(os, arch) lookup. Used by a pinned update campaign
+    # (ADR-0044) so a "binary" nonce always serves the exact artifact snapshot
+    # the operator approved, even if the shared agent-release cache has since
+    # been overwritten by a later detection pass. None (the default) preserves
+    # the original "serve whatever is currently cached" behavior.
+    path: str | None = None
 
 
 @dataclass
@@ -126,6 +164,7 @@ class ShareLinks:
         os_name: str = "windows",
         arch: str | None = None,
         binary_nonce: str | None = None,
+        path: str | None = None,
     ) -> str:
         nonce = secrets.token_urlsafe(24)
         self._nonces[nonce] = _Nonce(
@@ -135,6 +174,7 @@ class ShareLinks:
             os=os_name,
             arch=arch,
             binary_nonce=binary_nonce,
+            path=path,
         )
         return nonce
 
@@ -501,11 +541,16 @@ def build_download_routes(
             return JSONResponse({"error": "agent binary not configured"}, status_code=503)
         version = agent_release.resolve_agent_version(binary)
         sha256 = _sha256_file(binary)
-        nonce = share_links.create(agent_id, "binary", BINARY_TTL_S, os_name=os_name, arch=arch)
-        url = f"{_public_url()}/d/binary/{nonce}"
         try:
-            result = await tunnel.send_request(
-                agent_id, "agent_update", {"version": version, "url": url, "sha256": sha256}, 120
+            result = await perform_agent_update(
+                tunnel,
+                share_links,
+                agent_id,
+                os_name=os_name,
+                arch=arch,
+                version=version,
+                binary_path=binary,
+                sha256=sha256,
             )
         except ToolError as exc:
             return JSONResponse({"ok": False, "error": exc.message}, status_code=502)
@@ -522,8 +567,10 @@ def build_download_routes(
         os_name = entry.os
         # The install script appends the box's real arch as a query param.
         arch = _norm_arch(request.query_params.get("arch") or entry.arch)
-        binary = agent_binary_path(os_name=os_name, arch=arch)
-        if binary is None:
+        # A pinned update campaign (ADR-0044) carries its own artifact path;
+        # otherwise resolve the live agent-binary cache as before.
+        binary = entry.path or agent_binary_path(os_name=os_name, arch=arch)
+        if binary is None or not os.path.exists(binary):
             return JSONResponse({"error": "agent binary not configured"}, status_code=503)
         filename = "kenny-agent" if os_name == "linux" else "kenny-agent.exe"
         return FileResponse(binary, filename=filename, media_type="application/octet-stream")

@@ -145,6 +145,7 @@ GROUP_ORDER: tuple[str, ...] = (
     "Telemetry limits",
     "Agent distribution",
     "Backup",
+    "Updates",
 )
 
 _SPECS: list[SettingSpec] = [
@@ -287,6 +288,34 @@ _SPECS: list[SettingSpec] = [
           "Backup directory (env only)", lifecycle="env_only",
           help="Overrides the local backup directory. Empty derives it from "
                "KENNY_DB_PATH (a sibling 'backups' directory)."),
+    # -- Updates (live; scheduled detection + operator-approved rollout, ADR-0044) --
+    _spec("KENNY_UPDATE_CHECK_INTERVAL_SECS", "Updates", "int", "86400",
+          "Update check interval (s)", lifecycle="live", min=0,
+          help="Cadence of the scheduled check for newer agent releases (GitHub) "
+               "and server images (GHCR). Changing it retimes the running loop. "
+               "Setting it to 0 disables the loop only after a restart. Detection "
+               "only stages/records what's available — it never rolls anything "
+               "out on its own."),
+    _spec("KENNY_UPDATE_CHECK_INITIAL_DELAY", "Updates", "float", "30",
+          "Initial check delay (s)", lifecycle="restart", min=0,
+          help="Delay before the first update check after startup."),
+    _spec("KENNY_SERVER_IMAGE_REF", "Updates", "str", "ghcr.io/t11z/kenny-server",
+          "Server image ref (GHCR)", lifecycle="live",
+          help="GHCR repository polled (read-only, tags + manifest digest) to "
+               "detect a newer server image. Never pulled or applied automatically "
+               "— the operator runs the shown, digest-pinned compose command."),
+    _spec("KENNY_AGENT_ROLLOUT_ON_CONNECT", "Updates", "bool", "0",
+          "Auto-apply approved campaign on connect", lifecycle="live",
+          help="When an operator has approved an agent update campaign, apply it "
+               "automatically to agents as they connect/reconnect while the "
+               "campaign is active. Off by default. Never enables a rollout by "
+               "itself — an operator must still approve a campaign first."),
+    _spec("KENNY_UPDATE_CAMPAIGN_MAX_AGE_SECS", "Updates", "int", "1209600",
+          "Campaign max age (s)", lifecycle="live", min=0,
+          help="An approved campaign auto-expires after this long even if not "
+               "every agent reached the target version (default 14 days). It "
+               "already auto-completes earlier once every known agent is on the "
+               "target version."),
 ]
 
 CATALOG: dict[str, SettingSpec] = {spec.key: spec for spec in _SPECS}

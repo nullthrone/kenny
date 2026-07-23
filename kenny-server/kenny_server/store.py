@@ -701,6 +701,342 @@ class BackupTargetStore:
         return (cur.rowcount or 0) > 0
 
 
+_UPDATE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS update_availability (
+    component  TEXT PRIMARY KEY,
+    version    TEXT NOT NULL,
+    url        TEXT,
+    sha256     TEXT,
+    digest     TEXT,
+    ok         INTEGER NOT NULL DEFAULT 1,
+    message    TEXT NOT NULL DEFAULT '',
+    checked_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS update_campaigns (
+    id           TEXT PRIMARY KEY,
+    component    TEXT NOT NULL DEFAULT 'agent',
+    version      TEXT NOT NULL,
+    on_connect   INTEGER NOT NULL DEFAULT 0,
+    status       TEXT NOT NULL DEFAULT 'active',
+    created_at   TEXT NOT NULL,
+    expires_at   TEXT,
+    revoked_at   TEXT,
+    completed_at TEXT
+);
+CREATE TABLE IF NOT EXISTS update_campaign_targets (
+    campaign_id TEXT NOT NULL,
+    os          TEXT NOT NULL,
+    arch        TEXT NOT NULL,
+    path        TEXT NOT NULL,
+    sha256      TEXT NOT NULL,
+    PRIMARY KEY (campaign_id, os, arch)
+);
+CREATE TABLE IF NOT EXISTS update_campaign_agents (
+    campaign_id     TEXT NOT NULL,
+    agent_id        TEXT NOT NULL,
+    attempts        INTEGER NOT NULL DEFAULT 0,
+    held            INTEGER NOT NULL DEFAULT 0,
+    updated_version INTEGER NOT NULL DEFAULT 0,
+    last_attempt_at TEXT,
+    last_error      TEXT,
+    PRIMARY KEY (campaign_id, agent_id)
+);
+"""
+
+# Bounded number of update attempts a single agent gets under one campaign
+# before it is marked "held" and stops being auto-retried (ADR-0044). Prevents
+# a kill-switch-off agent or a crash-looping bad release from retriggering
+# forever on every reconnect.
+ATTEMPT_BUDGET = 3
+
+
+class UpdateStore:
+    """Async SQLite-backed store for scheduled update detection + rollout (ADR-0044).
+
+    Three concerns, one store (all tiny, all sharing the DB file):
+
+    * ``update_availability`` — the latest known version per component
+      (``agent`` | ``server``) from the last detection pass, one row each.
+    * ``update_campaigns`` (+ ``update_campaign_targets``) — an
+      operator-approved agent rollout. Approving a campaign **pins** an exact
+      version, snapshotting per-(os, arch) binary artifacts at approval time
+      (copied to a durable per-campaign path by the caller) so a later
+      detection pass refreshing the shared agent-binary cache can never change
+      what an active campaign pushes — the fix for the "campaign silently
+      tracks whatever is newest" trap. Only one campaign is active at a time
+      per component; approving a new one supersedes (revokes) the prior one.
+    * ``update_campaign_agents`` — per-agent attempt bookkeeping under a
+      campaign: a bounded retry budget (:data:`ATTEMPT_BUDGET`) so a refusing
+      or crash-looping agent gets marked ``held`` instead of being retried on
+      every reconnect forever.
+    """
+
+    def __init__(self, db_path: str = DEFAULT_DB_PATH) -> None:
+        self.db_path = db_path
+        self._db: aiosqlite.Connection | None = None
+
+    async def connect(self) -> None:
+        if self._db is not None:
+            return
+        self._db = await aiosqlite.connect(self.db_path)
+        await _configure_connection(self._db)
+        await self._db.executescript(_UPDATE_SCHEMA)
+        await self._db.commit()
+
+    async def close(self) -> None:
+        if self._db is not None:
+            await self._db.close()
+            self._db = None
+
+    @property
+    def _conn(self) -> aiosqlite.Connection:
+        if self._db is None:
+            raise RuntimeError("UpdateStore is not connected; call connect() first")
+        return self._db
+
+    # -- availability (last detection pass) --------------------------------
+
+    async def set_availability(
+        self,
+        component: str,
+        *,
+        version: str,
+        url: str | None = None,
+        sha256: str | None = None,
+        digest: str | None = None,
+        ok: bool = True,
+        message: str = "",
+    ) -> None:
+        checked_at = datetime.now(timezone.utc).isoformat()
+        await self._conn.execute(
+            "INSERT INTO update_availability "
+            "(component, version, url, sha256, digest, ok, message, checked_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(component) DO UPDATE SET "
+            "version=excluded.version, url=excluded.url, sha256=excluded.sha256, "
+            "digest=excluded.digest, ok=excluded.ok, message=excluded.message, "
+            "checked_at=excluded.checked_at",
+            (component, version, url, sha256, digest, 1 if ok else 0, message, checked_at),
+        )
+        await self._conn.commit()
+
+    async def get_availability(self, component: str) -> dict[str, Any] | None:
+        async with self._conn.execute(
+            "SELECT component, version, url, sha256, digest, ok, message, checked_at "
+            "FROM update_availability WHERE component = ?",
+            (component,),
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        d = dict(row)
+        d["ok"] = bool(d["ok"])
+        return d
+
+    async def list_availability(self) -> dict[str, dict[str, Any]]:
+        async with self._conn.execute(
+            "SELECT component, version, url, sha256, digest, ok, message, checked_at "
+            "FROM update_availability"
+        ) as cur:
+            rows = await cur.fetchall()
+        out: dict[str, dict[str, Any]] = {}
+        for r in rows:
+            d = dict(r)
+            d["ok"] = bool(d["ok"])
+            out[d["component"]] = d
+        return out
+
+    # -- campaigns -----------------------------------------------------------
+
+    def _campaign_row(self, row: aiosqlite.Row) -> dict[str, Any]:
+        d = dict(row)
+        d["on_connect"] = bool(d["on_connect"])
+        return d
+
+    async def get_active_campaign(self, component: str = "agent") -> dict[str, Any] | None:
+        async with self._conn.execute(
+            "SELECT id, component, version, on_connect, status, created_at, "
+            "expires_at, revoked_at, completed_at FROM update_campaigns "
+            "WHERE component = ? AND status = 'active' ORDER BY created_at DESC LIMIT 1",
+            (component,),
+        ) as cur:
+            row = await cur.fetchone()
+        return self._campaign_row(row) if row else None
+
+    async def get_campaign(self, campaign_id: str) -> dict[str, Any] | None:
+        async with self._conn.execute(
+            "SELECT id, component, version, on_connect, status, created_at, "
+            "expires_at, revoked_at, completed_at FROM update_campaigns WHERE id = ?",
+            (campaign_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        return self._campaign_row(row) if row else None
+
+    async def list_campaigns(self, *, component: str = "agent", limit: int = 20) -> list[dict[str, Any]]:
+        async with self._conn.execute(
+            "SELECT id, component, version, on_connect, status, created_at, "
+            "expires_at, revoked_at, completed_at FROM update_campaigns "
+            "WHERE component = ? ORDER BY created_at DESC LIMIT ?",
+            (component, limit),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [self._campaign_row(r) for r in rows]
+
+    async def create_campaign(
+        self,
+        *,
+        id: str | None = None,
+        component: str = "agent",
+        version: str,
+        on_connect: bool,
+        expires_at: str | None,
+        targets: list[dict[str, str]],
+    ) -> str:
+        """Persist a new active campaign, superseding any prior active one.
+
+        ``targets`` is a list of ``{"os", "arch", "path", "sha256"}`` — the
+        durable, per-campaign artifact copies the caller already staged on
+        disk (see ``update_manager.approve_campaign``); this method only
+        records their location, it does not touch the filesystem. ``id`` lets
+        the caller pick the id up front (``update_manager`` derives the
+        per-campaign artifact directory from it before this is called);
+        omitting it generates one.
+        """
+
+        campaign_id = id or uuid.uuid4().hex
+        now = datetime.now(timezone.utc).isoformat()
+        prior = await self.get_active_campaign(component)
+        if prior is not None:
+            await self._conn.execute(
+                "UPDATE update_campaigns SET status = 'revoked', revoked_at = ? WHERE id = ?",
+                (now, prior["id"]),
+            )
+        await self._conn.execute(
+            "INSERT INTO update_campaigns "
+            "(id, component, version, on_connect, status, created_at, expires_at) "
+            "VALUES (?, ?, ?, ?, 'active', ?, ?)",
+            (campaign_id, component, version, 1 if on_connect else 0, now, expires_at),
+        )
+        for t in targets:
+            await self._conn.execute(
+                "INSERT INTO update_campaign_targets (campaign_id, os, arch, path, sha256) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (campaign_id, t["os"], t["arch"], t["path"], t["sha256"]),
+            )
+        await self._conn.commit()
+        return campaign_id
+
+    async def campaign_targets(self, campaign_id: str) -> list[dict[str, str]]:
+        async with self._conn.execute(
+            "SELECT os, arch, path, sha256 FROM update_campaign_targets WHERE campaign_id = ?",
+            (campaign_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    async def set_campaign_status(
+        self, campaign_id: str, status: str, *, at_field: str | None = None
+    ) -> bool:
+        """Transition a campaign to a terminal status (``revoked``/``expired``/``completed``)."""
+
+        now = datetime.now(timezone.utc).isoformat()
+        field = at_field or {
+            "revoked": "revoked_at",
+            "expired": "revoked_at",
+            "completed": "completed_at",
+        }.get(status)
+        if field is None:
+            cur = await self._conn.execute(
+                "UPDATE update_campaigns SET status = ? WHERE id = ? AND status = 'active'",
+                (status, campaign_id),
+            )
+        else:
+            cur = await self._conn.execute(
+                f"UPDATE update_campaigns SET status = ?, {field} = ? "
+                "WHERE id = ? AND status = 'active'",
+                (status, now, campaign_id),
+            )
+        await self._conn.commit()
+        return (cur.rowcount or 0) > 0
+
+    # -- per-agent attempt bookkeeping under a campaign ----------------------
+
+    async def get_agent_state(self, campaign_id: str, agent_id: str) -> dict[str, Any] | None:
+        async with self._conn.execute(
+            "SELECT campaign_id, agent_id, attempts, held, updated_version, "
+            "last_attempt_at, last_error FROM update_campaign_agents "
+            "WHERE campaign_id = ? AND agent_id = ?",
+            (campaign_id, agent_id),
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        d = dict(row)
+        d["held"] = bool(d["held"])
+        d["updated_version"] = bool(d["updated_version"])
+        return d
+
+    async def list_agent_states(self, campaign_id: str) -> dict[str, dict[str, Any]]:
+        async with self._conn.execute(
+            "SELECT campaign_id, agent_id, attempts, held, updated_version, "
+            "last_attempt_at, last_error FROM update_campaign_agents WHERE campaign_id = ?",
+            (campaign_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+        out: dict[str, dict[str, Any]] = {}
+        for r in rows:
+            d = dict(r)
+            d["held"] = bool(d["held"])
+            d["updated_version"] = bool(d["updated_version"])
+            out[d["agent_id"]] = d
+        return out
+
+    async def record_attempt(
+        self,
+        campaign_id: str,
+        agent_id: str,
+        *,
+        ok: bool,
+        error: str | None = None,
+        count_against_budget: bool = True,
+    ) -> dict[str, Any]:
+        """Record one rollout attempt for ``agent_id`` under ``campaign_id``.
+
+        A successful attempt marks ``updated_version`` (the on-connect/apply
+        loop then leaves this agent alone). A failed attempt increments
+        ``attempts`` only when ``count_against_budget`` is true (an anti-cheat
+        ``paused`` refusal is expected to clear on its own and is retried
+        without spending the budget); once ``attempts >= ATTEMPT_BUDGET`` the
+        agent is marked ``held`` and is not auto-retried again under this
+        campaign. Returns the resulting row.
+        """
+
+        existing = await self.get_agent_state(campaign_id, agent_id)
+        attempts = existing["attempts"] if existing else 0
+        now = datetime.now(timezone.utc).isoformat()
+        if ok:
+            attempts = attempts  # unchanged; success ends the retry loop via updated_version
+            held = False
+            updated_version = True
+        else:
+            if count_against_budget:
+                attempts += 1
+            held = attempts >= ATTEMPT_BUDGET
+            updated_version = False
+        await self._conn.execute(
+            "INSERT INTO update_campaign_agents "
+            "(campaign_id, agent_id, attempts, held, updated_version, last_attempt_at, last_error) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(campaign_id, agent_id) DO UPDATE SET "
+            "attempts=excluded.attempts, held=excluded.held, "
+            "updated_version=excluded.updated_version, "
+            "last_attempt_at=excluded.last_attempt_at, last_error=excluded.last_error",
+            (campaign_id, agent_id, attempts, 1 if held else 0, 1 if updated_version else 0, now, error),
+        )
+        await self._conn.commit()
+        return await self.get_agent_state(campaign_id, agent_id)  # type: ignore[return-value]
+
+
 _SETTINGS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (
     key        TEXT PRIMARY KEY,
