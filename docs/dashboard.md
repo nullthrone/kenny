@@ -45,6 +45,8 @@ Every view shares one header:
       data on toggle.
     - **Settings** *(superuser only)* — opens the [`#/settings`](#accounts-roles-the-user-menu)
       config panel.
+    - **Backup** *(superuser only)* — opens the [`#/backup`](#the-backup-page) database
+      backup/restore page.
     - **About** — opens the [About box](#the-about-box).
     - **Documentation** — opens the project's docs site (this GitHub Pages site) in a new tab.
     - **Log out** (`/logout`).
@@ -387,6 +389,44 @@ The **About** item in the [user menu](#the-shell-header-global-controls) shows t
 **server version**, **protocol version**, **staged agent version**, and a link to the
 repository, plus a live **changelog** filtered from the project's GitHub Releases (filter
 by version, or view the full list on GitHub).
+
+---
+
+## The Backup page
+
+*(superuser only, [`#/backup`](#the-shell-header-global-controls))*
+
+kenny persists everything — telemetry, chat history, accounts, tokens, settings — in one
+SQLite file on the `/data` volume. Syncing that *live* file with an external tool (e.g.
+Syncthing) causes lock contention, because the sync tool watches and hashes a file the
+server is concurrently writing to. The Backup page is kenny's own answer: it produces
+finished, static snapshot files that are safe to hand to any external sync/backup tool,
+and gives an operator a way to trigger, inspect, and restore them without touching the
+host filesystem by hand. See [ADR-0043](adr/0043-server-database-backup-and-restore.md)
+for the full rationale.
+
+- **Status card** — the most recent backup's age, the total count and size on disk, the
+  configured **interval** and **retention** (editable inline — the same live-apply
+  settings as the [Settings panel](#accounts-roles-the-user-menu)), and the local
+  `backups/` directory path. *Point your sync tool at this directory, never at
+  `kenny.sqlite` itself.*
+- **Backup now** — triggers an out-of-schedule snapshot immediately (`VACUUM INTO`, so it
+  never blocks concurrent reads/writes).
+- **Remote targets** — optional, operator-configured push destinations in addition to the
+  always-on local copy: **HTTP** (POST to a simple API), **SCP/SFTP**, or **FTP/FTPS**.
+  Add, edit, enable/disable, **test the connection**, or remove a target; credential
+  fields (password, private key, token) are write-only in the UI — they show as *set* or
+  *not set*, never echoed back, and leaving one blank on an edit keeps the existing value.
+- **Backup list** — every known snapshot (local and remote), newest first: timestamp,
+  size, trigger (scheduled vs. manual), an integrity badge (`PRAGMA quick_check` result),
+  and which target(s) hold a copy. Per-row actions:
+    - **Download** the file directly.
+    - **Verify** re-checks integrity on demand.
+    - **Restore** — stages the chosen backup and **restarts the server** to apply it (the
+      live file has too many open connections to swap in place safely); a confirmation
+      dialog spells this out before you can proceed. The server comes back up on the
+      restored data automatically (container restart policy).
+    - **Delete** removes a snapshot from one or all targets.
 
 ---
 

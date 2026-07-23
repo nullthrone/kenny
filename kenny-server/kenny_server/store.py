@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -30,11 +31,20 @@ _BUSY_TIMEOUT_MS = int(os.environ.get("KENNY_SQLITE_BUSY_TIMEOUT_MS", "5000"))
 
 
 async def _configure_connection(db: aiosqlite.Connection) -> None:
-    """Apply the connection settings every store shares (row factory + pragmas)."""
+    """Apply the connection settings every store shares (row factory + pragmas).
+
+    Cursors are explicitly closed (rather than left to the garbage collector)
+    so no statement is left "in progress" on the connection — a lingering
+    unclosed PRAGMA cursor is otherwise enough to make a later ``VACUUM``/
+    ``VACUUM INTO`` on the same connection fail with "SQL statements in
+    progress" (see :mod:`kenny_server.backup`).
+    """
 
     db.row_factory = aiosqlite.Row
-    await db.execute("PRAGMA journal_mode=WAL")
-    await db.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
+    async with db.execute("PRAGMA journal_mode=WAL"):
+        pass
+    async with db.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}"):
+        pass
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS snapshots (
@@ -552,6 +562,141 @@ class PolicyStore:
         cur = await self._conn.execute(
             "DELETE FROM operator_policy_rules WHERE id = ?", (id,)
         )
+        await self._conn.commit()
+        return (cur.rowcount or 0) > 0
+
+
+_BACKUP_TARGET_SCHEMA = """
+CREATE TABLE IF NOT EXISTS backup_targets (
+    id         TEXT PRIMARY KEY,
+    kind       TEXT NOT NULL,
+    label      TEXT NOT NULL,
+    config     TEXT NOT NULL,
+    enabled    INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+"""
+
+
+class BackupTargetStore:
+    """Async SQLite-backed store for operator-configured remote backup destinations.
+
+    Rows are dispatched through :func:`kenny_server.backup_targets.build_destination`
+    by ``kind`` (``http``/``scp``/``ftp``). ``config`` is the destination's
+    connection dict (including secrets — SFTP key/password, FTP password, HTTP
+    token) json-encoded, consistent with the existing secret storage for
+    ``AgentTokenStore``/``KeyStore``/``OAuthStore``. Callers presenting this to
+    an operator (Phase B API) are responsible for masking secret fields.
+    """
+
+    def __init__(self, db_path: str = DEFAULT_DB_PATH) -> None:
+        self.db_path = db_path
+        self._db: aiosqlite.Connection | None = None
+
+    async def connect(self) -> None:
+        if self._db is not None:
+            return
+        self._db = await aiosqlite.connect(self.db_path)
+        await _configure_connection(self._db)
+        await self._db.executescript(_BACKUP_TARGET_SCHEMA)
+        await self._db.commit()
+
+    async def close(self) -> None:
+        if self._db is not None:
+            await self._db.close()
+            self._db = None
+
+    @property
+    def _conn(self) -> aiosqlite.Connection:
+        if self._db is None:
+            raise RuntimeError("BackupTargetStore is not connected; call connect() first")
+        return self._db
+
+    def _row_to_dict(self, row: aiosqlite.Row) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "kind": row["kind"],
+            "label": row["label"],
+            "config": json.loads(row["config"]),
+            "enabled": bool(row["enabled"]),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    async def list(self) -> list[dict[str, Any]]:
+        """Return all targets, config json-decoded, ordered by ``created_at``."""
+
+        async with self._conn.execute(
+            "SELECT id, kind, label, config, enabled, created_at, updated_at "
+            "FROM backup_targets ORDER BY created_at, id"
+        ) as cur:
+            rows = await cur.fetchall()
+        return [self._row_to_dict(r) for r in rows]
+
+    async def get(self, id: str) -> dict[str, Any] | None:
+        """Return one target by id, or None."""
+
+        async with self._conn.execute(
+            "SELECT id, kind, label, config, enabled, created_at, updated_at "
+            "FROM backup_targets WHERE id = ?",
+            (id,),
+        ) as cur:
+            row = await cur.fetchone()
+        return self._row_to_dict(row) if row else None
+
+    async def add(
+        self, *, id: str | None = None, kind: str, label: str, config: dict[str, Any]
+    ) -> str:
+        """Insert a new target. Returns the (possibly generated) id."""
+
+        target_id = id or uuid.uuid4().hex
+        now = datetime.now(timezone.utc).isoformat()
+        await self._conn.execute(
+            "INSERT INTO backup_targets "
+            "(id, kind, label, config, enabled, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, 1, ?, ?)",
+            (target_id, kind, label, json.dumps(config), now, now),
+        )
+        await self._conn.commit()
+        return target_id
+
+    async def update(
+        self, id: str, *, label: str | None = None, config: dict[str, Any] | None = None
+    ) -> bool:
+        """Update label and/or config for one target. Returns True if it existed."""
+
+        if label is None and config is None:
+            return await self.get(id) is not None
+        sets = ["updated_at = ?"]
+        params: list[Any] = [datetime.now(timezone.utc).isoformat()]
+        if label is not None:
+            sets.append("label = ?")
+            params.append(label)
+        if config is not None:
+            sets.append("config = ?")
+            params.append(json.dumps(config))
+        params.append(id)
+        cur = await self._conn.execute(
+            f"UPDATE backup_targets SET {', '.join(sets)} WHERE id = ?", params
+        )
+        await self._conn.commit()
+        return (cur.rowcount or 0) > 0
+
+    async def set_enabled(self, id: str, enabled: bool) -> bool:
+        """Flip the enabled flag on one target. Returns True if it existed."""
+
+        cur = await self._conn.execute(
+            "UPDATE backup_targets SET enabled = ?, updated_at = ? WHERE id = ?",
+            (1 if enabled else 0, datetime.now(timezone.utc).isoformat(), id),
+        )
+        await self._conn.commit()
+        return (cur.rowcount or 0) > 0
+
+    async def delete(self, id: str) -> bool:
+        """Delete one target by id. Returns True if a row was removed."""
+
+        cur = await self._conn.execute("DELETE FROM backup_targets WHERE id = ?", (id,))
         await self._conn.commit()
         return (cur.rowcount or 0) > 0
 

@@ -115,6 +115,16 @@ clients share one bucket). The bundled TLS profile sets this for you.
 | `KENNY_NTFY_URL` / `KENNY_NTFY_TOKEN` | — | ntfy topic URL (+ optional bearer) for push alerts. |
 | `KENNY_WEBHOOK_URL` | — | Generic JSON webhook for alerts. |
 
+**Database backups** (see the **[Backup page](dashboard.md#the-backup-page)**,
+[ADR-0043](adr/0043-server-database-backup-and-restore.md)):
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `KENNY_BACKUP_INTERVAL_SECS` | `21600` (6 h) | Scheduled-backup loop interval; `0` disables (restart to re-enable). Re-read live, so a dashboard change retimes the running loop. |
+| `KENNY_BACKUP_INITIAL_DELAY` | `30` | Delay before the first scheduled backup after startup. |
+| `KENNY_BACKUP_RETENTION` | `7` | Snapshots kept per target before older ones are pruned. |
+| `KENNY_BACKUP_DIR` | `<dir of KENNY_DB_PATH>/backups` | Where local snapshots are written — the directory to point an external sync tool at. |
+
 **Parental controls / web filter** (see **[Parental controls](parental-controls.md)**):
 
 | Variable | Default | Purpose |
@@ -324,8 +334,17 @@ is wired but off by default:
 
 ## Persistence, backups, upgrades
 
-- **Data**: the SQLite telemetry store lives on the `kenny-data` volume (`/data`). Back it up by
-  snapshotting the volume / copying `kenny.sqlite`. Snapshots auto-prune after ~30 days.
+- **Data**: the SQLite telemetry store lives on the `kenny-data` volume (`/data`). Telemetry
+  snapshots auto-prune after ~30 days.
+- **Backups**: kenny has a built-in backup manager ([ADR-0043](adr/0043-server-database-backup-and-restore.md),
+  dashboard **Backup** page, superuser only) — do **not** point an external sync/backup tool at
+  `kenny.sqlite` directly; syncing the *live* WAL file causes lock contention. Instead, on a
+  schedule (`KENNY_BACKUP_INTERVAL_SECS`, default 6 h) or on demand, it writes a consistent
+  `VACUUM INTO` snapshot to `<KENNY_DB_PATH dir>/backups/` — this directory holds only
+  finished, static files and is what you should point Syncthing/rsync/whatever at. Optionally
+  fan snapshots out to a remote **HTTP/SCP-SFTP/FTP(S)** target too, configured from the same
+  page. Restore stages a chosen backup and restarts the server to apply it (see the
+  [Backup page reference](dashboard.md#the-backup-page)).
 - **Server upgrade**: `docker compose pull && docker compose up -d` (or bump the image tag).
 - **Agent upgrade**: use **update agent** in the dashboard (server-triggered self-update) — on both
   Windows and Linux (ADR-0038).

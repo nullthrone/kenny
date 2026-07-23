@@ -16,6 +16,7 @@ import pytest
 
 from kenny_server.store import (
     AlertStateStore,
+    BackupTargetStore,
     ChatHistoryStore,
     EventStore,
     PolicyStore,
@@ -30,6 +31,7 @@ ALL_STORES = [
     PolicyStore,
     WebFilterStore,
     ChatHistoryStore,
+    BackupTargetStore,
 ]
 
 
