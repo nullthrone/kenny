@@ -78,6 +78,7 @@ def build_api_routes(
     webfilter_store: Any = None,
     backup_mgr: Any = None,
     backup_target_store: Any = None,
+    update_mgr: Any = None,
     client_factory: Any = None,
 ) -> list[Route]:
     """Build the dashboard's static + JSON routes.
@@ -780,6 +781,87 @@ def build_api_routes(
         result = await dest.test()
         return JSONResponse(result)
 
+    # -- scheduled updates + operator-approved rollout (ADR-0044) -----------
+
+    def _server_apply_hint(available: dict[str, Any]) -> dict[str, Any] | None:
+        """The digest-pinned ``docker compose`` command shown to the operator.
+
+        Server apply is detect-and-show-command only in this iteration — a
+        container cannot replace its own running image, and the docker-socket
+        sidecar that would automate it is a deferred follow-up (ADR-0044).
+        """
+
+        server = available.get("server")
+        if not server or not server.get("ok") or server.get("version") == __version__:
+            return None
+        image_ref = settings.get("KENNY_SERVER_IMAGE_REF") if settings else None
+        digest = server.get("digest")
+        ref = f"{image_ref}@{digest}" if image_ref and digest else None
+        return {
+            "tag": server.get("version"),
+            "digest": digest,
+            "command": (f"docker pull {ref} && docker compose up -d" if ref else None),
+        }
+
+    async def api_updates(request: Request) -> JSONResponse:
+        if update_mgr is None:
+            return JSONResponse({"error": "updates not configured"}, status_code=503)
+        status = await update_mgr.fleet_status()
+        status["server_apply"] = _server_apply_hint(status.get("available") or {})
+        status["config"] = {
+            "check_interval_secs": settings.get("KENNY_UPDATE_CHECK_INTERVAL_SECS") if settings else None,
+            "rollout_on_connect": settings.get("KENNY_AGENT_ROLLOUT_ON_CONNECT") if settings else None,
+            "server_image_ref": settings.get("KENNY_SERVER_IMAGE_REF") if settings else None,
+        }
+        return JSONResponse(status)
+
+    async def api_updates_check(request: Request) -> JSONResponse:
+        if update_mgr is None:
+            return JSONResponse({"error": "updates not configured"}, status_code=503)
+        result = await update_mgr.check_now()
+        return JSONResponse({"ok": True, **result})
+
+    async def api_updates_campaign_create(request: Request) -> JSONResponse:
+        if update_mgr is None:
+            return JSONResponse({"error": "updates not configured"}, status_code=503)
+        body = await _optional_json_body(request)
+        try:
+            campaign = await update_mgr.approve_campaign(
+                version=body.get("version"),
+                on_connect=bool(body.get("on_connect", False)),
+                max_age_secs=body.get("max_age_secs"),
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        if event_store is not None:
+            await event_store.insert_alert(
+                agent_id=None,
+                message=f"agent update campaign approved: version {campaign['version']!r}"
+                + (" (auto-apply on connect)" if campaign["on_connect"] else ""),
+                level="info",
+                fields={"campaign_id": campaign["id"], "version": campaign["version"]},
+            )
+        return JSONResponse({"ok": True, "campaign": campaign}, status_code=201)
+
+    async def api_updates_campaign_revoke(request: Request) -> JSONResponse:
+        if update_mgr is None:
+            return JSONResponse({"error": "updates not configured"}, status_code=503)
+        campaign_id = request.path_params["id"]
+        ok = await update_mgr.revoke_campaign(campaign_id)
+        if not ok:
+            return JSONResponse({"error": "not found or not active"}, status_code=404)
+        return JSONResponse({"ok": True})
+
+    async def api_updates_campaign_apply_now(request: Request) -> JSONResponse:
+        if update_mgr is None:
+            return JSONResponse({"error": "updates not configured"}, status_code=503)
+        campaign_id = request.path_params["id"]
+        try:
+            result = await update_mgr.apply_now(campaign_id)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        return JSONResponse({"ok": True, **result})
+
     # -- parental controls (webfilter) ------------------------------------
 
     async def _webfilter_overview(agent_id: str) -> dict[str, Any]:
@@ -985,6 +1067,23 @@ def build_api_routes(
         Route(
             "/api/backup-targets/{id}/test",
             guard(api_backup_targets_test, **su),
+            methods=["POST"],
+        ),
+        Route("/api/updates", guard(api_updates, **op)),
+        Route("/api/updates/check", guard(api_updates_check, **op), methods=["POST"]),
+        Route(
+            "/api/updates/campaigns",
+            guard(api_updates_campaign_create, **op),
+            methods=["POST"],
+        ),
+        Route(
+            "/api/updates/campaigns/{id}/revoke",
+            guard(api_updates_campaign_revoke, **op),
+            methods=["POST"],
+        ),
+        Route(
+            "/api/updates/campaigns/{id}/apply-now",
+            guard(api_updates_campaign_apply_now, **op),
             methods=["POST"],
         ),
         Route("/api/fleet", guard(api_fleet)),

@@ -22,7 +22,7 @@ import logging
 import os
 import secrets
 import uuid
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from starlette.websockets import WebSocket, WebSocketDisconnect, WebSocketState
 
@@ -131,6 +131,7 @@ class AgentTunnel:
         policy_engine: PolicyEngine | None = None,
         policy_store: PolicyStore | None = None,
         webfilter: WebFilterService | None = None,
+        on_agent_online: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
         self.registry = registry
         self.store = store
@@ -138,6 +139,12 @@ class AgentTunnel:
         self.policy_engine = policy_engine
         self.policy_store = policy_store
         self.webfilter = webfilter
+        # Optional hook fired (fire-and-forget) after an agent successfully
+        # registers, so the update-campaign on-connect rollout (ADR-0044) can
+        # decide whether to auto-apply a pinned campaign — without coupling the
+        # tunnel to update_manager. Never awaited inline: a slow or failing hook
+        # must not delay serving the connection or break the handshake.
+        self.on_agent_online = on_agent_online
         # request_id -> Future[Response]
         self._pending: dict[str, asyncio.Future[Response]] = {}
 
@@ -228,6 +235,8 @@ class AgentTunnel:
             agent_id = await self._handshake(websocket)
             if agent_id is None:
                 return
+            if self.on_agent_online is not None:
+                asyncio.create_task(self._fire_on_agent_online(agent_id))
             await self._serve(websocket, agent_id)
         except WebSocketDisconnect:
             pass
@@ -236,6 +245,20 @@ class AgentTunnel:
                 self.registry.mark_offline(agent_id)
                 self._fail_pending_for_disconnect()
                 logger.info("agent %s disconnected", agent_id)
+
+    async def _fire_on_agent_online(self, agent_id: str) -> None:
+        """Run the on-connect hook detached from the handshake/serve path.
+
+        A second safety net beyond ``on_agent_connect``'s own try/except
+        (ADR-0044): whatever the hook does, it must never surface into the
+        tunnel or delay serving the connection.
+        """
+
+        assert self.on_agent_online is not None
+        try:
+            await self.on_agent_online(agent_id)
+        except Exception:  # noqa: BLE001 - a hook failure must never affect the tunnel
+            logger.exception("on_agent_online hook failed for %s", agent_id)
 
     async def _handshake(self, websocket: WebSocket) -> str | None:
         raw = await websocket.receive_text()

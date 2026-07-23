@@ -430,6 +430,40 @@ for the full rationale.
 
 ---
 
+## The Updates page
+
+*(operator+, [`#/updates`](#the-shell-header-global-controls))*
+
+kenny checks for newer agent releases (GitHub Releases) and a newer server image (GHCR,
+read-only) on a schedule and shows both here — see
+[ADR-0044](adr/0044-scheduled-update-detection-and-operator-approved-rollout.md) for the
+rationale. Detection never applies anything by itself; every rollout is an explicit
+operator action.
+
+- **Server card** — the running image ref, the latest known tag, and when a newer one
+  exists: a **digest-pinned** `docker pull …@sha256:… && docker compose up -d` for you to
+  run. kenny cannot replace its own running container, so this stays a shown command rather
+  than an automated pull.
+- **Agent fleet card** — the latest known agent version, the **check interval** (editable
+  inline, the same live-apply settings as the [Settings panel](#accounts-roles-the-user-menu)),
+  a **check now** button, and the **auto-apply on connect** toggle.
+- **Rollout campaign card** — with no active campaign, **approve rollout** pins the latest
+  known agent version into a new campaign. Once approved, the campaign shows its pinned
+  version, whether on-connect auto-apply is on, and when it expires, plus:
+    - **Apply to online agents now** — pushes the pinned version to every currently-online,
+      eligible agent immediately.
+    - **Revoke** — stops future pushes under this campaign (an update already in flight to
+      an agent cannot be recalled).
+    - A per-agent table: current version, online/offline, and status (**updated**,
+      **pending**, **held** after repeated refusal — e.g. the agent's local remote-control
+      switch is off — or **n/a** for an (os, arch) the release doesn't cover).
+
+A campaign always pins one exact version at approval time: a later check finding something
+newer never changes what an already-approved campaign pushes — it just becomes a new,
+separately-approvable candidate.
+
+---
+
 ## Themes, deep links & accessibility
 
 - **Dark & light** — the warm "border-collie" dark theme is the default; the toggle lives in
@@ -445,7 +479,8 @@ for the full rationale.
   (OK = ● check, Warning = ◍ triangle, Critical = ■ octagon, Unknown = dashed ○), so the
   console is legible without colour.
 - **Deep links** — every view is a URL hash you can bookmark or share (`#/overview`,
-  `#/fleet`, `#/activity/audit`, `#/activity/events`, `#/flagged/warn`, `#/flagged/crit`).
+  `#/fleet`, `#/activity/audit`, `#/activity/events`, `#/flagged/warn`, `#/flagged/crit`,
+  `#/settings`, `#/backup`, `#/updates`).
 - **Keyboard & motion** — Escape closes modals and the copilot drawer; animations respect
   `prefers-reduced-motion`.
 
