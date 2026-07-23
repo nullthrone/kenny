@@ -30,7 +30,7 @@ jobs:
       ci: ${{ steps.filter.outputs.ci }}
     steps:
       - uses: actions/checkout@v7
-      - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4
+      - uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4
         id: filter
         with:
           filters: |
@@ -59,7 +59,7 @@ jobs:
         working-directory: kenny-server
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
       - name: Install
@@ -118,7 +118,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
@@ -148,7 +148,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
