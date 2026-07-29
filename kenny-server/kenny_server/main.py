@@ -44,12 +44,14 @@ from .oauth import build_oauth_routes
 from .oauthstore import OAuthStore
 from .policy import PolicyEngine
 from .registry import AgentRegistry
+from .reliability_suppression import SuppressionList
 from .store import (
     AlertStateStore,
     BackupTargetStore,
     ChatHistoryStore,
     EventStore,
     PolicyStore,
+    ReliabilitySuppressionStore,
     SettingsStore,
     TelemetryStore,
     UpdateStore,
@@ -116,6 +118,15 @@ def build_app(db_path: str | None = None) -> Starlette:
     registry = AgentRegistry(token_store=token_store, key_store=key_store)
     store = TelemetryStore(db_path)
     event_store = EventStore(db_path)
+    # Reliability alarm suppression (ADR-0045 / issue #166): an operator-authored
+    # rule table + an in-memory mirror consulted synchronously by every health
+    # read. Installed as `store`'s read-path annotator so every consumer of
+    # TelemetryStore (alerting, digest, the fleet list, the dashboard, MCP) sees
+    # suppression without each of them opting in individually — see
+    # reliability_suppression.py.
+    suppression_store = ReliabilitySuppressionStore(db_path)
+    suppression = SuppressionList(suppression_store)
+    store.annotate = suppression.mark
     # Shared-catalog mirror + operator deny rules (ADR-0021). The engine loads the
     # catalog at construction and never raises if it is missing (fail-open).
     policy_store = PolicyStore(db_path)
@@ -185,6 +196,7 @@ def build_app(db_path: str | None = None) -> Starlette:
         tunnel=tunnel,
         call_log=call_log,
         webfilter=webfilter,
+        suppression=suppression,
     )
     # mcp_app owns "/mcp" internally and is mounted at the app root below (not
     # re-prefixed with another "/mcp"). A Mount always requires a trailing slash
@@ -215,6 +227,7 @@ def build_app(db_path: str | None = None) -> Starlette:
         await event_store.connect()
         await policy_store.connect()
         await webfilter_store.connect()
+        await suppression_store.connect()
         await chat_history_store.connect()
         await alert_state.connect()
         await backup_target_store.connect()
@@ -228,6 +241,9 @@ def build_app(db_path: str | None = None) -> Starlette:
             )
         # Load persisted operator rules into the mirror engine at startup.
         policy_engine.set_operator_rules(await policy_store.list())
+        # Load persisted reliability suppression rules into their mirror too
+        # (ADR-0045 / issue #166) -- before any health evaluation can run.
+        await suppression.load()
         await store.prune()
         await event_store.prune()
         await webfilter_store.prune()
@@ -324,6 +340,7 @@ def build_app(db_path: str | None = None) -> Starlette:
             await event_store.close()
             await policy_store.close()
             await webfilter_store.close()
+            await suppression_store.close()
             await chat_history_store.close()
             await alert_state.close()
             await backup_target_store.close()
@@ -349,6 +366,7 @@ def build_app(db_path: str | None = None) -> Starlette:
         backup_mgr=backup_mgr,
         backup_target_store=backup_target_store,
         update_mgr=update_mgr,
+        suppression=suppression,
     )
     user_routes = build_user_routes(
         user_store=user_store, registry=registry, store=store, oauth_store=oauth_store
@@ -427,6 +445,8 @@ def build_app(db_path: str | None = None) -> Starlette:
     app.state.policy_engine = policy_engine
     app.state.webfilter_store = webfilter_store
     app.state.webfilter = webfilter
+    app.state.suppression_store = suppression_store
+    app.state.suppression = suppression
     app.state.backup_mgr = backup_mgr
     app.state.backup_target_store = backup_target_store
     app.state.update_store = update_store

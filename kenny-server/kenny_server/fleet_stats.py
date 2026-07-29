@@ -95,15 +95,20 @@ def _reliability_categories(agents: list[Agent]) -> dict[str, Any]:
     host has. Reads the server-annotated ``category`` on the reliability events
     (see ADR-0028); an unannotated event falls back to its raw ``source``.
 
-    Returns ``{agents, categories, cells:[{agent_id, category, count, crit, detail,
-    members}]}`` — cells sum event counts per host+category. ``crit`` flags any
-    critical-level group, OR any group the read-path LLM classified
-    as ``severity="serious"`` — a pattern can be worth flagging even when the
-    agent didn't mark the Windows event itself "critical". ``detail`` names the
-    loudest sources for the tooltip.
+    Returns ``{agents, categories, cells:[{agent_id, category, count, crit,
+    suppressed, detail, members}]}`` — cells sum event counts per host+category
+    (raw, including anything suppressed — the heatmap must keep showing real
+    volume). ``crit`` flags any critical-level group, OR any group the
+    read-path LLM classified as ``severity="serious"`` — a pattern can be
+    worth flagging even when the agent didn't mark the Windows event itself
+    "critical" — but a pattern the operator has suppressed (ADR-0045 / issue
+    #166) never sets ``crit``, matching the same exclusion the health rule
+    applies. ``suppressed`` is the portion of ``count`` behind muted patterns,
+    surfaced in the tooltip so a hot-but-not-crit cell is explained rather than
+    silently downgraded. ``detail`` names the loudest sources for the tooltip.
     """
 
-    # (agent_id, category) -> {count, crit, sources: {source: count}}
+    # (agent_id, category) -> {count, crit, suppressed, sources: {source: count}}
     cells: dict[tuple[str, str], dict[str, Any]] = {}
     categories: set[str] = set()
     host_set: set[str] = set()
@@ -120,9 +125,14 @@ def _reliability_categories(agents: list[Agent]) -> dict[str, Any]:
                 continue
             host_set.add(aid)
             categories.add(category)
-            cell = cells.setdefault((aid, category), {"count": 0, "crit": False, "sources": {}})
+            cell = cells.setdefault(
+                (aid, category), {"count": 0, "crit": False, "suppressed": 0, "sources": {}}
+            )
             cell["count"] += count
-            if e.get("level") == "critical" or e.get("severity") == "serious":
+            suppressed = bool(e.get("suppressed"))
+            if suppressed:
+                cell["suppressed"] += count
+            elif e.get("level") == "critical" or e.get("severity") == "serious":
                 cell["crit"] = True
             src = str(e.get("source") or "?")
             cell["sources"][src] = cell["sources"].get(src, 0) + count
@@ -137,6 +147,7 @@ def _reliability_categories(agents: list[Agent]) -> dict[str, Any]:
                 "category": category,
                 "count": c["count"],
                 "crit": c["crit"],
+                "suppressed": c["suppressed"],
                 "detail": detail,
                 "members": [_member(aid, c["count"], detail)],
             }

@@ -58,3 +58,4 @@ implementation detail", see *When (not) to write an ADR* in the repository `CLAU
 | [0042](0042-explicit-per-call-agent-targeting.md) | Explicit per-call agent targeting for forwarded MCP capability tools | accepted |
 | [0043](0043-server-database-backup-and-restore.md) | Server database backup/restore with pluggable local + remote destinations | accepted |
 | [0044](0044-scheduled-update-detection-and-operator-approved-rollout.md) | Scheduled update detection with a pinned, operator-approved rollout | proposed |
+| [0045](0045-reliability-alarm-suppression.md) | Operator-managed reliability alarm suppression | proposed |

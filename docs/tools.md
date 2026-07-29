@@ -195,6 +195,17 @@ state-changing (they change server-held policy or push a new block list to the a
 | `webfilter_push` | `id` | ✅ |
 | `web_activity_query` | `id`, `hours?`, `flagged_only?` | read-only |
 
+Reliability alarm suppression (ADR-0045, issue #166) is server-only too: rules exclude a
+`(source, event_id)` reliability event pattern from severity scoring, fleet-wide by default
+or scoped to one host, without hiding its raw count. `reliability_suppression_add`/`_remove`
+are state-changing (they hit the ADR-0009 confirm-gate in the copilot chat).
+
+| Tool | Arguments | State-changing? |
+|------|-----------|-----------------|
+| `reliability_suppression_list` | `agent_id?` | read-only |
+| `reliability_suppression_add` | `event_id`, `source?`, `agent_id?`, `note?` | ✅ |
+| `reliability_suppression_remove` | `rule_id` | ✅ |
+
 ## Auditing
 
 Every forwarded capability call is appended to the **tool-call audit log**, annotated

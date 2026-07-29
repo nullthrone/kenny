@@ -153,10 +153,12 @@ read "*this PC is critical because of these two sections*" at a glance.
 
 A heatmap of **hosts × friendly problem category** over the last 7 days; each cell's colour is
 the event count, and a cell is flagged **crit** if any of its events is agent-reported
-`level: critical` **or** was classified `severity: serious` by the reliability categorizer.
-Categories come from that same server-side categorizer (App crash / hang, Disk & storage,
-Power & boot, …; see [Telemetry reference](telemetry.md#reliability-categorization)). Click a
-cell to inspect the loudest sources behind it.
+`level: critical` **or** was classified `severity: serious` by the reliability categorizer —
+unless the operator has suppressed that exact pattern (see below), in which case its count
+still colours the cell but it never sets the crit flag. Categories come from that same
+server-side categorizer (App crash / hang, Disk & storage, Power & boot, …; see
+[Telemetry reference](telemetry.md#reliability-categorization)). Click a cell to inspect the
+loudest sources behind it; the tooltip also notes how much of the cell's count is suppressed.
 
 ### Fleet health trend
 
@@ -252,11 +254,19 @@ rule-reason chip.
   [ADR-0019](adr/0019-ai-recommendations-and-auto-remediation.md).
 - **Reliability** has a custom renderer — a category × day heatmap plus expandable event
   groups, each row showing a **severity badge** (`benign`/`notable`/`serious`/`unknown`) and
-  the categorizer's plain-language **suspected cause** alongside the raw sample message:
+  the categorizer's plain-language **suspected cause** alongside the raw sample message.
+  Each row also has a **suppress**/**unsuppress** button, and a suppressed pattern carries a
+  distinct **suppressed** badge and a dimmed row — visible but out of the health scoring. A
+  panel below the breakdown lists and manages suppression rules: a manual form takes an
+  **event id (required)**, an optional **source** (empty matches any source with that event
+  id), a fleet-wide/this-PC-only scope, and an optional note. Removing a fleet-wide rule
+  asks for confirmation, since it re-arms the alarm on every PC. See
+  [Alarm suppression](telemetry.md#alarm-suppression) and
+  [ADR-0045](adr/0045-reliability-alarm-suppression.md).
 
   <figure markdown>
     ![The reliability section detail](assets/screenshots/reliability.png)
-    <figcaption>Reliability: what is going wrong, as a category×day heatmap, with each category expanding to the raw sources, event ids, severity, suspected cause, and sample messages.</figcaption>
+    <figcaption>Reliability: what is going wrong, as a category×day heatmap, with each category expanding to the raw sources, event ids, severity, suspected cause, and sample messages — plus the alarm suppression panel below.</figcaption>
   </figure>
 
 - **Web activity** has the **parental-controls list editor** (toggles, custom domains,

@@ -71,7 +71,29 @@ RELIABILITY_CLASSIFICATIONS: dict[tuple[str, int], dict[str, str]] = {
         "severity": "benign",
         "cause": "background update-client retry noise",
     },
+    # The issue #166 pattern: a well-known, harmless CryptSvc quirk that can
+    # dominate a host's reliability scoring by sheer volume. Left "unknown"
+    # (not "benign") on purpose, mirroring the real classifier's genuine
+    # uncertainty about it — demonstrating that suppression, not a benign
+    # verdict, is what tames it (see RELIABILITY_SUPPRESSIONS below).
+    ("Microsoft-Windows-CAPI2", 4176): {
+        "category": "Windows service",
+        "severity": "unknown",
+        "cause": "undocumented AuthSafes count quirk in CryptSvc; no known fix",
+    },
 }
+
+# Seeded reliability alarm suppression rules (ADR-0045 / issue #166) — applied
+# by scripts/screenshots/seed.py via the app's SuppressionService, so the demo
+# fleet's Reliability card shows the suppressed badge and the panel populated
+# without any manual dashboard interaction.
+RELIABILITY_SUPPRESSIONS: list[dict[str, Any]] = [
+    {
+        "event_id": 4176,
+        "source": "Microsoft-Windows-CAPI2",
+        "note": "known CryptSvc AuthSafes quirk; Microsoft has no fix (issue #166)",
+    },
+]
 
 
 @dataclass
@@ -442,6 +464,13 @@ def build_fleet(base: datetime | None = None) -> list[DemoHost]:
         [
             _rel_event("Application Error", 1000, "error", 18, "faulting module explorer.exe"),
             _rel_event("Microsoft-Windows-Kernel-Power", 41, "critical", 12, "unexpected shutdown"),
+            # issue #166: a single noisy-but-suppressed pattern must not drown
+            # out the two events above once RELIABILITY_SUPPRESSIONS is seeded.
+            _rel_event(
+                "Microsoft-Windows-CAPI2", 4176, "error", 3439,
+                "PFX operation failed as AuthSafes count doesn't lie in expected "
+                "range. Maximum permissible value: 200. Erroneous value: 202.",
+            ),
         ],
         4.2,
     )

@@ -26,7 +26,10 @@
     {
       "id": "health-rules",
       "why": "Authoritative server-side health thresholds. The telemetry reference quotes exact thresholds and the Overview/Flagged/reliability views are driven by them.",
-      "sources": ["kenny-server/kenny_server/health_rules.py"],
+      "sources": [
+        "kenny-server/kenny_server/health_rules.py",
+        "kenny-server/kenny_server/reliability_suppression.py"
+      ],
       "docs": ["docs/telemetry.md", "docs/dashboard.md"],
       "screenshots": ["overview", "reliability", "flagged"],
       "adr": "New health model / status semantics may warrant an ADR; a threshold tweak does not."

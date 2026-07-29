@@ -14,7 +14,7 @@ import json
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Callable
 
 import aiosqlite
 
@@ -66,6 +66,17 @@ class TelemetryStore:
         self.db_path = db_path
         self.retention_days = retention_days
         self._db: aiosqlite.Connection | None = None
+        # Optional read-path annotator, called as ``annotate(agent_id, snapshot)``
+        # for every snapshot this store deserializes, mutating it in place.
+        # Operator-declared, LLM-free server-side annotations (reliability alarm
+        # suppression) must reach *every* health consumer -- alerting, the
+        # digest, the fleet list, the dashboard, MCP -- not just the two read
+        # paths that already run the ADR-0028 LLM categorization. Hooking in
+        # here, at the store boundary, means every caller gets it for free
+        # instead of each of the ~8 call sites opting in individually. Never
+        # touches the persisted row. ``None`` (the default) is a no-op, so
+        # every existing caller and test is unaffected.
+        self.annotate: Callable[[str, dict[str, Any]], None] | None = None
 
     async def connect(self) -> None:
         if self._db is not None:
@@ -144,10 +155,13 @@ class TelemetryStore:
             (agent_id, since, limit),
         ) as cur:
             rows = await cur.fetchall()
-        return [
-            {"collected_at": r["collected_at"], "snapshot": json.loads(r["snapshot"])}
-            for r in rows
-        ]
+        out = []
+        for r in rows:
+            snapshot = json.loads(r["snapshot"])
+            if self.annotate is not None:
+                self.annotate(agent_id, snapshot)
+            out.append({"collected_at": r["collected_at"], "snapshot": snapshot})
+        return out
 
     async def known_agents(self) -> list[str]:
         """Return distinct agent_ids that have stored snapshots."""
@@ -178,13 +192,15 @@ class TelemetryStore:
         await self._conn.commit()
         return cur.rowcount or 0
 
-    @staticmethod
-    def _row_to_record(row: aiosqlite.Row) -> dict[str, Any]:
+    def _row_to_record(self, row: aiosqlite.Row) -> dict[str, Any]:
+        snapshot = json.loads(row["snapshot"])
+        if self.annotate is not None:
+            self.annotate(row["agent_id"], snapshot)
         return {
             "agent_id": row["agent_id"],
             "collected_at": row["collected_at"],
             "received_at": row["received_at"],
-            "snapshot": json.loads(row["snapshot"]),
+            "snapshot": snapshot,
         }
 
 
@@ -564,6 +580,126 @@ class PolicyStore:
         )
         await self._conn.commit()
         return (cur.rowcount or 0) > 0
+
+
+_RELIABILITY_SUPPRESSION_SCHEMA = """
+CREATE TABLE IF NOT EXISTS reliability_suppressions (
+    id         TEXT PRIMARY KEY,
+    agent_id   TEXT NOT NULL DEFAULT '',
+    source     TEXT NOT NULL DEFAULT '',
+    event_id   INTEGER NOT NULL,
+    note       TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    created_by TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_reliability_suppressions_created
+    ON reliability_suppressions (created_at);
+"""
+
+
+class ReliabilitySuppressionStore:
+    """Async SQLite-backed store for operator-declared reliability alarm
+    suppression rules (issue #166 / see ADR-0045).
+
+    A rule mutes one ``(source, event_id)`` reliability event pattern out of
+    health *scoring* — never out of the displayed raw counts. ``agent_id``
+    empty means fleet-wide; ``source`` empty means a wildcard on any source
+    reporting that ``event_id``. Empty-string sentinels are used instead of
+    NULL because SQLite treats NULLs as pairwise-distinct in a would-be
+    UNIQUE(agent_id, source, event_id) constraint, which would silently allow
+    duplicate rules; the sentinels also match how
+    :mod:`kenny_server.event_categories` already normalizes ``source``
+    (``str(source or "").strip()``). ``id`` is the deterministic
+    ``"<agent_id>|<source>|<event_id>"`` key built by the caller
+    (:mod:`kenny_server.reliability_suppression`), which both enforces
+    uniqueness of the triple and makes the row directly addressable for
+    removal without a lookup.
+    """
+
+    def __init__(self, db_path: str = DEFAULT_DB_PATH) -> None:
+        self.db_path = db_path
+        self._db: aiosqlite.Connection | None = None
+
+    async def connect(self) -> None:
+        if self._db is not None:
+            return
+        self._db = await aiosqlite.connect(self.db_path)
+        await _configure_connection(self._db)
+        await self._db.executescript(_RELIABILITY_SUPPRESSION_SCHEMA)
+        await self._db.commit()
+
+    async def close(self) -> None:
+        if self._db is not None:
+            await self._db.close()
+            self._db = None
+
+    @property
+    def _conn(self) -> aiosqlite.Connection:
+        if self._db is None:
+            raise RuntimeError("ReliabilitySuppressionStore is not connected; call connect() first")
+        return self._db
+
+    async def list(self) -> list[dict[str, Any]]:
+        """Return all suppression rules, oldest-first."""
+
+        async with self._conn.execute(
+            "SELECT id, agent_id, source, event_id, note, created_at, created_by "
+            "FROM reliability_suppressions ORDER BY created_at, id"
+        ) as cur:
+            rows = await cur.fetchall()
+        return [
+            {
+                "id": r["id"],
+                "agent_id": r["agent_id"],
+                "source": r["source"],
+                "event_id": r["event_id"],
+                "note": r["note"],
+                "created_at": r["created_at"],
+                "created_by": r["created_by"],
+            }
+            for r in rows
+        ]
+
+    async def add(
+        self,
+        *,
+        id: str,
+        agent_id: str,
+        source: str,
+        event_id: int,
+        note: str = "",
+        created_by: str = "",
+    ) -> None:
+        """Insert (or replace) a suppression rule, stamping ``created_at``."""
+
+        created_at = datetime.now(timezone.utc).isoformat()
+        await self._conn.execute(
+            "INSERT OR REPLACE INTO reliability_suppressions "
+            "(id, agent_id, source, event_id, note, created_at, created_by) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (id, agent_id, source, event_id, note, created_at, created_by),
+        )
+        await self._conn.commit()
+
+    async def remove(self, id: str) -> bool:
+        """Delete one suppression rule by id. Returns True if a row was removed."""
+
+        cur = await self._conn.execute(
+            "DELETE FROM reliability_suppressions WHERE id = ?", (id,)
+        )
+        await self._conn.commit()
+        return (cur.rowcount or 0) > 0
+
+    async def delete_agent(self, agent_id: str) -> int:
+        """Delete host-scoped rules for a removed host. Fleet-wide rules
+        (``agent_id == ''``) are untouched by design -- they mute a Windows
+        quirk, not this specific PC."""
+
+        cur = await self._conn.execute(
+            "DELETE FROM reliability_suppressions WHERE agent_id = ?", (agent_id,)
+        )
+        await self._conn.commit()
+        return cur.rowcount or 0
 
 
 _BACKUP_TARGET_SCHEMA = """

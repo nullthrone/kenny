@@ -272,6 +272,34 @@ def test_reliability_categories_flags_crit_on_serious_severity():
     assert cell["crit"] is True
 
 
+def test_reliability_categories_suppressed_group_does_not_flag_crit():
+    # A pattern the operator has suppressed (ADR-0045 / issue #166) must not
+    # flag its heatmap cell crit -- but its raw count still colours the cell,
+    # and is surfaced separately so a hot-but-not-crit cell is explained.
+    a1 = _agent("pc1", {"reliability": {
+        "status": "ok", "summary": "", "recent_crashes": 3439, "events": [
+            {"source": "Microsoft-Windows-CAPI2", "event_id": 4176, "level": "error",
+             "count": 3439, "category": "Windows service", "severity": "serious",
+             "suppressed": True}]}})
+    out = fleet_stats.aggregate_overview([a1], now=NOW)["reliability_categories"]
+    cell = next(c for c in out["cells"] if c["category"] == "Windows service")
+    assert cell["crit"] is False
+    assert cell["count"] == 3439
+    assert cell["suppressed"] == 3439
+
+
+def test_reliability_categories_unsuppressed_serious_still_flags_crit():
+    # Guard against over-filtering: an unsuppressed serious group still crits.
+    a1 = _agent("pc1", {"reliability": {
+        "status": "warn", "summary": "", "recent_crashes": 10, "events": [
+            {"source": "disk", "event_id": 51, "level": "error", "count": 10,
+             "category": "Disk & storage", "severity": "serious"}]}})
+    out = fleet_stats.aggregate_overview([a1], now=NOW)["reliability_categories"]
+    cell = next(c for c in out["cells"] if c["category"] == "Disk & storage")
+    assert cell["crit"] is True
+    assert cell["suppressed"] == 0
+
+
 def test_reliability_categories_empty_without_events():
     # The baseline fleet's reliability sections carry only a count, no breakdown.
     out = fleet_stats.aggregate_overview(_fleet(), now=NOW)["reliability_categories"]

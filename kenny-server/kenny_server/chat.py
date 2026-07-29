@@ -108,6 +108,11 @@ STATE_CHANGING_TOOLS: frozenset[str] = frozenset(
         "webfilter_clear",
         "webfilter_set",
         "webfilter_push",
+        # Reliability alarm suppression (ADR-0045 / issue #166): both mutate
+        # server-held state (a rule that changes health scoring fleet-wide or
+        # per-host); listing is read-only and stays out of this set.
+        "reliability_suppression_add",
+        "reliability_suppression_remove",
     }
 )
 

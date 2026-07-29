@@ -359,6 +359,9 @@
     .k-relcat__count { margin-left: auto; color: var(--fg-muted); font-size: var(--text-sm); }
     .k-relcat table { margin: 0; }
     .k-relcat th { white-space: nowrap; }
+    /* A suppressed pattern reads as de-emphasised without being hidden — its
+       count and severity stay fully legible (ADR-0045 / issue #166). */
+    .k-relrow--sup > td { opacity: .65; }
     .k-deflist { display: grid; grid-template-columns: minmax(120px, max-content) 1fr; gap: 6px 16px; align-items: baseline; }
     .k-deflist__k { color: var(--fg-muted); font-size: var(--text-sm); }
     .k-deflist__v { color: var(--fg); font-size: var(--text-sm); overflow-wrap: anywhere; }
@@ -419,7 +422,7 @@
     .kwf-tog { display: inline-flex; align-items: center; gap: 7px; font-size: var(--text-sm);
       color: var(--fg); cursor: pointer; }
     .kwf-tog input { accent-color: var(--accent); width: 15px; height: 15px; cursor: pointer; }
-    .kwf-add { display: flex; gap: 8px; margin-bottom: 8px; }
+    .kwf-add { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
     .kwf-add .k-input { flex: 1 1 auto; min-width: 0; }
     .kwf-add select.k-input { flex: none; width: auto; max-width: max-content; }
     .kwf-add .k-btn { flex: none; }
@@ -1723,7 +1726,7 @@
         textStyle: base.textStyle,
         tooltip: { ...base.tooltip, trigger: "item", formatter: p => {
           const c = p.data && p.data._cell; if (!c) return "";
-          return `${esc(c.agent_id)} · ${esc(c.category)}<br/><b>${c.count}</b> event(s)${c.crit ? " · has critical" : ""}<br/>${esc(c.detail || "")}`;
+          return `${esc(c.agent_id)} · ${esc(c.category)}<br/><b>${c.count}</b> event(s)${c.crit ? " · has critical" : ""}${c.suppressed ? " · " + c.suppressed + " suppressed" : ""}<br/>${esc(c.detail || "")}`;
         } },
         grid: { left: 4, right: 14, top: 6, bottom: 40, containLabel: true },
         xAxis: { type: "category", data: cats, splitArea: { show: true },
@@ -3365,7 +3368,7 @@
       openModal(title, ai + render(raw, s));
       if (ai) streamRecommendation(data.agent_id, name);
       if (name === "web_activity") mountWebfilterPanel(data.agent_id);
-      if (name === "reliability") mountReliabilityHeatmap(raw);
+      if (name === "reliability") { mountReliabilityHeatmap(raw); mountReliabilitySuppressionPanel(data.agent_id); }
     }
 
     // Custom section renderers keyed by telemetry section name; a section not
@@ -3425,29 +3428,34 @@
       ]);
       if (!events.length) {
         body += `<div class="k-detail-grp"><div class="k-muted">No error or critical events in the window — nothing to break down.</div></div>`;
-        return body;
-      }
-      body += `<div class="k-detail-grp"><div class="k-detail-grp__lbl">what's going wrong · by day — click a cell for its events</div>
-        <div class="kc-chart" id="k-reliab-heat" style="height:200px"></div>
-        <div id="k-reliab-cell" style="display:none"></div></div>`;
+      } else {
+        body += `<div class="k-detail-grp"><div class="k-detail-grp__lbl">what's going wrong · by day — click a cell for its events</div>
+          <div class="kc-chart" id="k-reliab-heat" style="height:200px"></div>
+          <div id="k-reliab-cell" style="display:none"></div></div>`;
 
-      // Group the raw events by friendly category for the expandable breakdown.
-      const byCat = {};
-      for (const e of events) {
-        const cat = e.category || e.source || "Other";
-        (byCat[cat] = byCat[cat] || []).push(e);
+        // Group the raw events by friendly category for the expandable breakdown.
+        const byCat = {};
+        for (const e of events) {
+          const cat = e.category || e.source || "Other";
+          (byCat[cat] = byCat[cat] || []).push(e);
+        }
+        const cats = Object.keys(byCat).sort((a, b) =>
+          catTotal(byCat[b]) - catTotal(byCat[a]));
+        const groups = cats.map(cat => {
+          const rows = byCat[cat].slice().sort((a, b) => (b.count || 0) - (a.count || 0)).map(e => reliabEventRow(e)).join("");
+          return `<details class="k-relcat">
+            <summary><span class="k-relcat__name">${esc(cat)}</span>
+              <span class="k-relcat__count">${catTotal(byCat[cat])} event(s)</span></summary>
+            <table class="k-dtable"><thead><tr><th>source / id</th><th>level</th><th>severity</th><th>count</th><th>last seen</th><th>sample / suspected cause</th><th></th></tr></thead>
+              <tbody>${rows}</tbody></table></details>`;
+        }).join("");
+        body += `<div class="k-detail-grp"><div class="k-detail-grp__lbl">details — click a category to expand</div>${groups}</div>`;
       }
-      const cats = Object.keys(byCat).sort((a, b) =>
-        catTotal(byCat[b]) - catTotal(byCat[a]));
-      const groups = cats.map(cat => {
-        const rows = byCat[cat].slice().sort((a, b) => (b.count || 0) - (a.count || 0)).map(e => reliabEventRow(e)).join("");
-        return `<details class="k-relcat">
-          <summary><span class="k-relcat__name">${esc(cat)}</span>
-            <span class="k-relcat__count">${catTotal(byCat[cat])} event(s)</span></summary>
-          <table class="k-dtable"><thead><tr><th>source / id</th><th>level</th><th>severity</th><th>count</th><th>last seen</th><th>sample / suspected cause</th></tr></thead>
-            <tbody>${rows}</tbody></table></details>`;
-      }).join("");
-      body += `<div class="k-detail-grp"><div class="k-detail-grp__lbl">details — click a category to expand</div>${groups}</div>`;
+      // Alarm suppression (ADR-0045 / issue #166): exclude a (source, event_id)
+      // pattern from severity scoring while leaving its count and heatmap
+      // contribution untouched. Mounted async after the modal DOM exists — see
+      // mountReliabilitySuppressionPanel, called from openSectionDetail.
+      body += `<div class="k-detail-grp" id="k-relsup-panel"><div class="k-muted">loading suppression rules…</div></div>`;
       return body;
     }
     function catTotal(evs) { return evs.reduce((n, e) => n + (e.count || 0), 0); }
@@ -3464,23 +3472,56 @@
       const cls = { serious: "crit", notable: "warn", unknown: "warn", benign: "ok" }[severity] || "warn";
       return `<span class="k-pill k-pill--${cls}">${esc(severity)}</span>`;
     }
+    // An operator suppression rule matched this pattern (ADR-0045 / issue
+    // #166): it stays fully visible with its raw count and its LLM severity,
+    // but is excluded from severity/health scoring. Deliberately the neutral
+    // `muted` pill, never the green `ok` pill used for an LLM `benign`
+    // severity — "the operator muted this alarm" and "the model believes it
+    // is harmless" are different claims and must not look the same.
+    function relSuppressedBadge(info) {
+      info = info || {};
+      const where = info.scope === "host" ? "this PC only" : "fleet-wide";
+      const what = info.source ? info.source + " / " + info.event_id : "any source / " + info.event_id;
+      const why = info.note ? " — " + info.note : "";
+      return `<span class="k-pill k-pill--muted" title="${esc("suppressed " + where + " (" + what + ")" + why)}">suppressed</span>`;
+    }
+    // Per-row suppress/unsuppress affordance. Hidden for a scoped `user` (the
+    // mutating endpoint would 403 them anyway) — same read-only degradation as
+    // the parental-controls panel. Suppressing from a row always creates a
+    // fleet-wide rule with the exact (source, event_id) pair — the decided
+    // default scope; a one-click affordance must not open a scope dialog.
+    // Host-scoping and the wildcard source live in the manual-add form.
+    function relRowAction(e) {
+      if (!canOperate()) return "";
+      if (e.suppressed) {
+        const info = e.suppressed_by || {};
+        return `<button class="k-btn k-btn--ghost k-btn--sm" title="stop suppressing this pattern"
+          onclick="relUnsuppress(${jsArg(info.id)}, ${jsArg(info.scope)})">${icon('x', 12)}unsuppress</button>`;
+      }
+      if (e.event_id == null) return "";
+      return `<button class="k-btn k-btn--ghost k-btn--sm"
+        title="exclude this pattern from severity scoring, fleet-wide — counts stay visible"
+        onclick="relSuppress(${jsArg(e.source)}, ${jsArg(e.event_id)})">${icon('square', 12)}suppress</button>`;
+    }
     // One event row for the reliability tables. With `dayKey` the count column shows
     // that day's contribution (used by the clicked-cell panel); without it, the
     // window total (used by the per-category breakdown).
     function reliabEventRow(e, dayKey) {
       const cnt = dayKey ? ((e.by_day || {})[dayKey] || 0) : (e.count ?? "—");
       const sample = [e.suspected_cause, e.sample].filter(Boolean).join(" — ");
-      return `<tr>
+      return `<tr${e.suppressed ? ' class="k-relrow--sup"' : ""}>
         <td class="k-mono">${esc(e.source || "?")}${e.event_id != null ? " / " + esc(String(e.event_id)) : ""}</td>
         <td>${relLevelBadge(e.level)}</td>
-        <td>${relSeverityBadge(e.severity)}</td>
+        <td>${relSeverityBadge(e.severity)}${e.suppressed ? " " + relSuppressedBadge(e.suppressed_by) : ""}</td>
         <td class="k-mono">${esc(String(cnt))}</td>
         <td>${esc(fmtValue("last_seen", e.last_seen))}</td>
-        <td class="k-muted">${esc(sample)}</td></tr>`;
+        <td class="k-muted">${esc(sample)}</td>
+        <td>${relRowAction(e)}</td></tr>`;
     }
     // Fill the inline panel under the by-day heatmap with the exact events behind a
     // clicked cell — that friendly category, on that day. Same grouping expression as
     // the heatmap so the selection matches the cell; count column shows the day's share.
+    // Keep this header in sync with renderReliabilityDetail's per-category table.
     function renderReliabCell(cat, day, events) {
       const panel = document.getElementById("k-reliab-cell");
       if (!panel) return;
@@ -3495,7 +3536,7 @@
       } else {
         const rows = hits.map(e => reliabEventRow(e, day)).join("");
         panel.innerHTML = `<div class="k-detail-grp__lbl">${lbl}</div>
-          <table class="k-dtable"><thead><tr><th>source / id</th><th>level</th><th>severity</th><th>count</th><th>last seen</th><th>sample / suspected cause</th></tr></thead>
+          <table class="k-dtable"><thead><tr><th>source / id</th><th>level</th><th>severity</th><th>count</th><th>last seen</th><th>sample / suspected cause</th><th></th></tr></thead>
             <tbody>${rows}</tbody></table>`;
       }
       panel.style.display = "";
@@ -3551,6 +3592,104 @@
         if (!p.data) return;
         renderReliabCell(p.data._cat, p.data._day, events);
       });
+    }
+    // Alarm suppression panel (ADR-0045 / issue #166): the reliability card's
+    // editable list of operator rules that exclude a (source, event_id)
+    // pattern from severity scoring while leaving its counts and heatmap
+    // contribution untouched. Fetch → render, re-run after every mutation; a
+    // closed modal is a no-op. Mirrors mountWebfilterPanel/renderWebfilterPanel.
+    async function mountReliabilitySuppressionPanel(agentId) {
+      const panel = document.getElementById("k-relsup-panel");
+      if (!panel) return;
+      let d;
+      try { d = await getJSON("/api/reliability/suppressions"); }
+      catch (e) {
+        const p = document.getElementById("k-relsup-panel");
+        if (p) p.innerHTML = `<div class="k-airec__err">suppression rules unavailable: ${esc(e.message)}</div>`;
+        return;
+      }
+      renderReliabilitySuppressionPanel(agentId, d);
+    }
+    function renderReliabilitySuppressionPanel(agentId, d) {
+      const panel = document.getElementById("k-relsup-panel");
+      if (!panel) return;
+      const aid = jsArg(agentId);
+      const rw = canOperate();
+      // Rules effective for this host: fleet-wide plus this host's own.
+      const rules = (d.rules || []).filter(r => !r.agent_id || r.agent_id === agentId);
+      const rows = rules.length ? rules.map(r => `
+        <div class="kwf-row"><span class="k-mono">${esc(r.source || "any source")} / ${esc(String(r.event_id))}</span>
+          <span class="k-pill k-pill--muted">${esc(r.agent_id ? "this PC" : "fleet-wide")}</span>
+          ${r.note ? `<span class="k-muted">${esc(r.note)}</span>` : ""}
+          ${rw ? `<button class="k-btn k-btn--danger k-btn--sm" style="margin-left:auto"
+            title="remove" onclick="relUnsuppress(${jsArg(r.id)}, ${jsArg(r.agent_id ? "host" : "fleet")})">${icon('x', 12)}</button>` : ""}</div>`
+        ).join("") : `<div class="k-muted">no suppression rules — every pattern counts toward scoring</div>`;
+      // Event ID is required; source is optional (empty = any source with that id).
+      const addRow = rw ? `
+        <div class="kwf-add">
+          <input class="k-input" id="krs-eid" inputmode="numeric" autocomplete="off" placeholder="event id (required) e.g. 4176"
+            onkeydown="if(event.key==='Enter')relSuppressFromForm(${aid})"/>
+          <input class="k-input" id="krs-source" autocomplete="off" placeholder="source (optional — empty = any source)"
+            onkeydown="if(event.key==='Enter')relSuppressFromForm(${aid})"/>
+          <select class="k-input" id="krs-scope">
+            <option value="fleet">all PCs</option>
+            <option value="host">this PC only</option>
+          </select>
+          <input class="k-input" id="krs-note" autocomplete="off" placeholder="note (optional)"
+            onkeydown="if(event.key==='Enter')relSuppressFromForm(${aid})"/>
+          <button class="k-btn k-btn--primary k-btn--sm" onclick="relSuppressFromForm(${aid})">${icon('plus', 13)}add</button>
+        </div>` : "";
+      panel.innerHTML = `
+        <div class="k-detail-grp__lbl">alarm suppression — patterns excluded from severity scoring</div>
+        <div class="k-muted" style="margin-bottom:8px">A suppressed pattern keeps its full count and colours the heatmap; it just stops driving warn/crit and drops out of the health reason. The reliability index still scores on its own.</div>
+        ${addRow}
+        <div class="kwf-list">${rows}</div>
+        <div id="k-relsup-msg"></div>`;
+    }
+    // Suppress the exact (source, event_id) pair fleet-wide — the row action's
+    // one-click affordance, no scope dialog.
+    async function relSuppress(source, eventId) {
+      const agentId = (state.detail || {}).agent_id;
+      await relSuppressPost(agentId, { event_id: eventId, source: source || "" });
+    }
+    function relSuppressFromForm(agentId) {
+      const eidRaw = ((document.getElementById("krs-eid") || {}).value || "").trim();
+      const eid = parseInt(eidRaw, 10);
+      if (!eidRaw || !Number.isFinite(eid)) { relSupMsg("event id is required (a number).", true); return; }
+      const source = ((document.getElementById("krs-source") || {}).value || "").trim();
+      const scope = (document.getElementById("krs-scope") || {}).value || "fleet";
+      const note = ((document.getElementById("krs-note") || {}).value || "").trim();
+      relSuppressPost(agentId, {
+        event_id: eid, source, note,
+        agent_id: scope === "host" ? agentId : "",
+      });
+    }
+    async function relSuppressPost(agentId, body) {
+      try {
+        await getJSON("/api/reliability/suppressions",
+          { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+        await relRefreshAfterSuppressionChange(agentId);
+      } catch (e) { relSupMsg("could not suppress: " + e.message, true); }
+    }
+    async function relUnsuppress(ruleId, scope) {
+      const agentId = (state.detail || {}).agent_id;
+      // Removing a fleet-wide rule re-arms the alarm on every PC, so confirm it.
+      if (scope !== "host" && !confirm(
+        "This suppression is fleet-wide — removing it re-enables the alarm on every PC. Continue?")) return;
+      try {
+        await getJSON("/api/reliability/suppressions/" + encodeURIComponent(ruleId), { method: "DELETE" });
+        await relRefreshAfterSuppressionChange(agentId);
+      } catch (e) { relSupMsg("could not unsuppress: " + e.message, true); }
+    }
+    // Suppression changes the section's status, reason, and badges server-side,
+    // so refetch the agent and re-open the same popup rather than patching DOM.
+    async function relRefreshAfterSuppressionChange(agentId) {
+      await selectAgent(agentId);
+      openSectionDetail("reliability");
+    }
+    function relSupMsg(text, isErr) {
+      const m = document.getElementById("k-relsup-msg");
+      if (m) m.innerHTML = `<div class="${isErr ? "k-airec__err" : "k-muted"}" style="margin-top:6px">${esc(text)}</div>`;
     }
     // Parental-controls detail: flagged hits + observed domains + the per-host
     // list editor (mounted async after the modal opens — see mountWebfilterPanel).

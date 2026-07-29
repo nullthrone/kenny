@@ -138,6 +138,10 @@ MANIFEST: list[Shot] = [
             *_select("grandpa-pc"),
             {"eval": "openSectionDetail('reliability')"},
             {"wait_for": "#modal-overlay #k-reliab-heat"},
+            # The alarm suppression panel (ADR-0045 / issue #166) mounts async
+            # after the heatmap; wait for it too so the seeded suppressed
+            # pattern and its rule row are visible in the capture.
+            {"wait_for": "#modal-overlay #k-relsup-panel .kwf-list, #modal-overlay #k-relsup-panel .kwf-row"},
             {"sleep": SETTLE_MS},
         ],
     ),
@@ -192,6 +196,7 @@ MANIFEST: list[Shot] = [
             *_select("grandpa-pc"),
             {"eval": "openSectionDetail('reliability')"},
             {"wait_for": "#modal-overlay #k-reliab-heat"},
+            {"wait_for": "#modal-overlay #k-relsup-panel .kwf-list, #modal-overlay #k-relsup-panel .kwf-row"},
             {"sleep": SETTLE_MS},
         ],
     ),

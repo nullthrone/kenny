@@ -298,6 +298,7 @@ def register_tools(
     tunnel: AgentTunnel,
     call_log: CallLog,
     webfilter: WebFilterService | None = None,
+    suppression: Any = None,
 ) -> None:
     """Register all MCP tools on ``mcp``."""
 
@@ -442,6 +443,79 @@ def register_tools(
             "collected_at": latest["collected_at"],
             "snapshot": snapshot,
         }
+
+    # -- reliability alarm suppression server-only tools (ADR-0045 / #166) --
+    #
+    # Server-held operator state, not a per-agent capability -- like
+    # webfilter_get/web_activity_query, these never forward a request frame to
+    # an agent, so `agent_id` here is an optional scope filter, not a routing
+    # target (no `_resolve_target`/ADR-0042 concern). `agent_snapshot` above
+    # already carries the `suppressed`/`suppressed_by` markers for free (the
+    # TelemetryStore read-path hook), so a caller comparing a fresh breakdown
+    # against these rules needs no extra round-trip.
+
+    if suppression is not None:
+
+        @mcp.tool(
+            name="reliability_suppression_list",
+            description=(
+                "List reliability alarm suppression rules (read-only). Without "
+                "agent_id, all rules; with it, fleet-wide + that host's rules."
+            ),
+        )
+        async def reliability_suppression_list(agent_id: str | None = None) -> dict[str, Any]:
+            principal = _mcp_principal()
+            if agent_id:
+                _require_scope(principal, agent_id)
+                rules = suppression.rules(agent_id)
+            else:
+                rules = suppression.rules()
+                if principal is not None and principal.scoped:
+                    rules = [
+                        r for r in rules if not r["agent_id"] or r["agent_id"] in principal.hosts
+                    ]
+            return {"rules": rules}
+
+        @mcp.tool(
+            name="reliability_suppression_add",
+            description=(
+                "Exclude a reliability event pattern (source+event_id) from severity "
+                "scoring (state-changing). Counts and heatmaps stay unaffected. "
+                "event_id is required; source empty/omitted matches any source with "
+                "that id. agent_id empty/omitted suppresses fleet-wide."
+            ),
+        )
+        async def reliability_suppression_add(
+            event_id: int,
+            source: str | None = None,
+            agent_id: str | None = None,
+            note: str | None = None,
+        ) -> dict[str, Any]:
+            principal = _mcp_principal()
+            _require_role(principal, "operator")
+            if agent_id:
+                _require_scope(principal, agent_id)
+            try:
+                rules = await suppression.add(
+                    event_id=event_id,
+                    source=source or "",
+                    agent_id=agent_id or "",
+                    note=note or "",
+                    created_by=getattr(principal, "username", "") or "",
+                )
+            except ValueError as exc:
+                raise ToolError("bad_args", str(exc)) from exc
+            return {"rules": rules}
+
+        @mcp.tool(
+            name="reliability_suppression_remove",
+            description="Remove a reliability alarm suppression rule by id (state-changing).",
+        )
+        async def reliability_suppression_remove(rule_id: str) -> dict[str, Any]:
+            principal = _mcp_principal()
+            _require_role(principal, "operator")
+            removed, rules = await suppression.remove(rule_id)
+            return {"ok": True, "removed": removed, "rules": rules}
 
     # -- parental-controls (webfilter) server-only tools ------------------
 

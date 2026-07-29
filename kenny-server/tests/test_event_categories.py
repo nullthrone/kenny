@@ -141,6 +141,22 @@ def test_annotate_events_stamps_category_severity_and_cause():
     assert events[1]["suspected_cause"] == ""
 
 
+def test_annotate_events_leaves_suppression_markers_intact():
+    # ADR-0045 / issue #166: suppression markers are stamped by a different
+    # module (reliability_suppression.SuppressionList.mark) on the same event
+    # dicts. annotate_events must only ever write its own three keys, so a
+    # (re-)annotation pass never clobbers an existing suppression stamp.
+    events = [
+        {"source": "disk", "event_id": 51, "count": 3, "suppressed": True,
+         "suppressed_by": {"id": "r", "scope": "fleet"}},
+    ]
+    mapping = {("disk", 51): {"category": "Disk & storage", "severity": "serious", "cause": "bad sectors"}}
+    ec.annotate_events(events, mapping)
+    assert events[0]["suppressed"] is True
+    assert events[0]["suppressed_by"] == {"id": "r", "scope": "fleet"}
+    assert events[0]["category"] == "Disk & storage"
+
+
 def test_annotate_snapshots_no_events_is_noop():
     snap = {"reliability": {"status": "ok", "summary": "", "recent_crashes": 0, "events": []}}
     _run(ec.annotate_snapshots([snap], client_factory=lambda: _FakeClient("[]")))

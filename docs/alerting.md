@@ -25,6 +25,13 @@ not on every push:
 The persisted flap-suppression state means a server restart never re-fires alerts for
 conditions that were already notified.
 
+!!! note "Reliability alarm suppression also dampens this loop"
+    An operator-suppressed reliability event pattern (ADR-0045, issue #166) is excluded from
+    the `reliability` section's severity scoring wherever that scoring runs — including this
+    push-alert loop and the weekly digest below, not just the dashboard. Muting a known-noisy
+    Windows quirk (e.g. a `CryptSvc` pattern rotating hundreds of times a day) stops it from
+    triggering push notifications too. See [Alarm suppression](telemetry.md#alarm-suppression).
+
 !!! note "Offline detection is push-derived"
     An agent counts as **offline** when its newest snapshot is older than the offline
     threshold (default 2700 s = three missed 15-min pushes) **and** the in-memory registry
