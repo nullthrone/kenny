@@ -439,10 +439,17 @@ Linux CI. See ADR-0026.
 | `webfilter_set`   | `{id, ...}`     | edit a host's config/toggles or add/remove a domain |
 | `webfilter_push`  | `{id}`          | build the effective block set and forward `webfilter_apply`/`clear` |
 | `web_activity_query` | `{id, hours?, flagged_only?}` | observed/flagged domains for one host  |
+| `reliability_suppression_list` | `{agent_id?}` | reliability alarm suppression rules (fleet-wide + host) |
+| `reliability_suppression_add` | `{event_id, source?, agent_id?, note?}` | exclude a `(source, event_id)` pattern from severity scoring |
+| `reliability_suppression_remove` | `{rule_id}` | remove a suppression rule |
 
 The `webfilter_*` server-only tools manage the per-host list and trigger a push; they wrap
 the forwarded `webfilter_apply`/`webfilter_clear` capability tools (ADR-0026). `webfilter_set`
 and `webfilter_push` are state-changing (they pass the operator confirm-gate, ADR-0009).
+
+The `reliability_suppression_*` server-only tools manage the suppression-rule table behind
+the Reliability card (ADR-0045); `_add`/`_remove` are state-changing (ADR-0009). They forward
+nothing to an agent — `agent_id` is an optional scope filter, not a routing target.
 
 ## Telemetry sections
 
@@ -519,9 +526,13 @@ count = sum of the groups' counts) are retained. On the read path the server ann
 group with a friendly `category`, a `severity` (`benign`/`notable`/`serious`/`unknown`), and a
 short `suspected_cause` (via the connected LLM, cached) — used both for the dashboard's
 reliability heatmaps and to drive the health rule's crit/warn scoring by pattern, not raw
-volume. These three fields are **server-internal and not part of this wire contract** — the
-agent never sends them (see ADR-0028). Off Windows the section is the
-`n/a on this platform` stub with `events: []`.
+volume. If the operator has suppressed this exact `(source, event_id)` pattern (ADR-0045), the
+read path additionally stamps `suppressed: true` and a `suppressed_by` descriptor, excluding
+the group from severity scoring while leaving its count untouched; unlike the LLM annotation
+above, suppression needs no API key and so is stamped on every read path, including
+`agent_snapshot`. These fields are all **server-internal and not part of this wire
+contract** — the agent never sends them (see ADR-0028, ADR-0045). Off Windows the section is
+the `n/a on this platform` stub with `events: []`.
 
 ### Security-inventory, resilience, and parental-awareness sections (v0.10)
 

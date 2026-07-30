@@ -15,7 +15,9 @@ It populates, per host:
 plus a few fleet-wide Activity rows (an audit call, an alert, a log line) and a
 couple of persisted copilot conversations, and it pre-seeds the reliability
 categorization cache so the heatmaps and health scoring show friendly
-categories/severities (ADR-0028) without an API key.
+categories/severities (ADR-0028) without an API key, plus one reliability
+alarm suppression rule (ADR-0045 / issue #166) so the Reliability card's
+suppressed badge and rule panel are populated in the captured screenshots.
 """
 
 from __future__ import annotations
@@ -42,6 +44,8 @@ async def seed_app(app: Any, base: datetime | None = None) -> list[str]:
     hosts = demo_fleet.build_fleet(base)
 
     _seed_reliability_categories()
+    if getattr(state, "suppression", None) is not None:
+        await _seed_suppressions(state.suppression)
 
     screenshot_b64 = demo_desktop_png_b64()
 
@@ -80,6 +84,15 @@ def _seed_reliability_categories() -> None:
 
     for key, classification in demo_fleet.RELIABILITY_CLASSIFICATIONS.items():
         event_categories._cache_put(key, classification)  # noqa: SLF001
+
+
+async def _seed_suppressions(suppression: Any) -> None:
+    """Apply the demo fleet's reliability alarm suppression rules (ADR-0045 /
+    issue #166) via the real ``SuppressionService``, so the seeded state is
+    identical to what an operator clicking "suppress" would produce."""
+
+    for rule in demo_fleet.RELIABILITY_SUPPRESSIONS:
+        await suppression.add(**rule)
 
 
 async def _seed_webfilter(store: Any, agent_id: str, wf: dict[str, Any]) -> None:

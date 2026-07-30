@@ -89,7 +89,11 @@ The header shows the **worst-of** health across the whole fleet. Click a tile to
   rule reason. Click a section tile to open a popup with its details rendered as readable tables and
   fields (no raw JSON). For a *flagged* section, when an Anthropic API key is configured, an **AI
   Recommendation** (Diagnosis / Action / Urgency) streams in at the top, sometimes with an
-  **Auto-Remediate** button that hands a fix prompt to the copilot.
+  **Auto-Remediate** button that hands a fix prompt to the copilot. On **Reliability**, a noisy but
+  known-harmless Windows event pattern (e.g. a `CryptSvc` quirk repeating hundreds of times a day)
+  can be **suppressed** — a click next to the offending row, or the panel's manual form (event id
+  required, source optional) — so it stops dominating the health status while its raw count stays
+  visible. See [Alarm suppression](telemetry.md#alarm-suppression).
 - **AI Forecast** — a short, plain-English outlook pinned at the top of the drill-down: what is
   likely to need attention on this PC soon, drawn from the disk-fill and battery trends and the
   inventory changes since yesterday. With an Anthropic API key the model writes it (marked ✦);

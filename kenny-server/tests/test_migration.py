@@ -52,6 +52,30 @@ def test_upgrade_preserves_hosts_and_shared_token(tmp_path, monkeypatch) -> None
     tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     conn.close()
     assert {"users", "user_tokens", "sessions", "user_hosts"} <= tables
+    # The reliability alarm suppression table (ADR-0045 / issue #166) too.
+    assert "reliability_suppressions" in tables
+
+
+def test_suppression_table_created_idempotently_and_survives_a_second_boot(tmp_path) -> None:
+    db_path = str(tmp_path / "twice.sqlite")
+    app1 = build_app(db_path=db_path)
+    with TestClient(app1) as c:
+        h = {"Authorization": f"Bearer {app1.state.operator_token}"}
+        resp = c.post(
+            "/api/reliability/suppressions", headers=h,
+            json={"event_id": 4176, "source": "Microsoft-Windows-CAPI2"},
+        )
+        assert resp.status_code == 200
+
+    # Booting a second app instance against the same DB file must not error,
+    # and the rule inserted in boot #1 must survive and be in the mirror.
+    app2 = build_app(db_path=db_path)
+    with TestClient(app2) as c:
+        h = {"Authorization": f"Bearer {app2.state.operator_token}"}
+        rules = c.get("/api/reliability/suppressions", headers=h).json()["rules"]
+        assert len(rules) == 1
+        assert rules[0]["event_id"] == 4176
+        assert app2.state.suppression.match("ANY-PC", "Microsoft-Windows-CAPI2", 4176) is not None
 
 
 def test_setup_closes_after_first_account(tmp_path) -> None:

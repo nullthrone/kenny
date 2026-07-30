@@ -476,3 +476,174 @@ def test_net_quality_rules() -> None:
         now=NOW,
     )
     assert ok["status"] == "ok"
+
+
+# -- reliability: alarm suppression (ADR-0045 / issue #166) -----------------
+#
+# `suppressed` is stamped by the read-path SuppressionList.mark(), not by the
+# health rule itself (see reliability_suppression.py + the TelemetryStore.
+# annotate seam) -- these tests build already-stamped payloads directly, the
+# same way test_event_categories.py's fixtures already carry `category`/
+# `severity` as if ADR-0028 annotation had run.
+
+
+def test_reliability_suppressed_pattern_excluded_from_severity_scoring() -> None:
+    # The issue #166 regression: one dominant, suppressed pattern (3439 CAPI2/
+    # 4176 events) must not drown out the one pattern that actually matters
+    # (a single Kernel-Power/41 unclean shutdown).
+    events = [
+        {"source": "Microsoft-Windows-CAPI2", "event_id": 4176, "level": "error",
+         "count": 3439, "category": "Windows service", "severity": "unknown",
+         "suppressed": True,
+         "suppressed_by": {"id": "x", "scope": "fleet", "source": "Microsoft-Windows-CAPI2",
+                            "event_id": 4176, "note": "known CryptSvc quirk"}},
+        {"source": "Microsoft-Windows-Kernel-Power", "event_id": 41, "level": "critical",
+         "count": 1, "category": "Power & boot", "severity": "notable"},
+    ]
+    result = health_rules.evaluate_section(
+        "reliability", {"status": "ok", "summary": "", "recent_crashes": 3440, "events": events},
+        now=NOW,
+    )
+    # One significant (forced-serious) pattern with a low recurrence count ->
+    # warn, not crit -- and it must be the Kernel-Power pattern, not CAPI2.
+    assert result["status"] == "warn"
+    assert "Microsoft-Windows-Kernel-Power/41" in result["reason"]
+    assert "CAPI2" not in result["reason"]
+    assert "1 pattern(s) suppressed" in result["reason"]
+
+
+def test_reliability_all_patterns_suppressed_scores_ok_with_explicit_reason() -> None:
+    events = [
+        {"source": "Microsoft-Windows-CAPI2", "event_id": 4176, "level": "error",
+         "count": 3439, "category": "Windows service", "severity": "unknown",
+         "suppressed": True},
+    ]
+    result = health_rules.evaluate_section(
+        "reliability", {"status": "ok", "summary": "", "recent_crashes": 3439, "events": events},
+        now=NOW,
+    )
+    assert result["status"] == "ok"
+    assert "all 1 pattern(s) suppressed" in result["reason"]
+    assert "3439" in result["reason"]  # raw total is still visible
+
+
+def test_reliability_suppressed_serious_pattern_no_longer_crits() -> None:
+    events = [
+        {"source": "disk", "event_id": 51, "level": "error", "count": 50,
+         "category": "Disk & storage", "severity": "serious", "suppressed": True},
+    ]
+    result = health_rules.evaluate_section(
+        "reliability", {"status": "ok", "summary": "", "recent_crashes": 50, "events": events},
+        now=NOW,
+    )
+    assert result["status"] == "ok"
+
+
+def test_reliability_suppressed_windows_critical_no_longer_escalates() -> None:
+    # An operator explicitly suppressing this exact pattern overrides the
+    # automatic "Windows-critical -> serious" escalation.
+    events = [
+        {"source": "Kernel-Power", "event_id": 41, "level": "critical", "count": 5,
+         "category": "Power & boot", "severity": "unknown", "suppressed": True},
+    ]
+    result = health_rules.evaluate_section(
+        "reliability", {"status": "ok", "summary": "", "recent_crashes": 5, "events": events},
+        now=NOW,
+    )
+    assert result["status"] == "ok"
+
+
+def test_reliability_suppression_does_not_silence_low_stability_index() -> None:
+    # The Windows Reliability Index is independent of pattern suppression and
+    # always applies on top -- suppressing every pattern must not hide it.
+    events = [
+        {"source": "Microsoft-Windows-CAPI2", "event_id": 4176, "level": "error",
+         "count": 3439, "category": "Windows service", "severity": "unknown",
+         "suppressed": True},
+    ]
+    result = health_rules.evaluate_section(
+        "reliability",
+        {"status": "ok", "summary": "", "recent_crashes": 3439, "events": events,
+         "stability_index": 2.0},
+        now=NOW,
+    )
+    assert result["status"] == "crit"
+
+
+def test_reliability_suppressed_pattern_not_reported_as_benign() -> None:
+    # A suppressed, non-benign pattern must never be folded into the
+    # "known-benign" phrase -- that phrase is the LLM's verdict, suppression
+    # is the operator's, and they are different claims.
+    events = [
+        {"source": "Microsoft-Windows-CAPI2", "event_id": 4176, "level": "error",
+         "count": 3439, "category": "Windows service", "severity": "unknown",
+         "suppressed": True},
+        {"source": "DistributedCOM", "event_id": 10016, "level": "error", "count": 10,
+         "category": "Windows service", "severity": "benign"},
+    ]
+    result = health_rules.evaluate_section(
+        "reliability", {"status": "ok", "summary": "", "recent_crashes": 3449, "events": events},
+        now=NOW,
+    )
+    assert result["status"] == "ok"
+    assert "known-benign" in result["reason"]
+    assert "1 pattern(s) suppressed" in result["reason"]
+
+
+def test_reliability_volume_fallback_subtracts_suppressed_from_scoring_total() -> None:
+    # Unannotated events (no `severity` -- the volume fallback path) must also
+    # honour suppression: this is the path that drives push alerting, the
+    # weekly digest, and the fleet list (see reliability_suppression.py).
+    events = [
+        {"source": "Microsoft-Windows-CAPI2", "event_id": 4176, "level": "error",
+         "count": 3700, "suppressed": True},
+        {"source": "Application Error", "event_id": 1000, "level": "error", "count": 43},
+    ]
+    result = health_rules.evaluate_section(
+        "reliability", {"status": "ok", "summary": "", "recent_crashes": 3743, "events": events},
+        now=NOW,
+    )
+    # scored total = 3743 - 3700 = 43 -> warn (>=15), not crit (<50).
+    assert result["status"] == "warn"
+    assert "CAPI2" not in result["reason"]
+    assert "Application Error" in result["reason"]
+    assert "1 pattern(s) suppressed" in result["reason"]
+
+
+def test_reliability_volume_fallback_ignores_suppressed_critical_and_distinct() -> None:
+    # A suppressed critical-level group alone -> ok (not escalated by `level`).
+    events = [
+        {"source": "Kernel-Power", "event_id": 41, "level": "critical", "count": 3,
+         "suppressed": True},
+    ]
+    result = health_rules.evaluate_section(
+        "reliability", {"status": "ok", "summary": "", "recent_crashes": 3, "events": events},
+        now=NOW,
+    )
+    assert result["status"] == "ok"
+
+    # 8 distinct groups, 7 suppressed -> the distinct-pattern escalation must
+    # not fire on the suppressed ones.
+    events = [
+        {"source": f"App{i}", "event_id": i, "level": "error", "count": 1, "suppressed": True}
+        for i in range(7)
+    ] + [{"source": "App7", "event_id": 7, "level": "error", "count": 1}]
+    result = health_rules.evaluate_section(
+        "reliability", {"status": "ok", "summary": "", "recent_crashes": 8, "events": events},
+        now=NOW,
+    )
+    assert result["status"] == "ok"
+
+
+def test_reliability_existing_tests_unaffected_by_suppression_support() -> None:
+    # No `suppressed` key anywhere -> byte-identical to pre-ADR-0045 behavior.
+    events = [
+        {"source": "Application Error", "event_id": 1000, "level": "error", "count": 84,
+         "category": "App crash / hang", "severity": "notable"},
+    ]
+    result = health_rules.evaluate_section(
+        "reliability", {"status": "ok", "summary": "", "recent_crashes": 84, "events": events},
+        now=NOW,
+    )
+    assert result["status"] == "warn"
+    assert "suppressed" not in result["reason"]

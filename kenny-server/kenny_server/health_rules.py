@@ -180,7 +180,9 @@ _RELIABILITY_SIGNIFICANT_PATTERNS_CRIT = 5  # this many distinct non-benign patt
 
 # Shared by both scoring paths: the Windows Reliability Index (0-10) is an
 # independent, agent-computed signal that content-based pattern scoring can't
-# see into, so it always applies on top.
+# see into, so it always applies on top. It is deliberately NOT suppressible —
+# an operator muting a noisy event pattern must never be able to hide a
+# genuinely low reliability index (issue #166 / ADR-0045).
 _RELIABILITY_SI_CRIT = 3
 _RELIABILITY_SI_WARN = 6
 
@@ -190,18 +192,26 @@ def _reliability_reason(events: list[Any], total: int) -> str:
 
     Used for the volume-based fallback path, where there is no severity/cause
     to name — see :func:`_reliability_pattern_reason` for the annotated path.
+    Suppressed groups (ADR-0045) are excluded from the tally — a muted pattern
+    must not out-rank the events that still matter — and counted in a trailing
+    note instead, so an operator can tell "quiet" from "quieted".
     """
 
     tally: dict[str, int] = {}
+    suppressed_n = 0
     for e in events or []:
         if not isinstance(e, dict):
+            continue
+        if e.get("suppressed"):
+            suppressed_n += 1
             continue
         label = e.get("category") or e.get("source") or "?"
         tally[label] = tally.get(label, 0) + int(_number(e.get("count")) or 0)
     top = sorted(tally.items(), key=lambda kv: kv[1], reverse=True)[:3]
+    suffix = f" ({suppressed_n} pattern(s) suppressed)" if suppressed_n else ""
     if not top:
-        return f"{total} error/critical events in 7d"
-    return ", ".join(f"{label} ×{count}" for label, count in top)
+        return f"{total} error/critical events in 7d{suffix}"
+    return ", ".join(f"{label} ×{count}" for label, count in top) + suffix
 
 
 def _cadence_label(count: int, window_days: Any) -> str:
@@ -222,18 +232,30 @@ def _reliability_pattern_reason(patterns: list[dict[str, Any]], total: int, wind
     ``agent_health`` alone, without a manual ``diag_eventlog`` call. A host
     whose events are all known-benign says so explicitly instead of hiding the
     count behind a scary number.
+
+    Suppressed patterns (ADR-0045 / issue #166) are never named here — that is
+    the whole point of muting them — but their existence is always noted in a
+    trailing clause, so the reader can tell "quiet" from "quieted". A pattern
+    the operator muted is never folded into "known-benign": that phrase is the
+    LLM's verdict, and a suppression is the operator's, a different claim.
     """
 
-    significant = [p for p in patterns if p["severity"] != "benign"]
+    suppressed = [p for p in patterns if p.get("suppressed")]
+    scored = [p for p in patterns if not p.get("suppressed")]
+    suffix = f" ({len(suppressed)} pattern(s) suppressed)" if suppressed else ""
+
+    significant = [p for p in scored if p["severity"] != "benign"]
     if not significant:
         if not patterns:
             return f"{total} error/critical events in 7d"
+        if not scored:
+            return f"{total} events, all {len(suppressed)} pattern(s) suppressed"
         by_category: dict[str, int] = {}
-        for p in patterns:
+        for p in scored:
             label = p.get("category") or "?"
             by_category[label] = by_category.get(label, 0) + p["count"]
         top_cat = max(by_category, key=lambda c: by_category[c])
-        return f"{total} events, all known-benign ({top_cat})"
+        return f"{total} events, all known-benign ({top_cat}){suffix}"
 
     significant.sort(key=lambda p: p["count"], reverse=True)
     top = significant[0]
@@ -246,7 +268,7 @@ def _reliability_pattern_reason(patterns: list[dict[str, Any]], total: int, wind
     extra = len(significant) - 1
     if extra > 0:
         reason += f", +{extra} more pattern(s)"
-    return reason
+    return reason + suffix
 
 
 def _rule_reliability_by_volume(
@@ -254,15 +276,29 @@ def _rule_reliability_by_volume(
 ) -> "tuple[Status, str]":
     """Fallback scoring when events carry no severity annotation (see module
     comment above). Strictly at least as sensitive as the original volume-based rule.
+
+    Operator suppression (ADR-0045 / issue #166) still applies on this path.
+    Unlike the ADR-0028 LLM categorization, matching a suppression rule needs
+    no LLM and no API key, so it is available here too — and this is the path
+    that drives push alerting, the weekly digest, and the fleet list, which is
+    exactly where a single dominant noisy pattern is loudest (see the module
+    that installs the ``TelemetryStore.annotate`` hook). Suppressed volume is
+    subtracted from the SCORING total only; the raw ``total_i`` used in the
+    displayed reason (and ``recent_crashes`` itself) is untouched.
     """
 
-    has_critical = any(e.get("level") == "critical" for e in events)
-    distinct = len({(e.get("source"), e.get("event_id")) for e in events})
+    scored_events = [e for e in events if not e.get("suppressed")]
+    suppressed_total = sum(
+        int(_number(e.get("count")) or 0) for e in events if e.get("suppressed")
+    )
+    scored_total = max(0, total_i - suppressed_total)
+    has_critical = any(e.get("level") == "critical" for e in scored_events)
+    distinct = len({(e.get("source"), e.get("event_id")) for e in scored_events})
 
-    if total_i >= _RELIABILITY_FALLBACK_CRIT_TOTAL or (si is not None and si < _RELIABILITY_SI_CRIT):
+    if scored_total >= _RELIABILITY_FALLBACK_CRIT_TOTAL or (si is not None and si < _RELIABILITY_SI_CRIT):
         status: Status = "crit"
     elif (
-        total_i >= _RELIABILITY_FALLBACK_WARN_TOTAL
+        scored_total >= _RELIABILITY_FALLBACK_WARN_TOTAL
         or has_critical
         or distinct >= _RELIABILITY_FALLBACK_WARN_DISTINCT
         or (si is not None and si < _RELIABILITY_SI_WARN)
@@ -287,9 +323,14 @@ def _rule_reliability_by_severity(
         severity = e.get("severity")
         if severity not in ("benign", "notable", "serious", "unknown"):
             severity = "unknown"
-        if e.get("level") == "critical":
+        suppressed = bool(e.get("suppressed"))
+        if e.get("level") == "critical" and not suppressed:
             # A Windows-critical entry always counts as serious, regardless of
-            # what the LLM made of the message.
+            # what the LLM made of the message -- unless the operator has
+            # explicitly suppressed this exact pattern (ADR-0045 / issue #166),
+            # in which case that explicit intent overrides the automatic
+            # escalation. Without this, a suppressed Kernel-Power/41 could
+            # never actually be muted.
             severity = "serious"
         patterns.append(
             {
@@ -299,13 +340,18 @@ def _rule_reliability_by_severity(
                 "severity": severity,
                 "category": e.get("category"),
                 "cause": e.get("suspected_cause"),
+                "suppressed": suppressed,
             }
         )
 
-    serious = [p for p in patterns if p["severity"] == "serious"]
+    # Suppressed patterns stay in `patterns` (so they're still counted and
+    # reportable) but are excluded from every scoring list below.
+    scored = [p for p in patterns if not p["suppressed"]]
+    serious = [p for p in scored if p["severity"] == "serious"]
     # "unknown" is deliberately included here — never silently treated as
-    # benign — so genuinely novel/unclassifiable errors keep surfacing.
-    significant = [p for p in patterns if p["severity"] != "benign"]
+    # benign — so genuinely novel/unclassifiable errors keep surfacing. Only an
+    # explicit operator suppression rule removes a pattern from this list.
+    significant = [p for p in scored if p["severity"] != "benign"]
     worst_serious_count = max((p["count"] for p in serious), default=0)
 
     if (

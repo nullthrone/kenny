@@ -68,7 +68,7 @@ rule column).
 | `memory` | RAM usage | `percent_used` > 95 → **crit**; > 85 → **warn** |
 | `thermals` | Temperature sensors | hottest sensor ≥ 95 °C → **crit**; ≥ 85 °C → **warn** |
 | `battery` | Battery health and charge (laptops) | `health_percent` < 50 → **crit**; < 70 → **warn**. Laptops only; `battery.present` drives the device (laptop/desktop) pie |
-| `reliability` | Grouped Error/Critical event-log breakdown, stability index | Scored on **pattern severity**, not raw count, once the read-path categorizer has annotated each group: a `serious` pattern recurring ≥ 10×, **or** ≥ 5 distinct non-`benign` patterns, **or** `stability_index` < 3 → **crit**; any non-`benign` (`notable`/`unknown`/`serious`) pattern **or** `stability_index` < 6 → **warn**; all-`benign` → **ok** regardless of count. Reason names the dominant pattern (source/event id, cadence, suspected cause), or says so explicitly when everything is benign. Without annotation (no API key yet, or a raw payload) falls back to `recent_crashes` ≥ 50 **or** `stability_index` < 3 → **crit**; ≥ 15 events, ≥ 8 distinct patterns, any critical-level group, **or** `stability_index` < 6 → **warn** |
+| `reliability` | Grouped Error/Critical event-log breakdown, stability index | Scored on **pattern severity**, not raw count, once the read-path categorizer has annotated each group: a `serious` pattern recurring ≥ 10×, **or** ≥ 5 distinct non-`benign` patterns, **or** `stability_index` < 3 → **crit**; any non-`benign` (`notable`/`unknown`/`serious`) pattern **or** `stability_index` < 6 → **warn**; all-`benign` → **ok** regardless of count. Reason names the dominant pattern (source/event id, cadence, suspected cause), or says so explicitly when everything is benign. Without annotation (no API key yet, or a raw payload) falls back to `recent_crashes` ≥ 50 **or** `stability_index` < 3 → **crit**; ≥ 15 events, ≥ 8 distinct patterns, any critical-level group, **or** `stability_index` < 6 → **warn**. An operator-suppressed pattern (see *Alarm suppression* below) is excluded from every threshold above — in both the annotated and the fallback path — but never from the `stability_index` overlay |
 | `web_activity` | Observed domains (parental controls) | a serious flagged hit (`custom` / `seed` / `external_adult`) in 24 h → **crit**; a `bypass` hit in 24 h → **warn** (see [`parental-controls.md`](parental-controls.md)) |
 | `listening_ports` | Listening TCP/UDP ports | a non-loopback listener on **22 / 3389 / 5900 / 5985 / 5986** → **warn** |
 | `local_accounts` | Local users and administrators | an enabled admin with `password_required` false **and** no password ever set → **crit**; built-in Administrator or Guest enabled → **warn** |
@@ -133,6 +133,39 @@ Windows `level` is plain `"error"`.
 
 See [ADR-0028](adr/0028-llm-categorization-of-reliability-events.md) for the categorization
 decision.
+
+## Alarm suppression
+
+A single, well-known-benign event pattern can dominate a host's reliability scoring — e.g.
+the `Microsoft-Windows-CAPI2` / `4176` "AuthSafes count" quirk some Windows builds log
+hundreds of times a day from `CryptSvc`, with no known root cause or fix. The operator can
+**suppress** a specific `(source, event_id)` pattern from the Reliability section detail:
+either a click next to the offending event row (always fleet-wide, exact source), or the
+suppression panel's manual form (**event id required, source optional** — an empty source
+matches *any* source reporting that event id). A rule is fleet-wide by default; the panel
+also offers scoping it to one host.
+
+A suppressed pattern:
+
+- **stays fully visible** with its full raw count, in the raw event table, the category × day
+  heatmap, and the fleet Overview heatmap — suppression never hides volume;
+- **carries a distinct `suppressed` badge**, never the `benign` severity pill — "the model
+  classified this as harmless" and "the operator decided to ignore this" are different
+  claims, from different sources, and the UI keeps them visually separate;
+- is **excluded from severity scoring** — it no longer counts toward the `serious`/
+  `significant` pattern totals (or the raw-volume fallback total when no LLM annotation has
+  run), and drops out of the health rule's reason string, replaced by a
+  `(N pattern(s) suppressed)` note so the reader knows the quiet is explained, not guessed;
+- **does not affect the `stability_index` overlay** — the Windows Reliability Index is an
+  independent, agent-computed signal a suppression rule carries no information about, so it
+  keeps applying on top regardless of what's suppressed.
+
+Suppression is a synchronous, LLM-free rule lookup, so — unlike the categorization above —
+it reaches every health consumer, not just the two read paths that run the categorizer:
+push alerting, the weekly digest, the fleet list, and MCP's `agent_health`/`agent_snapshot`
+all see the same `suppressed` marker. Rules are managed via `/api/reliability/suppressions`
+(operator+ to write) or the `reliability_suppression_list`/`_add`/`_remove` MCP tools. See
+[ADR-0045](adr/0045-reliability-alarm-suppression.md).
 
 ## Screen time
 

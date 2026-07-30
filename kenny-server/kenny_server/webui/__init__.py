@@ -80,6 +80,7 @@ def build_api_routes(
     backup_target_store: Any = None,
     update_mgr: Any = None,
     client_factory: Any = None,
+    suppression: Any = None,
 ) -> list[Route]:
     """Build the dashboard's static + JSON routes.
 
@@ -468,6 +469,7 @@ def build_api_routes(
             webfilter_store=webfilter_store,
             user_store=user_store,
             screenshots=screenshots,
+            suppression=suppression,
         )
         await call_log.record(agent_id, "remove_host", {}, ok=True)
         return JSONResponse({"ok": True, "agent_id": agent_id, "purged": result})
@@ -528,6 +530,70 @@ def build_api_routes(
             policy_engine.set_operator_rules(operator)
         await tunnel.broadcast_policy()
         return JSONResponse({"ok": True, "removed": removed, "operator": operator})
+
+    # -- reliability alarm suppression (ADR-0045 / issue #166) --------------
+    #
+    # Server-held operator state, not a per-agent capability, so this follows
+    # the /api/policy/rules idiom (flat routes, no /api/agent/{id}/... prefix)
+    # rather than the webfilter one — a fleet-wide rule (the decided default
+    # scope) has no single host to hang a path param off. Writes are
+    # operator+ regardless of scope; a scoped `user`'s read is filtered to
+    # fleet-wide rules plus their own assigned hosts.
+
+    def _suppression_rules_for(request: Request) -> list[dict[str, Any]]:
+        rules = suppression.rules()
+        principal = principal_of(request)
+        if principal is not None and principal.scoped:
+            rules = [r for r in rules if not r["agent_id"] or r["agent_id"] in principal.hosts]
+        return rules
+
+    async def api_suppression_list(request: Request) -> JSONResponse:
+        """Suppression rules visible to the caller (ADR-0045)."""
+
+        if suppression is None:
+            return JSONResponse({"error": "suppression store not configured"}, status_code=503)
+        return JSONResponse({"rules": _suppression_rules_for(request)})
+
+    async def api_suppression_add(request: Request) -> JSONResponse:
+        """Add (or update) a reliability alarm suppression rule."""
+
+        if suppression is None:
+            return JSONResponse({"error": "suppression store not configured"}, status_code=503)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - malformed JSON
+            return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        agent_id = str(body.get("agent_id") or "").strip()
+        if agent_id:
+            known = await _known_ids(registry, store)
+            if agent_id not in known:
+                return JSONResponse({"error": f"unknown agent_id {agent_id!r}"}, status_code=400)
+        source = body.get("source", "")
+        if source is not None and not isinstance(source, str):
+            return JSONResponse({"error": "source must be a string"}, status_code=400)
+        note = body.get("note", "")
+        if note is not None and not isinstance(note, str):
+            return JSONResponse({"error": "note must be a string"}, status_code=400)
+        principal = principal_of(request)
+        try:
+            rules = await suppression.add(
+                event_id=body.get("event_id"),
+                source=source or "",
+                agent_id=agent_id,
+                note=note or "",
+                created_by=getattr(principal, "username", "") or "",
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        return JSONResponse({"rules": rules})
+
+    async def api_suppression_remove(request: Request) -> JSONResponse:
+        """Remove one reliability alarm suppression rule by id."""
+
+        if suppression is None:
+            return JSONResponse({"error": "suppression store not configured"}, status_code=503)
+        removed, rules = await suppression.remove(request.path_params["rule_id"])
+        return JSONResponse({"ok": True, "removed": removed, "rules": rules})
 
     # -- runtime settings --------------------------------------------------
 
@@ -1033,6 +1099,15 @@ def build_api_routes(
         Route(
             "/api/policy/rules/{id}",
             guard(api_policy_remove, **op),
+            methods=["DELETE"],
+        ),
+        Route("/api/reliability/suppressions", guard(api_suppression_list)),
+        Route(
+            "/api/reliability/suppressions", guard(api_suppression_add, **op), methods=["POST"]
+        ),
+        Route(
+            "/api/reliability/suppressions/{rule_id}",
+            guard(api_suppression_remove, **op),
             methods=["DELETE"],
         ),
         Route("/api/settings", guard(api_settings_list, **su)),
