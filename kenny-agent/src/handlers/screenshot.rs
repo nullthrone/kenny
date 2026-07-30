@@ -98,7 +98,6 @@ mod windows_impl {
     use super::*;
     use core::ffi::c_void;
 
-    use windows::Win32::Foundation::HWND;
     use windows::Win32::Graphics::Gdi::{
         BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC,
         GetDIBits, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, CAPTUREBLT,
@@ -147,22 +146,22 @@ mod windows_impl {
             }
 
             // `GetDC(None)` returns the DC for the entire screen.
-            let screen_dc: HDC = GetDC(HWND(std::ptr::null_mut()));
+            let screen_dc: HDC = GetDC(None);
             if screen_dc.is_invalid() {
                 return Err("GetDC(screen) returned null".into());
             }
 
             // From here on, ensure cleanup on every error path.
-            let mem_dc: HDC = CreateCompatibleDC(screen_dc);
+            let mem_dc: HDC = CreateCompatibleDC(Some(screen_dc));
             if mem_dc.is_invalid() {
-                ReleaseDC(HWND(std::ptr::null_mut()), screen_dc);
+                ReleaseDC(None, screen_dc);
                 return Err("CreateCompatibleDC failed".into());
             }
 
             let hbmp: HBITMAP = CreateCompatibleBitmap(screen_dc, width, height);
             if hbmp.is_invalid() {
                 let _ = DeleteDC(mem_dc);
-                ReleaseDC(HWND(std::ptr::null_mut()), screen_dc);
+                ReleaseDC(None, screen_dc);
                 return Err("CreateCompatibleBitmap failed".into());
             }
 
@@ -170,7 +169,7 @@ mod windows_impl {
             let cleanup = |hbmp: HBITMAP, mem_dc: HDC, screen_dc: HDC| {
                 let _ = DeleteObject(HGDIOBJ(hbmp.0));
                 let _ = DeleteDC(mem_dc);
-                ReleaseDC(HWND(std::ptr::null_mut()), screen_dc);
+                ReleaseDC(None, screen_dc);
             };
 
             let old = SelectObject(mem_dc, HGDIOBJ(hbmp.0));
@@ -186,7 +185,7 @@ mod windows_impl {
                 0,
                 width,
                 height,
-                screen_dc,
+                Some(screen_dc),
                 0,
                 0,
                 SRCCOPY | CAPTUREBLT,

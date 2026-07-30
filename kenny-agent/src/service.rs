@@ -576,7 +576,7 @@ mod windows_impl {
     pub(crate) fn launch_tray_in_active_session() -> anyhow::Result<()> {
         use anyhow::Context as _;
         use windows::core::PWSTR;
-        use windows::Win32::Foundation::{CloseHandle, FALSE, HANDLE};
+        use windows::Win32::Foundation::{CloseHandle, HANDLE};
         use windows::Win32::System::RemoteDesktop::{
             WTSGetActiveConsoleSessionId, WTSQueryUserToken,
         };
@@ -619,12 +619,12 @@ mod windows_impl {
             let mut pi = PROCESS_INFORMATION::default();
 
             let result = CreateProcessAsUserW(
-                token,
+                Some(token),
                 None,
-                PWSTR(cmdline.as_mut_ptr()),
+                Some(PWSTR(cmdline.as_mut_ptr())),
                 None,
                 None,
-                FALSE,
+                false,
                 CREATE_NO_WINDOW,
                 None,
                 None,

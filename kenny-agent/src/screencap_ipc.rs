@@ -301,7 +301,7 @@ mod windows_impl {
                     // SAFETY: `sd` was allocated by ConvertStringSecurityDescriptor... via
                     // LocalAlloc; free it exactly once with LocalFree.
                     unsafe {
-                        let _ = LocalFree(HLOCAL(self.sd.0));
+                        let _ = LocalFree(Some(HLOCAL(self.sd.0)));
                     }
                 }
             }
@@ -385,7 +385,7 @@ mod windows_impl {
             let s = unsafe { str_ptr.to_string() }.map_err(|e| format!("bad SID string: {e}"));
             // SAFETY: `str_ptr` was LocalAlloc'd by ConvertSidToStringSidW; free it once.
             unsafe {
-                let _ = LocalFree(HLOCAL(str_ptr.0 as *mut c_void));
+                let _ = LocalFree(Some(HLOCAL(str_ptr.0 as *mut c_void)));
             }
             s
         }
@@ -418,7 +418,7 @@ mod windows_impl {
         fn process_user_buffer(pid: u32) -> Result<Vec<u8>, String> {
             // SAFETY: returns a handle we close below; QUERY_LIMITED_INFORMATION is enough
             // to read the token's user and works across integrity levels.
-            let proc = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid) }
+            let proc = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }
                 .map_err(|e| format!("OpenProcess({pid}) failed: {e}"))?;
             let mut token = HANDLE::default();
             // SAFETY: `proc` is a valid process handle; `token` is closed below.
