@@ -42,7 +42,7 @@ png = "0.18"
 # windows-gated: bundling the amalgamation lets the Chromium/Firefox history readers
 # be unit-tested against fabricated temp DBs on Linux CI (matches the ungated
 # ureq/png precedent above).
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 # SHA-256. Used by `agent_update` (Windows-only) for binary verification AND by the
 # `webfilter` handler's portable `list_hash`, which is unit-tested on Linux CI — so this
 # is NOT windows-gated (the ungated ureq/png/rusqlite precedent applies).
