@@ -1,0 +1,13 @@
+{
+  "type": "response",
+  "id": "0216f927-83a4-4f10-a132-5d6e7f8091a2",
+  "ok": true,
+  "result": {
+    "ok": true,
+    "principal": "kid",
+    "action": "lock",
+    "sessions": [
+      { "session_id": 2, "state": "active", "acted": true }
+    ]
+  }
+}

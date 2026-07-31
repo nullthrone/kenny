@@ -3377,6 +3377,7 @@
       web_activity: renderWebActivityDetail,
       reliability: renderReliabilityDetail,
       screen_time: renderScreenTimeDetail,
+      local_accounts: renderAccountsDetail,
     };
 
     // Parental awareness (ADR-0032): whole-machine interactive minutes per day
@@ -3727,6 +3728,215 @@
       body += `<div class="k-detail-grp" id="kwf-panel"><div class="k-muted">loading parental-controls list…</div></div>`;
       return body;
     }
+    // -- account governance (ADR-0046) ------------------------------------
+    // One control set for local and Microsoft accounts alike: below the SAM/LSA
+    // layer Windows draws no distinction, so neither does this panel. Where a
+    // verb genuinely is not available for an account, the section's `unsupported`
+    // map says so and the control is disabled *with the reason shown* — hiding it
+    // would leave the operator wondering.
+    const ACCT_KIND_LABEL = {
+      local: "local", microsoft: "Microsoft", entra: "work/school", unknown: "unknown",
+    };
+    // Why a verb is unavailable. The wire carries stable tokens; the wording lives here.
+    const ACCT_UNSUPPORTED_REASON = {
+      password_in_cloud: "the password lives in the Microsoft account, not on this PC",
+      kind_unknown: "kenny could not determine what kind of account this is",
+    };
+    function acctKindBadge(kind) {
+      const k = kind || "unknown";
+      return `<span class="k-pill k-pill--${k === "unknown" ? "warn" : "ok"}">${esc(ACCT_KIND_LABEL[k] || k)}</span>`;
+    }
+
+    function renderAccountsDetail(raw, s) {
+      let body = "";
+      if (s && s.summary) body += `<div class="k-modal__sum">${esc(s.summary)}</div>`;
+      if (s) body += reasonHtml(s.reason, s.status);
+
+      const agentId = (state.detail || {}).agent_id;
+      const aid = jsArg(agentId);
+      // Governance calls are operator-only server-side; a scoped `user` sees the
+      // inventory read-only rather than buttons that would 403.
+      const rw = canOperate();
+      const accounts = Array.isArray(raw.accounts) ? raw.accounts : [];
+      const enabledAdmins = accounts.filter(a => a.enabled && a.is_admin).length;
+
+      const rows = accounts.map(a => {
+        const name = a.name || "?";
+        const nm = jsArg(name);
+        const unsup = a.unsupported || {};
+        const deny = Array.isArray(a.deny_logon) ? a.deny_logon : [];
+        // The self-protection rule the agent enforces, mirrored here so the button
+        // is visibly unavailable instead of failing on click. The agent stays
+        // authoritative — this is UX, not the boundary.
+        const lastAdmin = a.enabled && a.is_admin && enabledAdmins <= 1;
+        const builtin = a.builtin_admin || a.builtin_guest;
+        const guardTitle = lastAdmin
+          ? "blocked: this is the last enabled administrator — changing it would lock everyone out of this PC"
+          : "";
+        const btn = (label, ico, handler, disabled, title, danger) => `
+          <button class="k-btn ${danger ? "k-btn--danger" : "k-btn--ghost"} k-btn--sm"
+            ${disabled ? "disabled" : ""} title="${esc(title || "")}"
+            ${disabled ? "" : `onclick="${handler}"`}>${icon(ico, 12)}${esc(label)}</button>`;
+
+        const actions = rw ? `
+          ${btn(a.enabled ? "suspend" : "restore", a.enabled ? "x" : "check",
+                `acctSetEnabled(${aid}, ${nm}, ${a.enabled ? "false" : "true"})`,
+                a.enabled && lastAdmin, a.enabled ? guardTitle : "")}
+          ${btn(a.is_admin ? "make standard" : "make admin", "shield-check",
+                `acctSetAdmin(${aid}, ${nm}, ${a.is_admin ? "false" : "true"})`,
+                a.is_admin && lastAdmin, a.is_admin ? guardTitle : "")}
+          ${btn("lock", "lock", `acctSession(${aid}, ${nm}, 'lock')`, false,
+                "disconnect this account's session back to the sign-in screen; apps keep running")}
+          ${btn("sign out", "log-out", `acctSession(${aid}, ${nm}, 'logoff')`, false,
+                "end this account's session")}
+          ${btn("delete", "trash-2", `acctDelete(${aid}, ${nm})`, lastAdmin || builtin,
+                builtin ? "blocked: built-in Windows accounts cannot be deleted" : guardTitle, true)}
+        ` : "";
+
+        const flags = [
+          a.enabled ? "" : `<span class="k-pill k-pill--warn">suspended</span>`,
+          a.is_admin ? `<span class="k-pill k-pill--crit">administrator</span>` : "",
+          a.builtin_admin ? `<span class="k-pill k-pill--warn">built-in</span>` : "",
+          a.builtin_guest ? `<span class="k-pill k-pill--warn">guest</span>` : "",
+        ].filter(Boolean).join(" ");
+
+        const denyLine = `
+          <label class="kwf-tog" title="deny sign-in from other machines on the network">
+            <input type="checkbox" ${deny.includes("network") ? "checked" : ""} ${rw ? "" : "disabled"}
+              onchange="acctSetDeny(${aid}, ${nm}, 'network', this.checked)"/><span>no network sign-in</span></label>
+          <label class="kwf-tog" title="deny Remote Desktop sign-in">
+            <input type="checkbox" ${deny.includes("remote_interactive") ? "checked" : ""} ${rw ? "" : "disabled"}
+              onchange="acctSetDeny(${aid}, ${nm}, 'remote_interactive', this.checked)"/><span>no remote desktop</span></label>`;
+
+        // Only the asymmetries, and always with their reason.
+        const unsupLine = Object.keys(unsup).length ? `
+          <div class="k-muted" style="margin-top:4px">not available for this account:
+            ${Object.entries(unsup).map(([verb, reason]) =>
+              `<span title="${esc(ACCT_UNSUPPORTED_REASON[reason] || reason)}">${esc(prettyKey(verb))}</span>`
+            ).join(", ")}</div>` : "";
+
+        const family = a.kind === "microsoft" ? `
+          <div class="k-muted" style="margin-top:4px">If this account is in a Microsoft
+            family group, Windows enforces that group's screen time itself — kenny can
+            neither read nor change it.</div>` : "";
+
+        return `<div class="kwf-row" style="flex-wrap:wrap;gap:6px">
+          <span class="k-mono">${esc(name)}</span>
+          ${a.display && a.display !== name ? `<span class="k-muted">${esc(a.display)}</span>` : ""}
+          ${acctKindBadge(a.kind)} ${flags}
+          <span style="flex-basis:100%"></span>
+          <div class="kwf-togs">${denyLine}</div>
+          <span style="flex-basis:100%"></span>
+          ${actions}
+          ${unsupLine}${family}
+        </div>`;
+      }).join("");
+
+      body += `<div class="k-detail-grp">
+        <div class="k-detail-grp__lbl">accounts on this PC</div>
+        ${rows || `<div class="k-muted">no accounts reported</div>`}
+      </div>`;
+
+      const pol = raw.password_policy || {};
+      const polVal = v => (v === null || v === undefined) ? "—" : String(v);
+      body += `<div class="k-detail-grp">
+        <div class="k-detail-grp__lbl">password policy</div>
+        <div class="k-deflist">
+          <div class="k-deflist__k">Minimum length</div><div class="k-deflist__v">${esc(polVal(pol.min_length))}</div>
+          <div class="k-deflist__k">Maximum age (days)</div><div class="k-deflist__v">${esc(polVal(pol.max_age_days))}</div>
+          <div class="k-deflist__k">Lockout threshold</div><div class="k-deflist__v">${esc(polVal(pol.lockout_threshold))}</div>
+        </div>
+        <div class="k-muted" style="margin-top:6px">Applies to local accounts only —
+          a Microsoft account's password is governed by Microsoft's cloud policy and
+          ignores this entirely.</div>
+      </div>`;
+
+      body += `<div class="k-muted" style="margin-top:8px">Changes are refused while the
+        person at the PC has remote control switched off, and a local administrator can
+        undo them. Already-applied changes persist; new ones do not go through.</div>`;
+      body += `<div id="kacct-msg"></div>`;
+      return body;
+    }
+
+    function acctMsg(text, isErr) {
+      const el = document.getElementById("kacct-msg");
+      if (el) el.innerHTML = `<div class="${isErr ? "k-airec__err" : "k-muted"}" style="margin-top:8px">${esc(text)}</div>`;
+    }
+
+    // Run one governance tool, then re-collect telemetry so the panel reflects the
+    // machine rather than what we hoped would happen.
+    async function acctCall(agentId, tool, args, okText) {
+      try {
+        const r = await getJSON("/api/agent/" + encodeURIComponent(agentId) + "/accounts/" + tool,
+          { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(args) });
+        if (r && r.ok === false) {
+          acctMsg(r.error === "disabled"
+            ? "refused: remote control is switched off at that PC"
+            : (r.message || r.error || "refused"), true);
+          return false;
+        }
+        notify(okText);
+        await refreshNow(agentId);
+        return true;
+      } catch (e) { acctMsg("failed: " + e.message, true); return false; }
+    }
+    function acctSetEnabled(agentId, name, enabled) {
+      return acctCall(agentId, "account_set_enabled", { principal: name, enabled },
+        enabled ? "account restored" : "account suspended");
+    }
+    async function acctSetAdmin(agentId, name, admin) {
+      if (!admin) {
+        const ok = await confirmModal({
+          title: "Remove administrator rights",
+          ico: "shield-check",
+          body: "Make '" + name + "' a standard user? This is what makes kenny's other "
+            + "controls hold — an account with administrator rights can undo them.",
+          confirmLabel: "Make standard",
+        });
+        if (!ok) return;
+      }
+      return acctCall(agentId, "account_set_admin", { principal: name, admin },
+        admin ? "administrator rights granted" : "administrator rights removed");
+    }
+    function acctSetDeny(agentId, name, right, on) {
+      // The tool takes the full desired set, so rebuild it from what is rendered.
+      const acct = (((state.detail || {}).snapshot || {}).local_accounts || {}).accounts || [];
+      const cur = (acct.find(a => a.name === name) || {}).deny_logon || [];
+      const next = on ? Array.from(new Set(cur.concat([right]))) : cur.filter(r => r !== right);
+      return acctCall(agentId, "account_set_logon_rights", { principal: name, deny: next },
+        "sign-in restrictions updated");
+    }
+    async function acctSession(agentId, name, action) {
+      const ok = await confirmModal({
+        title: action === "lock" ? "Lock the session" : "Sign the account out",
+        ico: action === "lock" ? "lock" : "log-out",
+        body: (action === "lock"
+          ? "Return '" + name + "'s session to the sign-in screen? Open apps keep running."
+          : "Sign '" + name + "' out? Unsaved work in open apps may be lost.")
+          + " They will be warned 30 seconds beforehand.",
+        confirmLabel: action === "lock" ? "Lock" : "Sign out",
+      });
+      if (!ok) return;
+      notify("warning the person at the PC, then acting in 30 seconds…");
+      return acctCall(agentId, "account_session_action",
+        { principal: name, action, warn_seconds: 30 },
+        action === "lock" ? "session locked" : "signed out");
+    }
+    async function acctDelete(agentId, name) {
+      const ok = await confirmModal({
+        title: "Delete account",
+        ico: "trash-2",
+        body: "Delete '" + name + "' and its profile from this PC? For a Microsoft account "
+          + "this only unlinks it from this PC — the Microsoft account itself is untouched. "
+          + "Local files in the profile are deleted and cannot be recovered.",
+        confirmLabel: "Delete",
+        confirmClass: "k-btn--danger",
+      });
+      if (!ok) return;
+      return acctCall(agentId, "account_delete", { principal: name, remove_profile: true },
+        "account deleted");
+    }
+
     function wfCatBadge(cat) {
       const label = { custom: "custom", seed: "seed", external_adult: "adult list", bypass: "bypass" }[cat] || cat || "—";
       return `<span class="k-pill k-pill--${cat === "bypass" ? "warn" : "crit"}">${esc(label)}</span>`;

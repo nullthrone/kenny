@@ -1,0 +1,9 @@
+{
+  "type": "request",
+  "id": "c8d2b5e3-4f60-4b7c-8d9e-1f2a3b4c5d6e",
+  "tool": "account_set_admin",
+  "args": {
+    "principal": "kid",
+    "admin": false
+  }
+}

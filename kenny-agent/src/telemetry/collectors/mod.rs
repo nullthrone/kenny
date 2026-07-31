@@ -20,6 +20,7 @@ pub mod firewall;
 pub mod installed_software;
 pub mod listening_ports;
 pub mod local_accounts;
+pub mod logon_failures;
 pub mod memory;
 pub mod net_quality;
 pub mod network;
@@ -101,6 +102,7 @@ fn registry() -> Vec<(&'static str, Collector)> {
         ("listening_ports", listening_ports::collect),
         ("scheduled_tasks", scheduled_tasks::collect),
         ("local_accounts", local_accounts::collect),
+        ("logon_failures", logon_failures::collect),
         // Resilience.
         ("backup_status", backup_status::collect),
         ("net_quality", net_quality::collect),

@@ -49,12 +49,49 @@ logger = logging.getLogger("kenny.tools")
 _OS_SCOPED_TOOLS: dict[str, str] = {
     "powershell_exec": "windows",
     "shell_exec": "posix",
+    # Account governance is SAM/LSA/session work with no POSIX equivalent
+    # (ADR-0046). Unlike the shell pair these have no mirror — the refusal just
+    # says the host is the wrong OS.
+    "account_set_enabled": "windows",
+    "account_set_admin": "windows",
+    "account_set_logon_rights": "windows",
+    "account_create": "windows",
+    "account_delete": "windows",
+    "account_session_action": "windows",
+    "password_policy_set": "windows",
 }
 
-# The OS-scoped mirror of each key in ``_OS_SCOPED_TOOLS``, for error messages.
+# The OS-scoped mirror of a key in ``_OS_SCOPED_TOOLS``, for error messages.
+# Absent when the tool has no counterpart on the other family.
 _OS_SCOPED_MIRROR: dict[str, str] = {
     "powershell_exec": "shell_exec",
     "shell_exec": "powershell_exec",
+}
+
+# Minimum operator role for a forwarded capability tool. Absent means the
+# default: seeing the host is enough.
+#
+# Account governance is the first forwarded family to need this (ADR-0046).
+# Everything else in the catalog affects software, files or the network, all of
+# which a scoped ``user`` may already reach; deciding who can sign in to a
+# family PC — and being able to lock the household out by getting it wrong — is
+# a different kind of authority.
+_TOOL_MIN_ROLE: dict[str, str] = {
+    "account_set_enabled": "operator",
+    "account_set_admin": "operator",
+    "account_set_logon_rights": "operator",
+    "account_create": "operator",
+    "account_delete": "operator",
+    "account_session_action": "operator",
+    "password_policy_set": "operator",
+}
+
+# Per-tool floor on the forwarding timeout, for tools whose normal path is
+# slower than the 30 s default. ``account_session_action`` may show the
+# signed-in user a warning and wait it out before acting (the agent caps that
+# wait at 60 s), so the default would time out a perfectly healthy call.
+_TOOL_MIN_TIMEOUT_S: dict[str, float] = {
+    "account_session_action": 120.0,
 }
 
 
@@ -94,6 +131,17 @@ CAPABILITY_TOOLS: dict[str, list[str]] = {
     "webfilter_status": [],
     "webfilter_apply": ["domains", "doh_policy", "list_hash"],
     "webfilter_clear": [],
+    # Account governance (ADR-0046). `principal` is the SAM account name, which
+    # local and Microsoft accounts share — there is deliberately no per-kind
+    # variant of any of these. The inventory lives in the `local_accounts`
+    # telemetry section, so there is no `account_list` tool.
+    "account_set_enabled": ["principal", "enabled"],
+    "account_set_admin": ["principal", "admin"],
+    "account_set_logon_rights": ["principal", "deny"],
+    "account_create": ["name", "password", "display_name?", "admin?"],
+    "account_delete": ["principal", "remove_profile"],
+    "account_session_action": ["principal", "action", "warn_seconds?"],
+    "password_policy_set": ["min_length?", "max_age_days?", "lockout_threshold?"],
 }
 
 
@@ -308,12 +356,16 @@ def register_tools(
 
     def make_forwarder(tool_name: str):
         required_os = _OS_SCOPED_TOOLS.get(tool_name)
+        min_role = _TOOL_MIN_ROLE.get(tool_name)
+        min_timeout_s = _TOOL_MIN_TIMEOUT_S.get(tool_name, 0.0)
 
         async def forward(args: dict[str, Any] | None = None) -> dict[str, Any]:
             """Forward this capability call to the named agent and return its result."""
             args = args or {}
             principal = _mcp_principal()
             agent_id = _resolve_target(principal, args)
+            if min_role is not None:
+                _require_role(principal, min_role)
 
             # OS-scoped shell tools (powershell_exec/shell_exec): refuse the wrong
             # one for this agent's OS before ever forwarding, with a message naming
@@ -323,16 +375,18 @@ def register_tools(
             if required_os is not None:
                 agent = registry.get(agent_id)
                 if agent is not None and _os_family(agent.os) != required_os:
-                    mirror = _OS_SCOPED_MIRROR[tool_name]
+                    mirror = _OS_SCOPED_MIRROR.get(tool_name)
                     message = (
                         f"agent {agent_id!r} is {agent.os}; {tool_name} requires "
-                        f"{required_os}, use {mirror} instead"
+                        f"{required_os}"
                     )
+                    if mirror is not None:
+                        message += f", use {mirror} instead"
                     forward_logger.info("refused %s -> %s: %s", tool_name, agent_id, message)
                     await call_log.record(agent_id, tool_name, args, ok=False, error=message)
                     raise ToolError("unsupported", message)
 
-            timeout_s = float(args.get("timeout_s", 30))
+            timeout_s = max(float(args.get("timeout_s", 30)), min_timeout_s)
             forward_logger.info("forward %s -> %s", tool_name, agent_id)
             try:
                 result = await tunnel.send_request(agent_id, tool_name, args, timeout_s)

@@ -84,6 +84,14 @@ async fn run(tool: &str, args: Value) -> Result<Value, (ErrorCode, String)> {
         "webfilter_apply" => handlers::webfilter::apply(args).await,
         "webfilter_clear" => handlers::webfilter::clear(args).await,
 
+        "account_set_enabled" => handlers::accounts::set_enabled(args).await,
+        "account_set_admin" => handlers::accounts::set_admin(args).await,
+        "account_set_logon_rights" => handlers::accounts::set_logon_rights(args).await,
+        "account_create" => handlers::accounts::create(args).await,
+        "account_delete" => handlers::accounts::delete(args).await,
+        "account_session_action" => handlers::accounts::session_action(args).await,
+        "password_policy_set" => handlers::accounts::password_policy_set(args).await,
+
         "telemetry_collect" => telemetry_collect(args),
 
         "agent_update" => handlers::agent_update::update(args).await,

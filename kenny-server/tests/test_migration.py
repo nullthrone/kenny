@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+from datetime import datetime, timedelta, timezone
 
 from starlette.testclient import TestClient
 
@@ -19,10 +20,22 @@ from kenny_server.store import TelemetryStore
 
 
 def _seed_existing_db(db_path: str) -> None:
+    """Seed a pre-upgrade database with one host that has telemetry.
+
+    The timestamp is relative to now, not absolute: ``build_app``'s lifespan
+    prunes snapshots older than ``RETENTION_DAYS`` (30), so a hardcoded date
+    silently turns this test into a time bomb that starts failing 30 days after
+    it was written — which is exactly what happened to the original
+    ``2026-07-01`` value. "Recent enough to survive retention" is the property
+    the test actually needs.
+    """
+
+    collected_at = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+
     async def seed() -> None:
         ts = TelemetryStore(db_path)
         await ts.connect()
-        await ts.insert("OLD-PC", "2026-07-01T00:00:00+00:00", {"system": {"host": "OLD-PC"}})
+        await ts.insert("OLD-PC", collected_at, {"system": {"host": "OLD-PC"}})
         await ts.close()
 
     asyncio.run(seed())

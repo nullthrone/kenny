@@ -173,6 +173,12 @@ class MockAgent:
             # A real full-screen PNG, base64-encoded, routinely runs a few MB —
             # far past the telemetry cap but within the absolute frame ceiling.
             result = {"image_b64": "A" * (4 * 1024 * 1024), "format": "png"}
+        elif (FIXTURES_DIR / f"response_{tool}.json").exists():
+            # Any tool with a golden response fixture replays it, so adding a
+            # tool to the contract makes it drivable here without touching this
+            # method. The cases above stay explicit because they are synthesized
+            # rather than read from a fixture.
+            result = _fixture(f"response_{tool}.json")["result"]
         else:
             await self.ws.send(
                 json.dumps(

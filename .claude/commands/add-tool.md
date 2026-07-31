@@ -10,7 +10,9 @@ Add the capability tool **$ARGUMENTS** across all layers, in this order (contrac
 2. **Fixtures** — add a `request_*.json` and `response_*.json` under `docs/fixtures/` and
    list them in `docs/fixtures/README.md`.
 3. **Server** — register the MCP tool in `kenny-server/kenny_server/tools.py` (requires
-   `select_agent`, forwards a `request` frame, returns the `response`).
+   an explicit per-call `agent_id` per ADR-0042, forwards a `request` frame, returns the
+   `response`). Classify it in `control.rs::is_mutating` and, if it is state-changing,
+   in `chat.py`'s confirm-gate — the two must stay in lockstep (ADR-0024).
 4. **Agent** — add a handler in `kenny-agent/src/handlers/` and wire it in `dispatch.rs`,
    with `#[cfg(windows)]` real impl + `#[cfg(not(windows))]` fallback.
 5. **Tests** — fixture round-trip on both sides; a server test via the mock agent.

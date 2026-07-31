@@ -457,8 +457,51 @@ def _rule_local_accounts(payload: dict[str, Any], now: datetime) -> "tuple[Statu
             warns.append("built-in Administrator enabled")
         if account.get("builtin_guest"):
             warns.append("Guest account enabled")
+        # A governance contradiction: an account holding local administrator rights
+        # while also being denied logon types. Both were set deliberately, so one of
+        # them is stale — most often a demotion that was reverted, or deny rights
+        # left on an account that has since been promoted back. Worth a look rather
+        # than an alarm, since neither state is dangerous on its own (ADR-0046).
+        if account.get("is_admin") and account.get("deny_logon"):
+            warns.append(
+                f"'{account.get('name', '?')}' is an admin with denied logon rights"
+            )
     if warns:
         return "warn", "; ".join(warns)
+    return None
+
+
+# Failed sign-ins per account within the section's window before this looks like
+# something other than a mistyped password. A family PC produces a handful a week;
+# a spray or a child working through guesses produces dozens.
+LOGON_FAILURES_WARN = 15
+
+
+def _rule_logon_failures(payload: dict[str, Any], now: datetime) -> "tuple[Status, str] | None":
+    """Warn on a burst of failed sign-ins against a single account.
+
+    Deliberately never ``crit``: a failed logon is not, by itself, a compromised
+    machine, and kenny reports rather than judges here (the ADR-0032 stance). The
+    per-account threshold matters more than the total — twenty failures spread over
+    five accounts is a household forgetting passwords, twenty against one account is
+    someone working at it.
+    """
+    hours = payload.get("window_hours") or 24
+    worst: dict[str, Any] | None = None
+    for account in payload.get("accounts") or []:
+        count = account.get("count") or 0
+        if count >= LOGON_FAILURES_WARN and (worst is None or count > worst["count"]):
+            worst = {"name": account.get("name", "?"), "count": count}
+    if worst:
+        return (
+            "warn",
+            f"{worst['count']} failed sign-ins for '{worst['name']}' in {hours}h",
+        )
+    # Attempts against names that are not accounts here: password spraying or a
+    # scanner, never a household member mistyping their own name.
+    unmatched = payload.get("unmatched_count") or 0
+    if unmatched >= LOGON_FAILURES_WARN:
+        return "warn", f"{unmatched} failed sign-ins for unknown usernames in {hours}h"
     return None
 
 
@@ -519,18 +562,20 @@ RULES: dict[str, Rule] = {
     "reliability": _rule_reliability,
     "listening_ports": _rule_listening_ports,
     "local_accounts": _rule_local_accounts,
+    "logon_failures": _rule_logon_failures,
     "backup_status": _rule_backup_status,
     "net_quality": _rule_net_quality,
 }
 
 
 # Rules whose section is a Windows-only concept (Microsoft Defender, Windows
-# Update / KB numbers, the registry reboot-pending flags, and System Restore /
-# File History / OneDrive backup evidence). A non-Windows agent emits an
+# Update / KB numbers, the registry reboot-pending flags, System Restore /
+# File History / OneDrive backup evidence, and the Security-log sign-in failures
+# behind account governance). A non-Windows agent emits an
 # "n/a on this platform" stub for these; scoring them would mislead. They are
 # skipped for agents whose OS is not Windows (see ADR-0035).
 WINDOWS_ONLY_SECTIONS: frozenset[str] = frozenset(
-    {"defender", "win_update", "reboot_pending", "backup_status"}
+    {"defender", "win_update", "reboot_pending", "backup_status", "logon_failures"}
 )
 
 

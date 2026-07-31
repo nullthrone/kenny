@@ -72,11 +72,17 @@ SPECS: dict[str, SectionSpec] = {
         changed_fields=("action",),
         detail_fields=("action", "run_as"),
     ),
+    # The drift signal for account governance (ADR-0046). Enforcement there is
+    # best-effort by design — the kill switch and a local admin can both undo it —
+    # so noticing that an account appeared, gained admin, was re-enabled, or had its
+    # logon rights cleared is the part that actually holds. `kind` is diffed because
+    # a local account turning into a Microsoft one means somebody linked an MSA to
+    # this PC, which no other signal would surface.
     "local_accounts": SectionSpec(
         list_field="accounts",
         key_fields=("name",),
-        changed_fields=("is_admin", "enabled"),
-        detail_fields=("is_admin", "enabled"),
+        changed_fields=("is_admin", "enabled", "kind", "deny_logon"),
+        detail_fields=("kind", "is_admin", "enabled"),
     ),
 }
 
