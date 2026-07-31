@@ -4,6 +4,7 @@
 //! handler returns `Result<Value, (ErrorCode, String)>`, which the dispatcher maps
 //! onto `response.result` / `response.error`.
 
+pub mod accounts;
 pub mod agent_update;
 pub mod diagnostics;
 pub mod fs;

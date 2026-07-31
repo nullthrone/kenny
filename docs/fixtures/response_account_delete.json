@@ -1,0 +1,10 @@
+{
+  "type": "response",
+  "id": "f105e816-7293-4e0f-9021-4c5d6e7f8091",
+  "ok": true,
+  "result": {
+    "ok": true,
+    "principal": "guest-visit",
+    "profile_removed": true
+  }
+}

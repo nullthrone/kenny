@@ -7,6 +7,7 @@ nav:
     - Telemetry reference: telemetry.md
     - Tool reference: tools.md
     - Parental controls: parental-controls.md
+    - Account governance: account-governance.md
     - Alerting & digests: alerting.md
   - Developer:
     - Wire protocol: protocol.md

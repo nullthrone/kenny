@@ -57,6 +57,14 @@
       "adr": "A change to the filter's trust/precedence model is architectural (see ADR-0026); the list editor UI is not."
     },
     {
+      "id": "account-governance",
+      "why": "Who may sign in to a PC: the account_* tools, the accounts panel, and the local_accounts/logon_failures sections behind them. Local and Microsoft accounts share one surface, so a change to what is possible for one changes the reference for both.",
+      "sources": ["kenny-server/kenny_server/webui/index.html", "kenny-server/kenny_server/tools.py"],
+      "docs": ["docs/account-governance.md"],
+      "screenshots": ["drilldown", "agent-detail"],
+      "adr": "Changing what kenny may do to an account, or the privacy line around naming accounts, is architectural (see ADR-0046); a panel-layout tweak is not."
+    },
+    {
       "id": "alerting",
       "why": "Push alerts on health transitions, inventory-change notifications, disk/battery forecasts, and the weekly digest.",
       "sources": [

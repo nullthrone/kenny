@@ -1,0 +1,11 @@
+{
+  "type": "request",
+  "id": "e0f4d705-6182-4d9e-8f10-3b4c5d6e7f80",
+  "tool": "account_create",
+  "args": {
+    "name": "guest-visit",
+    "password": "correct horse battery staple",
+    "display_name": "Visitor",
+    "admin": false
+  }
+}

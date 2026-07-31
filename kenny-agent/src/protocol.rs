@@ -12,7 +12,7 @@ use serde_json::{Map, Value};
 ///
 /// From v0.8 this is placed on the wire in `register.protocol` to select the
 /// mutual-auth handshake.
-pub const PROTOCOL_VERSION: &str = "0.14";
+pub const PROTOCOL_VERSION: &str = "0.15";
 
 /// One WebSocket text message. Tagged by the `type` field.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

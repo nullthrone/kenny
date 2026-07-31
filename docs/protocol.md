@@ -178,14 +178,18 @@ Linux/macOS, or `shell_exec` on Windows). `disabled` is
 returned when the agent is online but the person at the endpoint has switched remote
 control **off** locally (via the agent's tray menu): the agent then refuses every
 **mutating** tool (`powershell_exec`, `shell_exec`, `winget_install|uninstall|update`,
-`net_dns_flush`, `net_adapter_reset`, `agent_update`, `webfilter_apply|clear`) while
+`net_dns_flush`, `net_adapter_reset`, `agent_update`, `webfilter_apply|clear`,
+`account_set_enabled|set_admin|set_logon_rights|create|delete|session_action`,
+`password_policy_set`) while
 telemetry and read-only diagnostics keep working. Remote control is **on** by default and the choice persists
 across restarts. See ADR-0011.
 
 #### OS-scoped tools
 
 `powershell_exec` and `shell_exec` each require a specific agent OS family (`windows`
-and `linux`/`macos` respectively). Before forwarding either tool, the **server**
+and `linux`/`macos` respectively), as do the seven account-governance tools
+(`account_*`, `password_policy_set` — `windows`). Before forwarding such a tool, the
+**server**
 compares the requested tool's required family against the target agent's known `os`
 (from `register.meta.os`, see "Frames" above) and, on a mismatch, refuses the call
 itself with `error.code = "unsupported"` and a message naming the correct tool —
@@ -371,6 +375,13 @@ forwarded call lands.
 | `webfilter_status`   | `{}`                          | `{active, entry_count, list_hash, doh_policy, applied_at, supported}` |
 | `webfilter_apply`    | `{domains, doh_policy, list_hash}` | `{ok, applied, doh_policy_applied, list_hash, applied_at}` |
 | `webfilter_clear`    | `{}`                          | `{ok, removed_entries, doh_policy_cleared}`  |
+| `account_set_enabled` | `{principal, enabled}`       | `{ok, principal, kind, enabled}`             |
+| `account_set_admin`  | `{principal, admin}`          | `{ok, principal, kind, admin}`               |
+| `account_set_logon_rights` | `{principal, deny}`     | `{ok, principal, kind, deny}`                |
+| `account_create`     | `{name, password, display_name?, admin?}` | `{ok, principal, kind}`          |
+| `account_delete`     | `{principal, remove_profile}` | `{ok, principal, profile_removed}`           |
+| `account_session_action` | `{principal, action, warn_seconds?}` | `{ok, principal, action, sessions}` |
+| `password_policy_set` | `{min_length?, max_age_days?, lockout_threshold?}` | `{ok, applies_to:"local_only", policy}` |
 
 `agent_update` is a **server-triggered self-update** (state-changing): the agent
 downloads the new binary from `url` (served by the server's download endpoint),
@@ -425,6 +436,56 @@ a flat `domains` array — the agent is a dumb, idempotent enforcer and carries 
 On a non-Windows/dev build `apply`/`clear` return `error.code = "unsupported"` and `status`
 reports `{active: false, supported: false, ...}`, keeping `cargo test`/`cargo build` green on
 Linux CI. See ADR-0026.
+
+#### Account governance tools
+
+The `account_*` tools plus `password_policy_set` govern Windows sign-in (ADR-0046). They
+are the enforcement half of the `local_accounts` telemetry section (below), which is also
+their **inventory**: there is no `account_list` tool — read the section, and refresh it on
+demand with `telemetry_collect {sections:["local_accounts"]}`.
+
+All of them are **mutating** (refused with `disabled` under the kill switch) and all are
+**Windows-scoped** (the server refuses to forward them to a non-Windows agent; an agent
+that receives one anyway answers `unsupported`).
+
+**`principal` is the SAM account name** — `local_accounts.accounts[].name`, the same string
+for a local and a Microsoft account. A Microsoft account on a workgroup PC *is* a SAM entry
+with a machine-local SID and profile, so these operations are type-agnostic by construction
+rather than by abstraction. Full SIDs and Microsoft-account email addresses never go on the
+wire in either direction (ADR-0046).
+
+- `account_set_enabled` (`{principal, enabled}`) — the suspend switch. Works identically for
+  both account kinds; disabling a Microsoft-account-backed entry blocks sign-in on this PC
+  and leaves the cloud account untouched.
+- `account_set_admin` (`{principal, admin}`) — add to or remove from the Administrators group,
+  resolved by the well-known SID `S-1-5-32-544` (locale-proof).
+- `account_set_logon_rights` (`{principal, deny}`) — `deny` is the full desired set, a subset
+  of `["network", "remote_interactive"]`, applied via LSA account rights (this works on
+  Windows Home, where only the `secpol.msc` snap-in is missing, not the API). Passing `[]`
+  clears both. `SeDenyInteractiveLogonRight` is deliberately **not** exposed: it can lock out
+  the sole console user and kenny has no remote console to recover with.
+- `account_create` (`{name, password, display_name?, admin?}`) — **local accounts only**, the
+  one genuinely asymmetric verb: a Microsoft account can be added to a PC only interactively.
+  Reported per account as `unsupported` on the inventory side.
+- `account_delete` (`{principal, remove_profile}`) — removes the SAM entry; for a
+  Microsoft-account-backed entry this unlinks the account from this PC and does not touch the
+  cloud account. `remove_profile` additionally deletes the user profile directory.
+- `account_session_action` (`{principal, action, warn_seconds?}`) — `action` ∈
+  {`"lock"`, `"logoff"`}. The agent resolves the principal to its interactive session(s)
+  itself and reports which it acted on in `sessions`; there is deliberately **no telemetry
+  section listing who is signed in** — this returns proof of effect, not a presence log.
+  `warn_seconds` (default 0) shows the user a message first. An account with no session
+  succeeds with an empty `sessions` array.
+- `password_policy_set` (`{min_length?, max_age_days?, lockout_threshold?}`) — machine-wide,
+  omitted keys are left unchanged. The result always carries `applies_to: "local_only"`
+  because a Microsoft account's password is governed by Microsoft's cloud policy and ignores
+  this entirely; consumers must surface that rather than imply full coverage.
+
+The agent enforces a **self-protection set** it will not let an operator override, refusing
+with `blocked`: the last enabled local administrator cannot be disabled, demoted, deleted, or
+given deny-logon rights, and accounts below RID 1000 cannot be deleted. This mirrors the
+`webfilter_apply` reserved-name rule — a governance call must never be able to lock everyone
+out of the machine.
 
 ### Server-only MCP tools (not forwarded to a single agent)
 
@@ -603,11 +664,54 @@ rules and cross-snapshot diffing) is server-side.
   it is set the moment a password is ever chosen, and `null` only for a genuinely
   password-less account. Health rules must consult both, not `password_required` alone.
 
+  Since v0.15 this section is also the **inventory for the `account_*` governance tools**
+  (ADR-0046), and each account carries four more fields:
+
+  - `kind` ∈ `local` | `microsoft` | `entra` | `unknown`, from `PrincipalSource`. A
+    Microsoft account is a SAM entry like any other — the section name still fits, and
+    `name` is the governance key for every kind.
+  - `display` — `FullName` if the account has one, else `name`. **Microsoft-account email
+    addresses never go on the wire** (ADR-0046, same rationale as the SID rule). Residual
+    imprecision, stated rather than hidden: with no `FullName` the fallback is the SAM
+    name, which Windows derives from the first five characters of the address.
+  - `deny_logon` — the LSA account rights currently denied, a subset of
+    `["network", "remote_interactive"]`. `SeDenyInteractiveLogonRight` is not reported
+    because it is not settable through kenny.
+  - `unsupported` — map of governance verb → short reason token, listing only what this
+    account *cannot* do; **an absent verb is supported**. Reason tokens are stable
+    identifiers for consumers to localize, not display strings. Today the only entries are
+    `create_local` → `msa_added_interactively` and `reset_password` → `password_in_cloud`
+    on non-local accounts.
+
+  The section-level `password_policy` is machine-wide and carries its own
+  `applies_to: "local_only"` — Microsoft accounts follow Microsoft's cloud password policy
+  and are unaffected. Any field may be `null` when the probe could not read it.
+
   ```json
   "local_accounts": {
     "status": "ok", "summary": "3 accounts, 1 admin",
-    "accounts": [ { "name": "kid", "enabled": true, "is_admin": false, "password_required": true, "password_last_set": "2026-02-20T18:30:00Z", "last_logon": "2026-06-04T15:02:00Z", "builtin_admin": false, "builtin_guest": false } ],
-    "admins": ["papa"], "count": 3
+    "accounts": [ { "name": "kid", "display": "Kid", "kind": "microsoft", "enabled": true, "is_admin": false, "password_required": true, "password_last_set": "2026-02-20T18:30:00Z", "last_logon": "2026-06-04T15:02:00Z", "builtin_admin": false, "builtin_guest": false, "deny_logon": ["remote_interactive"], "unsupported": { "reset_password": "password_in_cloud" } } ],
+    "admins": ["papa"], "count": 3,
+    "password_policy": { "applies_to": "local_only", "min_length": 8, "max_age_days": 0, "lockout_threshold": 10 }
+  }
+  ```
+
+- **`logon_failures`** — failed interactive/network sign-in attempts (Windows Security
+  event 4625) aggregated per account over a 24 h window. Reported per *named account*
+  because an authentication attempt belongs to the identity plane that ADR-0046 governs,
+  not to the behaviour plane that stays aggregated — `screen_time` and `web_activity` are
+  unaffected by that decision. Attempts against names with no matching SAM account collapse
+  into `unmatched_count` (a mistyped or probed username is not an account). **No source
+  addresses**: `types` (⊆ `interactive` | `network` | `remote`) already separates "someone
+  tried a password at the console" from "something is hammering RDP", which is what the
+  distinction is for. `accounts` is capped at 50 entries, sorted by descending count.
+
+  ```json
+  "logon_failures": {
+    "status": "ok", "summary": "3 failed logons in 24h",
+    "window_hours": 24,
+    "accounts": [ { "name": "papa", "count": 3, "types": ["interactive"] } ],
+    "unmatched_count": 0, "count": 3, "truncated": false
   }
   ```
 
@@ -665,11 +769,21 @@ for fleet aggregation. These thresholds are illustrative of the data-driven rule
 
 ## Versioning
 
-`PROTOCOL_VERSION = "0.14"`. Both implementations expose this constant; from v0.8 the
+`PROTOCOL_VERSION = "0.15"`. Both implementations expose this constant; from v0.8 the
 agent puts it on the wire in `register.protocol` to select the mutual-auth handshake
 (compare versions **numerically per component**, not lexically — `"0.10"` is newer than
 `"0.9"`). Bump on any breaking change to a frame or tool schema.
 
+- `0.15` — added account governance across local **and** Microsoft accounts (ADR-0046):
+  seven tools (`account_set_enabled`, `account_set_admin`, `account_set_logon_rights`,
+  `account_create`, `account_delete`, `account_session_action`, `password_policy_set`), four
+  new per-account fields on `local_accounts` (`kind`, `display`, `deny_logon`,
+  `unsupported`) plus a section-level `password_policy`, and a new `logon_failures`
+  telemetry section. Additive throughout — no frame changes, and existing `local_accounts`
+  consumers keep working since every addition is a new key. The governance key is the SAM
+  account name, which both account kinds share; full SIDs and Microsoft-account email
+  addresses stay off the wire. `screen_time` and `web_activity` are deliberately unchanged:
+  identity became nameable, behaviour did not (ADR-0026, ADR-0032 hold).
 - `0.14` — added the `shell_exec` tool, a POSIX mirror of `powershell_exec` for
   Linux/macOS agents (`{command, timeout_s}` → `{stdout, stderr, exit_code}`, run via
   `sh -c`). `powershell_exec` now returns `unsupported` on non-Windows agents instead of

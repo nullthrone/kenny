@@ -151,6 +151,13 @@ pub fn is_mutating(tool: &str) -> bool {
             | "agent_update"
             | "webfilter_apply"
             | "webfilter_clear"
+            | "account_set_enabled"
+            | "account_set_admin"
+            | "account_set_logon_rights"
+            | "account_create"
+            | "account_delete"
+            | "account_session_action"
+            | "password_policy_set"
     )
 }
 

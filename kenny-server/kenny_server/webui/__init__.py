@@ -1048,6 +1048,58 @@ def build_api_routes(
             {"ok": True, "result": result, "applied": call_args, "block_mode": block_mode}
         )
 
+    # Account governance (ADR-0046). The inventory is already in the snapshot
+    # (`local_accounts`), so the UI only needs a write path — deliberately one
+    # route per tool name rather than a generic setter, because the audit log
+    # records the tool name but not the arguments, and "granted administrator"
+    # must not be indistinguishable from "renamed an account" in that log.
+    _ACCOUNT_TOOLS = frozenset(
+        {
+            "account_set_enabled",
+            "account_set_admin",
+            "account_set_logon_rights",
+            "account_create",
+            "account_delete",
+            "account_session_action",
+            "password_policy_set",
+        }
+    )
+
+    async def api_account_action(request: Request) -> JSONResponse:
+        agent_id = request.path_params["id"]
+        tool = request.path_params["tool"]
+        if tool not in _ACCOUNT_TOOLS:
+            return JSONResponse({"error": f"unknown account tool {tool!r}"}, status_code=404)
+        try:
+            args = await request.json()
+        except Exception:  # noqa: BLE001 - malformed JSON
+            return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        if not isinstance(args, dict):
+            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
+        # `agent_id` is routing metadata on the MCP surface; here it is the path
+        # segment, so refuse a body that tries to smuggle a different target.
+        args.pop("agent_id", None)
+        # A session action may warn the signed-in user and wait before acting.
+        timeout_s = 120 if tool == "account_session_action" else 30
+        try:
+            result = await tunnel.send_request(agent_id, tool, args, timeout_s)
+            await call_log.record(agent_id, tool, args, ok=True)
+        except ToolError as exc:
+            await call_log.record(agent_id, tool, args, ok=False, error=exc.message)
+            # `disabled` (the endpoint's kill switch) and `blocked` (the agent's
+            # non-overridable self-protection, e.g. the last enabled admin) are
+            # both expected refusals, not server faults — the UI explains them
+            # rather than showing an error banner.
+            if exc.code in ("disabled", "blocked"):
+                return JSONResponse(
+                    {"ok": False, "error": exc.code, "message": exc.message}, status_code=200
+                )
+            return JSONResponse({"ok": False, "error": exc.message}, status_code=502)
+        except Exception as exc:  # noqa: BLE001 - surface to the UI
+            await call_log.record(agent_id, tool, args, ok=False, error=str(exc))
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=502)
+        return JSONResponse({"ok": True, "result": result})
+
     async def api_webfilter_activity(request: Request) -> JSONResponse:
         if webfilter is None:
             return JSONResponse({"error": "webfilter not configured"}, status_code=503)
@@ -1203,6 +1255,11 @@ def build_api_routes(
             methods=["POST"],
         ),
         Route("/api/agent/{id}/webfilter/activity", guard(api_webfilter_activity, **scoped)),
+        Route(
+            "/api/agent/{id}/accounts/{tool}",
+            guard(api_account_action, **op_scoped),
+            methods=["POST"],
+        ),
         Route("/api/agents/{id}/token", guard(api_rotate_token, **op), methods=["POST"]),
     ]
 

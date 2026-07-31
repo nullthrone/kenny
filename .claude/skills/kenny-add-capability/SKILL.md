@@ -14,7 +14,8 @@ The `/add-tool <name>` command automates the sequence; this skill explains the p
 1. **Contract** (`docs/protocol.md` catalog + `docs/fixtures/`): define `args` and the
    `result` sketch; add `request_<tool>.json` / `response_<tool>.json` fixtures.
 2. **Server** (`kenny-server/kenny_server/tools.py`): register an MCP tool with the exact
-   catalog name. It must require an active agent (`select_agent`), build a `request` frame,
+   catalog name. It must resolve an explicit per-call `agent_id` (ADR-0042 — `select_agent`
+   is advisory and does not route), build a `request` frame,
    await the correlated `response`, and surface `error` as a tool error.
 3. **Agent** (`kenny-agent/src/handlers/<tool>.rs` + `dispatch.rs`): implement the handler
    keyed by the tool name. Real impl behind `#[cfg(windows)]` (usually PowerShell via

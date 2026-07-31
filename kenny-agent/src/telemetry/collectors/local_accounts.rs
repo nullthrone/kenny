@@ -5,9 +5,16 @@
 //! SID, locale-proof) and is matched to users by SID. Built-ins are marked via the
 //! well-known RID suffixes (`-500` Administrator, `-501` Guest).
 //!
+//! Since v0.15 this section is also the **inventory for the `account_*` governance
+//! tools** (ADR-0046): each account carries its `kind` (a Microsoft account on a
+//! workgroup PC is a SAM entry like any other), a `display` label, the LSA logon
+//! rights currently denied, and the governance verbs it does *not* support.
+//!
 //! **Privacy/minimality:** full SIDs never go on the wire — all SID matching
 //! happens inside the probe, and only booleans leave it (ADR-0026 stance,
-//! docs/protocol.md v0.10).
+//! docs/protocol.md v0.10). Since v0.15, **Microsoft-account email addresses never
+//! go on the wire either** (ADR-0046): `display` falls back to the SAM name rather
+//! than the `MicrosoftAccount\…` qualified form. Both rules are asserted by tests.
 
 use serde_json::json;
 
@@ -29,7 +36,10 @@ pub fn collect() -> Section {
         Section::with_fields(
             Status::Ok,
             "n/a on this platform",
-            json!({ "accounts": [], "admins": [], "count": 0 }),
+            json!({
+                "accounts": [], "admins": [], "count": 0,
+                "password_policy": core::password_policy(None, None, None),
+            }),
         )
     }
 }
@@ -39,10 +49,77 @@ pub fn collect() -> Section {
 pub mod core {
     use serde_json::{json, Value};
 
+    /// Account kind, from PowerShell's `PrincipalSource` (ADR-0046).
+    ///
+    /// This is the *only* axis on which governance verbs differ. It is deliberately
+    /// not a routing switch: every `account_*` tool takes the same SAM name for
+    /// every kind, because below the SAM/LSA layer Windows draws no distinction.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Kind {
+        Local,
+        Microsoft,
+        Entra,
+        Unknown,
+    }
+
+    impl Kind {
+        /// Map a `PrincipalSource` string. Windows reports `MicrosoftAccount` and
+        /// `AzureAD`; anything unrecognized (including a probe that could not read
+        /// the property at all) is `Unknown` rather than being guessed as `Local` —
+        /// a wrong `local` would advertise `reset_password` as supported.
+        pub fn from_principal_source(source: Option<&str>) -> Kind {
+            match source.map(str::trim) {
+                Some("Local") => Kind::Local,
+                Some("MicrosoftAccount") => Kind::Microsoft,
+                Some("AzureAD") => Kind::Entra,
+                _ => Kind::Unknown,
+            }
+        }
+
+        pub fn as_str(self) -> &'static str {
+            match self {
+                Kind::Local => "local",
+                Kind::Microsoft => "microsoft",
+                Kind::Entra => "entra",
+                Kind::Unknown => "unknown",
+            }
+        }
+
+        /// Governance verbs this kind cannot perform, as `verb → reason token`.
+        ///
+        /// Negation, not enumeration: an absent verb is supported. That keeps the
+        /// payload small and makes the wire format state the design — seamless is
+        /// the default, asymmetry is the named exception (ADR-0046).
+        pub fn unsupported(self) -> Vec<(&'static str, &'static str)> {
+            match self {
+                // A password living in Microsoft's / Entra's cloud identity cannot
+                // be reset from the endpoint. No `create_local` entry here: creating
+                // an account is not an operation *on* an existing account.
+                Kind::Microsoft | Kind::Entra => vec![("reset_password", "password_in_cloud")],
+                // Unknown is treated as the restrictive case for the same reason
+                // `from_principal_source` refuses to guess.
+                Kind::Unknown => vec![("reset_password", "kind_unknown")],
+                Kind::Local => Vec::new(),
+            }
+        }
+    }
+
+    /// LSA logon rights kenny can deny, in stable wire order.
+    ///
+    /// `SeDenyInteractiveLogonRight` is deliberately absent: it can lock out the
+    /// sole console user and kenny has no remote console to recover with (ADR-0046).
+    pub const DENY_RIGHTS: [&str; 2] = ["network", "remote_interactive"];
+
     /// One local account, as read from the probe (SID already reduced to booleans).
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct Account {
         pub name: String,
+        /// Human label: `FullName` when set, else `name`. Never the
+        /// `MicrosoftAccount\<address>` qualified form — see the module docs.
+        pub display: String,
+        pub kind: Kind,
+        /// Denied LSA logon rights, a subset of [`DENY_RIGHTS`].
+        pub deny_logon: Vec<String>,
         pub enabled: bool,
         pub is_admin: bool,
         pub password_required: bool,
@@ -61,8 +138,22 @@ pub mod core {
         /// Build from one probe row; rows without a name are dropped, booleans
         /// default to `false` when the probe could not read them.
         pub fn from_row(row: &Value) -> Option<Account> {
+            let name = row.get("name")?.as_str()?.to_string();
+            let kind =
+                Kind::from_principal_source(row.get("principal_source").and_then(Value::as_str));
             Some(Account {
-                name: row.get("name")?.as_str()?.to_string(),
+                display: display_label(str_field(row, "display").as_deref(), &name),
+                kind,
+                deny_logon: DENY_RIGHTS
+                    .iter()
+                    .filter(|right| {
+                        row.get("deny_logon")
+                            .and_then(Value::as_array)
+                            .is_some_and(|set| set.iter().any(|v| v.as_str() == Some(**right)))
+                    })
+                    .map(|right| (*right).to_string())
+                    .collect(),
+                name,
                 enabled: bool_field(row, "enabled"),
                 is_admin: bool_field(row, "is_admin"),
                 password_required: bool_field(row, "password_required"),
@@ -84,6 +175,78 @@ pub mod core {
         row.get(key).and_then(Value::as_bool).unwrap_or(false)
     }
 
+    /// Pick the human label for an account, falling back to the SAM name.
+    ///
+    /// A candidate containing `@` or `\` is rejected outright: those are the shapes
+    /// of a Microsoft-account address and of the `MicrosoftAccount\<address>`
+    /// qualified name, and neither may reach the wire (ADR-0046). The probe already
+    /// avoids emitting them; this is the belt-and-braces check that a test can
+    /// assert against, since the cost of being wrong is leaking an address.
+    pub fn display_label(candidate: Option<&str>, name: &str) -> String {
+        candidate
+            .map(str::trim)
+            .filter(|d| !d.is_empty() && !d.contains('@') && !d.contains('\\'))
+            .unwrap_or(name)
+            .to_string()
+    }
+
+    fn str_field(row: &Value, key: &str) -> Option<String> {
+        row.get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .map(str::to_string)
+    }
+
+    /// Machine-wide password policy, carrying its own reach.
+    ///
+    /// `applies_to` is part of the payload rather than documentation because a
+    /// policy that silently misses every Microsoft account is worse than none: a
+    /// consumer that renders this must be able to say so without knowing ADR-0046.
+    /// Any field is `null` when the probe could not read it.
+    pub fn password_policy(
+        min_length: Option<u32>,
+        max_age_days: Option<u32>,
+        lockout_threshold: Option<u32>,
+    ) -> Value {
+        json!({
+            "applies_to": "local_only",
+            "min_length": min_length,
+            "max_age_days": max_age_days,
+            "lockout_threshold": lockout_threshold,
+        })
+    }
+
+    /// Parse the `[System Access]` block of a `secedit /export` INF into the
+    /// password-policy payload.
+    ///
+    /// Those key names are locale-invariant (unlike `net accounts` output, whose
+    /// labels are translated), which is the whole reason this reads the INF. A key
+    /// that is absent or unparsable stays `null` rather than defaulting to 0 — "no
+    /// minimum length" and "we could not read the minimum length" must not look
+    /// alike to a health rule. `MaximumPasswordAge = -1` means "never expires" and
+    /// is normalized to 0, matching how Windows itself presents it.
+    pub fn parse_system_access<'a>(lines: impl Iterator<Item = &'a str>) -> Value {
+        let (mut min_length, mut max_age_days, mut lockout_threshold) = (None, None, None);
+        for line in lines {
+            let Some((key, value)) = line.split_once('=') else {
+                continue;
+            };
+            let value = value.trim();
+            let slot = match key.trim() {
+                "MinimumPasswordLength" => &mut min_length,
+                "MaximumPasswordAge" => &mut max_age_days,
+                "LockoutBadCount" => &mut lockout_threshold,
+                _ => continue,
+            };
+            *slot = match value.parse::<i64>() {
+                Ok(n) if n < 0 => Some(0),
+                Ok(n) => u32::try_from(n).ok(),
+                Err(_) => None,
+            };
+        }
+        password_policy(min_length, max_age_days, lockout_threshold)
+    }
+
     /// Sort accounts by name and derive the `admins` list (enabled *and* disabled
     /// admin names, sorted). Returns `(accounts, admins, count)`.
     pub fn shape(mut accounts: Vec<Account>) -> (Vec<Value>, Vec<String>, usize) {
@@ -97,8 +260,16 @@ pub mod core {
         let out = accounts
             .into_iter()
             .map(|a| {
+                let unsupported: serde_json::Map<String, Value> = a
+                    .kind
+                    .unsupported()
+                    .into_iter()
+                    .map(|(verb, reason)| (verb.to_string(), Value::from(reason)))
+                    .collect();
                 json!({
                     "name": a.name,
+                    "display": a.display,
+                    "kind": a.kind.as_str(),
                     "enabled": a.enabled,
                     "is_admin": a.is_admin,
                     "password_required": a.password_required,
@@ -106,6 +277,8 @@ pub mod core {
                     "last_logon": a.last_logon,
                     "builtin_admin": a.builtin_admin,
                     "builtin_guest": a.builtin_guest,
+                    "deny_logon": a.deny_logon,
+                    "unsupported": unsupported,
                 })
             })
             .collect();
@@ -119,6 +292,9 @@ pub mod core {
         fn account(name: &str, enabled: bool, is_admin: bool) -> Account {
             Account {
                 name: name.to_string(),
+                display: name.to_string(),
+                kind: Kind::Local,
+                deny_logon: Vec::new(),
                 enabled,
                 is_admin,
                 password_required: true,
@@ -176,6 +352,135 @@ pub mod core {
             // The nullable field serializes even when null (key present as null).
             assert!(out[0].get("password_last_set").is_some());
         }
+
+        #[test]
+        fn kind_maps_principal_source_and_refuses_to_guess() {
+            assert_eq!(Kind::from_principal_source(Some("Local")), Kind::Local);
+            assert_eq!(
+                Kind::from_principal_source(Some("MicrosoftAccount")),
+                Kind::Microsoft
+            );
+            assert_eq!(Kind::from_principal_source(Some("AzureAD")), Kind::Entra);
+            // An unreadable or unfamiliar source must not become `Local` — that
+            // would advertise reset_password as supported when it is not.
+            assert_eq!(Kind::from_principal_source(None), Kind::Unknown);
+            assert_eq!(Kind::from_principal_source(Some("")), Kind::Unknown);
+            assert_eq!(Kind::from_principal_source(Some("Whatever")), Kind::Unknown);
+        }
+
+        #[test]
+        fn unsupported_is_a_negation_local_is_fully_capable() {
+            // Every governance verb is available unless listed. A local account
+            // lists nothing at all — that is the point of the whole design.
+            assert!(Kind::Local.unsupported().is_empty());
+            assert_eq!(
+                Kind::Microsoft.unsupported(),
+                vec![("reset_password", "password_in_cloud")]
+            );
+            assert_eq!(
+                Kind::Entra.unsupported(),
+                vec![("reset_password", "password_in_cloud")]
+            );
+            assert_eq!(
+                Kind::Unknown.unsupported(),
+                vec![("reset_password", "kind_unknown")]
+            );
+            // The verbs kenny actually ships are supported for every kind.
+            for kind in [Kind::Local, Kind::Microsoft, Kind::Entra, Kind::Unknown] {
+                let blocked: Vec<&str> = kind.unsupported().into_iter().map(|(v, _)| v).collect();
+                for verb in ["set_enabled", "set_admin", "set_logon_rights", "delete"] {
+                    assert!(!blocked.contains(&verb), "{verb} must work for {kind:?}");
+                }
+            }
+        }
+
+        #[test]
+        fn display_never_carries_a_microsoft_address() {
+            // The two shapes an MSA identity takes, both rejected in favour of the
+            // SAM name (ADR-0046).
+            assert_eq!(display_label(Some("kid@outlook.com"), "kid"), "kid");
+            assert_eq!(
+                display_label(Some("MicrosoftAccount\\kid@outlook.com"), "kid"),
+                "kid"
+            );
+            assert_eq!(display_label(Some("  "), "kid"), "kid");
+            assert_eq!(display_label(None, "kid"), "kid");
+            assert_eq!(display_label(Some(" Kid "), "kid"), "Kid");
+        }
+
+        #[test]
+        fn from_row_reads_governance_fields_and_filters_deny_rights() {
+            let row = json!({
+                "name": "kid", "display": "Kid",
+                "principal_source": "MicrosoftAccount",
+                // An unknown right from a future/edited probe is dropped rather
+                // than echoed onto the wire.
+                "deny_logon": ["remote_interactive", "interactive"],
+                "enabled": true, "is_admin": false, "password_required": true
+            });
+            let a = Account::from_row(&row).unwrap();
+            assert_eq!(a.kind, Kind::Microsoft);
+            assert_eq!(a.display, "Kid");
+            assert_eq!(a.deny_logon, vec!["remote_interactive".to_string()]);
+
+            // Missing governance fields degrade to the restrictive/empty case.
+            let bare = Account::from_row(&json!({ "name": "svc" })).unwrap();
+            assert_eq!(bare.kind, Kind::Unknown);
+            assert_eq!(bare.display, "svc");
+            assert!(bare.deny_logon.is_empty());
+        }
+
+        #[test]
+        fn shape_emits_kind_and_unsupported_per_account() {
+            let mut msa = account("kid", true, false);
+            msa.kind = Kind::Microsoft;
+            msa.display = "Kid".to_string();
+            msa.deny_logon = vec!["network".to_string()];
+            let (out, _, _) = shape(vec![msa, account("papa", true, true)]);
+
+            assert_eq!(out[0]["kind"], "microsoft");
+            assert_eq!(out[0]["display"], "Kid");
+            assert_eq!(out[0]["deny_logon"], json!(["network"]));
+            assert_eq!(out[0]["unsupported"]["reset_password"], "password_in_cloud");
+            // A local account carries an empty map, not a missing key: consumers
+            // read `unsupported` unconditionally.
+            assert_eq!(out[1]["kind"], "local");
+            assert_eq!(out[1]["unsupported"], json!({}));
+
+            // Still no SIDs, and now no Microsoft addresses either.
+            for a in &out {
+                let dumped = a.to_string();
+                assert!(!dumped.contains("S-1-5-"));
+                assert!(!dumped.contains('@'));
+            }
+        }
+
+        #[test]
+        fn parse_system_access_reads_locale_invariant_keys() {
+            let inf = "\
+MinimumPasswordAge = 0
+MaximumPasswordAge = 42
+MinimumPasswordLength = 8
+LockoutBadCount = 10
+PasswordComplexity = 1
+";
+            let p = parse_system_access(inf.lines());
+            assert_eq!(p["applies_to"], "local_only");
+            assert_eq!(p["min_length"], 8);
+            assert_eq!(p["max_age_days"], 42);
+            assert_eq!(p["lockout_threshold"], 10);
+
+            // "Never expires" is -1 in the INF; Windows shows it as 0.
+            let p = parse_system_access(["MaximumPasswordAge = -1"].into_iter());
+            assert_eq!(p["max_age_days"], 0);
+
+            // An unreadable export leaves nulls, not zeros: "no minimum" and "could
+            // not read the minimum" must not look alike to a health rule.
+            let p = parse_system_access(std::iter::empty());
+            assert!(p["min_length"].is_null());
+            assert!(p["lockout_threshold"].is_null());
+            assert_eq!(p["applies_to"], "local_only");
+        }
     }
 }
 
@@ -184,8 +489,15 @@ mod windows_impl {
     use super::*;
     use crate::telemetry::collectors::winps;
 
-    /// `Get-LocalUser` joined by SID with the Administrators group. The SIDs are
-    /// compared inside the probe and reduced to booleans — they never leave it.
+    /// `Get-LocalUser` joined by SID with the Administrators group and with the LSA
+    /// deny-logon rights exported by `secedit`. The SIDs are compared inside the
+    /// probe and reduced to booleans/short tokens — they never leave it.
+    ///
+    /// `PrincipalSource` is what makes a Microsoft account visible *as* a Microsoft
+    /// account; the rest of the row is identical for every kind, which is the whole
+    /// point (ADR-0046). `FullName` supplies `display`; the probe never emits the
+    /// `MicrosoftAccount\<address>` qualified name, so no email address can leak
+    /// through this path.
     pub fn collect() -> Section {
         let script = r#"
 $adminSids = @()
@@ -195,11 +507,42 @@ try {
   $adminSids = @(Get-LocalGroupMember -SID 'S-1-5-32-544' -ErrorAction Stop |
     ForEach-Object { [string]$_.SID.Value })
 } catch {}
+
+# LSA account rights and the machine password policy are not exposed by any cmdlet;
+# export the security policy once and read both out of the INF. Its key names
+# (SeDeny*, MinimumPasswordLength, …) are locale-invariant, unlike `net accounts`
+# output. Best-effort — an unreadable export yields empty deny sets and a null
+# policy, never a lost section.
+$denyNetwork = @(); $denyRemote = @(); $systemAccess = @()
+try {
+  $cfg = Join-Path $env:TEMP ('kenny-secpol-' + [guid]::NewGuid().ToString('N') + '.inf')
+  $null = & secedit.exe /export /areas USER_RIGHTS SECURITYPOLICY /cfg $cfg /quiet 2>$null
+  if (Test-Path $cfg) {
+    $inSystemAccess = $false
+    foreach ($line in (Get-Content -LiteralPath $cfg -Encoding Unicode -ErrorAction SilentlyContinue)) {
+      if ($line -match '^\s*\[') { $inSystemAccess = ($line -match '^\s*\[System Access\]') ; continue }
+      if ($inSystemAccess) { $systemAccess += [string]$line; continue }
+      if ($line -match '^\s*SeDenyNetworkLogonRight\s*=\s*(.*)$') {
+        $denyNetwork = @($matches[1] -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Where-Object { $_ })
+      } elseif ($line -match '^\s*SeDenyRemoteInteractiveLogonRight\s*=\s*(.*)$') {
+        $denyRemote = @($matches[1] -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Where-Object { $_ })
+      }
+    }
+    Remove-Item -LiteralPath $cfg -Force -ErrorAction SilentlyContinue
+  }
+} catch {}
+
 $out = @()
 Get-LocalUser -ErrorAction SilentlyContinue | ForEach-Object {
   $sid = [string]$_.SID.Value
+  $deny = @()
+  if ($denyNetwork -contains $sid) { $deny += 'network' }
+  if ($denyRemote -contains $sid) { $deny += 'remote_interactive' }
   $out += [pscustomobject]@{
     name = [string]$_.Name
+    display = [string]$_.FullName
+    principal_source = [string]$_.PrincipalSource
+    deny_logon = $deny
     enabled = [bool]$_.Enabled
     is_admin = ($adminSids -contains $sid)
     password_required = [bool]$_.PasswordRequired
@@ -209,12 +552,25 @@ Get-LocalUser -ErrorAction SilentlyContinue | ForEach-Object {
     builtin_guest = $sid.EndsWith('-501')
   }
 }
-ConvertTo-Json -Compress @($out)
+ConvertTo-Json -Compress -Depth 4 ([pscustomobject]@{ accounts = @($out); system_access = @($systemAccess) })
 "#;
 
-        let rows = winps::run_json(script)
+        let probe = winps::run_json(script).unwrap_or(json!({}));
+        let rows = probe
+            .get("accounts")
+            .cloned()
             .map(winps::as_array)
             .unwrap_or_default();
+        // `[System Access]` carries no SIDs, so the parse lives in the portable core
+        // where it is unit-tested on Linux CI.
+        let policy = core::parse_system_access(
+            probe
+                .get("system_access")
+                .and_then(serde_json::Value::as_array)
+                .map(|lines| lines.iter().filter_map(serde_json::Value::as_str))
+                .into_iter()
+                .flatten(),
+        );
         let accounts: Vec<core::Account> =
             rows.iter().filter_map(core::Account::from_row).collect();
         let (accounts, admins, count) = core::shape(accounts);
@@ -224,7 +580,12 @@ ConvertTo-Json -Compress @($out)
         Section::with_fields(
             Status::Ok,
             format!("{count} accounts, {n_admins} admin{plural}"),
-            json!({ "accounts": accounts, "admins": admins, "count": count }),
+            json!({
+                "accounts": accounts,
+                "admins": admins,
+                "count": count,
+                "password_policy": policy,
+            }),
         )
     }
 }
@@ -283,7 +644,7 @@ mod linux_impl {
                 let _passwd = cols.next()?; // "x"
                 let uid: u32 = cols.next()?.trim().parse().ok()?;
                 let _gid = cols.next()?;
-                let _gecos = cols.next()?;
+                let gecos = cols.next()?;
                 let _home = cols.next()?;
                 let shell = cols.next().unwrap_or("").trim();
                 if name.is_empty() {
@@ -296,6 +657,11 @@ mod linux_impl {
                 let is_admin = uid == 0 || admins.contains(name);
                 Some(core::Account {
                     name: name.to_string(),
+                    // Linux has no PrincipalSource; every /etc/passwd entry is local
+                    // by construction, and GECOS supplies the display label.
+                    display: core::display_label(gecos.split(',').next(), name),
+                    kind: core::Kind::Local,
+                    deny_logon: Vec::new(),
                     enabled,
                     is_admin,
                     password_required: true,
@@ -314,7 +680,10 @@ mod linux_impl {
             return Section::with_fields(
                 Status::Ok,
                 "n/a on this platform",
-                json!({ "accounts": [], "admins": [], "count": 0 }),
+                json!({
+                    "accounts": [], "admins": [], "count": 0,
+                    "password_policy": core::password_policy(None, None, None),
+                }),
             );
         };
         let group = std::fs::read_to_string("/etc/group").unwrap_or_default();
@@ -326,7 +695,12 @@ mod linux_impl {
         Section::with_fields(
             Status::Ok,
             format!("{count} accounts, {n_admins} admin{plural}"),
-            json!({ "accounts": accounts, "admins": admins, "count": count }),
+            json!({
+                "accounts": accounts, "admins": admins, "count": count,
+                // PAM/login.defs have no single machine-wide equivalent worth
+                // guessing at, and the governance tools are Windows-only anyway.
+                "password_policy": core::password_policy(None, None, None),
+            }),
         )
     }
 

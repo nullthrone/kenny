@@ -113,6 +113,18 @@ STATE_CHANGING_TOOLS: frozenset[str] = frozenset(
         # per-host); listing is read-only and stays out of this set.
         "reliability_suppression_add",
         "reliability_suppression_remove",
+        # Account governance (ADR-0046): every one of these is mutating on the
+        # agent (control.rs::is_mutating), and deciding who may sign in to a
+        # family PC is exactly the kind of call that must never happen because a
+        # conversation drifted there. ADR-0024 requires gate parity with the
+        # agent's own classification.
+        "account_set_enabled",
+        "account_set_admin",
+        "account_set_logon_rights",
+        "account_create",
+        "account_delete",
+        "account_session_action",
+        "password_policy_set",
     }
 )
 

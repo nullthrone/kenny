@@ -59,3 +59,4 @@ implementation detail", see *When (not) to write an ADR* in the repository `CLAU
 | [0043](0043-server-database-backup-and-restore.md) | Server database backup/restore with pluggable local + remote destinations | accepted |
 | [0044](0044-scheduled-update-detection-and-operator-approved-rollout.md) | Scheduled update detection with a pinned, operator-approved rollout | proposed |
 | [0045](0045-reliability-alarm-suppression.md) | Operator-managed reliability alarm suppression | proposed |
+| [0046](0046-account-governance-local-and-microsoft.md) | Account governance across local and Microsoft accounts | proposed |
