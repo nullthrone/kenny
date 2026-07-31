@@ -279,15 +279,18 @@ rule-reason chip.
 
 - **Screen time** renders whole-machine interactive minutes per day as simple bars.
 
-- **Local accounts** is the **account governance panel**: every account on the PC with
-  its kind (local / Microsoft / work-school), whether it is enabled or an administrator,
-  its sign-in restrictions, and — for operators — buttons to suspend, promote or demote,
-  lock, sign out, and delete. Below it sits the machine password policy, labelled with
-  the fact that it reaches local accounts only.
+- **Local accounts** is the **account governance panel**: every account on the machine
+  with its kind (local / Microsoft / work-school), whether it is enabled or an
+  administrator, its sign-in restrictions, and — for operators — buttons to suspend,
+  promote or demote, lock, sign out, and delete. Below it sits the machine password
+  policy, labelled with the fact that it reaches only accounts stored on the machine.
 
-  The same controls appear for a Microsoft account as for a local one; where a verb
-  genuinely is not available, it is shown **greyed out with the reason** rather than
-  hidden. Actions that would touch the last enabled administrator, or delete a built-in
+  The panel is the same on a Windows PC and on a Linux host: same rows, same badges, same
+  two switches, same five buttons. The same controls appear for a Microsoft account as for
+  a local one. Where a verb genuinely is not available — because of the account, its kind,
+  or the machine it is on — it is shown **greyed out with the reason** rather than hidden,
+  and the reason comes from the telemetry rather than from anything the dashboard assumes
+  about the operating system. Actions that would touch the last enabled administrator, or delete a built-in
   account, are disabled with an explanation — the agent refuses them regardless, so the
   greying is a courtesy, not the boundary. Every change triggers a fresh telemetry
   collect, so the panel shows the machine rather than what was requested. See

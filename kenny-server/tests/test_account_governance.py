@@ -1,17 +1,20 @@
-"""Account governance across local and Microsoft accounts (ADR-0046).
+"""Account governance across local, Microsoft and Linux accounts (ADR-0046/0047).
 
-Three things are worth pinning down here, and they are the three that would
+Four things are worth pinning down here, and they are the four that would
 silently rot:
 
 1. **Gate parity.** Every ``account_*`` tool has to appear in the forwarding
-   catalog, the Windows OS scope, the operator-role map, and the chat
-   confirm-gate. The agent enforces its own copy in ``control::is_mutating``;
-   ADR-0024 requires the server to agree, and nothing but a test makes the two
-   lists stay in step.
+   catalog, the OS scope, the operator-role map, and the chat confirm-gate. The
+   agent enforces its own copy in ``control::is_mutating``; ADR-0024 requires the
+   server to agree, and nothing but a test makes the two lists stay in step.
 2. **Type-agnosticism is structural.** There must be no per-kind tool and no
    ``kind`` argument anywhere in the catalog — the whole design rests on the
-   caller never having to know whether an account is local or Microsoft.
-3. **The health rules** read the new sections the way the contract describes.
+   caller never having to know whether an account is local or Microsoft. ADR-0047
+   extends the same rule to the OS axis: no ``linux_account_*`` family either.
+3. **The health rules** read the new sections the way the contract describes, on
+   both operating systems — including *not* firing Windows-shaped findings on a
+   Linux host.
+4. **The Linux payload the contract promises** is the one the agent can produce.
 """
 
 from __future__ import annotations
@@ -24,7 +27,12 @@ import pytest
 
 from kenny_server.chat import STATE_CHANGING_TOOLS, is_state_changing
 from kenny_server.diffs import diff_section
-from kenny_server.health_rules import LOGON_FAILURES_WARN, evaluate_section
+from kenny_server.health_rules import (
+    LOGON_FAILURES_WARN,
+    WINDOWS_ONLY_SECTIONS,
+    evaluate_section,
+    evaluate_snapshot,
+)
 from kenny_server.tools import (
     _OS_SCOPED_TOOLS,
     _TOOL_MIN_ROLE,
@@ -51,9 +59,11 @@ ACCOUNT_TOOLS = (
 @pytest.mark.parametrize("tool", ACCOUNT_TOOLS)
 def test_account_tool_is_registered_scoped_and_gated(tool: str) -> None:
     assert tool in CAPABILITY_TOOLS, f"{tool} missing from the forwarding catalog"
-    # SAM/LSA/session work has no POSIX equivalent, so a Linux agent must be
-    # refused before a frame is ever sent.
-    assert _OS_SCOPED_TOOLS.get(tool) == "windows"
+    # Served on Windows and Linux alike (ADR-0047). What a *particular account on
+    # a particular host* can do is published per account in the `local_accounts`
+    # inventory, not encoded as a whole-tool OS scope. macOS has no
+    # implementation, so it is still refused before a frame is ever sent.
+    assert _OS_SCOPED_TOOLS.get(tool) == frozenset({"windows", "linux"})
     # Deciding who may sign in is operator authority, unlike the rest of the
     # forwarded catalog where seeing the host is enough.
     assert _TOOL_MIN_ROLE.get(tool) == "operator"
@@ -299,6 +309,94 @@ def test_diff_reports_a_local_account_being_linked_to_microsoft() -> None:
     assert "kind: local -> microsoft" in changes[0]["detail"]
 
 
+# --- the Linux payload (ADR-0047) --------------------------------------------
+
+
+def _linux_snapshot() -> dict:
+    fixture = json.loads((FIXTURES_DIR / "telemetry_snapshot_linux.json").read_text())
+    return fixture["snapshot"]
+
+
+def test_root_being_enabled_is_not_a_finding_on_linux() -> None:
+    """`builtin_admin` means RID 500 on Windows and root on Linux.
+
+    RID 500 ships disabled, so finding it enabled means something turned it on.
+    root is enabled by definition — scoring it would put every Linux host at a
+    permanent warn for being a Linux host.
+    """
+
+    payload = _linux_snapshot()["local_accounts"]
+    root = next(a for a in payload["accounts"] if a["name"] == "root")
+    assert root["builtin_admin"] is True and root["enabled"] is True
+
+    assert evaluate_section("local_accounts", dict(payload), agent_os="linux")["status"] == "ok"
+    # The very same payload on Windows *is* a finding — the rule did not simply
+    # stop working.
+    windows = evaluate_section("local_accounts", dict(payload), agent_os="windows")
+    assert windows["status"] == "warn"
+    assert "built-in Administrator enabled" in windows["reason"]
+
+
+def test_logon_failures_is_scored_on_linux() -> None:
+    """It left WINDOWS_ONLY_SECTIONS when it gained a real Linux arm."""
+
+    assert "logon_failures" not in WINDOWS_ONLY_SECTIONS
+    health = evaluate_snapshot(_linux_snapshot(), agent_os="linux")
+    assert "logon_failures" in health["sections"]
+    # The Windows-only sections in the same fixture are still skipped.
+    assert "defender" not in health["sections"]
+    assert "win_update" not in health["sections"]
+    # A quiet household is quiet on either OS.
+    assert health["sections"]["logon_failures"]["status"] == "ok"
+
+
+def test_linux_asymmetries_travel_in_the_negation_map_not_in_a_second_tool() -> None:
+    """The load-bearing property of ADR-0047.
+
+    Everything Linux cannot do is a per-account `unsupported` entry with a
+    reason token — never a missing field, never a differently-named tool.
+    """
+
+    payload = _linux_snapshot()["local_accounts"]
+    by_name = {a["name"]: a for a in payload["accounts"]}
+
+    # Host-level: true for every account on this machine.
+    for account in payload["accounts"]:
+        assert account["unsupported"]["deny_network"] == "no_network_logon_concept"
+        assert account["unsupported"]["session_lock"] == "no_graphical_session"
+
+    # Account-level, and it beats the host-level entry for the same verb.
+    assert by_name["root"]["unsupported"]["set_admin"] == "root_account"
+    assert by_name["svc-backup"]["unsupported"]["set_enabled"] == "nologin_shell"
+    # Negation, not enumeration: what an account *can* do is simply absent.
+    assert "delete" not in by_name["kid"]["unsupported"]
+    assert "deny_remote_interactive" not in by_name["kid"]["unsupported"]
+
+    # The machine-wide policy uses the same idiom one level up, and keeps `null`
+    # ("not read") distinct from an `unsupported` entry ("no such knob here").
+    policy = payload["password_policy"]
+    assert policy["applies_to"] == "local_only"
+    assert policy["lockout_threshold"] is None
+    assert policy["unsupported"]["lockout_threshold"] == "pam_faillock_not_enabled"
+
+    # And every field the Windows shape promises is present, so one renderer
+    # serves both.
+    windows = json.loads((FIXTURES_DIR / "telemetry_snapshot.json").read_text())
+    windows_keys = set(windows["snapshot"]["local_accounts"]["accounts"][0])
+    assert windows_keys <= set(by_name["kid"])
+
+
+def test_the_linux_deny_set_reuses_the_windows_tokens() -> None:
+    """No third right token: the dashboard renders the same two checkboxes on
+    both operating systems, one of them greyed out with its reason."""
+
+    payload = _linux_snapshot()["local_accounts"]
+    for account in payload["accounts"]:
+        assert set(account["deny_logon"]) <= {"network", "remote_interactive"}
+    kid = next(a for a in payload["accounts"] if a["name"] == "kid")
+    assert kid["deny_logon"] == ["remote_interactive"]
+
+
 # --- forwarding, against the mock agent --------------------------------------
 
 
@@ -343,14 +441,14 @@ async def test_account_tool_forwards_to_a_windows_agent(tmp_path, monkeypatch) -
 
 
 @pytest.mark.asyncio
-async def test_account_tool_refused_on_a_linux_agent(tmp_path, monkeypatch) -> None:
-    """Refused by the server's OS guard before a frame is sent. Unlike the
-    shell pair there is no mirror tool to point at, so the message just says
-    the host is the wrong OS."""
+async def test_account_tool_forwards_to_a_linux_agent(tmp_path, monkeypatch) -> None:
+    """The load-bearing assertion of ADR-0047: the same tool, the same argument
+    shape, the same result shape — on a Linux host.
+
+    Until 0.16 this call was refused server-side with "requires windows"."""
 
     from fastmcp import Client
     from fastmcp.client.transports import StreamableHttpTransport
-    from fastmcp.exceptions import ToolError
 
     from kenny_server.main import build_app
 
@@ -371,10 +469,53 @@ async def test_account_tool_refused_on_a_linux_agent(tmp_path, monkeypatch) -> N
             headers={"Authorization": f"Bearer {app.state.operator_token}"},
         )
         async with Client(transport) as client:
-            with pytest.raises(ToolError, match="requires windows"):
+            result = await client.call_tool(
+                "account_set_admin",
+                {"args": {"principal": "kid", "admin": False, "agent_id": "nas"}},
+            )
+            payload = json.loads(result.content[0].text)
+            assert payload["ok"] is True
+            assert payload["principal"] == "kid"
+
+        await agent.stop()
+
+
+@pytest.mark.asyncio
+async def test_account_tool_refused_on_an_os_with_no_implementation(
+    tmp_path, monkeypatch
+) -> None:
+    """macOS keeps the fast, pre-flight refusal the OS scope exists for.
+
+    Unlike the shell pair there is no mirror tool to point at, so the message
+    just names the operating systems that do serve the tool."""
+
+    from fastmcp import Client
+    from fastmcp.client.transports import StreamableHttpTransport
+    from fastmcp.exceptions import ToolError
+
+    from kenny_server.main import build_app
+
+    from test_server_e2e import SERVER_SEED_B64, MockAgent, _free_port, _Server
+
+    monkeypatch.setenv("KENNY_SERVER_PRIVATE_KEY", SERVER_SEED_B64)
+    port = _free_port()
+    app = build_app(db_path=str(tmp_path / "accounts_macos.sqlite"))
+
+    async with _Server(app, port):
+        agent = MockAgent(f"ws://127.0.0.1:{port}/agent/ws", "air", os="macos")
+        await app.state.key_store.enroll("air", agent.public_key_b64)
+        await agent.start()
+        await asyncio.sleep(0.1)
+
+        transport = StreamableHttpTransport(
+            f"http://127.0.0.1:{port}/mcp",
+            headers={"Authorization": f"Bearer {app.state.operator_token}"},
+        )
+        async with Client(transport) as client:
+            with pytest.raises(ToolError, match="requires linux or windows"):
                 await client.call_tool(
                     "account_set_enabled",
-                    {"args": {"principal": "kid", "enabled": False, "agent_id": "nas"}},
+                    {"args": {"principal": "kid", "enabled": False, "agent_id": "air"}},
                 )
 
         await agent.stop()

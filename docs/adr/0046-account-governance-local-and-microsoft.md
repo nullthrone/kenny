@@ -211,6 +211,9 @@ does not know what any particular person did.
   `src/telemetry/collectors/logon_failures.rs`.
 - Code (server): `kenny-server/kenny_server/tools.py`, `health_rules.py`, `diffs.py`,
   `chat.py`, `webui/__init__.py`.
+- Extended by [ADR-0047](0047-account-governance-on-linux.md), which drops the Windows OS
+  scope of this tool family and routes the Linux asymmetries through the same per-account
+  capability-negation map. The rationale recorded here is unchanged by that.
 - Related: [ADR-0011](0011-local-remote-control-kill-switch.md) (kill switch),
   [ADR-0020](0020-agent-side-deterministic-tool-guard.md) (deterministic guard),
   [ADR-0024](0024-untrusted-agent-data-in-chat-context.md) (confirm-gate parity),

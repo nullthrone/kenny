@@ -41,24 +41,28 @@ from .webfilter import WebFilterService, load_seed
 
 logger = logging.getLogger("kenny.tools")
 
-# OS-scoped capability tools: name -> required agent OS family ("windows" or
-# "posix", the latter covering both "linux" and "macos" agents). Each has an
-# exact mirror on the other family. Enforced in ``make_forwarder`` so a
-# wrong-OS call is refused with an actionable message before ever reaching the
-# tunnel (see docs/protocol.md § "OS-scoped tools").
-_OS_SCOPED_TOOLS: dict[str, str] = {
-    "powershell_exec": "windows",
-    "shell_exec": "posix",
-    # Account governance is SAM/LSA/session work with no POSIX equivalent
-    # (ADR-0046). Unlike the shell pair these have no mirror — the refusal just
-    # says the host is the wrong OS.
-    "account_set_enabled": "windows",
-    "account_set_admin": "windows",
-    "account_set_logon_rights": "windows",
-    "account_create": "windows",
-    "account_delete": "windows",
-    "account_session_action": "windows",
-    "password_policy_set": "windows",
+# OS-scoped capability tools: name -> the agent OS values that can serve it.
+# Enforced in ``make_forwarder`` so a wrong-OS call is refused with an actionable
+# message before ever reaching the tunnel (see docs/protocol.md § "OS-scoped
+# tools").
+#
+# Account governance was pinned to ``windows`` in v0.15 and is deliberately no
+# longer OS-scoped at all (ADR-0047): it is served on Windows and Linux alike, and
+# what a *particular account on a particular host* can do is published per account
+# in the ``local_accounts`` inventory's ``unsupported`` map. A whole-tool OS scope
+# would be both coarser and less true. macOS keeps no implementation, so the seven
+# tools are still listed here — with the two OSes that do serve them, which is what
+# gives a macOS agent the same fast, actionable refusal it had before.
+_OS_SCOPED_TOOLS: dict[str, frozenset[str]] = {
+    "powershell_exec": frozenset({"windows"}),
+    "shell_exec": frozenset({"linux", "macos"}),
+    "account_set_enabled": frozenset({"windows", "linux"}),
+    "account_set_admin": frozenset({"windows", "linux"}),
+    "account_set_logon_rights": frozenset({"windows", "linux"}),
+    "account_create": frozenset({"windows", "linux"}),
+    "account_delete": frozenset({"windows", "linux"}),
+    "account_session_action": frozenset({"windows", "linux"}),
+    "password_policy_set": frozenset({"windows", "linux"}),
 }
 
 # The OS-scoped mirror of a key in ``_OS_SCOPED_TOOLS``, for error messages.
@@ -67,6 +71,20 @@ _OS_SCOPED_MIRROR: dict[str, str] = {
     "powershell_exec": "shell_exec",
     "shell_exec": "powershell_exec",
 }
+
+
+def supports_tool(tool_name: str, agent_os: str) -> bool:
+    """Can an agent on ``agent_os`` serve ``tool_name``?
+
+    The single answer for both the MCP forwarder and the dashboard's write route,
+    so the two surfaces cannot refuse the same call differently (they did until
+    ADR-0047: MCP refused pre-flight, the dashboard forwarded and surfaced the
+    agent's refusal as a 502).
+    """
+
+    allowed = _OS_SCOPED_TOOLS.get(tool_name)
+    return allowed is None or agent_os in allowed
+
 
 # Minimum operator role for a forwarded capability tool. Absent means the
 # default: seeing the host is enough.
@@ -93,12 +111,6 @@ _TOOL_MIN_ROLE: dict[str, str] = {
 _TOOL_MIN_TIMEOUT_S: dict[str, float] = {
     "account_session_action": 120.0,
 }
-
-
-def _os_family(agent_os: str) -> str:
-    """Collapse an agent's reported OS into the two shell-tool families."""
-
-    return "windows" if agent_os == "windows" else "posix"
 
 
 # Forwarding capability tools: name -> ordered arg keys (optional keys end "?").
@@ -374,11 +386,11 @@ def register_tools(
             # stored telemetry) — the tunnel send fails as offline in that case.
             if required_os is not None:
                 agent = registry.get(agent_id)
-                if agent is not None and _os_family(agent.os) != required_os:
+                if agent is not None and agent.os not in required_os:
                     mirror = _OS_SCOPED_MIRROR.get(tool_name)
                     message = (
                         f"agent {agent_id!r} is {agent.os}; {tool_name} requires "
-                        f"{required_os}"
+                        f"{' or '.join(sorted(required_os))}"
                     )
                     if mirror is not None:
                         message += f", use {mirror} instead"
