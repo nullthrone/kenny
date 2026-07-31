@@ -24,7 +24,7 @@ anyhow = "1"
 thiserror = "2"
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
-base64 = "0.22"
+base64 = "0.23"
 regex = "1"
 sysinfo = "0.39"
 # Per-agent mutual-auth (ADR-0023): Ed25519 keypair + signatures over the handshake
