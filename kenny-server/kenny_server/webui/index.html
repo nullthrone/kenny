@@ -3728,23 +3728,67 @@
       body += `<div class="k-detail-grp" id="kwf-panel"><div class="k-muted">loading parental-controls list…</div></div>`;
       return body;
     }
-    // -- account governance (ADR-0046) ------------------------------------
-    // One control set for local and Microsoft accounts alike: below the SAM/LSA
-    // layer Windows draws no distinction, so neither does this panel. Where a
-    // verb genuinely is not available for an account, the section's `unsupported`
-    // map says so and the control is disabled *with the reason shown* — hiding it
-    // would leave the operator wondering.
+    // -- account governance (ADR-0046, ADR-0047) --------------------------
+    // One control set for local, Microsoft and Linux accounts alike. Below the
+    // account-database layer neither Windows nor Linux draws the distinctions
+    // above it, so neither does this panel: same rows, same badges, same
+    // checkboxes, same buttons on every host.
+    //
+    // Every difference is data. Where a verb is not available for an account —
+    // whatever the reason, its kind or its host — the section's `unsupported` map
+    // names the verb and a reason token, and the control is rendered *disabled
+    // with the reason on hover* rather than hidden. Hiding it would leave the
+    // operator wondering; branching on `os` here would rebuild the two worlds
+    // this design exists to avoid.
     const ACCT_KIND_LABEL = {
       local: "local", microsoft: "Microsoft", entra: "work/school", unknown: "unknown",
     };
-    // Why a verb is unavailable. The wire carries stable tokens; the wording lives here.
+    // Why a verb is unavailable. The wire carries stable tokens; the wording lives
+    // here, which is the whole extension point — a new asymmetry on any OS costs
+    // one entry in this map and nothing else in the client.
     const ACCT_UNSUPPORTED_REASON = {
       password_in_cloud: "the password lives in the Microsoft account, not on this PC",
       kind_unknown: "kenny could not determine what kind of account this is",
+      root_account: "this is root — group membership neither grants nor revokes it",
+      admin_via_sudoers: "its administrator rights come from a sudoers rule, which kenny never edits",
+      nologin_shell: "the account has no login shell, and kenny does not rewrite shells",
+      no_network_logon_concept: "this machine has no per-account network sign-in to deny — SSH is covered by the other switch",
+      no_sshd: "no SSH server is installed, so there is no remote sign-in to deny",
+      sshd_no_include: "the SSH configuration has no drop-in directory, and kenny will not edit the main file",
+      no_logind: "this machine has no session manager to act through",
+      no_graphical_session: "there is no desktop session here to lock",
+      no_admin_group: "this machine has no sudo, wheel or admin group",
+      shadow_unreadable: "kenny cannot read the password database on this machine",
+      no_user_notification_channel: "there is no way to warn the signed-in person first",
+      pam_faillock_not_enabled: "account lockout is not part of this machine's login configuration",
+      no_pwquality: "this machine has no password-quality module to configure",
     };
+    // Verb -> what to call it in the "not available" footnote.
+    const ACCT_VERB_LABEL = {
+      set_enabled: "suspend / restore", set_admin: "administrator rights",
+      deny_network: "deny network sign-in", deny_remote_interactive: "deny remote sign-in",
+      delete: "delete", session_lock: "lock", session_logoff: "sign out",
+      session_warn: "warn before acting", reset_password: "reset password",
+    };
+    // The one place OS-specific *nouns* earn their keep: "Remote Desktop" and
+    // "SSH" are the words the operator knows for their own machine, and a neutral
+    // "remote sign-in" is vaguer for both. Purely editorial — which control is
+    // enabled, and why, still comes only from `unsupported`.
+    const ACCT_RIGHT_LABEL = {
+      windows: { network: "no network sign-in", remote_interactive: "no remote desktop" },
+      linux: { network: "no network sign-in", remote_interactive: "no SSH sign-in" },
+    };
+    const ACCT_PROFILE_NOUN = { windows: "profile", linux: "home directory" };
+    function acctOs() { return ((state.detail || {}).os) || "windows"; }
+    function acctLabels(table) { return table[acctOs()] || table.windows; }
     function acctKindBadge(kind) {
       const k = kind || "unknown";
       return `<span class="k-pill k-pill--${k === "unknown" ? "warn" : "ok"}">${esc(ACCT_KIND_LABEL[k] || k)}</span>`;
+    }
+    // The reason a verb is off for this account, or "" when it is available.
+    function acctWhyNot(account, verb) {
+      const token = (account.unsupported || {})[verb];
+      return token ? (ACCT_UNSUPPORTED_REASON[token] || token) : "";
     }
 
     function renderAccountsDetail(raw, s) {
@@ -3755,8 +3799,12 @@
       const agentId = (state.detail || {}).agent_id;
       const aid = jsArg(agentId);
       // Governance calls are operator-only server-side; a scoped `user` sees the
-      // inventory read-only rather than buttons that would 403.
-      const rw = canOperate();
+      // inventory read-only rather than buttons that would 403. `governance` comes
+      // from the server's own OS-scope table, so an OS with no implementation at
+      // all (macOS today) shows the inventory without dead controls, and the
+      // client never carries an OS list of its own.
+      const rw = canOperate() && (((state.detail || {}).governance || {}).supported !== false);
+      const rightLabel = acctLabels(ACCT_RIGHT_LABEL);
       const accounts = Array.isArray(raw.accounts) ? raw.accounts : [];
       const enabledAdmins = accounts.filter(a => a.enabled && a.is_admin).length;
 
@@ -3771,26 +3819,36 @@
         const lastAdmin = a.enabled && a.is_admin && enabledAdmins <= 1;
         const builtin = a.builtin_admin || a.builtin_guest;
         const guardTitle = lastAdmin
-          ? "blocked: this is the last enabled administrator — changing it would lock everyone out of this PC"
+          ? "blocked: this is the last enabled administrator — changing it would lock everyone out of this machine"
           : "";
         const btn = (label, ico, handler, disabled, title, danger) => `
           <button class="k-btn ${danger ? "k-btn--danger" : "k-btn--ghost"} k-btn--sm"
             ${disabled ? "disabled" : ""} title="${esc(title || "")}"
             ${disabled ? "" : `onclick="${handler}"`}>${icon(ico, 12)}${esc(label)}</button>`;
+        // The capability map decides; the lockout guard is the second reason.
+        const why = verb => acctWhyNot(a, verb);
+        const off = (verb, guardApplies) => why(verb) || (guardApplies ? guardTitle : "");
+
+        const offEnable = off("set_enabled", a.enabled && lastAdmin);
+        const offAdmin = off("set_admin", a.is_admin && lastAdmin);
+        const offLock = off("session_lock", false);
+        const offLogoff = off("session_logoff", false);
+        const offDelete = why("delete")
+          || (builtin ? "blocked: built-in accounts cannot be deleted" : "")
+          || (lastAdmin ? guardTitle : "");
 
         const actions = rw ? `
           ${btn(a.enabled ? "suspend" : "restore", a.enabled ? "x" : "check",
                 `acctSetEnabled(${aid}, ${nm}, ${a.enabled ? "false" : "true"})`,
-                a.enabled && lastAdmin, a.enabled ? guardTitle : "")}
+                !!offEnable, offEnable)}
           ${btn(a.is_admin ? "make standard" : "make admin", "shield-check",
                 `acctSetAdmin(${aid}, ${nm}, ${a.is_admin ? "false" : "true"})`,
-                a.is_admin && lastAdmin, a.is_admin ? guardTitle : "")}
-          ${btn("lock", "lock", `acctSession(${aid}, ${nm}, 'lock')`, false,
-                "disconnect this account's session back to the sign-in screen; apps keep running")}
-          ${btn("sign out", "log-out", `acctSession(${aid}, ${nm}, 'logoff')`, false,
-                "end this account's session")}
-          ${btn("delete", "trash-2", `acctDelete(${aid}, ${nm})`, lastAdmin || builtin,
-                builtin ? "blocked: built-in Windows accounts cannot be deleted" : guardTitle, true)}
+                !!offAdmin, offAdmin)}
+          ${btn("lock", "lock", `acctSession(${aid}, ${nm}, 'lock')`, !!offLock,
+                offLock || "lock this account's screen; open apps keep running")}
+          ${btn("sign out", "log-out", `acctSession(${aid}, ${nm}, 'logoff')`, !!offLogoff,
+                offLogoff || "end this account's session")}
+          ${btn("delete", "trash-2", `acctDelete(${aid}, ${nm})`, !!offDelete, offDelete, true)}
         ` : "";
 
         const flags = [
@@ -3800,19 +3858,25 @@
           a.builtin_guest ? `<span class="k-pill k-pill--warn">guest</span>` : "",
         ].filter(Boolean).join(" ");
 
-        const denyLine = `
-          <label class="kwf-tog" title="deny sign-in from other machines on the network">
-            <input type="checkbox" ${deny.includes("network") ? "checked" : ""} ${rw ? "" : "disabled"}
-              onchange="acctSetDeny(${aid}, ${nm}, 'network', this.checked)"/><span>no network sign-in</span></label>
-          <label class="kwf-tog" title="deny Remote Desktop sign-in">
-            <input type="checkbox" ${deny.includes("remote_interactive") ? "checked" : ""} ${rw ? "" : "disabled"}
-              onchange="acctSetDeny(${aid}, ${nm}, 'remote_interactive', this.checked)"/><span>no remote desktop</span></label>`;
+        // Both switches render on every host. Where one is not possible, it is
+        // greyed with its reason rather than removed — the shape of the panel
+        // stays the same, only the data differs.
+        const denyTog = (right, verb) => {
+          const blocked = why(verb);
+          return `
+          <label class="kwf-tog" title="${esc(blocked || ("deny " + rightLabel[right]))}">
+            <input type="checkbox" ${deny.includes(right) ? "checked" : ""}
+              ${(rw && !blocked) ? "" : "disabled"}
+              onchange="acctSetDeny(${aid}, ${nm}, '${right}', this.checked)"/><span>${esc(rightLabel[right])}</span></label>`;
+        };
+        const denyLine = denyTog("network", "deny_network")
+          + denyTog("remote_interactive", "deny_remote_interactive");
 
         // Only the asymmetries, and always with their reason.
         const unsupLine = Object.keys(unsup).length ? `
           <div class="k-muted" style="margin-top:4px">not available for this account:
             ${Object.entries(unsup).map(([verb, reason]) =>
-              `<span title="${esc(ACCT_UNSUPPORTED_REASON[reason] || reason)}">${esc(prettyKey(verb))}</span>`
+              `<span title="${esc(ACCT_UNSUPPORTED_REASON[reason] || reason)}">${esc(ACCT_VERB_LABEL[verb] || prettyKey(verb))}</span>`
             ).join(", ")}</div>` : "";
 
         const family = a.kind === "microsoft" ? `
@@ -3833,27 +3897,39 @@
       }).join("");
 
       body += `<div class="k-detail-grp">
-        <div class="k-detail-grp__lbl">accounts on this PC</div>
+        <div class="k-detail-grp__lbl">accounts on this machine</div>
         ${rows || `<div class="k-muted">no accounts reported</div>`}
       </div>`;
 
       const pol = raw.password_policy || {};
-      const polVal = v => (v === null || v === undefined) ? "—" : String(v);
+      const polGaps = pol.unsupported || {};
+      // A `null` value and an `unsupported` entry are different claims: "kenny
+      // could not read this" versus "this machine has no such setting". Showing
+      // "—" for both would collapse a distinction the contract works to keep.
+      const polRow = (label, key, value) => {
+        const gap = polGaps[key];
+        const shown = gap
+          ? `<span class="k-muted">not available here</span>`
+          : esc((value === null || value === undefined) ? "—" : String(value));
+        const why = gap ? ` title="${esc(ACCT_UNSUPPORTED_REASON[gap] || gap)}"` : "";
+        return `<div class="k-deflist__k"${why}>${esc(label)}</div><div class="k-deflist__v"${why}>${shown}</div>`;
+      };
       body += `<div class="k-detail-grp">
         <div class="k-detail-grp__lbl">password policy</div>
         <div class="k-deflist">
-          <div class="k-deflist__k">Minimum length</div><div class="k-deflist__v">${esc(polVal(pol.min_length))}</div>
-          <div class="k-deflist__k">Maximum age (days)</div><div class="k-deflist__v">${esc(polVal(pol.max_age_days))}</div>
-          <div class="k-deflist__k">Lockout threshold</div><div class="k-deflist__v">${esc(polVal(pol.lockout_threshold))}</div>
+          ${polRow("Minimum length", "min_length", pol.min_length)}
+          ${polRow("Maximum age (days)", "max_age_days", pol.max_age_days)}
+          ${polRow("Lockout threshold", "lockout_threshold", pol.lockout_threshold)}
         </div>
-        <div class="k-muted" style="margin-top:6px">Applies to local accounts only —
-          a Microsoft account's password is governed by Microsoft's cloud policy and
-          ignores this entirely.</div>
+        <div class="k-muted" style="margin-top:6px">Applies to accounts stored on this
+          machine only. An account backed by an online or directory service — a Microsoft
+          account, a work or school account, an LDAP identity — follows that service's own
+          password policy and ignores this entirely.</div>
       </div>`;
 
       body += `<div class="k-muted" style="margin-top:8px">Changes are refused while the
-        person at the PC has remote control switched off, and a local administrator can
-        undo them. Already-applied changes persist; new ones do not go through.</div>`;
+        person at the machine has remote control switched off, and an administrator on the
+        machine can undo them. Already-applied changes persist; new ones do not go through.</div>`;
       body += `<div id="kacct-msg"></div>`;
       return body;
     }
@@ -3871,7 +3947,7 @@
           { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(args) });
         if (r && r.ok === false) {
           acctMsg(r.error === "disabled"
-            ? "refused: remote control is switched off at that PC"
+            ? "refused: remote control is switched off at that machine"
             : (r.message || r.error || "refused"), true);
           return false;
         }
@@ -3907,28 +3983,42 @@
         "sign-in restrictions updated");
     }
     async function acctSession(agentId, name, action) {
+      // Whether the person can be warned first is a property of the host, not a
+      // promise the dashboard gets to make: Linux has no reliable channel to a
+      // signed-in user's screen, and saying "they will be warned" there would be
+      // a lie the operator acts on.
+      const acct = (((state.detail || {}).snapshot || {}).local_accounts || {}).accounts || [];
+      const canWarn = !acctWhyNot(acct.find(a => a.name === name) || {}, "session_warn");
+      const warnSeconds = canWarn ? 30 : 0;
       const ok = await confirmModal({
         title: action === "lock" ? "Lock the session" : "Sign the account out",
         ico: action === "lock" ? "lock" : "log-out",
         body: (action === "lock"
-          ? "Return '" + name + "'s session to the sign-in screen? Open apps keep running."
+          ? "Lock '" + name + "'s screen? Open apps keep running."
           : "Sign '" + name + "' out? Unsaved work in open apps may be lost.")
-          + " They will be warned 30 seconds beforehand.",
+          + (canWarn ? " They will be warned 30 seconds beforehand."
+                     : " This machine has no way to warn them first, so it happens immediately."),
         confirmLabel: action === "lock" ? "Lock" : "Sign out",
       });
       if (!ok) return;
-      notify("warning the person at the PC, then acting in 30 seconds…");
+      if (canWarn) notify("warning the person at the machine, then acting in 30 seconds…");
       return acctCall(agentId, "account_session_action",
-        { principal: name, action, warn_seconds: 30 },
+        { principal: name, action, warn_seconds: warnSeconds },
         action === "lock" ? "session locked" : "signed out");
     }
     async function acctDelete(agentId, name) {
+      const acct = (((state.detail || {}).snapshot || {}).local_accounts || {}).accounts || [];
+      const kind = (acct.find(a => a.name === name) || {}).kind;
+      const noun = acctLabels(ACCT_PROFILE_NOUN);
       const ok = await confirmModal({
         title: "Delete account",
         ico: "trash-2",
-        body: "Delete '" + name + "' and its profile from this PC? For a Microsoft account "
-          + "this only unlinks it from this PC — the Microsoft account itself is untouched. "
-          + "Local files in the profile are deleted and cannot be recovered.",
+        body: "Delete '" + name + "' and its " + noun + " from this machine? "
+          + (kind === "microsoft"
+              ? "For a Microsoft account this only unlinks it from this machine — the "
+                + "Microsoft account itself is untouched. "
+              : "")
+          + "Local files in it are deleted and cannot be recovered.",
         confirmLabel: "Delete",
         confirmClass: "k-btn--danger",
       });

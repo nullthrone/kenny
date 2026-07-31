@@ -187,8 +187,7 @@ across restarts. See ADR-0011.
 #### OS-scoped tools
 
 `powershell_exec` and `shell_exec` each require a specific agent OS family (`windows`
-and `linux`/`macos` respectively), as do the seven account-governance tools
-(`account_*`, `password_policy_set` — `windows`). Before forwarding such a tool, the
+and `linux`/`macos` respectively). Before forwarding such a tool, the
 **server**
 compares the requested tool's required family against the target agent's known `os`
 (from `register.meta.os`, see "Frames" above) and, on a mismatch, refuses the call
@@ -200,6 +199,13 @@ also refuse it, per the paragraph above, once code reaches `dispatch::run`). An 
 unknown to the registry (e.g. selected from stored telemetry only) skips this
 pre-check; the call still fails once attempted, either at the tunnel (agent offline) or
 at the agent's own OS-gated handler.
+
+The account-governance tools are deliberately **not** OS-scoped (they were, in v0.15).
+They are served on every OS family, and what a *particular account on a particular host*
+can do is discovered from the `local_accounts` inventory instead — see "Account
+governance tools" below. A whole-tool OS scope would have forced the caller to know the
+host's OS before acting; the per-account capability map is finer, truer, and already the
+mechanism ADR-0046 chose for the local-vs-Microsoft asymmetry.
 
 `paused` is returned when the agent is online but has **voluntarily stepped back** because a
 protected game is running on the endpoint (the agent detected the game's anti-cheat process).
@@ -439,53 +445,114 @@ Linux CI. See ADR-0026.
 
 #### Account governance tools
 
-The `account_*` tools plus `password_policy_set` govern Windows sign-in (ADR-0046). They
-are the enforcement half of the `local_accounts` telemetry section (below), which is also
-their **inventory**: there is no `account_list` tool — read the section, and refresh it on
-demand with `telemetry_collect {sections:["local_accounts"]}`.
+The `account_*` tools plus `password_policy_set` govern **who may sign in to a host**
+(ADR-0046, extended to Linux by ADR-0047). They are the enforcement half of the
+`local_accounts` telemetry section (below), which is also their **inventory**: there is no
+`account_list` tool — read the section, and refresh it on demand with
+`telemetry_collect {sections:["local_accounts"]}`.
 
-All of them are **mutating** (refused with `disabled` under the kill switch) and all are
-**Windows-scoped** (the server refuses to forward them to a non-Windows agent; an agent
-that receives one anyway answers `unsupported`).
+All of them are **mutating** (refused with `disabled` under the kill switch). None of them
+is OS-scoped: they are served on Windows and Linux alike, and per-account capability is
+read from the inventory (see "Capability negation" below). On an OS with no
+implementation (macOS today) the agent answers `unsupported`.
 
-**`principal` is the SAM account name** — `local_accounts.accounts[].name`, the same string
-for a local and a Microsoft account. A Microsoft account on a workgroup PC *is* a SAM entry
-with a machine-local SID and profile, so these operations are type-agnostic by construction
-rather than by abstraction. Full SIDs and Microsoft-account email addresses never go on the
-wire in either direction (ADR-0046).
+**`principal` is the local account name** — `local_accounts.accounts[].name`. On Windows
+that is the SAM name, identical for a local and a Microsoft account; on Linux it is the
+`/etc/passwd` login name. Both are unique per machine by construction, and both are exactly
+what the platform's own tooling accepts. A Microsoft account on a workgroup PC *is* a SAM
+entry with a machine-local SID and profile, so these operations are type-agnostic by
+construction rather than by abstraction. Full SIDs and Microsoft-account email addresses
+never go on the wire in either direction (ADR-0046).
 
 - `account_set_enabled` (`{principal, enabled}`) — the suspend switch. Works identically for
   both account kinds; disabling a Microsoft-account-backed entry blocks sign-in on this PC
-  and leaves the cloud account untouched.
-- `account_set_admin` (`{principal, admin}`) — add to or remove from the Administrators group,
-  resolved by the well-known SID `S-1-5-32-544` (locale-proof).
+  and leaves the cloud account untouched. On Linux "disabled" means **account expiry plus a
+  locked password**, not a locked password alone — a locked password still admits an SSH key.
+- `account_set_admin` (`{principal, admin}`) — add to or remove from the administrators
+  group. On Windows that group is resolved by the well-known SID `S-1-5-32-544`
+  (locale-proof); on Linux it is the first of `sudo`, `wheel`, `admin` that exists in
+  `/etc/group`, and removal strips membership in *all* of them.
 - `account_set_logon_rights` (`{principal, deny}`) — `deny` is the full desired set, a subset
-  of `["network", "remote_interactive"]`, applied via LSA account rights (this works on
-  Windows Home, where only the `secpol.msc` snap-in is missing, not the API). Passing `[]`
-  clears both. `SeDenyInteractiveLogonRight` is deliberately **not** exposed: it can lock out
-  the sole console user and kenny has no remote console to recover with.
-- `account_create` (`{name, password, display_name?, admin?}`) — **local accounts only**, the
-  one genuinely asymmetric verb: a Microsoft account can be added to a PC only interactively.
-  Reported per account as `unsupported` on the inventory side.
-- `account_delete` (`{principal, remove_profile}`) — removes the SAM entry; for a
+  of `["network", "remote_interactive"]`. Passing `[]` clears both.
+  `SeDenyInteractiveLogonRight` is deliberately **not** exposed: it can lock out
+  the sole console user and kenny has no remote console to recover with. On Windows both
+  rights are applied via LSA account rights (this works on Windows Home, where only the
+  `secpol.msc` snap-in is missing, not the API). On Linux `remote_interactive` denies SSH
+  sign-in through a kenny-owned `sshd_config` drop-in, and `network` is reported as
+  unsupported per account — Linux has no separate network-logon plane to deny.
+- `account_create` (`{name, password, display_name?, admin?}`) — creates a local account. On
+  Windows this is the one genuinely asymmetric verb: a Microsoft account can be added to a PC
+  only interactively. On Linux there is no asymmetry.
+- `account_delete` (`{principal, remove_profile}`) — removes the account entry; for a
   Microsoft-account-backed entry this unlinks the account from this PC and does not touch the
-  cloud account. `remove_profile` additionally deletes the user profile directory.
+  cloud account. `remove_profile` additionally deletes the user's profile/home directory.
 - `account_session_action` (`{principal, action, warn_seconds?}`) — `action` ∈
   {`"lock"`, `"logoff"`}. The agent resolves the principal to its interactive session(s)
   itself and reports which it acted on in `sessions`; there is deliberately **no telemetry
   section listing who is signed in** — this returns proof of effect, not a presence log.
   `warn_seconds` (default 0) shows the user a message first. An account with no session
-  succeeds with an empty `sessions` array.
+  succeeds with an empty `sessions` array. On Linux sessions come from `systemd-logind`, and
+  `lock` needs a graphical session — a headless host reports it unsupported.
 - `password_policy_set` (`{min_length?, max_age_days?, lockout_threshold?}`) — machine-wide,
-  omitted keys are left unchanged. The result always carries `applies_to: "local_only"`
-  because a Microsoft account's password is governed by Microsoft's cloud policy and ignores
-  this entirely; consumers must surface that rather than imply full coverage.
+  omitted keys are left unchanged. The result always carries `applies_to: "local_only"`: on
+  Windows because a Microsoft account's password is governed by Microsoft's cloud policy, on
+  Linux because the policy is enforced by local PAM and does not reach directory-backed
+  (LDAP/SSSD) identities. Consumers must surface that rather than imply full coverage. Where
+  the host lacks a knob entirely, the section-level `password_policy.unsupported` says so.
+
+##### Capability negation
+
+What a **particular account on a particular host** can do is published in
+`local_accounts.accounts[].unsupported`: a map of *capability verb* → *short reason token*,
+listing only what is **not** possible. An absent verb is supported. Reason tokens are stable
+identifiers for consumers to localize, never display strings.
+
+The verb vocabulary — capability names, not tool names, so one tool can be partly available:
+
+| verb | gates |
+|---|---|
+| `set_enabled` | `account_set_enabled` |
+| `set_admin` | `account_set_admin` |
+| `deny_network` | the `network` member of `account_set_logon_rights`'s `deny` set |
+| `deny_remote_interactive` | the `remote_interactive` member of that set |
+| `delete` | `account_delete` |
+| `session_lock` | `account_session_action` with `action: "lock"` |
+| `session_logoff` | `account_session_action` with `action: "logoff"` |
+| `session_warn` | `account_session_action`'s `warn_seconds` — the *warning*, not the action |
+| `reset_password` | advisory only — kenny has no password-reset tool |
+
+Splitting `account_set_logon_rights` and `account_session_action` into two verbs each is
+deliberate: a tool can be **partly** available, and a consumer needs that granularity to
+disable one checkbox and leave the other live.
+
+Reason tokens, and where they come from:
+
+| token | source | meaning |
+|---|---|---|
+| `password_in_cloud` | account kind | a Microsoft/Entra password is not on this machine |
+| `kind_unknown` | account kind | the probe could not determine the account kind |
+| `root_account` | Linux account | uid 0 — group membership neither grants nor revokes root |
+| `admin_via_sudoers` | Linux account | admin rights come from `/etc/sudoers.d`, which kenny never writes |
+| `nologin_shell` | Linux account | the account has no login shell, and kenny does not rewrite shells |
+| `no_network_logon_concept` | Linux host | Linux has no per-account network-logon plane to deny |
+| `no_sshd` | Linux host | no SSH daemon, so there is no remote sign-in to deny |
+| `sshd_no_include` | Linux host | `sshd_config` has no `Include` line, and kenny will not add one |
+| `no_logind` | Linux host | no `systemd-logind`, so sessions cannot be enumerated |
+| `no_graphical_session` | Linux host | headless — a session can be ended but not locked |
+| `no_admin_group` | Linux host | none of `sudo`/`wheel`/`admin` exists |
+| `shadow_unreadable` | Linux host | the agent cannot read `/etc/shadow` (not running as root) |
+| `no_user_notification_channel` | Linux host | no way to warn the signed-in user first |
+
+The machine-wide `password_policy` carries the same idiom one level up in its own optional
+`unsupported` map, with its own tokens `no_pwquality` and `pam_faillock_not_enabled`.
 
 The agent enforces a **self-protection set** it will not let an operator override, refusing
 with `blocked`: the last enabled local administrator cannot be disabled, demoted, deleted, or
-given deny-logon rights, and accounts below RID 1000 cannot be deleted. This mirrors the
-`webfilter_apply` reserved-name rule — a governance call must never be able to lock everyone
-out of the machine.
+given deny-logon rights; built-in accounts (Windows RID 500/501) cannot be deleted; **and any
+action whose verb the inventory reports as `unsupported` for that account is refused**. The
+last rule is what keeps the published capability map and the enforced one from drifting apart
+— it is the same list, read at call time. This mirrors the `webfilter_apply` reserved-name
+rule: a governance call must never be able to lock everyone out of the machine.
 
 ### Server-only MCP tools (not forwarded to a single agent)
 
@@ -655,37 +722,47 @@ rules and cross-snapshot diffing) is server-side.
   }
   ```
 
-- **`local_accounts`** — local users plus Administrators-group membership, resolved by
-  SID (`S-1-5-32-544`, locale-proof). Built-ins are marked via the well-known RID
-  (`builtin_admin` -500, `builtin_guest` -501); **full SIDs never go on the wire**
-  (minimum identifying tokens, ADR-0026 stance). `password_required` mirrors the
-  `UF_PASSWD_NOTREQD` flag — it means *a blank password is permitted by policy*, **not**
-  *the account has no password*. `password_last_set` (nullable RFC3339 UTC) disambiguates:
-  it is set the moment a password is ever chosen, and `null` only for a genuinely
-  password-less account. Health rules must consult both, not `password_required` alone.
+- **`local_accounts`** — local users plus administrators-group membership. On Windows the
+  group is resolved by SID (`S-1-5-32-544`, locale-proof) and built-ins are marked via the
+  well-known RID (`builtin_admin` -500, `builtin_guest` -501); **full SIDs never go on the
+  wire** (minimum identifying tokens, ADR-0026 stance). On Linux the source is
+  `/etc/passwd` + `/etc/group` + `/etc/shadow` (+ a read-only scan of `/etc/sudoers.d`):
+  `is_admin` is uid 0 or membership in `sudo`/`wheel`/`admin`. `builtin_admin` is set for
+  **root**, which is factually the built-in, undeletable administrator — so the same guard
+  rule that protects Windows RID 500 protects it. `builtin_guest` is always `false` on
+  Linux; it has no analogue. Accounts with uid 1–999 and `nobody` are not reported at all.
+  Consumers must read `builtin_admin` together with the agent's OS: an *enabled* built-in
+  administrator is a finding on Windows (RID 500 ships disabled) and is simply how Linux
+  works. `password_required` mirrors the
+  `UF_PASSWD_NOTREQD` flag on Windows and an empty `/etc/shadow` password field on Linux —
+  it means *a blank password is permitted*, **not** *the account has no password*.
+  `password_last_set` (nullable RFC3339 UTC) disambiguates: it is set the moment a password
+  is ever chosen, and `null` only for a genuinely password-less account. Health rules must
+  consult both, not `password_required` alone.
 
   Since v0.15 this section is also the **inventory for the `account_*` governance tools**
   (ADR-0046), and each account carries four more fields:
 
-  - `kind` ∈ `local` | `microsoft` | `entra` | `unknown`, from `PrincipalSource`. A
-    Microsoft account is a SAM entry like any other — the section name still fits, and
-    `name` is the governance key for every kind.
-  - `display` — `FullName` if the account has one, else `name`. **Microsoft-account email
-    addresses never go on the wire** (ADR-0046, same rationale as the SID rule). Residual
-    imprecision, stated rather than hidden: with no `FullName` the fallback is the SAM
-    name, which Windows derives from the first five characters of the address.
-  - `deny_logon` — the LSA account rights currently denied, a subset of
-    `["network", "remote_interactive"]`. `SeDenyInteractiveLogonRight` is not reported
-    because it is not settable through kenny.
-  - `unsupported` — map of governance verb → short reason token, listing only what this
-    account *cannot* do; **an absent verb is supported**. Reason tokens are stable
-    identifiers for consumers to localize, not display strings. Today the only entries are
-    `create_local` → `msa_added_interactively` and `reset_password` → `password_in_cloud`
-    on non-local accounts.
+  - `kind` ∈ `local` | `microsoft` | `entra` | `unknown`, from `PrincipalSource` on Windows.
+    A Microsoft account is a SAM entry like any other — the section name still fits, and
+    `name` is the governance key for every kind. Every Linux account is `local`.
+  - `display` — `FullName` (Windows) or the first GECOS field (Linux) if the account has
+    one, else `name`. **Microsoft-account email addresses never go on the wire** (ADR-0046,
+    same rationale as the SID rule). Residual imprecision, stated rather than hidden: with
+    no `FullName` the fallback is the SAM name, which Windows derives from the first five
+    characters of the address.
+  - `deny_logon` — the sign-in restrictions currently in force, a subset of
+    `["network", "remote_interactive"]` — LSA account rights on Windows, an sshd
+    `DenyUsers` drop-in on Linux (where only `remote_interactive` is settable).
+    `SeDenyInteractiveLogonRight` is not reported because it is not settable through kenny.
+  - `unsupported` — the per-account capability negation map; the verb and reason vocabulary
+    is defined under "Capability negation" in the tool catalog above.
 
   The section-level `password_policy` is machine-wide and carries its own
-  `applies_to: "local_only"` — Microsoft accounts follow Microsoft's cloud password policy
-  and are unaffected. Any field may be `null` when the probe could not read it.
+  `applies_to: "local_only"` — Microsoft accounts follow Microsoft's cloud password policy,
+  and on Linux the policy is local PAM and does not reach directory-backed identities.
+  Any field may be `null` when the probe could not read it; an optional `unsupported` map
+  names the fields this host cannot set at all.
 
   ```json
   "local_accounts": {
@@ -696,15 +773,18 @@ rules and cross-snapshot diffing) is server-side.
   }
   ```
 
-- **`logon_failures`** — failed interactive/network sign-in attempts (Windows Security
-  event 4625) aggregated per account over a 24 h window. Reported per *named account*
-  because an authentication attempt belongs to the identity plane that ADR-0046 governs,
-  not to the behaviour plane that stays aggregated — `screen_time` and `web_activity` are
-  unaffected by that decision. Attempts against names with no matching SAM account collapse
-  into `unmatched_count` (a mistyped or probed username is not an account). **No source
-  addresses**: `types` (⊆ `interactive` | `network` | `remote`) already separates "someone
-  tried a password at the console" from "something is hammering RDP", which is what the
-  distinction is for. `accounts` is capped at 50 entries, sorted by descending count.
+- **`logon_failures`** — failed sign-in attempts aggregated per account over a 24 h window.
+  The source is Windows Security event 4625, or on Linux the sshd/PAM authentication
+  failures in the journal (falling back to `/var/log/auth.log`). Reported per *named
+  account* because an authentication attempt belongs to the identity plane that ADR-0046
+  governs, not to the behaviour plane that stays aggregated — `screen_time` and
+  `web_activity` are unaffected by that decision. Attempts against names with no matching
+  local account collapse into `unmatched_count` (a mistyped or probed username is not an
+  account). **No source addresses**: `types` (⊆ `interactive` | `network` | `remote`)
+  already separates "someone tried a password at the console" from "something is hammering
+  RDP", which is what the distinction is for. On Linux `network` does not occur — SSH is
+  `remote`, console/display-manager attempts are `interactive`, and there is no third plane
+  to report. `accounts` is capped at 50 entries, sorted by descending count.
 
   ```json
   "logon_failures": {
@@ -769,11 +849,24 @@ for fleet aggregation. These thresholds are illustrative of the data-driven rule
 
 ## Versioning
 
-`PROTOCOL_VERSION = "0.15"`. Both implementations expose this constant; from v0.8 the
+`PROTOCOL_VERSION = "0.16"`. Both implementations expose this constant; from v0.8 the
 agent puts it on the wire in `register.protocol` to select the mutual-auth handshake
 (compare versions **numerically per component**, not lexically — `"0.10"` is newer than
 `"0.9"`). Bump on any breaking change to a frame or tool schema.
 
+- `0.16` — account governance is no longer Windows-only (ADR-0047). The seven `account_*`
+  /`password_policy_set` tools **lose their OS scope**: the server forwards them to Linux
+  agents too, and the agent serves them from `/etc/passwd`/`/etc/shadow`/`/etc/group`,
+  `usermod`/`useradd`/`userdel`, an sshd `DenyUsers` drop-in, `loginctl`, and
+  pwquality/login.defs/faillock. `logon_failures` gained a Linux arm (sshd/PAM failures from
+  the journal) and is no longer skipped for non-Windows agents. No frame or field shape
+  changes: every Linux asymmetry is published in the existing per-account `unsupported` map,
+  whose verb and reason vocabulary is now written down explicitly (see "Capability
+  negation"), and the agent's self-protection guard refuses any action whose verb that map
+  names — so the published capability set and the enforced one cannot drift. Additive
+  extras: an optional `password_policy.unsupported` map, and `password_required` /
+  `password_last_set` now carrying real values on Linux. Existing Windows payloads and
+  fixtures are byte-identical.
 - `0.15` — added account governance across local **and** Microsoft accounts (ADR-0046):
   seven tools (`account_set_enabled`, `account_set_admin`, `account_set_logon_rights`,
   `account_create`, `account_delete`, `account_session_action`, `password_policy_set`), four

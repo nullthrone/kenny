@@ -34,7 +34,11 @@ pub fn collect() -> Section {
     {
         windows_impl::collect()
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        linux_impl::collect()
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         Section::with_fields(Status::Ok, "n/a on this platform", core::empty())
     }
@@ -84,12 +88,26 @@ pub mod core {
     /// Accounts are sorted by descending count, then by name so the output is
     /// deterministic for equal counts (fixtures and diffs depend on that).
     pub fn shape(events: &[(String, i64)], known_accounts: &[String]) -> Value {
+        let tokens: Vec<(String, &'static str)> = events
+            .iter()
+            .map(|(name, logon_type)| (name.clone(), logon_type_token(*logon_type)))
+            .collect();
+        shape_tokens(&tokens, known_accounts)
+    }
+
+    /// As [`shape`], but taking events already classified into the wire vocabulary.
+    ///
+    /// The Linux arm has no logon-type numbers to translate — it reads a service tag
+    /// (`sshd`, `sudo`, `gdm-password`) and classifies directly. Routing it through
+    /// synthetic Windows type codes would bake Windows numerology into a Linux
+    /// parser; both arms instead meet here, on one aggregation path (ADR-0047).
+    pub fn shape_tokens(events: &[(String, &'static str)], known_accounts: &[String]) -> Value {
         let known: Vec<String> = known_accounts.iter().map(|n| n.to_lowercase()).collect();
         let mut per_account: BTreeMap<String, (u64, Vec<&'static str>)> = BTreeMap::new();
         let mut unmatched = 0u64;
         let mut total = 0u64;
 
-        for (raw_name, logon_type) in events {
+        for (raw_name, token) in events {
             let name = raw_name.trim();
             if name.is_empty() || name == "-" {
                 continue;
@@ -105,8 +123,7 @@ pub mod core {
             };
             let entry = per_account.entry(canonical).or_insert((0, Vec::new()));
             entry.0 += 1;
-            let token = logon_type_token(*logon_type);
-            if !entry.1.contains(&token) {
+            if !entry.1.contains(token) {
                 entry.1.push(token);
             }
         }
@@ -135,6 +152,126 @@ pub mod core {
             "count": total,
             "truncated": truncated,
         })
+    }
+
+    /// Classify a syslog service tag into the wire vocabulary.
+    ///
+    /// `sshd` is the Linux remote sign-in plane, so it maps to `remote` — the same
+    /// equivalence `deny_logon`'s `remote_interactive` makes, which keeps one story
+    /// across both features. Everything else kenny recognizes happens at the machine:
+    /// a console login, a display manager, or a failed `sudo`/`su` elevation. Windows
+    /// logs a 4625 with logon type 2 for a failed UAC elevation too, so counting
+    /// `sudo` here is closer to the Windows behaviour, not further from it.
+    ///
+    /// `network` is deliberately unreachable on Linux: there is no per-account
+    /// network-logon plane, and an absent token means "no failures of that kind",
+    /// which is true, rather than a coverage claim (ADR-0047).
+    ///
+    /// Returns `None` for a tag kenny does not recognize, so unrelated auth-facility
+    /// chatter (cron, dbus, systemd) is dropped rather than counted as a sign-in.
+    // Linux-only parsing, kept in `core` so it is unit-tested everywhere; off
+    // Linux the tests are its only consumers. `logon_type_token` above is the
+    // Windows-only mirror, covered by this module's own `not(windows)` allow.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub fn service_token(tag: &str) -> Option<&'static str> {
+        // OpenSSH 9.8+ splits the listener into `sshd-session`.
+        if tag.starts_with("sshd") {
+            return Some("remote");
+        }
+        match tag {
+            "sudo" | "su" | "login" | "gdm-password" | "gdm" | "sddm" | "lightdm" | "polkit"
+            | "polkitd" | "xdm" | "systemd-logind" => Some("interactive"),
+            _ => None,
+        }
+    }
+
+    /// Split a syslog line into its service tag and message.
+    ///
+    /// Lines look like `Jul 31 12:00:00 host sshd[1234]: Failed password for …`.
+    /// The tag is the last token before the first `: `, with any `[pid]` stripped.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    fn split_tag(line: &str) -> Option<(&str, &str)> {
+        let (prefix, msg) = line.split_once(": ")?;
+        let tag = prefix.split_whitespace().next_back()?;
+        let tag = tag.split('[').next()?;
+        (!tag.is_empty()).then_some((tag, msg))
+    }
+
+    /// Pull the target account out of an authentication-failure message.
+    ///
+    /// Ordered by specificity. `user=` (the PAM form) comes first because it is the
+    /// one field that is unambiguous; the sshd prose forms follow.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    fn extract_user(msg: &str) -> Option<&str> {
+        let after = |marker: &str| -> Option<&str> {
+            let rest = msg.split_once(marker)?.1.trim_start();
+            let end = rest
+                .find(|c: char| c.is_whitespace() || c == ',' || c == '\'')
+                .unwrap_or(rest.len());
+            Some(&rest[..end]).filter(|u| !u.is_empty())
+        };
+        // pam_unix(sshd:auth): authentication failure; … rhost=… user=papa
+        if let Some(user) = after(" user=") {
+            return Some(user);
+        }
+        // Failed password for invalid user bob from …  /  Failed publickey for bob …
+        for marker in [" for invalid user ", " for illegal user ", " for "] {
+            if msg.starts_with("Failed ") || msg.starts_with("error: maximum authentication") {
+                if let Some(user) = after(marker) {
+                    return Some(user);
+                }
+            }
+        }
+        // Invalid user bob from 1.2.3.4
+        if msg.starts_with("Invalid user ") {
+            return after("Invalid user ");
+        }
+        // FAILED LOGIN (1) on '/dev/tty1' FOR 'papa', Authentication failure
+        if msg.contains("FAILED LOGIN") {
+            return after(" FOR '");
+        }
+        None
+    }
+
+    /// Does this message describe a *failed authentication*?
+    ///
+    /// The auth facility carries plenty of successful and unrelated events; matching
+    /// the failure phrasings explicitly keeps a successful `sudo` out of the count.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    fn is_failure(msg: &str) -> bool {
+        msg.contains("authentication failure")
+            || msg.contains("Failed password")
+            || msg.contains("Failed publickey")
+            || msg.contains("Failed keyboard-interactive")
+            || msg.contains("Invalid user")
+            || msg.contains("FAILED LOGIN")
+            || msg.contains("incorrect password attempt")
+    }
+
+    /// Parse syslog/journal lines into classified failure events.
+    ///
+    /// Lives in the portable core so the patterns are unit-tested on every platform,
+    /// including Windows CI, exactly as `parse_system_access` is.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub fn parse_auth_lines<'a>(
+        lines: impl Iterator<Item = &'a str>,
+    ) -> Vec<(String, &'static str)> {
+        let mut out = Vec::new();
+        for line in lines {
+            let Some((tag, msg)) = split_tag(line) else {
+                continue;
+            };
+            let Some(token) = service_token(tag) else {
+                continue;
+            };
+            if !is_failure(msg) {
+                continue;
+            }
+            if let Some(user) = extract_user(msg) {
+                out.push((user.to_string(), token));
+            }
+        }
+        out
     }
 
     /// Human summary for the section header.
@@ -181,6 +318,67 @@ pub mod core {
             );
             assert_eq!(out["accounts"][1]["name"], "kid");
             assert_eq!(out["accounts"][1]["types"], json!(["interactive"]));
+        }
+
+        #[test]
+        fn auth_lines_classify_ssh_as_remote_and_the_console_as_interactive() {
+            let log = "\
+Jul 31 10:00:01 nas sshd[1201]: Failed password for papa from 10.0.0.5 port 51234 ssh2
+Jul 31 10:00:04 nas sshd[1201]: Failed password for invalid user admin from 10.0.0.5 port 51235 ssh2
+Jul 31 10:00:09 nas sshd-session[1300]: Failed publickey for kid from 10.0.0.9 port 51240 ssh2
+Jul 31 10:01:00 nas sshd[1400]: Invalid user oracle from 203.0.113.7 port 40000
+Jul 31 10:02:00 nas sudo[2000]: pam_unix(sudo:auth): authentication failure; logname=kid uid=1001 euid=0 tty=/dev/pts/0 ruser=kid rhost=  user=papa
+Jul 31 10:03:00 nas login[900]: FAILED LOGIN (1) on '/dev/tty1' FOR 'kid', Authentication failure
+Jul 31 10:04:00 nas sshd[1500]: Accepted password for papa from 10.0.0.5 port 51299 ssh2
+Jul 31 10:05:00 nas CRON[3000]: pam_unix(cron:session): session opened for user root
+";
+            let events = parse_auth_lines(log.lines());
+            assert_eq!(
+                events,
+                vec![
+                    ("papa".to_string(), "remote"),
+                    ("admin".to_string(), "remote"),
+                    ("kid".to_string(), "remote"),
+                    ("oracle".to_string(), "remote"),
+                    // A failed sudo is an elevation attempt at the machine, which is
+                    // what Windows logs as logon type 2 as well.
+                    ("papa".to_string(), "interactive"),
+                    ("kid".to_string(), "interactive"),
+                ],
+                "a successful sign-in and unrelated cron chatter must not be counted"
+            );
+        }
+
+        #[test]
+        fn linux_never_reports_the_network_type() {
+            // `network` has no Linux meaning; an absent token says "no failures of
+            // that kind", which is true, rather than claiming coverage (ADR-0047).
+            assert_eq!(service_token("sshd"), Some("remote"));
+            assert_eq!(service_token("sshd-session"), Some("remote"));
+            assert_eq!(service_token("gdm-password"), Some("interactive"));
+            assert_eq!(service_token("cron"), None);
+            assert_eq!(service_token("systemd"), None);
+        }
+
+        #[test]
+        fn shape_tokens_is_the_same_aggregation_as_shape() {
+            let events = vec![
+                ("papa".to_string(), "interactive"),
+                ("papa".to_string(), "interactive"),
+                ("papa".to_string(), "remote"),
+                ("kid".to_string(), "interactive"),
+            ];
+            let by_token = shape_tokens(&events, &known());
+            let by_type = shape(
+                &[
+                    ("papa".to_string(), 2),
+                    ("papa".to_string(), 2),
+                    ("papa".to_string(), 10),
+                    ("kid".to_string(), 2),
+                ],
+                &known(),
+            );
+            assert_eq!(by_token, by_type);
         }
 
         #[test]
@@ -308,6 +506,84 @@ ConvertTo-Json -Compress -Depth 4 ([pscustomobject]@{ events = @($rows); known =
     }
 }
 
+#[cfg(target_os = "linux")]
+mod linux_impl {
+    use std::process::Command;
+
+    use super::*;
+    use crate::telemetry::collectors::local_accounts::linux_impl as accounts;
+
+    /// Cap on how much of a plain-text auth log is read, in bytes.
+    ///
+    /// The journal query is already time-bounded; a file fallback is not, and a
+    /// long-lived server's `auth.log` can be very large. The tail is what the last
+    /// 24 h are in, and a bounded read cannot turn a snapshot into an OOM.
+    const MAX_LOG_BYTES: u64 = 2 * 1024 * 1024;
+
+    /// Auth events from the journal, time-bounded to the reporting window.
+    ///
+    /// `-o short` keeps the `tag[pid]:` prefix that carries the service name — the
+    /// thing the classification depends on — which `-o cat` would strip.
+    fn journal() -> Option<String> {
+        let out = Command::new("journalctl")
+            .args([
+                "--since",
+                "-24h",
+                "--facility=auth,authpriv",
+                "--no-pager",
+                "-q",
+                "-o",
+                "short",
+            ])
+            .output()
+            .ok()?;
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+            .filter(|text| !text.trim().is_empty())
+    }
+
+    /// Debian's `auth.log` / RHEL's `secure`, read from the tail.
+    ///
+    /// Syslog timestamps carry no year, so the 24 h window cannot be enforced from
+    /// the file itself; the byte cap is the approximation. Stated rather than
+    /// hidden — this is the fallback for hosts without a journal.
+    fn log_file() -> Option<String> {
+        use std::io::{Read, Seek, SeekFrom};
+        for path in ["/var/log/auth.log", "/var/log/secure"] {
+            let Ok(mut file) = std::fs::File::open(path) else {
+                continue;
+            };
+            let len = file.metadata().ok()?.len();
+            if len > MAX_LOG_BYTES {
+                file.seek(SeekFrom::End(-(MAX_LOG_BYTES as i64))).ok()?;
+            }
+            let mut buf = Vec::new();
+            file.read_to_end(&mut buf).ok()?;
+            return Some(String::from_utf8_lossy(&buf).into_owned());
+        }
+        None
+    }
+
+    pub fn collect() -> Section {
+        // Neither source available (no journal, no readable log): report the same
+        // empty payload as an unreadable Windows Security log rather than faulting.
+        let Some(text) = journal().or_else(log_file) else {
+            return Section::with_fields(Status::Ok, "n/a on this platform", core::empty());
+        };
+        let events = core::parse_auth_lines(text.lines());
+        // Matched against the same account set the `local_accounts` panel lists, so
+        // an attempt against a service account collapses into `unmatched_count`
+        // instead of naming a row the operator cannot see.
+        let known = std::fs::read_to_string("/etc/passwd")
+            .map(|passwd| accounts::login_account_names(&passwd))
+            .unwrap_or_default();
+
+        let payload = core::shape_tokens(&events, &known);
+        Section::with_fields(Status::Ok, core::summary(&payload), payload)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -323,7 +599,7 @@ mod tests {
         assert_eq!(v["window_hours"], 24);
     }
 
-    #[cfg(not(windows))]
+    #[cfg(all(not(windows), not(target_os = "linux")))]
     #[test]
     fn off_windows_is_ok_stub() {
         let v = collect().into_value();

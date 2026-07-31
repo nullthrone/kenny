@@ -48,6 +48,10 @@ def _age_days(value: Any, *, now: datetime) -> float | None:
 
 # A rule maps a section payload -> (status, reason) or None to defer.
 Rule = Callable[[dict[str, Any], datetime], "tuple[Status, str] | None"]
+# A rule that also needs the agent's OS. Listed in :data:`OS_AWARE_RULES` and
+# called with the extra argument by :func:`evaluate_section`; the OS parameter is
+# keyword-defaulted so such a rule still satisfies :data:`Rule`.
+OsAwareRule = Callable[[dict[str, Any], datetime, str], "tuple[Status, str] | None"]
 
 
 def _rule_disk(payload: dict[str, Any], now: datetime) -> "tuple[Status, str] | None":
@@ -435,7 +439,10 @@ def _rule_listening_ports(payload: dict[str, Any], now: datetime) -> "tuple[Stat
     return None
 
 
-def _rule_local_accounts(payload: dict[str, Any], now: datetime) -> "tuple[Status, str] | None":
+def _rule_local_accounts(
+    payload: dict[str, Any], now: datetime, agent_os: str = "windows"
+) -> "tuple[Status, str] | None":
+    is_windows = _is_windows(agent_os)
     warns: list[str] = []
     for account in payload.get("accounts") or []:
         if not account.get("enabled"):
@@ -453,7 +460,11 @@ def _rule_local_accounts(payload: dict[str, Any], now: datetime) -> "tuple[Statu
             and account.get("password_last_set") is None
         ):
             return "crit", f"admin '{account.get('name', '?')}' requires no password"
-        if account.get("builtin_admin"):
+        # An *enabled* built-in administrator is a finding on Windows, where RID 500
+        # ships disabled and something must have turned it on. On Linux the same
+        # flag marks root, which is enabled by definition — scoring it would put
+        # every Linux host at a permanent warn for being a Linux host (ADR-0047).
+        if is_windows and account.get("builtin_admin"):
             warns.append("built-in Administrator enabled")
         if account.get("builtin_guest"):
             warns.append("Guest account enabled")
@@ -549,7 +560,7 @@ def _rule_net_quality(payload: dict[str, Any], now: datetime) -> "tuple[Status, 
 
 
 # Section name -> rule. Easy to extend: add an entry.
-RULES: dict[str, Rule] = {
+RULES: dict[str, Rule | OsAwareRule] = {
     "disk": _rule_disk,
     "defender": _rule_defender,
     "win_update": _rule_win_update,
@@ -569,14 +580,23 @@ RULES: dict[str, Rule] = {
 
 
 # Rules whose section is a Windows-only concept (Microsoft Defender, Windows
-# Update / KB numbers, the registry reboot-pending flags, System Restore /
-# File History / OneDrive backup evidence, and the Security-log sign-in failures
-# behind account governance). A non-Windows agent emits an
+# Update / KB numbers, the registry reboot-pending flags, and System Restore /
+# File History / OneDrive backup evidence). A non-Windows agent emits an
 # "n/a on this platform" stub for these; scoring them would mislead. They are
 # skipped for agents whose OS is not Windows (see ADR-0035).
+#
+# ``logon_failures`` was in this set until ADR-0047 gave it a real Linux arm
+# (sshd/PAM failures from the journal). Its thresholds are OS-neutral, so it is
+# now scored everywhere.
 WINDOWS_ONLY_SECTIONS: frozenset[str] = frozenset(
-    {"defender", "win_update", "reboot_pending", "backup_status", "logon_failures"}
+    {"defender", "win_update", "reboot_pending", "backup_status"}
 )
+
+# Sections whose *rule* needs to know the agent's OS, as opposed to sections that
+# are skipped wholesale. Kept as a separate registry rather than widening every
+# rule's signature: exactly one rule needs this today, and an explicit list is
+# greppable in a way an inspected signature is not.
+OS_AWARE_RULES: frozenset[str] = frozenset({"local_accounts"})
 
 
 def _is_windows(agent_os: str | None) -> bool:
@@ -584,7 +604,11 @@ def _is_windows(agent_os: str | None) -> bool:
 
 
 def evaluate_section(
-    name: str, payload: dict[str, Any], *, now: datetime | None = None
+    name: str,
+    payload: dict[str, Any],
+    *,
+    now: datetime | None = None,
+    agent_os: str = "windows",
 ) -> dict[str, Any]:
     """Return ``{status, summary, reason?}`` for one section after applying rules."""
 
@@ -594,7 +618,9 @@ def evaluate_section(
     rule = RULES.get(name)
     if rule is None:
         return {"status": reported, "summary": summary}
-    outcome = rule(payload, now)
+    outcome = (
+        rule(payload, now, agent_os) if name in OS_AWARE_RULES else rule(payload, now)
+    )
     if outcome is None:
         return {"status": reported, "summary": summary}
     rule_status, reason = outcome
@@ -626,6 +652,8 @@ def evaluate_snapshot(
     for name, payload in snapshot.items():
         if not is_windows and name in WINDOWS_ONLY_SECTIONS:
             continue
-        sections[name] = evaluate_section(name, dict(payload), now=now)
+        sections[name] = evaluate_section(
+            name, dict(payload), now=now, agent_os=agent_os
+        )
     overall = worst(*(s["status"] for s in sections.values())) if sections else "ok"
     return {"overall": overall, "sections": sections}

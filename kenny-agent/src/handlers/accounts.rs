@@ -39,26 +39,41 @@ const MAX_WARN_SECONDS: u64 = 60;
 ///
 /// Only the variants the self-protection guard needs to distinguish; the handlers
 /// carry their own arguments.
-#[cfg_attr(not(windows), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     Disable,
     Demote,
-    DenyLogon,
+    /// Deny one specific logon right — the capability verb is per right, because a
+    /// host can support denying SSH while having no network-logon plane at all.
+    DenyLogon(&'static str),
     Delete,
-    /// Lock or log off a live session — never guarded, see [`guard`].
-    Session,
+    /// Lock or log off a live session — never *guarded* for lockout, but still
+    /// subject to the capability check, see [`guard`].
+    Session(&'static str),
 }
 
-#[cfg_attr(not(windows), allow(dead_code))]
 impl Action {
     fn verb(self) -> &'static str {
         match self {
             Action::Disable => "disable",
             Action::Demote => "remove administrator rights from",
-            Action::DenyLogon => "deny logon rights to",
+            Action::DenyLogon(_) => "deny logon rights to",
             Action::Delete => "delete",
-            Action::Session => "act on the session of",
+            Action::Session(_) => "act on the session of",
+        }
+    }
+
+    /// The capability verb this action needs, as published in the inventory's
+    /// per-account `unsupported` map (see docs/protocol.md § Capability negation).
+    fn capability(self) -> &'static str {
+        match self {
+            Action::Disable => "set_enabled",
+            Action::Demote => "set_admin",
+            Action::DenyLogon("network") => "deny_network",
+            Action::DenyLogon(_) => "deny_remote_interactive",
+            Action::Delete => "delete",
+            Action::Session("lock") => "session_lock",
+            Action::Session(_) => "session_logoff",
         }
     }
 }
@@ -78,9 +93,17 @@ impl Action {
 ///    Windows would refuse anyway, and failing here gives a clear reason instead of
 ///    an opaque cmdlet error.
 ///
-/// Session actions are never guarded: locking or logging off an administrator is
-/// reversible by signing back in, so it cannot lock anyone out.
-#[cfg_attr(not(windows), allow(dead_code))]
+/// 3. **The inventory's own capability map is enforced.** If the account publishes
+///    this action's verb in its `unsupported` map, the call is refused with the
+///    reason token. That is what keeps the capability set kenny *advertises* and the
+///    one it *enforces* from drifting apart — they are the same list, read at call
+///    time (ADR-0047). It is also how root, a shell-less account, a host without
+///    `sshd` and a headless server are all protected without a single
+///    platform-specific rule in this function.
+///
+/// Session actions are never guarded *for lockout*: locking or logging off an
+/// administrator is reversible by signing back in, so it cannot lock anyone out.
+/// They are still subject to rule 3.
 pub fn guard(
     action: Action,
     principal: &str,
@@ -99,7 +122,25 @@ pub fn guard(
             format!("no account named {principal:?} on this machine"),
         ));
     };
-    if action == Action::Session {
+    // Rule 3: refuse exactly what the inventory says this account cannot do. Runs
+    // before the lockout rules so the more specific reason is the one reported.
+    if let Some(reason) = target
+        .get("unsupported")
+        .and_then(Value::as_object)
+        .and_then(|map| map.get(action.capability()))
+        .and_then(Value::as_str)
+    {
+        return Err((
+            ErrorCode::Blocked,
+            format!(
+                "cannot {} {principal:?} on this host: {} ({reason})",
+                action.verb(),
+                unsupported_reason(reason)
+            ),
+        ));
+    }
+
+    if matches!(action, Action::Session(_)) {
         return Ok(());
     }
 
@@ -141,6 +182,36 @@ pub fn guard(
     Ok(())
 }
 
+/// Expand a wire reason token into a sentence for the `blocked` message.
+///
+/// The wire carries stable tokens so consumers can localize; this is the agent's own
+/// rendering for the one place a human reads the refusal directly — the tool result.
+/// The dashboard has its own table and does not use this.
+fn unsupported_reason(token: &str) -> &str {
+    match token {
+        "root_account" => "uid 0 is root, and group membership neither grants nor revokes that",
+        "admin_via_sudoers" => {
+            "its administrator rights come from a sudoers rule, which kenny never edits"
+        }
+        "nologin_shell" => "the account has no login shell, and kenny does not rewrite shells",
+        "no_network_logon_concept" => "this OS has no per-account network sign-in to deny",
+        "no_sshd" => "there is no SSH daemon, so there is no remote sign-in to deny",
+        "sshd_no_include" => {
+            "sshd_config has no Include line for its drop-in directory, and kenny will not add one"
+        }
+        "no_logind" => "there is no session manager to act through",
+        "no_graphical_session" => "there is no graphical session to lock",
+        "no_admin_group" => "this host has no sudo, wheel or admin group",
+        "shadow_unreadable" => {
+            "kenny cannot read /etc/shadow, so it is not running with the \
+                                privileges this needs"
+        }
+        "password_in_cloud" => "the password lives in the account's cloud identity",
+        "kind_unknown" => "kenny could not determine what kind of account this is",
+        other => other,
+    }
+}
+
 /// Validate a `deny` set for `account_set_logon_rights`.
 ///
 /// The set is absolute (it replaces whatever is configured), so `[]` clears both.
@@ -177,6 +248,55 @@ pub fn validate_deny_rights(deny: &[String]) -> Result<Vec<String>, (ErrorCode, 
             .unwrap_or(usize::MAX)
     });
     Ok(out)
+}
+
+/// Map a validated logon right back to its `'static` form.
+///
+/// [`validate_deny_rights`] has already proved the string is one of [`DENY_RIGHTS`];
+/// this only recovers the borrow so [`Action::DenyLogon`] can carry it.
+fn static_right(right: &str) -> &'static str {
+    DENY_RIGHTS
+        .iter()
+        .copied()
+        .find(|d| *d == right)
+        .unwrap_or("remote_interactive")
+}
+
+/// Validate a name for `account_create`.
+///
+/// Neither platform accepted arbitrary text before: Windows built a PowerShell
+/// literal and relied on quoting, Linux would pass the name to `useradd`. Rejecting
+/// the hostile shapes once, in the portable layer, means neither arm has to be the
+/// last line of defence — and the rule is exercised on Linux CI regardless of which
+/// arm is compiled.
+///
+/// The accepted set is deliberately narrower than either OS allows: a family fleet
+/// has no need for account names that are also shell metacharacters.
+pub fn validate_new_account_name(name: &str) -> Result<(), (ErrorCode, String)> {
+    const MAX_LEN: usize = 32;
+    if name.len() > MAX_LEN {
+        return Err((
+            ErrorCode::BadArgs,
+            format!("name must be at most {MAX_LEN} characters"),
+        ));
+    }
+    if name.starts_with('-') {
+        // A leading dash turns the name into an option for every POSIX tool.
+        return Err((
+            ErrorCode::BadArgs,
+            "name must not start with '-'".to_string(),
+        ));
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
+    {
+        return Err((
+            ErrorCode::BadArgs,
+            "name may contain only letters, digits, '.', '_' and '-'".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// Validate `password_policy_set` arguments, returning the fields actually set.
@@ -248,11 +368,11 @@ fn bool_arg(args: &Value, key: &str) -> Result<bool, (ErrorCode, String)> {
         .ok_or_else(|| (ErrorCode::BadArgs, format!("{key} must be a boolean")))
 }
 
-#[cfg_attr(windows, allow(dead_code))]
+#[cfg_attr(any(windows, target_os = "linux"), allow(dead_code))]
 fn unsupported(tool: &str) -> (ErrorCode, String) {
     (
         ErrorCode::Unsupported,
-        format!("{tool} is only available on Windows"),
+        format!("{tool} is not available on this operating system"),
     )
 }
 
@@ -267,7 +387,15 @@ pub async fn set_enabled(args: Value) -> Result<Value, (ErrorCode, String)> {
         }
         windows_impl::set_enabled(&principal, enabled)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        // Guarded in both directions, unlike Windows: on Linux the inventory also
+        // publishes *restore* restrictions (a shell-less account, an unreadable
+        // /etc/shadow), and those must be refused rather than silently no-op.
+        guard(Action::Disable, &principal, &linux_impl::inventory())?;
+        linux_impl::set_enabled(&principal, enabled)
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         let _ = (principal, enabled);
         Err(unsupported("account_set_enabled"))
@@ -286,7 +414,15 @@ pub async fn set_admin(args: Value) -> Result<Value, (ErrorCode, String)> {
         }
         windows_impl::set_admin(&principal, admin)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        // Checked for promotion too: root and a sudoers-granted admin publish
+        // `set_admin` as unsupported, and promoting them would report a change kenny
+        // did not make.
+        guard(Action::Demote, &principal, &linux_impl::inventory())?;
+        linux_impl::set_admin(&principal, admin)
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         let _ = (principal, admin);
         Err(unsupported("account_set_admin"))
@@ -306,12 +442,28 @@ pub async fn set_logon_rights(args: Value) -> Result<Value, (ErrorCode, String)>
     let deny = validate_deny_rights(&requested)?;
     #[cfg(windows)]
     {
-        if !deny.is_empty() {
-            guard(Action::DenyLogon, &principal, &windows_impl::inventory())?;
+        for right in &deny {
+            guard(
+                Action::DenyLogon(static_right(right)),
+                &principal,
+                &windows_impl::inventory(),
+            )?;
         }
         windows_impl::set_logon_rights(&principal, &deny)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        let inventory = linux_impl::inventory();
+        for right in &deny {
+            guard(
+                Action::DenyLogon(static_right(right)),
+                &principal,
+                &inventory,
+            )?;
+        }
+        linux_impl::set_logon_rights(&principal, &deny)
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         let _ = (principal, deny);
         Err(unsupported("account_set_logon_rights"))
@@ -339,11 +491,16 @@ pub async fn create(args: Value) -> Result<Value, (ErrorCode, String)> {
         .unwrap_or("")
         .to_string();
     let admin = args.get("admin").and_then(Value::as_bool).unwrap_or(false);
+    validate_new_account_name(&name)?;
     #[cfg(windows)]
     {
         windows_impl::create(&name, &password, &display_name, admin)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        linux_impl::create(&name, &password, &display_name, admin)
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         let _ = (name, password, display_name, admin);
         Err(unsupported("account_create"))
@@ -363,7 +520,12 @@ pub async fn delete(args: Value) -> Result<Value, (ErrorCode, String)> {
         guard(Action::Delete, &principal, &windows_impl::inventory())?;
         windows_impl::delete(&principal, remove_profile)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        guard(Action::Delete, &principal, &linux_impl::inventory())?;
+        linux_impl::delete(&principal, remove_profile)
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         let _ = (principal, remove_profile);
         Err(unsupported("account_delete"))
@@ -398,14 +560,28 @@ pub async fn session_action(args: Value) -> Result<Value, (ErrorCode, String)> {
             format!("warn_seconds must be between 0 and {MAX_WARN_SECONDS}"),
         ));
     }
+    let session_verb = if action == "lock" { "lock" } else { "logoff" };
     #[cfg(windows)]
     {
-        guard(Action::Session, &principal, &windows_impl::inventory())?;
+        guard(
+            Action::Session(session_verb),
+            &principal,
+            &windows_impl::inventory(),
+        )?;
         windows_impl::session_action(&principal, &action, warn_seconds).await
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
     {
-        let _ = (principal, action, warn_seconds);
+        guard(
+            Action::Session(session_verb),
+            &principal,
+            &linux_impl::inventory(),
+        )?;
+        linux_impl::session_action(&principal, &action).await
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
+    {
+        let _ = (principal, action, warn_seconds, session_verb);
         Err(unsupported("account_session_action"))
     }
 }
@@ -421,10 +597,765 @@ pub async fn password_policy_set(args: Value) -> Result<Value, (ErrorCode, Strin
     {
         windows_impl::password_policy_set(&fields)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        linux_impl::password_policy_set(&fields)
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         let _ = fields;
         Err(unsupported("password_policy_set"))
+    }
+}
+
+/// Linux governance, on the `/etc/passwd` + `/etc/shadow` + `/etc/group` layer plus
+/// `systemd-logind` and PAM (ADR-0047).
+///
+/// Two rules run through everything here:
+///
+/// 1. **Every command is an argv array, never a shell string.** Unlike the Windows
+///    arm, which must build PowerShell text and quote into it, nothing on this side
+///    is ever parsed by a shell — so an account name cannot become an injection.
+/// 2. **The mechanism is separated from the execution.** Each verb has a pure
+///    `plan_*` function returning the argv lists it intends to run, unit-tested on
+///    CI without root, and a thin executor. The interesting half is therefore the
+///    tested half.
+///
+/// kenny deliberately never writes `/etc/pam.d` or `/etc/sudoers`: a mistake in
+/// either locks out authentication or sudo for the whole machine, and neither is
+/// needed for anything in the tool catalog.
+#[cfg(target_os = "linux")]
+mod linux_impl {
+    use std::process::Command;
+
+    use super::*;
+    use crate::telemetry::collectors::local_accounts::{self, linux_impl as inv};
+
+    /// Current account inventory for the self-protection guard.
+    ///
+    /// Re-runs the telemetry collector rather than caching, exactly as the Windows
+    /// arm does: the guard must judge the machine as it is *now*, and this way it
+    /// can never disagree with what the dashboard showed.
+    pub fn inventory() -> Vec<Value> {
+        local_accounts::collect()
+            .into_value()
+            .get("accounts")
+            .and_then(|a| a.as_array().cloned())
+            .unwrap_or_default()
+    }
+
+    /// Run one argv, mapping a non-zero exit to `exec_failed` with the tool's own
+    /// stderr — which is nearly always the actionable message ("user is currently
+    /// used by process 1234").
+    fn run(argv: &[String], tool: &str) -> Result<(), (ErrorCode, String)> {
+        let (program, args) = argv
+            .split_first()
+            .ok_or_else(|| (ErrorCode::Internal, format!("{tool}: empty command")))?;
+        let out = Command::new(program).args(args).output().map_err(|e| {
+            (
+                ErrorCode::ExecFailed,
+                format!("{tool}: could not run {program}: {e}"),
+            )
+        })?;
+        if out.status.success() {
+            return Ok(());
+        }
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let detail = if stderr.trim().is_empty() {
+            stdout.trim()
+        } else {
+            stderr.trim()
+        };
+        Err((
+            ErrorCode::ExecFailed,
+            format!("{tool}: {program} failed: {detail}"),
+        ))
+    }
+
+    fn argv(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    // ---- account_set_enabled -------------------------------------------------
+
+    /// The commands that suspend or restore an account.
+    ///
+    /// Disabling sets an **account expiry** as well as locking the password. The
+    /// password lock alone is not enough: `usermod -L` only prefixes the hash with
+    /// `!`, and SSH public-key authentication never consults it. Expiry is evaluated
+    /// in PAM's account stage, which sshd runs for every authentication method, so it
+    /// is the only mechanism that closes all the doors (ADR-0047).
+    pub fn plan_set_enabled(principal: &str, enabled: bool) -> Vec<Vec<String>> {
+        if enabled {
+            vec![
+                argv(&["usermod", "--expiredate", "", principal]),
+                argv(&["usermod", "-U", principal]),
+            ]
+        } else {
+            vec![
+                argv(&["usermod", "--expiredate", "1", principal]),
+                argv(&["usermod", "-L", principal]),
+            ]
+        }
+    }
+
+    pub fn set_enabled(principal: &str, enabled: bool) -> Result<Value, (ErrorCode, String)> {
+        let plan = plan_set_enabled(principal, enabled);
+        // The expiry change is the one that must succeed; the password lock/unlock is
+        // best-effort. `usermod -U` deliberately refuses to unlock an account whose
+        // hash is a bare `!` — unlocking would leave it password-less — and turning
+        // that refusal into an error would make a correct, conservative behaviour
+        // look like a failure.
+        run(&plan[0], "account_set_enabled")?;
+        let _ = run(&plan[1], "account_set_enabled");
+        Ok(json!({
+            "ok": true, "principal": principal, "kind": "local",
+            "enabled": enabled,
+        }))
+    }
+
+    // ---- account_set_admin ---------------------------------------------------
+
+    /// The commands that grant or revoke administrator rights.
+    ///
+    /// Promotion targets the *first admin group that exists on this host*; demotion
+    /// strips **every** one the user is in. The asymmetry is deliberate: promoting
+    /// into the "wrong" group is harmless because membership in any of them counts,
+    /// while demoting from only one would leave the user an administrator and report
+    /// success.
+    ///
+    /// `gpasswd` is used both ways because `usermod -aG` can only add — using it
+    /// would force two different mechanisms for one verb.
+    pub fn plan_set_admin(
+        principal: &str,
+        admin: bool,
+        group_file: &str,
+    ) -> Result<Vec<Vec<String>>, (ErrorCode, String)> {
+        if admin {
+            let group = inv::preferred_admin_group(group_file).ok_or_else(|| {
+                (
+                    ErrorCode::Unsupported,
+                    "this host has no sudo, wheel or admin group to add the account to".to_string(),
+                )
+            })?;
+            Ok(vec![argv(&["gpasswd", "--add", principal, group])])
+        } else {
+            Ok(inv::admin_groups_of(group_file, principal)
+                .into_iter()
+                .map(|group| argv(&["gpasswd", "--delete", principal, group]))
+                .collect())
+        }
+    }
+
+    pub fn set_admin(principal: &str, admin: bool) -> Result<Value, (ErrorCode, String)> {
+        let group_file = std::fs::read_to_string("/etc/group").unwrap_or_default();
+        for command in plan_set_admin(principal, admin, &group_file)? {
+            run(&command, "account_set_admin")?;
+        }
+        Ok(json!({
+            "ok": true, "principal": principal, "kind": "local",
+            "admin": admin,
+        }))
+    }
+
+    // ---- account_set_logon_rights -------------------------------------------
+
+    /// Render kenny's sshd drop-in for a whole deny list.
+    ///
+    /// The file is owned entirely by kenny and rewritten wholesale, so it can never
+    /// accumulate state or damage an operator's own configuration. An empty list
+    /// still writes a file (with no `DenyUsers` line) rather than deleting it, so the
+    /// "kenny manages this" marker stays visible on the machine.
+    pub fn render_ssh_dropin(denied: &[String]) -> String {
+        let mut out = String::from(
+            "# Managed by kenny (ADR-0047). Rewritten on every account_set_logon_rights\n\
+             # call; edits here are lost. Remove kenny to remove this file.\n",
+        );
+        if !denied.is_empty() {
+            out.push_str("DenyUsers ");
+            out.push_str(&denied.join(" "));
+            out.push('\n');
+        }
+        out
+    }
+
+    /// The new full deny list after applying `deny` to `principal`.
+    ///
+    /// `deny` is an absolute set for *that account*, but the drop-in is machine-wide,
+    /// so the other accounts' entries have to be preserved.
+    pub fn merge_ssh_denials(current: &[String], principal: &str, denied: bool) -> Vec<String> {
+        let mut out: Vec<String> = current
+            .iter()
+            .filter(|u| u.as_str() != principal)
+            .cloned()
+            .collect();
+        if denied {
+            out.push(principal.to_string());
+        }
+        out.sort();
+        out
+    }
+
+    pub fn set_logon_rights(
+        principal: &str,
+        deny: &[String],
+    ) -> Result<Value, (ErrorCode, String)> {
+        // `network` is refused by name rather than silently dropped, the same stance
+        // `validate_deny_rights` takes for `interactive`: an operator who asks for it
+        // is trying to do something this OS cannot do, and a quiet no-op would look
+        // like it worked. (The guard already refuses it from the inventory; this is
+        // the belt-and-braces check for a host whose probe said otherwise.)
+        if deny.iter().any(|r| r == "network") {
+            return Err((
+                ErrorCode::Unsupported,
+                "denying network sign-in is not possible on Linux: there is no \
+                 per-account network-logon plane, only SSH (deny remote_interactive)"
+                    .to_string(),
+            ));
+        }
+
+        let current = std::fs::read_to_string(inv::SSHD_DROPIN)
+            .map(|text| inv::parse_deny_users(&text))
+            .unwrap_or_default();
+        let merged = merge_ssh_denials(
+            &current,
+            principal,
+            deny.iter().any(|r| r == "remote_interactive"),
+        );
+        let rendered = render_ssh_dropin(&merged);
+
+        let previous = std::fs::read_to_string(inv::SSHD_DROPIN).ok();
+        std::fs::create_dir_all(inv::SSHD_DROPIN_DIR).map_err(|e| {
+            (
+                ErrorCode::ExecFailed,
+                format!(
+                    "account_set_logon_rights: cannot create {}: {e}",
+                    inv::SSHD_DROPIN_DIR
+                ),
+            )
+        })?;
+        std::fs::write(inv::SSHD_DROPIN, &rendered).map_err(|e| {
+            (
+                ErrorCode::ExecFailed,
+                format!(
+                    "account_set_logon_rights: cannot write {}: {e}",
+                    inv::SSHD_DROPIN
+                ),
+            )
+        })?;
+
+        // Validate before reloading, and roll back if sshd rejects the result. A
+        // config that is written but not live would let kenny report success for a
+        // restriction that is not in force; a config that is live and broken would
+        // strand a headless machine.
+        let restore = |previous: &Option<String>| match previous {
+            Some(text) => {
+                let _ = std::fs::write(inv::SSHD_DROPIN, text);
+            }
+            None => {
+                let _ = std::fs::remove_file(inv::SSHD_DROPIN);
+            }
+        };
+        if let Err(err) = run(&argv(&["sshd", "-t"]), "account_set_logon_rights") {
+            restore(&previous);
+            return Err(err);
+        }
+        // Debian calls the unit `ssh`, RHEL calls it `sshd`; try both before failing.
+        let reloaded = ["ssh", "sshd"].iter().any(|unit| {
+            run(
+                &argv(&["systemctl", "reload", unit]),
+                "account_set_logon_rights",
+            )
+            .is_ok()
+        });
+        if !reloaded {
+            restore(&previous);
+            return Err((
+                ErrorCode::ExecFailed,
+                "account_set_logon_rights: wrote the sshd drop-in but could not reload \
+                 sshd, so the restriction is not in force; rolled back"
+                    .to_string(),
+            ));
+        }
+
+        Ok(json!({
+            "ok": true, "principal": principal, "kind": "local",
+            "deny": deny,
+        }))
+    }
+
+    // ---- account_create ------------------------------------------------------
+
+    pub fn plan_create(name: &str, display_name: &str) -> Vec<String> {
+        let mut out = argv(&["useradd", "--create-home"]);
+        if !display_name.is_empty() {
+            out.push("--comment".to_string());
+            out.push(display_name.to_string());
+        }
+        // A login shell, or the account would be created already disabled.
+        out.push("--shell".to_string());
+        out.push(
+            if std::path::Path::new("/bin/bash").exists() {
+                "/bin/bash"
+            } else {
+                "/bin/sh"
+            }
+            .to_string(),
+        );
+        out.push(name.to_string());
+        out
+    }
+
+    pub fn create(
+        name: &str,
+        password: &str,
+        display_name: &str,
+        admin: bool,
+    ) -> Result<Value, (ErrorCode, String)> {
+        run(&plan_create(name, display_name), "account_create")?;
+        // The password goes in on stdin, never in argv: `/proc/<pid>/cmdline` is
+        // world-readable, so a password as an argument is visible to every user on
+        // the machine for as long as the process lives.
+        set_password_via_stdin(name, password)?;
+        if admin {
+            let group_file = std::fs::read_to_string("/etc/group").unwrap_or_default();
+            for command in plan_set_admin(name, true, &group_file)? {
+                run(&command, "account_create")?;
+            }
+        }
+        Ok(json!({ "ok": true, "principal": name, "kind": "local" }))
+    }
+
+    fn set_password_via_stdin(name: &str, password: &str) -> Result<(), (ErrorCode, String)> {
+        use std::io::Write;
+        use std::process::Stdio;
+
+        let mut child = Command::new("chpasswd")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| {
+                (
+                    ErrorCode::ExecFailed,
+                    format!("account_create: could not run chpasswd: {e}"),
+                )
+            })?;
+        {
+            let stdin = child.stdin.as_mut().ok_or_else(|| {
+                (
+                    ErrorCode::Internal,
+                    "account_create: chpasswd stdin unavailable".to_string(),
+                )
+            })?;
+            // Deliberately not logged, not echoed, not in argv.
+            stdin
+                .write_all(format!("{name}:{password}\n").as_bytes())
+                .map_err(|e| {
+                    (
+                        ErrorCode::ExecFailed,
+                        format!("account_create: could not write to chpasswd: {e}"),
+                    )
+                })?;
+        }
+        let out = child.wait_with_output().map_err(|e| {
+            (
+                ErrorCode::ExecFailed,
+                format!("account_create: chpasswd did not finish: {e}"),
+            )
+        })?;
+        if out.status.success() {
+            return Ok(());
+        }
+        Err((
+            ErrorCode::ExecFailed,
+            format!(
+                "account_create: chpasswd failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ),
+        ))
+    }
+
+    // ---- account_delete ------------------------------------------------------
+
+    /// `userdel`, with `--remove` for the home directory and mail spool.
+    ///
+    /// Deliberately **without** `--force`: deleting an account that is currently
+    /// signed in leaves the system in an inconsistent state, and "user is currently
+    /// used by process N" is an actionable message the operator should see.
+    pub fn plan_delete(principal: &str, remove_profile: bool) -> Vec<String> {
+        let mut out = argv(&["userdel"]);
+        if remove_profile {
+            out.push("--remove".to_string());
+        }
+        out.push(principal.to_string());
+        out
+    }
+
+    pub fn delete(principal: &str, remove_profile: bool) -> Result<Value, (ErrorCode, String)> {
+        run(&plan_delete(principal, remove_profile), "account_delete")?;
+        Ok(json!({
+            "ok": true, "principal": principal, "profile_removed": remove_profile,
+        }))
+    }
+
+    // ---- account_session_action ---------------------------------------------
+
+    /// One logind session belonging to the principal.
+    #[derive(Debug, PartialEq, Eq)]
+    pub struct LogindSession {
+        pub id: String,
+        pub state: String,
+        pub graphical: bool,
+    }
+
+    /// Parse `loginctl show-session` output for one session.
+    ///
+    /// `Type` is `x11`/`wayland` for a desktop and `tty` for a console or SSH login;
+    /// only the former can be *locked*, which is why the distinction is carried.
+    pub fn parse_show_session(id: &str, text: &str) -> Option<(String, LogindSession)> {
+        let mut name = None;
+        let (mut state, mut kind) = (String::new(), String::new());
+        for line in text.lines() {
+            let Some((key, value)) = line.split_once('=') else {
+                continue;
+            };
+            match key.trim() {
+                "Name" => name = Some(value.trim().to_string()),
+                "State" => state = value.trim().to_string(),
+                "Type" => kind = value.trim().to_string(),
+                _ => {}
+            }
+        }
+        Some((
+            name?,
+            LogindSession {
+                id: id.to_string(),
+                state,
+                graphical: kind == "x11" || kind == "wayland" || kind == "mir",
+            },
+        ))
+    }
+
+    /// Session ids from `loginctl list-sessions --no-legend`, whose first column is
+    /// the id. Ids are opaque strings (`2`, `c1`), never numbers.
+    pub fn parse_session_ids(text: &str) -> Vec<String> {
+        text.lines()
+            .filter_map(|line| line.split_whitespace().next())
+            .map(str::to_string)
+            .collect()
+    }
+
+    fn sessions_for(principal: &str) -> Vec<LogindSession> {
+        let Ok(listed) = Command::new("loginctl")
+            .args(["list-sessions", "--no-legend"])
+            .output()
+        else {
+            return Vec::new();
+        };
+        parse_session_ids(&String::from_utf8_lossy(&listed.stdout))
+            .into_iter()
+            .filter_map(|id| {
+                let out = Command::new("loginctl")
+                    .args([
+                        "show-session",
+                        &id,
+                        "-p",
+                        "Name",
+                        "-p",
+                        "State",
+                        "-p",
+                        "Type",
+                    ])
+                    .output()
+                    .ok()?;
+                let (name, session) =
+                    parse_show_session(&id, &String::from_utf8_lossy(&out.stdout))?;
+                (name == principal).then_some(session)
+            })
+            .collect()
+    }
+
+    /// Lock or end every session belonging to `principal`.
+    ///
+    /// There is no `warn_seconds` equivalent on Linux — `wall` is machine-wide,
+    /// `write` needs a tty with `mesg y`, and `notify-send` needs the user's own
+    /// D-Bus session bus. Rather than send a warning that may silently vanish, the
+    /// inventory publishes `session_warn` as unsupported and this acts immediately
+    /// (ADR-0047).
+    pub async fn session_action(
+        principal: &str,
+        action: &str,
+    ) -> Result<Value, (ErrorCode, String)> {
+        let sessions = sessions_for(principal);
+        if sessions.is_empty() {
+            return Ok(json!({
+                "ok": true, "principal": principal, "action": action, "sessions": [],
+            }));
+        }
+        let acted: Vec<Value> = sessions
+            .iter()
+            .map(|session| {
+                // `lock-session` on a tty is a silent no-op in logind, so a
+                // non-graphical session reports `acted: false` rather than a success
+                // the operator cannot verify.
+                let ok = if action == "lock" {
+                    session.graphical
+                        && run(
+                            &argv(&["loginctl", "lock-session", &session.id]),
+                            "account_session_action",
+                        )
+                        .is_ok()
+                } else {
+                    run(
+                        &argv(&["loginctl", "terminate-session", &session.id]),
+                        "account_session_action",
+                    )
+                    .is_ok()
+                };
+                json!({ "session_id": session.id, "state": session.state, "acted": ok })
+            })
+            .collect();
+        Ok(json!({
+            "ok": acted.iter().all(|s| s["acted"] == true),
+            "principal": principal, "action": action, "sessions": acted,
+        }))
+    }
+
+    // ---- password_policy_set -------------------------------------------------
+
+    /// Where each policy field is written, and under what name.
+    ///
+    /// `min_length` goes to `pwquality.conf`, **not** to `login.defs PASS_MIN_LEN`:
+    /// PAM ignores the latter, so writing it would describe a rule nothing enforces.
+    fn policy_target(key: &str) -> Option<(&'static str, &'static str)> {
+        match key {
+            "min_length" => Some(("/etc/security/pwquality.conf", "minlen")),
+            "max_age_days" => Some(("/etc/login.defs", "PASS_MAX_DAYS")),
+            "lockout_threshold" => Some(("/etc/security/faillock.conf", "deny")),
+            _ => None,
+        }
+    }
+
+    /// Rewrite `setting` to `value` in a `key = value` / `key value` config file.
+    ///
+    /// An existing (uncommented) line is replaced in place, preserving its
+    /// separator style; otherwise the setting is appended with a marker. Commented
+    /// lines are left alone so the file's own documentation survives.
+    pub fn upsert_setting(text: &str, setting: &str, value: u32, separator: &str) -> String {
+        let mut replaced = false;
+        let mut out: Vec<String> = text
+            .lines()
+            .map(|line| {
+                let bare = line.split('#').next().unwrap_or("").trim();
+                let matches_key = bare.strip_prefix(setting).is_some_and(|rest| {
+                    rest.is_empty() || rest.starts_with(|c: char| c.is_whitespace() || c == '=')
+                });
+                if matches_key {
+                    replaced = true;
+                    format!("{setting}{separator}{value}")
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect();
+        if !replaced {
+            out.push("# set by kenny".to_string());
+            out.push(format!("{setting}{separator}{value}"));
+        }
+        let mut joined = out.join("\n");
+        joined.push('\n');
+        joined
+    }
+
+    pub fn password_policy_set(
+        fields: &[(&'static str, u32)],
+    ) -> Result<Value, (ErrorCode, String)> {
+        let mut applied = serde_json::Map::new();
+        for (key, value) in fields {
+            let Some((path, setting)) = policy_target(key) else {
+                continue;
+            };
+            let existing = std::fs::read_to_string(path).unwrap_or_default();
+            // `login.defs` is whitespace-separated; the PAM files use `=`.
+            let separator = if path == "/etc/login.defs" {
+                "\t"
+            } else {
+                " = "
+            };
+            let updated = upsert_setting(&existing, setting, *value, separator);
+            std::fs::write(path, updated).map_err(|e| {
+                (
+                    ErrorCode::ExecFailed,
+                    format!("password_policy_set: cannot write {path}: {e}"),
+                )
+            })?;
+            applied.insert((*key).to_string(), Value::from(*value));
+
+            // `login.defs` only governs accounts created from now on, so an operator
+            // setting a maximum age would otherwise change nothing for the people
+            // actually using the machine. Apply it to the existing accounts too —
+            // except root, whose password expiring on a headless box is how you lose
+            // the machine.
+            if *key == "max_age_days" {
+                for name in existing_non_root_accounts() {
+                    let _ = run(
+                        &argv(&["chage", "-M", &value.to_string(), &name]),
+                        "password_policy_set",
+                    );
+                }
+            }
+        }
+        Ok(json!({
+            "ok": true,
+            "applies_to": "local_only",
+            "policy": Value::Object(applied),
+        }))
+    }
+
+    fn existing_non_root_accounts() -> Vec<String> {
+        std::fs::read_to_string("/etc/passwd")
+            .map(|passwd| inv::login_account_names(&passwd))
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|n| n != "root")
+            .collect()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        const GROUP: &str = "root:x:0:\nsudo:x:27:papa\nwheel:x:998:papa\n";
+
+        #[test]
+        fn disabling_sets_an_expiry_not_just_a_password_lock() {
+            let plan = plan_set_enabled("kid", false);
+            assert_eq!(plan[0], argv(&["usermod", "--expiredate", "1", "kid"]));
+            assert_eq!(plan[1], argv(&["usermod", "-L", "kid"]));
+
+            let plan = plan_set_enabled("kid", true);
+            assert_eq!(plan[0], argv(&["usermod", "--expiredate", "", "kid"]));
+            assert_eq!(plan[1], argv(&["usermod", "-U", "kid"]));
+        }
+
+        #[test]
+        fn demotion_strips_every_admin_group_promotion_picks_one() {
+            let promote = plan_set_admin("kid", true, GROUP).unwrap();
+            assert_eq!(promote, vec![argv(&["gpasswd", "--add", "kid", "sudo"])]);
+
+            // papa is in both sudo and wheel: leaving either behind would report a
+            // demotion that did not happen.
+            let demote = plan_set_admin("papa", false, GROUP).unwrap();
+            assert_eq!(
+                demote,
+                vec![
+                    argv(&["gpasswd", "--delete", "papa", "sudo"]),
+                    argv(&["gpasswd", "--delete", "papa", "wheel"]),
+                ]
+            );
+
+            // Nothing to strip is a valid, empty plan — not an error.
+            assert!(plan_set_admin("kid", false, GROUP).unwrap().is_empty());
+
+            // No admin group at all is refused rather than guessed at.
+            let err = plan_set_admin("kid", true, "users:x:100:\n").unwrap_err();
+            assert_eq!(err.0, ErrorCode::Unsupported);
+        }
+
+        #[test]
+        fn ssh_dropin_is_rewritten_wholesale_and_preserves_other_accounts() {
+            let current = vec!["kid".to_string(), "guest".to_string()];
+            // Denying papa must not release kid or guest.
+            let merged = merge_ssh_denials(&current, "papa", true);
+            assert_eq!(merged, vec!["guest", "kid", "papa"]);
+            // Clearing papa's denial leaves the others in place.
+            let merged = merge_ssh_denials(&merged, "papa", false);
+            assert_eq!(merged, vec!["guest", "kid"]);
+            // Denying an already-denied account is idempotent.
+            assert_eq!(
+                merge_ssh_denials(&merged, "kid", true),
+                vec!["guest", "kid"]
+            );
+
+            let rendered = render_ssh_dropin(&merged);
+            assert!(rendered.contains("DenyUsers guest kid"));
+            assert!(rendered.starts_with("# Managed by kenny"));
+            // Round-trips through the reader the collector uses.
+            assert_eq!(inv::parse_deny_users(&rendered), vec!["guest", "kid"]);
+
+            // An empty list still writes the marker, without a DenyUsers line.
+            let empty = render_ssh_dropin(&[]);
+            assert!(!empty.contains("DenyUsers"));
+            assert!(inv::parse_deny_users(&empty).is_empty());
+        }
+
+        #[test]
+        fn create_never_puts_the_password_in_argv() {
+            let plan = plan_create("guest-visit", "Visitor");
+            assert!(plan.contains(&"--create-home".to_string()));
+            assert!(plan.contains(&"Visitor".to_string()));
+            assert_eq!(plan.last().unwrap(), "guest-visit");
+            // The whole point: nothing in the argv can be the password.
+            assert!(!plan.iter().any(|a| a.contains("password")));
+        }
+
+        #[test]
+        fn delete_never_forces() {
+            assert_eq!(plan_delete("kid", false), argv(&["userdel", "kid"]));
+            assert_eq!(
+                plan_delete("kid", true),
+                argv(&["userdel", "--remove", "kid"])
+            );
+            // `--force` would delete a signed-in user and leave the system
+            // inconsistent; the failure message is more useful than the deletion.
+            assert!(!plan_delete("kid", true).contains(&"--force".to_string()));
+        }
+
+        #[test]
+        fn logind_sessions_are_parsed_with_opaque_string_ids() {
+            let ids = parse_session_ids("   2 1000 papa seat0 tty2\n  c1 1001 kid  -     -\n");
+            assert_eq!(ids, vec!["2", "c1"]);
+
+            let (name, session) =
+                parse_show_session("2", "Name=papa\nState=active\nType=wayland\n").unwrap();
+            assert_eq!(name, "papa");
+            assert_eq!(session.id, "2");
+            assert_eq!(session.state, "active");
+            assert!(session.graphical, "a wayland session can be locked");
+
+            let (_, tty) = parse_show_session("c1", "Name=kid\nState=online\nType=tty\n").unwrap();
+            assert!(!tty.graphical, "locking a tty session is a silent no-op");
+
+            // A session with no Name is not attributable and is dropped.
+            assert!(parse_show_session("3", "State=closing\n").is_none());
+        }
+
+        #[test]
+        fn policy_settings_are_upserted_without_disturbing_comments() {
+            let pwquality = "# minlen = 9\n# Do not edit\nminlen = 8\nretry = 3\n";
+            let out = upsert_setting(pwquality, "minlen", 12, " = ");
+            assert!(out.contains("minlen = 12"));
+            assert!(out.contains("# minlen = 9"), "documentation survives");
+            assert!(out.contains("retry = 3"), "other settings survive");
+            assert_eq!(out.matches("minlen = 12").count(), 1);
+
+            // Absent settings are appended, with a marker saying who wrote them.
+            let out = upsert_setting("retry = 3\n", "minlen", 12, " = ");
+            assert!(out.contains("# set by kenny"));
+            assert!(out.contains("minlen = 12"));
+
+            // login.defs is whitespace-separated.
+            let out = upsert_setting("PASS_MAX_DAYS\t99999\n", "PASS_MAX_DAYS", 90, "\t");
+            assert!(out.contains("PASS_MAX_DAYS\t90"));
+
+            // min_length goes to pwquality, not to the login.defs key PAM ignores.
+            assert_eq!(
+                policy_target("min_length"),
+                Some(("/etc/security/pwquality.conf", "minlen"))
+            );
+        }
     }
 }
 
@@ -877,7 +1808,7 @@ mod tests {
         for action in [
             Action::Disable,
             Action::Demote,
-            Action::DenyLogon,
+            Action::DenyLogon("remote_interactive"),
             Action::Delete,
         ] {
             assert!(
@@ -898,7 +1829,7 @@ mod tests {
         for action in [
             Action::Disable,
             Action::Demote,
-            Action::DenyLogon,
+            Action::DenyLogon("remote_interactive"),
             Action::Delete,
         ] {
             let err = guard(action, "papa", &inventory).unwrap_err();
@@ -907,7 +1838,7 @@ mod tests {
         }
         // A session action stays allowed: signing back in undoes it, so it cannot
         // lock anyone out.
-        assert!(guard(Action::Session, "papa", &inventory).is_ok());
+        assert!(guard(Action::Session("lock"), "papa", &inventory).is_ok());
         // And the non-admin is unaffected by the invariant.
         assert!(guard(Action::Disable, "kid", &inventory).is_ok());
     }
@@ -1022,9 +1953,9 @@ mod tests {
         );
     }
 
-    #[cfg(not(windows))]
+    #[cfg(all(not(windows), not(target_os = "linux")))]
     #[tokio::test]
-    async fn off_windows_every_tool_is_unsupported() {
+    async fn on_an_unimplemented_os_every_tool_is_unsupported() {
         let calls: Vec<Result<Value, (ErrorCode, String)>> = vec![
             set_enabled(json!({ "principal": "kid", "enabled": false })).await,
             set_admin(json!({ "principal": "kid", "admin": false })).await,
@@ -1037,7 +1968,76 @@ mod tests {
         for call in calls {
             let (code, message) = call.unwrap_err();
             assert_eq!(code, ErrorCode::Unsupported);
-            assert!(message.contains("Windows"), "{message}");
+            assert!(message.contains("operating system"), "{message}");
         }
+    }
+
+    #[test]
+    fn guard_refuses_exactly_what_the_inventory_says_is_unsupported() {
+        // The rule that keeps the published capability set and the enforced one from
+        // drifting apart: they are the same list, read at call time (ADR-0047).
+        let mut root = account("root", true, true);
+        root["builtin_admin"] = json!(true);
+        root["unsupported"] = json!({
+            "set_admin": "root_account",
+            "set_enabled": "root_account",
+        });
+        let mut kid = account("kid", true, false);
+        kid["unsupported"] = json!({
+            "deny_network": "no_network_logon_concept",
+            "session_lock": "no_graphical_session",
+        });
+        let inventory = vec![root, kid, account("papa", true, true)];
+
+        for (action, principal, reason) in [
+            (Action::Demote, "root", "root_account"),
+            (Action::Disable, "root", "root_account"),
+            (
+                Action::DenyLogon("network"),
+                "kid",
+                "no_network_logon_concept",
+            ),
+            (Action::Session("lock"), "kid", "no_graphical_session"),
+        ] {
+            let (code, message) = guard(action, principal, &inventory).unwrap_err();
+            assert_eq!(code, ErrorCode::Blocked, "{action:?} on {principal}");
+            assert!(message.contains(reason), "{message}");
+        }
+
+        // The verbs the map does not name stay available — negation, not enumeration.
+        assert!(guard(Action::Delete, "kid", &inventory).is_ok());
+        assert!(guard(Action::DenyLogon("remote_interactive"), "kid", &inventory).is_ok());
+        assert!(guard(Action::Session("logoff"), "kid", &inventory).is_ok());
+        // And a Windows inventory, whose only token maps to no tool, is unaffected.
+        let mut msa = account("msa", true, false);
+        msa["unsupported"] = json!({ "reset_password": "password_in_cloud" });
+        assert!(guard(Action::Disable, "msa", &[msa]).is_ok());
+    }
+
+    #[test]
+    fn new_account_names_reject_shell_hostile_shapes() {
+        for ok in ["kid", "guest-visit", "svc_1", "a.b"] {
+            assert!(validate_new_account_name(ok).is_ok(), "{ok}");
+        }
+        // A leading dash becomes an option for every POSIX tool; the rest are shell
+        // metacharacters that no arm should have to be the last defence against.
+        for bad in [
+            "-rf",
+            "kid; rm -rf /",
+            "kid$(id)",
+            "kid kid",
+            "a/b",
+            "kid`id`",
+        ] {
+            assert_eq!(
+                validate_new_account_name(bad).unwrap_err().0,
+                ErrorCode::BadArgs,
+                "{bad}"
+            );
+        }
+        assert_eq!(
+            validate_new_account_name(&"a".repeat(33)).unwrap_err().0,
+            ErrorCode::BadArgs
+        );
     }
 }

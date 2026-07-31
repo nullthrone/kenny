@@ -40,7 +40,7 @@ from ..recommend import ai_available, recommend_events, warning_facts
 from ..registry import AgentRegistry
 from ..store import ChatHistoryStore, EventStore, PolicyStore, TelemetryStore
 from ..tokenstore import AgentTokenStore
-from ..tools import CallLog, ScreenshotStore, build_health
+from ..tools import CallLog, ScreenshotStore, build_health, supports_tool
 from ..tunnel import AgentTunnel, ToolError
 from ..webfilter import WebFilterService, load_seed, normalize_domain
 from .authz import guard, principal_of, visible_ids
@@ -233,6 +233,12 @@ def build_api_routes(
                 "collected_at": latest["collected_at"] if latest else None,
                 "snapshot": snapshot,
                 "health": build_health(snapshot, agent_os=agent_os),
+                # Can this host's OS serve the account-governance verbs at all?
+                # Derived from the same table the write route enforces, so the
+                # dashboard never hard-codes an OS list of its own (ADR-0047).
+                "governance": {
+                    "supported": supports_tool("account_set_admin", agent_os)
+                },
                 # Whether the AI Recommendation block is offered for flagged
                 # sections (true only when an Anthropic API key is configured).
                 "ai_enabled": ai_available(),
@@ -1079,6 +1085,17 @@ def build_api_routes(
         # `agent_id` is routing metadata on the MCP surface; here it is the path
         # segment, so refuse a body that tries to smuggle a different target.
         args.pop("agent_id", None)
+        # Share the MCP surface's OS pre-check. Without it the two surfaces refuse
+        # the same call differently: MCP said "requires windows" before sending a
+        # frame, while this route forwarded and turned the agent's own `unsupported`
+        # into a 502 error banner (ADR-0047).
+        agent = registry.get(agent_id)
+        if agent is not None and not supports_tool(tool, agent.os):
+            message = f"agent {agent_id!r} is {agent.os}; {tool} is not available there"
+            await call_log.record(agent_id, tool, args, ok=False, error=message)
+            return JSONResponse(
+                {"ok": False, "error": "unsupported", "message": message}, status_code=200
+            )
         # A session action may warn the signed-in user and wait before acting.
         timeout_s = 120 if tool == "account_session_action" else 30
         try:

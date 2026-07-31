@@ -1,0 +1,118 @@
+{
+  "type": "telemetry",
+  "agent_id": "nas",
+  "collected_at": "2026-07-31T09:15:00Z",
+  "snapshot": {
+    "local_accounts": {
+      "status": "ok",
+      "summary": "4 accounts, 2 admins",
+      "accounts": [
+        {
+          "name": "kid",
+          "display": "Kid",
+          "kind": "local",
+          "enabled": true,
+          "is_admin": false,
+          "password_required": true,
+          "password_last_set": "2026-02-20T00:00:00Z",
+          "last_logon": "2026-07-30T18:40:00Z",
+          "builtin_admin": false,
+          "builtin_guest": false,
+          "deny_logon": ["remote_interactive"],
+          "unsupported": {
+            "deny_network": "no_network_logon_concept",
+            "session_lock": "no_graphical_session",
+            "session_warn": "no_user_notification_channel"
+          }
+        },
+        {
+          "name": "papa",
+          "display": "Papa",
+          "kind": "local",
+          "enabled": true,
+          "is_admin": true,
+          "password_required": true,
+          "password_last_set": "2026-01-15T00:00:00Z",
+          "last_logon": "2026-07-31T07:02:00Z",
+          "builtin_admin": false,
+          "builtin_guest": false,
+          "deny_logon": [],
+          "unsupported": {
+            "deny_network": "no_network_logon_concept",
+            "session_lock": "no_graphical_session",
+            "session_warn": "no_user_notification_channel"
+          }
+        },
+        {
+          "name": "root",
+          "display": "root",
+          "kind": "local",
+          "enabled": true,
+          "is_admin": true,
+          "password_required": true,
+          "password_last_set": "2025-11-02T00:00:00Z",
+          "last_logon": null,
+          "builtin_admin": true,
+          "builtin_guest": false,
+          "deny_logon": [],
+          "unsupported": {
+            "deny_network": "no_network_logon_concept",
+            "session_lock": "no_graphical_session",
+            "session_warn": "no_user_notification_channel",
+            "set_admin": "root_account",
+            "set_enabled": "root_account"
+          }
+        },
+        {
+          "name": "svc-backup",
+          "display": "Backup service",
+          "kind": "local",
+          "enabled": false,
+          "is_admin": false,
+          "password_required": true,
+          "password_last_set": null,
+          "last_logon": null,
+          "builtin_admin": false,
+          "builtin_guest": false,
+          "deny_logon": [],
+          "unsupported": {
+            "deny_network": "no_network_logon_concept",
+            "session_lock": "no_graphical_session",
+            "session_warn": "no_user_notification_channel",
+            "set_enabled": "nologin_shell"
+          }
+        }
+      ],
+      "admins": ["papa", "root"],
+      "count": 4,
+      "password_policy": {
+        "applies_to": "local_only",
+        "min_length": 12,
+        "max_age_days": 90,
+        "lockout_threshold": null,
+        "unsupported": {
+          "lockout_threshold": "pam_faillock_not_enabled"
+        }
+      }
+    },
+    "logon_failures": {
+      "status": "ok",
+      "summary": "9 failed logons in 24h",
+      "window_hours": 24,
+      "accounts": [
+        { "name": "papa", "count": 2, "types": ["interactive", "remote"] }
+      ],
+      "unmatched_count": 7,
+      "count": 9,
+      "truncated": false
+    },
+    "defender": {
+      "status": "ok",
+      "summary": "n/a on this platform"
+    },
+    "win_update": {
+      "status": "ok",
+      "summary": "n/a on this platform"
+    }
+  }
+}

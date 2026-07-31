@@ -174,22 +174,23 @@ Registered on the agent when the web filter is wired up. See
 
 ### Account governance
 
-Who may sign in to the PC. `principal` is the account name — the **same tool works for a
-local and a Microsoft account**, because below this layer Windows draws no distinction.
-There is no `account_list`: the inventory is the `local_accounts` telemetry section,
-refreshable on demand with `telemetry_collect`. All of these are Windows-only, require
-the `operator` role, and are confirm-gated. See
-[`account-governance.md`](account-governance.md).
+Who may sign in to the machine. `principal` is the account name — the **same tool works
+for a local, a Microsoft and a Linux account**, on **Windows and Linux hosts alike**,
+because below this layer neither operating system draws the distinctions above it. There
+is no `account_list`: the inventory is the `local_accounts` telemetry section, refreshable
+on demand with `telemetry_collect` — and it is also where each account publishes the verbs
+it *cannot* perform, with a reason. All of these require the `operator` role and are
+confirm-gated. See [`account-governance.md`](account-governance.md).
 
 | Tool | Arguments | State-changing? |
 |------|-----------|-----------------|
 | `account_set_enabled` | `principal`, `enabled` | ✅ |
 | `account_set_admin` | `principal`, `admin` | ✅ |
-| `account_set_logon_rights` | `principal`, `deny` (⊆ `network`, `remote_interactive`) | ✅ |
-| `account_create` | `name`, `password`, `display_name?`, `admin?` | ✅ (local accounts only) |
+| `account_set_logon_rights` | `principal`, `deny` (⊆ `network`, `remote_interactive`) | ✅ (`network` is Windows-only) |
+| `account_create` | `name`, `password`, `display_name?`, `admin?` | ✅ (local accounts only; no asymmetry on Linux) |
 | `account_delete` | `principal`, `remove_profile` | ✅ |
 | `account_session_action` | `principal`, `action` (`lock` / `logoff`), `warn_seconds?` | ✅ |
-| `password_policy_set` | `min_length?`, `max_age_days?`, `lockout_threshold?` | ✅ (local accounts only) |
+| `password_policy_set` | `min_length?`, `max_age_days?`, `lockout_threshold?` | ✅ (accounts stored on the machine only) |
 
 The agent refuses — with `blocked`, not overridable from the server — any call that would
 disable, demote, delete or restrict the **last enabled administrator**, or delete a

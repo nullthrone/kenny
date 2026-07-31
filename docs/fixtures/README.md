@@ -28,6 +28,7 @@ Adding/altering a fixture is a contract change — see `docs/protocol.md` § Ver
 | `response_error_paused.json`    | error `response` frame (anti-cheat coexistence `paused`) |
 | `ping.json` / `pong.json`       | heartbeat frames                                 |
 | `telemetry_snapshot.json`       | `telemetry` frame with a representative snapshot |
+| `telemetry_snapshot_linux.json` | `telemetry` frame from a Linux agent (partial snapshot: the account-governance sections plus two `n/a` stubs) |
 | `request_agent_update.json`     | `request` frame (`agent_update`)                 |
 | `response_agent_update.json`    | successful `response` frame (`agent_update`)     |
 | `policy.json`                   | `policy` frame (operator append-only deny rules) |
