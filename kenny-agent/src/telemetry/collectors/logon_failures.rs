@@ -169,6 +169,10 @@ pub mod core {
     ///
     /// Returns `None` for a tag kenny does not recognize, so unrelated auth-facility
     /// chatter (cron, dbus, systemd) is dropped rather than counted as a sign-in.
+    // Linux-only parsing, kept in `core` so it is unit-tested everywhere; off
+    // Linux the tests are its only consumers. `logon_type_token` above is the
+    // Windows-only mirror, covered by this module's own `not(windows)` allow.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn service_token(tag: &str) -> Option<&'static str> {
         // OpenSSH 9.8+ splits the listener into `sshd-session`.
         if tag.starts_with("sshd") {
@@ -185,6 +189,7 @@ pub mod core {
     ///
     /// Lines look like `Jul 31 12:00:00 host sshd[1234]: Failed password for …`.
     /// The tag is the last token before the first `: `, with any `[pid]` stripped.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     fn split_tag(line: &str) -> Option<(&str, &str)> {
         let (prefix, msg) = line.split_once(": ")?;
         let tag = prefix.split_whitespace().next_back()?;
@@ -196,6 +201,7 @@ pub mod core {
     ///
     /// Ordered by specificity. `user=` (the PAM form) comes first because it is the
     /// one field that is unambiguous; the sshd prose forms follow.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     fn extract_user(msg: &str) -> Option<&str> {
         let after = |marker: &str| -> Option<&str> {
             let rest = msg.split_once(marker)?.1.trim_start();
@@ -231,6 +237,7 @@ pub mod core {
     ///
     /// The auth facility carries plenty of successful and unrelated events; matching
     /// the failure phrasings explicitly keeps a successful `sudo` out of the count.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     fn is_failure(msg: &str) -> bool {
         msg.contains("authentication failure")
             || msg.contains("Failed password")
@@ -245,6 +252,7 @@ pub mod core {
     ///
     /// Lives in the portable core so the patterns are unit-tested on every platform,
     /// including Windows CI, exactly as `parse_system_access` is.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn parse_auth_lines<'a>(
         lines: impl Iterator<Item = &'a str>,
     ) -> Vec<(String, &'static str)> {

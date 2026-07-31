@@ -135,6 +135,7 @@ pub mod core {
         }
 
         /// Record that this host cannot perform `verb`, because `reason`.
+        #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
         pub fn gap(&mut self, verb: &'static str, reason: &'static str) {
             self.gaps.push((verb, reason));
         }
@@ -316,6 +317,11 @@ pub mod core {
     /// on every platform, including Windows CI — the shadow file itself is only ever
     /// read by the Linux arm.
     #[derive(Debug, Clone, PartialEq, Eq)]
+    // The parsers below read Linux-only files, so off Linux their only consumers
+    // are the unit tests — which is the point of keeping them here rather than in
+    // `linux_impl`: the discrimination rules are exercised on every platform,
+    // including Windows CI. The mirror of the `#[cfg(windows)]`-only items above.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub struct ShadowFacts {
         /// `false` only for a genuinely password-less account (empty hash field).
         /// A locked (`!`) or disabled (`*`) hash still means a password is required —
@@ -338,6 +344,7 @@ pub mod core {
     /// An expiry of `0` is treated as *not* expired: `useradd` writes it for "no
     /// expiry" on some distros, and reading 1970-01-01 as a deliberate lockout would
     /// report healthy accounts as suspended.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn parse_shadow(
         text: &str,
         today_days: i64,
@@ -367,6 +374,7 @@ pub mod core {
     }
 
     /// Day number since the Unix epoch → RFC3339 UTC midnight.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     fn days_to_rfc3339(days: i64) -> Option<String> {
         let secs = days.checked_mul(86_400)?;
         chrono::DateTime::from_timestamp(secs, 0)
@@ -380,6 +388,7 @@ pub mod core {
     /// `/etc/security/faillock.conf` (`deny = 3`) — the three formats differ only in
     /// whitespace. Comments (`#`) and non-numeric values are ignored; the **last**
     /// occurrence wins, which is how all three files are evaluated.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn parse_kv_setting(text: &str, key: &str) -> Option<u32> {
         let mut found = None;
         for line in text.lines() {
@@ -409,6 +418,7 @@ pub mod core {
     /// route kenny cannot revoke?* — and a false positive there costs a greyed-out
     /// button, while a false negative costs a governance call that reports success
     /// and changes nothing (ADR-0047). kenny never writes these files.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn parse_sudoers(text: &str) -> (Vec<String>, Vec<String>) {
         let (mut users, mut groups) = (Vec::new(), Vec::new());
         for line in text.lines() {
