@@ -1,6 +1,7 @@
 # 0009. Server-hosted Claude chat with a confirm-gate
 
 - Status: accepted
+- Amended by: [ADR-0049](0049-tiered-tool-classification.md)
 - Date: 2026-06-04
 
 ## Context and Problem Statement
