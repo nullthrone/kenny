@@ -46,6 +46,8 @@ from typing import Any
 from . import security, urls
 from .auth import Principal
 from .discord_adapter import (
+    CommandOption,
+    CommandSpec,
     ComponentEvent,
     DiscordGateway,
     InboundEvent,
@@ -715,6 +717,45 @@ def _title_from(content: str) -> str:
     if not flat:
         return "Support request"
     return flat[:_MAX_TITLE_CHARS]
+
+
+# The commands `handle_slash` below dispatches on. Registration (telling Discord
+# these exist, so they show up in the `/` picker) is a separate step the caller
+# drives explicitly via `DiscordGateway.register_commands` — this constant is
+# the single place both sides read from, so the two cannot drift.
+SLASH_COMMANDS: tuple[CommandSpec, ...] = (
+    CommandSpec(
+        name="link",
+        description="Link your Discord account to a kenny account",
+        options=(
+            CommandOption(
+                name="name", description="A display hint for the operator", required=False
+            ),
+        ),
+    ),
+    CommandSpec(name="whoami", description="Show what kenny knows about you"),
+    CommandSpec(name="status", description="List your open tickets"),
+    CommandSpec(
+        name="help-me",
+        description="Open a support ticket",
+        options=(
+            CommandOption(
+                name="host", description="Which PC, if you have more than one", required=False
+            ),
+            CommandOption(name="problem", description="What's going wrong", required=False),
+        ),
+    ),
+    CommandSpec(
+        name="close",
+        description="Close one of your tickets",
+        options=(CommandOption(name="ticket", description="Ticket number, e.g. KEN-000123"),),
+    ),
+    CommandSpec(
+        name="cancel",
+        description="Cancel one of your tickets",
+        options=(CommandOption(name="ticket", description="Ticket number, e.g. KEN-000123"),),
+    ),
+)
 
 
 # -- the service -------------------------------------------------------------

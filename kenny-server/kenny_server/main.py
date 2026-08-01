@@ -38,7 +38,7 @@ from .backup import BackupManager, apply_pending_restore
 from .chat import ChatSessions
 from .discord_adapter import DiscordPyGateway, GatewayUnavailable
 from .discord_identity import DiscordIdentityStore
-from .discord_service import DiscordService
+from .discord_service import SLASH_COMMANDS, DiscordService
 from .distribution import ShareLinks, build_download_routes
 from .keystore import KeyStore
 from .logging_config import StoreLogHandler, configure_logging, drain_log_queue
@@ -138,6 +138,15 @@ async def _discord_loop(service: DiscordService) -> None:
         service.startup_error = f"gateway failed to start: {exc}"
         log.exception("Discord gateway failed to start; the surface stays off")
         return
+    # Guild-scoped registration propagates immediately (a global registration
+    # can take up to an hour) and is safe to repeat on every startup — Discord
+    # treats it as an idempotent bulk replace, so re-registering the same set
+    # is a no-op server-side. register_commands never raises: a failure is
+    # logged as a warning by the gateway and the surface still comes up
+    # without slash commands rather than not at all.
+    for guild_id in service.guild_ids:
+        commands = list(SLASH_COMMANDS)
+        await service.gateway.register_commands(guild_id=guild_id, commands=commands)
     try:
         await service.run()
     except asyncio.CancelledError:

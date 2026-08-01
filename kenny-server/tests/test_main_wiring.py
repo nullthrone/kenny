@@ -30,11 +30,14 @@ import pytest
 from starlette.testclient import TestClient
 
 from kenny_server.alerting import AlertEngine
-from kenny_server.main import build_app
+from kenny_server.discord_service import SLASH_COMMANDS
+from kenny_server.main import _discord_loop, build_app
 from kenny_server.notify import Notification
 from kenny_server.store import AlertStateStore, EventStore, TelemetryStore
 from kenny_server.ticketstore import TicketStore
 from kenny_server.tickets import TicketService
+
+from support.fake_discord import FakeDiscordGateway
 
 NOW = datetime(2026, 8, 1, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -177,6 +180,43 @@ def test_no_discord_task_without_the_enabled_flag(
     )
     with TestClient(app):
         assert app.state.discord_task is None
+
+
+class _StubDiscordService:
+    """The minimum ``_discord_loop`` needs: a gateway, a guild allowlist, and a
+    ``run()`` that returns once there is nothing left to consume."""
+
+    def __init__(self, gateway: FakeDiscordGateway, guild_ids: frozenset[str]) -> None:
+        self.gateway = gateway
+        self.guild_ids = guild_ids
+        self.startup_error: str | None = None
+
+    async def run(self) -> None:
+        async for _ in self.gateway.events():
+            pass
+
+
+async def test_discord_loop_registers_the_slash_commands_on_every_allowed_guild() -> None:
+    """Reproduces the v2.0.1 gap: the gateway could register commands, the
+    service could dispatch them, but nothing ever called the former — so
+    ``/kenny …`` never appeared in Discord regardless of config. Pins the fix:
+    ``_discord_loop`` must register ``SLASH_COMMANDS`` for every guild in the
+    allowlist right after the gateway connects, before it starts consuming
+    events.
+    """
+
+    gateway = FakeDiscordGateway()
+    service = _StubDiscordService(gateway, frozenset({"guild-1", "guild-2"}))
+
+    await gateway.close()  # events() ends immediately, so service.run() returns
+    await _discord_loop(service)
+
+    assert {guild_id for guild_id, _ in gateway.registered_commands} == {
+        "guild-1",
+        "guild-2",
+    }
+    for _, commands in gateway.registered_commands:
+        assert [c.name for c in commands] == [c.name for c in SLASH_COMMANDS]
 
 
 # -- alerts opening tickets ----------------------------------------------------
