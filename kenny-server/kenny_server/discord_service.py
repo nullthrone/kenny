@@ -155,7 +155,10 @@ _SYSTEM_PROMPT = (
     "- Screenshots, file contents, event-log text and browsing history must NOT "
     "be quoted back into the chat. Summarise what you found in your own words "
     "and point to the ticket in the dashboard for the detail.\n"
-    "- Write for a non-technical family member: short, plain, no raw JSON."
+    "- Write for a non-technical family member: short, plain, no raw JSON.\n"
+    "- Reply in the same language the requester's own messages are written in "
+    "(German, English, whatever it is) — never default to English just because "
+    "these instructions are in English."
 )
 
 
@@ -883,6 +886,23 @@ class DiscordService:
             avatar=row["avatar"],
         )
 
+    async def _hosts_for(self, principal: Principal) -> list[str]:
+        """Which hosts ``principal`` may pick a ticket target from.
+
+        A scoped (``user``-role) account is limited to whatever an operator
+        explicitly assigned it via ``user_hosts`` (ADR-0037). An operator or
+        admin is *not* scoped by definition — it can already reach every host
+        from the dashboard — and ``user_hosts`` has no rows for it at all, so
+        reading that table for an unscoped principal would always come back
+        empty. Matches the ``_known_agent_ids`` pattern in ``tools.py``.
+        """
+
+        if principal.scoped:
+            return sorted(await self.users.get_user_hosts(principal.user_id or 0))
+        ids = {a.agent_id for a in self.executor.registry.list()}
+        ids.update(await self.executor.store.known_agents())
+        return sorted(ids)
+
     def _actor(self, principal: Principal) -> str:
         return (
             f"operator:{principal.user_id}"
@@ -924,7 +944,7 @@ class DiscordService:
                               "please give kenny a moment before the next one.")
             return
 
-        hosts = sorted(await self.users.get_user_hosts(principal.user_id))
+        hosts = await self._hosts_for(principal)
         if not hosts:
             await self._reply(
                 event,
@@ -1644,7 +1664,7 @@ class DiscordService:
         principal = await self._principal_for(discord_user_id, guild_id)
         if principal is None:
             return "You are not linked to a kenny account. Use `/kenny link` to ask."
-        hosts = sorted(await self.users.get_user_hosts(principal.user_id or 0))
+        hosts = await self._hosts_for(principal)
         profile = await self.users.get_capability_profile(principal.user_id or 0)
         allowed = allowed_tools_for(profile=profile, scoped=principal.scoped)
         return (
@@ -1689,7 +1709,7 @@ class DiscordService:
             return "You are not linked to a kenny account."
         if not self._limiter.allow(f"u:{principal.user_id}"):
             return "You have opened a lot of requests recently — please wait a little."
-        hosts = sorted(await self.users.get_user_hosts(principal.user_id or 0))
+        hosts = await self._hosts_for(principal)
         if not hosts:
             return "No PC is assigned to your kenny account yet."
         if host:

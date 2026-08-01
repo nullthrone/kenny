@@ -452,6 +452,24 @@ async def test_requester_without_a_host_gets_no_ticket(world: World) -> None:
     assert "No PC is assigned" in world.posted_text
 
 
+async def test_operator_mention_can_target_any_registered_host(world: World) -> None:
+    """``user_hosts`` only ever has rows for scoped ``user``-role accounts
+    (ADR-0037) — an operator's own account never gets one, since it can
+    already reach every host from the dashboard. Before the fix, ``dad``
+    (role ``operator``) mentioning kenny always hit the same "no PC assigned"
+    reply as an unassigned family member, even with agents in the fleet.
+    """
+
+    world.registry.register("lena-pc", "t", {}, lambda *a, **kw: None)
+    service = world.build(text_turn("On it."))
+    await service.handle_event(mention("check my pc", author=D_DAD))
+
+    ticket = await only_ticket(world)
+    assert ticket.agent_id == "lena-pc"
+    assert ticket.requester_user_id == world.dad["id"]
+    assert "No PC is assigned" not in world.posted_text
+
+
 async def test_several_hosts_are_never_guessed(world: World) -> None:
     await world.users.set_user_hosts(world.lena["id"], ["lena-pc", "lena-laptop"])
     service = world.build(text_turn("unused"))
@@ -1006,6 +1024,14 @@ async def test_whoami_reports_the_binding(world: World) -> None:
     assert "not available" in await service.whoami(
         discord_user_id=D_LENA, guild_id=OTHER_GUILD
     )
+
+
+async def test_whoami_lists_the_fleet_for_an_unscoped_operator(world: World) -> None:
+    world.registry.register("lena-pc", "t", {}, lambda *a, **kw: None)
+    service = world.build()
+    text = await service.whoami(discord_user_id=D_DAD, guild_id=GUILD)
+    assert "dad" in text and "operator" in text and "lena-pc" in text
+    assert "none assigned" not in text
 
 
 async def test_link_opens_a_claim_only_in_an_allowed_guild(world: World) -> None:
