@@ -105,13 +105,14 @@ time.
 
 ## Notification channels
 
-Delivery goes through two best-effort channels, **both off unless configured** (a single
+Delivery goes through three best-effort channels, **all off unless configured** (a single
 HTTP POST each):
 
 | Channel | Configure with | Payload |
 |---------|----------------|---------|
 | **ntfy** | `KENNY_NTFY_URL` (+ optional `KENNY_NTFY_TOKEN` bearer) | POST body to an ntfy topic; title/priority/tags as headers — works out of the box with the ntfy phone apps |
 | **Generic webhook** | `KENNY_WEBHOOK_URL` | JSON POST (`kind`, `title`, `body`, `priority`, `tags`, `agent_id`, `at`) |
+| **Discord** | `KENNY_DISCORD_WEBHOOK_URL` | JSON POST of a Discord embed — title, body as the description, priority as the embed colour, and `kind` / `agent_id` as fields |
 
 Delivery is strictly best-effort: send errors are logged and swallowed, a dead target
 never stalls or kills the loop. **With no channel configured, evaluation still runs and
@@ -132,6 +133,7 @@ Alerting environment variables (see [`setup.md`](setup.md) for the full list):
 | `KENNY_NTFY_URL` | *(empty)* | ntfy topic URL; empty = channel off |
 | `KENNY_NTFY_TOKEN` | *(empty)* | Optional ntfy bearer token |
 | `KENNY_WEBHOOK_URL` | *(empty)* | Generic JSON webhook URL; empty = channel off |
+| `KENNY_DISCORD_WEBHOOK_URL` | *(empty)* | Discord webhook URL; empty = channel off |
 
 ## See also
 
