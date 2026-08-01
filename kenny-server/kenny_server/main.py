@@ -18,7 +18,7 @@ import asyncio
 import contextlib
 import logging
 import os
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 
 from fastmcp import FastMCP
 from starlette.applications import Starlette
@@ -36,10 +36,13 @@ from .auth import (
 )
 from .backup import BackupManager, apply_pending_restore
 from .chat import ChatSessions
+from .discord_adapter import DiscordPyGateway, GatewayUnavailable
+from .discord_identity import DiscordIdentityStore
+from .discord_service import DiscordService
 from .distribution import ShareLinks, build_download_routes
 from .keystore import KeyStore
 from .logging_config import StoreLogHandler, configure_logging, drain_log_queue
-from .notify import load_notifiers
+from .notify import Notification, load_notifiers
 from .oauth import build_oauth_routes
 from .oauthstore import OAuthStore
 from .policy import PolicyEngine
@@ -57,14 +60,18 @@ from .store import (
     UpdateStore,
     WebFilterStore,
 )
+from .ticketstore import TicketStore
+from .tickets import TicketService, ticket_sweep_loop
 from .tokenstore import AgentTokenStore
+from .toolloop import ToolExecutor
 from .tools import CallLog, ScreenshotStore, register_tools
 from .tunnel import AgentTunnel
 from .update_manager import UpdateManager, update_check_loop
 from .userstore import UserStore
 from .webfilter import ExternalListCache, WebFilterService
-from .webui import build_api_routes, build_chat_routes
+from .webui import _anthropic_client, build_api_routes, build_chat_routes
 from .webui.authz import guard
+from .webui.tickets import build_ticket_routes
 from .webui.users import build_user_routes
 
 
@@ -100,8 +107,47 @@ async def _backup_loop(
         await asyncio.sleep(interval if interval and interval > 0 else interval_s)
 
 
-def build_app(db_path: str | None = None) -> Starlette:
-    """Build and return the composed ASGI application."""
+def _guild_ids(raw: Any) -> frozenset[str]:
+    """Parse ``KENNY_DISCORD_GUILD_IDS`` into an allowlist (empty = deny all)."""
+
+    return frozenset(part.strip() for part in str(raw or "").split(",") if part.strip())
+
+
+async def _discord_loop(service: DiscordService) -> None:
+    """Connect the gateway and consume its events, isolated from the server.
+
+    Every failure mode ends this task and nothing else: a missing optional
+    dependency is a single WARNING (the operator asked for a surface that is not
+    installed), and anything else is logged with a traceback. The server, its
+    tickets and its dashboard keep running either way.
+    """
+
+    log = logging.getLogger("kenny.discord")
+    try:
+        await service.gateway.start()
+    except GatewayUnavailable as exc:
+        log.warning("Discord surface disabled: %s", exc)
+        return
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 - never take the server down with the bot
+        log.exception("Discord gateway failed to start; the surface stays off")
+        return
+    try:
+        await service.run()
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 - never take the server down with the bot
+        log.exception("Discord event loop stopped")
+
+
+def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_client) -> Starlette:
+    """Build and return the composed ASGI application.
+
+    ``client_factory`` constructs the Anthropic client used by both the
+    dashboard chat routes and the Discord surface; it is injected so tests need
+    no API key (see ``webui._anthropic_client``).
+    """
 
     db_path = db_path or os.environ.get("KENNY_DB_PATH", "kenny.sqlite")
 
@@ -172,6 +218,40 @@ def build_app(db_path: str | None = None) -> Starlette:
         settings=settings,
     )
     tunnel.on_agent_online = update_mgr.on_agent_connect
+    # Tickets: the ITSM record an assisted change hangs off. Store, lifecycle
+    # service and Discord identity mapping are built unconditionally — the
+    # ticket surface is fully functional on a server that has no Discord at all.
+    # The two lifetime knobs are read again after ``settings.load()`` below so a
+    # dashboard override applies from this boot.
+    ticket_store = TicketStore(db_path)
+    ticket_service = TicketService(
+        ticket_store,
+        approval_ttl_secs=int(settings.get("KENNY_TICKET_APPROVAL_TTL_SECS")),
+        autoclose_secs=int(settings.get("KENNY_TICKET_AUTOCLOSE_SECS")),
+    )
+    discord_identities = DiscordIdentityStore(db_path)
+
+    async def open_alert_ticket(note: Notification) -> None:
+        """Open the ticket an alert asks for (ADR-0029 stays best-effort).
+
+        ``origin='alert'`` and no requester: nobody asked for it, so it has no
+        owner and is operator-only by the ticket API's own listing rule. The
+        alerting agent is frozen as the ticket's target the same way a Discord
+        requester's host is.
+        """
+
+        await ticket_service.create(
+            title=note.title,
+            origin="alert",
+            requester_user_id=None,
+            agent_id=note.agent_id,
+            priority="high" if note.priority in ("high", "urgent") else "normal",
+            category="alert",
+            summary=note.body,
+            actor="system",
+            reason="opened from an alert",
+        )
+
     # Push alerting (ADR-0029): transition detection over the health rules,
     # delivered best-effort via the env-configured channels (possibly none).
     alert_state = AlertStateStore(db_path)
@@ -185,8 +265,55 @@ def build_app(db_path: str | None = None) -> Starlette:
         registry=registry,
         notifiers=notifiers,
         settings=settings,
-        prunables=[store, event_store, webfilter_store],
+        prunables=[store, event_store, webfilter_store, ticket_store, discord_identities],
+        open_ticket=open_alert_ticket,
     )
+
+    # Discord bot surface (optional). The service is constructed only when a bot
+    # token exists — an env-only secret, so its presence is already known here —
+    # and started only when KENNY_DISCORD_ENABLED is set, which is re-read in the
+    # lifespan after the operator's DB overrides load. Constructing
+    # ``DiscordPyGateway`` imports nothing: discord.py is imported lazily inside
+    # ``start()``, so a server without the optional dependency builds normally.
+    discord_token = str(settings.get("KENNY_DISCORD_BOT_TOKEN") or "").strip()
+    discord_service: DiscordService | None = None
+    discord_client: Any = None
+    if discord_token:
+        try:
+            discord_client = client_factory()
+        except Exception as exc:  # noqa: BLE001 - e.g. no ANTHROPIC_API_KEY
+            logging.getLogger("kenny.discord").warning(
+                "Discord surface disabled: no usable Anthropic client (%s)", exc
+            )
+    if discord_token and discord_client is not None:
+        guild_allowlist = _guild_ids(settings.get("KENNY_DISCORD_GUILD_IDS"))
+        discord_service = DiscordService(
+            gateway=DiscordPyGateway(
+                token=discord_token, guild_allowlist=guild_allowlist
+            ),
+            identities=discord_identities,
+            tickets=ticket_service,
+            users=user_store,
+            executor=ToolExecutor(
+                registry=registry,
+                store=store,
+                tunnel=tunnel,
+                call_log=call_log,
+                screenshots=screenshots,
+            ),
+            client=discord_client,
+            model=(
+                str(settings.get("KENNY_DISCORD_MODEL") or "").strip()
+                or str(settings.get("KENNY_CHAT_MODEL"))
+            ),
+            guild_ids=guild_allowlist,
+            support_channel_id=str(settings.get("KENNY_DISCORD_SUPPORT_CHANNEL_ID")) or None,
+            operator_channel_id=str(settings.get("KENNY_DISCORD_OPERATOR_CHANNEL_ID")) or None,
+            private_threads=bool(settings.get("KENNY_DISCORD_PRIVATE_THREADS")),
+            max_turns_per_ticket=int(settings.get("KENNY_DISCORD_MAX_TURNS_PER_TICKET")),
+            rate_limit_per_hour=int(settings.get("KENNY_DISCORD_RATE_LIMIT_PER_USER_HOUR")),
+            approval_ttl_secs=int(settings.get("KENNY_TICKET_APPROVAL_TTL_SECS")),
+        )
 
     mcp = FastMCP("kenny")
     register_tools(
@@ -232,6 +359,14 @@ def build_app(db_path: str | None = None) -> Starlette:
         await alert_state.connect()
         await backup_target_store.connect()
         await update_store.connect()
+        await ticket_store.connect()
+        await discord_identities.connect()
+        # Ticket lifetimes are "live" settings, but the service and the store are
+        # constructed before the DB overrides are readable — re-read them here so
+        # a dashboard override is in force from the first sweep of this boot.
+        ticket_service.approval_ttl_secs = int(settings.get("KENNY_TICKET_APPROVAL_TTL_SECS"))
+        ticket_service.autoclose_secs = int(settings.get("KENNY_TICKET_AUTOCLOSE_SECS"))
+        ticket_store.run_retention_days = int(settings.get("KENNY_TICKET_RETENTION_DAYS"))
         if applied:
             await event_store.insert_alert(
                 agent_id=None,
@@ -288,6 +423,32 @@ def build_app(db_path: str | None = None) -> Starlette:
             update_check_task = asyncio.create_task(
                 update_check_loop(update_mgr, settings, update_check_secs, update_check_delay)
             )
+        # Ticket housekeeping loop: expires overdue approval/consent gates and
+        # auto-closes resolved tickets. KENNY_TICKET_SWEEP_INTERVAL_SECS=0
+        # disables entirely (a "restart" decision, like the loops above); the
+        # cadence itself is re-read live inside the loop.
+        sweep_secs = int(settings.get("KENNY_TICKET_SWEEP_INTERVAL_SECS"))
+        ticket_task: asyncio.Task | None = None
+        if sweep_secs > 0:
+            sweep_delay = float(settings.get("KENNY_TICKET_SWEEP_INITIAL_DELAY"))
+            ticket_task = asyncio.create_task(
+                ticket_sweep_loop(ticket_service, settings.get, sweep_secs, sweep_delay)
+            )
+        # Discord bot surface. Only started when an operator both configured a bot
+        # token and enabled the surface; anything else is a one-line info and no
+        # task at all. Failures inside the task never reach the server.
+        discord_task: asyncio.Task | None = None
+        if discord_service is not None and bool(settings.get("KENNY_DISCORD_ENABLED")):
+            discord_task = asyncio.create_task(_discord_loop(discord_service))
+        else:
+            logging.getLogger("kenny.discord").info(
+                "Discord surface not started (enabled=%s, token=%s)",
+                bool(settings.get("KENNY_DISCORD_ENABLED")),
+                "set" if discord_token else "unset",
+            )
+        # Exposed for tests/introspection: which optional loops this boot started.
+        app.state.ticket_task = ticket_task
+        app.state.discord_task = discord_task
         # Capture server-side log records onto a bounded queue and persist them
         # via a background drain task (source='server'). See ADR-0017.
         log_handler = StoreLogHandler()
@@ -332,6 +493,17 @@ def build_app(db_path: str | None = None) -> Starlette:
                 update_check_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await update_check_task
+            if ticket_task is not None:
+                ticket_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await ticket_task
+            if discord_task is not None:
+                discord_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await discord_task
+            if discord_service is not None:
+                with contextlib.suppress(Exception):
+                    await discord_service.gateway.close()
             await token_store.close()
             await key_store.close()
             await user_store.close()
@@ -345,6 +517,8 @@ def build_app(db_path: str | None = None) -> Starlette:
             await alert_state.close()
             await backup_target_store.close()
             await update_store.close()
+            await ticket_store.close()
+            await discord_identities.close()
             await settings_store.close()
 
     api_routes = build_api_routes(
@@ -379,6 +553,7 @@ def build_app(db_path: str | None = None) -> Starlette:
         sessions=chat_sessions,
         screenshots=screenshots,
         history_store=chat_history_store,
+        client_factory=client_factory,
     )
     # The server-hosted copilot drives arbitrary capability tools over the
     # process-global active agent, so it is gated to operator+ (ADR-0037). The
@@ -392,6 +567,16 @@ def build_app(db_path: str | None = None) -> Starlette:
         )
         for r in chat_routes
     ]
+    # Ticket/approval/Discord-identity/tool-class routes. Registered on every
+    # server: the Discord collaborators are optional and only the two routes that
+    # genuinely need a gateway answer 503 without one.
+    ticket_routes = build_ticket_routes(
+        tickets=ticket_service,
+        store=ticket_store,
+        identities=discord_identities,
+        user_store=user_store,
+        discord=discord_service,
+    )
     download_routes = build_download_routes(
         registry=registry,
         token_store=token_store,
@@ -412,6 +597,7 @@ def build_app(db_path: str | None = None) -> Starlette:
         *chat_routes,
         *download_routes,
         *user_routes,
+        *ticket_routes,
         *api_routes,
         # Mounted last so it only catches what nothing above matched.
         Mount("/", app=mcp_app),
@@ -458,6 +644,13 @@ def build_app(db_path: str | None = None) -> Starlette:
     app.state.chat_history_store = chat_history_store
     app.state.alert_state = alert_state
     app.state.alert_engine = alert_engine
+    app.state.ticket_store = ticket_store
+    app.state.tickets = ticket_service
+    app.state.discord_identities = discord_identities
+    app.state.discord_service = discord_service
+    # Replaced by the lifespan with the tasks it actually started (if any).
+    app.state.ticket_task = None
+    app.state.discord_task = None
     app.state.notifiers = notifiers
     app.state.share_links = share_links
     app.state.mcp = mcp

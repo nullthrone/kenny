@@ -446,12 +446,23 @@
     .kc-header__right { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
     .kc-operator { display: inline-flex; align-items: center; gap: 6px; font-size: var(--text-sm); color: var(--fg-muted); }
     .kc-operator svg { width: 15px; height: 15px; }
-    .kc-icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px;
-      border-radius: var(--radius-sm); border: 1px solid var(--border); background: transparent; color: var(--fg-muted);
+    .kc-icon-btn { position: relative; display: inline-flex; align-items: center; justify-content: center;
+      width: 32px; height: 32px; border-radius: var(--radius-sm); border: 1px solid var(--border);
+      background: transparent; color: var(--fg-muted);
       cursor: pointer; transition: background var(--dur) var(--ease), color var(--dur) var(--ease); }
     .kc-icon-btn:hover { background: var(--surface-raised); color: var(--fg); }
     .kc-icon-btn.is-active { background: var(--surface-raised); color: var(--accent); border-color: var(--border-strong); }
     .kc-icon-btn svg { width: 16px; height: 16px; }
+    /* small numeric badge (e.g. pending-approvals count) anchored to an icon button */
+    .k-badge { position: absolute; top: -5px; right: -5px; min-width: 16px; height: 16px; padding: 0 4px;
+      border-radius: 999px; background: var(--crit-solid); color: var(--crit-on); font-size: 10px; font-weight: 700;
+      line-height: 16px; text-align: center; }
+
+    /* ticket detail: chronological trail of state changes, tool calls, approvals, notes */
+    .kc-timeline__row { display: flex; align-items: baseline; gap: 10px; padding: 7px 4px;
+      border-bottom: 1px solid var(--border); font-size: var(--text-sm); flex-wrap: wrap; }
+    .kc-timeline__row:last-child { border-bottom: none; }
+    .kc-timeline__actor { min-width: 90px; color: var(--fg-muted); flex: none; }
 
     /* top-level tab navigation (Fleet / Activity) */
     .kc-tabs { display: flex; align-items: center; gap: 6px; }
@@ -1247,7 +1258,8 @@
       fleet: null, bin: null, selected: null, detail: null,
       overview: null, trend: null, topMetric: "disk", sankeyByOs: false, trendDays: 30,
       audit: [], auditQuery: "", auditPage: 1,
-      events: [], eventsQuery: "", eventsPage: 1 };
+      events: [], eventsQuery: "", eventsPage: 1,
+      tickets: [], ticketsStateFilter: "", ticketDetail: null, approvalsCount: 0 };
     const AUDIT_PAGE_SIZE = 25;
     const EVENTS_PAGE_SIZE = 25;
 
@@ -1276,6 +1288,11 @@
       if (parts[0] === "updates") {
         return { tab: "updates", activityView: state.activityView };
       }
+      // #/tickets is the list; #/tickets/{id} is one ticket's detail — the
+      // landing page for every "see the dashboard" link posted into Discord.
+      if (parts[0] === "tickets") {
+        return { tab: "tickets", ticketId: parts[1] || null, activityView: state.activityView };
+      }
       // Overview is the default landing view (bare or unknown hash).
       return { tab: "overview", activityView: state.activityView };
     }
@@ -1285,15 +1302,18 @@
         `<a class="kc-tab${state.tab === name ? " is-active" : ""}" href="${href}">${icon(ico, 16)}${label}</a>`;
       // Settings has moved into the user menu (superuser only); it is no longer
       // a top-level tab. The #/settings route still renders it (see router).
+      // Tickets is visible to every role — it is the first genuinely
+      // user-facing view (a scoped `user` only ever sees their own tickets).
       tabsEl.innerHTML =
         tab("overview", "#/overview", "activity", "Overview") +
         tab("fleet", "#/fleet", "network", "Fleet") +
-        tab("activity", "#/activity/" + state.activityView, "activity", "Activity");
+        tab("activity", "#/activity/" + state.activityView, "activity", "Activity") +
+        tab("tickets", "#/tickets", "message-square", "Tickets");
     }
 
     async function router() {
       disposeOvCharts();  // tear down Overview charts when leaving/re-entering
-      const { tab, activityView, flaggedSev } = parseHash();
+      const { tab, activityView, flaggedSev, ticketId } = parseHash();
       state.tab = tab;
       state.activityView = activityView;
       state.flaggedSev = flaggedSev || "warn";
@@ -1301,6 +1321,10 @@
       if (tab === "overview") await renderOverview();
       else if (tab === "activity") await renderActivity();
       else if (tab === "flagged") await renderFlagged();
+      else if (tab === "tickets") {
+        if (ticketId) await renderTicketDetail(ticketId);
+        else await renderTickets();
+      }
       else if (tab === "settings") {
         // Guard direct navigation (typed/bookmarked #/settings) for non-superusers.
         if (!isSuperuser()) { history.replaceState(null, "", "#/overview"); state.tab = "overview"; renderTabs(); await renderOverview(); }
@@ -1818,6 +1842,290 @@
     }
 
     // ====================================================================
+    // TICKETS TAB — the simplified-ITSM ticket list/detail. Visible to every
+    // role: an operator+ sees the whole queue, a scoped `user` only ever sees
+    // their own tickets (enforced server-side, not just hidden in the UI).
+    // #/tickets/{id} is the landing page for every "see the dashboard" link
+    // posted into Discord, so it has to work from a cold load, not just from
+    // clicking through the list.
+    // ====================================================================
+    const TICKET_STATES = ["new", "triage", "in_progress", "awaiting_user",
+      "awaiting_approval", "awaiting_agent", "resolved", "closed", "cancelled"];
+
+    function ticketStateClass(s) {
+      if (s === "resolved" || s === "closed") return "k-pill--ok";
+      if (s === "cancelled") return "k-pill--muted";
+      if (String(s).startsWith("awaiting")) return "k-pill--warn";
+      if (s === "in_progress") return "k-pill--role";
+      return "k-pill--muted"; // new, triage
+    }
+    function ticketStateLabel(s) { return String(s || "").replace(/_/g, " "); }
+
+    async function renderTickets() {
+      if (!state.fleet) state.fleet = await getJSON("/api/fleet").catch(() => ({ agents: [] }));
+      renderHeaderRight(state.fleet, state.fleet.agents || []);
+      app.innerHTML = `<div class="kset"><div class="k-muted">loading…</div></div>`;
+      let data;
+      try { data = await getJSON("/api/tickets?limit=200"); }
+      catch (e) {
+        app.innerHTML = `<div class="kset"><div class="k-airec__err">could not load tickets: ${esc(e.message)}</div></div>`;
+        return;
+      }
+      state.tickets = data.tickets || [];
+      app.innerHTML = ticketsPageHtml();
+    }
+    function ticketsPageHtml() {
+      const filter = state.ticketsStateFilter || "";
+      const rows = (filter ? state.tickets.filter(t => t.state === filter) : state.tickets)
+        .map(ticketRowHtml).join("");
+      const options = `<option value="">all states</option>` + TICKET_STATES.map(s =>
+        `<option value="${s}" ${s === filter ? "selected" : ""}>${esc(ticketStateLabel(s))}</option>`).join("");
+      return `<div class="kset">
+        <div class="k-panel">
+          <div class="k-row" style="justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:10px">
+            <div class="kc-section-lbl">tickets</div>
+            <div class="k-row" style="gap:8px">
+              <select class="k-input" id="tk-state-filter" onchange="onTicketsFilterChange(this.value)">${options}</select>
+              <button class="k-btn k-btn--primary k-btn--sm" onclick="openCreateTicketModal()">${icon('plus', 13)}New ticket</button>
+            </div>
+          </div>
+          <table class="kacc-tbl"><thead><tr>
+            <th>#</th><th>Title</th><th>State</th><th>Requester</th><th>Agent</th><th>Age</th></tr></thead>
+            <tbody>${rows || `<tr><td colspan="6" class="kacc-empty">no tickets</td></tr>`}</tbody></table>
+        </div>
+      </div>`;
+    }
+    function openTicket(id) { location.hash = "#/tickets/" + id; }
+    function ticketRowHtml(t) {
+      return `<tr style="cursor:pointer" onclick="openTicket(${jsArg(t.id)})">
+        <td class="k-mono">#${t.number}</td>
+        <td>${esc(t.title)}</td>
+        <td><span class="k-pill ${ticketStateClass(t.state)}">${esc(ticketStateLabel(t.state))}</span></td>
+        <td>${t.requester_user_id != null ? "#" + esc(t.requester_user_id) : '<span class="k-muted">alert</span>'}</td>
+        <td class="k-mono">${t.agent_id ? esc(t.agent_id) : '<span class="k-muted">—</span>'}</td>
+        <td class="k-muted">${esc(relTime(t.created_at))}</td>
+      </tr>`;
+    }
+    function onTicketsFilterChange(v) { state.ticketsStateFilter = v; app.innerHTML = ticketsPageHtml(); }
+
+    function openCreateTicketModal() {
+      const body = `
+        <div class="kfield"><span class="kfield__lbl">Title</span>
+          <input class="k-input" id="nt-title" autocomplete="off"></div>
+        <div class="kfield"><span class="kfield__lbl">Details (optional)</span>
+          <textarea class="k-input" id="nt-summary" rows="4"></textarea></div>
+        <div class="k-modal__actions">
+          <button class="k-btn k-btn--ghost" onclick="closeModal()">Cancel</button>
+          <button class="k-btn k-btn--primary" onclick="createTicket()">${icon('check', 14)}Create</button>
+        </div>`;
+      openModal(`${icon('message-square', 20)}<span>New ticket</span>`, body);
+    }
+    async function createTicket() {
+      const title = document.getElementById("nt-title").value.trim();
+      const summary = document.getElementById("nt-summary").value.trim();
+      if (!title) { notify("title is required", "err"); return; }
+      try {
+        const t = await api("/api/tickets", "POST", { title, summary });
+        closeModal();
+        location.hash = "#/tickets/" + t.id;
+      } catch (e) { notify(e.message, "err"); }
+    }
+
+    async function renderTicketDetail(id) {
+      if (!state.fleet) state.fleet = await getJSON("/api/fleet").catch(() => ({ agents: [] }));
+      renderHeaderRight(state.fleet, state.fleet.agents || []);
+      app.innerHTML = `<div class="kset"><div class="k-muted">loading…</div></div>`;
+      let ticket, events;
+      try {
+        ticket = await getJSON("/api/tickets/" + encodeURIComponent(id));
+        events = await getJSON("/api/tickets/" + encodeURIComponent(id) + "/events").catch(() => ({ events: [] }));
+      } catch (e) {
+        app.innerHTML = `<div class="kset"><div class="k-airec__err">could not load ticket: ${esc(e.message)}</div></div>`;
+        return;
+      }
+      state.ticketDetail = { ticket, events: events.events || [] };
+      app.innerHTML = ticketDetailPageHtml(state.ticketDetail);
+    }
+    function ticketDetailPageHtml(d) {
+      const t = d.ticket;
+      const head = `<div class="k-row" style="justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px">
+        <div class="k-row" style="gap:10px;flex-wrap:wrap">
+          <a class="k-btn k-btn--ghost k-btn--sm" href="#/tickets">${icon('chevron-left', 13)}All tickets</a>
+          <span style="font-size:var(--text-md);font-weight:600">${esc(t.title)}</span>
+          <span class="k-pill ${ticketStateClass(t.state)}">${esc(ticketStateLabel(t.state))}</span>
+        </div>
+        ${ticketActionsHtml(t)}
+      </div>`;
+      const meta = `<div class="k-panel kset__grp">
+        <div class="k-deflist">
+          <div class="k-deflist__k">number</div><div class="k-deflist__v k-mono">#${t.number}</div>
+          <div class="k-deflist__k">origin</div><div class="k-deflist__v">${esc(t.origin)}</div>
+          <div class="k-deflist__k">priority</div><div class="k-deflist__v">${esc(t.priority)}</div>
+          <div class="k-deflist__k">category</div><div class="k-deflist__v">${t.category ? esc(t.category) : "—"}</div>
+          <div class="k-deflist__k">requester</div>
+          <div class="k-deflist__v">${t.requester_user_id != null ? "#" + esc(t.requester_user_id) : "alert (no requester)"}</div>
+          <div class="k-deflist__k">agent</div><div class="k-deflist__v k-mono">${t.agent_id ? esc(t.agent_id) : "—"}</div>
+          <div class="k-deflist__k">created</div><div class="k-deflist__v">${esc(fmtValue("at", t.created_at))}</div>
+          <div class="k-deflist__k">updated</div><div class="k-deflist__v">${esc(fmtValue("at", t.updated_at))}</div>
+        </div>
+        ${t.summary ? `<div class="kacc-sec"><div class="kacc-sec__lbl">Summary</div><div>${esc(t.summary)}</div></div>` : ""}
+        ${t.resolution ? `<div class="kacc-sec"><div class="kacc-sec__lbl">Resolution</div><div>${esc(t.resolution)}</div></div>` : ""}
+      </div>`;
+      const noteForm = canOperate() ? `<div class="k-panel kset__grp">
+        <div class="k-detail-grp__lbl">add a note</div>
+        <div class="kfield__row">
+          <input class="k-input" id="tk-note-input" placeholder="operator note" autocomplete="off">
+          <button class="k-btn k-btn--primary" onclick="addTicketNote(${jsArg(t.id)})">${icon('plus', 13)}Add</button>
+        </div>
+      </div>` : "";
+      const timeline = `<div class="k-panel kset__grp">
+        <div class="k-detail-grp__lbl">timeline</div>
+        <div class="kc-timeline">${(d.events || []).map(ticketEventHtml).join("")
+          || '<div class="k-muted">no activity yet</div>'}</div>
+      </div>`;
+      return `<div class="kset">${head}${meta}${noteForm}${timeline}</div>`;
+    }
+    function ticketActionsHtml(t) {
+      const btns = [];
+      if (canOperate()) {
+        btns.push(`<button class="k-btn k-btn--ghost k-btn--sm"
+          onclick="openReassignModal(${jsArg(t.id)}, ${jsArg(t.agent_id || "")})">${icon('network', 13)}Reassign</button>`);
+      }
+      if (t.state === "resolved") {
+        btns.push(`<button class="k-btn k-btn--primary k-btn--sm" onclick="closeTicket(${jsArg(t.id)})">${icon('check', 13)}Close ticket</button>`);
+      }
+      return btns.length ? `<div class="k-row" style="gap:8px">${btns.join("")}</div>` : "";
+    }
+    const TICKET_EVENT_ICON = { state: "activity", handoff: "network", tool_call: "cpu",
+      approval: "shield-check", consent: "shield-check", note: "message-square",
+      message: "message-square", error: "triangle-alert" };
+    function ticketEventHtml(e) {
+      const time = e.at ? esc(new Date(e.at).toLocaleString()) : "";
+      let body;
+      if (e.kind === "state") {
+        body = `state: <b>${esc(e.from_state || "—")}</b> → <b>${esc(e.to_state || "—")}</b>` +
+          (e.summary ? " — " + esc(e.summary) : "");
+      } else if (e.kind === "handoff") {
+        const f = e.fields || {};
+        body = `reassigned <b>${esc(f.from_agent_id || "—")}</b> → <b>${esc(f.to_agent_id || "—")}</b>`;
+      } else if (e.kind === "tool_call") {
+        const args = e.fields && e.fields.args !== undefined ? esc(JSON.stringify(e.fields.args)) : "";
+        body = `<span class="k-mono">${esc(e.tool || "")}</span>` +
+          (args ? ` <span class="k-muted">${args}</span>` : "") +
+          (e.ok === false ? ` <span class="k-pill k-pill--crit">failed</span>` : "");
+      } else if (e.kind === "approval") {
+        const f = e.fields || {};
+        body = esc(e.summary || "approval") + (f.decided_via ? " via " + esc(f.decided_via) : "");
+      } else {
+        body = esc(e.summary || "");
+      }
+      // Every dynamic piece above already went through esc()/JSON.stringify —
+      // tool args and ticket text originate from chat messages and monitored
+      // machines, so this innerHTML must never carry an unescaped value.
+      return `<div class="kc-timeline__row">
+        <span class="k-audit__time">${time}</span>
+        ${icon(TICKET_EVENT_ICON[e.kind] || "circle-help", 14)}
+        <span class="kc-timeline__actor">${esc(e.actor || "")}</span>
+        <span>${body}</span>
+      </div>`;
+    }
+    async function openReassignModal(id, current) {
+      if (!state.fleet) state.fleet = await getJSON("/api/fleet").catch(() => ({ agents: [] }));
+      const opts = (state.fleet.agents || []).map(a =>
+        `<option value="${esc(a.agent_id)}" ${a.agent_id === current ? "selected" : ""}>${esc(a.agent_id)}</option>`).join("");
+      const body = `<div class="kfield"><span class="kfield__lbl">Agent</span>
+          <select class="k-input" id="tk-reassign-agent"><option value="">(unassigned)</option>${opts}</select></div>
+        <div class="k-modal__actions">
+          <button class="k-btn k-btn--ghost" onclick="closeModal()">Cancel</button>
+          <button class="k-btn k-btn--primary" onclick="submitReassign(${jsArg(id)})">${icon('check', 14)}Reassign</button>
+        </div>`;
+      openModal(`${icon('network', 20)}<span>Reassign ticket</span>`, body);
+    }
+    async function submitReassign(id) {
+      const el = document.getElementById("tk-reassign-agent");
+      const agent_id = el && el.value ? el.value : null;
+      try {
+        await api("/api/tickets/" + encodeURIComponent(id) + "/reassign", "POST", { agent_id });
+        closeModal();
+        notify("ticket reassigned");
+        await renderTicketDetail(id);
+      } catch (e) { notify(e.message, "err"); }
+    }
+    async function closeTicket(id) {
+      const ok = await confirmModal({ title: "Close ticket", ico: "check",
+        body: "Close this ticket? It can still be reopened while it stays resolved.",
+        confirmLabel: "Close" });
+      if (ok) {
+        try { await api("/api/tickets/" + encodeURIComponent(id) + "/close", "POST", {}); notify("ticket closed"); }
+        catch (e) { notify(e.message, "err"); }
+      }
+      await renderTicketDetail(id);
+    }
+    async function addTicketNote(id) {
+      const el = document.getElementById("tk-note-input");
+      const summary = el ? el.value.trim() : "";
+      if (!summary) return;
+      try {
+        await api("/api/tickets/" + encodeURIComponent(id) + "/note", "POST", { summary });
+        notify("note added");
+      } catch (e) { notify(e.message, "err"); }
+      await renderTicketDetail(id);
+    }
+
+    // -- approvals badge modal: the frozen tool call, args and target, one
+    // decision away from running (or being denied) ------------------------
+    async function openApprovalsModal() {
+      openModal(`${icon('shield-alert', 20)}<span>Pending approvals</span>`, `<div class="k-muted">loading…</div>`, "k-modal--wide");
+      await refreshApprovalsModal();
+    }
+    async function refreshApprovalsModal() {
+      let approvals = [];
+      try { approvals = ((await api("/api/approvals")) || {}).approvals || []; }
+      catch (e) {
+        const b = modalBody(); if (b) b.innerHTML = `<div class="k-airec__err">${esc(e.message)}</div>`;
+        return;
+      }
+      const b = modalBody(); if (b) b.innerHTML = approvalsBodyHtml(approvals);
+    }
+    function approvalsBodyHtml(approvals) {
+      if (!approvals.length) return `<div class="k-muted">no pending approvals</div>`;
+      const rows = approvals.map(a => `<tr>
+          <td class="k-mono">${esc(a.tool)}</td>
+          <td><span class="k-pill">${esc(a.tool_class)}</span></td>
+          <td class="k-mono" style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+            title="${esc(JSON.stringify(a.args))}">${esc(JSON.stringify(a.args))}</td>
+          <td><a href="#/tickets/${encodeURIComponent(a.ticket_id)}" onclick="closeModal()">${icon('link', 13)}ticket</a></td>
+          <td class="kacc-tbl__actions">
+            <button class="k-btn k-btn--primary k-btn--sm" onclick="decideApproval(${jsArg(a.id)}, true)">${icon('check', 13)}Approve</button>
+            <button class="k-btn k-btn--danger k-btn--sm" onclick="decideApproval(${jsArg(a.id)}, false)">${icon('x', 13)}Deny</button>
+          </td></tr>`).join("");
+      return `<table class="kacc-tbl"><thead><tr><th>Tool</th><th>Class</th><th>Args</th><th>Ticket</th><th></th></tr></thead>
+        <tbody>${rows}</tbody></table>`;
+    }
+    async function decideApproval(id, approve) {
+      const ok = await confirmModal({
+        title: approve ? "Approve tool call" : "Deny tool call",
+        ico: approve ? "shield-check" : "shield-alert",
+        body: approve
+          ? "Allow this held tool call to run on the target host?"
+          : "Deny this held tool call? It will not run.",
+        confirmLabel: approve ? "Approve" : "Deny",
+        confirmClass: approve ? "k-btn--primary" : "k-btn--danger",
+      });
+      if (ok) {
+        try {
+          await api("/api/approvals/" + encodeURIComponent(id), "POST", { approve });
+          notify(approve ? "approved" : "denied");
+        } catch (e) { notify(e.message, "err"); }
+      }
+      // confirmModal() replaces/closes the single shared modal, so reopen the
+      // approvals list (same pattern as resetUserTotp()) rather than trying to
+      // patch the now-gone DOM in place.
+      await openApprovalsModal();
+      refreshHeader();
+    }
+
+    // ====================================================================
     // SETTINGS TAB — structured view of the runtime configuration catalog.
     // Values resolve DB override > environment > coded default. Editable
     // (live/restart) settings are written back via /api/settings; env_only
@@ -1842,7 +2150,148 @@
         <div class="kset__intro k-muted">Settings resolve <b>custom override → environment → default</b>.
           Editable settings apply immediately; read-only ones are managed via the environment.</div>
         ${groups.map(settingsGroupHtml).join("")}
+        ${isSuperuser()
+          ? `<div class="k-panel kset__grp" id="discord-panel"><div class="k-detail-grp__lbl">Discord</div>
+               <div class="k-muted">loading…</div></div>`
+          : ""}
       </div>`;
+      if (isSuperuser()) await renderDiscordPanel();
+    }
+
+    // ====================================================================
+    // DISCORD PANEL (Settings, superuser) — gateway connection status, linked
+    // identity table, and both enrollment paths: confirming a pending claim
+    // code and picking a guild member directly. Superuser-only surface
+    // (/api/discord/* on the server); degrades to a "not configured" notice
+    // until the Discord identity service is wired in (identities is None).
+    // ====================================================================
+    // Both enrollment paths bind a Discord snowflake to a *kenny account*, so
+    // each needs the operator to say which account — the server rejects either
+    // without a user_id, and there is no sane default to guess.
+    let discordUsers = [];
+    function discordUserOptions(selectId) {
+      return `<select id="${selectId}" class="k-input k-input--sm">
+        <option value="">choose kenny user…</option>
+        ${discordUsers.map(u => `<option value="${esc(u.id)}">${esc(u.username)} (${esc(u.role)})</option>`).join("")}
+      </select>`;
+    }
+    function pickedUserId(selectId) {
+      const el = document.getElementById(selectId);
+      const v = el && el.value ? el.value : "";
+      if (!v) { notify("choose a kenny user first", "err"); return null; }
+      return Number(v);
+    }
+    async function renderDiscordPanel() {
+      const host = document.getElementById("discord-panel");
+      if (!host) return;
+      let status = { connected: false, configured: false };
+      try { status = await getJSON("/api/discord/status"); } catch (e) {}
+      let identities = null, claims = [];
+      try { identities = ((await api("/api/discord/identities")) || {}).identities || []; }
+      catch (e) { identities = null; }
+      if (identities !== null) {
+        try { claims = ((await api("/api/discord/claims")) || {}).claims || []; } catch (e) {}
+        try { discordUsers = ((await api("/api/users")) || {}).users || []; } catch (e) {}
+      }
+      host.innerHTML = discordPanelHtml(status, identities, claims);
+    }
+    function discordPanelHtml(status, identities, claims) {
+      const statusPill = status.connected
+        ? `<span class="k-pill k-pill--ok">${icon('check', 13)}connected</span>`
+        : `<span class="k-pill k-pill--muted">not connected</span>`;
+      const head = `<div class="k-detail-grp__lbl">Discord</div>
+        <div class="k-row" style="gap:10px;margin-bottom:14px">${statusPill}</div>`;
+      if (identities === null) {
+        return head + `<div class="k-muted">Discord identity linking is not configured on
+          this server yet.</div>`;
+      }
+      const userName = uid => {
+        const u = discordUsers.find(x => String(x.id) === String(uid));
+        return u ? u.username : (uid != null ? "#" + uid : "—");
+      };
+      const linkedRows = identities.map(i => `<tr${i.disabled ? ' class="k-muted"' : ""}>
+          <td>${esc(userName(i.user_id))}</td>
+          <td class="k-mono">${esc(i.discord_user_id || "")}</td>
+          <td>${esc(i.linked_via || "")}${i.disabled ? " · disabled" : ""}</td>
+          <td class="kacc-tbl__actions">
+            <button class="k-btn k-btn--danger k-btn--sm" onclick="deleteDiscordIdentity(${jsArg(i.discord_user_id)})">${icon('trash-2', 13)}</button>
+          </td></tr>`).join("");
+      const pendingRows = (claims || []).map((c, n) => `<tr>
+          <td class="k-mono">${esc(c.code || "")}</td>
+          <td>${esc(c.display_hint || "")}<div class="k-mono k-muted">${esc(c.discord_user_id || "")}</div></td>
+          <td>${discordUserOptions("dc-claim-" + n)}</td>
+          <td>
+            <button class="k-btn k-btn--primary k-btn--sm"
+              onclick="confirmDiscordClaim(${jsArg(c.code)}, ${jsArg('dc-claim-' + n)})">${icon('check', 13)}Confirm</button>
+          </td></tr>`).join("");
+      return head + `
+        <div class="kacc-sec">
+          <div class="kacc-sec__lbl">Linked accounts</div>
+          <table class="kacc-tbl"><thead><tr><th>kenny user</th><th>Discord user</th><th>Linked via</th><th></th></tr></thead>
+            <tbody>${linkedRows || `<tr><td colspan="4" class="kacc-empty">no linked accounts</td></tr>`}</tbody></table>
+        </div>
+        <div class="kacc-sec">
+          <div class="kacc-sec__lbl">Pending claims</div>
+          <div class="k-muted" style="margin-bottom:8px">Someone ran <code>/kenny link</code> in
+            Discord. Pick the kenny account it belongs to — that mapping is what decides which
+            machines they may ask about.</div>
+          <table class="kacc-tbl"><thead><tr><th>Code</th><th>Discord user</th><th>kenny user</th><th></th></tr></thead>
+            <tbody>${pendingRows || `<tr><td colspan="4" class="kacc-empty">no pending claims</td></tr>`}</tbody></table>
+        </div>
+        <div class="kacc-sec">
+          <div class="kacc-sec__lbl">Link by member picker</div>
+          <button class="k-btn k-btn--ghost k-btn--sm" onclick="openDiscordMemberPicker()">${icon('users', 13)}Pick a guild member</button>
+        </div>`;
+    }
+    async function deleteDiscordIdentity(did) {
+      const ok = await confirmModal({ title: "Unlink Discord account", ico: "trash-2",
+        body: "Remove this Discord link? The person will need to re-enroll to use Discord again.",
+        confirmLabel: "Unlink", confirmClass: "k-btn--danger" });
+      if (ok) {
+        try { await api("/api/discord/identities/" + encodeURIComponent(did), "DELETE"); notify("unlinked"); }
+        catch (e) { notify(e.message, "err"); }
+      }
+      await renderDiscordPanel();
+    }
+    async function confirmDiscordClaim(code, selectId) {
+      const userId = pickedUserId(selectId);
+      if (userId === null) return;
+      try {
+        await api("/api/discord/claims/" + encodeURIComponent(code), "POST", { user_id: userId });
+        notify("claim confirmed");
+      } catch (e) { notify(e.message, "err"); }
+      await renderDiscordPanel();
+    }
+    async function openDiscordMemberPicker() {
+      openModal(`${icon('users', 20)}<span>Link a Discord member</span>`, `<div class="k-muted">loading…</div>`);
+      let members;
+      try { members = ((await api("/api/discord/members")) || {}).members || []; }
+      catch (e) {
+        const b = modalBody(); if (b) b.innerHTML = `<div class="k-airec__err">${esc(e.message)}</div>`;
+        return;
+      }
+      const b = modalBody();
+      if (!b) return;
+      b.innerHTML = members.length
+        ? `<table class="kacc-tbl"><thead><tr><th>Member</th><th>Discord ID</th><th>kenny user</th><th></th></tr></thead><tbody>` +
+          members.map((m, n) => `<tr>
+              <td>${esc(m.display_hint || "")}</td>
+              <td class="k-mono">${esc(m.user_id || "")}</td>
+              <td>${discordUserOptions("dc-member-" + n)}</td>
+              <td><button class="k-btn k-btn--primary k-btn--sm" onclick="linkDiscordMember(${jsArg(m.user_id)}, ${jsArg('dc-member-' + n)})">${icon('link', 13)}Link</button></td>
+            </tr>`).join("") + `</tbody></table>`
+        : `<div class="k-muted">no guild members found</div>`;
+    }
+    async function linkDiscordMember(discordUserId, selectId) {
+      const userId = pickedUserId(selectId);
+      if (userId === null) return;
+      closeModal();
+      try {
+        await api("/api/discord/identities", "POST",
+                  { discord_user_id: discordUserId, user_id: userId });
+        notify("linked");
+      } catch (e) { notify(e.message, "err"); }
+      await renderDiscordPanel();
     }
 
     function settingsGroupHtml(g) {
@@ -2500,7 +2949,7 @@
     // Theme, About and Settings live in the user menu (see toggleUserMenu);
     // the header keeps only the fleet metrics, the copilot toggle and the
     // identity control.
-    function renderHeaderRight(fleet, agents) {
+    async function renderHeaderRight(fleet, agents) {
       // The copilot toggle only applies to the Fleet tab (the rail lives there).
       const copilotBtn = state.tab === "fleet"
         ? `<button class="kc-icon-btn" id="copilot-btn" onclick="toggleCopilot()" title="toggle copilot panel" aria-label="toggle copilot panel">${icon('sparkles', 16)}</button>`
@@ -2508,7 +2957,26 @@
       headerRight.innerHTML =
         fleetMetricsHtml(agents) +
         copilotBtn +
+        approvalsBadgeHtml() +
         identityHtml();
+      if (canOperate()) {
+        try {
+          const data = await getJSON("/api/approvals");
+          state.approvalsCount = (data.approvals || []).length;
+        } catch (e) { state.approvalsCount = 0; }
+        const btn = document.getElementById("approvals-badge");
+        if (btn) btn.outerHTML = approvalsBadgeHtml();
+      }
+    }
+
+    // A pending-approvals count badge (operator+) opening the approvals modal —
+    // the operator-facing gate on every held tool call across the fleet.
+    function approvalsBadgeHtml() {
+      if (!canOperate()) return "";
+      const n = state.approvalsCount || 0;
+      return `<button class="kc-icon-btn${n ? " is-active" : ""}" id="approvals-badge"
+          onclick="openApprovalsModal()" title="pending approvals" aria-label="pending approvals">
+          ${icon('shield-alert', 16)}${n ? `<span class="k-badge">${n > 99 ? "99+" : n}</span>` : ""}</button>`;
     }
 
     // -- identity control: avatar + username + dropdown -------------------
@@ -2878,19 +3346,20 @@
     }
     async function openUserDetail(uid) {
       openModal(`${icon('user-round', 20)}<span>User</span>`, `<div class="k-muted">loading…</div>`, "k-modal--wide");
-      let user, avatars = [], hosts = [];
+      let user, avatars = [], hosts = [], profiles = {};
       try {
         user = await api("/api/users/" + encodeURIComponent(uid));
         avatars = ((await api("/api/avatars").catch(() => ({ avatars: [] }))) || {}).avatars || [];
         const fleet = (await api("/api/fleet").catch(() => ({ agents: [] }))) || { agents: [] };
         hosts = (fleet.agents || []).map(a => a.agent_id);
+        profiles = ((await api("/api/tool-classes").catch(() => ({ profiles: {} }))) || {}).profiles || {};
       } catch (e) {
         const b = modalBody(); if (b) b.innerHTML = `<div class="k-airec__err">${esc(e.message)}</div>`;
         return;
       }
-      const b = modalBody(); if (b) b.innerHTML = userDetailHtml(user, avatars, hosts);
+      const b = modalBody(); if (b) b.innerHTML = userDetailHtml(user, avatars, hosts, profiles);
     }
-    function userDetailHtml(u, avatars, hosts) {
+    function userDetailHtml(u, avatars, hosts, profiles) {
       const uid = u.id;
       const head = `<div class="k-row" style="justify-content:space-between;margin-bottom:14px">
         <span class="kacc-cell">${avatarHtml(u, "kc-avatar--lg")}<b style="font-size:var(--text-md)">${esc(u.username)}</b>${rolePill(u.role)}</span>
@@ -2906,6 +3375,21 @@
         <div class="kfield"><span class="kfield__lbl">Avatar</span>${avatarPickerHtml("edituser-av", avatars, u.avatar || null)}</div>
         <label class="kwf-tog" style="margin:4px 0 12px"><input type="checkbox" id="eu-disabled" ${u.disabled ? "checked" : ""}><span>account disabled</span></label>
         <button class="k-btn k-btn--primary" onclick="saveUser(${jsArg(uid)})">${icon('check', 14)}Save changes</button>
+      </div>`;
+      const profileNames = Object.keys(profiles || {});
+      const profileSec = `<div class="kacc-sec">
+        <div class="kacc-sec__lbl">Capability profile</div>
+        <div class="k-muted" style="margin-bottom:8px">Narrows which tools this account may
+          invoke, on top of what its role already allows.</div>
+        <div class="kfield__row">
+          <select class="k-input" id="eu-profile">
+            <option value="">(none — role default)</option>
+            ${profileNames.map(p =>
+              `<option value="${esc(p)}" ${p === u.capability_profile ? "selected" : ""}>${esc(p)}</option>`
+            ).join("")}
+          </select>
+          <button class="k-btn k-btn--ghost" onclick="saveUserProfile(${jsArg(uid)})">${icon('check', 14)}Save</button>
+        </div>
       </div>`;
       const pwSec = `<div class="kacc-sec">
         <div class="kacc-sec__lbl">Reset password</div>
@@ -2937,7 +3421,16 @@
       </div>`;
       // Bind the row-scoped revoke handler for this user's PAT table.
       window["revokeUserPat_" + cssId(uid)] = pid => revokeUserPat(uid, pid);
-      return head + accountSec + pwSec + totpSec + hostsSec + patSec;
+      return head + accountSec + profileSec + pwSec + totpSec + hostsSec + patSec;
+    }
+    async function saveUserProfile(uid) {
+      const el = document.getElementById("eu-profile");
+      const capability_profile = el && el.value ? el.value : null;
+      try {
+        await api("/api/users/" + encodeURIComponent(uid) + "/profile", "PUT", { capability_profile });
+        notify("capability profile saved");
+        await openUserDetail(uid);
+      } catch (e) { notify(e.message, "err"); }
     }
     // A stable identifier fragment for building a per-user handler name.
     function cssId(uid) { return String(uid).replace(/[^A-Za-z0-9]/g, "_"); }

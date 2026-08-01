@@ -49,6 +49,22 @@ events & logs** view with no extra UI plumbing.
 <figcaption>Emitted alerts and server/agent events in the Activity → events & logs view.</figcaption>
 </figure>
 
+## An alert can open a ticket
+
+A genuine alert (not a recovery, not the digest) can also open a [ticket](itsm.md) — the
+same ITSM record a Discord conversation or a dashboard action produces, so a
+Defender-disabled or a disk-forecast notification arrives with somewhere to work it rather
+than just a push you have to remember. This runs **after** delivery and is strictly
+best-effort: a failure to open the ticket is logged and swallowed, never lets a failing
+side effect make an alert late or lost — alerting must not become less reliable by gaining
+one.
+
+An alert-origin ticket has **no requester** — it belongs to the fleet, not a person — so it
+is operator-only in the [Tickets tab](dashboard.md#the-tickets-tab): a scoped `user` never
+sees it. It starts life pinned to the alerting agent, at `high` priority for a `high`/`urgent`
+notification and `normal` otherwise, with the alert's own message as its opening summary.
+Nothing about this is configurable per alert type today — every genuine alert opens one.
+
 ## Change notifications
 
 A diff step in the same loop compares **consecutive snapshots** (once per *new* snapshot,
@@ -105,13 +121,14 @@ time.
 
 ## Notification channels
 
-Delivery goes through two best-effort channels, **both off unless configured** (a single
+Delivery goes through three best-effort channels, **all off unless configured** (a single
 HTTP POST each):
 
 | Channel | Configure with | Payload |
 |---------|----------------|---------|
 | **ntfy** | `KENNY_NTFY_URL` (+ optional `KENNY_NTFY_TOKEN` bearer) | POST body to an ntfy topic; title/priority/tags as headers — works out of the box with the ntfy phone apps |
 | **Generic webhook** | `KENNY_WEBHOOK_URL` | JSON POST (`kind`, `title`, `body`, `priority`, `tags`, `agent_id`, `at`) |
+| **Discord** | `KENNY_DISCORD_WEBHOOK_URL` | JSON POST of a Discord embed — title, body as the description, priority as the embed colour, and `kind` / `agent_id` as fields |
 
 Delivery is strictly best-effort: send errors are logged and swallowed, a dead target
 never stalls or kills the loop. **With no channel configured, evaluation still runs and
@@ -132,11 +149,13 @@ Alerting environment variables (see [`setup.md`](setup.md) for the full list):
 | `KENNY_NTFY_URL` | *(empty)* | ntfy topic URL; empty = channel off |
 | `KENNY_NTFY_TOKEN` | *(empty)* | Optional ntfy bearer token |
 | `KENNY_WEBHOOK_URL` | *(empty)* | Generic JSON webhook URL; empty = channel off |
+| `KENNY_DISCORD_WEBHOOK_URL` | *(empty)* | Discord webhook URL; empty = channel off |
 
 ## See also
 
 - [`setup.md`](setup.md) — hosting, TLS, and the full environment-variable list
 - [`dashboard.md`](dashboard.md) — the Overview KPIs and the per-agent AI Forecast card
 - [`telemetry.md`](telemetry.md) — the sections and health rules these alerts evaluate
+- [`itsm.md`](itsm.md) — tickets, the Discord bot, and what an alert-opened ticket looks like
 - [ADR-0029](adr/0029-push-alerting-ntfy-webhook-and-weekly-digest.md) — push alerting & weekly digest
 - [ADR-0030](adr/0030-server-side-diff-and-trend-engine.md) — server-side diff & trend engine

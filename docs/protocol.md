@@ -1,4 +1,4 @@
-# kenny Wire Protocol (v0.9)
+# kenny Wire Protocol (v0.16)
 
 > **Single source of truth.** This document and the JSON files in `docs/fixtures/`
 > define the contract between `kenny-server` (Python) and `kenny-agent` (Rust).
@@ -179,6 +179,7 @@ returned when the agent is online but the person at the endpoint has switched re
 control **off** locally (via the agent's tray menu): the agent then refuses every
 **mutating** tool (`powershell_exec`, `shell_exec`, `winget_install|uninstall|update`,
 `net_dns_flush`, `net_adapter_reset`, `agent_update`, `webfilter_apply|clear`,
+`remotehelp_start|stop`,
 `account_set_enabled|set_admin|set_logon_rights|create|delete|session_action`,
 `password_policy_set`) while
 telemetry and read-only diagnostics keep working. Remote control is **on** by default and the choice persists

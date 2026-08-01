@@ -19,12 +19,19 @@ skipped for offline agents so stale snapshots cannot flap.
 
 Every emitted notification is also persisted to the events table
 (``kind='alert'``) as the audit trail and the weekly digest's input.
+
+An optional ``open_ticket`` callable may be injected to turn an ``alert``-kind
+notification into a ticket. It is opt-in (a server without the ticket surface
+simply passes nothing) and best-effort: delivery happens first and a failing
+ticket call is logged, never raised — alerting must not become less reliable by
+gaining a side effect (ADR-0029).
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
 
@@ -82,6 +89,7 @@ class AlertEngine:
         digest_enabled: bool = True,
         digest_day: str = "mon",
         digest_hour: int = 8,
+        open_ticket: Callable[[Notification], Awaitable[Any]] | None = None,
     ) -> None:
         self._store = store
         self._alert_state = alert_state
@@ -100,6 +108,10 @@ class AlertEngine:
         self._digest_hour_fb = digest_hour
         self._prunables = prunables or []
         self._last_prune: datetime | None = None
+        # Injected by the composition root when the ticket surface exists; see
+        # ``_dispatch``. None means alerts never open tickets, which is the
+        # behaviour of every server that does not wire one.
+        self._open_ticket = open_ticket
 
     # -- live config accessors -------------------------------------------------
 
@@ -447,6 +459,15 @@ class AlertEngine:
         )
         for notifier in self._notifiers:
             await notifier.send(note)  # best-effort; send() never raises
+        # Only a genuine alert becomes a ticket: a recovery, an inventory change
+        # and the weekly digest are all notifications about work that does not
+        # need doing. Runs after delivery and swallows everything, so the ticket
+        # surface can never make a notification late or lost.
+        if self._open_ticket is not None and note.kind == "alert":
+            try:
+                await self._open_ticket(note)
+            except Exception:  # noqa: BLE001 - alerting stays best-effort
+                logger.exception("opening a ticket for %r failed", note.title)
 
     # -- loop ---------------------------------------------------------------------
 

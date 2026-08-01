@@ -134,6 +134,37 @@ clients share one bucket). The bundled TLS profile sets this for you.
 | `KENNY_WEBFILTER_BYPASS_URL` | hagezi list | Source URL for the DoH/VPN/proxy bypass list. |
 | `KENNY_WEBFILTER_MAX_BLOCK_DOMAINS` | `5000` | Cap on external-adult domains pushed to an agent (hard cap 10 000). |
 
+**Discord bot & tickets** (see **[Tickets & the Discord bot](itsm.md)** for the full
+operator setup walkthrough — creating the Discord application, the two privileged intents,
+and both enrollment paths). Tickets themselves need none of this: the ticket store,
+lifecycle service and sweeper always run, and the dashboard's Tickets tab and `/api/tickets`
+work with nothing configured here. These keys only decide whether a Discord bot is also
+connected, install the optional dependency first: `pip install -e ".[discord]"`.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `KENNY_DISCORD_BOT_TOKEN` | — | Bot token of the Discord application. Unset keeps the whole Discord surface off. |
+| `KENNY_DISCORD_ENABLED` | `0` | Connect the bot at startup. Needs the token above and at least one allowed guild. |
+| `KENNY_DISCORD_GUILD_IDS` | — | Comma-separated guild (server) snowflakes kenny reacts in. **Empty means deny everywhere** — there is no allow-all mode. |
+| `KENNY_DISCORD_SUPPORT_CHANNEL_ID` | — | Channel a mention has to be in to open a ticket; empty accepts a mention in any channel of an allowed guild. |
+| `KENNY_DISCORD_OPERATOR_CHANNEL_ID` | — | Where operator approval cards are posted; empty posts them into the ticket's own thread. |
+| `KENNY_DISCORD_PRIVATE_THREADS` | `1` | Open each ticket in a private thread with only the requester invited. |
+| `KENNY_DISCORD_MODEL` | — | Anthropic model id for the Discord surface; empty falls back to `KENNY_CHAT_MODEL`. |
+| `KENNY_DISCORD_MAX_TURNS_PER_TICKET` | `40` | Autonomous turn cap per ticket before it is handed to an operator. |
+| `KENNY_DISCORD_RATE_LIMIT_PER_USER_HOUR` | `20` | Per-account throttle on opening/driving tickets from Discord; `0` = unlimited. |
+| `KENNY_DISCORD_WEBHOOK_URL` | — | Discord incoming-webhook URL for the alert push channel — independent of the bot; see [Alerting & digests](alerting.md#notification-channels). |
+| `KENNY_TICKET_APPROVAL_TTL_SECS` | `86400` | How long a held approval/consent waits for a decision before the sweeper expires it (an expiry counts as a denial); `0` never expires. |
+| `KENNY_TICKET_AUTOCLOSE_SECS` | `172800` | Reopen window: a `resolved` ticket untouched this long is auto-closed; `0` disables. |
+| `KENNY_TICKET_SWEEP_INTERVAL_SECS` | `300` | Ticket housekeeping loop interval (expires gates, auto-closes); `0` disables (restart to re-enable). Re-read live. |
+| `KENNY_TICKET_SWEEP_INITIAL_DELAY` | `30` | Delay before the first sweep after startup. |
+| `KENNY_TICKET_RETENTION_DAYS` | `30` | How long a **closed** ticket keeps its raw working transcript. The ticket, its summary and its audit trail are never pruned. |
+
+Everything above except the bot token and the webhook URL (secrets, env-only) is also
+editable from the dashboard's **Settings** tab, under the **Discord & Tickets** group — most
+apply immediately, and `KENNY_DISCORD_ENABLED`/`KENNY_DISCORD_GUILD_IDS`/
+`KENNY_TICKET_SWEEP_INITIAL_DELAY` need a restart, exactly like the other loop-startup
+settings on this page.
+
 > **Security:** if `KENNY_OPERATOR_TOKEN` is unset the server uses a loud, insecure dev token. Always
 > set real tokens and serve over `wss`/`https` for anything non-local. See
 > [`adr/0008-operator-authentication.md`](adr/0008-operator-authentication.md) and

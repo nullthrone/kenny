@@ -1,6 +1,7 @@
 # 0027. Persistent, resumable copilot chat history
 
 - Status: accepted
+- Amended by: [ADR-0050](0050-ticket-as-entity-chat-thread-as-binding.md)
 - Date: 2026-07-02
 
 ## Context and Problem Statement

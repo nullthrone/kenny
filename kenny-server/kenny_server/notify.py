@@ -1,11 +1,11 @@
-"""Outbound operator notifications: ntfy and a generic JSON webhook.
+"""Outbound operator notifications: ntfy, a generic JSON webhook, and Discord.
 
 Alert delivery is best-effort by design (ADR-0029): a dead or slow
 notification target must never stall or kill the evaluation loop, so every
 ``send`` swallows and logs transport errors. Channels are configured purely
 via environment variables (``KENNY_NTFY_URL``, ``KENNY_NTFY_TOKEN``,
 ``KENNY_WEBHOOK_URL``); with none configured, alert evaluation still runs and
-records history, it just pushes nothing.
+records history, it just pushes nothing. Discord adds ``KENNY_DISCORD_WEBHOOK_URL``.
 
 ``client_factory`` is injected so tests can supply an ``httpx.MockTransport``
 (same pattern as ``webfilter.ExternalListCache``).
@@ -118,6 +118,45 @@ class WebhookNotifier(_HttpNotifier):
         )
 
 
+_DISCORD_TITLE_LIMIT = 256
+_DISCORD_DESCRIPTION_LIMIT = 4096
+
+# Discord embed colors (decimal), keyed by Notification.priority.
+_DISCORD_COLORS = {
+    "low": 0x95A5A6,  # grey
+    "default": 0x3498DB,  # blue
+    "high": 0xE67E22,  # orange
+    "urgent": 0xE74C3C,  # red
+}
+_DISCORD_DEFAULT_COLOR = _DISCORD_COLORS["default"]
+
+
+def _truncate(text: str, limit: int) -> str:
+    """Cut ``text`` to ``limit`` chars, replacing the tail with an ellipsis."""
+
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1] + "…"
+
+
+class DiscordNotifier(_HttpNotifier):
+    """POST a Discord webhook payload (embed) to a Discord channel webhook URL."""
+
+    name = "discord"
+
+    async def send(self, notification: Notification) -> None:
+        fields = [{"name": "kind", "value": notification.kind, "inline": True}]
+        if notification.agent_id:
+            fields.append({"name": "agent_id", "value": notification.agent_id, "inline": True})
+        embed = {
+            "title": _truncate(notification.title, _DISCORD_TITLE_LIMIT),
+            "description": _truncate(notification.body, _DISCORD_DESCRIPTION_LIMIT),
+            "color": _DISCORD_COLORS.get(notification.priority, _DISCORD_DEFAULT_COLOR),
+            "fields": fields,
+        }
+        await self._post(json={"embeds": [embed]})
+
+
 def load_notifiers(*, client_factory: ClientFactory | None = None) -> list[Notifier]:
     """Build the configured channels from the environment (possibly empty)."""
 
@@ -129,4 +168,7 @@ def load_notifiers(*, client_factory: ClientFactory | None = None) -> list[Notif
     webhook_url = os.environ.get("KENNY_WEBHOOK_URL", "").strip()
     if webhook_url:
         notifiers.append(WebhookNotifier(webhook_url, client_factory=client_factory))
+    discord_url = os.environ.get("KENNY_DISCORD_WEBHOOK_URL", "").strip()
+    if discord_url:
+        notifiers.append(DiscordNotifier(discord_url, client_factory=client_factory))
     return notifiers

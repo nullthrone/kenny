@@ -146,6 +146,7 @@ GROUP_ORDER: tuple[str, ...] = (
     "Agent distribution",
     "Backup",
     "Updates",
+    "Discord & Tickets",
 )
 
 _SPECS: list[SettingSpec] = [
@@ -316,6 +317,74 @@ _SPECS: list[SettingSpec] = [
                "every agent reached the target version (default 14 days). It "
                "already auto-completes earlier once every known agent is on the "
                "target version."),
+    # -- Discord & Tickets -----------------------------------------------------
+    # Tickets are independent of Discord: the ticket store, lifecycle service and
+    # sweeper run on every server. The Discord keys only decide whether the bot
+    # surface is also connected.
+    _spec("KENNY_DISCORD_BOT_TOKEN", "Discord & Tickets", "secret", "",
+          "Discord bot token", lifecycle="env_only", sensitive=True,
+          help="Bot token of the Discord application. Managed via the "
+               "environment; without it the Discord surface stays off."),
+    _spec("KENNY_DISCORD_WEBHOOK_URL", "Discord & Tickets", "secret", "",
+          "Discord alert webhook URL", lifecycle="env_only", sensitive=True,
+          help="Incoming-webhook URL used as a push notification channel for "
+               "alerts. Independent of the bot surface."),
+    _spec("KENNY_DISCORD_ENABLED", "Discord & Tickets", "bool", "0",
+          "Discord bot enabled", lifecycle="restart",
+          help="Connect the Discord bot surface at startup. Requires a bot "
+               "token and at least one allowed guild."),
+    _spec("KENNY_DISCORD_GUILD_IDS", "Discord & Tickets", "str", "",
+          "Allowed guild IDs", lifecycle="restart",
+          help="Comma-separated Discord server (guild) snowflakes kenny reacts "
+               "in. EMPTY MEANS DENY EVERYWHERE — there is no allow-all mode."),
+    _spec("KENNY_DISCORD_SUPPORT_CHANNEL_ID", "Discord & Tickets", "str", "",
+          "Support channel ID", lifecycle="live",
+          help="Channel snowflake where a mention opens a ticket. Empty accepts "
+               "a mention in any channel of an allowed guild."),
+    _spec("KENNY_DISCORD_OPERATOR_CHANNEL_ID", "Discord & Tickets", "str", "",
+          "Operator channel ID", lifecycle="live",
+          help="Channel snowflake where operator approval cards are posted. "
+               "Empty posts them into the ticket thread instead."),
+    _spec("KENNY_DISCORD_PRIVATE_THREADS", "Discord & Tickets", "bool", "1",
+          "Use private threads", lifecycle="live",
+          help="Open each ticket in a private thread with only the requester "
+               "invited. Falls back to a public thread where the server plan "
+               "does not allow private ones."),
+    _spec("KENNY_DISCORD_MODEL", "Discord & Tickets", "str", "",
+          "Discord model", lifecycle="live",
+          help="Anthropic model id used on the Discord surface. Empty falls "
+               "back to KENNY_CHAT_MODEL."),
+    _spec("KENNY_DISCORD_MAX_TURNS_PER_TICKET", "Discord & Tickets", "int", "40",
+          "Max assistant turns per ticket", lifecycle="live", min=1,
+          help="Hard cap on autonomous turns; the ticket is handed to an "
+               "operator once it is reached."),
+    _spec("KENNY_DISCORD_RATE_LIMIT_PER_USER_HOUR", "Discord & Tickets", "int", "20",
+          "Requests per user per hour", lifecycle="live", min=0,
+          help="Per-account throttle on opening/driving tickets from Discord. "
+               "0 means unlimited."),
+    _spec("KENNY_TICKET_APPROVAL_TTL_SECS", "Discord & Tickets", "int", "86400",
+          "Approval/consent lifetime (s)", lifecycle="live", min=0,
+          help="How long a held tool call waits for a decision before the "
+               "sweeper expires it (an expiry counts as a denial). 0 means the "
+               "gate never expires."),
+    _spec("KENNY_TICKET_AUTOCLOSE_SECS", "Discord & Tickets", "int", "172800",
+          "Auto-close resolved after (s)", lifecycle="live", min=0,
+          help="Reopen window: a resolved ticket untouched for this long is "
+               "closed by the sweeper. 0 disables auto-closing."),
+    _spec("KENNY_TICKET_SWEEP_INTERVAL_SECS", "Discord & Tickets", "int", "300",
+          "Ticket sweep interval (s)", lifecycle="live", min=0,
+          help="Cadence of the housekeeping pass that expires overdue gates and "
+               "auto-closes resolved tickets. Changing it retimes the running "
+               "loop. Setting it to 0 disables the loop only after a restart."),
+    _spec("KENNY_TICKET_SWEEP_INITIAL_DELAY", "Discord & Tickets", "float", "30",
+          "Initial sweep delay (s)", lifecycle="restart", min=0,
+          help="Delay before the first ticket sweep after startup."),
+    _spec("KENNY_TICKET_RETENTION_DAYS", "Discord & Tickets", "int", "30",
+          "Ticket transcript retention (days)", lifecycle="live", min=1,
+          help="How long a closed ticket keeps its raw working transcript — the "
+               "verbatim conversation and tool output needed only to resume it. "
+               "The ticket, its summary and its audit trail are never pruned, so "
+               "the record outlives the transcript by design."),
 ]
 
 CATALOG: dict[str, SettingSpec] = {spec.key: spec for spec in _SPECS}

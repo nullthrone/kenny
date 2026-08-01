@@ -21,7 +21,7 @@ implementation detail", see *When (not) to write an ADR* in the repository `CLAU
 | [0005](0005-contract-first-with-golden-fixtures.md) | Contract-first development with golden fixtures | accepted |
 | [0006](0006-mcp-streamable-http-transport.md) | MCP over Streamable HTTP between Claude and the server | accepted |
 | [0007](0007-telemetry-push-model-and-sqlite-storage.md) | Telemetry push model and SQLite storage | accepted |
-| [0008](0008-operator-authentication.md) | Operator authentication | accepted |
+| [0008](0008-operator-authentication.md) | Operator authentication | superseded by [0037](0037-multi-user-authentication.md) |
 | [0009](0009-server-hosted-claude-chat.md) | Server-hosted Claude chat with a confirm-gate | accepted |
 | [0010](0010-containerization-and-ghcr.md) | Containerization (Docker/Compose) and GHCR | accepted |
 | [0011](0011-local-remote-control-kill-switch.md) | Local remote-control kill switch (tray on/off) | accepted |
@@ -61,3 +61,7 @@ implementation detail", see *When (not) to write an ADR* in the repository `CLAU
 | [0045](0045-reliability-alarm-suppression.md) | Operator-managed reliability alarm suppression | proposed |
 | [0046](0046-account-governance-local-and-microsoft.md) | Account governance across local and Microsoft accounts | proposed |
 | [0047](0047-account-governance-on-linux.md) | Account governance on Linux | proposed |
+| [0048](0048-delegated-identity-from-a-chat-platform.md) | Delegated identity from a chat platform, with no parallel authorization | proposed |
+| [0049](0049-tiered-tool-classification.md) | Tiered tool classification: the tier belongs to the tool, the gate to the surface | proposed |
+| [0050](0050-ticket-as-entity-chat-thread-as-binding.md) | The ticket is the entity; the chat thread is a binding | proposed |
+| [0051](0051-capability-profiles.md) | Capability profiles: named per-user tool allowlists that only narrow | proposed |
