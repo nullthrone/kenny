@@ -255,7 +255,8 @@ rule-reason chip.
 - **Reliability** has a custom renderer — a category × day heatmap plus expandable event
   groups, each row showing a **severity badge** (`benign`/`notable`/`serious`/`unknown`) and
   the categorizer's plain-language **suspected cause** alongside the raw sample message.
-  Each row also has a **suppress**/**unsuppress** button, and a suppressed pattern carries a
+  Each row also has an icon-only **suppress**/**unsuppress** button (a bell-slash/bell icon;
+  hover for the tooltip), and a suppressed pattern carries a
   distinct **suppressed** badge and a dimmed row — visible but out of the health scoring. A
   panel below the breakdown lists and manages suppression rules: a manual form takes an
   **event id (required)**, an optional **source** (empty matches any source with that event
