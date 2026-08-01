@@ -1,11 +1,14 @@
 """Tests for the Discord transport seam: the frozen protocol, the chunking
 helper, the guild allowlist, and the in-memory fake.
 
-None of these tests require discord.py to be installed -- that is the point.
+None of these tests require discord.py to be installed -- that is the point --
+except the one test that skips itself via ``pytest.importorskip`` when it is
+not, because what it pins down only exists once discord.py is real.
 """
 
 from __future__ import annotations
 
+import asyncio
 import builtins
 import dataclasses
 import logging
@@ -583,6 +586,61 @@ def test_command_spec_to_payload_with_no_options():
     spec = CommandSpec(name="status", description="Fleet status")
     payload = _command_spec_to_payload(spec)
     assert payload["options"] == []
+
+
+async def test_register_commands_waits_for_the_client_to_finish_logging_in():
+    """``start()`` returns once the connect task is *scheduled*, not once
+    discord.py has actually logged in -- ``application_id`` stays unset until
+    then. Pins the v2.0.2 regression: ``main.py``'s ``_discord_loop`` called
+    ``register_commands`` immediately after ``start()`` returned, racing the
+    connect task (which had not even had a turn to run yet) and silently
+    skipping registration every single time, logging "gateway not started".
+    """
+
+    discord = pytest.importorskip("discord")
+
+    gateway = DiscordPyGateway(token="x", guild_allowlist=frozenset({"123"}))
+    client = discord.Client(intents=discord.Intents.none())
+    await client._async_setup_hook()  # initialises `_ready`, as login() would
+    gateway._client = client
+
+    calls = []
+
+    async def fake_bulk_upsert(app_id, guild_id, payload):
+        calls.append((app_id, guild_id, payload))
+
+    client.http.bulk_upsert_guild_commands = fake_bulk_upsert
+
+    async def become_ready_shortly() -> None:
+        await asyncio.sleep(0.05)
+        client._connection.application_id = 999
+        client._ready.set()
+
+    asyncio.create_task(become_ready_shortly())
+    spec = CommandSpec(name="whoami", description="Show what kenny knows about you")
+    await gateway.register_commands(guild_id="123", commands=[spec])
+
+    assert calls == [(999, 123, [_command_spec_to_payload(spec)])]
+
+
+async def test_register_commands_gives_up_if_the_client_never_becomes_ready(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A bad token or a dead network must not hang the caller forever."""
+
+    discord = pytest.importorskip("discord")
+    from kenny_server import discord_adapter
+
+    monkeypatch.setattr(discord_adapter, "_READY_TIMEOUT_SECS", 0.05)
+    gateway = DiscordPyGateway(token="x", guild_allowlist=frozenset({"123"}))
+    client = discord.Client(intents=discord.Intents.none())
+    await client._async_setup_hook()  # `_ready` exists but is never set
+    gateway._client = client
+
+    await gateway.register_commands(
+        guild_id="123",
+        commands=[CommandSpec(name="whoami", description="Show what kenny knows about you")],
+    )  # must return, not hang
 
 
 # ---------------------------------------------------------------------------
