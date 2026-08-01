@@ -323,7 +323,7 @@
       justify-content: center; padding: 7vh 18px 18px; background: rgba(0,0,0,.5);
       -webkit-backdrop-filter: blur(2px); backdrop-filter: blur(2px); overflow-y: auto; }
     .k-modal { background: var(--surface); border: var(--border-width) solid var(--border-strong);
-      border-radius: var(--radius-lg); width: 100%; max-width: 680px; max-height: 84vh;
+      border-radius: var(--radius-lg); width: 100%; max-width: 860px; max-height: 84vh;
       display: flex; flex-direction: column; box-shadow: 0 24px 60px -20px rgba(0,0,0,.6);
       animation: kModalIn var(--dur) var(--ease); }
     @keyframes kModalIn { from { opacity: 0; transform: translateY(-8px) scale(.99); } to { opacity: 1; transform: none; } }
@@ -749,7 +749,7 @@
     .kc-usermenu__item svg { width: 16px; height: 16px; color: var(--fg-muted); flex: none; }
     .kc-usermenu__sep { height: 1px; background: var(--border); margin: 4px 2px; }
 
-    .k-modal--wide { max-width: 760px; }
+    .k-modal--wide { max-width: 960px; }
     .kacc-sec { border-top: 1px solid var(--border); padding-top: 16px; margin-top: 16px; }
     .kacc-sec:first-child { border-top: none; padding-top: 0; margin-top: 0; }
     .kacc-sec__lbl { font-size: var(--text-xs); color: var(--fg-muted); letter-spacing: var(--tracking-label);
@@ -869,6 +869,8 @@
       'copy': '<path d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 0 1-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 0 1 1.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.876a9.06 9.06 0 0 0-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.375H9.375a1.125 1.125 0 0 1-1.125-1.125v-9.25m12 6.625v-1.875a3.375 3.375 0 0 0-3.375-3.375h-1.5a1.125 1.125 0 0 1-1.125-1.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H9.75"/>',
       'chevron-down': '<path d="m19.5 8.25-7.5 7.5-7.5-7.5"/>',
       'book-open': '<path d="M12 6.042A8.967 8.967 0 0 0 6 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 0 1 6 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 0 1 6-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0 0 18 18a8.967 8.967 0 0 0-6 2.292m0-14.25v14.25"/>',
+      'bell': '<path d="M14.857 17.082a23.848 23.848 0 0 0 5.454-1.31A8.967 8.967 0 0 1 18 9.75V9A6 6 0 0 0 6 9v.75a8.967 8.967 0 0 1-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 0 1-5.714 0m5.714 0a3 3 0 1 1-5.714 0"/>',
+      'bell-slash': '<path d="M9.143 17.082a24.248 24.248 0 0 0 3.844.148m-3.844-.148a23.856 23.856 0 0 1-5.455-1.31 8.964 8.964 0 0 0 2.3-5.542m3.155 6.852a3 3 0 0 0 5.667 1.97m1.965-2.277L21 21m-4.225-4.225a23.81 23.81 0 0 0 3.536-1.003A8.967 8.967 0 0 1 18 9.75V9A6 6 0 0 0 6.53 6.53m10.245 10.245L6.53 6.53M3 3l3.53 3.53"/>',
     };
     function icon(name, size) {
       const p = ICONS[name] || ICONS.box;
@@ -3989,13 +3991,13 @@
       if (!canOperate()) return "";
       if (e.suppressed) {
         const info = e.suppressed_by || {};
-        return `<button class="k-btn k-btn--ghost k-btn--sm" title="stop suppressing this pattern"
-          onclick="relUnsuppress(${jsArg(info.id)}, ${jsArg(info.scope)})">${icon('x', 12)}unsuppress</button>`;
+        return `<button class="k-btn k-btn--ghost k-btn--sm" title="unsuppress — stop suppressing this pattern"
+          onclick="relUnsuppress(${jsArg(info.id)}, ${jsArg(info.scope)})">${icon('bell', 13)}</button>`;
       }
       if (e.event_id == null) return "";
       return `<button class="k-btn k-btn--ghost k-btn--sm"
-        title="exclude this pattern from severity scoring, fleet-wide — counts stay visible"
-        onclick="relSuppress(${jsArg(e.source)}, ${jsArg(e.event_id)})">${icon('square', 12)}suppress</button>`;
+        title="suppress — exclude this pattern from severity scoring, fleet-wide — counts stay visible"
+        onclick="relSuppress(${jsArg(e.source)}, ${jsArg(e.event_id)})">${icon('bell-slash', 13)}</button>`;
     }
     // One event row for the reliability tables. With `dayKey` the count column shows
     // that day's contribution (used by the clicked-cell panel); without it, the
