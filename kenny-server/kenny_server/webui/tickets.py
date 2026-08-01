@@ -32,6 +32,7 @@ gateway (:class:`~kenny_server.discord_service.DiscordService`).
 
 from __future__ import annotations
 
+import logging
 from functools import wraps
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -49,6 +50,8 @@ from .authz import Forbidden, guard, require_user
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle-free typing only
     from ..discord_service import DiscordService
+
+logger = logging.getLogger("kenny.webui.tickets")
 
 # -- small local helpers (mirrors webui/users.py's shape) ----------------------
 
@@ -235,8 +238,15 @@ def build_ticket_routes(
     async def api_ticket_reassign(request: Request) -> JSONResponse:
         principal = require_user(request)
         body = await _body(request)
+        agent_id = str(body.get("agent_id") or "").strip()
+        if not agent_id:
+            # A ticket's frozen target is an authorization control, not a field
+            # an empty body may clear: a target-less ticket is the one shape in
+            # which a host argument has nothing to be pinned to. Unassigning is
+            # deliberate work, not the default of a missing key.
+            return _err("agent_id is required")
         updated = await tickets.reassign(
-            request.path_params["tid"], body.get("agent_id"), actor=_actor(principal)
+            request.path_params["tid"], agent_id, actor=_actor(principal)
         )
         return JSONResponse(updated.as_dict())
 
@@ -255,6 +265,10 @@ def build_ticket_routes(
     async def api_ticket_note(request: Request) -> JSONResponse:
         principal = require_user(request)
         ticket = await tickets.get(request.path_params["tid"])
+        # Redundant while the route floor is ``operator``, and deliberately so:
+        # every other per-ticket handler carries this check, and the one that
+        # does not is the one that breaks silently if the floor ever moves.
+        _owned_or_operator(principal, ticket)
         body = await _body(request)
         await tickets.append_event(
             ticket.id,
@@ -283,6 +297,19 @@ def build_ticket_routes(
         return JSONResponse({"approvals": [a.as_dict() for a in approvals]})
 
     async def api_approval_decide(request: Request) -> JSONResponse:
+        """Decide a held call and then let the ticket act on the decision.
+
+        Deciding is only half of it: the frozen call runs when the ticket is
+        *resumed*, so a dashboard decision that stopped at the row would leave
+        an operator reading "approved" while the ticket sat in
+        ``awaiting_approval`` and nothing ever executed. The resume goes through
+        the same :meth:`DiscordService.resume` the Discord button uses.
+
+        The decision is durable before the resume starts, so a resume failure is
+        logged and reported (``resumed``), never raised: failing the request
+        would tell the caller their decision did not happen when it did.
+        """
+
         principal = require_user(request)
         body = await _body(request)
         approve = body.get("approve")
@@ -295,7 +322,18 @@ def build_ticket_routes(
             decided_via="dashboard",
             actor=_actor(principal),
         )
-        return JSONResponse(decided.as_dict())
+        resumed = False
+        if discord is not None:
+            try:
+                await discord.resume(decided.ticket_id, approval=decided)
+                resumed = True
+            except Exception:  # noqa: BLE001 - the decision already happened
+                logger.exception(
+                    "ticket %s: resuming after a dashboard decision on %s failed",
+                    decided.ticket_id,
+                    decided.id,
+                )
+        return JSONResponse({**decided.as_dict(), "resumed": resumed})
 
     # -- Discord (superuser-managed identities; operator-visible status) -------
 

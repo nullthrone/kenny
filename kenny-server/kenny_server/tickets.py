@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -26,6 +26,7 @@ from .ticketstore import Ticket, TicketApproval, TicketEvent, TicketStore, to_is
 
 __all__ = [
     "DEFAULT_APPROVAL_TTL_SECS",
+    "GateResumer",
     "DEFAULT_AUTOCLOSE_SECS",
     "DEFAULT_SWEEP_INTERVAL_SECS",
     "REDACTED",
@@ -136,6 +137,11 @@ EVENT_KINDS: frozenset[str] = frozenset(
 )
 
 APPROVAL_KINDS: frozenset[str] = frozenset({"operator_approval", "user_consent"})
+
+#: Called with a gate this module just closed on its own (expiry). Whoever
+#: drives the assistant for a ticket registers one; this module only knows that
+#: something has to be told, never what a model or a chat platform is.
+GateResumer = Callable[[TicketApproval], Awaitable[None]]
 
 DEFAULT_APPROVAL_TTL_SECS = 3600
 DEFAULT_AUTOCLOSE_SECS = 3 * 24 * 3600
@@ -318,6 +324,18 @@ class TicketService:
         self._now = now or (lambda: datetime.now(timezone.utc))
         self.approval_ttl_secs = approval_ttl_secs
         self.autoclose_secs = autoclose_secs
+        self._gate_resumer: GateResumer | None = None
+
+    def set_gate_resumer(self, resumer: GateResumer | None) -> None:
+        """Register who answers a gate this service closes by itself.
+
+        Only :meth:`expire_due` uses it: every other decision arrives from a
+        surface, which resumes its own ticket. An expiry has no such caller, so
+        without a resumer the ticket would stay in ``awaiting_approval`` — a
+        state its requester is not allowed to leave — for good.
+        """
+
+        self._gate_resumer = resumer
 
     def now(self) -> datetime:
         """Current time through the injected clock."""
@@ -722,10 +740,13 @@ class TicketService:
     async def expire_due(self, now: datetime | None = None) -> list[TicketApproval]:
         """Expire every pending gate whose ``expires_at`` has passed.
 
-        An expired gate counts as a denial. This closes and records it but does
-        not move the ticket — resuming is the caller's job, because whoever
-        drives the assistant has to feed the refusal back to it before the
-        ticket is workable again.
+        An expired gate counts as a denial, and a denial has to reach the
+        assistant: the held call needs its refusal ``tool_result`` and the
+        ticket needs to leave ``awaiting_approval``. This method closes and
+        records the row and then hands it to the registered
+        :data:`GateResumer` (see :meth:`set_gate_resumer`), which is the only
+        part of this that knows what a model is. A resumer that fails is logged
+        — the expiry itself is already durable and must not be rolled back.
         """
 
         at = now or self.now()
@@ -746,6 +767,17 @@ class TicketService:
                 fields={"approval_id": row.id, "expired_at": to_iso(at)},
                 now=to_iso(at),
             )
+            if self._gate_resumer is not None:
+                try:
+                    await self._gate_resumer(row)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001 - one stuck ticket must not stop the sweep
+                    logger.exception(
+                        "ticket %s: resuming the expired gate %s failed",
+                        row.ticket_id,
+                        row.id,
+                    )
         return expired
 
     # -- housekeeping ------------------------------------------------------

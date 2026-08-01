@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from collections import deque
 from collections.abc import Callable, Sequence
@@ -205,13 +206,19 @@ def envelope(
 
 
 def _narrower_role(a: str | None, b: str | None) -> str:
-    """The lower of two role names (missing means "no opinion")."""
+    """The lower of two role names (missing means "no opinion").
 
-    if not a:
-        return b or "user"
-    if not b:
-        return a
-    return a if security.role_at_least(b, a) else b
+    A name this build does not recognise is treated as the *lowest* role rather
+    than returned verbatim. ``Principal.scoped`` is ``role == "user"``, so an
+    unknown string reaching the principal would read as unscoped and silently
+    switch off host scoping — the one default in here that must fail closed.
+    """
+
+    named = [r for r in (a, b) if r]
+    if not named:
+        return security.ROLES[0]
+    ranked = [r if security.is_valid_role(r) else security.ROLES[0] for r in named]
+    return min(ranked, key=security.role_rank)
 
 
 def allowed_tools_for(
@@ -336,12 +343,19 @@ class TicketPolicy:
             text = str(claimed).strip()
             if text and text != (frozen or ""):
                 session.record_retarget(tool, text)
-        if tool in _HOST_ARG_TOOLS and frozen:
+        if tool in _HOST_ARG_TOOLS:
             claimed_id = str(args.get("id") or "").strip()
-            if claimed_id != frozen:
-                if claimed_id:
-                    session.record_retarget(tool, claimed_id)
-                args["id"] = frozen
+            if frozen:
+                if claimed_id != frozen:
+                    if claimed_id:
+                        session.record_retarget(tool, claimed_id)
+                    args["id"] = frozen
+            elif claimed_id:
+                # There is no frozen target to pin the argument to, so the host
+                # the model named is left in place *and* recorded — never
+                # silently accepted. ``gate`` refuses it: a ticket without a
+                # target is not a ticket that may reach an arbitrary host.
+                session.record_retarget(tool, claimed_id)
         return frozen
 
     async def _flush_retargets(self, session: TicketSession) -> None:
@@ -388,7 +402,9 @@ class TicketPolicy:
 
         1. **Profile.** Not in the ticket's allowlist -> denied. The tool was not
            in the schemas either; this is the dispatch-side half of that.
-        2. **Host scope.** The routing target must be one the requester may see.
+        2. **Host scope.** Every host this call would touch — the routing target
+           *and* a host named in an argument — must be one the requester may
+           see, and a host-naming tool may not run unpinned at all.
         3. **Consent.** A privacy-touching tool holds for the affected person,
            once per ticket per tool.
         4. **Tier.** ``normal_change`` holds for an operator.
@@ -411,11 +427,24 @@ class TicketPolicy:
 
         if tool not in SERVER_TOOLS and not agent_id:
             return Deny("no_agent", "this ticket has no target machine")
-        if agent_id and not session.principal.may_see(agent_id):
-            return Deny(
-                "forbidden",
-                f"{session.principal.username} is not scoped to {agent_id}",
-            )
+
+        # The host-scope check runs over every host the call would reach, not
+        # just the routing target: ``agent_health``/``agent_snapshot`` name their
+        # host in an ``id`` argument, and on a ticket whose target is NULL
+        # ``resolve_target`` has nothing to pin that argument to. The absence of
+        # a frozen target is not permission to read any host.
+        host_arg = str(args.get("id") or "").strip() if tool in _HOST_ARG_TOOLS else ""
+        for host in (agent_id, host_arg):
+            if host and not session.principal.may_see(host):
+                return Deny(
+                    "forbidden",
+                    f"{session.principal.username} is not scoped to {host}",
+                )
+        if tool in _HOST_ARG_TOOLS and not agent_id and session.principal.scoped:
+            # Unpinnable: the argument would be whatever the model wrote. Even
+            # the requester's own host is refused here, because "which machine"
+            # is the ticket's decision and this ticket has not made one.
+            return Deny("no_agent", "this ticket has no target machine")
 
         if tool in SENSITIVE_TOOLS and tool not in session.consented:
             return Hold("user_consent")
@@ -529,13 +558,156 @@ def approval_custom_id(approval_id: str, *, approve: bool) -> str:
     return f"{APPROVAL_CUSTOM_ID_PREFIX}:{approval_id}:{'approve' if approve else 'deny'}"
 
 
-def _scrub(text: str, blobs: Sequence[str]) -> str:
-    """Remove any redacted payload the model may have echoed into its reply."""
+#: What replaces a stripped span. Short, and it points at the one place the
+#: detail legitimately lives.
+_REDACTION_MARKER = "[redacted — see the ticket in the dashboard]"
+
+#: Shortest span of a redacted payload that may be stripped from an outgoing
+#: message. A two- or three-character overlap is ordinary prose ("the", "on my
+#: pc"): blanking it would mangle kenny's own writing while protecting nothing.
+#: The floor is on the *matched span*, not on the payload, so a long file body
+#: does not license removing a common word that happens to occur in it.
+_MIN_REDACTED_SPAN = 12
+
+_TOKEN_RE = re.compile(r"\S+")
+
+#: Punctuation a quoted payload picks up from the sentence around it. A token is
+#: whitespace-delimited, so `"secret".` is one token and the payload sits inside
+#: it; both ends are trimmed before matching, or the quotation survives whole.
+_SPAN_BOUNDARY_CHARS = ".,;:!?)]}>\"'`…*_~"
+_SPAN_LEAD_CHARS = "\"'`([{<*_"
+_MARKER_RUN_RE = re.compile(
+    re.escape(_REDACTION_MARKER) + r"(?:\s*" + re.escape(_REDACTION_MARKER) + r")+"
+)
+
+
+def _payload_strings(value: Any, out: list[str]) -> None:
+    """Collect every string worth protecting out of a tool result.
+
+    Recurses dicts and lists in the same spirit as :func:`tickets.redact_args`,
+    which walks the argument side of the same call.
+    """
+
+    if isinstance(value, str):
+        if len(value) >= _MIN_REDACTED_SPAN:
+            out.append(value)
+    elif isinstance(value, dict):
+        for item in value.values():
+            _payload_strings(item, out)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _payload_strings(item, out)
+
+
+def redacted_payloads(session: TicketSession) -> list[str]:
+    """Everything a ``REDACTED_OUTPUT`` tool put into this ticket's transcript.
+
+    The transcript is the authority rather than the live turn's events, because
+    the model can quote a file it read three turns (or one restart) ago just as
+    easily as one it read a moment before. Error results are skipped: a refusal
+    message is kenny's own text and the model is asked to repeat it.
+    """
+
+    blocks: list[dict[str, Any]] = []
+    for message in session.messages:
+        content = message.get("content")
+        if isinstance(content, list):
+            blocks.extend(b for b in content if isinstance(b, dict))
+    blocks.extend(b for b in session._staged_results if isinstance(b, dict))
+
+    tools = {b.get("id"): b.get("name") for b in blocks if b.get("type") == "tool_use"}
+    out: list[str] = []
+    for block in blocks:
+        if block.get("type") != "tool_result" or block.get("is_error"):
+            continue
+        if tools.get(block.get("tool_use_id")) not in REDACTED_OUTPUT:
+            continue
+        content = block.get("content")
+        if isinstance(content, str):
+            try:
+                parsed: Any = json.loads(content)
+            except ValueError:
+                # A truncated (or otherwise unparseable) result: the raw text
+                # still contains the payload, so protect that instead.
+                parsed = content
+            _payload_strings(parsed, out)
+        else:
+            _payload_strings(content, out)
+    return out
+
+
+def _strip_spans(text: str, payloads: Sequence[str]) -> str:
+    """Cut every verbatim run of a redacted payload out of ``text``.
+
+    Scans the outgoing message (which is short) rather than enumerating spans of
+    the payload (which is not), extending greedily from each token for as long
+    as the span still occurs in the payload. Whole lines and multi-token runs
+    are therefore caught as one span, and a run shorter than
+    :data:`_MIN_REDACTED_SPAN` is left alone.
+
+    **The limit, stated honestly:** this makes *verbatim* quoting mechanically
+    impossible. A model that paraphrases the file body, or reflows its
+    whitespace, still gets through — that remains bounded only by the system
+    prompt, which is a request, not a control.
+    """
+
+    if not text or not payloads:
+        return text
+    haystack = "\n".join(payloads)
+    tokens = [m.span() for m in _TOKEN_RE.finditer(text)]
+    out: list[str] = []
+    cursor = 0
+    i = 0
+    while i < len(tokens):
+        start, tok_end = tokens[i]
+        # Step over an opening quote or bracket so a payload that begins inside
+        # the token is still found; the skipped characters are emitted verbatim.
+        while start < tok_end and text[start] in _SPAN_LEAD_CHARS:
+            start += 1
+        matched_end = -1
+        j = i
+        while j < len(tokens):
+            end = tokens[j][1]
+            if text[start:end] in haystack:
+                matched_end = end
+                j += 1
+                continue
+            # A payload can end part-way through a token — the model writing
+            # "...the key is hunter2." puts the sentence-final period inside the
+            # same whitespace-delimited token as the secret. Without this the
+            # span fails to match and the whole quotation survives, which is the
+            # most natural way for it to be echoed.
+            trimmed = text[start:end].rstrip(_SPAN_BOUNDARY_CHARS)
+            if len(trimmed) > max(matched_end - start, 0) and trimmed in haystack:
+                matched_end = start + len(trimmed)
+                # This token is (partly) consumed even though it never matched
+                # whole, so the scan has to resume after it — cursor keeps the
+                # trailing punctuation, which is not part of the payload.
+                j += 1
+            break
+        if matched_end - start >= _MIN_REDACTED_SPAN:
+            out.append(text[cursor:start])
+            out.append(_REDACTION_MARKER)
+            cursor = matched_end
+            i = j
+        else:
+            i += 1
+    out.append(text[cursor:])
+    return _MARKER_RUN_RE.sub(_REDACTION_MARKER, "".join(out))
+
+
+def _scrub(text: str, blobs: Sequence[str], payloads: Sequence[str] = ()) -> str:
+    """Remove any redacted payload the model may have echoed into its reply.
+
+    Two mechanisms, because they protect different shapes: ``blobs`` are whole
+    screenshot payloads (one enormous token, replaced outright) and ``payloads``
+    are the text a ``REDACTED_OUTPUT`` tool returned (matched span by span).
+    """
 
     for blob in blobs:
         if len(blob) >= 32 and blob in text:
-            text = text.replace(blob, "[redacted — see the ticket in the dashboard]")
-    return text
+            text = text.replace(blob, _REDACTION_MARKER)
+    return _strip_spans(text, payloads)
 
 
 def _title_from(content: str) -> str:
@@ -587,6 +759,14 @@ class DiscordService:
         self.approval_ttl_secs = approval_ttl_secs
         self.base_url = base_url
         self._limiter = _RateLimiter(rate_limit_per_hour, clock=clock)
+        # An expired gate is a denial, and a denial nobody feeds back to the
+        # assistant parks the ticket in ``awaiting_approval`` — a state its
+        # requester may not leave — behind a transcript that still ends in an
+        # unanswered tool_use. The sweeper lives in ``tickets.py``, which knows
+        # nothing about models or Discord, so the surface that drives the
+        # assistant registers itself as the thing that can answer for it.
+        # Constructor-time on purpose: this cannot be forgotten at a wiring site.
+        tickets.set_gate_resumer(self.resume_expired)
         # Set once when a mention arrives with empty content — the symptom of a
         # missing Message Content intent, which otherwise looks like a dead bot.
         self.missing_message_content = False
@@ -1061,7 +1241,10 @@ class DiscordService:
     async def _post_reply(
         self, session: TicketSession, ticket: Ticket, state: _TurnState
     ) -> None:
-        body = _scrub(state.text, state.blobs).strip()
+        # Scrubbed on the way *out*, not on the way into the model's context:
+        # the model is supposed to read the file, that is what the tool is for.
+        # What it may not do is paste the body into a chat kenny does not own.
+        body = _scrub(state.text, state.blobs, redacted_payloads(session)).strip()
         if state.redacted_tools:
             names = ", ".join(sorted(set(state.redacted_tools)))
             note = (
@@ -1179,10 +1362,17 @@ class DiscordService:
                 return
             await self._decide_consent(approval, ticket, approve=approve, principal=principal)
         else:
-            if approve and not principal.at_least("operator"):
+            if not principal.at_least("operator"):
+                # Both directions, not just approval. ``decide_approval`` leaves
+                # denial open to any actor so the sweeper can expire a gate, but
+                # that is a service affordance: over Discord, denying someone
+                # else's gate cancels their change and drives a model turn on a
+                # ticket the clicker may not even read. Who can *see* the
+                # operator channel is a Discord role, and Discord roles never
+                # authorize.
                 await self.gateway.respond_ephemeral(
                     interaction_id=event.interaction_id,
-                    content="Only an operator can approve this step.",
+                    content="Only an operator can decide this step.",
                 )
                 return
             await self.tickets.decide_approval(
@@ -1228,6 +1418,18 @@ class DiscordService:
             decided_via="discord",
             actor=f"user:{principal.user_id}",
         )
+
+    async def resume_expired(self, approval: TicketApproval) -> None:
+        """Answer a gate the sweeper timed out, exactly as a denial is answered.
+
+        Registered on the :class:`~kenny_server.tickets.TicketService` at
+        construction time and called from ``expire_due``. It takes the same
+        :meth:`resume` path a Discord "Deny" click takes, so the held call gets
+        its refusal ``tool_result``, the ticket leaves ``awaiting_approval`` and
+        the assistant tells the requester nothing was run.
+        """
+
+        await self.resume(approval.ticket_id, approval=approval)
 
     async def _last_decision(self, ticket_id: str) -> TicketApproval | None:
         """The most recently decided gate of a ticket, from its trail."""
