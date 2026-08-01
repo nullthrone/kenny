@@ -260,6 +260,40 @@ async def test_only_an_operator_may_approve_a_gate(service: TicketService) -> No
     assert moved.state == "in_progress"
 
 
+async def test_only_the_affected_person_may_grant_consent(service: TicketService) -> None:
+    """A consent gate answers a privacy question, so it is not the operator's to grant.
+
+    The mirror image of the approval rule: an operator deciding whether someone's
+    screen may be captured would defeat the gate's entire purpose.
+    """
+
+    ticket = await _ticket_in(service, "awaiting_user")
+    consent = await service.open_approval(
+        ticket.id,
+        tool_use_id="tu2",
+        tool="screen_capture",
+        tool_class="read_only",
+        args={},
+        kind="user_consent",
+    )
+
+    for actor in ("operator:7", "system", "user:999"):
+        with pytest.raises(ApprovalForbiddenError) as exc:
+            await service.decide_approval(consent.id, approve=True, actor=actor)
+        assert exc.value.status_code == 403
+    assert (await service.store.get_approval(consent.id)).status == "pending"
+
+    granted = await service.decide_approval(
+        consent.id, approve=True, actor=f"user:{REQUESTER_ID}", decided_by=REQUESTER_ID
+    )
+    assert granted.status == "approved"
+
+    # The trail calls it what it was, not an approval.
+    trail = await service.events(ticket.id)
+    assert trail[-1].kind == "consent"
+    assert trail[-1].actor == f"user:{REQUESTER_ID}"
+
+
 async def test_requester_may_not_release_a_gate(service: TicketService) -> None:
     ticket = await _ticket_in(service, "awaiting_approval")
     with pytest.raises(TransitionError) as exc:

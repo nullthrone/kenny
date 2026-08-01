@@ -1216,33 +1216,17 @@ class DiscordService:
     ) -> None:
         """Close a consent gate on behalf of the affected person.
 
-        Deliberately not ``TicketService.decide_approval``: that method's
-        operator-only rule guards *authorization* gates, and a privacy consent is
-        by definition granted by the person whose privacy it is, who is normally
-        a plain ``user``. The store primitive closes the row and an explicit
-        ``consent`` trail entry names who granted it — the operator gate is
-        untouched.
+        Goes through the service like every other decision: it knows that a
+        consent gate is answered by the ticket's requester and refuses anyone
+        else, including an operator.
         """
 
-        await self.store.decide_approval(
+        await self.tickets.decide_approval(
             approval.id,
-            status="approved" if approve else "denied",
+            approve=approve,
             decided_by=principal.user_id,
             decided_via="discord",
-        )
-        await self.tickets.append_event(
-            ticket.id,
-            kind="consent",
             actor=f"user:{principal.user_id}",
-            ok=approve,
-            summary=(
-                f"consent granted for {approval.tool}"
-                if approve
-                else f"consent refused for {approval.tool}"
-            ),
-            tool=approval.tool,
-            tool_class=approval.tool_class,
-            fields={"approval_id": approval.id, "decided_via": "discord"},
         )
 
     async def _last_decision(self, ticket_id: str) -> TicketApproval | None:

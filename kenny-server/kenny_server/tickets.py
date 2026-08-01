@@ -642,11 +642,19 @@ class TicketService:
     ) -> TicketApproval:
         """Close a pending gate and record the decision.
 
-        **Approving is operator-only, and this is where that is enforced.** A
-        held call runs only because its approval row reads ``approved``, so this
-        method — not the lifecycle transition — is the security boundary. Any
-        actor may *deny* (the sweeper denies on expiry, a requester may withdraw
-        their own request); nobody below operator may approve.
+        **Approving is enforced here**, because a held call runs only by virtue
+        of its row reading ``approved`` — this method, not the lifecycle
+        transition, is the boundary. Who may approve depends on what the gate is
+        for, and the two answers are deliberately different:
+
+        * ``operator_approval`` asks whether the fleet should be changed, so only
+          an operator may grant it. The requester must never release their own.
+        * ``user_consent`` asks whether someone's screen, files or browsing may
+          be looked at. Only the person it belongs to can answer that — an
+          operator granting it for them would defeat the point of the gate.
+
+        Denying stays open to every actor: expiry is a denial and the sweeper
+        has to issue it, and a requester may always withdraw.
 
         Deciding does not itself move the ticket; resuming is a separate
         transition.
@@ -658,17 +666,28 @@ class TicketService:
         deciding_actor = actor or (
             f"operator:{decided_by}" if decided_by is not None else "system"
         )
-        role, _ = parse_actor(deciding_actor)
-        if approve and role != "operator":
-            raise ApprovalForbiddenError(
-                "approving a held call requires an operator",
-                actor=deciding_actor,
-                role=role,
-            )
+        role, actor_user_id = parse_actor(deciding_actor)
 
         existing = await self.store.get_approval(approval_id)
         if existing is None:
             raise ApprovalNotFoundError(approval_id)
+
+        if approve:
+            if existing.kind == "user_consent":
+                ticket = await self.get(existing.ticket_id)
+                owner = ticket.requester_user_id
+                if owner is None or role != "requester" or actor_user_id != owner:
+                    raise ApprovalForbiddenError(
+                        "consent can only be granted by the person it concerns",
+                        actor=deciding_actor,
+                        role=role,
+                    )
+            elif role != "operator":
+                raise ApprovalForbiddenError(
+                    "approving a held call requires an operator",
+                    actor=deciding_actor,
+                    role=role,
+                )
         if existing.status != "pending":
             raise ApprovalConflictError(
                 f"approval {approval_id} was already {existing.status}",
@@ -688,7 +707,9 @@ class TicketService:
             )
         await self.append_event(
             existing.ticket_id,
-            kind="approval",
+            # The trail names what was actually answered: a privacy consent reads
+            # as consent, not as an approval it never was.
+            kind="consent" if existing.kind == "user_consent" else "approval",
             actor=deciding_actor,
             ok=approve,
             summary=f"{existing.kind} {status} for {existing.tool}",
