@@ -144,6 +144,13 @@ class CommandSpec:
 DISCORD_MESSAGE_HARD_LIMIT = 2000
 CHUNK_TARGET_LIMIT = 1900
 
+# How long register_commands waits for the client to finish logging in before
+# giving up. start() returns as soon as the connect task is *scheduled*, not
+# once discord.py has actually logged in -- application_id (and everything
+# else on the client) is only populated once that finishes, which is what
+# wait_until_ready() blocks on.
+_READY_TIMEOUT_SECS = 30
+
 
 def chunk_message(content: str, limit: int = CHUNK_TARGET_LIMIT) -> list[str]:
     """Split ``content`` into chunks of at most ``limit`` characters.
@@ -898,9 +905,24 @@ class DiscordPyGateway:
         Registration only declares the commands to Discord; the resulting
         interactions arrive through the same `on_interaction` path as
         everything else and are translated by `_translate_slash_command`.
+
+        Waits for the client to finish logging in first: a caller driving
+        this right after ``start()`` returns would otherwise race the
+        connect task, which has not had a chance to run yet, let alone
+        finish -- ``application_id`` is unset until it does.
         """
 
-        if self._client is None or self._client.application_id is None:
+        if self._client is None:
+            logger.warning("register_commands: gateway not started; skipping")
+            return
+        try:
+            await asyncio.wait_for(self._client.wait_until_ready(), timeout=_READY_TIMEOUT_SECS)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "register_commands(guild=%s): gateway never became ready; skipping", guild_id
+            )
+            return
+        if self._client.application_id is None:
             logger.warning("register_commands: gateway not started; skipping")
             return
         payload = [_command_spec_to_payload(spec) for spec in commands]
