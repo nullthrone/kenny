@@ -37,7 +37,7 @@ from kenny_server.toolloop import ToolExecutor
 from kenny_server.tunnel import AgentTunnel
 from kenny_server.userstore import UserStore
 
-from tests.support.fake_discord import FakeDiscordGateway
+from support.fake_discord import FakeDiscordGateway
 
 GUILD = "111111111111111111"
 OTHER_GUILD = "222222222222222222"

@@ -37,7 +37,7 @@ from kenny_server.discord_adapter import (
     chunk_message,
     parse_approval_custom_id,
 )
-from tests.support.fake_discord import FakeDiscordGateway
+from support.fake_discord import FakeDiscordGateway
 
 # ---------------------------------------------------------------------------
 # start() lazy-import guard

@@ -32,7 +32,7 @@ from starlette.middleware import Middleware
 from kenny_server.auth import OperatorAuthMiddleware
 from kenny_server.webui.tickets import build_ticket_routes
 
-from tests.test_discord_security import (
+from test_discord_security import (
     MIA_PC,
     ROOT,
     Bench,

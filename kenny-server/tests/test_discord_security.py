@@ -14,9 +14,11 @@ Anthropic client for the model, a stubbed ``AgentTunnel.send_request`` for the
 wire — so an assertion is about what the service *did*, never about which
 private function it called. Nothing here touches the network.
 
-Four tests in this module are **known failures**: they state a property the
-feature claims and the code does not hold. Their docstrings say so. They are not
-softened, skipped or xfailed, because a red test is the report.
+Three tests in this module were written red: they stated a property the feature
+claimed and the code did not hold, and they were left failing rather than
+softened, skipped or xfailed, because a red test is the report. The defects are
+fixed; those tests now stand as regression guards and say so in their
+docstrings.
 """
 
 from __future__ import annotations
@@ -56,7 +58,7 @@ from kenny_server.tools import CAPABILITY_TOOLS, CallLog, ScreenshotStore
 from kenny_server.tunnel import AgentTunnel
 from kenny_server.userstore import UserStore
 
-from tests.support.fake_discord import FakeDiscordGateway
+from support.fake_discord import FakeDiscordGateway
 
 GUILD = "300000000000000001"
 FOREIGN_GUILD = "300000000000000002"
