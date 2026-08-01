@@ -201,6 +201,12 @@ async def test_fake_discord_gateway_records_outbound_calls():
             "approval_id": "a1",
             "summary": "do the thing",
             "detail_url": "http://x",
+            # Built the way `DiscordPyGateway` builds them, so a test can click
+            # the card the gateway produced instead of one it invented itself.
+            "custom_ids": {
+                "approve": build_approval_custom_id("approve", "a1"),
+                "deny": build_approval_custom_id("deny", "a1"),
+            },
         }
     ]
     assert card_id

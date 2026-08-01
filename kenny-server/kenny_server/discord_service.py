@@ -55,6 +55,7 @@ from .discord_adapter import (
     SlashCommandEvent,
     ThreadStateEvent,
     chunk_message,
+    parse_approval_custom_id,
 )
 from .discord_identity import DiscordIdentityStore
 from .ticketstore import Ticket, TicketApproval, TicketChannel
@@ -83,7 +84,6 @@ from .tools import CAPABILITY_TOOLS
 from .userstore import UserStore
 
 __all__ = [
-    "APPROVAL_CUSTOM_ID_PREFIX",
     "DiscordService",
     "EXCLUDED_TOOLS",
     "FLEET_WIDE_TOOLS",
@@ -91,7 +91,6 @@ __all__ = [
     "TicketSession",
     "allowed_tools_for",
     "envelope",
-    "parse_custom_id",
 ]
 
 logger = logging.getLogger("kenny.discord")
@@ -111,8 +110,6 @@ FLEET_WIDE_TOOLS: frozenset[str] = frozenset({"list_agents", "fleet_overview"})
 #: Server-only tools that name their host in an ``id`` argument. Pinned to the
 #: ticket's frozen target for the same reason ``agent_id`` is discarded.
 _HOST_ARG_TOOLS: frozenset[str] = frozenset({"agent_health", "agent_snapshot"})
-
-APPROVAL_CUSTOM_ID_PREFIX = "kenny:approval"
 
 _TOOL_CATALOG: frozenset[str] = frozenset(SERVER_TOOLS) | frozenset(CAPABILITY_TOOLS)
 
@@ -544,23 +541,6 @@ class _RateLimiter:
             return False
         hits.append(now)
         return True
-
-
-def parse_custom_id(custom_id: str) -> tuple[str, bool] | None:
-    """Split an approval button's ``custom_id`` into ``(approval_id, approve)``."""
-
-    parts = (custom_id or "").split(":")
-    if len(parts) != 4 or f"{parts[0]}:{parts[1]}" != APPROVAL_CUSTOM_ID_PREFIX:
-        return None
-    if parts[3] not in ("approve", "deny"):
-        return None
-    return parts[2], parts[3] == "approve"
-
-
-def approval_custom_id(approval_id: str, *, approve: bool) -> str:
-    """The ``custom_id`` for one approval button."""
-
-    return f"{APPROVAL_CUSTOM_ID_PREFIX}:{approval_id}:{'approve' if approve else 'deny'}"
 
 
 #: What replaces a stripped span. Short, and it points at the one place the
@@ -1398,10 +1378,10 @@ class DiscordService:
     # -- decisions ---------------------------------------------------------
 
     async def handle_component(self, event: ComponentEvent) -> None:
-        parsed = parse_custom_id(event.custom_id)
+        parsed = parse_approval_custom_id(event.custom_id)
         if parsed is None:
             return
-        approval_id, approve = parsed
+        approval_id, approve = parsed.approval_id, parsed.action == "approve"
         principal = await self._principal_for(event.user_id, event.guild_id)
         if principal is None:
             logger.info("discord: ignoring button click from unmapped user")

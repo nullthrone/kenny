@@ -19,14 +19,18 @@ from typing import Any
 
 import pytest
 
-from kenny_server.discord_adapter import ComponentEvent, MessageEvent, ThreadStateEvent
+from kenny_server.discord_adapter import (
+    ComponentEvent,
+    MessageEvent,
+    ThreadStateEvent,
+    build_approval_custom_id,
+    parse_approval_custom_id,
+)
 from kenny_server.discord_identity import DiscordIdentityStore
 from kenny_server.discord_service import (
     DiscordService,
     allowed_tools_for,
-    approval_custom_id,
     envelope,
-    parse_custom_id,
 )
 from kenny_server.registry import AgentRegistry
 from kenny_server.store import EventStore, TelemetryStore
@@ -277,7 +281,7 @@ def click(approval_id: str, *, user: str, approve: bool, guild: str = GUILD) -> 
         message_id="card-1",
         user_id=user,
         interaction_id="i1",
-        custom_id=approval_custom_id(approval_id, approve=approve),
+        custom_id=build_approval_custom_id("approve" if approve else "deny", approval_id),
     )
 
 
@@ -321,12 +325,24 @@ def test_envelope_cannot_be_forged_from_content() -> None:
     assert 'role="user"' in wrapped
 
 
-def test_custom_id_round_trip() -> None:
-    assert parse_custom_id(approval_custom_id("abc", approve=True)) == ("abc", True)
-    assert parse_custom_id(approval_custom_id("abc", approve=False)) == ("abc", False)
-    assert parse_custom_id("kenny:approval:abc:maybe") is None
-    assert parse_custom_id("other:approval:abc:approve") is None
-    assert parse_custom_id("") is None
+def test_the_service_reads_the_gateways_scheme_and_no_other() -> None:
+    """There is one ``custom_id`` scheme, and it is the adapter's.
+
+    The service used to carry a second builder/parser pair of its own. Both
+    sides round-tripped against themselves, so the suite was green while no
+    button click in production was ever parsed. Shape assertions live in
+    ``test_discord_adapter.py``; what this pins is that the service has no
+    private scheme to drift back to — the round trip below is the *adapter's*.
+    """
+
+    from kenny_server import discord_service
+
+    assert not hasattr(discord_service, "approval_custom_id")
+    assert not hasattr(discord_service, "parse_custom_id")
+    assert not hasattr(discord_service, "APPROVAL_CUSTOM_ID_PREFIX")
+
+    decoded = parse_approval_custom_id(build_approval_custom_id("approve", "abc"))
+    assert decoded is not None and (decoded.approval_id, decoded.action) == ("abc", "approve")
 
 
 def test_select_agent_is_never_offered() -> None:
@@ -683,6 +699,40 @@ async def test_sensitive_tool_holds_for_consent_first(world: World) -> None:
     assert world.sent == []
     # The card went to the thread (the affected person), not the operator channel.
     assert world.gateway.cards[-1]["channel_id"] == world.gateway.threads[0].thread_id
+
+
+async def test_a_card_the_gateway_built_is_decidable(world: World) -> None:
+    """SEAM: the gateway writes the button's ``custom_id``, the service reads it.
+
+    Every other test in this file clicks a ``custom_id`` the *test* built, so
+    both halves could disagree — and did: the gateway wrote
+    ``kenny-approval:<action>:<id>`` while the service's parser demanded four
+    colon-separated parts prefixed ``kenny:approval``, so `handle_component`
+    dropped every real click on the floor and no approval or consent in Discord
+    ever resolved. This clicks what `post_approval_card` actually put on the
+    button, so the two halves have to fit.
+    """
+
+    service, ticket, approval = await _open_consent_ticket(
+        world,
+        "remotehelp_start",
+        tool_turn(tool_use_block("t1", "remotehelp_start", {})),
+        text_turn("Remote help is open."),
+    )
+    assert approval is not None
+
+    await service.handle_event(
+        ComponentEvent(
+            guild_id=GUILD,
+            channel_id=world.gateway.threads[0].thread_id,
+            message_id="card-1",
+            user_id=D_LENA,
+            interaction_id="i-seam",
+            custom_id=world.gateway.cards[-1]["custom_ids"]["approve"],
+        )
+    )
+
+    assert await world.tickets_store.get_open_approval(ticket.id) is None
 
 
 async def test_only_the_requester_may_grant_consent(world: World) -> None:

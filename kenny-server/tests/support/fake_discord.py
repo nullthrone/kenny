@@ -16,6 +16,7 @@ from kenny_server.discord_adapter import (
     GuildMember,
     InboundEvent,
     ThreadRef,
+    build_approval_custom_id,
 )
 
 
@@ -101,6 +102,15 @@ class FakeDiscordGateway:
                 "approval_id": approval_id,
                 "summary": summary,
                 "detail_url": detail_url,
+                # The custom_ids the buttons actually carry, built the same way
+                # `DiscordPyGateway` builds them. Recording them is what makes a
+                # test able to click the card the *gateway* produced rather than
+                # one the test invented -- the two used to disagree, and every
+                # click in production was silently dropped because of it.
+                "custom_ids": {
+                    action: build_approval_custom_id(action, approval_id)
+                    for action in ("approve", "deny")
+                },
             }
         )
         return f"fake-card-{len(self.cards)}"
