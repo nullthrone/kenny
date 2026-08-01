@@ -10,10 +10,11 @@ just want the common workflows, start with the **[User guide](user-guide.md)**; 
 here when you want to know what a particular control does.
 
 !!! info "How to read this page"
-    kenny has **three top-level tabs** — **Overview**, **Fleet**, and **Activity** — plus a
-    **Flagged** view you reach from the header. Each tab is a URL you can bookmark
-    (`#/overview`, `#/fleet`, `#/activity/audit`, `#/activity/events`, `#/flagged/warn`,
-    `#/flagged/crit`). The examples below use a demo fleet of six family PCs.
+    kenny has **four top-level tabs** — **Overview**, **Fleet**, **Activity**, and
+    **Tickets** — plus a **Flagged** view you reach from the header. Each tab is a URL you
+    can bookmark (`#/overview`, `#/fleet`, `#/activity/audit`, `#/activity/events`,
+    `#/flagged/warn`, `#/flagged/crit`, `#/tickets`, `#/tickets/{id}`). The examples below
+    use a demo fleet of six family PCs.
 
 ---
 
@@ -35,6 +36,9 @@ Every view shares one header:
   On narrow screens the word labels collapse to icon + number.
 - **✨ Copilot toggle** *(Fleet tab only)* — show/hide the chat rail (see
   [The copilot](#the-copilot-chat-rail)).
+- **Approvals badge** *(operator+ only)* — a shield icon with a live count of everything
+  currently held for you across every ticket; see [The approvals badge](#the-approvals-badge)
+  below.
 - **User menu** — your avatar (a selectable dog-breed image, or your initials when none is
   set) and username, top-right. Clicking it opens a dropdown that collects the global
   controls:
@@ -43,13 +47,28 @@ Every view shares one header:
       stays open, and the item names the theme it switches *to*). The choice is saved in
       `localStorage` and applied before first paint (no flash); charts repaint from the cached
       data on toggle.
-    - **Settings** *(superuser only)* — opens the [`#/settings`](#accounts-roles-the-user-menu)
+    - **Settings** *(superuser only)* — opens the [`#/settings`](#the-settings-panel)
       config panel.
     - **Backup** *(superuser only)* — opens the [`#/backup`](#the-backup-page) database
       backup/restore page.
     - **About** — opens the [About box](#the-about-box).
     - **Documentation** — opens the project's docs site (this GitHub Pages site) in a new tab.
     - **Log out** (`/logout`).
+
+### The approvals badge
+
+A shield icon lives in the header for **operator+** accounts, next to the copilot toggle,
+with a live count of every tool call currently held for a decision — across every ticket,
+not just the one you happen to have open. Clicking it opens the same queue as a modal:
+each row shows the **tool**, its **tier**, the frozen **arguments**, a link straight to the
+ticket it belongs to, and **Approve**/**Deny** buttons. Deciding one re-opens the queue
+rather than trying to patch a now-stale row in place — the same decision then lands as an
+`approval` row on that [ticket's timeline](#ticket-detail).
+
+This is the dashboard's side of the same confirm-gate the [Discord surface](itsm.md) holds
+a `normal_change` for — see [Tool reference](tools.md#three-tiers-and-who-enforces-what)
+for how the gate differs by surface, and [ITSM & the Discord bot](itsm.md#operator-approval-vs-user-consent-two-different-questions)
+for the difference between an operator approval and a user consent.
 
 ---
 
@@ -75,7 +94,11 @@ sent as `Authorization: Bearer <pat>` to `/mcp` and shown once at creation.
 
 **Users** (superuser only) lists every account and lets you create, edit (role, email,
 avatar, enable/disable), delete, reset a password, reset 2FA, assign the host scope for a
-`user`-role account, and manage that user's access tokens.
+`user`-role account, set its **capability profile**, and manage that user's access tokens.
+A capability profile is a named tool allowlist that only ever *narrows* what the account's
+role already allows — `self-service-basic`, `power-user`, `operator`, or `(none — role
+default)` are the shipped choices — and applies wherever that account acts, Discord
+included. See [Capability profiles](itsm.md#capability-profiles).
 
 Existing single-token installs keep working across the upgrade: the legacy
 `KENNY_OPERATOR_TOKEN` is still accepted as a back-compat superuser while you create real
@@ -315,7 +338,7 @@ language and Claude picks and runs kenny's tools.
 - **Confirm-gate** — read-only tools run automatically; any **state-changing** tool pauses in
   an amber card showing the exact tool + arguments, with **confirm & run** / **cancel**. The
   composer is locked until you resolve it. See
-  [Tool reference](tools.md#the-confirm-gate-who-enforces-what).
+  [Tool reference](tools.md#three-tiers-and-who-enforces-what).
 - **Composer** — type and **send**; while a turn streams the button becomes **stop**.
   Suggestion chips ("Why is this PC flagged?", "Free up disk space", "Update all packages")
   pre-fill the box.
@@ -359,6 +382,54 @@ times) filters live, and the list is paged.
 A unified stream of server + agent **log lines**, emitted **alerts**, and audit events: time,
 level (error/warn/info/debug), source, the PC (if any), and the message. Searchable by level,
 source, PC, or message, and paged. This is where [alerts](alerting.md) land as an audit trail.
+
+---
+
+## The Tickets tab
+
+The simplified-ITSM record behind every Discord conversation, every alert-opened case, and
+anything opened straight from the dashboard — see [Tickets & the Discord bot](itsm.md) for
+what a ticket is, its lifecycle, and the authorization model behind it. **Visible to every
+role**: an operator+ sees the whole queue, a scoped `user` only ever their own (enforced
+server-side, not just hidden in the UI) — this is the dashboard's first genuinely
+user-facing view.
+
+### Ticket list
+
+<figure markdown>
+  ![The Tickets list, filterable by state.](assets/screenshots/tickets.png)
+  <figcaption>The Tickets list: number, title, state, requester, target PC and age, filterable by state.</figcaption>
+</figure>
+
+One row per ticket — number, title, a **state pill**, the requester (or "alert" for a
+ticket with no owner), the target PC, and its age — sorted newest-first. The **state
+filter** narrows to one lifecycle state; **New ticket** opens one directly from the
+dashboard (title + optional details), which lands exactly like a Discord-opened one except
+it has no thread attached.
+
+### Ticket detail
+
+<figure markdown>
+  ![A ticket's detail view: the paraphrase and the full event timeline.](assets/screenshots/ticket-detail.png)
+  <figcaption>Ticket detail: number, origin, priority, category, requester and target; the paraphrase and resolution; and the full event timeline — messages, an autonomous standard-change call, a held approval and its decision, and the closing state change.</figcaption>
+</figure>
+
+Reached by clicking a row, or `#/tickets/{id}` directly — this is the landing page every
+"see the dashboard" link kenny posts into Discord goes to, so it works from a cold load,
+not just from clicking through the list. It shows:
+
+- The **metadata** block — number, origin (`discord` / `dashboard` / `alert`), priority,
+  category, requester, target PC, and the created/updated timestamps.
+- Kenny's running **summary**, and the **resolution** once one is set.
+- An **add a note** box (operator+) for a plain operator annotation on the trail.
+- The **timeline** — every `ticket_events` row in order: state changes, messages (tagged by
+  who sent them), tool calls (with their arguments, tagged by [tier](tools.md)), approval/
+  consent requests and their decisions, and reassignment handoffs (including a *discarded*
+  retarget attempt, which is recorded even though nothing about the ticket changed).
+- **Reassign** (operator+) — point the ticket at a different PC; the only path that ever
+  changes a ticket's target.
+- **Close ticket** — once `resolved`, close it outright rather than waiting for the
+  auto-close window.
 
 ---
 
@@ -419,6 +490,36 @@ by version, or view the full list on GitHub).
 
 ---
 
+## The Settings panel
+
+*(superuser only, [`#/settings`](#the-shell-header-global-controls))*
+
+The runtime configuration catalog — every setting resolves **custom override → environment
+→ coded default**, grouped the same way as `config.py`. Each row shows its label, a badge
+for where its current value came from (`custom` / `env` / `default`), and — for a setting
+whose new value only takes effect on restart — a **restart** pill. Editable settings apply
+immediately (or on next restart, per that pill) and can be **reset** back to
+environment/default; a setting managed only via the environment (secrets, wire-contract
+knobs, process-bind options) is shown read-only, with a sensitive one displayed as *set* /
+*not set* rather than echoed back.
+
+### Discord panel
+
+<figure markdown>
+  ![The Discord panel in Settings.](assets/screenshots/discord-settings.png)
+  <figcaption>The Discord panel: connection status, linked accounts, pending link claims, and the guild-member picker.</figcaption>
+</figure>
+
+Below the settings groups, superusers get a **Discord** panel: a connection-status pill,
+the table of linked accounts (with an unlink button), the **pending claims** table for
+enrollment path A (`/kenny link` in Discord — pick the kenny account it belongs to and
+confirm), and **Pick a guild member** for enrollment path B (a direct picker from the
+server's member list). See [Enrollment: linking a Discord account](itsm.md#enrollment-linking-a-discord-account)
+for what each path means and why the mapping matters. On a server with no Discord identity
+store configured, the panel says so instead of erroring.
+
+---
+
 ## The Backup page
 
 *(superuser only, [`#/backup`](#the-shell-header-global-controls))*
@@ -434,7 +535,7 @@ for the full rationale.
 
 - **Status card** — the most recent backup's age, the total count and size on disk, the
   configured **interval** and **retention** (editable inline — the same live-apply
-  settings as the [Settings panel](#accounts-roles-the-user-menu)), and the local
+  settings as the [Settings panel](#the-settings-panel)), and the local
   `backups/` directory path. *Point your sync tool at this directory, never at
   `kenny.sqlite` itself.*
 - **Backup now** — triggers an out-of-schedule snapshot immediately (`VACUUM INTO`, so it
@@ -472,7 +573,7 @@ operator action.
   run. kenny cannot replace its own running container, so this stays a shown command rather
   than an automated pull.
 - **Agent fleet card** — the latest known agent version, the **check interval** (editable
-  inline, the same live-apply settings as the [Settings panel](#accounts-roles-the-user-menu)),
+  inline, the same live-apply settings as the [Settings panel](#the-settings-panel)),
   a **check now** button, and the **auto-apply on connect** toggle.
 - **Rollout campaign card** — with no active campaign, **approve rollout** pins the latest
   known agent version into a new campaign. Once approved, the campaign shows its pinned
@@ -507,7 +608,7 @@ separately-approvable candidate.
   console is legible without colour.
 - **Deep links** — every view is a URL hash you can bookmark or share (`#/overview`,
   `#/fleet`, `#/activity/audit`, `#/activity/events`, `#/flagged/warn`, `#/flagged/crit`,
-  `#/settings`, `#/backup`, `#/updates`).
+  `#/tickets`, `#/tickets/{id}`, `#/settings`, `#/backup`, `#/updates`).
 - **Keyboard & motion** — Escape closes modals and the copilot drawer; animations respect
   `prefers-reduced-motion`.
 
@@ -518,4 +619,6 @@ separately-approvable candidate.
 - **[User guide](user-guide.md)** — the common operator workflows.
 - **[Telemetry reference](telemetry.md)** — every section and its health rule.
 - **[Tool reference](tools.md)** — the capability and orchestration tools.
+- **[Tickets & the Discord bot](itsm.md)** — what a ticket is, its lifecycle, and the
+  authorization model behind it.
 - **[Parental controls](parental-controls.md)** · **[Alerting & digests](alerting.md)**.

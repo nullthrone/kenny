@@ -1,4 +1,5 @@
-"""The screenshot manifest: one :class:`Shot` per figure in ``docs/dashboard.md``.
+"""The screenshot manifest: one :class:`Shot` per figure in ``docs/dashboard.md``
+(and, for the ticket views, ``docs/itsm.md``).
 
 Each shot names a target view (a URL hash), a capture ``mode`` (``full_page`` or
 an element ``selector`` crop), a ``theme``, and an ordered list of ``actions`` the
@@ -265,6 +266,25 @@ MANIFEST: list[Shot] = [
             {"wait_for": "#modal-overlay #km-share-url"},
             {"sleep": 300},
         ],
+    ),
+    Shot(
+        name="tickets",
+        hash="#/tickets",
+        mode="full_page",
+        actions=[{"wait_for": "table.kacc-tbl tbody tr"}, {"sleep": 300}],
+    ),
+    Shot(
+        name="ticket-detail",
+        hash="#/tickets/demo-tkt-flush",
+        mode="full_page",
+        actions=[{"wait_for": ".kc-timeline"}, {"sleep": 300}],
+    ),
+    Shot(
+        name="discord-settings",
+        hash="#/settings",
+        mode="element",
+        selector="#discord-panel",
+        actions=[{"wait_for": "#discord-panel .kacc-tbl"}, {"sleep": 300}],
     ),
     Shot(
         name="about",

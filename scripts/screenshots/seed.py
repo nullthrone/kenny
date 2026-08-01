@@ -18,6 +18,16 @@ categorization cache so the heatmaps and health scoring show friendly
 categories/severities (ADR-0028) without an API key, plus one reliability
 alarm suppression rule (ADR-0045 / issue #166) so the Reliability card's
 suppressed badge and rule panel are populated in the captured screenshots.
+
+It also seeds a handful of demo **tickets** (``TicketService``, no Discord
+gateway involved) so the Tickets tab has a real list and one ticket shows a
+full lifecycle — a message, an autonomous ``standard_change`` call, a held
+``normal_change`` that was approved, and a resolution — through
+``TicketService`` itself rather than by writing rows directly, so the seeded
+state is exactly what driving the real gate would have produced. And a couple
+of **Discord identities** plus one pending link claim (``DiscordIdentityStore``,
+still no gateway) so the Settings Discord panel has real rows instead of the
+"nothing linked yet" empty state.
 """
 
 from __future__ import annotations
@@ -67,6 +77,10 @@ async def seed_app(app: Any, base: datetime | None = None) -> list[str]:
 
     await _seed_activity(state.event_store, base)
     await _seed_chat_history(state.chat_history_store, base)
+    if getattr(state, "tickets", None) is not None:
+        await _seed_tickets(state.tickets, base)
+    if getattr(state, "discord_identities", None) is not None:
+        await _seed_discord_identities(state.discord_identities, base)
 
     return [h.agent_id for h in hosts]
 
@@ -207,6 +221,187 @@ async def _seed_chat_history(store: Any, base: datetime) -> None:
                 "content": "3 of 6 PCs need attention: grandpa-pc, kid-pc and study-pc.",
             },
         ],
+    )
+
+
+async def _seed_tickets(tickets: Any, base: datetime) -> None:
+    """Four demo tickets across states/origins for the Tickets tab.
+
+    Driven entirely through ``TicketService`` — create/transition/append_event/
+    open_approval/decide_approval — so the seeded rows are exactly what the
+    real lifecycle would have produced, not a shortcut through the store. The
+    service's clock is temporarily backdated per step (restored in ``finally``)
+    so the list's age column and the detail timeline read like a fleet that has
+    been running for a while, not "just now" for everything.
+    """
+
+    original_now = tickets._now  # noqa: SLF001 - screenshot-only backdating
+
+    def _at(**delta: float) -> None:
+        tickets._now = lambda: base - timedelta(**delta)  # noqa: SLF001
+
+    try:
+        # -- the rich one: a full Discord lifecycle through both gates --------
+        _at(hours=2, minutes=10)
+        flush = await tickets.create(
+            id="demo-tkt-flush",
+            title="Wi-Fi keeps dropping and games lag on grandpa-pc",
+            origin="discord",
+            requester_user_id=7,
+            agent_id="grandpa-pc",
+            role_snapshot="user",
+            profile_snapshot="self-service-basic",
+            actor="user:7",
+            reason="opened from Discord",
+        )
+        await tickets.transition(flush.id, "triage", actor="system", reason="opened from Discord")
+        await tickets.transition(flush.id, "in_progress", actor="system")
+        await tickets.append_event(
+            flush.id, kind="message", actor="user:7", summary="opening message",
+            fields={"actionable": True, "discord_id": "441029938271"},
+        )
+        _at(hours=2, minutes=6)
+        await tickets.append_event(
+            flush.id, kind="tool_call", actor="kenny", tool="diag_processes",
+            tool_class="read_only", ok=True, summary="diag_processes succeeded",
+            fields={"agent_id": "grandpa-pc"},
+        )
+        _at(hours=2, minutes=4)
+        await tickets.append_event(
+            flush.id, kind="tool_call", actor="kenny", tool="net_dns_flush",
+            tool_class="standard_change", args={},
+            summary="net_dns_flush authorized autonomously as a standard change",
+        )
+        await tickets.append_event(
+            flush.id, kind="tool_call", actor="kenny", tool="net_dns_flush",
+            tool_class="standard_change", ok=True, summary="net_dns_flush succeeded",
+            fields={"agent_id": "grandpa-pc"},
+        )
+        _at(hours=1, minutes=55)
+        approval = await tickets.open_approval(
+            flush.id, tool_use_id="toolu_demo1", tool="winget_install",
+            tool_class="normal_change", args={"id": "Realtek.WiFiDriver"},
+            kind="operator_approval", agent_id="grandpa-pc", actor="kenny",
+        )
+        await tickets.transition(
+            flush.id, "awaiting_approval", actor="system",
+            reason="winget_install held for operator_approval",
+        )
+        _at(hours=1, minutes=40)
+        await tickets.decide_approval(
+            approval.id, approve=True, decided_by=1, decided_via="dashboard", actor="operator:1",
+        )
+        await tickets.transition(flush.id, "in_progress", actor="system", reason="gate decided")
+        _at(hours=1, minutes=38)
+        await tickets.append_event(
+            flush.id, kind="tool_call", actor="kenny", tool="winget_install",
+            tool_class="normal_change", ok=True, summary="winget_install succeeded",
+            fields={"agent_id": "grandpa-pc"},
+        )
+        _at(hours=1, minutes=30)
+        await tickets.transition(flush.id, "resolved", actor="system", reason="issue fixed")
+        await tickets.update(
+            flush.id,
+            resolution="Updated the Wi-Fi driver; grandpa-pc now holds a stable connection.",
+        )
+
+        # -- an open approval, so the header's approvals badge has something --
+        _at(minutes=42)
+        printer = await tickets.create(
+            id="demo-tkt-printer",
+            title="Install printer driver on living-room-pc",
+            origin="discord",
+            requester_user_id=4,
+            agent_id="living-room-pc",
+            role_snapshot="user",
+            profile_snapshot="power-user",
+            actor="user:4",
+            reason="opened from Discord",
+        )
+        await tickets.transition(printer.id, "triage", actor="system", reason="opened from Discord")
+        await tickets.transition(printer.id, "in_progress", actor="system")
+        await tickets.append_event(
+            printer.id, kind="message", actor="user:4", summary="opening message",
+            fields={"actionable": True, "discord_id": "552017744102"},
+        )
+        _at(minutes=39)
+        await tickets.open_approval(
+            printer.id, tool_use_id="toolu_demo2", tool="winget_install",
+            tool_class="normal_change", args={"id": "Brother.iPrintScan"},
+            kind="operator_approval", agent_id="living-room-pc", actor="kenny",
+        )
+        await tickets.transition(
+            printer.id, "awaiting_approval", actor="system",
+            reason="winget_install held for operator_approval",
+        )
+
+        # -- a fresh, untouched ticket opened straight from the dashboard -----
+        _at(minutes=6)
+        await tickets.create(
+            id="demo-tkt-webcam",
+            title="Webcam not detected in Teams",
+            origin="dashboard",
+            requester_user_id=4,
+            agent_id="papa-pc",
+            actor="user:4",
+            reason="opened from the dashboard",
+        )
+
+        # -- an alert that opened its own ticket, still waiting on an operator -
+        _at(minutes=8)
+        defender = await tickets.create(
+            id="demo-tkt-defender",
+            title="Defender real-time protection is OFF on grandpa-pc",
+            origin="alert",
+            requester_user_id=None,
+            agent_id="grandpa-pc",
+            priority="high",
+            category="alert",
+            summary="Defender real-time protection is OFF on grandpa-pc",
+            actor="system",
+            reason="opened from an alert",
+        )
+        await tickets.transition(defender.id, "triage", actor="system")
+        await tickets.transition(
+            defender.id, "awaiting_agent", actor="system",
+            reason="waiting for an operator to pick this up",
+        )
+    finally:
+        tickets._now = original_now  # noqa: SLF001
+
+
+_DEMO_GUILD_ID = "123456789012345678"
+
+
+async def _seed_discord_identities(identities: Any, base: datetime) -> None:
+    """Two linked accounts (one per enrollment path) and one pending claim.
+
+    The same two Discord snowflakes used in :func:`_seed_tickets`, so the
+    Settings panel and the ticket timeline agree with each other.
+    """
+
+    await identities.link(
+        discord_user_id="441029938271",
+        user_id=7,
+        guild_id=_DEMO_GUILD_ID,
+        linked_via="claim",
+        linked_by=1,
+        now=base - timedelta(days=12),
+    )
+    await identities.link(
+        discord_user_id="552017744102",
+        user_id=4,
+        guild_id=_DEMO_GUILD_ID,
+        linked_via="member_list",
+        linked_by=1,
+        now=base - timedelta(days=5),
+    )
+    await identities.open_claim(
+        discord_user_id="998877665544332211",
+        display_hint="papas_kid",
+        guild_id=_DEMO_GUILD_ID,
+        ttl_secs=3600,
+        now=base - timedelta(minutes=10),
     )
 
 

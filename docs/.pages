@@ -8,6 +8,7 @@ nav:
     - Tool reference: tools.md
     - Parental controls: parental-controls.md
     - Account governance: account-governance.md
+    - Tickets & the Discord bot: itsm.md
     - Alerting & digests: alerting.md
   - Developer:
     - Wire protocol: protocol.md

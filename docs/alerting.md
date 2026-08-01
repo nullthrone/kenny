@@ -49,6 +49,22 @@ events & logs** view with no extra UI plumbing.
 <figcaption>Emitted alerts and server/agent events in the Activity → events & logs view.</figcaption>
 </figure>
 
+## An alert can open a ticket
+
+A genuine alert (not a recovery, not the digest) can also open a [ticket](itsm.md) — the
+same ITSM record a Discord conversation or a dashboard action produces, so a
+Defender-disabled or a disk-forecast notification arrives with somewhere to work it rather
+than just a push you have to remember. This runs **after** delivery and is strictly
+best-effort: a failure to open the ticket is logged and swallowed, never lets a failing
+side effect make an alert late or lost — alerting must not become less reliable by gaining
+one.
+
+An alert-origin ticket has **no requester** — it belongs to the fleet, not a person — so it
+is operator-only in the [Tickets tab](dashboard.md#the-tickets-tab): a scoped `user` never
+sees it. It starts life pinned to the alerting agent, at `high` priority for a `high`/`urgent`
+notification and `normal` otherwise, with the alert's own message as its opening summary.
+Nothing about this is configurable per alert type today — every genuine alert opens one.
+
 ## Change notifications
 
 A diff step in the same loop compares **consecutive snapshots** (once per *new* snapshot,
@@ -140,5 +156,6 @@ Alerting environment variables (see [`setup.md`](setup.md) for the full list):
 - [`setup.md`](setup.md) — hosting, TLS, and the full environment-variable list
 - [`dashboard.md`](dashboard.md) — the Overview KPIs and the per-agent AI Forecast card
 - [`telemetry.md`](telemetry.md) — the sections and health rules these alerts evaluate
+- [`itsm.md`](itsm.md) — tickets, the Discord bot, and what an alert-opened ticket looks like
 - [ADR-0029](adr/0029-push-alerting-ntfy-webhook-and-weekly-digest.md) — push alerting & weekly digest
 - [ADR-0030](adr/0030-server-side-diff-and-trend-engine.md) — server-side diff & trend engine
