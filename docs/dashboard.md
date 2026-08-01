@@ -93,8 +93,12 @@ access tokens are the Bearer credential for scripts and other MCP clients that c
 sent as `Authorization: Bearer <pat>` to `/mcp` and shown once at creation.
 
 **Users** (superuser only) lists every account and lets you create, edit (role, email,
-avatar, enable/disable), delete, reset a password, reset 2FA, assign the host scope for a
-`user`-role account, set its **capability profile**, and manage that user's access tokens.
+avatar, enable/disable), delete, reset a password, reset 2FA, assign the **host scope**,
+set its **capability profile**, and manage that user's access tokens. Host scope reads two
+ways depending on the role: for a `user` account it is a limit — the only hosts it can see
+— while for an operator or superuser it limits nothing and instead names which PCs are
+that person's own, which is what an unqualified Discord request is taken to be about (see
+[Which PC a request is about](itsm.md#which-pc-a-request-is-about)).
 A capability profile is a named tool allowlist that only ever *narrows* what the account's
 role already allows — `self-service-basic`, `power-user`, `operator`, or `(none — role
 default)` are the shipped choices — and applies wherever that account acts, Discord

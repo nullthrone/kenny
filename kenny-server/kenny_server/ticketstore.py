@@ -7,7 +7,7 @@ transports, LLMs or how a ticket is worked. Lifecycle rules (which state may
 follow which, and who may drive the change) live in
 :mod:`kenny_server.tickets`.
 
-Five tables, one connection, shared DB file — same shape as the stores in
+Six tables, one connection, shared DB file — same shape as the stores in
 :mod:`kenny_server.store` (own :func:`~kenny_server.store._configure_connection`
 for WAL + busy-timeout, ``CREATE TABLE IF NOT EXISTS`` only, ISO-8601 UTC text
 timestamps).
@@ -28,6 +28,8 @@ from .store import DEFAULT_DB_PATH, _configure_connection
 
 __all__ = [
     "DEFAULT_DB_PATH",
+    "PENDING_REQUEST_TTL_SECS",
+    "PendingRequest",
     "RUN_RETENTION_DAYS",
     "Ticket",
     "TicketApproval",
@@ -42,6 +44,12 @@ __all__ = [
 # How long a closed ticket keeps its (potentially large) working transcript.
 # Only ``ticket_runs`` is subject to this; see ``TicketStore.prune``.
 RUN_RETENTION_DAYS = 30
+
+# How long an unanswered "which PC?" picker stays clickable. Matched to the
+# link-claim window in ``discord_identity``: both are a card a human is looking
+# at right now, and a stale one should expire rather than open a ticket about a
+# problem from last week.
+PENDING_REQUEST_TTL_SECS = 900
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS tickets (
@@ -122,6 +130,22 @@ CREATE TABLE IF NOT EXISTS ticket_channels (
     archived_at TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_ticket_channels_thread ON ticket_channels (thread_id);
+
+CREATE TABLE IF NOT EXISTS discord_pending_requests (
+    id              TEXT PRIMARY KEY,
+    discord_user_id TEXT NOT NULL,
+    user_id         INTEGER NOT NULL,
+    guild_id        TEXT NOT NULL,
+    channel_id      TEXT NOT NULL,
+    message_id      TEXT,
+    content         TEXT NOT NULL,
+    candidates      TEXT NOT NULL,      -- JSON array; what was offered, display only
+    created_at      TEXT NOT NULL,
+    expires_at      TEXT NOT NULL,
+    consumed_at     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_discord_pending_open
+    ON discord_pending_requests (consumed_at, expires_at);
 """
 
 
@@ -333,6 +357,53 @@ class TicketRun:
         return asdict(self)
 
 
+@dataclass(slots=True)
+class PendingRequest:
+    """A support request waiting for its author to say which PC it is about.
+
+    This is the pre-ticket phase, and it exists because there is deliberately no
+    conversational state before a ticket: the target host is frozen when the
+    ticket is opened and nothing said afterwards may move it, so the question
+    "which PC?" cannot be answered by a later message. It is answered by a
+    button click instead, and this row is what the click resolves back to.
+
+    ``candidates`` records what was offered, for the trail. It is **not** the
+    authorization list — a click re-checks the chosen host against the clicker's
+    scope as it is at click time, so a scope narrowed in between still bites.
+    """
+
+    id: str
+    discord_user_id: str
+    user_id: int
+    guild_id: str
+    channel_id: str
+    message_id: str | None
+    content: str
+    candidates: list[str]
+    created_at: str
+    expires_at: str
+    consumed_at: str | None = None
+
+    @classmethod
+    def from_row(cls, row: aiosqlite.Row) -> PendingRequest:
+        return cls(
+            id=row["id"],
+            discord_user_id=row["discord_user_id"],
+            user_id=int(row["user_id"]),
+            guild_id=row["guild_id"],
+            channel_id=row["channel_id"],
+            message_id=row["message_id"],
+            content=row["content"],
+            candidates=json.loads(row["candidates"]),
+            created_at=row["created_at"],
+            expires_at=row["expires_at"],
+            consumed_at=row["consumed_at"],
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 _TICKET_COLUMNS = (
     "id, number, title, state, origin, priority, category, requester_user_id, "
     "agent_id, role_snapshot, profile_snapshot, summary, resolution, "
@@ -348,6 +419,10 @@ _APPROVAL_COLUMNS = (
     "discord_channel_id, discord_message_id"
 )
 _CHANNEL_COLUMNS = "ticket_id, guild_id, channel_id, thread_id, private, created_at, archived_at"
+_PENDING_COLUMNS = (
+    "id, discord_user_id, user_id, guild_id, channel_id, message_id, content, "
+    "candidates, created_at, expires_at, consumed_at"
+)
 
 # States whose entry stamps ``closed_at`` (and thus starts the transcript
 # retention clock). Kept here — not imported from ``tickets`` — so the store
@@ -993,12 +1068,93 @@ class TicketStore:
 
     # -- retention ---------------------------------------------------------
 
+    # -- pending requests (the pre-ticket "which PC?" phase) ------------------
+
+    async def open_pending_request(
+        self,
+        *,
+        discord_user_id: str,
+        user_id: int,
+        guild_id: str,
+        channel_id: str,
+        content: str,
+        candidates: Sequence[str],
+        message_id: str | None = None,
+        ttl_secs: int = PENDING_REQUEST_TTL_SECS,
+        now: datetime | str | None = None,
+    ) -> PendingRequest:
+        """Record a request whose target host is still unanswered."""
+
+        created = _stamp(now)
+        # Derive the expiry from the creation stamp rather than the wall clock,
+        # so an injected clock governs both ends of the window.
+        expires = to_iso(
+            datetime.fromisoformat(created) + timedelta(seconds=max(0, ttl_secs))
+        )
+        request_id = uuid.uuid4().hex
+        await self._conn.execute(
+            f"INSERT INTO discord_pending_requests ({_PENDING_COLUMNS}) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
+            (
+                request_id,
+                discord_user_id,
+                user_id,
+                guild_id,
+                channel_id,
+                message_id,
+                content,
+                json.dumps(list(candidates)),
+                created,
+                expires,
+            ),
+        )
+        await self._conn.commit()
+        pending = await self.get_pending_request(request_id)
+        if pending is None:  # pragma: no cover - insert just succeeded
+            raise RuntimeError(f"pending request {request_id} vanished after insert")
+        return pending
+
+    async def get_pending_request(self, request_id: str) -> PendingRequest | None:
+        """Return one pending request by id, consumed or not."""
+
+        async with self._conn.execute(
+            f"SELECT {_PENDING_COLUMNS} FROM discord_pending_requests WHERE id = ?",
+            (request_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        return PendingRequest.from_row(row) if row else None
+
+    async def consume_pending_request(
+        self, request_id: str, *, now: datetime | str | None = None
+    ) -> PendingRequest | None:
+        """Claim a pending request exactly once; None if unknown, used or stale.
+
+        Single-use is what stops a picker card from opening a second ticket when
+        two buttons are clicked in quick succession — the losing click finds the
+        row already consumed rather than racing the winner.
+        """
+
+        stamp = _stamp(now)
+        cur = await self._conn.execute(
+            "UPDATE discord_pending_requests SET consumed_at = ? "
+            "WHERE id = ? AND consumed_at IS NULL AND expires_at > ?",
+            (stamp, request_id, stamp),
+        )
+        if (cur.rowcount or 0) == 0:
+            await self._conn.rollback()
+            return None
+        await self._conn.commit()
+        return await self.get_pending_request(request_id)
+
     async def prune(self, *, now: datetime | None = None) -> int:
         """Delete run state of tickets closed longer than retention ago.
 
         Only ``ticket_runs`` rows go: the ticket and its event trail are the
         operator-curated record and are never pruned, the stance
-        ``ChatHistoryStore`` takes about conversations. Returns rows deleted.
+        ``ChatHistoryStore`` takes about conversations. Dead pending requests
+        (consumed or expired) go too — an unanswered picker leaves nothing worth
+        keeping, and a consumed one's outcome is already the ticket it opened.
+        Returns rows deleted.
         """
 
         now = now or datetime.now(timezone.utc)
@@ -1008,5 +1164,12 @@ class TicketStore:
             "SELECT id FROM tickets WHERE closed_at IS NOT NULL AND closed_at < ?)",
             (cutoff,),
         )
+        deleted = cur.rowcount or 0
+        cur = await self._conn.execute(
+            "DELETE FROM discord_pending_requests "
+            "WHERE consumed_at IS NOT NULL OR expires_at <= ?",
+            (to_iso(now),),
+        )
+        deleted += cur.rowcount or 0
         await self._conn.commit()
-        return cur.rowcount or 0
+        return deleted

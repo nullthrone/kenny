@@ -3432,7 +3432,7 @@
       </div>`;
       const hostsSec = `<div class="kacc-sec">
         <div class="kacc-sec__lbl">Host scope</div>
-        <div class="k-muted" style="margin-bottom:8px">Applies to scoped <b>user</b> accounts — the hosts they can see.</div>
+        <div class="k-muted" style="margin-bottom:8px">For a <b>user</b> account this is a limit — the only hosts it can see. For an <b>operator</b> or <b>superuser</b> it limits nothing, and instead says which PCs are their own: what an unqualified Discord request like &ldquo;my PC is slow&rdquo; is taken to be about. Leave it empty and every such request has to be answered with a question first.</div>
         ${hostGridHtml("edituser-hosts", hosts, u.hosts || [])}
         <button class="k-btn k-btn--ghost" style="margin-top:10px" onclick="saveUserHosts(${jsArg(uid)})">${icon('check', 14)}Save host scope</button>
       </div>`;
