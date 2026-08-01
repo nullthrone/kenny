@@ -114,6 +114,13 @@ the `operator` role (a scoped `user` sees the inventory read-only), and when Cla
 proposes one of these actions in chat it stops and waits for you, like every other
 state-changing tool.
 
+That holds on the [Discord support surface](itsm.md) too, and by more than one
+mechanism. Every account tool is classified `normal_change` — the tier that never runs
+without an operator's approval — and none of them appears in any capability profile, so a
+family member working a ticket is not offered them at all and is refused at dispatch if
+the assistant asks for one anyway. Deciding who may sign in to a PC is not something a
+support conversation can reach.
+
 **Every call is written to the audit log** — visible under *Activity → Tool-call audit
 log* in the dashboard.
 
