@@ -1893,8 +1893,9 @@
         </div>
       </div>`;
     }
+    function openTicket(id) { location.hash = "#/tickets/" + id; }
     function ticketRowHtml(t) {
-      return `<tr style="cursor:pointer" onclick="location.hash='#/tickets/' + ${jsArg(t.id)}">
+      return `<tr style="cursor:pointer" onclick="openTicket(${jsArg(t.id)})">
         <td class="k-mono">#${t.number}</td>
         <td>${esc(t.title)}</td>
         <td><span class="k-pill ${ticketStateClass(t.state)}">${esc(ticketStateLabel(t.state))}</span></td>
