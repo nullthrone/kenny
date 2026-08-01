@@ -76,7 +76,14 @@ def test_audit_endpoint_shape_and_classification(tmp_path):
         by_tool = {e["tool"]: e for e in entries}
         assert by_tool["telemetry_collect"]["state_changing"] is False
         assert by_tool["winget_update"]["state_changing"] is True
-        assert set(entries[0]) == {"at", "agent_id", "tool", "ok", "error", "state_changing"}
+        # The three-tier class is carried alongside the boolean, not instead of
+        # it: the dashboard keeps reading `state_changing`, the ticket trail and
+        # the Discord surface grade the same call more finely.
+        assert by_tool["telemetry_collect"]["tool_class"] == "read_only"
+        assert by_tool["winget_update"]["tool_class"] == "standard_change"
+        assert set(entries[0]) == {
+            "at", "agent_id", "tool", "ok", "error", "state_changing", "tool_class",
+        }
 
 
 def test_audit_requires_auth(tmp_path):

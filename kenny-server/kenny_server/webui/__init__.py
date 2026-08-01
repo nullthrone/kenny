@@ -371,11 +371,17 @@ def build_api_routes(
         """Recent tool-call audit log across the fleet (for the dashboard).
 
         Each entry is annotated ``state_changing`` (vs read-only) so the UI can
-        label confirm-gated calls without re-deriving the classification. A
-        ``user``-role caller only sees entries for their assigned hosts.
+        label confirm-gated calls without re-deriving the classification, and
+        ``tool_class`` with the three-tier classification (``read_only`` /
+        ``standard_change`` / ``normal_change``) the ticket trail also records.
+        The two are deliberately both present: ``state_changing`` is the
+        boolean the dashboard has always shown, ``tool_class`` is the finer
+        grade, and neither is derived from the other in the UI. A ``user``-role
+        caller only sees entries for their assigned hosts.
         """
 
         from ..chat import is_state_changing
+        from ..tool_classes import classify
 
         principal = principal_of(request)
         entries = [
@@ -386,6 +392,7 @@ def build_api_routes(
                 "ok": c["ok"],
                 "error": c.get("error"),
                 "state_changing": is_state_changing(c["tool"]),
+                "tool_class": classify(c["tool"]),
             }
             for c in await call_log.list()
             if principal is None or principal.may_see(c["agent_id"])

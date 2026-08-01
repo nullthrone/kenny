@@ -20,23 +20,20 @@ the caller for a scoped ``user`` — it is always narrowed to
 ``requester_user_id=principal.user_id`` server-side, so a `user` can never widen
 their own view by request parameter.
 
-**Discord/collaborators are optional.** ``identities``, ``user_store`` and
-``gateway_status`` are accepted as keyword-only collaborators defaulting to
-``None`` so this module imports and the routes register cleanly before the
-integration step (in ``main.py``) wires the concrete Discord service. Until
-then, any route that needs one of them returns ``503``. The identity/member/
-claim handlers are intentionally duck-typed (``list()``/``create()``/etc. on
-whatever ``identities`` turns out to be) rather than importing a concrete type
-from ``discord_identity``/``discord_service`` — those modules are owned and
-under active development elsewhere.
+**Discord is optional, and tickets do not depend on it.** ``identities``,
+``user_store`` and ``discord`` are keyword-only collaborators defaulting to
+``None``: a server with no Discord configuration still serves every ticket and
+approval route, and the routes that genuinely need a Discord collaborator answer
+``503`` instead. The two collaborators are separate on purpose — the identity
+mapping is a plain SQLite store that exists whether or not a bot is connected,
+while the guild member list and the connection status can only come from a live
+gateway (:class:`~kenny_server.discord_service.DiscordService`).
 """
 
 from __future__ import annotations
 
-import inspect
-from dataclasses import asdict, is_dataclass
 from functools import wraps
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -44,9 +41,14 @@ from starlette.routing import Route
 
 from .. import tool_classes
 from ..auth import Principal
+from ..discord_identity import DiscordIdentityStore, IdentityConflict
 from ..ticketstore import Ticket, TicketStore
 from ..tickets import TicketError, TicketService, TransitionError
+from ..userstore import UserStore
 from .authz import Forbidden, guard, require_user
+
+if TYPE_CHECKING:  # pragma: no cover - import cycle-free typing only
+    from ..discord_service import DiscordService
 
 # -- small local helpers (mirrors webui/users.py's shape) ----------------------
 
@@ -59,11 +61,26 @@ async def _body(request: Request) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+_STATUS_ERROR_NAMES = {
+    400: "invalid",
+    403: "forbidden",
+    404: "not_found",
+    409: "conflict",
+    503: "unavailable",
+}
+
+
 def _err(detail: str, status: int = 400) -> JSONResponse:
-    return JSONResponse({"error": "invalid", "detail": detail}, status_code=status)
+    """One error shape for the whole module: ``{"error": ..., "detail": ...}``.
 
+    The ``error`` name is derived from the status, so a 404/409/503 raised here
+    reads the same way as one translated from a :class:`TicketError`.
+    """
 
-_STATUS_ERROR_NAMES = {400: "invalid", 403: "forbidden", 404: "not_found", 409: "conflict"}
+    return JSONResponse(
+        {"error": _STATUS_ERROR_NAMES.get(status, "error"), "detail": detail},
+        status_code=status,
+    )
 
 
 def _ticket_error_response(exc: TicketError) -> JSONResponse:
@@ -125,32 +142,13 @@ def _owned_or_operator(principal: Principal, ticket: Ticket) -> None:
         raise Forbidden(403, "not your ticket")
 
 
-def _as_dict(obj: Any) -> dict[str, Any]:
-    """Best-effort ``dict`` view of a collaborator-supplied row of unknown shape."""
-
-    if isinstance(obj, dict):
-        return obj
-    as_dict = getattr(obj, "as_dict", None)
-    if callable(as_dict):
-        return as_dict()
-    if is_dataclass(obj):
-        return asdict(obj)
-    return vars(obj)
-
-
-async def _maybe_await(value: Any) -> Any:
-    if inspect.isawaitable(value):
-        return await value
-    return value
-
-
 def build_ticket_routes(
     *,
     tickets: TicketService,
     store: TicketStore,
-    identities: Any = None,
-    user_store: Any = None,
-    gateway_status: Any = None,
+    identities: DiscordIdentityStore | None = None,
+    user_store: UserStore | None = None,
+    discord: DiscordService | None = None,
 ) -> list[Route]:
     """Ticket/approval/Discord/tool-class routes. See module docstring."""
 
@@ -302,56 +300,165 @@ def build_ticket_routes(
     # -- Discord (superuser-managed identities; operator-visible status) -------
 
     async def api_discord_status(_request: Request) -> JSONResponse:
-        if gateway_status is None:
-            return JSONResponse({"connected": False, "configured": False})
-        result = await _maybe_await(
-            gateway_status() if callable(gateway_status) else gateway_status
-        )
-        if not isinstance(result, dict):
-            result = _as_dict(result)
-        return JSONResponse(result)
+        """Gateway diagnostics, or a flat "not configured" answer.
 
-    def _identities_required() -> JSONResponse | None:
+        Deliberately never ``503``: "is Discord set up at all?" is exactly the
+        question this route exists to answer, so an unconfigured server answers
+        it with ``configured: false`` rather than an error.
+        """
+
+        if discord is None:
+            return JSONResponse({"connected": False, "configured": False})
+        return JSONResponse({"configured": True, **discord.diagnostics()})
+
+    def _need_identities() -> JSONResponse | None:
         if identities is None:
-            return _err("discord identity service is not configured", 503)
+            return _err("the Discord identity store is not configured", 503)
         return None
 
-    async def api_discord_identities_list(_request: Request) -> JSONResponse:
-        missing = _identities_required()
+    def _need_gateway() -> JSONResponse | None:
+        if discord is None:
+            return _err("the Discord gateway is not configured", 503)
+        return None
+
+    async def api_discord_identities_list(request: Request) -> JSONResponse:
+        missing = _need_identities()
         if missing is not None:
             return missing
-        rows = await _maybe_await(identities.list())
-        return JSONResponse({"identities": [_as_dict(r) for r in rows]})
+        assert identities is not None
+        rows = await identities.list_identities(guild_id=request.query_params.get("guild_id"))
+        return JSONResponse({"identities": [r.as_dict() for r in rows]})
+
+    def _guild_for(named: str | None) -> str | JSONResponse:
+        """Resolve the guild a request applies to, or explain why it cannot.
+
+        A guild is never guessed: the caller may name one (and only one on the
+        allowlist), otherwise the single configured guild is used, and an
+        ambiguous or unconfigured allowlist is an error rather than a default.
+        ``guild_id`` is half of the identity table's key, so picking the wrong
+        one would silently mint a binding that resolves nowhere.
+        """
+
+        wanted = (named or "").strip()
+        guilds = sorted(discord.guild_ids) if discord is not None else []
+        if wanted:
+            if guilds and wanted not in guilds:
+                return _err(f"guild {wanted} is not in the allowlist", 403)
+            return wanted
+        if len(guilds) == 1:
+            return guilds[0]
+        if not guilds:
+            return _err("no Discord guild is configured; pass guild_id", 400)
+        return _err(f"several guilds are configured ({', '.join(guilds)}); pass guild_id")
 
     async def api_discord_identity_create(request: Request) -> JSONResponse:
-        missing = _identities_required()
+        """Enrollment path B: an operator links a guild member outright."""
+
+        missing = _need_identities()
         if missing is not None:
             return missing
+        assert identities is not None
+        principal = require_user(request, "superuser")
         body = await _body(request)
-        created = await _maybe_await(identities.create(**body))
-        return JSONResponse(_as_dict(created), status_code=201)
+        discord_user_id = str(body.get("discord_user_id", "")).strip()
+        if not discord_user_id:
+            return _err("discord_user_id is required")
+        raw_user_id = body.get("user_id")
+        if raw_user_id is None:
+            return _err("user_id is required")
+        try:
+            user_id = int(raw_user_id)
+        except (TypeError, ValueError):
+            return _err("user_id must be an integer")
+        if user_store is not None and await user_store.get_user(user_id) is None:
+            return _err("user not found", 404)
+        guild = _guild_for(str(body.get("guild_id") or ""))
+        if isinstance(guild, JSONResponse):
+            return guild
+        try:
+            identity = await identities.link(
+                discord_user_id=discord_user_id,
+                user_id=user_id,
+                guild_id=guild,
+                linked_via="member_list",
+                linked_by=principal.user_id,
+            )
+        except IdentityConflict as exc:
+            return _err(str(exc), exc.status_code)
+        return JSONResponse(identity.as_dict(), status_code=201)
 
     async def api_discord_identity_delete(request: Request) -> JSONResponse:
-        missing = _identities_required()
+        missing = _need_identities()
         if missing is not None:
             return missing
-        ok = await _maybe_await(identities.delete(request.path_params["did"]))
-        return JSONResponse({"ok": bool(ok)})
+        assert identities is not None
+        removed = await identities.unlink(request.path_params["did"])
+        if not removed:
+            return _err("identity not found", 404)
+        return JSONResponse({"ok": True})
 
-    async def api_discord_members(_request: Request) -> JSONResponse:
-        missing = _identities_required()
-        if missing is not None:
-            return missing
-        rows = await _maybe_await(identities.list_members())
-        return JSONResponse({"members": [_as_dict(r) for r in rows]})
+    async def api_discord_members(request: Request) -> JSONResponse:
+        """The guild member picker's source. Needs a live gateway, not the store."""
 
-    async def api_discord_claim(request: Request) -> JSONResponse:
-        missing = _identities_required()
+        missing = _need_gateway()
         if missing is not None:
             return missing
+        assert discord is not None
+        guild = _guild_for(request.query_params.get("guild_id"))
+        if isinstance(guild, JSONResponse):
+            return guild
+        members = await discord.gateway.list_guild_members(guild_id=guild)
+        return JSONResponse(
+            {
+                "guild_id": guild,
+                "members": [
+                    {"user_id": m.user_id, "display_hint": m.display_hint} for m in members
+                ],
+            }
+        )
+
+    async def api_discord_claims_list(request: Request) -> JSONResponse:
+        missing = _need_identities()
+        if missing is not None:
+            return missing
+        assert identities is not None
+        claims = await identities.list_pending_claims(
+            guild_id=request.query_params.get("guild_id")
+        )
+        return JSONResponse({"claims": [c.as_dict() for c in claims]})
+
+    async def api_discord_claim_confirm(request: Request) -> JSONResponse:
+        """Enrollment path A: an operator confirms a ``/kenny link`` claim code.
+
+        The claim carries the snowflake and the guild; the operator supplies the
+        kenny account it maps to. A code that is unknown, expired or already
+        consumed changes nothing and reads as ``404``.
+        """
+
+        missing = _need_identities()
+        if missing is not None:
+            return missing
+        assert identities is not None
+        principal = require_user(request, "superuser")
         body = await _body(request)
-        result = await _maybe_await(identities.claim(request.path_params["code"], **body))
-        return JSONResponse(_as_dict(result))
+        raw_user_id = body.get("user_id")
+        if raw_user_id is None:
+            return _err("user_id is required")
+        try:
+            user_id = int(raw_user_id)
+        except (TypeError, ValueError):
+            return _err("user_id must be an integer")
+        if user_store is not None and await user_store.get_user(user_id) is None:
+            return _err("user not found", 404)
+        try:
+            identity = await identities.consume_claim(
+                request.path_params["code"], user_id=user_id, linked_by=principal.user_id
+            )
+        except IdentityConflict as exc:
+            return _err(str(exc), exc.status_code)
+        if identity is None:
+            return _err("no such claim, or it expired or was already used", 404)
+        return JSONResponse(identity.as_dict())
 
     # -- capability profiles ----------------------------------------------------
 
@@ -429,9 +536,10 @@ def build_ticket_routes(
             methods=["DELETE"],
         ),
         Route("/api/discord/members", g(api_discord_members, min_role="superuser")),
+        Route("/api/discord/claims", g(api_discord_claims_list, min_role="superuser")),
         Route(
             "/api/discord/claims/{code}",
-            g(api_discord_claim, min_role="superuser"),
+            g(api_discord_claim_confirm, min_role="superuser"),
             methods=["POST"],
         ),
         Route(

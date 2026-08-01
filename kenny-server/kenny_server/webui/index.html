@@ -2163,17 +2163,37 @@
     // (/api/discord/* on the server); degrades to a "not configured" notice
     // until the Discord identity service is wired in (identities is None).
     // ====================================================================
+    // Both enrollment paths bind a Discord snowflake to a *kenny account*, so
+    // each needs the operator to say which account — the server rejects either
+    // without a user_id, and there is no sane default to guess.
+    let discordUsers = [];
+    function discordUserOptions(selectId) {
+      return `<select id="${selectId}" class="k-input k-input--sm">
+        <option value="">choose kenny user…</option>
+        ${discordUsers.map(u => `<option value="${esc(u.id)}">${esc(u.username)} (${esc(u.role)})</option>`).join("")}
+      </select>`;
+    }
+    function pickedUserId(selectId) {
+      const el = document.getElementById(selectId);
+      const v = el && el.value ? el.value : "";
+      if (!v) { notify("choose a kenny user first", "err"); return null; }
+      return Number(v);
+    }
     async function renderDiscordPanel() {
       const host = document.getElementById("discord-panel");
       if (!host) return;
       let status = { connected: false, configured: false };
       try { status = await getJSON("/api/discord/status"); } catch (e) {}
-      let identities = null;
+      let identities = null, claims = [];
       try { identities = ((await api("/api/discord/identities")) || {}).identities || []; }
       catch (e) { identities = null; }
-      host.innerHTML = discordPanelHtml(status, identities);
+      if (identities !== null) {
+        try { claims = ((await api("/api/discord/claims")) || {}).claims || []; } catch (e) {}
+        try { discordUsers = ((await api("/api/users")) || {}).users || []; } catch (e) {}
+      }
+      host.innerHTML = discordPanelHtml(status, identities, claims);
     }
-    function discordPanelHtml(status, identities) {
+    function discordPanelHtml(status, identities, claims) {
       const statusPill = status.connected
         ? `<span class="k-pill k-pill--ok">${icon('check', 13)}connected</span>`
         : `<span class="k-pill k-pill--muted">not connected</span>`;
@@ -2183,35 +2203,38 @@
         return head + `<div class="k-muted">Discord identity linking is not configured on
           this server yet.</div>`;
       }
-      const isPending = i => i.status === "pending" || i.pending === true;
-      const linked = identities.filter(i => !isPending(i));
-      const pending = identities.filter(isPending);
-      const linkedRows = linked.map(i => `<tr>
-          <td>${i.user_id != null ? "#" + esc(i.user_id) : '<span class="k-muted">—</span>'}</td>
-          <td class="k-mono">${esc(i.discord_user_id || i.id || "")}</td>
-          <td>${esc(i.display_hint || "")}</td>
-          <td class="kacc-tbl__actions">
-            <button class="k-btn k-btn--danger k-btn--sm" onclick="deleteDiscordIdentity(${jsArg(i.id)})">${icon('trash-2', 13)}</button>
-          </td></tr>`).join("");
-      const pendingRows = pending.map(i => `<tr>
-          <td class="k-mono">${esc(i.code || i.claim_code || i.id || "")}</td>
+      const userName = uid => {
+        const u = discordUsers.find(x => String(x.id) === String(uid));
+        return u ? u.username : (uid != null ? "#" + uid : "—");
+      };
+      const linkedRows = identities.map(i => `<tr${i.disabled ? ' class="k-muted"' : ""}>
+          <td>${esc(userName(i.user_id))}</td>
           <td class="k-mono">${esc(i.discord_user_id || "")}</td>
+          <td>${esc(i.linked_via || "")}${i.disabled ? " · disabled" : ""}</td>
+          <td class="kacc-tbl__actions">
+            <button class="k-btn k-btn--danger k-btn--sm" onclick="deleteDiscordIdentity(${jsArg(i.discord_user_id)})">${icon('trash-2', 13)}</button>
+          </td></tr>`).join("");
+      const pendingRows = (claims || []).map((c, n) => `<tr>
+          <td class="k-mono">${esc(c.code || "")}</td>
+          <td>${esc(c.display_hint || "")}<div class="k-mono k-muted">${esc(c.discord_user_id || "")}</div></td>
+          <td>${discordUserOptions("dc-claim-" + n)}</td>
           <td>
             <button class="k-btn k-btn--primary k-btn--sm"
-              onclick="confirmDiscordClaim(${jsArg(i.code || i.claim_code || i.id)})">${icon('check', 13)}Confirm</button>
+              onclick="confirmDiscordClaim(${jsArg(c.code)}, ${jsArg('dc-claim-' + n)})">${icon('check', 13)}Confirm</button>
           </td></tr>`).join("");
       return head + `
         <div class="kacc-sec">
           <div class="kacc-sec__lbl">Linked accounts</div>
-          <table class="kacc-tbl"><thead><tr><th>kenny user</th><th>Discord user</th><th>Name</th><th></th></tr></thead>
+          <table class="kacc-tbl"><thead><tr><th>kenny user</th><th>Discord user</th><th>Linked via</th><th></th></tr></thead>
             <tbody>${linkedRows || `<tr><td colspan="4" class="kacc-empty">no linked accounts</td></tr>`}</tbody></table>
         </div>
         <div class="kacc-sec">
           <div class="kacc-sec__lbl">Pending claims</div>
-          <div class="k-muted" style="margin-bottom:8px">A claim code is posted in Discord by the
-            person asking to link their account; confirming it here completes the link.</div>
-          <table class="kacc-tbl"><thead><tr><th>Code</th><th>Discord user</th><th></th></tr></thead>
-            <tbody>${pendingRows || `<tr><td colspan="3" class="kacc-empty">no pending claims</td></tr>`}</tbody></table>
+          <div class="k-muted" style="margin-bottom:8px">Someone ran <code>/kenny link</code> in
+            Discord. Pick the kenny account it belongs to — that mapping is what decides which
+            machines they may ask about.</div>
+          <table class="kacc-tbl"><thead><tr><th>Code</th><th>Discord user</th><th>kenny user</th><th></th></tr></thead>
+            <tbody>${pendingRows || `<tr><td colspan="4" class="kacc-empty">no pending claims</td></tr>`}</tbody></table>
         </div>
         <div class="kacc-sec">
           <div class="kacc-sec__lbl">Link by member picker</div>
@@ -2228,9 +2251,13 @@
       }
       await renderDiscordPanel();
     }
-    async function confirmDiscordClaim(code) {
-      try { await api("/api/discord/claims/" + encodeURIComponent(code), "POST", {}); notify("claim confirmed"); }
-      catch (e) { notify(e.message, "err"); }
+    async function confirmDiscordClaim(code, selectId) {
+      const userId = pickedUserId(selectId);
+      if (userId === null) return;
+      try {
+        await api("/api/discord/claims/" + encodeURIComponent(code), "POST", { user_id: userId });
+        notify("claim confirmed");
+      } catch (e) { notify(e.message, "err"); }
       await renderDiscordPanel();
     }
     async function openDiscordMemberPicker() {
@@ -2244,18 +2271,24 @@
       const b = modalBody();
       if (!b) return;
       b.innerHTML = members.length
-        ? `<table class="kacc-tbl"><thead><tr><th>Member</th><th>Discord ID</th><th></th></tr></thead><tbody>` +
-          members.map(m => `<tr>
+        ? `<table class="kacc-tbl"><thead><tr><th>Member</th><th>Discord ID</th><th>kenny user</th><th></th></tr></thead><tbody>` +
+          members.map((m, n) => `<tr>
               <td>${esc(m.display_hint || "")}</td>
               <td class="k-mono">${esc(m.user_id || "")}</td>
-              <td><button class="k-btn k-btn--primary k-btn--sm" onclick="linkDiscordMember(${jsArg(m.user_id)})">${icon('link', 13)}Link</button></td>
+              <td>${discordUserOptions("dc-member-" + n)}</td>
+              <td><button class="k-btn k-btn--primary k-btn--sm" onclick="linkDiscordMember(${jsArg(m.user_id)}, ${jsArg('dc-member-' + n)})">${icon('link', 13)}Link</button></td>
             </tr>`).join("") + `</tbody></table>`
         : `<div class="k-muted">no guild members found</div>`;
     }
-    async function linkDiscordMember(discordUserId) {
+    async function linkDiscordMember(discordUserId, selectId) {
+      const userId = pickedUserId(selectId);
+      if (userId === null) return;
       closeModal();
-      try { await api("/api/discord/identities", "POST", { discord_user_id: discordUserId }); notify("linked"); }
-      catch (e) { notify(e.message, "err"); }
+      try {
+        await api("/api/discord/identities", "POST",
+                  { discord_user_id: discordUserId, user_id: userId });
+        notify("linked");
+      } catch (e) { notify(e.message, "err"); }
       await renderDiscordPanel();
     }
 
