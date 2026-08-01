@@ -83,11 +83,17 @@ ROLES: frozenset[str] = frozenset({"system", "requester", "operator"})
 # Who may drive each transition. ``operator`` covers operator and superuser;
 # ``requester`` additionally has to *own* the ticket (see ``_authorize``).
 #
-# Two rules shape the table: leaving ``awaiting_approval`` for ``in_progress``
-# is the approval-driven transition and is operator-only — a requester must not
-# be able to release their own gate; and a requester may cancel their ticket
-# from any live state, close it once resolved, and answer a question
-# (``awaiting_user -> in_progress``).
+# Two rules shape the table: a requester may cancel their ticket from any live
+# state, close it once resolved, and answer a question (``awaiting_user ->
+# in_progress``); and a requester may never leave ``awaiting_approval``, because
+# that is the state their own gate is waiting in.
+#
+# ``system`` may leave ``awaiting_approval`` so a denial or an expiry can resume
+# the loop and let the assistant tell the requester it could not proceed —
+# without it an expired gate would park the ticket forever. That is not a hole:
+# the transition executes nothing on its own. Whether the held call actually
+# runs depends solely on the approval row reading ``approved``, and only an
+# operator can put it there (see ``decide_approval``).
 _ACTORS: dict[tuple[str, str], frozenset[str]] = {
     ("new", "triage"): frozenset({"system", "operator"}),
     ("new", "cancelled"): frozenset({"system", "requester", "operator"}),
@@ -104,7 +110,7 @@ _ACTORS: dict[tuple[str, str], frozenset[str]] = {
     ("awaiting_user", "in_progress"): frozenset({"system", "requester", "operator"}),
     ("awaiting_user", "resolved"): frozenset({"system", "operator"}),
     ("awaiting_user", "cancelled"): frozenset({"system", "requester", "operator"}),
-    ("awaiting_approval", "in_progress"): frozenset({"operator"}),
+    ("awaiting_approval", "in_progress"): frozenset({"system", "operator"}),
     ("awaiting_approval", "cancelled"): frozenset({"requester", "operator"}),
     ("awaiting_agent", "in_progress"): frozenset({"system", "operator"}),
     ("awaiting_agent", "cancelled"): frozenset({"system", "requester", "operator"}),
@@ -207,6 +213,21 @@ class ApprovalConflictError(TicketError):
     def __init__(self, message: str, *, ticket_id: str | None = None) -> None:
         super().__init__(message)
         self.ticket_id = ticket_id
+
+
+class ApprovalForbiddenError(TicketError):
+    """The actor may not decide this gate the way they asked to.
+
+    Raised when anyone below operator tries to *approve*. Denial is deliberately
+    open to every actor — the sweeper denies on expiry.
+    """
+
+    status_code = 403
+
+    def __init__(self, message: str, *, actor: str, role: str) -> None:
+        super().__init__(message)
+        self.actor = actor
+        self.role = role
 
 
 class TransitionError(TicketError):
@@ -621,10 +642,29 @@ class TicketService:
     ) -> TicketApproval:
         """Close a pending gate and record the decision.
 
-        Deciding does not itself move the ticket: resuming from
-        ``awaiting_approval`` is an operator-only transition, so a decision by
-        anyone else can never restart the work on its own.
+        **Approving is operator-only, and this is where that is enforced.** A
+        held call runs only because its approval row reads ``approved``, so this
+        method — not the lifecycle transition — is the security boundary. Any
+        actor may *deny* (the sweeper denies on expiry, a requester may withdraw
+        their own request); nobody below operator may approve.
+
+        Deciding does not itself move the ticket; resuming is a separate
+        transition.
         """
+
+        # One derivation, used for both the guard and the trail entry: a caller
+        # that names a deciding user is acting as that operator, and a caller
+        # that names nobody is the system.
+        deciding_actor = actor or (
+            f"operator:{decided_by}" if decided_by is not None else "system"
+        )
+        role, _ = parse_actor(deciding_actor)
+        if approve and role != "operator":
+            raise ApprovalForbiddenError(
+                "approving a held call requires an operator",
+                actor=deciding_actor,
+                role=role,
+            )
 
         existing = await self.store.get_approval(approval_id)
         if existing is None:
@@ -649,7 +689,7 @@ class TicketService:
         await self.append_event(
             existing.ticket_id,
             kind="approval",
-            actor=actor or (f"operator:{decided_by}" if decided_by is not None else "system"),
+            actor=deciding_actor,
             ok=approve,
             summary=f"{existing.kind} {status} for {existing.tool}",
             tool=existing.tool,
@@ -661,9 +701,10 @@ class TicketService:
     async def expire_due(self, now: datetime | None = None) -> list[TicketApproval]:
         """Expire every pending gate whose ``expires_at`` has passed.
 
-        Expiry closes the gate and records it, but does not move the ticket: the
-        ticket stays in ``awaiting_approval`` until an operator picks it up,
-        because leaving that state is an operator-only decision.
+        An expired gate counts as a denial. This closes and records it but does
+        not move the ticket — resuming is the caller's job, because whoever
+        drives the assistant has to feed the refusal back to it before the
+        ticket is workable again.
         """
 
         at = now or self.now()

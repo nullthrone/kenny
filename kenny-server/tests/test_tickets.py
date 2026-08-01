@@ -14,6 +14,7 @@ from kenny_server.tickets import (
     _ALLOWED,
     STATES,
     ApprovalConflictError,
+    ApprovalForbiddenError,
     ApprovalNotFoundError,
     TicketNotFoundError,
     TicketService,
@@ -232,10 +233,37 @@ async def test_requester_may_not_release_their_own_gate(service: TicketService) 
     assert moved.state == "in_progress"
 
 
-async def test_system_may_not_release_a_gate(service: TicketService) -> None:
+async def test_only_an_operator_may_approve_a_gate(service: TicketService) -> None:
+    """Approving is the boundary — not leaving ``awaiting_approval``.
+
+    The system has to be able to move the ticket on, or an expired gate would
+    park it forever. What it must never do is mark the held call approved.
+    """
+
+    ticket = await _ticket_in(service, "awaiting_approval")
+    approval = await service.open_approval(
+        ticket.id, tool_use_id="tu1", tool="reboot", tool_class="admin", args={}
+    )
+
+    for actor in ("system", f"user:{REQUESTER_ID}"):
+        with pytest.raises(ApprovalForbiddenError) as exc:
+            await service.decide_approval(approval.id, approve=True, actor=actor)
+        assert exc.value.status_code == 403
+    assert (await service.store.get_approval(approval.id)).status == "pending"
+
+    # Denial is open to everyone: the sweeper denies on expiry.
+    denied = await service.decide_approval(approval.id, approve=False, actor="system")
+    assert denied.status == "denied"
+
+    # ...and the system may then resume the ticket to report the refusal.
+    moved = await service.transition(ticket.id, "in_progress", actor="system")
+    assert moved.state == "in_progress"
+
+
+async def test_requester_may_not_release_a_gate(service: TicketService) -> None:
     ticket = await _ticket_in(service, "awaiting_approval")
     with pytest.raises(TransitionError) as exc:
-        await service.transition(ticket.id, "in_progress", actor="system")
+        await service.transition(ticket.id, "in_progress", actor=f"user:{REQUESTER_ID}")
     assert exc.value.code == "forbidden_actor"
 
 
@@ -452,8 +480,10 @@ async def test_decide_approval_records_and_refuses_twice(service: TicketService)
 
     with pytest.raises(ApprovalConflictError):
         await service.decide_approval(approval.id, approve=False)
+    # Authorization is checked before the lookup, so an unknown id still needs a
+    # caller who could have approved a real one.
     with pytest.raises(ApprovalNotFoundError):
-        await service.decide_approval("nope", approve=True)
+        await service.decide_approval("nope", approve=True, decided_by=3)
 
 
 async def test_denied_approval_does_not_move_the_ticket(service: TicketService) -> None:
