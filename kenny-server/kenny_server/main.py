@@ -126,11 +126,16 @@ async def _discord_loop(service: DiscordService) -> None:
     try:
         await service.gateway.start()
     except GatewayUnavailable as exc:
+        # Reaching here means the operator asked for the surface and the runtime
+        # cannot provide it, so this is a misconfiguration rather than a quiet
+        # opt-out — record it where /api/discord/status will show it.
+        service.startup_error = str(exc)
         log.warning("Discord surface disabled: %s", exc)
         return
     except asyncio.CancelledError:
         raise
-    except Exception:  # noqa: BLE001 - never take the server down with the bot
+    except Exception as exc:  # noqa: BLE001 - never take the server down with the bot
+        service.startup_error = f"gateway failed to start: {exc}"
         log.exception("Discord gateway failed to start; the surface stays off")
         return
     try:

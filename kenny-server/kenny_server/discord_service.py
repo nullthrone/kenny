@@ -770,6 +770,12 @@ class DiscordService:
         # Set once when a mention arrives with empty content — the symptom of a
         # missing Message Content intent, which otherwise looks like a dead bot.
         self.missing_message_content = False
+        # Why the gateway is not up, when it failed to start. Refusing to start
+        # is a designed outcome (a source install without the optional
+        # dependency), but the operator who configured a bot token needs the
+        # reason where they configured it, not only in a log line they will
+        # never read.
+        self.startup_error: str | None = None
 
     # -- intake ------------------------------------------------------------
 
@@ -1748,5 +1754,6 @@ class DiscordService:
             "support_channel_id": self.support_channel_id,
             "operator_channel_id": self.operator_channel_id,
             "missing_message_content": self.missing_message_content,
+            "startup_error": self.startup_error,
             "model": self.model,
         }
