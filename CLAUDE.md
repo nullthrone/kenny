@@ -46,6 +46,12 @@ reverting it is a routine pull request, it isn't.
   language. Change `docs/protocol.md` + `docs/fixtures/` first, then both sides.
 - **Python and Rust must not drift.** Both round-trip the golden fixtures; run
   `/contract-check` after touching the protocol.
+- **Every seam two places must agree on gets a test that fails when they diverge.**
+  The contract is the best-known seam, not the only one: the server's tool tiers against
+  the agent's `is_mutating`, the runtime extras in `pyproject.toml` against what the
+  `Dockerfile` installs, a module against the interface its caller assumed. Test the seam
+  **joined** — a test that passes because the other half is not wired up yet is not
+  evidence that the two halves fit.
 - **Record architectural decisions as an ADR** (`/new-adr`) — see *When (not) to write an
   ADR* above. Architecture explanations belong in ADRs, not in any CLAUDE.md.
 - **`#[cfg(windows)]` discipline** in the agent: Windows-only code is gated and has a
@@ -55,7 +61,8 @@ reverting it is a routine pull request, it isn't.
 
 ## Build & test
 
-- Server: `cd kenny-server && pytest`
+- Server: `cd kenny-server && pytest` — exactly that; `python -m pytest` adds the working
+  directory to `sys.path` and hides import errors CI will hit.
 - Agent: `cd kenny-agent && cargo test && cargo build`
 - End-to-end smoke test: `/e2e`
 
