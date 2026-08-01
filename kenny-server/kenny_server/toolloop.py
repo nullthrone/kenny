@@ -611,6 +611,13 @@ async def drive_events(
                     tool_class=classify(tool),
                     gate_kind=decision.kind,
                 )
+                # Record the hold BEFORE announcing it. A surface that has to
+                # durably store the pending call (to resolve it minutes later, or
+                # after a restart) must not depend on the consumer draining this
+                # generator — one that breaks on `done` would otherwise show a
+                # pending gate that was never persisted. Transient surfaces make
+                # this a no-op.
+                await policy.on_hold(session, session.pending)
                 yield {"type": "pending", "tool": tool, "args": args, "agent_id": target}
                 # Pause: hold the remaining queue + staged results for resume.
                 yield {
@@ -620,10 +627,6 @@ async def drive_events(
                     "pending": session.pending.to_public(),
                     "done": False,
                 }
-                # The surface may need to durably record the hold (notify someone,
-                # open a ticket). Runs after the events so a purely transient
-                # surface pays nothing for it.
-                await policy.on_hold(session, session.pending)
                 return
 
             payload, is_error = await _execute_one(

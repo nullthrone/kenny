@@ -224,6 +224,37 @@ async def test_hold_pauses_the_turn_and_notifies_the_policy(store: TelemetryStor
     assert policy.holds == [session.pending]
 
 
+async def test_hold_is_recorded_before_it_is_announced(store: TelemetryStore) -> None:
+    """A consumer that stops at the first event still gets the hold persisted.
+
+    A surface that stores the pending call durably (to resolve it after a
+    restart) must not depend on the caller draining the generator — otherwise it
+    would show a gate it never recorded.
+    """
+
+    executor, _registry, tunnel = _executor(store)
+
+    async def fake_send_request(agent_id, tool, args, timeout_s):  # type: ignore[no-untyped-def]
+        raise AssertionError("nothing may run while a gate is open")
+
+    tunnel.send_request = fake_send_request  # type: ignore[assignment]
+
+    session = FakeSession(id="hold-early", agent_id="dev")
+    policy = StubPolicy({"winget_install": Hold("operator_approval")})
+    client = FakeAnthropic(
+        [_Response([tool_use_block("tu9", "winget_install", {"id": "Git.Git"})], "tool_use")]
+    )
+    session.messages.append({"role": "user", "content": "install git"})
+
+    # Break out at the very first event, as an impatient consumer would.
+    stream = drive_events(session, executor, client=client, model="m", policy=policy)
+    first = await anext(stream)
+    await stream.aclose()
+
+    assert first["type"] == "pending"
+    assert policy.holds == [session.pending]
+
+
 async def test_hold_freezes_the_target_before_the_gate(store: TelemetryStore) -> None:
     """The target is resolved *before* the gate, so a later switch can't retarget."""
 
