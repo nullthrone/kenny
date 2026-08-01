@@ -697,6 +697,10 @@
 
     /* Settings tab: a single column of grouped panels. */
     .kset { max-width: 920px; margin: 0 auto; display: flex; flex-direction: column; gap: var(--space-4); }
+    /* Tickets stack like the settings pages but must not be capped: this is a
+       working list with a title, requester, agent and age column, so it gets the
+       full console width the fleet view uses rather than a centred form column. */
+    .ktk { display: flex; flex-direction: column; gap: var(--space-4); }
     .kset__intro { font-size: var(--text-sm); padding: 2px 2px 0; }
     .kset__grp { padding: var(--space-4) var(--space-5); }
     .kset__row { display: flex; align-items: flex-start; gap: var(--space-4);
@@ -1023,8 +1027,14 @@
       if (cb) cb();
     }
     function onModalKey(e) { if (e.key === "Escape") closeModal(); }
-    function openModal(titleHtml, bodyHtml, modalClass, onClose) {
+    // `dismissible: false` removes every way out except the dialog's own
+    // buttons — no close cross, no click-outside, no Escape. Reserved for a
+    // decision where "I clicked away" must not be confusable with an answer:
+    // the confirm-gate stays pending either way, but an operator who thinks
+    // they denied something and did not is worse than one extra click.
+    function openModal(titleHtml, bodyHtml, modalClass, onClose, opts) {
       closeModal();
+      const dismissible = !opts || opts.dismissible !== false;
       modalOnClose = onClose || null;
       const ov = document.createElement("div");
       ov.id = "modal-overlay";
@@ -1032,14 +1042,18 @@
       ov.innerHTML = `<div class="k-modal${modalClass ? " " + modalClass : ""}" role="dialog" aria-modal="true">
         <div class="k-modal__head">
           <span class="k-modal__title">${titleHtml}</span>
-          <button class="k-modal__close" onclick="closeModal()" aria-label="close">${icon('x', 18)}</button>
+          ${dismissible
+            ? `<button class="k-modal__close" onclick="closeModal()" aria-label="close">${icon('x', 18)}</button>`
+            : ""}
         </div>
         <div class="k-modal__body">${bodyHtml}</div>
       </div>`;
-      ov.addEventListener("mousedown", e => { if (e.target === ov) closeModal(); });
+      if (dismissible) {
+        ov.addEventListener("mousedown", e => { if (e.target === ov) closeModal(); });
+      }
       document.body.appendChild(ov);
       document.body.style.overflow = "hidden";
-      document.addEventListener("keydown", onModalKey);
+      if (dismissible) document.addEventListener("keydown", onModalKey);
     }
 
     // -- in-app notifications + dialogs (replace native alert/confirm/prompt) --
@@ -1864,11 +1878,11 @@
     async function renderTickets() {
       if (!state.fleet) state.fleet = await getJSON("/api/fleet").catch(() => ({ agents: [] }));
       renderHeaderRight(state.fleet, state.fleet.agents || []);
-      app.innerHTML = `<div class="kset"><div class="k-muted">loading…</div></div>`;
+      app.innerHTML = `<div class="ktk"><div class="k-muted">loading…</div></div>`;
       let data;
       try { data = await getJSON("/api/tickets?limit=200"); }
       catch (e) {
-        app.innerHTML = `<div class="kset"><div class="k-airec__err">could not load tickets: ${esc(e.message)}</div></div>`;
+        app.innerHTML = `<div class="ktk"><div class="k-airec__err">could not load tickets: ${esc(e.message)}</div></div>`;
         return;
       }
       state.tickets = data.tickets || [];
@@ -1880,7 +1894,7 @@
         .map(ticketRowHtml).join("");
       const options = `<option value="">all states</option>` + TICKET_STATES.map(s =>
         `<option value="${s}" ${s === filter ? "selected" : ""}>${esc(ticketStateLabel(s))}</option>`).join("");
-      return `<div class="kset">
+      return `<div class="ktk">
         <div class="k-panel">
           <div class="k-row" style="justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:10px">
             <div class="kc-section-lbl">tickets</div>
@@ -1934,13 +1948,13 @@
     async function renderTicketDetail(id) {
       if (!state.fleet) state.fleet = await getJSON("/api/fleet").catch(() => ({ agents: [] }));
       renderHeaderRight(state.fleet, state.fleet.agents || []);
-      app.innerHTML = `<div class="kset"><div class="k-muted">loading…</div></div>`;
+      app.innerHTML = `<div class="ktk"><div class="k-muted">loading…</div></div>`;
       let ticket, events;
       try {
         ticket = await getJSON("/api/tickets/" + encodeURIComponent(id));
         events = await getJSON("/api/tickets/" + encodeURIComponent(id) + "/events").catch(() => ({ events: [] }));
       } catch (e) {
-        app.innerHTML = `<div class="kset"><div class="k-airec__err">could not load ticket: ${esc(e.message)}</div></div>`;
+        app.innerHTML = `<div class="ktk"><div class="k-airec__err">could not load ticket: ${esc(e.message)}</div></div>`;
         return;
       }
       state.ticketDetail = { ticket, events: events.events || [] };
@@ -1983,7 +1997,7 @@
         <div class="kc-timeline">${(d.events || []).map(ticketEventHtml).join("")
           || '<div class="k-muted">no activity yet</div>'}</div>
       </div>`;
-      return `<div class="kset">${head}${meta}${noteForm}${timeline}</div>`;
+      return `<div class="ktk">${head}${meta}${noteForm}${timeline}</div>`;
     }
     function ticketActionsHtml(t) {
       const btns = [];
@@ -2198,9 +2212,20 @@
     function discordPanelHtml(status, identities, claims) {
       const statusPill = status.connected
         ? `<span class="k-pill k-pill--ok">${icon('check', 13)}connected</span>`
-        : `<span class="k-pill k-pill--muted">not connected</span>`;
+        : status.startup_error
+          ? `<span class="k-pill k-pill--crit">${icon('alert-triangle', 13)}failed to start</span>`
+          : `<span class="k-pill k-pill--muted">not connected</span>`;
+      // "not connected" alone leaves an operator who configured everything with
+      // nowhere to look; the reason belongs next to the switch they threw.
+      const why = status.startup_error
+        ? `<div class="k-airec__err" style="margin-bottom:14px">${esc(status.startup_error)}</div>`
+        : status.missing_message_content
+          ? `<div class="k-airec__err" style="margin-bottom:14px">Mentions are arriving
+              empty — enable the privileged <b>Message Content</b> intent for this
+              application in the Discord developer portal.</div>`
+          : "";
       const head = `<div class="k-detail-grp__lbl">Discord</div>
-        <div class="k-row" style="gap:10px;margin-bottom:14px">${statusPill}</div>`;
+        <div class="k-row" style="gap:10px;margin-bottom:14px">${statusPill}</div>${why}`;
       if (identities === null) {
         return head + `<div class="k-muted">Discord identity linking is not configured on
           this server yet.</div>`;
@@ -5247,6 +5272,30 @@
       t.appendChild(div);
       t.scrollTop = t.scrollHeight;
       setComposerEnabled(false); // lock the composer until the gate is resolved
+      openGateModal(p);
+    }
+
+    // The card above stays as the anchor — it marks where in the conversation
+    // the gate happened and survives the decision as history — but the rail is
+    // ~380px and a PowerShell script is unreadable in it. The decision itself
+    // moves to a dialog wide enough to actually read the call, which is what
+    // the assistant's own instructions already promise the operator.
+    function openGateModal(p) {
+      openModal(
+        `${icon('shield-alert', 20)}<span>Confirm before this runs</span>`,
+        `<div class="k-gate__desc" style="margin-bottom:12px">This will <b>change state</b> on
+           <b>${esc(p.agent_id || "the active PC")}</b>. Review the exact call below.</div>
+         <div class="k-gate__call">${gateCall(p.tool, p.args)}</div>
+         <div class="k-row" style="gap:8px;justify-content:flex-end;margin-top:16px">
+           <button class="k-btn k-btn--ghost" onclick="confirmChatFromModal(false, this)">cancel</button>
+           <button class="k-btn k-btn--primary" onclick="confirmChatFromModal(true, this)">${icon('check', 15)}confirm &amp; run</button>
+         </div>`,
+        "k-modal--wide", null, { dismissible: false });
+    }
+    function confirmChatFromModal(approve, btn) {
+      btn.disabled = true;
+      closeModal();
+      confirmChat(approve, null);
     }
     async function sendChat() {
       if (chatAbort) return; // a turn is already streaming (Enter while busy)
@@ -5281,7 +5330,13 @@
       }
     }
     async function confirmChat(approve, btn) {
-      btn.closest(".k-gate").remove();
+      // Either entry point may call this: the inline card's own buttons, or the
+      // dialog's, which has no card ancestor. At most one gate is ever open —
+      // the composer stays locked until it resolves — so falling back to the
+      // one in the transcript is unambiguous.
+      const card = (btn && btn.closest) ? btn.closest(".k-gate") : null;
+      const open = card || document.querySelector("#transcript .k-gate");
+      if (open) open.remove();
       setComposerEnabled(true);
       const ctx = newChatCtx();
       chatAbort = new AbortController();

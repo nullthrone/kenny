@@ -197,25 +197,114 @@ The bot needs its own Discord application — kenny cannot use Discord's own ass
 ("Clyde" was retired at the end of 2024), and there is no shared kenny bot to add. This
 part is on you, once, in the [Discord Developer Portal](https://discord.com/developers/applications):
 
-1. **Create an application**, add a bot to it, and copy its token into
-   `KENNY_DISCORD_BOT_TOKEN`.
-2. **Enable the Message Content privileged intent** (Bot → Privileged Gateway Intents).
-   Without it, a mention arrives with **empty content** — kenny cannot tell what was asked,
-   and the bot simply looks broken. kenny notices this specific symptom and reports it once
-   in the operator channel and via `/api/discord/status`, so a missing intent does not read
-   as a silent hang.
-3. **Enable the Server Members Intent** ("Guild Members" in the portal) if you want
-   enrollment path B — the guild-member picker in Settings needs it to list who is in the
-   server.
-4. **Invite the bot** to your server(s) with the `bot` and `applications.commands` scopes.
-5. **Set `KENNY_DISCORD_GUILD_IDS`** to the server snowflake(s) you want kenny to react in.
-   **This is a hard allowlist, and an empty one denies everywhere** — there is no
-   allow-all mode, on purpose. An event from any other guild is dropped before anything
-   else happens.
-6. **Set `KENNY_DISCORD_ENABLED=1`** and restart. Optionally set
-   `KENNY_DISCORD_SUPPORT_CHANNEL_ID` (which channel a mention has to be in) and
-   `KENNY_DISCORD_OPERATOR_CHANNEL_ID` (where approval cards go — the ticket thread
-   otherwise).
+### 1. Create the application and its bot
+
+**Applications → New Application**, name it (this name and its avatar are what the family
+sees — "kenny" and the dog mark keep it recognisable), then open the **Bot** tab and add a
+bot.
+
+While you are on that tab, turn **Public Bot** off unless you have a reason not to. It only
+controls whether *other people* can invite your bot; leaving it on does not grant anyone
+access to your server, but there is no reason to advertise it.
+
+### 2. The token
+
+**Bot → Token → Reset Token**, then copy the value. Discord shows a bot token exactly
+once — there is no "reveal" later, so if you lose it you reset it again, and resetting
+immediately invalidates the previous one.
+
+Put it in `KENNY_DISCORD_BOT_TOKEN`. This one is **environment-only**: it is never written
+to kenny's database and never editable in the Settings UI, so rotating it means changing
+the environment and restarting. A leaked bot token lets anyone act as your bot in your
+server — treat it like the operator token.
+
+### 3. Privileged intents
+
+Still on the **Bot** tab, under **Privileged Gateway Intents**:
+
+| Intent | Needed for | If missing |
+|---|---|---|
+| **Message Content** | **Required.** Reading what someone actually wrote. | Mentions arrive with **empty content**. kenny cannot tell what was asked and the bot looks dead. This exact symptom is detected and reported once in the operator channel and in `/api/discord/status`, so it does not read as a silent hang. |
+| **Server Members** | The guild-member picker (enrollment path B). | The picker returns an empty list with a warning; enrollment path A (`/kenny link`) still works. |
+| Presence | nothing — leave it off. | — |
+
+kenny asks for no other intent. Under 100 servers these are toggles; above that Discord
+requires verification, which a household install will never reach.
+
+### 4. Bot permissions and the invite
+
+Use **OAuth2 → URL Generator** rather than writing the URL by hand — it computes the
+permission bits for you.
+
+**Scopes:** `bot` **and** `applications.commands`. The second one is easy to forget and is
+what allows the slash commands to be registered; without it the bot joins and the
+`/kenny …` commands never appear.
+
+**Bot permissions** — check exactly these:
+
+| Permission | Why |
+|---|---|
+| View Channels | See the support and operator channels at all |
+| Send Messages | Reply, and post approval cards |
+| Send Messages in Threads | Everything after a ticket is opened happens in a thread |
+| Create Private Threads | A ticket thread is private by default (`KENNY_DISCORD_PRIVATE_THREADS`) |
+| Manage Threads | Archive and lock a thread when its ticket closes |
+| Read Message History | Read the thread it is working in |
+| Embed Links | Approval cards are embeds |
+
+Nothing else. kenny never posts files or images to Discord — screenshots, file contents and
+event-log text are deliberately kept on the server — so it needs no attachment permission,
+and it never moderates, so it needs no kick, ban or role permission. If you are tempted to
+grant Administrator to "make it work", don't: it will not fix a missing intent, which is the
+usual real cause.
+
+Open the generated URL, pick your server, and authorise.
+
+**Channel overwrites can still block it.** Server-level permissions are not the whole story
+— if the support or operator channel has its own permission overwrites, add the bot's role
+there too. A bot that can see the server but not the channel behaves exactly like one that
+was never invited.
+
+### 5. Point kenny at the right places
+
+Turn on **User Settings → Advanced → Developer Mode**, then right-click a server or channel
+and **Copy ID** to get the snowflakes for:
+
+- **`KENNY_DISCORD_GUILD_IDS`** — the server(s) kenny may react in. **This is a hard
+  allowlist and an empty one denies everywhere**; there is no allow-all mode, on purpose. An
+  event from any other guild is dropped before anything else happens, including before the
+  author is looked up.
+- **`KENNY_DISCORD_SUPPORT_CHANNEL_ID`** — where a mention opens a ticket.
+- **`KENNY_DISCORD_OPERATOR_CHANNEL_ID`** — where approval cards go (the ticket thread
+  otherwise).
+
+Restrict the operator channel to yourself as good hygiene — but understand what that is and
+is not. Deciding an approval requires the kenny `operator` role either way; channel
+visibility governs who *sees* the card, not who may act on it. Discord roles are never read
+as authorization ([ADR-0048](adr/0048-delegated-identity-from-a-chat-platform.md)), so this
+is defence in depth, not the control.
+
+### 6. Switch it on
+
+Set `KENNY_DISCORD_ENABLED=1` and restart. The bot connects on startup; nothing happens
+before that, and nothing happens at all without a token.
+
+### Checking it actually worked
+
+**Settings → Discord** shows the gateway status. Three things it will tell you:
+
+- **connected** — the gateway is up.
+- **failed to start** with a reason — most often the optional `discord.py` dependency is
+  missing from a source install (the published image ships it), or the token is rejected.
+- a **Message Content** warning — the intent is off; mentions are arriving empty.
+
+Then mention the bot in the support channel. You should get a private thread. If nothing
+happens at all, work down: is the account linked (`/kenny whoami`), is the guild on the
+allowlist, can the bot see the channel?
+
+An unmapped Discord account is **completely inert** by design — no thread, no reply, not
+even a model call — so "the bot ignores me" is the expected behaviour before enrollment,
+not a fault.
 
 A server with no Discord configuration at all still runs the full ticket surface — the
 store, the lifecycle, the dashboard's Tickets tab and API all work with nothing pointed at

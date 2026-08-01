@@ -9,7 +9,13 @@ COPY kenny-server/ /app/
 # (the resolver's container candidate is /app/docs/policy/deny_rules.json). ADR-0021.
 COPY docs/policy/ /app/docs/policy/
 
-RUN pip install --no-cache-dir . && mkdir -p /data
+# Install every optional extra the running server can need. discord.py is an
+# extra because a source install without it still works — the gateway degrades
+# to "surface off" — but the image is the deployment shape (ADR-0010), so an
+# operator configuring the Discord surface here has no pip step to add it at.
+# tests/test_packaging.py fails the build if this list and the runtime's
+# optional imports drift apart.
+RUN pip install --no-cache-dir ".[discord]" && mkdir -p /data
 
 # The release workflow passes the git tag here so the running server reports its
 # real version (see kenny_server/__init__.py); unset for local/dev builds.
