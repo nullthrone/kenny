@@ -36,7 +36,7 @@ from kenny_server.toolloop import (
     drive_events,
 )
 from kenny_server.tools import CAPABILITY_TOOLS, CallLog, ScreenshotStore
-from kenny_server.tunnel import AgentTunnel
+from kenny_server.tunnel import AgentTunnel, ToolError
 
 from test_chat import FakeAnthropic, _Response, text_block, tool_use_block
 
@@ -313,9 +313,40 @@ async def test_apply_confirmation_denial_stages_an_error(store: TelemetryStore) 
 
     assert sent == []
     assert resume["type"] == "denied" and resume["tool"] == "powershell_exec"
+    assert resume["code"] == "denied"
+    assert resume["message"] == "operator denied this action"
     staged = session._staged_results[0]
     assert staged["is_error"] is True
     assert json.loads(staged["content"])["error"]["code"] == "denied"
+
+
+async def test_apply_confirmation_approval_that_fails_reports_its_error(
+    store: TelemetryStore,
+) -> None:
+    """A confirmed call that fails on execution must carry error detail on the
+    resumed event too, the same as a fresh (non-confirmed) call.
+    """
+
+    executor, _registry, tunnel = _executor(store)
+
+    async def fake_send_request(agent_id, tool, args, timeout_s):  # type: ignore[no-untyped-def]
+        raise ToolError("exec_failed", "powershell exited 1")
+
+    tunnel.send_request = fake_send_request  # type: ignore[assignment]
+
+    session = FakeSession(id="approve-fails", agent_id="dev")
+    session.pending = PendingCall(
+        id="p2",
+        tool_use_id="tu9",
+        tool="powershell_exec",
+        args={"script": "exit 1"},
+        agent_id="dev",
+    )
+
+    resume = await apply_confirmation(session, approve=True, executor=executor)
+
+    assert resume["type"] == "tool_result" and resume["ok"] is False
+    assert resume["error"] == {"code": "exec_failed", "message": "powershell exited 1"}
 
 
 # -- Deny -------------------------------------------------------------------
@@ -354,6 +385,8 @@ async def test_deny_stages_an_error_block_and_the_loop_continues(
             "tool": "powershell_exec",
             "args": {"script": "whoami"},
             "agent_id": "dev",
+            "code": "forbidden",
+            "message": "not on this surface",
         }
     ]
     # The turn ran to completion and the model saw an error-shaped tool_result.
@@ -416,6 +449,36 @@ async def test_unresolvable_target_is_reported_without_pausing(store: TelemetryS
     assert policy.gated == []  # never reached the gate
     failed = [e for e in events if e["type"] == "tool_result"]
     assert failed and failed[0]["ok"] is False
+    assert failed[0]["error"]["code"] == "no_agent"
     fed_back = _fed_back_tool_results(client, 1)
     assert json.loads(fed_back[0]["content"])["error"]["code"] == "no_agent"
     assert events[-1]["done"] is True
+
+
+async def test_an_allowed_call_that_fails_reports_its_error(store: TelemetryStore) -> None:
+    """A genuine execution failure (e.g. an agent-side timeout) must carry its
+    code/message on the yielded event, not just the boolean ``ok``.
+    """
+
+    executor, _registry, tunnel = _executor(store)
+
+    async def fake_send_request(agent_id, tool, args, timeout_s):  # type: ignore[no-untyped-def]
+        raise ToolError("timeout", "tool powershell_exec exceeded 60s")
+
+    tunnel.send_request = fake_send_request  # type: ignore[assignment]
+
+    session = FakeSession(id="times-out", agent_id="dev")
+    policy = StubPolicy()
+    client = FakeAnthropic(
+        [
+            _Response([tool_use_block("tu8", "powershell_exec", {"script": "Get-ChildItem"})], "tool_use"),
+            _Response([text_block("That timed out.")], "end_turn"),
+        ]
+    )
+    session.messages.append({"role": "user", "content": "list files"})
+
+    events = await _drive(session, executor, client, policy)
+
+    results = [e for e in events if e["type"] == "tool_result"]
+    assert results and results[0]["ok"] is False
+    assert results[0]["error"] == {"code": "timeout", "message": "tool powershell_exec exceeded 60s"}

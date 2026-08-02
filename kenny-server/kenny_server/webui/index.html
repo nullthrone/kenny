@@ -2003,7 +2003,15 @@
       const btns = [];
       if (canOperate()) {
         btns.push(`<button class="k-btn k-btn--ghost k-btn--sm"
-          onclick="openReassignModal(${jsArg(t.id)}, ${jsArg(t.agent_id || "")})">${icon('network', 13)}Reassign</button>`);
+          onclick="openReassignModal(${jsArg(t.id)}, ${jsArg(t.agent_id || "")})">${icon('network', 13)}Reassign host</button>`);
+        if (t.state === "in_progress" || t.state === "awaiting_user") {
+          btns.push(`<button class="k-btn k-btn--primary k-btn--sm"
+            onclick="openResolveModal(${jsArg(t.id)})">${icon('check', 13)}Resolve</button>`);
+        }
+        if (t.state === "resolved") {
+          btns.push(`<button class="k-btn k-btn--ghost k-btn--sm"
+            onclick="reopenTicket(${jsArg(t.id)})">${icon('rotate-ccw', 13)}Reopen</button>`);
+        }
       }
       if (t.state === "resolved") {
         btns.push(`<button class="k-btn k-btn--primary k-btn--sm" onclick="closeTicket(${jsArg(t.id)})">${icon('check', 13)}Close ticket</button>`);
@@ -2024,12 +2032,18 @@
         body = `reassigned <b>${esc(f.from_agent_id || "—")}</b> → <b>${esc(f.to_agent_id || "—")}</b>`;
       } else if (e.kind === "tool_call") {
         const args = e.fields && e.fields.args !== undefined ? esc(JSON.stringify(e.fields.args)) : "";
+        const err = e.fields && e.fields.error;
         body = `<span class="k-mono">${esc(e.tool || "")}</span>` +
           (args ? ` <span class="k-muted">${args}</span>` : "") +
-          (e.ok === false ? ` <span class="k-pill k-pill--crit">failed</span>` : "");
+          (e.ok === false
+            ? ` <span class="k-pill k-pill--crit" title="${err ? esc(err.message || "") : ""}">${err ? esc(err.code || "failed") : "failed"}</span>`
+            : "");
       } else if (e.kind === "approval") {
         const f = e.fields || {};
-        body = esc(e.summary || "approval") + (f.decided_via ? " via " + esc(f.decided_via) : "");
+        const args = f.args !== undefined
+          ? `<pre class="k-mono" style="margin:4px 0 0;max-height:160px;overflow:auto;white-space:pre-wrap;word-break:break-word">${esc(JSON.stringify(f.args, null, 2))}</pre>`
+          : "";
+        body = esc(e.summary || "approval") + (f.decided_via ? " via " + esc(f.decided_via) : "") + args;
       } else {
         body = esc(e.summary || "");
       }
@@ -2047,7 +2061,7 @@
       if (!state.fleet) state.fleet = await getJSON("/api/fleet").catch(() => ({ agents: [] }));
       const opts = (state.fleet.agents || []).map(a =>
         `<option value="${esc(a.agent_id)}" ${a.agent_id === current ? "selected" : ""}>${esc(a.agent_id)}</option>`).join("");
-      const body = `<div class="kfield"><span class="kfield__lbl">Agent</span>
+      const body = `<div class="kfield"><span class="kfield__lbl">Host</span>
           <select class="k-input" id="tk-reassign-agent"><option value="">(unassigned)</option>${opts}</select></div>
         <div class="k-modal__actions">
           <button class="k-btn k-btn--ghost" onclick="closeModal()">Cancel</button>
@@ -2064,6 +2078,42 @@
         notify("ticket reassigned");
         await renderTicketDetail(id);
       } catch (e) { notify(e.message, "err"); }
+    }
+    function openResolveModal(id) {
+      const body = `<div class="kfield"><span class="kfield__lbl">Reason (optional)</span>
+          <input class="k-input" id="tk-resolve-reason" placeholder="what fixed it"></div>
+        <label class="k-row" style="gap:6px"><input type="checkbox" id="tk-resolve-close"> also close now</label>
+        <div class="k-modal__actions">
+          <button class="k-btn k-btn--ghost" onclick="closeModal()">Cancel</button>
+          <button class="k-btn k-btn--primary" onclick="submitResolve(${jsArg(id)})">${icon('check', 14)}Resolve</button>
+        </div>`;
+      openModal(`${icon('check', 20)}<span>Resolve ticket</span>`, body);
+    }
+    async function submitResolve(id) {
+      const reason = (document.getElementById("tk-resolve-reason") || {}).value || "";
+      const and_close = !!(document.getElementById("tk-resolve-close") || {}).checked;
+      try {
+        await api("/api/tickets/" + encodeURIComponent(id) + "/transition", "POST",
+          { to: "resolved", reason, and_close });
+        closeModal();
+        notify("resolved");
+      } catch (e) { notify(e.message, "err"); }
+      await renderTicketDetail(id);
+    }
+    async function reopenTicket(id) {
+      const ok = await confirmModal({
+        title: "Reopen ticket", ico: "rotate-ccw",
+        body: "Move this ticket back to in-progress?",
+        confirmLabel: "Reopen", confirmClass: "k-btn--primary",
+      });
+      if (ok) {
+        try {
+          await api("/api/tickets/" + encodeURIComponent(id) + "/transition", "POST",
+            { to: "in_progress", reason: "reopened from dashboard" });
+          notify("reopened");
+        } catch (e) { notify(e.message, "err"); }
+      }
+      await renderTicketDetail(id);
     }
     async function closeTicket(id) {
       const ok = await confirmModal({ title: "Close ticket", ico: "check",
@@ -2106,8 +2156,9 @@
       const rows = approvals.map(a => `<tr>
           <td class="k-mono">${esc(a.tool)}</td>
           <td><span class="k-pill">${esc(a.tool_class)}</span></td>
-          <td class="k-mono" style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
-            title="${esc(JSON.stringify(a.args))}">${esc(JSON.stringify(a.args))}</td>
+          <td class="k-mono" style="max-width:420px">
+            <pre style="margin:0;max-height:180px;overflow:auto;white-space:pre-wrap;word-break:break-word">${esc(JSON.stringify(a.args, null, 2))}</pre>
+          </td>
           <td><a href="#/tickets/${encodeURIComponent(a.ticket_id)}" onclick="closeModal()">${icon('link', 13)}ticket</a></td>
           <td class="kacc-tbl__actions">
             <button class="k-btn k-btn--primary k-btn--sm" onclick="decideApproval(${jsArg(a.id)}, true)">${icon('check', 13)}Approve</button>
