@@ -442,8 +442,20 @@ def _translate_slash_command(interaction: Any) -> SlashCommandEvent:
     Reads: `.id`, `.guild_id`, `.channel_id`, `.channel` (`.id`, `.parent_id`
     if a thread; may be absent/None, in which case `channel_id` falls back
     to `.channel_id` directly and `thread_id` is `None`), `.user.id`,
-    `.command.name`, `.namespace` (attribute-per-option; each value is
-    stringified).
+    `.data` -- the raw `ApplicationCommandInteractionData` payload Discord
+    always sends, read directly rather than via `.command`/`.namespace`.
+    Both of those are properties that require a `discord.app_commands.
+    CommandTree` bound to the client's connection state -- this gateway
+    deliberately never constructs one (see `register_commands`, which
+    registers commands via the raw REST endpoint instead), so `.command`
+    is always `None` and `.namespace` is always an empty `Namespace` on
+    every real interaction here; reading `.data` sidesteps both.
+    `.data["name"]` is the command name; `.data.get("options", [])` is a
+    flat list of `{"name": ..., "value": ...}` dicts -- flat because every
+    command this bot registers is a top-level command with only STRING
+    options (see `_command_spec_to_payload`), never a subcommand or
+    subcommand-group (Discord option type 1/2), so no nested walk is
+    needed.
     """
 
     channel = getattr(interaction, "channel", None)
@@ -451,17 +463,19 @@ def _translate_slash_command(interaction: Any) -> SlashCommandEvent:
         thread_id, channel_id = _thread_and_channel_id(channel)
     else:
         thread_id, channel_id = None, str(interaction.channel_id)
-    options: dict[str, str] = {}
-    namespace = getattr(interaction, "namespace", None)
-    if namespace is not None:
-        options = {name: str(value) for name, value in vars(namespace).items()}
+    data = interaction.data or {}
+    options = {
+        str(opt["name"]): str(opt["value"])
+        for opt in data.get("options", [])
+        if "value" in opt
+    }
     return SlashCommandEvent(
         guild_id=str(interaction.guild_id),
         channel_id=channel_id,
         thread_id=thread_id,
         user_id=str(interaction.user.id),
         interaction_id=str(interaction.id),
-        command=interaction.command.name,
+        command=str(data["name"]),
         options=options,
     )
 
