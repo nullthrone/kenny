@@ -22,6 +22,7 @@ import pytest
 from kenny_server.discord_adapter import (
     ComponentEvent,
     MessageEvent,
+    SlashCommandEvent,
     ThreadStateEvent,
     build_approval_custom_id,
     build_host_custom_id,
@@ -29,6 +30,7 @@ from kenny_server.discord_adapter import (
 )
 from kenny_server.discord_identity import DiscordIdentityStore
 from kenny_server.discord_service import (
+    _SYSTEM_PROMPT,
     DiscordService,
     allowed_tools_for,
     envelope,
@@ -275,6 +277,25 @@ def thread_message(
     )
 
 
+def slash(
+    command: str,
+    *,
+    author: str = D_LENA,
+    guild: str = GUILD,
+    interaction_id: str = "i-slash-1",
+    options: dict[str, str] | None = None,
+) -> SlashCommandEvent:
+    return SlashCommandEvent(
+        guild_id=guild,
+        channel_id=SUPPORT,
+        thread_id=None,
+        user_id=author,
+        interaction_id=interaction_id,
+        command=command,
+        options=options or {},
+    )
+
+
 def click(approval_id: str, *, user: str, approve: bool, guild: str = GUILD) -> ComponentEvent:
     return ComponentEvent(
         guild_id=guild,
@@ -457,6 +478,52 @@ async def test_mention_opens_a_thread_and_a_ticket_with_a_frozen_target(
     assert 'kenny_user="lena"' in prompt
     assert "my pc is slow" in prompt
     assert "Let me take a look." in world.posted_text
+
+
+async def test_handle_slash_defers_before_any_slow_work(world: World) -> None:
+    """Pins the fix for the "app did not respond" bug: the interaction must be
+    deferred immediately, not only acknowledged after a (potentially
+    minutes-long, approval-gated) turn has fully run.
+    """
+
+    service = world.build()
+    await service.handle_slash(slash("whoami", interaction_id="i-defer-1"))
+
+    assert world.gateway.deferred == ["i-defer-1"]
+    assert world.gateway.ephemerals and world.gateway.ephemerals[-1][0] == "i-defer-1"
+
+
+def test_system_prompt_forbids_claiming_ticket_lifecycle_actions() -> None:
+    """Pins the guardrail sentence — without it, the model has no tool to
+    close/resolve/cancel/reassign a ticket and nothing stops it from claiming
+    it did anyway (the "Ticket geschlossen" hallucination bug).
+    """
+
+    assert "cannot resolve, close, cancel" in _SYSTEM_PROMPT
+    assert "/kenny close" in _SYSTEM_PROMPT
+
+
+async def test_a_claimed_close_in_chat_does_not_change_ticket_state(world: World) -> None:
+    """Even if the model ignores the guardrail and claims success in prose
+    (there is no tool for it to call), the ticket's actual state must not
+    silently change underneath that claim.
+    """
+
+    service = world.build(
+        text_turn("Let me take a look."),
+        text_turn("Ticket geschlossen. 👍"),
+    )
+    await service.handle_event(mention("my pc is slow"))
+    ticket = await only_ticket(world)
+    thread_id = world.gateway.threads[0].thread_id
+
+    await service.handle_event(
+        thread_message("schließe das ticket", thread_id=thread_id, author=D_LENA)
+    )
+
+    updated = await world.tickets_store.get(ticket.id)
+    assert updated is not None
+    assert updated.state not in ("resolved", "closed")
 
 
 async def test_requester_without_a_host_gets_no_ticket(world: World) -> None:
@@ -820,6 +887,39 @@ async def test_profile_denies_a_tool_in_the_schemas_and_at_dispatch(
     assert "forbidden" in fed["content"]
 
 
+async def test_a_failed_tool_call_carries_its_error_code_in_the_trail(world: World) -> None:
+    """The timeline must be able to say *why* a call failed, not just that it
+    did — a bare boolean ``ok`` used to be all that reached the trail.
+    """
+
+    from kenny_server.tunnel import ToolError
+
+    async def failing_send_request(agent_id, tool, args, timeout_s):  # type: ignore[no-untyped-def]
+        raise ToolError("timeout", "tool net_dns_flush exceeded 60s")
+
+    world.tunnel.send_request = failing_send_request  # type: ignore[assignment]
+    service = world.build(
+        tool_turn(tool_use_block("t1", "net_dns_flush", {"note": "please"})),
+        text_turn("That didn't work."),
+    )
+    await service.handle_event(mention("my browser cannot resolve anything"))
+
+    ticket = await only_ticket(world)
+    calls = [
+        e
+        for e in await world.service.events(ticket.id)
+        if e.kind == "tool_call" and e.tool == "net_dns_flush"
+    ]
+    outcome = calls[-1]
+    assert outcome.ok is False
+    assert outcome.fields is not None
+    assert outcome.fields.get("error") == {
+        "code": "timeout",
+        "message": "tool net_dns_flush exceeded 60s",
+    }
+    assert "timeout" in outcome.summary
+
+
 async def test_fleet_wide_tools_are_withheld_from_a_scoped_requester(
     world: World,
 ) -> None:
@@ -1124,6 +1224,30 @@ async def test_unmapped_thread_message_never_enters_the_context(world: World) ->
 
 
 # -- approvals, persistence and resume ---------------------------------------
+
+
+async def test_a_failed_approval_card_post_does_not_abort_the_turn(world: World) -> None:
+    """The approval is already durably recorded once ``open_approval`` runs; a
+    Discord-side failure posting the notification card (e.g. the observed
+    ``403 Missing Access``) must not take the rest of the turn down with it.
+    """
+
+    async def boom(**kwargs: Any) -> str:
+        raise RuntimeError("403 Missing Access")
+
+    world.gateway.post_approval_card = boom  # type: ignore[method-assign]
+    service = world.build(
+        tool_turn(tool_use_block("t1", "winget_install", {"id": "Git.Git"})),
+    )
+    await world.users.set_capability_profile(world.lena["id"], "power-user")
+    await service.handle_event(mention("install git"))  # must not raise
+
+    ticket = await only_ticket(world)
+    assert ticket.state == "awaiting_approval"
+    approval = await world.tickets_store.get_open_approval(ticket.id)
+    assert approval is not None
+    assert approval.tool == "winget_install"
+    assert world.gateway.cards == []
 
 
 async def test_only_an_operator_can_approve(world: World) -> None:

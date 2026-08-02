@@ -340,6 +340,111 @@ def test_user_can_close_own_resolved_ticket(tmp_path) -> None:
         assert r.json()["state"] == "closed"
 
 
+# -- operator lifecycle: resolve/reopen/cancel via the generic transition route --
+
+
+def test_operator_can_resolve_a_ticket_a_requester_cannot(tmp_path) -> None:
+    async def seed(users: UserStore, _store: TicketStore, svc: TicketService) -> dict:
+        kid = await users.create_user("kid", "pw-123456", "user")
+        op = await users.create_user("op", "pw-123456", "operator")
+        kid_pat = await users.create_pat(kid["id"], "t")
+        op_pat = await users.create_pat(op["id"], "t")
+        ticket = await svc.create(
+            title="printer jam", origin="dashboard", requester_user_id=kid["id"]
+        )
+        await svc.transition(ticket.id, "triage", actor="system")
+        await svc.transition(ticket.id, "in_progress", actor="system")
+        return {"kid_pat": kid_pat, "op_pat": op_pat, "ticket_id": ticket.id}
+
+    app = _build_app(tmp_path, seed)
+    with TestClient(app) as c:
+        s = app.state.seed
+        # A requester (role `user`) may not resolve — only close an already
+        # resolved ticket (the pre-existing, separate `/close` route).
+        r = c.post(
+            f"/api/tickets/{s['ticket_id']}/transition",
+            json={"to": "resolved"},
+            headers=_hdr(s["kid_pat"]),
+        )
+        assert r.status_code == 403
+
+        r = c.post(
+            f"/api/tickets/{s['ticket_id']}/transition",
+            json={"to": "resolved", "reason": "reseated the paper"},
+            headers=_hdr(s["op_pat"]),
+        )
+        assert r.status_code == 200
+        assert r.json()["state"] == "resolved"
+
+
+def test_transition_to_an_illegal_state_is_conflict(tmp_path) -> None:
+    async def seed(users: UserStore, _store: TicketStore, svc: TicketService) -> dict:
+        op = await users.create_user("op", "pw-123456", "operator")
+        op_pat = await users.create_pat(op["id"], "t")
+        # Freshly created tickets start in "new" -- "resolved" is not a legal
+        # direct successor from there.
+        ticket = await svc.create(title="brand new", origin="dashboard")
+        return {"op_pat": op_pat, "ticket_id": ticket.id}
+
+    app = _build_app(tmp_path, seed)
+    with TestClient(app) as c:
+        s = app.state.seed
+        r = c.post(
+            f"/api/tickets/{s['ticket_id']}/transition",
+            json={"to": "resolved"},
+            headers=_hdr(s["op_pat"]),
+        )
+        assert r.status_code == 409
+
+
+def test_resolve_with_and_close_chains_straight_to_closed(tmp_path) -> None:
+    async def seed(users: UserStore, _store: TicketStore, svc: TicketService) -> dict:
+        op = await users.create_user("op", "pw-123456", "operator")
+        op_pat = await users.create_pat(op["id"], "t")
+        ticket = await svc.create(title="quick fix", origin="dashboard")
+        await svc.transition(ticket.id, "triage", actor="system")
+        await svc.transition(ticket.id, "in_progress", actor="system")
+        return {"op_pat": op_pat, "ticket_id": ticket.id}
+
+    app = _build_app(tmp_path, seed)
+    with TestClient(app) as c:
+        s = app.state.seed
+        h = _hdr(s["op_pat"])
+        r = c.post(
+            f"/api/tickets/{s['ticket_id']}/transition",
+            json={"to": "resolved", "and_close": True},
+            headers=h,
+        )
+        assert r.status_code == 200
+        assert r.json()["state"] == "closed"
+
+        events = c.get(f"/api/tickets/{s['ticket_id']}/events", headers=h).json()["events"]
+        state_events = [e for e in events if e["kind"] == "state"]
+        assert [e["to_state"] for e in state_events[-2:]] == ["resolved", "closed"]
+
+
+def test_operator_can_reopen_a_resolved_ticket(tmp_path) -> None:
+    async def seed(users: UserStore, _store: TicketStore, svc: TicketService) -> dict:
+        op = await users.create_user("op", "pw-123456", "operator")
+        op_pat = await users.create_pat(op["id"], "t")
+        ticket = await svc.create(title="maybe fixed", origin="dashboard")
+        await svc.transition(ticket.id, "triage", actor="system")
+        await svc.transition(ticket.id, "in_progress", actor="system")
+        await svc.transition(ticket.id, "resolved", actor="system")
+        return {"op_pat": op_pat, "ticket_id": ticket.id}
+
+    app = _build_app(tmp_path, seed)
+    with TestClient(app) as c:
+        s = app.state.seed
+        r = c.post(
+            f"/api/tickets/{s['ticket_id']}/transition",
+            json={"to": "in_progress", "reason": "still broken"},
+            headers=_hdr(s["op_pat"]),
+        )
+        assert r.status_code == 200
+        assert r.json()["state"] == "in_progress"
+
+
 # -- superuser-only surfaces: identities, members, claims, profiles ------------
 
 

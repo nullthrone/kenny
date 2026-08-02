@@ -547,12 +547,15 @@ async def drive_events(
 
     * ``{"type": "text_delta", "text": ...}`` — one per token as the assistant
       block streams;
-    * ``{"type": "tool_result", "tool": ..., "args": ..., "ok": bool[, "image_b64",
-      "format"]}`` — emitted the moment each tool executes (live);
+    * ``{"type": "tool_result", "tool": ..., "args": ..., "ok": bool[, "error":
+      {"code": ..., "message": ...}][, "image_b64", "format"]}`` — emitted the
+      moment each tool executes (live); ``error`` is present iff ``ok`` is
+      false;
     * ``{"type": "pending", "tool": ..., "args": ..., "agent_id": ...}`` — a call
       the policy held, awaiting a decision;
-    * ``{"type": "denied", "tool": ..., "args": ..., "agent_id": ...}`` — a call
-      the policy refused outright (the model is told and the loop continues);
+    * ``{"type": "denied", "tool": ..., "args": ..., "agent_id": ..., "code": ...,
+      "message": ...}`` — a call the policy refused outright (the model is told
+      and the loop continues);
     * ``{"type": "done", "session_id": ..., "assistant_text": ..., "pending":
       dict|None, "done": bool}`` — terminal, carrying the scalars a
       ``TurnResult`` needs.
@@ -583,7 +586,13 @@ async def drive_events(
                 target = policy.resolve_target(session, tool, args)
             except ToolError as exc:
                 payload = {"error": {"code": exc.code, "message": exc.message}}
-                yield {"type": "tool_result", "tool": tool, "args": args, "ok": False}
+                yield {
+                    "type": "tool_result",
+                    "tool": tool,
+                    "args": args,
+                    "ok": False,
+                    "error": payload["error"],
+                }
                 session._staged_results.append(
                     _tool_result_block(block["id"], payload, is_error=True)
                 )
@@ -595,7 +604,14 @@ async def drive_events(
                 # Same shape the confirm path stages for an operator denial: the
                 # model sees an error tool_result and can react in the same turn.
                 payload = {"error": {"code": decision.code, "message": decision.message}}
-                yield {"type": "denied", "tool": tool, "args": args, "agent_id": target}
+                yield {
+                    "type": "denied",
+                    "tool": tool,
+                    "args": args,
+                    "agent_id": target,
+                    "code": decision.code,
+                    "message": decision.message,
+                }
                 session._staged_results.append(
                     _tool_result_block(block["id"], payload, is_error=True)
                 )
@@ -638,6 +654,8 @@ async def drive_events(
                 "args": args,
                 "ok": not is_error,
             }
+            if is_error:
+                event["error"] = payload.get("error")
             image = None if is_error else _image_of(payload)
             if image is not None:
                 event["image_b64"], event["format"] = image
@@ -719,6 +737,8 @@ async def apply_confirmation(
             "args": pending.args,
             "ok": not is_error,
         }
+        if is_error:
+            resume_event["error"] = payload.get("error")
         image = None if is_error else _image_of(payload)
         if image is not None:
             resume_event["image_b64"], resume_event["format"] = image
@@ -732,5 +752,7 @@ async def apply_confirmation(
             "tool": pending.tool,
             "args": pending.args,
             "agent_id": pending.agent_id,
+            "code": "denied",
+            "message": "operator denied this action",
         }
     return resume_event

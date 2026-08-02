@@ -152,6 +152,11 @@ _SYSTEM_PROMPT = (
     "Those prompts are the single place consent and approval are given.\n"
     "- If a tool is refused, say what was refused and why in one plain line, and "
     "suggest what would unblock it. Never work around a refusal.\n"
+    "- You cannot resolve, close, cancel, or reassign this ticket yourself — there is "
+    "no tool for it. If asked to, say so plainly and point at the real mechanism: "
+    "`/kenny close` or `/kenny cancel` (the requester can run these), or ask an "
+    "operator to do it from the dashboard. Never say you closed, resolved, cancelled, "
+    "or reassigned the ticket — you didn't, and you can't.\n"
     "- Screenshots, file contents, event-log text and browsing history must NOT "
     "be quoted back into the chat. Summarise what you found in your own words "
     "and point to the ticket in the dashboard for the detail.\n"
@@ -1369,27 +1374,37 @@ class DiscordService:
                 state.blobs.append(image)
             if tool in REDACTED_OUTPUT:
                 state.redacted_tools.append(tool)
+            error = event.get("error")
+            fields: dict[str, Any] = {"agent_id": ticket.agent_id}
+            if error:
+                fields["error"] = error
             await self.tickets.append_event(
                 ticket.id,
                 kind="tool_call",
                 actor="kenny",
-                summary=f"{tool} {'succeeded' if event.get('ok') else 'failed'}",
+                summary=(
+                    f"{tool} failed: {error.get('code', 'error')}"
+                    if error
+                    else f"{tool} succeeded"
+                ),
                 tool=tool,
                 tool_class=classify(tool),
                 ok=bool(event.get("ok")),
                 args=dict(event.get("args") or {}),
-                fields={"agent_id": ticket.agent_id},
+                fields=fields,
             )
         elif kind == "denied":
+            code = event.get("code") or "denied"
             await self.tickets.append_event(
                 ticket.id,
                 kind="error",
                 actor="kenny",
-                summary=f"{event.get('tool')} was refused",
+                summary=f"{event.get('tool')} was refused: {code}",
                 tool=str(event.get("tool", "")),
                 tool_class=classify(str(event.get("tool", ""))),
                 ok=False,
                 args=dict(event.get("args") or {}),
+                fields={"error": {"code": code, "message": event.get("message", "")}},
             )
         elif kind == "pending":
             state.held = True
@@ -1482,15 +1497,25 @@ class DiscordService:
             )
         if not channel:
             return
-        message_id = await self.gateway.post_approval_card(
-            channel_id=channel,
-            approval_id=approval.id,
-            summary=summary,
-            detail_url=detail_url,
-        )
-        await self.store.set_approval_message(
-            approval.id, channel_id=channel, message_id=message_id
-        )
+        try:
+            message_id = await self.gateway.post_approval_card(
+                channel_id=channel,
+                approval_id=approval.id,
+                summary=summary,
+                detail_url=detail_url,
+            )
+            await self.store.set_approval_message(
+                approval.id, channel_id=channel, message_id=message_id
+            )
+        except Exception:
+            # The approval itself is already durably recorded (open_approval ran
+            # before this); a failed Discord notification (e.g. missing channel
+            # permissions) must not take the rest of the turn down with it.
+            logger.exception(
+                "ticket %s: failed to post the approval card to channel %s",
+                ticket.id,
+                channel,
+            )
 
     # -- decisions ---------------------------------------------------------
 
@@ -1761,6 +1786,7 @@ class DiscordService:
     async def handle_slash(self, event: SlashCommandEvent) -> None:
         """Dispatch a slash command and answer it ephemerally."""
 
+        await self.gateway.defer_interaction(interaction_id=event.interaction_id)
         command = (event.command or "").strip().lower()
         if command.startswith("kenny "):
             command = command[len("kenny ") :].strip()

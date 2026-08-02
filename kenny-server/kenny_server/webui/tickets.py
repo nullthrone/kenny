@@ -289,6 +289,38 @@ def build_ticket_routes(
         )
         return JSONResponse(updated.as_dict())
 
+    async def api_ticket_transition(request: Request) -> JSONResponse:
+        """Operator-driven lifecycle moves: resolve, reopen, cancel.
+
+        One generic route rather than one per verb: ``transition()`` already
+        enforces legality (``_check_transition``) and actor authority, so this
+        covers resolve/reopen/cancel without duplicating that logic per action.
+        ``and_close`` (only meaningful when ``to == "resolved"``) chains straight
+        into ``closed`` in the same call, mirroring what the Discord `/kenny
+        close` path already does for a requester — without removing the
+        separate, later "Close ticket" action, since the ``resolved`` dwell
+        window (and the sweeper's auto-close) is the intended undo window.
+        """
+
+        principal = require_user(request)
+        ticket = await tickets.get(request.path_params["tid"])
+        body = await _body(request)
+        to_state = str(body.get("to") or "").strip()
+        if not to_state:
+            return _err("to is required")
+        reason = str(body.get("reason", ""))
+        updated = await tickets.transition(
+            ticket.id, to_state, actor=_actor(principal), reason=reason
+        )
+        if to_state == "resolved" and body.get("and_close"):
+            updated = await tickets.transition(
+                ticket.id,
+                "closed",
+                actor=_actor(principal),
+                reason=reason or "resolved and closed together",
+            )
+        return JSONResponse(updated.as_dict())
+
     # -- approvals -------------------------------------------------------------
 
     async def api_approvals_list(request: Request) -> JSONResponse:
@@ -551,6 +583,11 @@ def build_ticket_routes(
         Route(
             "/api/tickets/{tid}/close",
             g(api_ticket_close, min_role="user"),
+            methods=["POST"],
+        ),
+        Route(
+            "/api/tickets/{tid}/transition",
+            g(api_ticket_transition, min_role="operator"),
             methods=["POST"],
         ),
         Route("/api/approvals", g(api_approvals_list, min_role="operator")),
