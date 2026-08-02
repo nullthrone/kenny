@@ -190,8 +190,10 @@ class _StubDiscordService:
         self.gateway = gateway
         self.guild_ids = guild_ids
         self.startup_error: str | None = None
+        self.ran = False
 
     async def run(self) -> None:
+        self.ran = True
         async for _ in self.gateway.events():
             pass
 
@@ -217,6 +219,30 @@ async def test_discord_loop_registers_the_slash_commands_on_every_allowed_guild(
     }
     for _, commands in gateway.registered_commands:
         assert [c.name for c in commands] == [c.name for c in SLASH_COMMANDS]
+
+
+class _RaisingRegisterGateway(FakeDiscordGateway):
+    async def register_commands(self, *, guild_id: str, commands) -> None:
+        raise RuntimeError("boom")
+
+
+async def test_discord_loop_reaches_service_run_even_if_register_commands_raises() -> None:
+    """register_commands is documented to never raise (discord_adapter.py
+    swallows every failure mode, including the RuntimeError a live run
+    actually hit — see its test suite), but that is a contract on the
+    implementation, not the type. Pins that _discord_loop defends against a
+    DiscordGateway that breaks it anyway: service.run() is what actually
+    processes mentions and interactions, and losing that over a slash-command
+    registration failure would be far worse than losing the commands.
+    """
+
+    gateway = _RaisingRegisterGateway()
+    service = _StubDiscordService(gateway, frozenset({"guild-1"}))
+    await gateway.close()  # events() ends immediately once run() is reached
+
+    await _discord_loop(service)  # must not raise
+
+    assert service.ran is True
 
 
 # -- alerts opening tickets ----------------------------------------------------

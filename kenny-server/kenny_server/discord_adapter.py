@@ -1010,7 +1010,13 @@ class DiscordPyGateway:
         Waits for the client to finish logging in first: a caller driving
         this right after ``start()`` returns would otherwise race the
         connect task, which has not had a chance to run yet, let alone
-        finish -- ``application_id`` is unset until it does.
+        finish -- ``application_id`` is unset until it does. That wait
+        races the same connect task one level deeper still: discord.py's
+        ``wait_until_ready()`` raises ``RuntimeError`` outright rather
+        than blocking if called before the task has even reached its own
+        internal setup. Caught below along with everything else -- a
+        caller driving this immediately after ``start()`` (as
+        ``_discord_loop`` does) must never take the surface down with it.
         """
 
         if self._client is None:
@@ -1018,16 +1024,9 @@ class DiscordPyGateway:
             return
         try:
             await asyncio.wait_for(self._client.wait_until_ready(), timeout=_READY_TIMEOUT_SECS)
-        except asyncio.TimeoutError:
-            logger.warning(
-                "register_commands(guild=%s): gateway never became ready; skipping", guild_id
-            )
-            return
-        if self._client.application_id is None:
-            logger.warning("register_commands: gateway not started; skipping")
-            return
-        payload = [_command_spec_to_payload(spec) for spec in commands]
-        try:
+            if self._client.application_id is None:
+                raise RuntimeError("application_id still unset after wait_until_ready")
+            payload = [_command_spec_to_payload(spec) for spec in commands]
             await self._client.http.bulk_upsert_guild_commands(
                 self._client.application_id, int(guild_id), payload
             )
