@@ -652,6 +652,30 @@ async def test_register_commands_gives_up_if_the_client_never_becomes_ready(
     )  # must return, not hang
 
 
+async def test_register_commands_survives_the_client_not_being_set_up_yet():
+    """The actual live regression, caught by installing this fix in production
+    and watching it crash on shutdown: discord.py's ``wait_until_ready()``
+    does not just block when called too early -- it raises ``RuntimeError``
+    outright if the connect task has not even reached its own internal setup
+    yet, which a freshly constructed, never-started ``discord.Client`` always
+    is. The previous fix only caught ``TimeoutError``, so this escaped
+    ``register_commands`` uncaught, killed ``_discord_loop`` before it ever
+    reached ``service.run()`` (so no mention or interaction was processed
+    either -- not just slash commands), and only surfaced as a traceback
+    during application shutdown, nowhere near where it actually happened.
+    """
+
+    discord = pytest.importorskip("discord")
+
+    gateway = DiscordPyGateway(token="x", guild_allowlist=frozenset({"123"}))
+    gateway._client = discord.Client(intents=discord.Intents.none())  # never started
+
+    await gateway.register_commands(
+        guild_id="123",
+        commands=[CommandSpec(name="whoami", description="Show what kenny knows about you")],
+    )  # must return, not raise
+
+
 # ---------------------------------------------------------------------------
 # post_message: chunk-and-post ordering (fake the send, no discord package)
 # ---------------------------------------------------------------------------

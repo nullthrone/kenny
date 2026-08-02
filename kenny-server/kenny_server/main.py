@@ -141,12 +141,19 @@ async def _discord_loop(service: DiscordService) -> None:
     # Guild-scoped registration propagates immediately (a global registration
     # can take up to an hour) and is safe to repeat on every startup — Discord
     # treats it as an idempotent bulk replace, so re-registering the same set
-    # is a no-op server-side. register_commands never raises: a failure is
-    # logged as a warning by the gateway and the surface still comes up
-    # without slash commands rather than not at all.
-    for guild_id in service.guild_ids:
-        commands = list(SLASH_COMMANDS)
-        await service.gateway.register_commands(guild_id=guild_id, commands=commands)
+    # is a no-op server-side. register_commands is documented to never raise
+    # (a failure is logged as a warning by the gateway), but that is a
+    # contract on the implementation, not the type -- wrapped here too so a
+    # violation of it (any DiscordGateway, present or future) still can't
+    # cost the ticket surface below, which matters far more than commands.
+    try:
+        for guild_id in service.guild_ids:
+            commands = list(SLASH_COMMANDS)
+            await service.gateway.register_commands(guild_id=guild_id, commands=commands)
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 - never take the ticket surface down over this
+        log.exception("registering Discord slash commands failed; continuing without them")
     try:
         await service.run()
     except asyncio.CancelledError:
