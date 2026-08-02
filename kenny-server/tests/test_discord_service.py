@@ -19,14 +19,19 @@ from typing import Any
 
 import pytest
 
-from kenny_server.discord_adapter import ComponentEvent, MessageEvent, ThreadStateEvent
+from kenny_server.discord_adapter import (
+    ComponentEvent,
+    MessageEvent,
+    ThreadStateEvent,
+    build_approval_custom_id,
+    build_host_custom_id,
+    parse_approval_custom_id,
+)
 from kenny_server.discord_identity import DiscordIdentityStore
 from kenny_server.discord_service import (
     DiscordService,
     allowed_tools_for,
-    approval_custom_id,
     envelope,
-    parse_custom_id,
 )
 from kenny_server.registry import AgentRegistry
 from kenny_server.store import EventStore, TelemetryStore
@@ -277,7 +282,7 @@ def click(approval_id: str, *, user: str, approve: bool, guild: str = GUILD) -> 
         message_id="card-1",
         user_id=user,
         interaction_id="i1",
-        custom_id=approval_custom_id(approval_id, approve=approve),
+        custom_id=build_approval_custom_id("approve" if approve else "deny", approval_id),
     )
 
 
@@ -321,12 +326,24 @@ def test_envelope_cannot_be_forged_from_content() -> None:
     assert 'role="user"' in wrapped
 
 
-def test_custom_id_round_trip() -> None:
-    assert parse_custom_id(approval_custom_id("abc", approve=True)) == ("abc", True)
-    assert parse_custom_id(approval_custom_id("abc", approve=False)) == ("abc", False)
-    assert parse_custom_id("kenny:approval:abc:maybe") is None
-    assert parse_custom_id("other:approval:abc:approve") is None
-    assert parse_custom_id("") is None
+def test_the_service_reads_the_gateways_scheme_and_no_other() -> None:
+    """There is one ``custom_id`` scheme, and it is the adapter's.
+
+    The service used to carry a second builder/parser pair of its own. Both
+    sides round-tripped against themselves, so the suite was green while no
+    button click in production was ever parsed. Shape assertions live in
+    ``test_discord_adapter.py``; what this pins is that the service has no
+    private scheme to drift back to — the round trip below is the *adapter's*.
+    """
+
+    from kenny_server import discord_service
+
+    assert not hasattr(discord_service, "approval_custom_id")
+    assert not hasattr(discord_service, "parse_custom_id")
+    assert not hasattr(discord_service, "APPROVAL_CUSTOM_ID_PREFIX")
+
+    decoded = parse_approval_custom_id(build_approval_custom_id("approve", "abc"))
+    assert decoded is not None and (decoded.approval_id, decoded.action) == ("abc", "approve")
 
 
 def test_select_agent_is_never_offered() -> None:
@@ -471,13 +488,213 @@ async def test_operator_mention_can_target_any_registered_host(world: World) -> 
 
 
 async def test_several_hosts_are_never_guessed(world: World) -> None:
+    """The host is asked for, never inferred — the picker only changes how.
+
+    ADR-0048 control 1: no ticket exists until a target does, and no model turn
+    runs before one. What the caller is offered is a set of buttons rather than
+    a sentence, but nothing about the request itself decided anything.
+    """
+
     await world.users.set_user_hosts(world.lena["id"], ["lena-pc", "lena-laptop"])
     service = world.build(text_turn("unused"))
     await service.handle_event(mention("help"))
 
     assert await world.tickets_store.list() == []
     assert world.model_calls == 0
-    assert "which one" in world.posted_text
+    picker = world.gateway.pickers[-1]
+    assert sorted(picker["hosts"]) == ["lena-laptop", "lena-pc"]
+    assert "Which PC" in picker["prompt"]
+
+
+def pick(request_id: str, agent_id: str, *, user: str, guild: str = GUILD) -> ComponentEvent:
+    return ComponentEvent(
+        guild_id=guild,
+        channel_id=SUPPORT,
+        message_id="picker-1",
+        user_id=user,
+        interaction_id="i-pick",
+        custom_id=build_host_custom_id(request_id, agent_id),
+    )
+
+
+async def _dad_with_a_fleet(world: World, *, own: list[str] | None = None) -> None:
+    """An operator, four machines in the fleet, optionally one of them its own."""
+
+    for agent_id in ("fridolin", "linus-pc", "maria-pc", "thomas-pc"):
+        await world.telemetry.insert(agent_id, "2026-07-01T10:00:00Z", {"os": {}})
+    if own:
+        await world.users.set_user_hosts(world.dad["id"], own)
+
+
+async def test_an_operators_own_pc_answers_a_bare_mention(world: World) -> None:
+    """REGRESSION — an operator could never open a ticket by mentioning kenny.
+
+    `_hosts_for` hands an unscoped principal the whole fleet, so with more than
+    one machine enrolled ``len(hosts) > 1`` held on every single mention and the
+    only possible reply was "which one?". Assigning hosts did not help either:
+    ``user_hosts`` was read for scoped accounts only. Nothing about the account
+    was broken — kenny just had no way to express *which machine is theirs*.
+    """
+
+    await _dad_with_a_fleet(world, own=["thomas-pc"])
+    service = world.build(text_turn("Looking into it."))
+    await service.handle_event(mention("warum ist mein PC langsam?", author=D_DAD))
+
+    ticket = await only_ticket(world)
+    assert ticket.agent_id == "thomas-pc"
+    assert ticket.requester_user_id == world.dad["id"]
+    assert world.gateway.pickers == []
+
+
+async def test_an_assignment_narrows_the_default_and_nothing_else(world: World) -> None:
+    """The shortlist steers a bare mention; it must not shrink what may be reached."""
+
+    await _dad_with_a_fleet(world, own=["thomas-pc"])
+    service = world.build(text_turn("On it."))
+
+    reply = await service.help_me(
+        discord_user_id=D_DAD, guild_id=GUILD, channel_id=SUPPORT, host="maria-pc"
+    )
+    ticket = await only_ticket(world)
+    assert ticket.agent_id == "maria-pc"
+    assert "maria-pc" in reply
+
+
+async def test_an_operator_without_an_assignment_is_asked(world: World) -> None:
+    await _dad_with_a_fleet(world)
+    service = world.build(text_turn("unused"))
+    await service.handle_event(mention("my pc is slow", author=D_DAD))
+
+    assert await world.tickets_store.list() == []
+    assert world.model_calls == 0
+    assert sorted(world.gateway.pickers[-1]["hosts"]) == [
+        "fridolin",
+        "linus-pc",
+        "maria-pc",
+        "thomas-pc",
+    ]
+
+
+async def test_clicking_a_host_opens_the_parked_request(world: World) -> None:
+    """SEAM: the gateway writes the picker's custom_ids, the service reads them."""
+
+    await _dad_with_a_fleet(world)
+    service = world.build(text_turn("Looking into it."))
+    await service.handle_event(mention("warum ist mein PC langsam?", author=D_DAD))
+    picker = world.gateway.pickers[-1]
+
+    await service.handle_event(
+        ComponentEvent(
+            guild_id=GUILD,
+            channel_id=SUPPORT,
+            message_id="picker-1",
+            user_id=D_DAD,
+            interaction_id="i-pick",
+            custom_id=picker["custom_ids"]["thomas-pc"],
+        )
+    )
+
+    ticket = await only_ticket(world)
+    assert ticket.agent_id == "thomas-pc"
+    # The original question is what the ticket is about, not the click.
+    assert "langsam" in ticket.title
+    assert f"KEN-{ticket.number:06d}" in world.gateway.ephemerals[-1][1]
+
+
+async def test_only_the_asker_may_pick_the_host(world: World) -> None:
+    await _dad_with_a_fleet(world)
+    service = world.build(text_turn("unused"))
+    await service.handle_event(mention("my pc is slow", author=D_DAD))
+    request_id = world.gateway.pickers[-1]["request_id"]
+
+    await service.handle_event(pick(request_id, "thomas-pc", user=D_LENA))
+
+    assert await world.tickets_store.list() == []
+    assert "Only the person who asked" in world.gateway.ephemerals[-1][1]
+    # And an unmapped clicker learns nothing at all.
+    before = len(world.gateway.ephemerals)
+    await service.handle_event(pick(request_id, "thomas-pc", user=D_STRANGER))
+    assert len(world.gateway.ephemerals) == before
+    assert await world.tickets_store.list() == []
+
+
+async def test_a_click_is_re_checked_against_scope_as_it_is_now(world: World) -> None:
+    """A card outlives the assignment that produced it.
+
+    The button's label is not evidence: `lena` is offered her two PCs, an
+    operator takes one away, and the click for it has to fail — the card is
+    still sitting in the channel, clickable.
+    """
+
+    await world.users.set_user_hosts(world.lena["id"], ["lena-pc", "lena-laptop"])
+    service = world.build(text_turn("unused"))
+    await service.handle_event(mention("help"))
+    request_id = world.gateway.pickers[-1]["request_id"]
+
+    await world.users.set_user_hosts(world.lena["id"], ["lena-pc"])
+    await service.handle_event(pick(request_id, "lena-laptop", user=D_LENA))
+
+    assert await world.tickets_store.list() == []
+    assert "not one of your PCs" in world.gateway.ephemerals[-1][1]
+
+
+async def test_a_picker_answers_once(world: World) -> None:
+    """Two buttons, two clicks, one ticket — the row is consumed, not re-read."""
+
+    await world.users.set_user_hosts(world.lena["id"], ["lena-pc", "lena-laptop"])
+    service = world.build(text_turn("On it."), text_turn("On it."))
+    await service.handle_event(mention("help"))
+    request_id = world.gateway.pickers[-1]["request_id"]
+
+    await service.handle_event(pick(request_id, "lena-pc", user=D_LENA))
+    await service.handle_event(pick(request_id, "lena-laptop", user=D_LENA))
+
+    ticket = await only_ticket(world)
+    assert ticket.agent_id == "lena-pc"
+    assert "no longer open" in world.gateway.ephemerals[-1][1]
+
+
+async def test_help_me_asks_with_the_same_picker(world: World) -> None:
+    """`/kenny help-me` used to answer "please say which PC" — the command the
+    caller had just run. It offers the choice instead."""
+
+    await world.users.set_user_hosts(world.lena["id"], ["lena-pc", "lena-laptop"])
+    service = world.build(text_turn("unused"))
+
+    reply = await service.help_me(
+        discord_user_id=D_LENA, guild_id=GUILD, channel_id=SUPPORT, content="it is slow"
+    )
+
+    assert await world.tickets_store.list() == []
+    assert "Which PC" in reply
+    assert sorted(world.gateway.pickers[-1]["hosts"]) == ["lena-laptop", "lena-pc"]
+    # The description survives the detour, so the click does not lose it.
+    await service.handle_event(
+        pick(world.gateway.pickers[-1]["request_id"], "lena-pc", user=D_LENA)
+    )
+    assert "it is slow" in (await only_ticket(world)).title
+
+
+async def test_help_me_refuses_a_host_that_is_not_yours(world: World) -> None:
+    service = world.build(text_turn("unused"))
+    reply = await service.help_me(
+        discord_user_id=D_LENA, guild_id=GUILD, channel_id=SUPPORT, host="tim-pc"
+    )
+    assert "not one of your PCs" in reply
+    assert await world.tickets_store.list() == []
+
+
+async def test_a_fleet_too_large_to_click_falls_back_to_the_command() -> None:
+    """Discord caps components per message; the request stays answerable."""
+
+    from kenny_server.discord_service import _picker_fits
+
+    assert _picker_fits(["a-pc", "b-pc"])
+    assert not _picker_fits([])
+    assert not _picker_fits([f"pc-{i}" for i in range(26)])
+    # 100-char custom_id budget: "kenny-host:" + 32-char uuid + ":" leaves 56.
+    assert _picker_fits(["x" * 56])
+    assert not _picker_fits(["x" * 57])
 
 
 async def test_rate_limit_blocks_a_second_ticket(world: World) -> None:
@@ -683,6 +900,40 @@ async def test_sensitive_tool_holds_for_consent_first(world: World) -> None:
     assert world.sent == []
     # The card went to the thread (the affected person), not the operator channel.
     assert world.gateway.cards[-1]["channel_id"] == world.gateway.threads[0].thread_id
+
+
+async def test_a_card_the_gateway_built_is_decidable(world: World) -> None:
+    """SEAM: the gateway writes the button's ``custom_id``, the service reads it.
+
+    Every other test in this file clicks a ``custom_id`` the *test* built, so
+    both halves could disagree — and did: the gateway wrote
+    ``kenny-approval:<action>:<id>`` while the service's parser demanded four
+    colon-separated parts prefixed ``kenny:approval``, so `handle_component`
+    dropped every real click on the floor and no approval or consent in Discord
+    ever resolved. This clicks what `post_approval_card` actually put on the
+    button, so the two halves have to fit.
+    """
+
+    service, ticket, approval = await _open_consent_ticket(
+        world,
+        "remotehelp_start",
+        tool_turn(tool_use_block("t1", "remotehelp_start", {})),
+        text_turn("Remote help is open."),
+    )
+    assert approval is not None
+
+    await service.handle_event(
+        ComponentEvent(
+            guild_id=GUILD,
+            channel_id=world.gateway.threads[0].thread_id,
+            message_id="card-1",
+            user_id=D_LENA,
+            interaction_id="i-seam",
+            custom_id=world.gateway.cards[-1]["custom_ids"]["approve"],
+        )
+    )
+
+    assert await world.tickets_store.get_open_approval(ticket.id) is None
 
 
 async def test_only_the_requester_may_grant_consent(world: World) -> None:

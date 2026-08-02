@@ -416,3 +416,80 @@ async def test_use_before_connect_raises(tmp_path) -> None:
     store = TicketStore(str(tmp_path / "tickets.sqlite"))
     with pytest.raises(RuntimeError):
         await store.get("x")
+
+
+# -- pending requests (the pre-ticket "which PC?" phase) ----------------------
+
+
+async def _pending(store: TicketStore, **kwargs):
+    return await store.open_pending_request(
+        discord_user_id="900000000000000001",
+        user_id=7,
+        guild_id="g1",
+        channel_id="c1",
+        content="my pc is slow",
+        candidates=["a-pc", "b-pc"],
+        **kwargs,
+    )
+
+
+async def test_pending_request_round_trips(tmp_path) -> None:
+    store = await _store(tmp_path)
+    try:
+        opened = await _pending(store, message_id="m1", now=NOW)
+        assert opened.candidates == ["a-pc", "b-pc"]
+        assert opened.consumed_at is None
+        # The window is derived from the creation stamp, not the wall clock, so
+        # an injected clock governs both ends of it.
+        assert opened.expires_at == to_iso(NOW + timedelta(seconds=900))
+        assert await store.get_pending_request(opened.id) == opened
+        assert await store.get_pending_request("nope") is None
+    finally:
+        await store.close()
+
+
+async def test_pending_request_is_consumed_exactly_once(tmp_path) -> None:
+    """Two buttons clicked in quick succession must not open two tickets."""
+
+    store = await _store(tmp_path)
+    try:
+        opened = await _pending(store, now=NOW)
+        claimed = await store.consume_pending_request(opened.id, now=NOW)
+        assert claimed is not None and claimed.content == "my pc is slow"
+        assert await store.consume_pending_request(opened.id, now=NOW) is None
+        # The losing click still finds the row — it just cannot claim it.
+        stale = await store.get_pending_request(opened.id)
+        assert stale is not None and stale.consumed_at is not None
+    finally:
+        await store.close()
+
+
+async def test_an_expired_pending_request_cannot_be_consumed(tmp_path) -> None:
+    """A card from last week must not open a ticket about last week's problem."""
+
+    store = await _store(tmp_path)
+    try:
+        opened = await _pending(store, ttl_secs=900, now=NOW)
+        late = NOW + timedelta(seconds=901)
+        assert await store.consume_pending_request(opened.id, now=late) is None
+        untouched = await store.get_pending_request(opened.id)
+        assert untouched is not None and untouched.consumed_at is None
+    finally:
+        await store.close()
+
+
+async def test_prune_clears_dead_pending_requests_only(tmp_path) -> None:
+    store = await _store(tmp_path)
+    try:
+        expired = await _pending(store, ttl_secs=60, now=NOW - timedelta(hours=1))
+        consumed = await _pending(store, now=NOW)
+        await store.consume_pending_request(consumed.id, now=NOW)
+        live = await _pending(store, now=NOW)
+
+        assert await store.prune(now=NOW) == 2
+
+        assert await store.get_pending_request(expired.id) is None
+        assert await store.get_pending_request(consumed.id) is None
+        assert await store.get_pending_request(live.id) is not None
+    finally:
+        await store.close()

@@ -30,7 +30,11 @@ from typing import Any
 
 import pytest
 
-from kenny_server.discord_adapter import ComponentEvent, MessageEvent
+from kenny_server.discord_adapter import (
+    ComponentEvent,
+    MessageEvent,
+    build_approval_custom_id,
+)
 from kenny_server.discord_identity import DiscordIdentityStore
 from kenny_server.discord_service import (
     DiscordService,
@@ -39,7 +43,6 @@ from kenny_server.discord_service import (
     _REDACTION_MARKER,
     _strip_spans,
     allowed_tools_for,
-    approval_custom_id,
     envelope,
 )
 from kenny_server.registry import AgentRegistry
@@ -347,7 +350,7 @@ def button(approval_id: str, *, by: str, approve: bool) -> ComponentEvent:
         message_id="card",
         user_id=by,
         interaction_id="interaction-1",
-        custom_id=approval_custom_id(approval_id, approve=approve),
+        custom_id=build_approval_custom_id("approve" if approve else "deny", approval_id),
     )
 
 

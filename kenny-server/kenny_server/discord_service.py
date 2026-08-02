@@ -50,11 +50,15 @@ from .discord_adapter import (
     CommandSpec,
     ComponentEvent,
     DiscordGateway,
+    HostChoice,
     InboundEvent,
     MessageEvent,
     SlashCommandEvent,
     ThreadStateEvent,
+    build_host_custom_id,
     chunk_message,
+    parse_approval_custom_id,
+    parse_host_custom_id,
 )
 from .discord_identity import DiscordIdentityStore
 from .ticketstore import Ticket, TicketApproval, TicketChannel
@@ -83,7 +87,6 @@ from .tools import CAPABILITY_TOOLS
 from .userstore import UserStore
 
 __all__ = [
-    "APPROVAL_CUSTOM_ID_PREFIX",
     "DiscordService",
     "EXCLUDED_TOOLS",
     "FLEET_WIDE_TOOLS",
@@ -91,7 +94,6 @@ __all__ = [
     "TicketSession",
     "allowed_tools_for",
     "envelope",
-    "parse_custom_id",
 ]
 
 logger = logging.getLogger("kenny.discord")
@@ -111,8 +113,6 @@ FLEET_WIDE_TOOLS: frozenset[str] = frozenset({"list_agents", "fleet_overview"})
 #: Server-only tools that name their host in an ``id`` argument. Pinned to the
 #: ticket's frozen target for the same reason ``agent_id`` is discarded.
 _HOST_ARG_TOOLS: frozenset[str] = frozenset({"agent_health", "agent_snapshot"})
-
-APPROVAL_CUSTOM_ID_PREFIX = "kenny:approval"
 
 _TOOL_CATALOG: frozenset[str] = frozenset(SERVER_TOOLS) | frozenset(CAPABILITY_TOOLS)
 
@@ -546,23 +546,6 @@ class _RateLimiter:
         return True
 
 
-def parse_custom_id(custom_id: str) -> tuple[str, bool] | None:
-    """Split an approval button's ``custom_id`` into ``(approval_id, approve)``."""
-
-    parts = (custom_id or "").split(":")
-    if len(parts) != 4 or f"{parts[0]}:{parts[1]}" != APPROVAL_CUSTOM_ID_PREFIX:
-        return None
-    if parts[3] not in ("approve", "deny"):
-        return None
-    return parts[2], parts[3] == "approve"
-
-
-def approval_custom_id(approval_id: str, *, approve: bool) -> str:
-    """The ``custom_id`` for one approval button."""
-
-    return f"{APPROVAL_CUSTOM_ID_PREFIX}:{approval_id}:{'approve' if approve else 'deny'}"
-
-
 #: What replaces a stripped span. Short, and it points at the one place the
 #: detail legitimately lives.
 _REDACTION_MARKER = "[redacted — see the ticket in the dashboard]"
@@ -720,6 +703,31 @@ def _title_from(content: str) -> str:
     if not flat:
         return "Support request"
     return flat[:_MAX_TITLE_CHARS]
+
+
+#: Discord's ceiling on message components: five action rows of five buttons.
+_MAX_PICKER_BUTTONS = 25
+
+
+def _picker_fits(hosts: Sequence[str]) -> bool:
+    """Whether every host can be offered as a button on one message.
+
+    Two Discord ceilings, checked before anything is written: 25 components per
+    message, and 100 characters per ``custom_id``. Asked up front so a fleet
+    that does not fit degrades to the slash command instead of raising from
+    inside a reply path — an unanswerable request is worse than a clumsy one.
+    """
+
+    if not 0 < len(hosts) <= _MAX_PICKER_BUTTONS:
+        return False
+    try:
+        # A request id is always a 32-character uuid4 hex, so the budget can be
+        # measured against a stand-in without minting a real one.
+        for host in hosts:
+            build_host_custom_id("0" * 32, host)
+    except ValueError:
+        return False
+    return True
 
 
 # The commands `handle_slash` below dispatches on. Registration (telling Discord
@@ -889,12 +897,14 @@ class DiscordService:
     async def _hosts_for(self, principal: Principal) -> list[str]:
         """Which hosts ``principal`` may pick a ticket target from.
 
-        A scoped (``user``-role) account is limited to whatever an operator
-        explicitly assigned it via ``user_hosts`` (ADR-0037). An operator or
-        admin is *not* scoped by definition — it can already reach every host
-        from the dashboard — and ``user_hosts`` has no rows for it at all, so
-        reading that table for an unscoped principal would always come back
-        empty. Matches the ``_known_agent_ids`` pattern in ``tools.py``.
+        The authorization question. A scoped (``user``-role) account is limited
+        to whatever an operator explicitly assigned it via ``user_hosts``
+        (ADR-0037). An operator or admin is *not* scoped by definition — it can
+        already reach every host from the dashboard — so it may target the whole
+        fleet. Matches the ``_known_agent_ids`` pattern in ``tools.py``.
+
+        Not to be confused with :meth:`_own_hosts`, which answers a different
+        question and must never widen this one.
         """
 
         if principal.scoped:
@@ -902,6 +912,40 @@ class DiscordService:
         ids = {a.agent_id for a in self.executor.registry.list()}
         ids.update(await self.executor.store.known_agents())
         return sorted(ids)
+
+    async def _own_hosts(self, principal: Principal) -> list[str]:
+        """Which hosts are *this account's own*, whatever its role.
+
+        The ergonomic question, deliberately separate from :meth:`_hosts_for`.
+        For a scoped account the two coincide. For an operator they do not: it
+        may target the fleet, but "my PC is slow" is about one machine, and
+        without this it was unanswerable — every bare mention from an unscoped
+        account resolved to the whole fleet and could only ever be met with a
+        question, so an operator could never open a ticket by mentioning kenny
+        at all.
+
+        An explicit ``user_hosts`` assignment is therefore read for every role.
+        For an operator it grants nothing (``_hosts_for`` already returns the
+        fleet) and narrows nothing (naming a host explicitly still works) — it
+        only says which of the machines it may reach are the ones it lives with.
+        """
+
+        return sorted(await self.users.get_user_hosts(principal.user_id or 0))
+
+    async def _target_candidates(self, principal: Principal) -> tuple[list[str], list[str]]:
+        """``(may_target, ask_about)`` — the authorization set and the shortlist.
+
+        The shortlist is what a bare request is offered a choice between; it
+        falls back to the full set when nobody has said which machines are this
+        account's own.
+        """
+
+        may_target = await self._hosts_for(principal)
+        own = await self._own_hosts(principal)
+        # Intersect rather than trust the assignment: a row naming a host this
+        # principal may not target must not become a shortcut to it.
+        shortlist = [h for h in own if h in set(may_target)]
+        return may_target, shortlist or may_target
 
     def _actor(self, principal: Principal) -> str:
         return (
@@ -944,31 +988,84 @@ class DiscordService:
                               "please give kenny a moment before the next one.")
             return
 
-        hosts = await self._hosts_for(principal)
-        if not hosts:
+        _, candidates = await self._target_candidates(principal)
+        if not candidates:
             await self._reply(
                 event,
                 "No PC is assigned to your kenny account yet, so there is nothing I "
                 "could look at. Ask an operator to assign one.",
             )
             return
-        if len(hosts) > 1:
-            listed = ", ".join(f"`{h}`" for h in hosts)
-            await self._reply(
-                event,
-                f"You have several PCs ({listed}). Tell me which one with "
-                "`/kenny help-me` and pick the host there — I will not guess.",
+        if len(candidates) > 1:
+            await self._ask_which_host(
+                principal=principal,
+                candidates=candidates,
+                guild_id=event.guild_id,
+                channel_id=event.channel_id,
+                discord_user_id=event.author_id,
+                content=event.content,
+                message_id=event.message_id,
             )
             return
 
         await self.open_ticket(
             principal=principal,
-            agent_id=hosts[0],
+            agent_id=candidates[0],
             guild_id=event.guild_id,
             channel_id=event.channel_id,
             discord_user_id=event.author_id,
             content=event.content,
         )
+
+    async def _ask_which_host(
+        self,
+        *,
+        principal: Principal,
+        candidates: list[str],
+        guild_id: str,
+        channel_id: str,
+        discord_user_id: str,
+        content: str,
+        message_id: str | None = None,
+    ) -> str:
+        """Park a request and ask which PC it is about, as buttons. Returns the reply.
+
+        A click is not a message. It carries no prose for the model to be steered
+        by, it cannot be typed by a bystander into the channel, and it resolves
+        through a row kenny wrote — so the target is still decided outside the
+        model loop and frozen before the ticket exists (ADR-0048 control 1). The
+        host is *still* never inferred from what anyone wrote; the only thing
+        that changed is that saying which one no longer requires knowing a slash
+        command's option syntax.
+        """
+
+        listed = ", ".join(f"`{h}`" for h in candidates)
+        if not _picker_fits(candidates):
+            fallback = (
+                f"You have several PCs ({listed}). Tell me which one with "
+                "`/kenny help-me` and pick the host there — I will not guess."
+            )
+            await self.gateway.post_message(channel_id=channel_id, content=fallback)
+            return fallback
+
+        pending = await self.store.open_pending_request(
+            discord_user_id=discord_user_id,
+            user_id=principal.user_id or 0,
+            guild_id=guild_id,
+            channel_id=channel_id,
+            content=content,
+            candidates=candidates,
+            message_id=message_id,
+        )
+        prompt = f"Which PC is this about? ({listed})"
+        await self.gateway.post_host_picker(
+            channel_id=channel_id,
+            request_id=pending.id,
+            hosts=candidates,
+            prompt=prompt,
+            reply_to=message_id,
+        )
+        return prompt
 
     async def _handle_thread_message(
         self, event: MessageEvent, binding: TicketChannel
@@ -1397,11 +1494,84 @@ class DiscordService:
 
     # -- decisions ---------------------------------------------------------
 
+    async def _handle_host_choice(self, event: ComponentEvent, choice: HostChoice) -> None:
+        """Open the parked request against the host that was clicked.
+
+        Every check is redone here against state read now, not against what was
+        true when the card was posted. The card is a Discord message: it outlives
+        the assignment that produced it, anyone who can see the channel can click
+        it, and Discord will happily deliver a click for a card from last week.
+        """
+
+        principal = await self._principal_for(event.user_id, event.guild_id)
+        if principal is None:
+            # Same inertness as an unmapped mention: a stranger clicking a button
+            # must not learn that the button did anything.
+            logger.info("discord: ignoring host-picker click from unmapped user")
+            return
+
+        pending = await self.store.get_pending_request(choice.request_id)
+        if pending is None or pending.guild_id != event.guild_id:
+            await self.gateway.respond_ephemeral(
+                interaction_id=event.interaction_id,
+                content="That request is no longer open.",
+            )
+            return
+        if pending.user_id != principal.user_id:
+            # Ownership, not host scope: picking a machine for somebody else's
+            # request would open a ticket in their name.
+            await self.gateway.respond_ephemeral(
+                interaction_id=event.interaction_id,
+                content="Only the person who asked can pick the PC.",
+            )
+            return
+        if choice.agent_id not in await self._hosts_for(principal):
+            # Re-checked at click time on purpose: a scope narrowed after the
+            # card went out has to bite, and the button's own label is not
+            # evidence of anything.
+            await self.gateway.respond_ephemeral(
+                interaction_id=event.interaction_id,
+                content=f"`{choice.agent_id}` is not one of your PCs.",
+            )
+            return
+        if not self._limiter.allow(f"u:{principal.user_id}"):
+            await self.gateway.respond_ephemeral(
+                interaction_id=event.interaction_id,
+                content="You have opened a lot of requests recently — please wait a little.",
+            )
+            return
+
+        claimed = await self.store.consume_pending_request(choice.request_id)
+        if claimed is None:
+            # Already answered, or expired between the checks above and here.
+            await self.gateway.respond_ephemeral(
+                interaction_id=event.interaction_id,
+                content="That request is no longer open.",
+            )
+            return
+
+        ticket = await self.open_ticket(
+            principal=principal,
+            agent_id=choice.agent_id,
+            guild_id=claimed.guild_id,
+            channel_id=claimed.channel_id,
+            discord_user_id=claimed.discord_user_id,
+            content=claimed.content,
+        )
+        await self.gateway.respond_ephemeral(
+            interaction_id=event.interaction_id,
+            content=f"Opened KEN-{ticket.number:06d} for `{choice.agent_id}` — see the thread.",
+        )
+
     async def handle_component(self, event: ComponentEvent) -> None:
-        parsed = parse_custom_id(event.custom_id)
+        choice = parse_host_custom_id(event.custom_id)
+        if choice is not None:
+            await self._handle_host_choice(event, choice)
+            return
+        parsed = parse_approval_custom_id(event.custom_id)
         if parsed is None:
             return
-        approval_id, approve = parsed
+        approval_id, approve = parsed.approval_id, parsed.action == "approve"
         principal = await self._principal_for(event.user_id, event.guild_id)
         if principal is None:
             logger.info("discord: ignoring button click from unmapped user")
@@ -1664,15 +1834,19 @@ class DiscordService:
         principal = await self._principal_for(discord_user_id, guild_id)
         if principal is None:
             return "You are not linked to a kenny account. Use `/kenny link` to ask."
-        hosts = await self._hosts_for(principal)
+        hosts, candidates = await self._target_candidates(principal)
         profile = await self.users.get_capability_profile(principal.user_id or 0)
         allowed = allowed_tools_for(profile=profile, scoped=principal.scoped)
-        return (
-            f"kenny account: **{principal.username}** (role `{principal.role}`)\n"
-            f"Capability profile: `{profile or 'role default'}` "
-            f"({len(allowed)} tools)\n"
-            f"PCs: {', '.join(f'`{h}`' for h in hosts) if hosts else 'none assigned'}"
-        )
+        lines = [
+            f"kenny account: **{principal.username}** (role `{principal.role}`)",
+            f"Capability profile: `{profile or 'role default'}` ({len(allowed)} tools)",
+            f"PCs: {', '.join(f'`{h}`' for h in hosts) if hosts else 'none assigned'}",
+        ]
+        if candidates != hosts:
+            # Only for an operator with an assignment, where the two differ and
+            # the difference is exactly what decides where a bare mention goes.
+            lines.append(f"Yours: {', '.join(f'`{h}`' for h in candidates)}")
+        return "\n".join(lines)
 
     async def status(self, *, discord_user_id: str, guild_id: str) -> str:
         """List the caller's own open tickets."""
@@ -1709,19 +1883,30 @@ class DiscordService:
             return "You are not linked to a kenny account."
         if not self._limiter.allow(f"u:{principal.user_id}"):
             return "You have opened a lot of requests recently — please wait a little."
-        hosts = await self._hosts_for(principal)
-        if not hosts:
+        may_target, candidates = await self._target_candidates(principal)
+        if not may_target:
             return "No PC is assigned to your kenny account yet."
         if host:
-            # Only ever a choice among the caller's own hosts, so naming one can
-            # widen nothing; an unknown name is refused rather than guessed.
-            if host not in hosts:
-                return f"`{host}` is not one of your PCs ({', '.join(hosts)})."
+            # Validated against the full set, not the shortlist: naming a host
+            # explicitly is how an operator reaches a machine that is not its
+            # own. Widening nothing, since the set is the caller's own scope;
+            # an unknown name is refused rather than guessed.
+            if host not in may_target:
+                return f"`{host}` is not one of your PCs ({', '.join(may_target)})."
             target = host
-        elif len(hosts) == 1:
-            target = hosts[0]
+        elif len(candidates) == 1:
+            target = candidates[0]
         else:
-            return f"Please say which PC: {', '.join(f'`{h}`' for h in hosts)}."
+            # Same picker the mention path posts, rather than a second dead end
+            # telling the caller to rerun the command they just ran.
+            return await self._ask_which_host(
+                principal=principal,
+                candidates=candidates,
+                guild_id=guild_id,
+                channel_id=channel_id,
+                discord_user_id=discord_user_id,
+                content=content or "(no description given)",
+            )
         ticket = await self.open_ticket(
             principal=principal,
             agent_id=target,

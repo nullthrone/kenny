@@ -225,6 +225,16 @@ class DiscordGateway(Protocol):
         self, *, channel_id: str, approval_id: str, summary: str, detail_url: str
     ) -> str: ...
 
+    async def post_host_picker(
+        self,
+        *,
+        channel_id: str,
+        request_id: str,
+        hosts: list[str],
+        prompt: str,
+        reply_to: str | None = None,
+    ) -> str: ...
+
     async def resolve_card(
         self, *, channel_id: str, message_id: str, outcome: str, decided_by: str
     ) -> None: ...
@@ -308,6 +318,61 @@ def parse_approval_custom_id(custom_id: str) -> ApprovalAction | None:
     if prefix != _APPROVAL_CUSTOM_ID_PREFIX or action not in _APPROVAL_ACTIONS or not approval_id:
         return None
     return ApprovalAction(action=action, approval_id=approval_id)
+
+
+# ---------------------------------------------------------------------------
+# Host-picker custom_id scheme (pure, testable without any gateway)
+# ---------------------------------------------------------------------------
+
+_HOST_CUSTOM_ID_PREFIX = "kenny-host"
+
+
+@dataclass(frozen=True, slots=True)
+class HostChoice:
+    """The decoded intent of a host-picker button click."""
+
+    request_id: str
+    agent_id: str
+
+
+def build_host_custom_id(request_id: str, agent_id: str) -> str:
+    """Build the `custom_id` for one button of a host picker.
+
+    Scheme: ``kenny-host:<request_id>:<agent_id>``. The request id names the
+    pending request the click answers; the agent id is carried literally rather
+    than as an index into a list, so a click can be re-validated against the
+    clicker's current host scope without depending on the order a list happened
+    to have when the card was posted.
+
+    A distinct prefix from `build_approval_custom_id` is what lets one
+    component handler tell the two card kinds apart without guessing.
+    """
+
+    if not request_id or ":" in request_id:
+        raise ValueError(f"request_id must be non-empty and colon-free: {request_id!r}")
+    if not agent_id:
+        raise ValueError("agent_id must not be empty")
+    custom_id = f"{_HOST_CUSTOM_ID_PREFIX}:{request_id}:{agent_id}"
+    if len(custom_id) > _CUSTOM_ID_HARD_LIMIT:
+        raise ValueError(f"custom_id exceeds Discord's 100-character limit: {custom_id!r}")
+    return custom_id
+
+
+def parse_host_custom_id(custom_id: str) -> HostChoice | None:
+    """Decode a `custom_id` built by `build_host_custom_id`, else `None`.
+
+    The agent id is the *remainder* after the second separator, so an id
+    containing a colon survives the round trip instead of being truncated into
+    a different, possibly real, host name.
+    """
+
+    parts = custom_id.split(":", 2)
+    if len(parts) != 3:
+        return None
+    prefix, request_id, agent_id = parts
+    if prefix != _HOST_CUSTOM_ID_PREFIX or not request_id or not agent_id:
+        return None
+    return HostChoice(request_id=request_id, agent_id=agent_id)
 
 
 # ---------------------------------------------------------------------------
@@ -783,6 +848,42 @@ class DiscordPyGateway:
 
         channel = await self._resolve_channel(channel_id)
         message = await channel.send(embed=embed, view=view)
+        return str(message.id)
+
+    async def post_host_picker(
+        self,
+        *,
+        channel_id: str,
+        request_id: str,
+        hosts: list[str],
+        prompt: str,
+        reply_to: str | None = None,
+    ) -> str:
+        """Post one button per host so the caller can pick a target by clicking.
+
+        Discord allows 25 buttons on a message (5 rows of 5); callers are
+        expected to fall back to plain text above that rather than have this
+        raise from inside a reply path.
+        """
+
+        discord = self._discord
+        view = discord.ui.View(timeout=None)
+        for agent_id in hosts:
+            view.add_item(
+                discord.ui.Button(
+                    label=agent_id[:80],  # Discord's label limit
+                    style=discord.ButtonStyle.secondary,
+                    custom_id=build_host_custom_id(request_id, agent_id),
+                )
+            )
+
+        reference = None
+        if reply_to is not None:
+            reference = discord.MessageReference(
+                message_id=int(reply_to), channel_id=int(channel_id)
+            )
+        channel = await self._resolve_channel(channel_id)
+        message = await channel.send(prompt, view=view, reference=reference)
         return str(message.id)
 
     async def resolve_card(

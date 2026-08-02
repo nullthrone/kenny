@@ -16,6 +16,8 @@ from kenny_server.discord_adapter import (
     GuildMember,
     InboundEvent,
     ThreadRef,
+    build_approval_custom_id,
+    build_host_custom_id,
 )
 
 
@@ -34,6 +36,7 @@ class FakeDiscordGateway:
 
     posted: list[tuple[str, str]] = field(default_factory=list)
     cards: list[dict] = field(default_factory=list)
+    pickers: list[dict] = field(default_factory=list)
     ephemerals: list[tuple[str, str]] = field(default_factory=list)
     threads: list[ThreadRef] = field(default_factory=list)
     invited: list[list[str]] = field(default_factory=list)
@@ -101,9 +104,41 @@ class FakeDiscordGateway:
                 "approval_id": approval_id,
                 "summary": summary,
                 "detail_url": detail_url,
+                # The custom_ids the buttons actually carry, built the same way
+                # `DiscordPyGateway` builds them. Recording them is what makes a
+                # test able to click the card the *gateway* produced rather than
+                # one the test invented -- the two used to disagree, and every
+                # click in production was silently dropped because of it.
+                "custom_ids": {
+                    action: build_approval_custom_id(action, approval_id)
+                    for action in ("approve", "deny")
+                },
             }
         )
         return f"fake-card-{len(self.cards)}"
+
+    async def post_host_picker(
+        self,
+        *,
+        channel_id: str,
+        request_id: str,
+        hosts: list[str],
+        prompt: str,
+        reply_to: str | None = None,
+    ) -> str:
+        self.pickers.append(
+            {
+                "channel_id": channel_id,
+                "request_id": request_id,
+                "hosts": list(hosts),
+                "prompt": prompt,
+                "reply_to": reply_to,
+                # As for approval cards: the custom_ids the buttons really
+                # carry, so a test clicks the gateway's own output.
+                "custom_ids": {h: build_host_custom_id(request_id, h) for h in hosts},
+            }
+        )
+        return f"fake-picker-{len(self.pickers)}"
 
     async def resolve_card(
         self, *, channel_id: str, message_id: str, outcome: str, decided_by: str

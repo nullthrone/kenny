@@ -20,6 +20,7 @@ from kenny_server.discord_adapter import (
     CHUNK_TARGET_LIMIT,
     DISCORD_MESSAGE_HARD_LIMIT,
     ApprovalAction,
+    HostChoice,
     CommandOption,
     CommandSpec,
     ComponentEvent,
@@ -37,8 +38,10 @@ from kenny_server.discord_adapter import (
     _translate_slash_command,
     _translate_thread_state,
     build_approval_custom_id,
+    build_host_custom_id,
     chunk_message,
     parse_approval_custom_id,
+    parse_host_custom_id,
 )
 from support.fake_discord import FakeDiscordGateway
 
@@ -201,6 +204,12 @@ async def test_fake_discord_gateway_records_outbound_calls():
             "approval_id": "a1",
             "summary": "do the thing",
             "detail_url": "http://x",
+            # Built the way `DiscordPyGateway` builds them, so a test can click
+            # the card the gateway produced instead of one it invented itself.
+            "custom_ids": {
+                "approve": build_approval_custom_id("approve", "a1"),
+                "deny": build_approval_custom_id("deny", "a1"),
+            },
         }
     ]
     assert card_id
@@ -767,3 +776,59 @@ def test_handle_message_ignores_dms():
     gateway._handle_message(dm)
 
     assert gateway._queue.empty()
+
+
+# ---------------------------------------------------------------------------
+# Host-picker custom_id scheme
+# ---------------------------------------------------------------------------
+
+
+def test_host_custom_id_round_trips():
+    custom_id = build_host_custom_id("req-1", "thomas-pc")
+    assert parse_host_custom_id(custom_id) == HostChoice(
+        request_id="req-1", agent_id="thomas-pc"
+    )
+
+
+def test_host_custom_id_uses_its_own_prefix():
+    """The two card kinds must be distinguishable, or one handler eats both."""
+
+    host = build_host_custom_id("req-1", "thomas-pc")
+    approval = build_approval_custom_id("approve", "ap-1")
+    assert parse_approval_custom_id(host) is None
+    assert parse_host_custom_id(approval) is None
+
+
+def test_host_custom_id_build_rejects_what_cannot_be_carried():
+    with pytest.raises(ValueError):
+        build_host_custom_id("req-1", "")
+    with pytest.raises(ValueError):
+        build_host_custom_id("", "thomas-pc")
+    with pytest.raises(ValueError):
+        # A request id with a separator in it would reparse as a different id.
+        build_host_custom_id("req:1", "thomas-pc")
+    with pytest.raises(ValueError):
+        build_host_custom_id("r" * 32, "x" * 100)
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        "not-a-host-id",
+        "kenny-host:req-1",  # missing agent_id
+        "kenny-host::thomas-pc",  # empty request_id
+        "kenny-host:req-1:",  # empty agent_id
+        "",
+        "other-prefix:req-1:thomas-pc",
+    ],
+)
+def test_host_custom_id_parse_rejects_malformed_ids_rather_than_misparsing(malformed):
+    assert parse_host_custom_id(malformed) is None
+
+
+def test_host_custom_id_parse_keeps_a_colon_inside_the_agent_id():
+    """Truncating at the wrong ':' could name a *different*, real host."""
+
+    assert parse_host_custom_id("kenny-host:req-1:a:b") == HostChoice(
+        request_id="req-1", agent_id="a:b"
+    )

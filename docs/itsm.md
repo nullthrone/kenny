@@ -26,7 +26,9 @@ approval and state change underneath it. Three things can open one:
 
 - **A Discord mention.** Someone `@kenny`s the bot in the support channel (or runs
   `/kenny help-me`), kenny opens a private thread for it, and the ticket is born already
-  pointed at that person's PC.
+  pointed at that person's PC. If more than one PC could be meant, kenny asks first with a
+  row of buttons and opens nothing until one is clicked — see
+  [Which PC a request is about](#which-pc-a-request-is-about).
 - **The dashboard.** Any signed-in account — including a scoped `user` — can open a ticket
   with **New ticket** on the [Tickets tab](dashboard.md). This is the same record type, it
   just starts without a Discord thread attached.
@@ -151,6 +153,33 @@ specifically so a mis-mapping is visible to the person it affects, not silent.
 An account can be **unlinked** at any time (Settings → Discord → the trash icon on a
 linked row); a disabled/removed mapping makes that Discord user completely inert again —
 no ticket, no reply, no model call, exactly as if they had never linked.
+
+## Which PC a request is about
+
+A ticket is about exactly one machine, and that machine is fixed before the ticket exists
+— nothing said afterwards can move it ([ADR-0048](adr/0048-delegated-identity-from-a-chat-platform.md),
+control 1). So "my PC is slow" has to be resolved to one host up front, and kenny never
+infers it from the wording.
+
+Two things decide it, and they are **not** the same question:
+
+- **What the account may reach.** A scoped `user` account reaches only the hosts assigned
+  to it. An operator or superuser reaches the whole fleet.
+- **Which of those are its own.** The host scope in **Users → (a user) → Host scope**,
+  which for an operator limits nothing and instead names the machines it lives with.
+
+An unqualified request goes to the second list. One host on it → the ticket opens straight
+away. More than one → kenny posts one button per host and opens nothing until the asker
+clicks. Only the person who asked can answer, the click is good once, and the chosen host
+is re-checked against their scope at click time — a card that has been sitting in the
+channel since before an assignment changed does not get to use the old answer.
+
+Set the host scope for an operator too. Without it every bare mention from an operator
+account has to be answered with a question first, because reaching the whole fleet is
+indistinguishable from owning all of it.
+
+`/kenny help-me host:<id>` still names any host the account may reach, whether or not it
+is one of its own — the shortlist steers the default, it does not shrink the reach.
 
 ## Capability profiles
 
