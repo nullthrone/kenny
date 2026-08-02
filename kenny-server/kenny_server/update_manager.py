@@ -41,7 +41,7 @@ from .agent_release import _sha256_file
 from .config import Settings
 from .distribution import ShareLinks, agent_binary_path, perform_agent_update
 from .registry import AgentRegistry
-from .store import UpdateStore
+from .store import UpdateStore, _availability_key
 from .tunnel import AgentTunnel, ToolError
 
 logger = logging.getLogger("kenny.update")
@@ -117,7 +117,89 @@ class UpdateManager:
         else:
             logger.info("server image check skipped: %s", server_result.message)
 
-        return {"agent": status.to_public(), "server": server_result.to_public()}
+        status_dev = await self._check_agent_dev()
+        server_result_dev = await self._check_server_dev(image_ref)
+
+        return {
+            "agent": status.to_public(),
+            "server": server_result.to_public(),
+            "agent_dev": status_dev.to_public(),
+            "server_dev": server_result_dev.to_public(),
+        }
+
+    async def _check_agent_dev(self) -> agent_release.FetchResult:
+        """Dev-channel counterpart of the agent-binary check above.
+
+        Independently best-effort: any failure here (fetch or cache-probe) must
+        never affect the stable ``agent`` availability row recorded above.
+        """
+
+        try:
+            agent_fetch_dev = None
+            if agent_release.github_configured():
+                agent_fetch_dev = await asyncio.to_thread(
+                    agent_release.fetch_latest_agent_binary, channel="dev"
+                )
+            status_dev = agent_release.binary_status(
+                manual_path=agent_binary_path(channel="dev"), channel="dev"
+            )
+            await self.store.set_availability(
+                _availability_key("agent", "dev"),
+                version=status_dev.version or "",
+                sha256=status_dev.sha256,
+                ok=status_dev.ok,
+                message=(agent_fetch_dev.message if agent_fetch_dev is not None else status_dev.message),
+            )
+            return status_dev
+        except Exception as exc:  # noqa: BLE001 - a dev-poll failure must never affect the stable result
+            logger.info("agent dev-channel check skipped: %s", exc)
+            return agent_release.FetchResult(ok=False, source="none", message=f"dev check failed: {exc}")
+
+    async def _check_server_dev(self, image_ref: str) -> server_release.ServerReleaseInfo:
+        """Dev-channel counterpart of the server-image check above.
+
+        The "current" side of the newer-than comparison reuses ``__version__``:
+        a dev-channel server build's ``KENNY_SERVER_VERSION`` is itself a
+        ``X.Y.Z-dev.N`` string once CI stamps it. If ``__version__`` doesn't
+        parse as a dev-prerelease (e.g. this server is running stable), that
+        means "no dev baseline" — the dev candidate is always reported as
+        available rather than hidden, mirroring how the stable path already
+        treats an unparseable current version as "not comparable", but erring
+        toward showing the dev availability since an operator on the stable
+        server channel still wants to see "here's the latest dev build" for
+        provisioning a fresh dev test PC.
+        """
+
+        try:
+            server_result_dev = await server_release.fetch_latest_server_tag(
+                image_ref, github_token=agent_release.github_token(), channel="dev"
+            )
+            if server_result_dev.ok and server_result_dev.tag:
+                show_available = (
+                    server_release._parse_dev_comparable(__version__) is None
+                    or server_release.is_newer(server_result_dev.tag, __version__, channel="dev")
+                )
+                if show_available:
+                    await self.store.set_availability(
+                        _availability_key("server", "dev"),
+                        version=server_result_dev.tag,
+                        digest=server_result_dev.digest,
+                        ok=True,
+                        message=server_result_dev.message,
+                    )
+                else:
+                    await self.store.set_availability(
+                        _availability_key("server", "dev"),
+                        version=__version__,
+                        ok=True,
+                        message="up to date",
+                    )
+            else:
+                logger.info("server dev-channel image check skipped: %s", server_result_dev.message)
+            return server_result_dev
+        except Exception as exc:  # noqa: BLE001 - a dev-poll failure must never affect the stable result
+            logger.info("server dev-channel check skipped: %s", exc)
+            return server_release.ServerReleaseInfo(ok=False, message=f"dev check failed: {exc}")
 
     # -- campaign lifecycle ----------------------------------------------------
 
@@ -125,31 +207,34 @@ class UpdateManager:
         self,
         *,
         version: str | None = None,
+        channel: str = "stable",
         on_connect: bool = False,
         max_age_secs: int | None = None,
     ) -> dict[str, Any]:
         """Pin an agent-update campaign to one exact, already-cached version.
 
-        Copies every (os, arch) binary currently cached at ``version`` into a
-        durable per-campaign directory, so a later detection pass overwriting
-        the shared release cache can never change what this campaign pushes.
-        Supersedes (and cleans up) any prior active campaign. Raises
+        Copies every (os, arch) binary currently cached at ``version`` (for
+        ``channel``) into a durable per-campaign directory, so a later
+        detection pass overwriting the shared release cache can never change
+        what this campaign pushes. Supersedes (and cleans up) any prior active
+        campaign **for the same channel** — an active stable campaign and an
+        active dev campaign coexist independently (ADR-0052). Raises
         :class:`ValueError` if no cached binary matches ``version``.
         """
 
         if version is None:
-            avail = await self.store.get_availability("agent")
+            avail = await self.store.get_availability(_availability_key("agent", channel))
             if avail is None or not avail.get("version"):
                 raise ValueError("no known agent version to approve; run a check first")
             version = avail["version"]
 
-        prior = await self.store.get_active_campaign()
+        prior = await self.store.get_active_campaign(channel=channel)
 
         campaign_id = uuid.uuid4().hex
         dest_dir = os.path.join(self.campaign_dir, campaign_id)
         targets: list[dict[str, str]] = []
         for os_name, arch in agent_release.SUPPORTED_TARGETS:
-            cache = agent_release.cache_path(os_name, arch)
+            cache = agent_release.cache_path(os_name, arch, channel)
             if not os.path.exists(cache):
                 continue
             if agent_release.resolve_agent_version(cache) != version:
@@ -171,6 +256,7 @@ class UpdateManager:
 
         await self.store.create_campaign(
             id=campaign_id,
+            channel=channel,
             version=version,
             on_connect=on_connect,
             expires_at=expires_at,
@@ -224,7 +310,12 @@ class UpdateManager:
             # because the global setting is later flipped on.
             if not self.settings.get("KENNY_AGENT_ROLLOUT_ON_CONNECT"):
                 return
-            campaign = await self.store.get_active_campaign()
+            # Look up the active campaign for *this agent's desired channel*
+            # (ADR-0052) — an agent an operator just flipped to dev, but which
+            # hasn't updated yet, still reports its old (stable) actual
+            # channel, so the campaign lookup must key off desired, not actual.
+            desired_channel = await self.store.get_desired_channel(agent_id)
+            campaign = await self.store.get_active_campaign(channel=desired_channel)
             if campaign is None or not campaign["on_connect"]:
                 return
             await asyncio.sleep(ON_CONNECT_DELAY_S)
@@ -241,36 +332,82 @@ class UpdateManager:
         availability = await self.store.list_availability()
         campaign = await self.store.get_active_campaign()
         campaigns = await self.store.list_campaigns()
-        agents_out: list[dict[str, Any]] = []
-        if campaign is not None:
-            targets = await self.store.campaign_targets(campaign["id"])
-            states = await self.store.list_agent_states(campaign["id"])
-            for agent in self.registry.list():
-                eligible = any(t["os"] == agent.os and t["arch"] == agent.arch for t in targets)
-                state = states.get(agent.agent_id, {})
-                agents_out.append(
-                    {
-                        "agent_id": agent.agent_id,
-                        "online": agent.online,
-                        "os": agent.os,
-                        "arch": agent.arch,
-                        "current_version": (agent.meta or {}).get("version"),
-                        "eligible": eligible,
-                        "attempts": state.get("attempts", 0),
-                        "held": state.get("held", False),
-                        "updated": state.get("updated_version", False),
-                    }
-                )
+        agents_out = await self._agents_for_campaign(campaign)
+        # Dev-channel counterparts, additive (ADR-0052): a stable and a dev
+        # campaign can be active simultaneously (store.py keys them apart by
+        # channel), so the dashboard needs to see both to approve/track a dev
+        # rollout without disturbing the existing stable fields above.
+        campaign_dev = await self.store.get_active_campaign(channel="dev")
+        campaigns_dev = await self.store.list_campaigns(channel="dev")
+        agents_out_dev = await self._agents_for_campaign(campaign_dev)
         return {
             "available": availability,
             "active_campaign": campaign,
             "campaigns": campaigns,
             "agents": agents_out,
+            "active_campaign_dev": campaign_dev,
+            "campaigns_dev": campaigns_dev,
+            "agents_dev": agents_out_dev,
         }
+
+    async def _agents_for_campaign(self, campaign: dict[str, Any] | None) -> list[dict[str, Any]]:
+        """Per-agent eligibility/progress rows for ``campaign`` (or ``[]`` if None).
+
+        Eligibility (ADR-0044, ADR-0052) requires both a matching (os, arch)
+        target under the campaign *and* the agent's **desired** channel (soll,
+        operator-set) matching the campaign's channel — not the agent's
+        actual/reported channel (ist), so an agent an operator just flipped to
+        dev, but which hasn't updated yet, is still eligible for the dev
+        campaign that will bring it there.
+        """
+
+        if campaign is None:
+            return []
+        targets = await self.store.campaign_targets(campaign["id"])
+        states = await self.store.list_agent_states(campaign["id"])
+        out: list[dict[str, Any]] = []
+        for agent in self.registry.list():
+            desired_channel = await self.store.get_desired_channel(agent.agent_id)
+            eligible = (
+                any(t["os"] == agent.os and t["arch"] == agent.arch for t in targets)
+                and desired_channel == campaign["channel"]
+            )
+            state = states.get(agent.agent_id, {})
+            out.append(
+                {
+                    "agent_id": agent.agent_id,
+                    "online": agent.online,
+                    "os": agent.os,
+                    "arch": agent.arch,
+                    "channel": agent.channel,
+                    "desired_channel": desired_channel,
+                    "current_version": (agent.meta or {}).get("version"),
+                    "eligible": eligible,
+                    "attempts": state.get("attempts", 0),
+                    "held": state.get("held", False),
+                    "updated": state.get("updated_version", False),
+                }
+            )
+        return out
+
+    async def set_desired_channel(self, agent_id: str, channel: str) -> None:
+        """Set the operator-desired release channel for ``agent_id`` (ADR-0052).
+
+        Thin passthrough to ``store.UpdateStore.set_desired_channel`` so the
+        web API layer doesn't reach into the store directly — this module owns
+        the read/write model the dashboard's Updates tab consumes.
+        """
+
+        await self.store.set_desired_channel(agent_id, channel)
 
     # -- internals ---------------------------------------------------------
 
     async def _apply_to_agent(self, campaign: dict[str, Any], agent: Any) -> None:
+        desired_channel = await self.store.get_desired_channel(agent.agent_id)
+        if desired_channel != campaign.get("channel", "stable"):
+            # Not eligible under this campaign's channel (ADR-0052) — same
+            # no-op-without-penalty treatment as a missing (os, arch) target.
+            return
         targets = await self.store.campaign_targets(campaign["id"])
         target = next((t for t in targets if t["os"] == agent.os and t["arch"] == agent.arch), None)
         if target is None:
@@ -322,11 +459,14 @@ class UpdateManager:
         if campaign["status"] != "active":
             return
         targets = await self.store.campaign_targets(campaign["id"])
-        eligible = [
-            a
-            for a in self.registry.list()
-            if any(t["os"] == a.os and t["arch"] == a.arch for t in targets)
-        ]
+        campaign_channel = campaign.get("channel", "stable")
+        eligible: list[Any] = []
+        for a in self.registry.list():
+            if not any(t["os"] == a.os and t["arch"] == a.arch for t in targets):
+                continue
+            if await self.store.get_desired_channel(a.agent_id) != campaign_channel:
+                continue
+            eligible.append(a)
         if not eligible:
             return
         # Deliberately does NOT treat a "held" agent as done: a held agent has
@@ -346,7 +486,14 @@ class UpdateManager:
             self._cleanup_campaign_dir(campaign["id"])
 
     async def _expire_stale_campaign(self) -> None:
-        campaign = await self.store.get_active_campaign()
+        # A stable and a dev campaign can be active simultaneously (ADR-0052,
+        # store.py's per-channel active-campaign uniqueness) — both need their
+        # own expiry check, independently.
+        for channel in ("stable", "dev"):
+            await self._expire_stale_campaign_for_channel(channel)
+
+    async def _expire_stale_campaign_for_channel(self, channel: str) -> None:
+        campaign = await self.store.get_active_campaign(channel=channel)
         if campaign is None or not campaign.get("expires_at"):
             return
         try:

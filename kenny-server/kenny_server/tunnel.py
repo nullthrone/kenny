@@ -472,6 +472,11 @@ class AgentTunnel:
                 reported_arch = snapshot.get("os_support", {}).get("arch")
                 if reported_arch in ("x86_64", "aarch64"):
                     self.registry.note_arch(frame.agent_id, reported_arch)
+                # Periodic channel reconfirmation (ADR-0052, protocol 0.17): the
+                # same pattern as the arch mirror above, one release cycle later.
+                reported_channel = snapshot.get("os_support", {}).get("channel")
+                if reported_channel in ("stable", "dev"):
+                    self.registry.note_channel(frame.agent_id, reported_channel)
                 # Parental controls (ADR-0026): enrich the web_activity section
                 # with server-computed `flagged` before persisting. A webfilter
                 # bug must never drop the whole snapshot.

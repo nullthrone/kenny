@@ -3,6 +3,11 @@ name: Release
 # Tag a version to publish: the server image to GHCR and the Windows agent binary
 # (sha256, optionally code-signed) as a GitHub Release asset.
 #   git tag v0.1.0 && git push origin v0.1.0
+#
+# This is the stable channel (ADR-0052): a non-prerelease GitHub Release, so
+# `GET /repos/{repo}/releases/latest` (which excludes prereleases by definition)
+# always resolves to it. See release-dev.yml for the dev channel and
+# _release-artifacts.yml for the shared job bodies both call.
 on:
   push:
     tags: ["v*"]
@@ -12,209 +17,11 @@ permissions:
   packages: write   # push to GHCR
 
 jobs:
-  # Both jobs verify the exact artifact they are about to publish *before* the
-  # publish step runs: a failing smoke test / e2e fails the job and the later push
-  # steps never execute. Without enforceable branch protection on a private repo,
-  # this in-workflow gate is the only hard guarantee that a broken image or binary
-  # is never released.
-  server-image:
-    name: kenny-server image -> GHCR
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      # QEMU lets this amd64 runner build the linux/arm64 image too.
-      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
-      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
-      - name: Image metadata
-        id: meta
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
-        with:
-          images: ghcr.io/${{ github.repository_owner }}/kenny-server
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest
-      # Build only the runner-native amd64 image here so it can be `load`ed and
-      # smoke-tested locally (`load: true` cannot handle a multi-arch manifest).
-      # The arm64 variant is built and verified in the push step below.
-      - name: Build image (load locally, do not push yet)
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
-        with:
-          context: .
-          file: kenny-server/Dockerfile
-          load: true
-          platforms: linux/amd64
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: KENNY_SERVER_VERSION=${{ steps.meta.outputs.version }}
-          cache-to: type=gha,mode=max
-          cache-from: type=gha
-      - name: Smoke test the image
-        run: |
-          set -euo pipefail
-          image='${{ fromJSON(steps.meta.outputs.json).tags[0] }}'
-          echo "Smoke-testing $image"
-          docker run -d --name kenny-smoke -p 8000:8000 "$image"
-          ok=0
-          for i in $(seq 1 30); do
-            # A fresh image has no accounts yet, so GET /login redirects to the
-            # first-run /setup page (ADR-0037). Follow redirects (-L) and accept
-            # the final 200 as proof the web UI is served.
-            code=$(curl -sL -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/login || true)
-            echo "attempt $i -> HTTP $code"
-            if [ "$code" = "200" ]; then ok=1; break; fi
-            sleep 1
-          done
-          docker logs kenny-smoke || true
-          docker rm -f kenny-smoke >/dev/null 2>&1 || true
-          if [ "$ok" != "1" ]; then
-            echo "::error::server image did not serve the auth UI (/login -> /setup)"
-            exit 1
-          fi
-      - name: Log in to GHCR
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      # Publish a multi-arch manifest (amd64 + arm64). The amd64 layers are reused
-      # from the cache populated by the build above; arm64 is built here via QEMU.
-      - name: Push image (only after the smoke test passed)
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
-        with:
-          context: .
-          file: kenny-server/Dockerfile
-          push: true
-          platforms: linux/amd64,linux/arm64
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: KENNY_SERVER_VERSION=${{ steps.meta.outputs.version }}
-          provenance: true
-          cache-from: type=gha
-
-  agent-binary:
-    name: kenny-agent.exe -> Release asset
-    runs-on: windows-latest
-    env:
-      HAS_CERT: ${{ secrets.WINDOWS_CERT_BASE64 != '' }}
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-      - name: Build release binary
-        working-directory: kenny-agent
-        # The release tag is the leading source of the agent version (ADR-0015):
-        # build.rs stamps it into the binary (reported as meta.version).
-        env:
-          KENNY_AGENT_VERSION: ${{ github.ref_name }}
-        run: cargo build --release
-      # Gate the publish on a real round-trip against the EXACT release binary
-      # (LTO/stripped --release profile, not the debug build CI exercises). On
-      # Windows this also drives the real #[cfg(windows)] tool paths.
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.11"
-      - name: Install server
-        working-directory: kenny-server
-        run: pip install -e ".[dev]"
-      - name: E2E against the release binary
-        working-directory: kenny-server
-        env:
-          KENNY_E2E: "1"
-          KENNY_AGENT_BIN: ${{ github.workspace }}\kenny-agent\target\release\kenny-agent.exe
-        run: python -m pytest tests/test_integration_e2e.py -q
-      - name: Stage artifact
-        id: stage
-        shell: pwsh
-        working-directory: kenny-agent
-        run: |
-          $name = "kenny-agent-${{ github.ref_name }}-x86_64-pc-windows-msvc.exe"
-          Copy-Item target/release/kenny-agent.exe $name
-          (Get-FileHash $name -Algorithm SHA256).Hash.ToLower() + "  " + $name | Out-File "$name.sha256" -Encoding ascii
-          "artifact=$name" >> $env:GITHUB_OUTPUT
-      # Optional Authenticode signing when a cert is configured (skipped otherwise).
-      - name: Code sign (optional)
-        if: ${{ env.HAS_CERT == 'true' }}
-        shell: pwsh
-        working-directory: kenny-agent
-        env:
-          CERT_B64: ${{ secrets.WINDOWS_CERT_BASE64 }}
-          CERT_PW: ${{ secrets.WINDOWS_CERT_PASSWORD }}
-        run: |
-          [IO.File]::WriteAllBytes("cert.pfx", [Convert]::FromBase64String($env:CERT_B64))
-          & "${env:ProgramFiles(x86)}\Windows Kits\10\bin\x64\signtool.exe" sign `
-            /f cert.pfx /p $env:CERT_PW /tr http://timestamp.digicert.com /td sha256 /fd sha256 `
-            "${{ steps.stage.outputs.artifact }}"
-          # refresh the hash after signing
-          $name = "${{ steps.stage.outputs.artifact }}"
-          (Get-FileHash $name -Algorithm SHA256).Hash.ToLower() + "  " + $name | Out-File "$name.sha256" -Encoding ascii
-      - name: Publish to the Release
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
-        with:
-          files: |
-            kenny-agent/${{ steps.stage.outputs.artifact }}
-            kenny-agent/${{ steps.stage.outputs.artifact }}.sha256
-
-  agent-binary-linux:
-    name: kenny-agent (linux musl) -> Release asset
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # x86_64 is built AND e2e-gated (the static musl binary runs natively on the
-          # amd64 runner). aarch64 (Raspberry Pi / ARM NAS) is cross-built only — it can't
-          # run on the runner without emulation, so it is published without the e2e gate.
-          - target: x86_64-unknown-linux-musl
-            e2e: true
-          - target: aarch64-unknown-linux-musl
-            e2e: false
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-      # `cross` cross-compiles a fully static musl binary inside a target-matched Docker
-      # image (C toolchain for bundled rusqlite included), so no host musl setup is needed.
-      # KENNY_AGENT_VERSION is forwarded into the container via kenny-agent/Cross.toml.
-      - name: Install cross
-        run: cargo install cross --locked --version 0.2.5
-      - name: Build release binary
-        working-directory: kenny-agent
-        # The release tag leads the agent version (ADR-0015): build.rs stamps it.
-        # KENNY_DENY_RULES_DIR points build.rs at the shared deny-rule catalog
-        # (docs/policy/, ADR-0021), which lives outside the crate; Cross.toml mounts this
-        # directory into the build container so the cross build can embed it.
-        env:
-          KENNY_AGENT_VERSION: ${{ github.ref_name }}
-          KENNY_DENY_RULES_DIR: ${{ github.workspace }}/docs/policy
-        run: cross build --release --target ${{ matrix.target }}
-      # Gate the x86_64 publish on a real round-trip against the EXACT release binary
-      # (LTO/stripped --release profile). The static musl binary runs on the glibc runner.
-      - uses: actions/setup-python@v7
-        if: ${{ matrix.e2e }}
-        with:
-          python-version: "3.11"
-      - name: Install server
-        if: ${{ matrix.e2e }}
-        working-directory: kenny-server
-        run: pip install -e ".[dev]"
-      - name: E2E against the release binary
-        if: ${{ matrix.e2e }}
-        working-directory: kenny-server
-        env:
-          KENNY_E2E: "1"
-          KENNY_AGENT_BIN: ${{ github.workspace }}/kenny-agent/target/${{ matrix.target }}/release/kenny-agent
-        run: python -m pytest tests/test_integration_e2e.py -q
-      - name: Stage artifact
-        id: stage
-        working-directory: kenny-agent
-        run: |
-          set -euo pipefail
-          name="kenny-agent-${{ github.ref_name }}-${{ matrix.target }}"
-          cp "target/${{ matrix.target }}/release/kenny-agent" "$name"
-          sha256sum "$name" > "$name.sha256"
-          echo "artifact=$name" >> "$GITHUB_OUTPUT"
-      - name: Publish to the Release
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
-        with:
-          files: |
-            kenny-agent/${{ steps.stage.outputs.artifact }}
-            kenny-agent/${{ steps.stage.outputs.artifact }}.sha256
+  release:
+    name: Publish stable release
+    uses: ./.github/workflows/_release-artifacts.yml
+    with:
+      version: ${{ github.ref_name }}
+      prerelease: false
+      channel: stable
+    secrets: inherit

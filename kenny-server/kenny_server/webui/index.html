@@ -2795,6 +2795,8 @@
       const avail = data.available || {};
       const agentAvail = avail.agent || {};
       const serverAvail = avail.server || {};
+      const agentAvailDev = avail["agent:dev"] || {};
+      const serverAvailDev = avail["server:dev"] || {};
       const campaign = data.active_campaign;
       const cfg = data.config || {};
       const serverApply = data.server_apply;
@@ -2807,6 +2809,9 @@
           <div class="k-deflist__k">latest known</div>
           <div class="k-deflist__v">${serverAvail.version ? esc(serverAvail.version) : "—"}
             ${serverAvail.checked_at ? `<span class="k-muted"> · checked ${esc(relTime(serverAvail.checked_at))}</span>` : ""}</div>
+          <div class="k-deflist__k">latest dev</div>
+          <div class="k-deflist__v">${serverAvailDev.version ? esc(serverAvailDev.version) : "—"}
+            ${serverAvailDev.checked_at ? `<span class="k-muted"> · checked ${esc(relTime(serverAvailDev.checked_at))}</span>` : ""}</div>
         </div>
         ${serverApply ? `<div class="k-panel" style="margin-top:10px;border-color:var(--warn-dot)">
             ${icon('triangle-alert', 15)}<b>version ${esc(serverApply.tag)} available.</b>
@@ -2824,6 +2829,9 @@
           <div class="k-deflist__k">latest known</div>
           <div class="k-deflist__v">${agentAvail.version ? esc(agentAvail.version) : "—"}
             ${agentAvail.checked_at ? `<span class="k-muted"> · checked ${esc(relTime(agentAvail.checked_at))}</span>` : ""}</div>
+          <div class="k-deflist__k">latest dev</div>
+          <div class="k-deflist__v">${agentAvailDev.version ? esc(agentAvailDev.version) : "—"}
+            ${agentAvailDev.checked_at ? `<span class="k-muted"> · checked ${esc(relTime(agentAvailDev.checked_at))}</span>` : ""}</div>
         </div>
         <div class="k-row" style="gap:16px;margin-top:14px;flex-wrap:wrap;align-items:flex-end">
           <div class="kfield" style="margin-bottom:0">
@@ -2845,20 +2853,28 @@
 
       const campaignCard = `<div class="k-panel kset__grp">
         <div class="k-detail-grp__lbl">agent rollout campaign</div>
-        ${campaignHtml(campaign, agentAvail, data.agents || [])}
+        ${campaignHtml(campaign, agentAvail, data.agents || [], "stable")}
       </div>`;
 
-      return `<div class="kset">${serverCard}${agentCard}${campaignCard}</div>`;
+      // Dev-channel campaign card (ADR-0052): same control, pinned to channel
+      // "dev" — a mixed fleet can have a stable and a dev campaign active at
+      // once, so this is additive, not a toggle over the stable card above.
+      const campaignCardDev = `<div class="k-panel kset__grp">
+        <div class="k-detail-grp__lbl">agent rollout campaign (dev)</div>
+        ${campaignHtml(data.active_campaign_dev, agentAvailDev, data.agents_dev || [], "dev")}
+      </div>`;
+
+      return `<div class="kset">${serverCard}${agentCard}${campaignCard}${campaignCardDev}</div>`;
     }
 
-    function campaignHtml(campaign, agentAvail, agents) {
+    function campaignHtml(campaign, agentAvail, agents, channel) {
       if (!campaign) {
         const canApprove = !!agentAvail.version;
-        return `<div class="k-muted">no active campaign.</div>
+        return `<div class="k-muted">no active ${esc(channel)} campaign.</div>
           <div class="k-row" style="margin-top:10px">
             <button class="k-btn k-btn--primary k-btn--sm" ${canApprove ? "" : "disabled"}
-              onclick="updatesApproveCampaign(${jsArg(agentAvail.version || "")})">
-              ${icon('download', 13)}approve rollout to ${esc(agentAvail.version || "—")}
+              onclick="updatesApproveCampaign(${jsArg(agentAvail.version || "")}, ${jsArg(channel)})">
+              ${icon('download', 13)}approve ${esc(channel)} rollout to ${esc(agentAvail.version || "—")}
             </button>
           </div>`;
       }
@@ -2866,18 +2882,19 @@
         const status = a.updated ? `<span class="k-pill k-pill--ok">updated</span>`
           : a.held ? `<span class="k-pill k-pill--crit">held (${a.attempts})</span>`
           : a.eligible ? `<span class="k-pill">pending</span>`
-          : `<span class="k-pill k-pill--muted">n/a for this arch</span>`;
+          : `<span class="k-pill k-pill--muted">n/a for this arch/channel</span>`;
         return `<tr>
           <td>${esc(a.agent_id)}</td>
           <td>${esc(a.os)}/${esc(a.arch)}</td>
           <td class="k-mono">${esc(a.current_version || "?")}</td>
+          <td>${agentChannelCellHtml(a)}</td>
           <td>${a.online ? `<span class="k-pill k-pill--ok">online</span>` : `<span class="k-pill k-pill--muted">offline</span>`}</td>
           <td>${status}</td>
         </tr>`;
       }).join("");
       const table = `<table class="kacc-tbl"><thead><tr>
-          <th>Agent</th><th>OS/Arch</th><th>Current</th><th>Connection</th><th>Status</th></tr></thead>
-          <tbody>${rows || `<tr><td colspan="5" class="kacc-empty">no known agents</td></tr>`}</tbody></table>`;
+          <th>Agent</th><th>OS/Arch</th><th>Current</th><th>Channel (built / desired)</th><th>Connection</th><th>Status</th></tr></thead>
+          <tbody>${rows || `<tr><td colspan="6" class="kacc-empty">no known agents</td></tr>`}</tbody></table>`;
       return `<div class="k-deflist">
           <div class="k-deflist__k">pinned version</div>
           <div class="k-deflist__v k-mono">${esc(campaign.version)}</div>
@@ -2897,7 +2914,30 @@
           revoking stops future pushes only — an update already in flight to an
           agent cannot be recalled. an agent held after repeated refusal (e.g.
           remote control switched off locally) needs the operator to look at it.
+          eligibility (and the campaign that will apply on connect) is decided
+          by an agent's <b>desired</b> channel below, not its currently-built one.
         </div>`;
+    }
+
+    // Soll/ist channel badges (ADR-0052): "channel" is what the connected
+    // binary actually reports about itself (read-only here); "desired_channel"
+    // is the operator-set target a campaign's eligibility is checked against.
+    // The select lets an operator flip the latter without leaving this table.
+    function agentChannelCellHtml(a) {
+      const built = `<span class="k-pill k-pill--muted">${esc(a.channel || "stable")}</span>`;
+      return `${built} <select class="k-input k-input--sm" style="width:auto;display:inline-block"
+          onchange="updatesSetDesiredChannel(${jsArg(a.agent_id)}, this.value)">
+          <option value="stable" ${a.desired_channel === "dev" ? "" : "selected"}>desired: stable</option>
+          <option value="dev" ${a.desired_channel === "dev" ? "selected" : ""}>desired: dev</option>
+        </select>`;
+    }
+
+    async function updatesSetDesiredChannel(agentId, channel) {
+      try {
+        await api("/api/agent/" + encodeURIComponent(agentId) + "/channel", "PUT", { channel });
+        notify(`${agentId}: desired channel set to ${channel}`, "ok");
+        await renderUpdates();
+      } catch (e) { notify("could not set channel: " + e.message, "err"); }
     }
 
     async function updatesSaveSetting(key, inputId, isCheckbox) {
@@ -2922,16 +2962,17 @@
       } catch (e) { notify("check failed: " + e.message, "err"); }
     }
 
-    async function updatesApproveCampaign(version) {
+    async function updatesApproveCampaign(version, channel) {
+      channel = channel || "stable";
       const ok = await confirmModal({
         title: "Approve agent update campaign",
         ico: "download",
-        body: `Approve rolling out agent version ${version} to the fleet? This pins that exact version — a later release found by a future check will not be included unless separately approved.`,
+        body: `Approve rolling out agent version ${version} (${channel} channel) to the fleet? This pins that exact version — a later release found by a future check will not be included unless separately approved.`,
         confirmLabel: "Approve", confirmClass: "k-btn--primary",
       });
       if (!ok) return;
       try {
-        await api("/api/updates/campaigns", "POST", { version });
+        await api("/api/updates/campaigns", "POST", { version, channel });
         notify("campaign approved", "ok");
         await renderUpdates();
       } catch (e) { notify("could not approve campaign: " + e.message, "err"); }

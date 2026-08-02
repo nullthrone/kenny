@@ -877,7 +877,36 @@ CREATE TABLE IF NOT EXISTS update_campaign_agents (
     last_error      TEXT,
     PRIMARY KEY (campaign_id, agent_id)
 );
+-- Per-agent operator-desired release channel (ADR-0052): the soll side of the
+-- soll/ist split, separate from what the connected binary actually reports
+-- (``registry.Agent.channel``). Default 'stable'; a row only exists once an
+-- operator has explicitly set one (see `UpdateStore.set_desired_channel`).
+CREATE TABLE IF NOT EXISTS agent_channel_prefs (
+    agent_id   TEXT PRIMARY KEY,
+    channel    TEXT NOT NULL DEFAULT 'stable',
+    updated_at TEXT NOT NULL
+);
 """
+
+# Update-campaign columns added after the table's original release, migrated
+# in for existing DB files the same way `KeyStore._migrate` adds its grace
+# columns (ADR-0052).
+_CAMPAIGN_MIGRATED_COLUMNS: dict[str, str] = {
+    "channel": "TEXT NOT NULL DEFAULT 'stable'",
+}
+
+
+def _availability_key(component: str, channel: str = "stable") -> str:
+    """Compose the ``update_availability.component`` key for ``(component, channel)``.
+
+    ``channel="stable"`` is byte-identical to the pre-ADR-0052 key (``"agent"``/
+    ``"server"``) — existing rows are untouched. ``channel="dev"`` composes
+    ``"agent:dev"``/``"server:dev"``, a second, additive row alongside the
+    stable one. The ``update_availability`` table's schema/PK is unchanged;
+    this only widens what a caller may pass as ``component``.
+    """
+
+    return component if channel == "stable" else f"{component}:{channel}"
 
 # Bounded number of update attempts a single agent gets under one campaign
 # before it is marked "held" and stops being auto-retried (ADR-0044). Prevents
@@ -917,7 +946,17 @@ class UpdateStore:
         self._db = await aiosqlite.connect(self.db_path)
         await _configure_connection(self._db)
         await self._db.executescript(_UPDATE_SCHEMA)
+        await self._migrate()
         await self._db.commit()
+
+    async def _migrate(self) -> None:
+        """Add columns to ``update_campaigns`` for DBs created before they existed."""
+
+        async with self._conn.execute("PRAGMA table_info(update_campaigns)") as cur:
+            cols = {row["name"] for row in await cur.fetchall()}
+        for col, ddl in _CAMPAIGN_MIGRATED_COLUMNS.items():
+            if col not in cols:
+                await self._conn.execute(f"ALTER TABLE update_campaigns ADD COLUMN {col} {ddl}")
 
     async def close(self) -> None:
         if self._db is not None:
@@ -989,12 +1028,15 @@ class UpdateStore:
         d["on_connect"] = bool(d["on_connect"])
         return d
 
-    async def get_active_campaign(self, component: str = "agent") -> dict[str, Any] | None:
+    async def get_active_campaign(
+        self, component: str = "agent", channel: str = "stable"
+    ) -> dict[str, Any] | None:
         async with self._conn.execute(
             "SELECT id, component, version, on_connect, status, created_at, "
-            "expires_at, revoked_at, completed_at FROM update_campaigns "
-            "WHERE component = ? AND status = 'active' ORDER BY created_at DESC LIMIT 1",
-            (component,),
+            "expires_at, revoked_at, completed_at, channel FROM update_campaigns "
+            "WHERE component = ? AND channel = ? AND status = 'active' "
+            "ORDER BY created_at DESC LIMIT 1",
+            (component, channel),
         ) as cur:
             row = await cur.fetchone()
         return self._campaign_row(row) if row else None
@@ -1002,18 +1044,20 @@ class UpdateStore:
     async def get_campaign(self, campaign_id: str) -> dict[str, Any] | None:
         async with self._conn.execute(
             "SELECT id, component, version, on_connect, status, created_at, "
-            "expires_at, revoked_at, completed_at FROM update_campaigns WHERE id = ?",
+            "expires_at, revoked_at, completed_at, channel FROM update_campaigns WHERE id = ?",
             (campaign_id,),
         ) as cur:
             row = await cur.fetchone()
         return self._campaign_row(row) if row else None
 
-    async def list_campaigns(self, *, component: str = "agent", limit: int = 20) -> list[dict[str, Any]]:
+    async def list_campaigns(
+        self, *, component: str = "agent", channel: str = "stable", limit: int = 20
+    ) -> list[dict[str, Any]]:
         async with self._conn.execute(
             "SELECT id, component, version, on_connect, status, created_at, "
-            "expires_at, revoked_at, completed_at FROM update_campaigns "
-            "WHERE component = ? ORDER BY created_at DESC LIMIT ?",
-            (component, limit),
+            "expires_at, revoked_at, completed_at, channel FROM update_campaigns "
+            "WHERE component = ? AND channel = ? ORDER BY created_at DESC LIMIT ?",
+            (component, channel, limit),
         ) as cur:
             rows = await cur.fetchall()
         return [self._campaign_row(r) for r in rows]
@@ -1023,6 +1067,7 @@ class UpdateStore:
         *,
         id: str | None = None,
         component: str = "agent",
+        channel: str = "stable",
         version: str,
         on_connect: bool,
         expires_at: str | None,
@@ -1036,12 +1081,14 @@ class UpdateStore:
         records their location, it does not touch the filesystem. ``id`` lets
         the caller pick the id up front (``update_manager`` derives the
         per-campaign artifact directory from it before this is called);
-        omitting it generates one.
+        omitting it generates one. Only one campaign is active at a time per
+        ``(component, channel)`` (ADR-0052) — approving a dev campaign never
+        supersedes a concurrently-active stable one, and vice versa.
         """
 
         campaign_id = id or uuid.uuid4().hex
         now = datetime.now(timezone.utc).isoformat()
-        prior = await self.get_active_campaign(component)
+        prior = await self.get_active_campaign(component, channel)
         if prior is not None:
             await self._conn.execute(
                 "UPDATE update_campaigns SET status = 'revoked', revoked_at = ? WHERE id = ?",
@@ -1049,9 +1096,9 @@ class UpdateStore:
             )
         await self._conn.execute(
             "INSERT INTO update_campaigns "
-            "(id, component, version, on_connect, status, created_at, expires_at) "
-            "VALUES (?, ?, ?, ?, 'active', ?, ?)",
-            (campaign_id, component, version, 1 if on_connect else 0, now, expires_at),
+            "(id, component, version, on_connect, status, created_at, expires_at, channel) "
+            "VALUES (?, ?, ?, ?, 'active', ?, ?, ?)",
+            (campaign_id, component, version, 1 if on_connect else 0, now, expires_at, channel),
         )
         for t in targets:
             await self._conn.execute(
@@ -1171,6 +1218,48 @@ class UpdateStore:
         )
         await self._conn.commit()
         return await self.get_agent_state(campaign_id, agent_id)  # type: ignore[return-value]
+
+    # -- desired channel (per-agent, operator-editable, ADR-0052) -----------
+
+    async def get_desired_channel(self, agent_id: str) -> str:
+        """The operator-desired channel for ``agent_id``, defaulting to ``"stable"``.
+
+        This is the soll side of ADR-0052's soll/ist split — separate from
+        ``registry.Agent.channel``, which is what the connected binary reports
+        about itself. Campaign eligibility is checked against this, not that.
+        """
+
+        async with self._conn.execute(
+            "SELECT channel FROM agent_channel_prefs WHERE agent_id = ?", (agent_id,)
+        ) as cur:
+            row = await cur.fetchone()
+        return row["channel"] if row is not None else "stable"
+
+    async def set_desired_channel(self, agent_id: str, channel: str) -> None:
+        """Set the operator-desired channel for ``agent_id`` (upsert)."""
+
+        if channel not in ("stable", "dev"):
+            raise ValueError(f"channel must be 'stable' or 'dev', got {channel!r}")
+        now = datetime.now(timezone.utc).isoformat()
+        await self._conn.execute(
+            "INSERT INTO agent_channel_prefs (agent_id, channel, updated_at) "
+            "VALUES (?, ?, ?) "
+            "ON CONFLICT(agent_id) DO UPDATE SET channel=excluded.channel, "
+            "updated_at=excluded.updated_at",
+            (agent_id, channel, now),
+        )
+        await self._conn.commit()
+
+    async def list_desired_channels(self) -> dict[str, str]:
+        """Every agent with an explicit desired-channel row, ``agent_id -> channel``.
+
+        An agent absent from this dict has never had one set and defaults to
+        ``"stable"`` (see :meth:`get_desired_channel`).
+        """
+
+        async with self._conn.execute("SELECT agent_id, channel FROM agent_channel_prefs") as cur:
+            rows = await cur.fetchall()
+        return {r["agent_id"]: r["channel"] for r in rows}
 
 
 _SETTINGS_SCHEMA = """

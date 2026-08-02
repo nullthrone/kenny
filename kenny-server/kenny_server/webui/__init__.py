@@ -904,9 +904,13 @@ def build_api_routes(
         if update_mgr is None:
             return JSONResponse({"error": "updates not configured"}, status_code=503)
         body = await _optional_json_body(request)
+        channel = body.get("channel") or "stable"
+        if channel not in ("stable", "dev"):
+            return JSONResponse({"error": "channel must be 'stable' or 'dev'"}, status_code=400)
         try:
             campaign = await update_mgr.approve_campaign(
                 version=body.get("version"),
+                channel=channel,
                 on_connect=bool(body.get("on_connect", False)),
                 max_age_secs=body.get("max_age_secs"),
             )
@@ -940,6 +944,22 @@ def build_api_routes(
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
         return JSONResponse({"ok": True, **result})
+
+    async def api_agent_channel(request: Request) -> JSONResponse:
+        """Set an agent's operator-desired release channel (ADR-0052)."""
+
+        if update_mgr is None:
+            return JSONResponse({"error": "updates not configured"}, status_code=503)
+        agent_id = request.path_params["id"]
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - malformed JSON
+            return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        channel = body.get("channel")
+        if channel not in ("stable", "dev"):
+            return JSONResponse({"error": "channel must be 'stable' or 'dev'"}, status_code=400)
+        await update_mgr.set_desired_channel(agent_id, channel)
+        return JSONResponse({"ok": True, "agent_id": agent_id, "desired_channel": channel})
 
     # -- parental controls (webfilter) ------------------------------------
 
@@ -1231,6 +1251,11 @@ def build_api_routes(
             "/api/updates/campaigns/{id}/revoke",
             guard(api_updates_campaign_revoke, **op),
             methods=["POST"],
+        ),
+        Route(
+            "/api/agent/{id}/channel",
+            guard(api_agent_channel, **op_scoped),
+            methods=["PUT"],
         ),
         Route(
             "/api/updates/campaigns/{id}/apply-now",

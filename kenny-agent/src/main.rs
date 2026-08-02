@@ -50,6 +50,11 @@ pub use protocol::PROTOCOL_VERSION;
 /// falls back to the Cargo package version for dev/CI builds.
 pub const BUILD_VERSION: &str = env!("KENNY_BUILD_VERSION");
 
+/// Release channel this binary was built from (`stable`/`dev`, see `build.rs` and
+/// ADR-0052). `stable` unless CI set `KENNY_AGENT_CHANNEL=dev` (the `release-dev.yml`
+/// build) — every other build, including local `cargo build`, gets `stable`.
+pub const BUILD_CHANNEL: &str = env!("KENNY_BUILD_CHANNEL");
+
 /// Base file name of the rolling agent log. `tracing_appender`'s daily rotation
 /// appends a `.YYYY-MM-DD` suffix, so on disk the files are
 /// `kenny-agent.log.2026-06-06` etc. Shared with the tray so its "open logs"

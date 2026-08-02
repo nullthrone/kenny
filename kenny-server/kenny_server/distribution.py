@@ -48,16 +48,26 @@ INSTALLER_TTL_S = 3600  # one hour for an operator-shared installer link
 BINARY_TTL_S = 600  # ten minutes for a self-update binary fetch
 
 
-def agent_binary_path(os_name: str = "windows", arch: str = "x86_64") -> str | None:
-    """Path to the prebuilt agent binary for ``(os_name, arch)``, or None.
+def agent_binary_path(
+    os_name: str = "windows", arch: str = "x86_64", channel: str = "stable"
+) -> str | None:
+    """Path to the prebuilt agent binary for ``(os_name, arch, channel)``, or None.
 
-    Operator-placed env override wins, otherwise the GitHub-fetched cache
-    (``agent_release.cache_path``) is used if present (ADR-0015). Overrides:
+    Operator-placed env override wins for ``channel="stable"``, otherwise the
+    GitHub-fetched cache (``agent_release.cache_path``) is used if present
+    (ADR-0015). Overrides (stable only):
 
     * windows/x86_64 -> ``KENNY_AGENT_BINARY`` (the default, pre-Linux behavior).
     * linux/x86_64   -> ``KENNY_AGENT_BINARY_LINUX``.
     * linux/aarch64  -> ``KENNY_AGENT_BINARY_LINUX_AARCH64``.
+
+    ``channel="dev"`` has no manual-placement env in this iteration (ADR-0052)
+    — it goes straight to the channel-aware cache path.
     """
+
+    if channel != "stable":
+        cache = agent_release.cache_path(os_name, arch, channel)
+        return cache if os.path.exists(cache) else None
 
     if os_name == "linux":
         env = (
@@ -536,7 +546,12 @@ def build_download_routes(
         agent = registry.get(agent_id)
         os_name = agent.os if agent is not None else "windows"
         arch = agent.arch if agent is not None else "x86_64"
-        binary = agent_binary_path(os_name=os_name, arch=arch)
+        # Manual "update this one agent now" pulls the agent's *desired*
+        # channel (ADR-0052, soll not ist) via the update store already on
+        # app.state, so a dev-pinned agent gets the dev binary, not stable.
+        update_store = getattr(request.app.state, "update_store", None)
+        channel = await update_store.get_desired_channel(agent_id) if update_store is not None else "stable"
+        binary = agent_binary_path(os_name=os_name, arch=arch, channel=channel)
         if binary is None:
             return JSONResponse({"error": "agent binary not configured"}, status_code=503)
         version = agent_release.resolve_agent_version(binary)
@@ -601,6 +616,27 @@ def build_download_routes(
         body["repo"] = agent_release.github_repo()
         last = getattr(request.app.state, "last_fetch", None)
         body["last_fetch"] = last.to_public() if last is not None else None
+        # Dev-channel cache status, additive (ADR-0052): lets the dashboard show
+        # "dev binary available: yes/no" without a second round trip.
+        win_dev = agent_binary_path(channel="dev")
+        body["dev"] = {
+            "available": win_dev is not None,
+            "by_os": {
+                "windows": win_dev is not None,
+                "linux": (
+                    agent_binary_path("linux", "x86_64", "dev") is not None
+                    or agent_binary_path("linux", "aarch64", "dev") is not None
+                ),
+            },
+            "targets": [
+                {
+                    "os": os_name,
+                    "arch": arch,
+                    "available": agent_binary_path(os_name, arch, "dev") is not None,
+                }
+                for os_name, arch in agent_release.SUPPORTED_TARGETS
+            ],
+        }
         return JSONResponse(body)
 
     async def agent_binary_fetch(request: Request) -> Response:

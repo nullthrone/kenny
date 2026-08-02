@@ -67,6 +67,10 @@ class RegisterMeta(BaseModel):
     # predate #139 still register. Absent -> `_norm_arch` in distribution.py
     # defaults to x86_64.
     arch: str | None = None
+    # Release channel the binary was built as (``stable``/``dev``); optional so
+    # legacy/no-channel agents that predate ADR-0052 still register. Absent ->
+    # callers treat it as ``stable`` (see `registry.Agent.channel`).
+    channel: str | None = None
 
 
 # ---------------------------------------------------------------------------

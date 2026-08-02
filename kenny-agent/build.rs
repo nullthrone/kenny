@@ -4,6 +4,10 @@
 //! we expose it to the crate as the compile-time env `KENNY_BUILD_VERSION`.
 //! For dev/CI builds without the tag set, we fall back to the Cargo package
 //! version, so the binary always reports a sensible version.
+//!
+//! Also stamps the release channel (ADR-0052): CI sets `KENNY_AGENT_CHANNEL=dev` on
+//! the `release-dev.yml` build; every other build (stable release, local `cargo
+//! build`, CI's own test builds) leaves it unset and gets `stable`.
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -16,6 +20,14 @@ fn main() {
         .unwrap_or_else(|| env::var("CARGO_PKG_VERSION").unwrap());
     println!("cargo:rustc-env=KENNY_BUILD_VERSION={version}");
     println!("cargo:rerun-if-env-changed=KENNY_AGENT_VERSION");
+
+    let channel = env::var("KENNY_AGENT_CHANNEL")
+        .ok()
+        .map(|c| c.trim().to_string())
+        .filter(|c| !c.is_empty())
+        .unwrap_or_else(|| "stable".to_string());
+    println!("cargo:rustc-env=KENNY_BUILD_CHANNEL={channel}");
+    println!("cargo:rerun-if-env-changed=KENNY_AGENT_CHANNEL");
 
     embed_deny_rules();
 

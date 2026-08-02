@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from kenny_server.store import ATTEMPT_BUDGET, UpdateStore
+import aiosqlite
+
+from kenny_server.store import ATTEMPT_BUDGET, UpdateStore, _availability_key
 
 
 async def _store(tmp_path) -> UpdateStore:
@@ -119,4 +121,138 @@ async def test_list_campaigns_newest_first(tmp_path) -> None:
     # newest (most recently created -> active) first; each create supersedes the prior
     assert versions[0] == "1.2.0"
     assert len(campaigns) == 3
+    await store.close()
+
+
+# -- channel (ADR-0052): availability key composition, campaign channel scoping,
+# migration, and desired-channel round trip ----------------------------------
+
+
+def test_availability_key_composition() -> None:
+    assert _availability_key("agent") == "agent"
+    assert _availability_key("agent", "stable") == "agent"
+    assert _availability_key("agent", "dev") == "agent:dev"
+    assert _availability_key("server", "dev") == "server:dev"
+
+
+async def test_availability_stable_and_dev_are_independent_rows(tmp_path) -> None:
+    store = await _store(tmp_path)
+    await store.set_availability("agent", version="1.0.0", ok=True, message="ok")
+    await store.set_availability(_availability_key("agent", "dev"), version="1.1.0-dev.3", ok=True, message="ok")
+    stable = await store.get_availability("agent")
+    dev = await store.get_availability("agent:dev")
+    assert stable["version"] == "1.0.0"
+    assert dev["version"] == "1.1.0-dev.3"
+    both = await store.list_availability()
+    assert set(both) == {"agent", "agent:dev"}
+    await store.close()
+
+
+async def test_campaign_channel_defaults_to_stable_and_is_selectable(tmp_path) -> None:
+    store = await _store(tmp_path)
+    cid = await store.create_campaign(version="1.0.0", on_connect=False, expires_at=None, targets=[])
+    row = await store.get_campaign(cid)
+    assert row["channel"] == "stable"
+    await store.close()
+
+
+async def test_stable_and_dev_campaigns_coexist_without_superseding(tmp_path) -> None:
+    store = await _store(tmp_path)
+    stable_id = await store.create_campaign(
+        channel="stable", version="1.0.0", on_connect=False, expires_at=None, targets=[]
+    )
+    dev_id = await store.create_campaign(
+        channel="dev", version="1.1.0-dev.5", on_connect=False, expires_at=None, targets=[]
+    )
+    # approving the dev campaign must not revoke the concurrently-active stable one
+    stable_active = await store.get_active_campaign(channel="stable")
+    dev_active = await store.get_active_campaign(channel="dev")
+    assert stable_active["id"] == stable_id
+    assert dev_active["id"] == dev_id
+    assert stable_active["status"] == "active"
+    assert dev_active["status"] == "active"
+    await store.close()
+
+
+async def test_list_campaigns_scoped_by_channel(tmp_path) -> None:
+    store = await _store(tmp_path)
+    await store.create_campaign(
+        channel="stable", version="1.0.0", on_connect=False, expires_at=None, targets=[]
+    )
+    await store.create_campaign(
+        channel="dev", version="1.1.0-dev.1", on_connect=False, expires_at=None, targets=[]
+    )
+    stable_list = await store.list_campaigns(channel="stable")
+    dev_list = await store.list_campaigns(channel="dev")
+    assert [c["version"] for c in stable_list] == ["1.0.0"]
+    assert [c["version"] for c in dev_list] == ["1.1.0-dev.1"]
+    await store.close()
+
+
+async def test_channel_column_migrated_onto_pre_existing_db(tmp_path) -> None:
+    """A DB file created before the ``channel`` column existed gets it added
+    on the next connect (mirrors ``keystore.KeyStore``'s grace-column migration)."""
+
+    db_path = str(tmp_path / "updates.sqlite")
+    # Simulate a pre-migration DB: create the table without the `channel` column.
+    conn = await aiosqlite.connect(db_path)
+    await conn.executescript(
+        """
+        CREATE TABLE update_campaigns (
+            id           TEXT PRIMARY KEY,
+            component    TEXT NOT NULL DEFAULT 'agent',
+            version      TEXT NOT NULL,
+            on_connect   INTEGER NOT NULL DEFAULT 0,
+            status       TEXT NOT NULL DEFAULT 'active',
+            created_at   TEXT NOT NULL,
+            expires_at   TEXT,
+            revoked_at   TEXT,
+            completed_at TEXT
+        );
+        """
+    )
+    await conn.execute(
+        "INSERT INTO update_campaigns (id, version, on_connect, status, created_at) "
+        "VALUES ('legacy-id', '0.9.0', 0, 'active', '2025-01-01T00:00:00+00:00')"
+    )
+    await conn.commit()
+    await conn.close()
+
+    store = UpdateStore(db_path)
+    await store.connect()
+    row = await store.get_campaign("legacy-id")
+    assert row is not None
+    # the migrated column defaults to 'stable' for a pre-existing row
+    assert row["channel"] == "stable"
+    await store.close()
+
+
+async def test_desired_channel_round_trip(tmp_path) -> None:
+    store = await _store(tmp_path)
+    # no row -> defaults to stable
+    assert await store.get_desired_channel("pc-1") == "stable"
+    await store.set_desired_channel("pc-1", "dev")
+    assert await store.get_desired_channel("pc-1") == "dev"
+    # upsert: setting again updates rather than duplicating
+    await store.set_desired_channel("pc-1", "stable")
+    assert await store.get_desired_channel("pc-1") == "stable"
+    await store.close()
+
+
+async def test_desired_channel_rejects_invalid_value(tmp_path) -> None:
+    store = await _store(tmp_path)
+    try:
+        await store.set_desired_channel("pc-1", "beta")
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+    await store.close()
+
+
+async def test_list_desired_channels(tmp_path) -> None:
+    store = await _store(tmp_path)
+    await store.set_desired_channel("pc-1", "dev")
+    await store.set_desired_channel("pc-2", "stable")
+    channels = await store.list_desired_channels()
+    assert channels == {"pc-1": "dev", "pc-2": "stable"}
     await store.close()

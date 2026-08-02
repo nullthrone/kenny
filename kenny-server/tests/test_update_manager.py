@@ -77,9 +77,11 @@ def _mgr(tmp_path, *, tunnel=None, settings=None, registry=None) -> UpdateManage
     )
 
 
-def _write_cached_binary(tmp_path, monkeypatch, os_name, arch, version, content=b"binary-bytes"):
+def _write_cached_binary(
+    tmp_path, monkeypatch, os_name, arch, version, content=b"binary-bytes", channel="stable"
+):
     monkeypatch.setenv("KENNY_DB_PATH", str(tmp_path / "kenny.sqlite"))
-    path = agent_release.cache_path(os_name, arch)
+    path = agent_release.cache_path(os_name, arch, channel)
     with open(path, "wb") as fh:
         fh.write(content)
     with open(path + ".version", "w", encoding="utf-8") as fh:
@@ -357,4 +359,132 @@ async def test_expire_stale_campaign_transitions_and_cleans_up(tmp_path, monkeyp
     assert expired["status"] == "expired"
     assert not campaign_dir.exists()
     assert await mgr.store.get_active_campaign() is None
+    await mgr.store.close()
+
+
+# -- channel (ADR-0052): desired-channel eligibility, stable/dev campaign
+# independence, dev-channel detection ------------------------------------------
+
+
+async def test_dev_campaign_does_not_capture_stable_desired_agent(tmp_path, monkeypatch):
+    """The whole point of a per-agent desired channel: a dev campaign must
+    never apply to an agent an operator hasn't opted into dev."""
+
+    _write_cached_binary(tmp_path, monkeypatch, "windows", "x86_64", "1.1.0-dev.5", channel="dev")
+    registry = AgentRegistry()
+    registry.register_signed_async(
+        "pc-1", {"os": "windows", "arch": "x86_64", "version": "1.0.0"}, _noop
+    )
+    tunnel = _FakeTunnel()
+    mgr = _mgr(tmp_path, tunnel=tunnel, registry=registry)
+    await mgr.store.connect()
+    # pc-1's desired channel defaults to stable — never explicitly set to dev.
+    campaign = await mgr.approve_campaign(version="1.1.0-dev.5", channel="dev")
+
+    result = await mgr.apply_now(campaign["id"])
+    assert result["attempted"] == ["pc-1"]  # attempted, but ineligible -> no-op
+    assert tunnel.calls == []
+    state = await mgr.store.get_agent_state(campaign["id"], "pc-1")
+    assert state is None  # never even recorded an attempt (not eligible)
+    await mgr.store.close()
+
+
+async def test_dev_campaign_applies_once_agent_opts_into_dev(tmp_path, monkeypatch):
+    _write_cached_binary(tmp_path, monkeypatch, "windows", "x86_64", "1.1.0-dev.5", channel="dev")
+    registry = AgentRegistry()
+    registry.register_signed_async(
+        "pc-1", {"os": "windows", "arch": "x86_64", "version": "1.0.0"}, _noop
+    )
+    tunnel = _FakeTunnel()
+    mgr = _mgr(tmp_path, tunnel=tunnel, registry=registry)
+    await mgr.store.connect()
+    await mgr.store.set_desired_channel("pc-1", "dev")
+    campaign = await mgr.approve_campaign(version="1.1.0-dev.5", channel="dev")
+
+    result = await mgr.apply_now(campaign["id"])
+    assert result["attempted"] == ["pc-1"]
+    assert len(tunnel.calls) == 1
+    assert tunnel.calls[0][2]["version"] == "1.1.0-dev.5"
+    await mgr.store.close()
+
+
+async def test_approving_dev_campaign_does_not_revoke_active_stable_one(tmp_path, monkeypatch):
+    _write_cached_binary(tmp_path, monkeypatch, "windows", "x86_64", "1.0.0", channel="stable")
+    _write_cached_binary(tmp_path, monkeypatch, "windows", "x86_64", "1.1.0-dev.1", channel="dev")
+    mgr = _mgr(tmp_path)
+    await mgr.store.connect()
+    stable = await mgr.approve_campaign(version="1.0.0", channel="stable")
+    dev = await mgr.approve_campaign(version="1.1.0-dev.1", channel="dev")
+
+    stable_reloaded = await mgr.store.get_campaign(stable["id"])
+    dev_reloaded = await mgr.store.get_campaign(dev["id"])
+    assert stable_reloaded["status"] == "active"
+    assert dev_reloaded["status"] == "active"
+    await mgr.store.close()
+
+
+async def test_approving_stable_campaign_does_not_revoke_active_dev_one(tmp_path, monkeypatch):
+    _write_cached_binary(tmp_path, monkeypatch, "windows", "x86_64", "1.1.0-dev.1", channel="dev")
+    _write_cached_binary(tmp_path, monkeypatch, "windows", "x86_64", "1.0.0", channel="stable")
+    mgr = _mgr(tmp_path)
+    await mgr.store.connect()
+    dev = await mgr.approve_campaign(version="1.1.0-dev.1", channel="dev")
+    stable = await mgr.approve_campaign(version="1.0.0", channel="stable")
+
+    dev_reloaded = await mgr.store.get_campaign(dev["id"])
+    stable_reloaded = await mgr.store.get_campaign(stable["id"])
+    assert dev_reloaded["status"] == "active"
+    assert stable_reloaded["status"] == "active"
+    await mgr.store.close()
+
+
+async def test_fleet_status_reports_actual_and_desired_channel(tmp_path, monkeypatch):
+    _write_cached_binary(tmp_path, monkeypatch, "windows", "x86_64", "1.1.0-dev.1", channel="dev")
+    registry = AgentRegistry()
+    registry.register_signed_async(
+        "pc-1", {"os": "windows", "arch": "x86_64", "version": "1.0.0", "channel": "stable"}, _noop
+    )
+    mgr = _mgr(tmp_path, registry=registry)
+    await mgr.store.connect()
+    await mgr.store.set_desired_channel("pc-1", "dev")
+    await mgr.approve_campaign(version="1.1.0-dev.1", channel="dev")
+
+    status = await mgr.fleet_status()
+    assert status["active_campaign"] is None  # no stable campaign was approved
+    assert status["active_campaign_dev"] is not None
+    dev_row = next(a for a in status["agents_dev"] if a["agent_id"] == "pc-1")
+    assert dev_row["channel"] == "stable"  # actual/reported (hasn't updated yet)
+    assert dev_row["desired_channel"] == "dev"  # soll
+    assert dev_row["eligible"] is True
+    await mgr.store.close()
+
+
+async def test_check_now_populates_dev_availability_without_disturbing_stable(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("KENNY_DB_PATH", str(tmp_path / "kenny.sqlite"))
+    _write_cached_binary(tmp_path, monkeypatch, "windows", "x86_64", "1.0.0", channel="stable")
+
+    async def fake_fetch_tag(image_ref, *, github_token=None, client_factory=None, channel="stable"):
+        if channel == "dev":
+            return server_release.ServerReleaseInfo(
+                ok=True, message="latest tag 1.1.0-dev.9", tag="1.1.0-dev.9", digest="sha256:" + "f" * 64
+            )
+        return server_release.ServerReleaseInfo(ok=False, message="no semver-tagged release found")
+
+    monkeypatch.setattr(server_release, "fetch_latest_server_tag", fake_fetch_tag)
+    mgr = _mgr(tmp_path)
+    await mgr.store.connect()
+    result = await mgr.check_now()
+
+    assert "agent_dev" in result
+    assert "server_dev" in result
+    stable_row = await mgr.store.get_availability("agent")
+    dev_row = await mgr.store.get_availability("agent:dev")
+    assert stable_row["version"] == "1.0.0"  # untouched by the dev pass
+    assert dev_row is not None  # additive: no dev binary cached, but the row exists
+
+    server_dev_row = await mgr.store.get_availability("server:dev")
+    assert server_dev_row["version"] == "1.1.0-dev.9"
+    assert server_dev_row["digest"] == "sha256:" + "f" * 64
     await mgr.store.close()
