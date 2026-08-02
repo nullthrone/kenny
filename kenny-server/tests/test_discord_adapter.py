@@ -652,7 +652,9 @@ async def test_register_commands_gives_up_if_the_client_never_becomes_ready(
     )  # must return, not hang
 
 
-async def test_register_commands_survives_the_client_not_being_set_up_yet():
+async def test_register_commands_survives_the_client_not_being_set_up_yet(
+    monkeypatch: pytest.MonkeyPatch,
+):
     """The actual live regression, caught by installing this fix in production
     and watching it crash on shutdown: discord.py's ``wait_until_ready()``
     does not just block when called too early -- it raises ``RuntimeError``
@@ -663,17 +665,58 @@ async def test_register_commands_survives_the_client_not_being_set_up_yet():
     reached ``service.run()`` (so no mention or interaction was processed
     either -- not just slash commands), and only surfaced as a traceback
     during application shutdown, nowhere near where it actually happened.
+    Every retry hits the same wall here (the client is never started at all),
+    so this also covers exhausting every attempt.
     """
 
     discord = pytest.importorskip("discord")
+    from kenny_server import discord_adapter
 
+    monkeypatch.setattr(discord_adapter, "_REGISTER_RETRY_DELAY_SECS", 0.01)
     gateway = DiscordPyGateway(token="x", guild_allowlist=frozenset({"123"}))
     gateway._client = discord.Client(intents=discord.Intents.none())  # never started
 
     await gateway.register_commands(
         guild_id="123",
         commands=[CommandSpec(name="whoami", description="Show what kenny knows about you")],
-    )  # must return, not raise
+    )  # must return, not raise, even after every attempt fails
+
+
+async def test_register_commands_retries_past_the_not_ready_yet_race(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Pins the retry actually recovering, not just the failure being
+    swallowed: the first attempt hits the exact ``RuntimeError`` observed
+    live (client not set up yet), the connect task catches up shortly after,
+    and the next attempt must land the real registration call.
+    """
+
+    discord = pytest.importorskip("discord")
+    from kenny_server import discord_adapter
+
+    monkeypatch.setattr(discord_adapter, "_REGISTER_RETRY_DELAY_SECS", 0.05)
+    gateway = DiscordPyGateway(token="x", guild_allowlist=frozenset({"123"}))
+    client = discord.Client(intents=discord.Intents.none())  # not set up -- races attempt 1
+    gateway._client = client
+
+    calls = []
+
+    async def fake_bulk_upsert(app_id, guild_id, payload):
+        calls.append((app_id, guild_id, payload))
+
+    client.http.bulk_upsert_guild_commands = fake_bulk_upsert
+
+    async def catch_up_shortly() -> None:
+        await asyncio.sleep(0.01)  # well before the 0.05s retry delay elapses
+        await client._async_setup_hook()
+        client._connection.application_id = 999
+        client._ready.set()
+
+    asyncio.create_task(catch_up_shortly())
+    spec = CommandSpec(name="whoami", description="Show what kenny knows about you")
+    await gateway.register_commands(guild_id="123", commands=[spec])
+
+    assert calls == [(999, 123, [_command_spec_to_payload(spec)])]
 
 
 # ---------------------------------------------------------------------------

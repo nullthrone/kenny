@@ -151,6 +151,16 @@ CHUNK_TARGET_LIMIT = 1900
 # wait_until_ready() blocks on.
 _READY_TIMEOUT_SECS = 30
 
+# register_commands is called immediately after start() returns, which can
+# race the connect task before it has run even once -- discord.py's
+# wait_until_ready() raises RuntimeError outright in that exact window,
+# rather than blocking (see its own docstring below). One retry, almost
+# immediately, is enough in practice: the failure mode is "the other task
+# has not had a single turn yet", not a real fault, and any scheduler tick
+# clears it.
+_REGISTER_ATTEMPTS = 3
+_REGISTER_RETRY_DELAY_SECS = 1.0
+
 
 def chunk_message(content: str, limit: int = CHUNK_TARGET_LIMIT) -> list[str]:
     """Split ``content`` into chunks of at most ``limit`` characters.
@@ -1014,21 +1024,38 @@ class DiscordPyGateway:
         races the same connect task one level deeper still: discord.py's
         ``wait_until_ready()`` raises ``RuntimeError`` outright rather
         than blocking if called before the task has even reached its own
-        internal setup. Caught below along with everything else -- a
-        caller driving this immediately after ``start()`` (as
-        ``_discord_loop`` does) must never take the surface down with it.
+        internal setup -- observed live, not hypothetical: a caller
+        driving this immediately after ``start()`` (as ``_discord_loop``
+        does) hits it on the very first attempt more often than not, so a
+        single try is not enough. Retried up to ``_REGISTER_ATTEMPTS``
+        times with a short delay; every attempt failing is still caught,
+        never raised, so the ticket surface below is never put at risk
+        over slash commands.
         """
 
         if self._client is None:
             logger.warning("register_commands: gateway not started; skipping")
             return
-        try:
-            await asyncio.wait_for(self._client.wait_until_ready(), timeout=_READY_TIMEOUT_SECS)
-            if self._client.application_id is None:
-                raise RuntimeError("application_id still unset after wait_until_ready")
-            payload = [_command_spec_to_payload(spec) for spec in commands]
-            await self._client.http.bulk_upsert_guild_commands(
-                self._client.application_id, int(guild_id), payload
-            )
-        except Exception as exc:
-            logger.warning("register_commands(guild=%s): failed to register: %s", guild_id, exc)
+        payload = [_command_spec_to_payload(spec) for spec in commands]
+        last_exc: Exception | None = None
+        for attempt in range(1, _REGISTER_ATTEMPTS + 1):
+            try:
+                await asyncio.wait_for(
+                    self._client.wait_until_ready(), timeout=_READY_TIMEOUT_SECS
+                )
+                if self._client.application_id is None:
+                    raise RuntimeError("application_id still unset after wait_until_ready")
+                await self._client.http.bulk_upsert_guild_commands(
+                    self._client.application_id, int(guild_id), payload
+                )
+                return
+            except Exception as exc:  # noqa: BLE001 - retried, then swallowed below
+                last_exc = exc
+                if attempt < _REGISTER_ATTEMPTS:
+                    await asyncio.sleep(_REGISTER_RETRY_DELAY_SECS)
+        logger.warning(
+            "register_commands(guild=%s): failed to register after %d attempts: %s",
+            guild_id,
+            _REGISTER_ATTEMPTS,
+            last_exc,
+        )
