@@ -440,15 +440,17 @@ def _fake_interaction_command(
         resolved_channel = SimpleNamespace(id=channel_id)
         if parent_id is not None:
             resolved_channel.parent_id = parent_id
-    namespace = SimpleNamespace(**(options or {}))
+    data = {
+        "name": command_name,
+        "options": [{"name": k, "value": v} for k, v in (options or {}).items()],
+    }
     return SimpleNamespace(
         id=interaction_id,
         guild_id=guild_id,
         channel_id=channel_id,
         channel=resolved_channel,
         user=SimpleNamespace(id=user_id),
-        command=SimpleNamespace(name=command_name),
-        namespace=namespace,
+        data=data,
     )
 
 
@@ -497,6 +499,49 @@ def test_translated_slash_command_respects_the_allowlist_via_intake(guild_id, al
     event = _translate_slash_command(interaction)
     result = gateway._intake(event)
     assert (result is not None) is allowed
+
+
+async def test_translate_slash_command_against_a_real_unbound_interaction():
+    """Pins the actual production bug: discord.py's ``Interaction.command`` and
+    ``.namespace`` both require a ``discord.app_commands.CommandTree`` bound to
+    the client, which this gateway never constructs (commands are registered
+    via the raw REST endpoint in ``register_commands`` instead). Building a
+    *real* ``discord.Interaction`` against a client with no tree bound --
+    rather than a hand-built fake -- is the only way to prove
+    ``_translate_slash_command`` no longer touches either property.
+    """
+
+    discord = pytest.importorskip("discord")
+
+    client = discord.Client(intents=discord.Intents.none())
+    await client._async_setup_hook()
+    assert client._connection._command_tree is None
+
+    payload = {
+        "id": "111",
+        "application_id": "999",
+        "token": "tok",
+        "version": 1,
+        "type": 2,
+        "channel_id": "456",
+        "channel": {"id": "456", "type": 1},
+        "authorizing_integration_owners": {},
+        "attachment_size_limit": 25_000_000,
+        "user": {"id": "789", "username": "u", "discriminator": "0", "avatar": None},
+        "data": {
+            "id": "222",
+            "name": "close",
+            "type": 1,
+            "options": [{"name": "ticket", "type": 3, "value": "KEN-000123"}],
+        },
+    }
+    interaction = discord.Interaction(data=payload, state=client._connection)
+    assert interaction.command is None  # pins the precondition that crashed line 464
+
+    event = _translate_slash_command(interaction)
+
+    assert event.command == "close"
+    assert event.options == {"ticket": "KEN-000123"}
 
 
 def _fake_interaction_component(
