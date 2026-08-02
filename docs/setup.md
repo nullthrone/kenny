@@ -344,6 +344,25 @@ flowchart LR
   downloads/updates against that version. When `KENNY_GITHUB_TOKEN` is set the server auto-fetches
   all of them.
 
+### Dev channel (ADR-0052)
+
+Every push to `main` additionally publishes a **prerelease** build (`.github/workflows/release-dev.yml`,
+tag `v<next-patch>-dev.<run_number>`) via the same shared job body
+(`.github/workflows/_release-artifacts.yml`) and the same publish gate (image smoke test, e2e
+against the exact release binary) as a stable tag — nothing about how an artifact is verified
+differs by channel. Because GitHub Releases marks it `prerelease: true`, the stable resolution
+path (`GET /repos/{repo}/releases/latest`) never sees it, so the dev channel cannot affect stable
+agents or the stable server image. The server image also gets a floating `:edge` GHCR tag as a
+convenience `docker pull` alias; nothing server-side resolves or pins against it — detection always
+uses the exact versioned tag + digest.
+
+To run one PC on dev while the rest of the fleet stays stable: set that agent's **desired channel**
+to `dev` in the dashboard (or `POST /api/agents/{id}`), then approve a dev-channel update campaign
+the same way as a stable one. Only agents whose desired channel matches the campaign's channel are
+eligible — a dev campaign never touches an agent an operator hasn't opted in. A locally built agent
+can also self-identify as dev from the start via `KENNY_AGENT_CHANNEL=dev cargo build --release`
+(stamped into `register.meta.channel` and the `os_support` telemetry section).
+
 ### Code signing (Authenticode)
 
 An unsigned agent binary is more likely to be flagged by AV and game anti-cheat heuristics, and

@@ -18,8 +18,8 @@ from . import agent_release
 CACHE_TTL_S = 300.0
 FETCH_TIMEOUT_S = 10.0
 
-# repo -> (fetched_at, releases)
-_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+# (repo, include_prerelease) -> (fetched_at, releases)
+_cache: dict[tuple[str, bool], tuple[float, list[dict[str, Any]]]] = {}
 
 
 def _headers() -> dict[str, str]:
@@ -46,15 +46,21 @@ def _to_public(release: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def fetch_releases(repo: str) -> list[dict[str, Any]]:
+async def fetch_releases(repo: str, *, include_prerelease: bool = False) -> list[dict[str, Any]]:
     """Non-draft releases for ``repo``, newest first, cached for ``CACHE_TTL_S``.
 
-    Best-effort: never raises. On failure, serves the last good cache entry
-    (if any) rather than erroring the whole About popup; falls back to ``[]``.
+    ``include_prerelease=False`` (the default, matching the About modal's
+    existing stable-only view) additionally excludes ``prerelease`` entries —
+    a dev-channel (ADR-0052) release published via `main`-push never shows up
+    in the default changelog. The cache key includes the flag so the two views
+    never clobber each other. Best-effort: never raises. On failure, serves
+    the last good cache entry (if any) rather than erroring the whole About
+    popup; falls back to ``[]``.
     """
 
     now = time.monotonic()
-    cached = _cache.get(repo)
+    cache_key = (repo, include_prerelease)
+    cached = _cache.get(cache_key)
     if cached is not None and now - cached[0] < CACHE_TTL_S:
         return cached[1]
     try:
@@ -64,8 +70,12 @@ async def fetch_releases(repo: str) -> list[dict[str, Any]]:
                 params={"per_page": 30},
             )
             resp.raise_for_status()
-            releases = [_to_public(r) for r in resp.json() if not r.get("draft")]
+            releases = [
+                _to_public(r)
+                for r in resp.json()
+                if not r.get("draft") and (include_prerelease or not r.get("prerelease"))
+            ]
     except Exception:  # noqa: BLE001 - best-effort, degrade instead of erroring the modal
         return cached[1] if cached is not None else []
-    _cache[repo] = (now, releases)
+    _cache[cache_key] = (now, releases)
     return releases

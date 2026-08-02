@@ -79,6 +79,22 @@ class Agent:
 
         return _norm_arch(self.meta.get("arch"))
 
+    @property
+    def channel(self) -> str:
+        """The agent's actual/built release channel (``stable`` | ``dev``).
+
+        Read-only view over ``meta["channel"]`` (set from ``register.meta.channel``
+        on the wire, added in protocol 0.17, ADR-0052). This is what the connected
+        binary reports about itself, not what an operator *wants* it to run — that
+        desired channel is separate, operator-editable server-side state held in
+        ``store.UpdateStore`` (``get_desired_channel``/``set_desired_channel``), the
+        same soll/ist split ADR-0044 already uses for version vs. running version.
+        Legacy/no-channel agents and any unrecognized value default to ``stable``.
+        """
+
+        value = str(self.meta.get("channel") or "stable").lower()
+        return value if value in ("stable", "dev") else "stable"
+
     def to_public(self) -> dict[str, Any]:
         return {
             "agent_id": self.agent_id,
@@ -239,6 +255,22 @@ class AgentRegistry:
         agent = self._agents.get(agent_id)
         if agent is not None:
             agent.meta["arch"] = arch
+
+    def note_channel(self, agent_id: str, channel: str) -> None:
+        """Merge a telemetry-reported ``channel`` into the agent's stored meta.
+
+        A periodic reconfirmation of ``register.meta.channel`` (ADR-0052, protocol
+        0.17), the same pattern as :meth:`note_arch`. Guarded to only accept a
+        literal ``"stable"``/``"dev"`` so a malformed value never clobbers good
+        data. Merges into the existing ``meta`` dict in place. No-op if the agent
+        isn't known.
+        """
+
+        if channel not in ("stable", "dev"):
+            return
+        agent = self._agents.get(agent_id)
+        if agent is not None:
+            agent.meta["channel"] = channel
 
     def mark_offline(self, agent_id: str) -> None:
         agent = self._agents.get(agent_id)

@@ -203,6 +203,7 @@ async fn serve_once(
             os: crate::util::os_family().to_string(),
             version: crate::BUILD_VERSION.to_string(),
             arch: crate::util::arch().to_string(),
+            channel: crate::BUILD_CHANNEL.to_string(),
         },
     }))
     .await

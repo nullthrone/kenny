@@ -587,13 +587,26 @@ operator action.
       eligible agent immediately.
     - **Revoke** — stops future pushes under this campaign (an update already in flight to
       an agent cannot be recalled).
-    - A per-agent table: current version, online/offline, and status (**updated**,
-      **pending**, **held** after repeated refusal — e.g. the agent's local remote-control
-      switch is off — or **n/a** for an (os, arch) the release doesn't cover).
+    - A per-agent table: current version, **channel** (built / desired), online/offline, and
+      status (**updated**, **pending**, **held** after repeated refusal — e.g. the agent's
+      local remote-control switch is off — or **n/a** for an (os, arch, channel) the release
+      doesn't cover).
 
 A campaign always pins one exact version at approval time: a later check finding something
 newer never changes what an already-approved campaign pushes — it just becomes a new,
 separately-approvable candidate.
+
+### Dev channel (ADR-0052)
+
+Alongside the stable server/agent cards, the page shows a **latest dev** row for each and a
+second, independent **rollout campaign (dev)** card — a stable and a dev campaign can be
+active at the same time, since they target different agents. The per-agent channel column
+shows the agent's **built** channel (read-only — what the connected binary actually is,
+`stable` unless it was built with `KENNY_AGENT_CHANNEL=dev`) next to a **desired** channel
+selector an operator sets per agent. A dev campaign's eligibility — and what an on-connect
+auto-apply pushes — is decided by an agent's *desired* channel, not its currently-built one,
+so flipping an agent to `dev` and approving a dev campaign is what moves it, one PC at a
+time, onto the dev stream while the rest of the fleet stays on stable.
 
 ---
 

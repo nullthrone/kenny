@@ -103,6 +103,90 @@ async def test_fetch_latest_server_tag_no_such_package():
     assert "no such package" in res.message
 
 
+# -- dev channel (ADR-0052) ---------------------------------------------------
+
+
+def test_parse_semver_prerelease():
+    assert server_release._parse_semver_prerelease("2.0.5-dev.17") == (2, 0, 5, 17)
+    assert server_release._parse_semver_prerelease("2.0.5-dev.0") == (2, 0, 5, 0)
+    # a plain release tag is not itself a prerelease tag
+    assert server_release._parse_semver_prerelease("2.0.5") is None
+    assert server_release._parse_semver_prerelease("2.0.5-rc1") is None
+    assert server_release._parse_semver_prerelease("latest") is None
+
+
+def test_is_newer_dev_channel_orders_by_dev_n():
+    assert server_release.is_newer("2.0.5-dev.18", "2.0.5-dev.17", channel="dev")
+    assert not server_release.is_newer("2.0.5-dev.17", "2.0.5-dev.18", channel="dev")
+    assert not server_release.is_newer("2.0.5-dev.17", "2.0.5-dev.17", channel="dev")
+    # a higher patch triple wins regardless of dev_n
+    assert server_release.is_newer("2.0.6-dev.1", "2.0.5-dev.99", channel="dev")
+
+
+def test_is_newer_dev_channel_plain_release_compares_as_older_baseline():
+    # A same-triple plain release is treated as dev_n = -1 for comparison
+    # purposes only — a dev prerelease of that triple is "newer".
+    assert server_release.is_newer("2.0.5-dev.1", "2.0.5", channel="dev")
+    assert not server_release.is_newer("2.0.5", "2.0.5-dev.1", channel="dev")
+
+
+def test_is_newer_dev_channel_unparseable_never_claims_newer():
+    assert not server_release.is_newer("latest", "2.0.5-dev.1", channel="dev")
+    assert not server_release.is_newer("2.0.5-dev.1", "latest", channel="dev")
+
+
+def test_is_newer_stable_channel_unaffected_by_dev_tags():
+    # the stable comparison must never consider a "-dev." suffixed tag "newer"
+    assert not server_release.is_newer("2.0.5-dev.99", "2.0.4", channel="stable")
+
+
+async def test_fetch_latest_server_tag_dev_picks_highest_dev_tag():
+    def handle(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if request.url.path == "/token":
+            return httpx.Response(200, json={"token": "anon"})
+        if url.endswith("/tags/list"):
+            return httpx.Response(
+                200,
+                json={
+                    "tags": [
+                        "latest",
+                        "edge",
+                        "2.0.4",
+                        "2.0.5-dev.3",
+                        "2.0.5-dev.17",
+                        "2.0.5-dev.9",
+                    ]
+                },
+            )
+        if "/manifests/2.0.5-dev.17" in url and request.method == "HEAD":
+            return httpx.Response(200, headers={"Docker-Content-Digest": "sha256:" + "e" * 64})
+        return httpx.Response(404)
+
+    res = await server_release.fetch_latest_server_tag(
+        "ghcr.io/t11z/kenny-server", client_factory=_factory(handle), channel="dev"
+    )
+    assert res.ok
+    assert res.tag == "2.0.5-dev.17"  # highest dev_n, never the floating "edge" alias
+    assert res.digest == "sha256:" + "e" * 64
+
+
+async def test_fetch_latest_server_tag_dev_no_prerelease_tags():
+    def handle(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if request.url.path == "/token":
+            return httpx.Response(200, json={"token": "anon"})
+        if url.endswith("/tags/list"):
+            return httpx.Response(200, json={"tags": ["latest", "2.0.4", "edge"]})
+        return httpx.Response(404)
+
+    res = await server_release.fetch_latest_server_tag(
+        "ghcr.io/t11z/kenny-server", client_factory=_factory(handle), channel="dev"
+    )
+    assert not res.ok
+    assert res.tag is None
+
+
 async def test_fetch_latest_server_tag_uses_pat_for_private_package(monkeypatch):
     seen_auth = {}
 

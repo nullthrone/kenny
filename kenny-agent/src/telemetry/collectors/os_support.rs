@@ -3,7 +3,8 @@
 //! Portable basics (name/version) via `sysinfo`; Windows enriches with build and
 //! support lifecycle. Also carries `arch` (protocol 0.13), mirroring
 //! `register.meta.arch` — a periodic, self-refreshing reconfirmation of the CPU
-//! architecture the update-serving path relies on (see ADR-0040).
+//! architecture the update-serving path relies on (see ADR-0040). Since protocol
+//! 0.17 it likewise carries `channel`, mirroring `register.meta.channel` (ADR-0052).
 
 use serde_json::json;
 use sysinfo::System;
@@ -29,6 +30,7 @@ pub fn collect() -> Section {
             json!({
                 "name": name, "version": version, "build": null, "eol": null, "eol_date": null,
                 "arch": crate::util::arch(),
+                "channel": crate::BUILD_CHANNEL,
             }),
         )
     }
@@ -89,6 +91,7 @@ mod windows_impl {
                 "eol": eol,
                 "eol_date": eol_date,
                 "arch": crate::util::arch(),
+                "channel": crate::BUILD_CHANNEL,
             }),
         )
     }
@@ -133,5 +136,14 @@ mod tests {
             Some("x86_64") | Some("aarch64")
         ));
         assert_eq!(v["arch"].as_str().unwrap(), crate::util::arch());
+    }
+
+    #[test]
+    fn os_support_section_reports_channel() {
+        let v = collect().into_value();
+        // Test builds never set KENNY_AGENT_CHANNEL, so this asserts the
+        // build.rs default (`stable`) as well as the field's presence.
+        assert_eq!(v["channel"].as_str().unwrap(), crate::BUILD_CHANNEL);
+        assert_eq!(v["channel"].as_str().unwrap(), "stable");
     }
 }
