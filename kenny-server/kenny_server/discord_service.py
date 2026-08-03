@@ -1602,6 +1602,11 @@ class DiscordService:
             )
             return
 
+        # Answer the interaction before the turn, not after: open_ticket's own
+        # model turn can run for minutes (an approval gate), and the
+        # interaction token backing this reply is only good for ~15 minutes.
+        # Confirming first also means the click gets its "Opened KEN-..." the
+        # moment the thread exists, instead of only once the model is done.
         ticket = await self.open_ticket(
             principal=principal,
             agent_id=choice.agent_id,
@@ -1609,20 +1614,33 @@ class DiscordService:
             channel_id=claimed.channel_id,
             discord_user_id=claimed.discord_user_id,
             content=claimed.content,
+            run=False,
         )
         await self.gateway.respond_ephemeral(
             interaction_id=event.interaction_id,
             content=f"Opened KEN-{ticket.number:06d} for `{choice.agent_id}` — see the thread.",
         )
+        session = await self._session_for(ticket)
+        if session is not None:  # pragma: no cover - the account was just resolved
+            await self._run_turn(session, ticket)
 
     async def handle_component(self, event: ComponentEvent) -> None:
         choice = parse_host_custom_id(event.custom_id)
         if choice is not None:
+            # Discord requires the first ack of an interaction within ~3s.
+            # What follows (DB writes, thread creation, a full model turn) is
+            # routinely slower than that, so defer immediately -- the same
+            # fix handle_slash already has (see the docstring there). The two
+            # custom_id parsers above are pure and synchronous, so deciding
+            # this costs nothing and an interaction that is not kenny's own
+            # (an unrecognized custom_id) is never touched.
+            await self.gateway.defer_interaction(interaction_id=event.interaction_id)
             await self._handle_host_choice(event, choice)
             return
         parsed = parse_approval_custom_id(event.custom_id)
         if parsed is None:
             return
+        await self.gateway.defer_interaction(interaction_id=event.interaction_id)
         approval_id, approve = parsed.approval_id, parsed.action == "approve"
         principal = await self._principal_for(event.user_id, event.guild_id)
         if principal is None:

@@ -673,6 +673,90 @@ async def test_clicking_a_host_opens_the_parked_request(world: World) -> None:
     assert f"KEN-{ticket.number:06d}" in world.gateway.ephemerals[-1][1]
 
 
+async def test_host_click_defers_before_any_slow_work(world: World) -> None:
+    """Pins the button-click twin of the "app did not respond" bug (see
+    ``test_handle_slash_defers_before_any_slow_work``): opening the thread and
+    running the turn are routinely slower than Discord's ~3s ack window, so
+    the interaction must be deferred before either happens, not only
+    acknowledged once ``open_ticket`` has fully returned.
+    """
+
+    await _dad_with_a_fleet(world)
+    service = world.build(text_turn("Looking into it."))
+    await service.handle_event(mention("warum ist mein PC langsam?", author=D_DAD))
+    picker = world.gateway.pickers[-1]
+
+    real_open_thread = world.gateway.open_thread
+
+    async def checked_open_thread(**kwargs: Any):
+        assert world.gateway.deferred == ["i-pick"], (
+            "thread opened before the interaction was deferred"
+        )
+        return await real_open_thread(**kwargs)
+
+    world.gateway.open_thread = checked_open_thread  # type: ignore[method-assign]
+
+    await service.handle_event(
+        ComponentEvent(
+            guild_id=GUILD,
+            channel_id=SUPPORT,
+            message_id="picker-1",
+            user_id=D_DAD,
+            interaction_id="i-pick",
+            custom_id=picker["custom_ids"]["thomas-pc"],
+        )
+    )
+
+    assert world.gateway.deferred == ["i-pick"]
+    ticket = await only_ticket(world)
+    assert ticket.agent_id == "thomas-pc"
+    # The confirmation still lands, as a follow-up to the deferred interaction.
+    assert f"KEN-{ticket.number:06d}" in world.gateway.ephemerals[-1][1]
+
+
+async def test_an_unmapped_users_host_click_is_deferred_and_answered_with_nothing(
+    world: World,
+) -> None:
+    """A stranger's click must be genuinely inert (ADR-0048), not merely
+    silent -- an interaction Discord never sees acked shows the user a red
+    "interaction failed", which is itself a signal that something is there.
+    """
+
+    await _dad_with_a_fleet(world)
+    service = world.build(text_turn("unused"))
+    await service.handle_event(mention("my pc is slow", author=D_DAD))
+    request_id = world.gateway.pickers[-1]["request_id"]
+
+    await service.handle_event(pick(request_id, "thomas-pc", user=D_STRANGER))
+
+    assert world.gateway.deferred == ["i-pick"]
+    assert world.gateway.ephemerals == []
+    assert await world.tickets_store.list() == []
+    assert world.model_calls == 0
+
+
+async def test_an_unrecognized_custom_id_is_never_deferred(world: World) -> None:
+    """The two custom_id parsers decide this before anything is awaited, so an
+    interaction that is not one of kenny's own component clicks is left
+    completely untouched.
+    """
+
+    service = world.build()
+    await service.handle_event(
+        ComponentEvent(
+            guild_id=GUILD,
+            channel_id=SUPPORT,
+            message_id="m1",
+            user_id=D_LENA,
+            interaction_id="i-unknown",
+            custom_id="not-a-kenny-custom-id",
+        )
+    )
+
+    assert world.gateway.deferred == []
+    assert world.gateway.ephemerals == []
+
+
 async def test_only_the_asker_may_pick_the_host(world: World) -> None:
     await _dad_with_a_fleet(world)
     service = world.build(text_turn("unused"))
@@ -1331,6 +1415,39 @@ async def test_only_an_operator_can_approve(world: World) -> None:
     assert decided is not None and decided.status == "approved"
     assert decided.decided_by == world.dad["id"]
     assert world.gateway.resolved[-1]["outcome"] == "approved"
+
+
+async def test_approval_click_defers_before_deciding(world: World) -> None:
+    """The approval/consent twin of ``test_host_click_defers_before_any_slow_work``:
+    ``resolve_card`` and ``resume`` (a full model turn) are both slower than
+    Discord's ~3s ack window, so the click is deferred first.
+    """
+
+    await world.users.set_capability_profile(world.lena["id"], None)
+    service = world.build(
+        tool_turn(tool_use_block("t1", "winget_install", {"id": "Git.Git"})),
+        text_turn("Installed."),
+    )
+    await service.handle_event(mention("install git"))
+    ticket = await only_ticket(world)
+    approval = await world.tickets_store.get_open_approval(ticket.id)
+    assert approval is not None
+
+    real_decide = world.service.decide_approval
+
+    async def checked_decide_approval(*args: Any, **kwargs: Any):
+        assert world.gateway.deferred == ["i1"], (
+            "the decision was recorded before the interaction was deferred"
+        )
+        return await real_decide(*args, **kwargs)
+
+    world.service.decide_approval = checked_decide_approval  # type: ignore[method-assign]
+
+    await service.handle_event(click(approval.id, user=D_DAD, approve=True))
+
+    assert world.gateway.deferred == ["i1"]
+    decided = await world.tickets_store.get_approval(approval.id)
+    assert decided is not None and decided.status == "approved"
 
 
 async def test_denied_approval_feeds_the_refusal_back(world: World) -> None:
