@@ -283,12 +283,13 @@ def slash(
     author: str = D_LENA,
     guild: str = GUILD,
     interaction_id: str = "i-slash-1",
+    thread_id: str | None = None,
     options: dict[str, str] | None = None,
 ) -> SlashCommandEvent:
     return SlashCommandEvent(
         guild_id=guild,
         channel_id=SUPPORT,
-        thread_id=None,
+        thread_id=thread_id,
         user_id=author,
         interaction_id=interaction_id,
         command=command,
@@ -620,7 +621,11 @@ async def test_an_assignment_narrows_the_default_and_nothing_else(world: World) 
     service = world.build(text_turn("On it."))
 
     reply = await service.help_me(
-        discord_user_id=D_DAD, guild_id=GUILD, channel_id=SUPPORT, host="maria-pc"
+        discord_user_id=D_DAD,
+        guild_id=GUILD,
+        channel_id=SUPPORT,
+        interaction_id="i-help-1",
+        host="maria-pc",
     )
     ticket = await only_ticket(world)
     assert ticket.agent_id == "maria-pc"
@@ -723,29 +728,80 @@ async def test_a_picker_answers_once(world: World) -> None:
 
 async def test_help_me_asks_with_the_same_picker(world: World) -> None:
     """`/kenny help-me` used to answer "please say which PC" — the command the
-    caller had just run. It offers the choice instead."""
+    caller had just run. It offers the choice instead — once, as this
+    interaction's own ephemeral reply, with buttons and no public channel
+    post (see `test_help_me_picker_is_ephemeral_and_sent_once` for the
+    regression this guards against).
+    """
 
     await world.users.set_user_hosts(world.lena["id"], ["lena-pc", "lena-laptop"])
     service = world.build(text_turn("unused"))
 
-    reply = await service.help_me(
-        discord_user_id=D_LENA, guild_id=GUILD, channel_id=SUPPORT, content="it is slow"
+    await service.handle_slash(
+        slash("help-me", author=D_LENA, options={"problem": "it is slow"})
     )
 
     assert await world.tickets_store.list() == []
-    assert "Which PC" in reply
-    assert sorted(world.gateway.pickers[-1]["hosts"]) == ["lena-laptop", "lena-pc"]
+    picker = world.gateway.ephemeral_pickers[-1]
+    assert sorted(picker["hosts"]) == ["lena-laptop", "lena-pc"]
     # The description survives the detour, so the click does not lose it.
     await service.handle_event(
-        pick(world.gateway.pickers[-1]["request_id"], "lena-pc", user=D_LENA)
+        pick(picker["request_id"], "lena-pc", user=D_LENA)
     )
     assert "it is slow" in (await only_ticket(world)).title
+
+
+async def test_help_me_picker_is_ephemeral_and_sent_once(world: World) -> None:
+    """Regression: `/kenny help-me` used to post the "which PC" prompt twice —
+    once as a public channel message with the buttons, once as an ephemeral
+    text copy with none — and the public one leaked into the parent channel
+    whenever the command was typed inside a private ticket thread.
+    """
+
+    await world.users.set_user_hosts(world.lena["id"], ["lena-pc", "lena-laptop"])
+    service = world.build(text_turn("unused"))
+
+    await service.handle_slash(slash("help-me", author=D_LENA, thread_id="thread-1"))
+
+    assert world.gateway.pickers == []
+    assert len(world.gateway.ephemeral_pickers) == 1
+    assert not any("Which PC" in content for _, content in world.gateway.ephemerals)
+
+
+async def test_a_bare_mention_still_gets_one_public_picker(world: World) -> None:
+    """The mention path is untouched: a public picker, no ephemeral copy."""
+
+    await world.users.set_user_hosts(world.lena["id"], ["lena-pc", "lena-laptop"])
+    service = world.build(text_turn("unused"))
+
+    await service.handle_event(mention("help", author=D_LENA))
+
+    assert len(world.gateway.pickers) == 1
+    assert world.gateway.ephemeral_pickers == []
+
+
+async def test_help_me_fallback_for_too_large_a_fleet_is_sent_once(world: World) -> None:
+    """The too-many-hosts-to-click fallback must not double-post either."""
+
+    await world.users.set_user_hosts(world.lena["id"], [f"pc-{i}" for i in range(26)])
+    service = world.build(text_turn("unused"))
+
+    await service.handle_slash(slash("help-me", author=D_LENA))
+
+    assert world.gateway.posted == []
+    assert world.gateway.ephemeral_pickers == []
+    assert len(world.gateway.ephemerals) == 1
+    assert "Tell me which one" in world.gateway.ephemerals[-1][1]
 
 
 async def test_help_me_refuses_a_host_that_is_not_yours(world: World) -> None:
     service = world.build(text_turn("unused"))
     reply = await service.help_me(
-        discord_user_id=D_LENA, guild_id=GUILD, channel_id=SUPPORT, host="tim-pc"
+        discord_user_id=D_LENA,
+        guild_id=GUILD,
+        channel_id=SUPPORT,
+        interaction_id="i-help-2",
+        host="tim-pc",
     )
     assert "not one of your PCs" in reply
     assert await world.tickets_store.list() == []

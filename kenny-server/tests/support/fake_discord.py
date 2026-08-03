@@ -37,6 +37,7 @@ class FakeDiscordGateway:
     posted: list[tuple[str, str]] = field(default_factory=list)
     cards: list[dict] = field(default_factory=list)
     pickers: list[dict] = field(default_factory=list)
+    ephemeral_pickers: list[dict] = field(default_factory=list)
     ephemerals: list[tuple[str, str]] = field(default_factory=list)
     threads: list[ThreadRef] = field(default_factory=list)
     invited: list[list[str]] = field(default_factory=list)
@@ -154,6 +155,21 @@ class FakeDiscordGateway:
 
     async def respond_ephemeral(self, *, interaction_id: str, content: str) -> None:
         self.ephemerals.append((interaction_id, content))
+
+    async def respond_ephemeral_picker(
+        self, *, interaction_id: str, request_id: str, hosts: list[str], prompt: str
+    ) -> None:
+        self.ephemeral_pickers.append(
+            {
+                "interaction_id": interaction_id,
+                "request_id": request_id,
+                "hosts": list(hosts),
+                "prompt": prompt,
+                # As for the public picker: the custom_ids the buttons really
+                # carry, so a test clicks the gateway's own output.
+                "custom_ids": {h: build_host_custom_id(request_id, h) for h in hosts},
+            }
+        )
 
     async def defer_interaction(self, *, interaction_id: str) -> None:
         self.deferred.append(interaction_id)
