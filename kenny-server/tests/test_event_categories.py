@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
 import pytest
 
@@ -37,11 +38,38 @@ class _FakeClient:
         self.messages = _Messages(text, self.calls)
 
 
+class _SlowMessages:
+    def __init__(self, text: str, calls: list[int], delay: float) -> None:
+        self._text = text
+        self._calls = calls
+        self._delay = delay
+
+    def create(self, **_kwargs):
+        self._calls[0] += 1
+        time.sleep(self._delay)  # runs on a worker thread via asyncio.to_thread
+        return _Resp(self._text)
+
+
+class _SlowFakeClient:
+    """Like ``_FakeClient``, but ``messages.create`` blocks for ``delay``
+    seconds — exercises the bounded-wait / background-completion path
+    (``_classify`` runs it via ``asyncio.to_thread``, so this blocks a worker
+    thread, never the event loop)."""
+
+    def __init__(self, text: str, delay: float) -> None:
+        self.calls = [0]
+        self.messages = _SlowMessages(text, self.calls, delay)
+
+
 @pytest.fixture(autouse=True)
 def _clear_cache():
     ec._cache.clear()
+    ec._inflight.clear()
+    ec._failed_until.clear()
     yield
     ec._cache.clear()
+    ec._inflight.clear()
+    ec._failed_until.clear()
 
 
 def _run(coro):
@@ -92,7 +120,12 @@ def test_bad_response_falls_back_and_is_not_cached():
     bad = _FakeClient("not json at all")
     mapping = _run(ec.categorize_events(bad, groups))
     assert mapping[("disk", 51)] == {"category": "Other", "severity": "unknown", "cause": ""}
-    # Fallback isn't cached, so a later good client still classifies it.
+    # Fallback isn't cached, but a failed batch does back off for a while (so a
+    # persistently broken API isn't re-hit on every read) — see
+    # test_failed_batch_backs_off_then_retries for that in isolation. Once the
+    # backoff has expired, a later good client still classifies it.
+    assert ("disk", 51) in ec._failed_until
+    ec._failed_until.clear()
     good = _FakeClient('[{"category": "Disk & storage", "severity": "serious", "cause": "bad sectors"}]')
     mapping2 = _run(ec.categorize_events(good, groups))
     assert mapping2[("disk", 51)]["category"] == "Disk & storage"
@@ -184,3 +217,99 @@ def test_annotate_snapshots_stamps_across_multiple_snapshots(monkeypatch):
     assert snap_b["reliability"]["events"][1]["suspected_cause"] == "unexpected shutdown"
     # One batched call for both snapshots' distinct (source, event_id) pairs.
     assert client.calls[0] == 1
+
+
+# -- bounded wait / background completion (dashboard-latency fix) ----------
+
+
+def test_annotate_snapshots_does_not_block_on_slow_client():
+    # A cold cache + a slow/misbehaving Anthropic client used to leave the
+    # whole /api/fleet/overview request hanging on the classify call; a read
+    # must never block beyond `wait`.
+    snap = {"reliability": {"status": "warn", "summary": "", "events": [
+        {"source": "disk", "event_id": 51, "count": 3},
+    ]}}
+    client = _SlowFakeClient(
+        '[{"category": "Disk & storage", "severity": "serious", "cause": "bad sectors"}]',
+        delay=5.0,
+    )
+
+    async def scenario():
+        t0 = time.monotonic()
+        await ec.annotate_snapshots([snap], client_factory=lambda: client, wait=0.05)
+        elapsed = time.monotonic() - t0
+        assert elapsed < 1.0
+        # Let the background batch finish inside this event loop, rather than
+        # asyncio.run() cancelling a still-sleeping task at teardown.
+        task = ec._inflight.get(("disk", 51))
+        if task is not None:
+            await task
+
+    _run(scenario())
+    event = snap["reliability"]["events"][0]
+    # health_rules.py switches its whole reliability scoring rule based on
+    # whether events carry a `severity` at all — the fast path must still
+    # stamp the safe defaults rather than skip annotation outright.
+    assert "severity" in event
+    assert event["category"] == "Other"
+    assert event["severity"] == "unknown"
+
+
+def test_slow_classification_still_warms_the_cache():
+    # A batch that times out is not abandoned (asyncio.shield) — it keeps
+    # running and lands in the cache, so the next read gets the real category
+    # instead of paying the same latency (or the same Other) forever.
+    groups = [{"source": "disk", "event_id": 51, "sample": "x"}]
+    client = _SlowFakeClient(
+        '[{"category": "Disk & storage", "severity": "serious", "cause": "bad sectors"}]',
+        delay=0.05,
+    )
+
+    async def scenario():
+        first = await ec.categorize_events(client, groups, wait=0.0)
+        assert first[("disk", 51)]["category"] == "Other"
+        await asyncio.sleep(0.3)  # give the background batch time to land
+        second = await ec.categorize_events(client, groups, wait=0.0)
+        assert second[("disk", 51)]["category"] == "Disk & storage"
+        assert client.calls[0] == 1
+
+    _run(scenario())
+
+
+def test_concurrent_annotations_share_one_classification():
+    # api_fleet_overview and api_agent can race over the same event groups;
+    # they must ride along on one in-flight batch, not each fire their own.
+    groups = [{"source": "disk", "event_id": 51, "sample": "x"}]
+    client = _SlowFakeClient(
+        '[{"category": "Disk & storage", "severity": "serious", "cause": "bad sectors"}]',
+        delay=0.05,
+    )
+
+    async def scenario():
+        results = await asyncio.gather(
+            ec.categorize_events(client, groups, wait=1.0),
+            ec.categorize_events(client, groups, wait=1.0),
+        )
+        for mapping in results:
+            assert mapping[("disk", 51)]["category"] == "Disk & storage"
+        assert client.calls[0] == 1
+
+    _run(scenario())
+
+
+def test_failed_batch_backs_off_then_retries():
+    groups = [{"source": "disk", "event_id": 51, "sample": "x"}]
+    bad = _FakeClient("not json at all")
+    mapping1 = _run(ec.categorize_events(bad, groups))
+    assert mapping1[("disk", 51)]["category"] == "Other"
+    assert bad.calls[0] == 1
+    # Still cooling down: a second call does not re-hit the (still bad) API.
+    mapping2 = _run(ec.categorize_events(bad, groups))
+    assert mapping2[("disk", 51)]["category"] == "Other"
+    assert bad.calls[0] == 1
+    # Once the backoff has expired, classification retries and succeeds.
+    ec._failed_until.clear()
+    good = _FakeClient('[{"category": "Disk & storage", "severity": "serious", "cause": "bad sectors"}]')
+    mapping3 = _run(ec.categorize_events(good, groups))
+    assert mapping3[("disk", 51)]["category"] == "Disk & storage"
+    assert good.calls[0] == 1

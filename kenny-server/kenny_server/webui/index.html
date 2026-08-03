@@ -1270,12 +1270,17 @@
     // -- console state -----------------------------------------------------
     let state = { tab: "overview", activityView: "audit",
       fleet: null, bin: null, selected: null, detail: null,
-      overview: null, trend: null, topMetric: "disk", sankeyByOs: false, trendDays: 30,
+      overview: null, trend: null, overviewAt: 0, topMetric: "disk", sankeyByOs: false, trendDays: 30,
       audit: [], auditQuery: "", auditPage: 1,
       events: [], eventsQuery: "", eventsPage: 1,
       tickets: [], ticketsStateFilter: "", ticketDetail: null, approvalsCount: 0 };
     const AUDIT_PAGE_SIZE = 25;
     const EVENTS_PAGE_SIZE = 25;
+    // Bumped by router() on every navigation. An async render captures it on
+    // entry and drops its DOM writes if it no longer matches — a response from
+    // a tab the operator has already left must never clobber the tab they are
+    // looking at now.
+    let navToken = 0;
 
     // -- top-level tab routing (Fleet / Activity) via location.hash -------
     // Hash scheme: #/fleet, #/activity/audit, #/activity/events,
@@ -1326,12 +1331,20 @@
     }
 
     async function router() {
+      navToken++;
       disposeOvCharts();  // tear down Overview charts when leaving/re-entering
+      const prevTab = state.tab;
       const { tab, activityView, flaggedSev, ticketId } = parseHash();
       state.tab = tab;
       state.activityView = activityView;
       state.flaggedSev = flaggedSev || "warn";
       renderTabs();
+      // Tab switches must be visible on click, not when the data lands. Clearing
+      // app here also drops the Overview's large SVG DOM immediately, so leaving
+      // Overview is as snappy as entering it. Same-tab re-entry (gotoAgent ->
+      // router, a trend-window change, etc.) keeps its DOM until its own
+      // renderer decides to replace it.
+      if (prevTab !== tab) app.innerHTML = `<div class="k-muted">loading…</div>`;
       if (tab === "overview") await renderOverview();
       else if (tab === "activity") await renderActivity();
       else if (tab === "flagged") await renderFlagged();
@@ -1359,12 +1372,14 @@
     }
 
     async function renderFleet() {
+      const nav = navToken;
       const [fleet, bin] = await Promise.all([
         getJSON("/api/fleet"),
         getJSON("/api/agent-binary").catch(() => null),
       ]);
       state.fleet = fleet;
       state.bin = bin;
+      if (nav !== navToken) return;  // navigated away while this was loading
       const agents = fleet.agents || [];
       if (!state.selected || !agents.find(a => a.agent_id === state.selected)) {
         state.selected = worstOf(agents);
@@ -1393,8 +1408,13 @@
     // ====================================================================
     let ovChartInstances = [];
     let ovResizeBound = false;
+    // Handle of the requestAnimationFrame that builds the 8 non-KPI charts
+    // (see paintOverview) — cancelled on re-paint/dispose so a navigation
+    // mid-frame never runs the builders against a replaced #app.
+    let ovBuildRaf = 0;
 
     function disposeOvCharts() {
+      if (ovBuildRaf) { cancelAnimationFrame(ovBuildRaf); ovBuildRaf = 0; }
       ovChartInstances.forEach(i => { try { i.dispose(); } catch (e) {} });
       ovChartInstances = [];
     }
@@ -1415,7 +1435,19 @@
         ovChartInstances.forEach(i => { try { i.resize(); } catch (e) {} }));
     }
 
-    function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+    // getComputedStyle is re-read ~150x per Overview paint (chartBase() alone
+    // runs 10x), interleaved with the el.style.height writes in
+    // buildSections/buildTop/buildSankey — i.e. repeated forced style
+    // recalc. Memoize per theme; the theme attribute is the only thing that
+    // can change these values, and toggleTheme() sets it before repainting.
+    let _cssMemo = {}, _cssMemoTheme = null;
+    function cssVar(name) {
+      const t = document.documentElement.getAttribute("data-theme") || "dark";
+      if (t !== _cssMemoTheme) { _cssMemo = {}; _cssMemoTheme = t; }
+      if (!(name in _cssMemo))
+        _cssMemo[name] = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+      return _cssMemo[name];
+    }
     function statusColor(key) {
       return ({
         ok: cssVar("--ok-solid") || cssVar("--ok-dot"),
@@ -1467,14 +1499,38 @@
     }
 
     async function renderOverview() {
-      const [overview, trend, fleet] = await Promise.all([
-        getJSON("/api/fleet/overview"),
-        getJSON("/api/fleet/trend?days=" + state.trendDays).catch(() => ({ days: [] })),
-        state.fleet ? Promise.resolve(state.fleet) : getJSON("/api/fleet").catch(() => ({ agents: [] })),
-      ]);
+      const nav = navToken;
+      // Cache-first: state.overview/trend/fleet are already a complete paint
+      // source (paintOverview() repaints purely from them — see toggleTheme),
+      // so show the last known dashboard on the same tick as the click, then
+      // refresh behind it instead of blanking the tab for a whole round-trip.
+      const warm = !!(state.overview && state.fleet);
+      if (warm) { renderHeaderRight(state.fleet, state.fleet.agents || []); paintOverview(); }
+      // Rapid tab ping-pong shouldn't re-hit two endpoints that are seconds
+      // old; telemetry pushes are minutes apart, so a short freshness window
+      // costs nothing in staleness and saves a full reload.
+      if (warm && Date.now() - state.overviewAt < 15000) return;
+      let overview, trend, fleet;
+      try {
+        [overview, trend, fleet] = await Promise.all([
+          getJSON("/api/fleet/overview"),
+          getJSON("/api/fleet/trend?days=" + state.trendDays).catch(() => ({ days: [] })),
+          state.fleet ? Promise.resolve(state.fleet) : getJSON("/api/fleet").catch(() => ({ agents: [] })),
+        ]);
+      } catch (e) {
+        // /api/fleet/overview has no .catch() above (unlike trend/fleet) since
+        // there's no sane default to paint from — surface the error instead of
+        // silently rendering an empty dashboard, but only if we have nothing
+        // cached to fall back to; a warm tab just keeps showing stale data.
+        if (nav !== navToken || warm) return;
+        app.innerHTML = `<div class="k-airec__err">could not load overview: ${esc(e.message)}</div>`;
+        return;
+      }
       state.overview = overview;
       state.trend = trend;
       state.fleet = fleet;
+      state.overviewAt = Date.now();
+      if (nav !== navToken) return;  // navigated away while this was loading
       renderHeaderRight(fleet, fleet.agents || []);
       paintOverview();
     }
@@ -1527,17 +1583,9 @@
             `<div class="kc-chart" id="ov-trend" style="height:300px"></div>`)}
       </section>`;
 
+      // The KPI numbers are what's read first and cost nothing — paint them
+      // synchronously so they're on screen the same frame as the tab switch.
       buildKpis();
-      buildHealth();
-      buildPie("ov-os", o.os.segments.map(s => ({ ...s, label: osIcon(s.label) + s.label })), "OS", "box");
-      buildPie("ov-device", o.device.segments, "Device", "monitor");
-      buildPosture();
-      buildSections();
-      buildTop();
-      buildSankey();
-      buildReliabilityCategories();
-      buildTrend();
-      bindOvResize();
 
       const tsel = document.getElementById("ov-trend-sel");
       if (tsel) tsel.onchange = async () => {
@@ -1545,6 +1593,27 @@
         state.trend = await getJSON("/api/fleet/trend?days=" + state.trendDays).catch(() => ({ days: [] }));
         buildTrend();
       };
+
+      // The remaining 8 ECharts builds (incl. the sankey + heatmap) are the
+      // priciest part of a paint; deferring them one frame lets the browser
+      // paint the shell + KPI row first, which is what makes a tab switch
+      // feel instant rather than freezing for the whole synchronous block.
+      // Cancelled by disposeOvCharts() (top of this function, and on
+      // navigation away) so a stale frame never builds against a replaced
+      // #app.
+      ovBuildRaf = requestAnimationFrame(() => {
+        ovBuildRaf = 0;
+        buildHealth();
+        buildPie("ov-os", o.os.segments.map(s => ({ ...s, label: osIcon(s.label) + s.label })), "OS", "box");
+        buildPie("ov-device", o.device.segments, "Device", "monitor");
+        buildPosture();
+        buildSections();
+        buildTop();
+        buildSankey();
+        buildReliabilityCategories();
+        buildTrend();
+        bindOvResize();
+      });
     }
 
     function buildKpis() {
@@ -1831,10 +1900,12 @@
     }
 
     async function renderActivity() {
+      const nav = navToken;
       // The header metrics need fleet data in every tab; fetch it if missing.
       if (!state.fleet) {
         state.fleet = await getJSON("/api/fleet").catch(() => ({ agents: [] }));
       }
+      if (nav !== navToken) return;  // navigated away while this was loading
       renderHeaderRight(state.fleet, state.fleet.agents || []);
       // Lazy-load the fleet-wide logs on entry (same fallbacks as before).
       const [audit, events] = await Promise.all([
@@ -1843,6 +1914,7 @@
       ]);
       state.audit = audit.entries || [];
       state.events = events.entries || [];
+      if (nav !== navToken) return;  // navigated away while this was loading
       const view = state.activityView;
       // no-copilot: there is no copilot rail here, so reuse the 2-column layout
       // and let the tables use the full width the rail would otherwise occupy.
@@ -1876,16 +1948,20 @@
     function ticketStateLabel(s) { return String(s || "").replace(/_/g, " "); }
 
     async function renderTickets() {
+      const nav = navToken;
       if (!state.fleet) state.fleet = await getJSON("/api/fleet").catch(() => ({ agents: [] }));
+      if (nav !== navToken) return;  // navigated away while this was loading
       renderHeaderRight(state.fleet, state.fleet.agents || []);
       app.innerHTML = `<div class="ktk"><div class="k-muted">loading…</div></div>`;
       let data;
       try { data = await getJSON("/api/tickets?limit=200"); }
       catch (e) {
+        if (nav !== navToken) return;
         app.innerHTML = `<div class="ktk"><div class="k-airec__err">could not load tickets: ${esc(e.message)}</div></div>`;
         return;
       }
       state.tickets = data.tickets || [];
+      if (nav !== navToken) return;  // navigated away while this was loading
       app.innerHTML = ticketsPageHtml();
     }
     function ticketsPageHtml() {
@@ -1946,7 +2022,9 @@
     }
 
     async function renderTicketDetail(id) {
+      const nav = navToken;
       if (!state.fleet) state.fleet = await getJSON("/api/fleet").catch(() => ({ agents: [] }));
+      if (nav !== navToken) return;  // navigated away while this was loading
       renderHeaderRight(state.fleet, state.fleet.agents || []);
       app.innerHTML = `<div class="ktk"><div class="k-muted">loading…</div></div>`;
       let ticket, events;
@@ -1954,10 +2032,12 @@
         ticket = await getJSON("/api/tickets/" + encodeURIComponent(id));
         events = await getJSON("/api/tickets/" + encodeURIComponent(id) + "/events").catch(() => ({ events: [] }));
       } catch (e) {
+        if (nav !== navToken) return;
         app.innerHTML = `<div class="ktk"><div class="k-airec__err">could not load ticket: ${esc(e.message)}</div></div>`;
         return;
       }
       state.ticketDetail = { ticket, events: events.events || [] };
+      if (nav !== navToken) return;  // navigated away while this was loading
       app.innerHTML = ticketDetailPageHtml(state.ticketDetail);
     }
     function ticketDetailPageHtml(d) {
@@ -4900,10 +4980,12 @@
 
     // -- flagged view: warnings/critical grouped by agent (from the pills) --
     async function renderFlagged() {
+      const nav = navToken;
       // Reachable from any tab via the header pills; ensure fleet data is loaded.
       if (!state.fleet) {
         state.fleet = await getJSON("/api/fleet").catch(() => ({ agents: [] }));
       }
+      if (nav !== navToken) return;  // navigated away while this was loading
       const agents = state.fleet.agents || [];
       renderHeaderRight(state.fleet, agents);
       const sevName = state.flaggedSev === "crit" ? "crit" : "warn";

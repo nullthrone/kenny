@@ -71,9 +71,37 @@ degradation. Concretely (mirroring `recommend.py`):
   expand a category to the raw sources / event ids / sample messages. Categorization
   is an enhancement, never a hard dependency.
 - **Bad / accepted.** Categories are non-deterministic across model versions
-  (bounded by the fixed enum + cache). A first, cold dashboard load on a new event
-  type incurs one Haiku call's latency. Event **sample messages** are sent to the
+  (bounded by the fixed enum + cache). Event **sample messages** are sent to the
   API; they can contain app names and file paths (never more than the event log
   already holds, and less sensitive than the `web_activity` data ADR-0026 already
   sends) — acceptable for a self-hosted family deployment, and skipped entirely
-  when no key is set.
+  when no key is set. See the 2026-08-03 update below for how a cold-cache load
+  is now bounded rather than paying the classify call's full latency.
+
+## Update (2026-08-03): bounded wait instead of an unbounded read-path block
+
+The Overview tab (and the agent detail view) felt laggy switching in and out,
+traced in part to this ADR's "cold dashboard load incurs one Haiku call's
+latency" — with no timeout, a slow or failing Anthropic API blocked the whole
+`/api/fleet/overview` response indefinitely, and a failed classification was
+retried on every single subsequent read. The decision is unchanged —
+classification stays server-side, on the read path, cached, injected via
+`client_factory`, degrading to the fixed *Other*/`unknown` fallback — only the
+bound on how long a read may wait for it changes:
+
+- **Bounded wait, background completion.** `categorize_events` now blocks a
+  caller for at most `_CLASSIFY_WAIT_SECONDS` (1.5s); a batch that hasn't
+  finished by then is not abandoned — it keeps running via `asyncio.shield`
+  and lands in the cache for the next read, rather than being thrown away and
+  re-paying the same latency forever.
+- **Failure backoff.** A batch that fails outright backs off for
+  `_FAILURE_BACKOFF_SECONDS` (60s) before its keys are retried, so a
+  persistently broken or rate-limited API isn't re-hit by every dashboard read.
+- **In-flight dedupe.** Concurrent callers racing over the same uncached keys
+  (`api_fleet_overview` and `api_agent` can run at the same time) ride along on
+  one in-flight batch instead of firing duplicate calls.
+
+So the accepted cost is now the mirror image of the one above: a cold cache or
+a slow/failing API serves the safe defaults for that one response, and the
+real categories appear on the next read once the background batch lands —
+never an unbounded wait.
