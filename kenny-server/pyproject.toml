@@ -36,6 +36,7 @@ discord = [
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
+    "pytest-timeout>=2.3",
     "ruff>=0.5",
 ]
 docs = [
@@ -73,6 +74,15 @@ include = ["kenny_server*"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# A hung test previously sat in CI as "in_progress" for the runner's full
+# multi-hour job limit with no output -- indistinguishable from a healthy
+# slow job until someone cancelled it by hand. No test here legitimately
+# runs anywhere near this long (the slowest real workloads finish in low
+# single-digit seconds), so a bound this generous only ever fires on an
+# actual hang, and "thread" dumps every thread's stack into the log at that
+# point instead of leaving CI silent.
+timeout = 90
+timeout_method = "thread"
 
 [tool.ruff]
 line-length = 100

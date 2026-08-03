@@ -251,6 +251,10 @@ class DiscordGateway(Protocol):
 
     async def respond_ephemeral(self, *, interaction_id: str, content: str) -> None: ...
 
+    async def respond_ephemeral_picker(
+        self, *, interaction_id: str, request_id: str, hosts: list[str], prompt: str
+    ) -> None: ...
+
     async def defer_interaction(self, *, interaction_id: str) -> None: ...
 
     async def list_guild_members(self, *, guild_id: str) -> list[GuildMember]: ...
@@ -874,6 +878,26 @@ class DiscordPyGateway:
         message = await channel.send(embed=embed, view=view)
         return str(message.id)
 
+    def _host_picker_view(self, *, request_id: str, hosts: list[str]) -> Any:
+        """Build the one-button-per-host view shared by the public and the
+        ephemeral picker. `custom_id`s are read by `on_interaction` off the
+        raw payload (see `parse_host_custom_id`), never through the `View`'s
+        own callback machinery, so the view's lifetime does not matter --
+        both kinds of picker stay answerable across a restart.
+        """
+
+        discord = self._discord
+        view = discord.ui.View(timeout=None)
+        for agent_id in hosts:
+            view.add_item(
+                discord.ui.Button(
+                    label=agent_id[:80],  # Discord's label limit
+                    style=discord.ButtonStyle.secondary,
+                    custom_id=build_host_custom_id(request_id, agent_id),
+                )
+            )
+        return view
+
     async def post_host_picker(
         self,
         *,
@@ -891,16 +915,7 @@ class DiscordPyGateway:
         """
 
         discord = self._discord
-        view = discord.ui.View(timeout=None)
-        for agent_id in hosts:
-            view.add_item(
-                discord.ui.Button(
-                    label=agent_id[:80],  # Discord's label limit
-                    style=discord.ButtonStyle.secondary,
-                    custom_id=build_host_custom_id(request_id, agent_id),
-                )
-            )
-
+        view = self._host_picker_view(request_id=request_id, hosts=hosts)
         reference = None
         if reply_to is not None:
             reference = discord.MessageReference(
@@ -949,6 +964,35 @@ class DiscordPyGateway:
                 await interaction.response.send_message(content, ephemeral=True)
         except Exception as exc:
             logger.warning("respond_ephemeral(%s): failed to send: %s", interaction_id, exc)
+
+    async def respond_ephemeral_picker(
+        self, *, interaction_id: str, request_id: str, hosts: list[str], prompt: str
+    ) -> None:
+        """Like `respond_ephemeral`, but with the host-picker buttons attached.
+
+        This is what keeps a slash command's host picker in the same place
+        the command was typed -- an interaction response (deferred or not)
+        always renders there, whereas `post_host_picker` sends an ordinary
+        channel message that has no such guarantee inside a thread.
+        """
+
+        interaction = self._interactions.pop(interaction_id, None)
+        if interaction is None:
+            logger.warning(
+                "respond_ephemeral_picker: unknown or expired interaction_id=%s",
+                interaction_id,
+            )
+            return
+        view = self._host_picker_view(request_id=request_id, hosts=hosts)
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(prompt, view=view, ephemeral=True)
+            else:
+                await interaction.response.send_message(prompt, view=view, ephemeral=True)
+        except Exception as exc:
+            logger.warning(
+                "respond_ephemeral_picker(%s): failed to send: %s", interaction_id, exc
+            )
 
     async def defer_interaction(self, *, interaction_id: str) -> None:
         """Acknowledge an interaction within Discord's ~3 second window

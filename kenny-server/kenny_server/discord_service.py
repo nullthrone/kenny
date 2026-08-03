@@ -530,6 +530,22 @@ class _TurnState:
     blobs: list[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class HostPrompt:
+    """A "which PC is this about" prompt, built but not yet sent.
+
+    ``request_id`` is the parked row's id, and ``hosts`` are the candidates
+    to render as buttons -- or ``request_id is None`` and ``prompt`` is a
+    plain-text fallback when the fleet is too large to fit on one message's
+    buttons (see `_picker_fits`). The caller decides *where* and *how*
+    (public message with buttons vs. an ephemeral interaction reply).
+    """
+
+    prompt: str
+    request_id: str | None
+    hosts: list[str]
+
+
 class _RateLimiter:
     """Fixed-window-per-caller throttle (in-memory, dev-grade like ``CallLog``)."""
 
@@ -1002,7 +1018,7 @@ class DiscordService:
             )
             return
         if len(candidates) > 1:
-            await self._ask_which_host(
+            choice = await self._prepare_host_choice(
                 principal=principal,
                 candidates=candidates,
                 guild_id=event.guild_id,
@@ -1011,6 +1027,18 @@ class DiscordService:
                 content=event.content,
                 message_id=event.message_id,
             )
+            if choice.request_id is None:
+                await self.gateway.post_message(
+                    channel_id=event.channel_id, content=choice.prompt
+                )
+            else:
+                await self.gateway.post_host_picker(
+                    channel_id=event.channel_id,
+                    request_id=choice.request_id,
+                    hosts=choice.hosts,
+                    prompt=choice.prompt,
+                    reply_to=event.message_id,
+                )
             return
 
         await self.open_ticket(
@@ -1022,7 +1050,7 @@ class DiscordService:
             content=event.content,
         )
 
-    async def _ask_which_host(
+    async def _prepare_host_choice(
         self,
         *,
         principal: Principal,
@@ -1032,8 +1060,8 @@ class DiscordService:
         discord_user_id: str,
         content: str,
         message_id: str | None = None,
-    ) -> str:
-        """Park a request and ask which PC it is about, as buttons. Returns the reply.
+    ) -> HostPrompt:
+        """Park a request and build the "which PC" prompt. Sends nothing.
 
         A click is not a message. It carries no prose for the model to be steered
         by, it cannot be typed by a bystander into the channel, and it resolves
@@ -1042,6 +1070,13 @@ class DiscordService:
         host is *still* never inferred from what anyone wrote; the only thing
         that changed is that saying which one no longer requires knowing a slash
         command's option syntax.
+
+        Deliberately send-free: a bare mention answers this publicly in the
+        channel it was sent to, while `/kenny help-me` answers it as the
+        interaction's own ephemeral reply — the two callers decide that, this
+        just does the parking and wording shared by both. ``request_id is
+        None`` means the fleet does not fit on one message's buttons (see
+        `_picker_fits`) and ``prompt`` is a plain-text fallback instead.
         """
 
         listed = ", ".join(f"`{h}`" for h in candidates)
@@ -1050,8 +1085,7 @@ class DiscordService:
                 f"You have several PCs ({listed}). Tell me which one with "
                 "`/kenny help-me` and pick the host there — I will not guess."
             )
-            await self.gateway.post_message(channel_id=channel_id, content=fallback)
-            return fallback
+            return HostPrompt(prompt=fallback, request_id=None, hosts=candidates)
 
         pending = await self.store.open_pending_request(
             discord_user_id=discord_user_id,
@@ -1063,14 +1097,7 @@ class DiscordService:
             message_id=message_id,
         )
         prompt = f"Which PC is this about? ({listed})"
-        await self.gateway.post_host_picker(
-            channel_id=channel_id,
-            request_id=pending.id,
-            hosts=candidates,
-            prompt=prompt,
-            reply_to=message_id,
-        )
-        return prompt
+        return HostPrompt(prompt=prompt, request_id=pending.id, hosts=candidates)
 
     async def _handle_thread_message(
         self, event: MessageEvent, binding: TicketChannel
@@ -1784,13 +1811,21 @@ class DiscordService:
     # -- slash commands ----------------------------------------------------
 
     async def handle_slash(self, event: SlashCommandEvent) -> None:
-        """Dispatch a slash command and answer it ephemerally."""
+        """Dispatch a slash command and answer it ephemerally.
+
+        ``content`` ends up ``None`` exactly when the command has already
+        answered the interaction itself (the host picker, see `help_me`) --
+        the trailing `respond_ephemeral` is skipped for those so the picker
+        is not immediately followed by a second, textual reply to the same
+        interaction.
+        """
 
         await self.gateway.defer_interaction(interaction_id=event.interaction_id)
         command = (event.command or "").strip().lower()
         if command.startswith("kenny "):
             command = command[len("kenny ") :].strip()
         options = event.options or {}
+        content: str | None
         if command == "link":
             content = await self.link(
                 discord_user_id=event.user_id,
@@ -1806,10 +1841,18 @@ class DiscordService:
                 discord_user_id=event.user_id, guild_id=event.guild_id
             )
         elif command in ("help-me", "help_me"):
+            # channel_id, not thread_id: this is what gets parked and what
+            # open_ticket hands to open_thread -- a thread cannot itself host
+            # a thread, so the parent channel is the only correct value here,
+            # even when the command was typed inside an existing ticket
+            # thread. The host picker itself stays with the caller regardless
+            # (see help_me), because it is the interaction's own ephemeral
+            # reply rather than a channel post.
             content = await self.help_me(
                 discord_user_id=event.user_id,
                 guild_id=event.guild_id,
                 channel_id=event.channel_id,
+                interaction_id=event.interaction_id,
                 host=options.get("host"),
                 content=options.get("problem", ""),
             )
@@ -1827,9 +1870,10 @@ class DiscordService:
             )
         else:
             content = "Unknown command."
-        await self.gateway.respond_ephemeral(
-            interaction_id=event.interaction_id, content=content
-        )
+        if content is not None:
+            await self.gateway.respond_ephemeral(
+                interaction_id=event.interaction_id, content=content
+            )
 
     async def link(
         self, *, discord_user_id: str, guild_id: str, display_hint: str = ""
@@ -1899,10 +1943,16 @@ class DiscordService:
         discord_user_id: str,
         guild_id: str,
         channel_id: str,
+        interaction_id: str,
         host: str | None = None,
         content: str = "",
-    ) -> str:
-        """Open a ticket explicitly, naming the host when the caller has several."""
+    ) -> str | None:
+        """Open a ticket explicitly, naming the host when the caller has several.
+
+        Returns ``None`` when the multi-host picker was sent as its own
+        ephemeral reply to ``interaction_id`` -- the caller (`handle_slash`)
+        must not answer the interaction a second time in that case.
+        """
 
         principal = await self._principal_for(discord_user_id, guild_id)
         if principal is None:
@@ -1923,9 +1973,14 @@ class DiscordService:
         elif len(candidates) == 1:
             target = candidates[0]
         else:
-            # Same picker the mention path posts, rather than a second dead end
-            # telling the caller to rerun the command they just ran.
-            return await self._ask_which_host(
+            # Same picker the mention path offers, rather than a second dead
+            # end telling the caller to rerun the command they just ran --
+            # but sent as this interaction's own ephemeral reply, not a
+            # second channel post: an interaction response always renders
+            # where the command was typed, so this is what keeps the picker
+            # in a private ticket thread instead of leaking to its public
+            # parent channel.
+            choice = await self._prepare_host_choice(
                 principal=principal,
                 candidates=candidates,
                 guild_id=guild_id,
@@ -1933,6 +1988,15 @@ class DiscordService:
                 discord_user_id=discord_user_id,
                 content=content or "(no description given)",
             )
+            if choice.request_id is None:
+                return choice.prompt
+            await self.gateway.respond_ephemeral_picker(
+                interaction_id=interaction_id,
+                request_id=choice.request_id,
+                hosts=choice.hosts,
+                prompt=choice.prompt,
+            )
+            return None
         ticket = await self.open_ticket(
             principal=principal,
             agent_id=target,

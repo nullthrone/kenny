@@ -27,7 +27,8 @@ approval and state change underneath it. Three things can open one:
 - **A Discord mention.** Someone `@kenny`s the bot in the support channel (or runs
   `/kenny help-me`), kenny opens a private thread for it, and the ticket is born already
   pointed at that person's PC. If more than one PC could be meant, kenny asks first with a
-  row of buttons and opens nothing until one is clicked — see
+  row of buttons and opens nothing until one is clicked — publicly, replying to the
+  mention, or privately to the caller alone for `/kenny help-me` — see
   [Which PC a request is about](#which-pc-a-request-is-about).
 - **The dashboard.** Any signed-in account — including a scoped `user` — can open a ticket
   with **New ticket** on the [Tickets tab](dashboard.md). This is the same record type, it
@@ -170,9 +171,12 @@ Two things decide it, and they are **not** the same question:
 
 An unqualified request goes to the second list. One host on it → the ticket opens straight
 away. More than one → kenny posts one button per host and opens nothing until the asker
-clicks. Only the person who asked can answer, the click is good once, and the chosen host
-is re-checked against their scope at click time — a card that has been sitting in the
-channel since before an assignment changed does not get to use the old answer.
+clicks. A bare mention gets a public card replying to it; `/kenny help-me` gets the same
+buttons back as its own private reply, wherever the command was typed — including inside
+an existing ticket thread, so it never leaks into the public support channel. Only the
+person who asked can answer, the click is good once, and the chosen host is re-checked
+against their scope at click time — a card that has been sitting around since before an
+assignment changed does not get to use the old answer.
 
 Set the host scope for an operator too. Without it every bare mention from an operator
 account has to be answered with a question first, because reaching the whole fleet is
