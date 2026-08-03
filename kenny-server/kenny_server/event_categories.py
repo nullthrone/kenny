@@ -19,6 +19,17 @@ Two things keep this cheap and safe, mirroring ``recommend.py``:
   ``severity="unknown"``), so categorization degrades gracefully and never
   becomes a hard dependency — and "unknown" is scored as at least notable
   rather than silently trusted as benign.
+
+A third thing keeps a cold cache or a slow/broken API from turning into an
+unbounded dashboard read: classification never blocks a read beyond a bounded
+**wait** (see ``categorize_events``' ``wait`` parameter). A batch that hasn't
+finished when the wait elapses is not abandoned — the caller gets the safe
+defaults for this response, but the batch keeps running in the background
+(``asyncio.shield``) and lands in the cache for the next read. A batch that
+fails outright backs off for a short cooldown so a persistently broken API
+doesn't get re-hit on every single request. Concurrent callers racing over the
+same uncached keys (e.g. ``api_fleet_overview`` and ``api_agent``) ride along
+on one in-flight batch instead of firing duplicate calls.
 """
 
 from __future__ import annotations
@@ -26,7 +37,9 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from collections import OrderedDict
+from functools import lru_cache
 from typing import Any, Callable
 
 from .recommend import ai_available  # re-exported for callers
@@ -46,6 +59,16 @@ __all__ = [
 CATEGORIZE_MODEL = "claude-haiku-4-5"
 _MAX_TOKENS = 512
 _CACHE_MAX = 512
+# How long a read may block on classification before falling back to the safe
+# defaults for this response (the batch keeps running in the background — see
+# module docstring). 1.5s is comfortably above a warm-cache no-op (0ms) and a
+# typical Haiku batch, while still keeping a dashboard tab switch feeling fast
+# on a cold cache.
+_CLASSIFY_WAIT_SECONDS = 1.5
+# After a batch fails outright (bad response / API error), don't retry any of
+# its keys for this long — a broken or rate-limited API would otherwise be
+# re-hit by every single dashboard read.
+_FAILURE_BACKOFF_SECONDS = 60.0
 
 # Fixed friendly categories — stable heatmap rows/colours, and the only values the
 # model may return (anything else is coerced to FALLBACK). Order is display order.
@@ -113,6 +136,12 @@ def _cached_system() -> list[dict[str, Any]]:
 Classification = dict[str, str]
 
 _cache: "OrderedDict[tuple[str, int], Classification]" = OrderedDict()
+
+# Keys currently being classified by a background task (so a concurrent caller
+# rides along on the same batch instead of starting a duplicate one), and keys
+# whose last batch failed, mapped to the monotonic time their backoff expires.
+_inflight: dict[tuple[str, int], "asyncio.Task[None]"] = {}
+_failed_until: dict[tuple[str, int], float] = {}
 
 
 def _key(source: Any, event_id: Any) -> tuple[str, int]:
@@ -210,38 +239,102 @@ async def _classify(client: Any, groups: list[dict[str, Any]]) -> list[Classific
     return _parse_classifications(_extract_text(resp), len(groups))
 
 
+def _start_classify_task(
+    client: Any, todo: list[tuple[tuple[str, int], dict[str, Any]]]
+) -> "asyncio.Task[None]":
+    """Kick off one batched classify call for ``todo`` as a background task.
+
+    Registers every key in ``_inflight`` before the first ``await`` (i.e.
+    synchronously, before the caller can yield to another coroutine), so a
+    concurrent caller racing over the same keys (``api_fleet_overview`` vs.
+    ``api_agent``) sees them as already being classified and waits on this
+    same task instead of firing a duplicate batch call.
+    """
+
+    keys = [key for key, _ in todo]
+
+    async def _run() -> None:
+        try:
+            classifications = await _classify(client, [g for _, g in todo])
+            if classifications is None:
+                until = time.monotonic() + _FAILURE_BACKOFF_SECONDS
+                for key in keys:
+                    _failed_until[key] = until
+                return
+            for (key, _), classification in zip(todo, classifications):
+                _cache_put(key, classification)
+        finally:
+            for key in keys:
+                if _inflight.get(key) is task:
+                    _inflight.pop(key, None)
+
+    task: "asyncio.Task[None]" = asyncio.ensure_future(_run())
+    for key in keys:
+        _inflight[key] = task
+    # Best-effort background work: retrieve any exception so a task abandoned
+    # by a timed-out wait_for() never logs "exception was never retrieved".
+    # _classify() already swallows API/parse errors internally, so this only
+    # guards against a genuine bug in _run() itself.
+    task.add_done_callback(lambda t: t.exception())
+    return task
+
+
 async def categorize_events(
-    client: Any, groups: list[dict[str, Any]]
+    client: Any, groups: list[dict[str, Any]], *, wait: float = _CLASSIFY_WAIT_SECONDS
 ) -> dict[tuple[str, int], Classification]:
     """Map each ``(source, event_id)`` in ``groups`` to a classification.
 
-    Cached pairs are returned from the cache; the rest are classified in a single
-    batched call and cached. With ``client is None`` (no API key) or on any API /
-    parse failure the uncached pairs resolve to the safe default
-    (:func:`_default_classification`: ``category="Other"``, ``severity="unknown"``)
-    — not cached, so a later call can still classify them once a key is present.
+    Cached pairs are returned from the cache immediately. Uncached pairs are
+    classified in one batched call, but this call blocks on that batch for at
+    most ``wait`` seconds (see module docstring) — on timeout, on ``client is
+    None`` (no API key), or on any API/parse failure, the uncached pairs
+    resolve to the safe default (:func:`_default_classification`:
+    ``category="Other"``, ``severity="unknown"``). A timed-out batch is not
+    abandoned: it keeps running via ``asyncio.shield`` and populates the cache
+    for the next call. A pair already being classified by another concurrent
+    call (or cooling down after a recent failure) rides along / defers rather
+    than starting a duplicate batch.
     """
 
     result: dict[tuple[str, int], Classification] = {}
     todo: list[tuple[tuple[str, int], dict[str, Any]]] = []
-    seen: set[tuple[str, int]] = set()
+    uncached: list[tuple[str, int]] = []
+    seen_todo: set[tuple[str, int]] = set()
+    wait_tasks: "set[asyncio.Task[None]]" = set()
+    now = time.monotonic()
+
     for g in groups:
         key = _key(g.get("source"), g.get("event_id"))
         if key in _cache:
             _cache.move_to_end(key)
             result[key] = _cache[key]
-        elif key not in seen:
-            seen.add(key)
+            continue
+        uncached.append(key)
+        existing = _inflight.get(key)
+        if existing is not None:
+            wait_tasks.add(existing)
+        elif _failed_until.get(key, 0.0) > now:
+            pass  # cooling down after a recent failure; resolves to default below
+        elif key not in seen_todo:
+            seen_todo.add(key)
             todo.append((key, g))
 
     if todo and client is not None:
-        classifications = await _classify(client, [g for _, g in todo])
-        if classifications is not None:
-            for (key, _), classification in zip(todo, classifications):
-                _cache_put(key, classification)
-                result[key] = classification
+        wait_tasks.add(_start_classify_task(client, todo))
 
-    for key, _ in todo:
+    if wait_tasks:
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(asyncio.gather(*wait_tasks, return_exceptions=True)),
+                timeout=wait,
+            )
+        except asyncio.TimeoutError:
+            pass
+        for key in uncached:
+            if key in _cache:
+                result[key] = _cache[key]
+
+    for key in uncached:
         result.setdefault(key, _default_classification())
     return result
 
@@ -261,11 +354,17 @@ def annotate_events(
             e["suspected_cause"] = info["cause"]
 
 
+@lru_cache(maxsize=1)
 def default_client() -> Any:
     """Construct the real Anthropic client (lazy import; needs ``ANTHROPIC_API_KEY``).
 
     A tiny, dependency-free default so callers outside the dashboard (e.g. the
-    ``agent_health`` MCP tool) don't need their own Anthropic wiring.
+    ``agent_health`` MCP tool) don't need their own Anthropic wiring. Cached for
+    the life of the process — this runs on every dashboard read (even a fully
+    cached one, see ``annotate_snapshots``), and building a fresh
+    ``anthropic.Anthropic()`` (httpx client, connection pool) per read is pure
+    overhead once the cache is warm. Not used by tests, which always inject
+    ``client_factory``.
     """
 
     import anthropic
@@ -277,14 +376,17 @@ async def annotate_snapshots(
     snapshots: list[dict[str, Any] | None],
     *,
     client_factory: Callable[[], Any] | None = None,
+    wait: float = _CLASSIFY_WAIT_SECONDS,
 ) -> None:
     """Stamp category/severity/suspected_cause onto every reliability event
     across ``snapshots`` (mutating the in-memory dicts in place).
 
     One batched LLM call for the whole set, cached and deduped by
     :func:`categorize_events`; a no-op when there are no events, and — with no
-    API key — every event resolves to the safe defaults (ADR-0028).
-    ``client_factory`` defaults to :func:`default_client`.
+    API key, or a cold cache the classify call doesn't finish within ``wait``
+    seconds — every event resolves to the safe defaults (ADR-0028). A slow
+    batch keeps running in the background and warms the cache for the next
+    read. ``client_factory`` defaults to :func:`default_client`.
     """
 
     groups: list[dict[str, Any]] = []
@@ -296,7 +398,7 @@ async def annotate_snapshots(
         return
     factory = client_factory or default_client
     client = factory() if ai_available() else None
-    mapping = await categorize_events(client, groups)
+    mapping = await categorize_events(client, groups, wait=wait)
     for snap in snapshots:
         rel = snap.get("reliability") if isinstance(snap, dict) else None
         if isinstance(rel, dict) and isinstance(rel.get("events"), list):

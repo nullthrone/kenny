@@ -12,6 +12,7 @@ import json
 import os
 import re
 import signal
+import time
 from pathlib import Path
 from typing import Any
 
@@ -116,6 +117,33 @@ def build_api_routes(
 
         await annotate_snapshots(snapshots, client_factory=client_factory or _anthropic_client)
 
+    # /api/fleet/overview and /api/fleet/trend both walk the same 30-day daily
+    # window per agent (the browser fires them in parallel from the Overview
+    # tab, see index.html renderOverview), over one shared aiosqlite connection
+    # — so they serialize and each json.loads the same stored snapshots.
+    # Memoize briefly, scoped to this app instance (a module-level cache would
+    # leak results across the separate stores each test's build_app() creates).
+    # daily_latest buckets by CALENDAR DAY, so a few seconds of staleness cannot
+    # change a bucket except right at the moment a new day's first snapshot
+    # lands, and that self-heals within the TTL. Consumers (trends.disk_forecast,
+    # build_health) are read-only. Cached rows carry the suppression annotation
+    # (store.annotate) as of load time — bounded by the same TTL.
+    _DAILY_TTL_SECONDS = 15.0
+    _daily_cache: dict[tuple[str, str], tuple[float, list[dict[str, Any]]]] = {}
+
+    async def _daily_latest_cached(agent_id: str, since: str) -> list[dict[str, Any]]:
+        now = time.monotonic()
+        key = (agent_id, since)
+        hit = _daily_cache.get(key)
+        if hit is not None and now - hit[0] < _DAILY_TTL_SECONDS:
+            return hit[1]
+        rows = await store.daily_latest(agent_id, since)
+        _daily_cache[key] = (now, rows)
+        for stale_key, (ts, _) in list(_daily_cache.items()):  # bounded by fleet size
+            if now - ts >= _DAILY_TTL_SECONDS:
+                _daily_cache.pop(stale_key, None)
+        return rows
+
     async def api_fleet(request: Request) -> JSONResponse:
         ids = await _known_ids(registry, store)
         principal = principal_of(request)
@@ -169,7 +197,7 @@ def build_api_routes(
         ]
         disk_forecasts: dict[str, list[dict[str, Any]]] = {}
         for agent_id in ids:
-            daily = await store.daily_latest(agent_id, forecast_since)
+            daily = await _daily_latest_cached(agent_id, forecast_since)
             disk_forecasts[agent_id] = trends.disk_forecast(daily)
         return JSONResponse(
             fleet_stats.aggregate_overview(agents, disk_forecasts=disk_forecasts)
@@ -197,7 +225,7 @@ def build_api_routes(
         for agent_id in ids:
             agent = registry.get(agent_id)
             agent_os = agent.os if agent else "windows"
-            daily = await store.daily_latest(agent_id, since)
+            daily = await _daily_latest_cached(agent_id, since)
             points_by_agent[agent_id] = [
                 {
                     "collected_at": d["collected_at"],
