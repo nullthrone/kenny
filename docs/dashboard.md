@@ -433,6 +433,11 @@ not just from clicking through the list. It shows:
   retarget attempt, which is recorded even though nothing about the ticket changed).
 - **Reassign** (operator+) — point the ticket at a different PC; the only path that ever
   changes a ticket's target.
+- **Resolve** (operator+) — mark the ticket done, from any state that isn't already
+  `resolved`, `closed` or `cancelled`. Resolving one still sitting on a pending approval
+  request denies that request instead of leaving it open. An optional reason and an
+  "also close now" checkbox that chains straight into `closed` in the same action.
+- **Reopen** (operator+) — while still `resolved`, move it back to `in_progress`.
 - **Close ticket** — once `resolved`, close it outright rather than waiting for the
   auto-close window.
 

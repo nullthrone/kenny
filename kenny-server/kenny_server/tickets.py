@@ -61,17 +61,34 @@ STATES: frozenset[str] = frozenset(
 
 # Legal successor states. ``closed`` and ``cancelled`` map to the empty set:
 # they are terminal, and a ticket that reached them can only be read.
+#
+# ``resolved`` is a legal successor of every live state, not just the ones
+# where work actually happened: it means "nothing is left to do", which is
+# equally true of a ticket nobody has touched yet, one still waiting on a
+# reply, or one sitting on a gate nobody needs answered anymore. Routing a
+# `new` ticket through `triage`/`in_progress` just to reach `resolved` would
+# make the trail claim work that never happened. ``closed`` stays reachable
+# only from ``resolved`` — it is always the second half of "resolve, then
+# close", never a direct exit, so it keeps the property that every closed
+# ticket passed through the reopen window first.
 _ALLOWED: dict[str, frozenset[str]] = {
-    "new": frozenset({"triage", "cancelled"}),
+    "new": frozenset({"triage", "resolved", "cancelled"}),
     "triage": frozenset(
-        {"in_progress", "awaiting_user", "awaiting_approval", "awaiting_agent", "cancelled"}
+        {
+            "in_progress",
+            "awaiting_user",
+            "awaiting_approval",
+            "awaiting_agent",
+            "resolved",
+            "cancelled",
+        }
     ),
     "in_progress": frozenset(
         {"awaiting_user", "awaiting_approval", "awaiting_agent", "resolved", "cancelled"}
     ),
     "awaiting_user": frozenset({"in_progress", "resolved", "cancelled"}),
-    "awaiting_approval": frozenset({"in_progress", "cancelled"}),
-    "awaiting_agent": frozenset({"in_progress", "cancelled"}),
+    "awaiting_approval": frozenset({"in_progress", "resolved", "cancelled"}),
+    "awaiting_agent": frozenset({"in_progress", "resolved", "cancelled"}),
     # Reopening is only possible while the ticket is still ``resolved``; the
     # sweeper closes it once the window has passed, and ``closed`` is terminal.
     "resolved": frozenset({"closed", "in_progress"}),
@@ -97,11 +114,13 @@ ROLES: frozenset[str] = frozenset({"system", "requester", "operator"})
 # operator can put it there (see ``decide_approval``).
 _ACTORS: dict[tuple[str, str], frozenset[str]] = {
     ("new", "triage"): frozenset({"system", "operator"}),
+    ("new", "resolved"): frozenset({"system", "operator"}),
     ("new", "cancelled"): frozenset({"system", "requester", "operator"}),
     ("triage", "in_progress"): frozenset({"system", "operator"}),
     ("triage", "awaiting_user"): frozenset({"system", "operator"}),
     ("triage", "awaiting_approval"): frozenset({"system", "operator"}),
     ("triage", "awaiting_agent"): frozenset({"system", "operator"}),
+    ("triage", "resolved"): frozenset({"system", "operator"}),
     ("triage", "cancelled"): frozenset({"system", "requester", "operator"}),
     ("in_progress", "awaiting_user"): frozenset({"system", "operator"}),
     ("in_progress", "awaiting_approval"): frozenset({"system", "operator"}),
@@ -112,12 +131,18 @@ _ACTORS: dict[tuple[str, str], frozenset[str]] = {
     ("awaiting_user", "resolved"): frozenset({"system", "operator"}),
     ("awaiting_user", "cancelled"): frozenset({"system", "requester", "operator"}),
     ("awaiting_approval", "in_progress"): frozenset({"system", "operator"}),
+    ("awaiting_approval", "resolved"): frozenset({"system", "operator"}),
     ("awaiting_approval", "cancelled"): frozenset({"requester", "operator"}),
     ("awaiting_agent", "in_progress"): frozenset({"system", "operator"}),
+    ("awaiting_agent", "resolved"): frozenset({"system", "operator"}),
     ("awaiting_agent", "cancelled"): frozenset({"system", "requester", "operator"}),
     ("resolved", "closed"): frozenset({"system", "requester", "operator"}),
     ("resolved", "in_progress"): frozenset({"requester", "operator"}),
 }
+
+# States a transition into which must first deny any gate the ticket still has
+# open — see ``transition``'s docstring for why that is a denial, not a resume.
+_CLOSING_STATES: frozenset[str] = frozenset({"resolved", "closed", "cancelled"})
 
 # Actor-string prefixes to lifecycle roles. Operator and superuser accounts are
 # one role here: both may drive anything an operator may.
@@ -420,10 +445,29 @@ class TicketService:
         ticket at another host is a separate, operator-only :meth:`reassign`.
         The frozen routing target is a security control, so it must not be
         changeable as a side effect of a routine state change.
+
+        Leaving the ticket with its one open gate still ``pending`` — now
+        possible from ``awaiting_approval`` straight to ``resolved`` or
+        ``cancelled`` — denies that gate first, via :meth:`decide_approval`,
+        before the state itself moves. That deliberately does **not** run the
+        registered :data:`GateResumer`: the resumer's job is to let a denial or
+        expiry push the ticket back to ``in_progress`` so the assistant can
+        keep going, which is exactly what this transition is ending. A held
+        call must not execute, and a settled ticket must not be nudged back
+        to ``in_progress``, just because someone later decides the gate.
         """
 
         ticket = await self.get(ticket_id)
         self._check_transition(ticket, to_state, actor)
+        if to_state in _CLOSING_STATES:
+            open_gate = await self.store.get_open_approval(ticket_id)
+            if open_gate is not None:
+                await self.decide_approval(
+                    open_gate.id,
+                    approve=False,
+                    actor="system",
+                    decided_via=f"ticket moved to {to_state}",
+                )
         updated = await self.store.set_state(
             ticket_id, to_state, actor=actor, reason=reason, now=to_iso(self.now())
         )

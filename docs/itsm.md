@@ -71,6 +71,12 @@ A `resolved` ticket auto-closes after a while if nobody touches it (`KENNY_TICKE
 default 2 days) — a housekeeping sweep that runs alongside the alert and backup loops, not
 anything the requester has to do.
 
+An operator can call a ticket `resolved` from any state that isn't already `resolved`,
+`closed` or `cancelled` — including `new` (a duplicate, or something that fixed itself
+before kenny got to it) and `awaiting_approval`. Resolving one that is still sitting on a
+pending approval request denies that request rather than leaving it open: the sign-off is
+no longer meaningful once the ticket itself is done.
+
 <figure markdown>
   ![A ticket's detail view: the paraphrase, and the full event timeline.](assets/screenshots/ticket-detail.png)
   <figcaption>Ticket detail: the summary/resolution, and the timeline — messages, autonomous tool calls, a held approval, its decision, and the resolution, in order.</figcaption>

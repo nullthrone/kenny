@@ -1937,6 +1937,7 @@
     // ====================================================================
     const TICKET_STATES = ["new", "triage", "in_progress", "awaiting_user",
       "awaiting_approval", "awaiting_agent", "resolved", "closed", "cancelled"];
+    const TICKET_TERMINAL = ["resolved", "closed", "cancelled"];
 
     function ticketStateClass(s) {
       if (s === "resolved" || s === "closed") return "k-pill--ok";
@@ -2084,9 +2085,9 @@
       if (canOperate()) {
         btns.push(`<button class="k-btn k-btn--ghost k-btn--sm"
           onclick="openReassignModal(${jsArg(t.id)}, ${jsArg(t.agent_id || "")})">${icon('network', 13)}Reassign host</button>`);
-        if (t.state === "in_progress" || t.state === "awaiting_user") {
+        if (!TICKET_TERMINAL.includes(t.state)) {
           btns.push(`<button class="k-btn k-btn--primary k-btn--sm"
-            onclick="openResolveModal(${jsArg(t.id)})">${icon('check', 13)}Resolve</button>`);
+            onclick="openResolveModal(${jsArg(t.id)}, ${jsArg(t.state)})">${icon('check', 13)}Resolve</button>`);
         }
         if (t.state === "resolved") {
           btns.push(`<button class="k-btn k-btn--ghost k-btn--sm"
@@ -2159,8 +2160,12 @@
         await renderTicketDetail(id);
       } catch (e) { notify(e.message, "err"); }
     }
-    function openResolveModal(id) {
-      const body = `<div class="kfield"><span class="kfield__lbl">Reason (optional)</span>
+    function openResolveModal(id, currentState) {
+      const gateWarning = currentState === "awaiting_approval"
+        ? `<div class="k-muted" style="margin-bottom:8px">This ticket has a pending approval
+            request. Resolving it now denies that request instead of waiting for a decision.</div>`
+        : "";
+      const body = `${gateWarning}<div class="kfield"><span class="kfield__lbl">Reason (optional)</span>
           <input class="k-input" id="tk-resolve-reason" placeholder="what fixed it"></div>
         <label class="k-row" style="gap:6px"><input type="checkbox" id="tk-resolve-close"> also close now</label>
         <div class="k-modal__actions">

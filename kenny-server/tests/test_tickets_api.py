@@ -381,8 +381,8 @@ def test_transition_to_an_illegal_state_is_conflict(tmp_path) -> None:
     async def seed(users: UserStore, _store: TicketStore, svc: TicketService) -> dict:
         op = await users.create_user("op", "pw-123456", "operator")
         op_pat = await users.create_pat(op["id"], "t")
-        # Freshly created tickets start in "new" -- "resolved" is not a legal
-        # direct successor from there.
+        # Freshly created tickets start in "new" -- "in_progress" is not a
+        # legal direct successor from there (it has to pass through "triage").
         ticket = await svc.create(title="brand new", origin="dashboard")
         return {"op_pat": op_pat, "ticket_id": ticket.id}
 
@@ -391,10 +391,34 @@ def test_transition_to_an_illegal_state_is_conflict(tmp_path) -> None:
         s = app.state.seed
         r = c.post(
             f"/api/tickets/{s['ticket_id']}/transition",
-            json={"to": "resolved"},
+            json={"to": "in_progress"},
             headers=_hdr(s["op_pat"]),
         )
         assert r.status_code == 409
+
+
+def test_operator_can_resolve_a_brand_new_ticket(tmp_path) -> None:
+    async def seed(users: UserStore, _store: TicketStore, svc: TicketService) -> dict:
+        op = await users.create_user("op", "pw-123456", "operator")
+        op_pat = await users.create_pat(op["id"], "t")
+        ticket = await svc.create(title="turned out fine on its own", origin="dashboard")
+        return {"op_pat": op_pat, "ticket_id": ticket.id}
+
+    app = _build_app(tmp_path, seed)
+    with TestClient(app) as c:
+        s = app.state.seed
+        h = _hdr(s["op_pat"])
+        r = c.post(
+            f"/api/tickets/{s['ticket_id']}/transition",
+            json={"to": "resolved", "and_close": True, "reason": "fixed itself"},
+            headers=h,
+        )
+        assert r.status_code == 200
+        assert r.json()["state"] == "closed"
+
+        events = c.get(f"/api/tickets/{s['ticket_id']}/events", headers=h).json()["events"]
+        state_events = [e for e in events if e["kind"] == "state"]
+        assert [e["to_state"] for e in state_events[-2:]] == ["resolved", "closed"]
 
 
 def test_resolve_with_and_close_chains_straight_to_closed(tmp_path) -> None:
