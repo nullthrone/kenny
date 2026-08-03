@@ -153,15 +153,11 @@ async def test_every_legal_transition_succeeds(
     ("from_state", "to_state"),
     [
         ("new", "in_progress"),
-        ("new", "resolved"),
         ("new", "closed"),
-        ("triage", "resolved"),
         ("triage", "closed"),
         ("in_progress", "triage"),
         ("in_progress", "closed"),
         ("awaiting_user", "awaiting_approval"),
-        ("awaiting_approval", "resolved"),
-        ("awaiting_agent", "resolved"),
         ("resolved", "cancelled"),
         ("resolved", "awaiting_user"),
         ("in_progress", "in_progress"),
@@ -328,7 +324,76 @@ async def test_can_transition_mirrors_transition(service: TicketService) -> None
     ticket = await _ticket_in(service, "awaiting_approval")
     assert service.can_transition(ticket, "in_progress", "operator:3") is True
     assert service.can_transition(ticket, "in_progress", f"user:{REQUESTER_ID}") is False
-    assert service.can_transition(ticket, "resolved", "operator:3") is False
+    assert service.can_transition(ticket, "resolved", "operator:3") is True
+    # Resolving is not cancelling: a requester may withdraw their own ticket
+    # from here, but only an operator (or the system) may call it resolved.
+    assert service.can_transition(ticket, "resolved", f"user:{REQUESTER_ID}") is False
+
+
+# -- resolving from any live state ----------------------------------------------
+
+
+@pytest.mark.parametrize("from_state", ["new", "triage", "awaiting_approval", "awaiting_agent"])
+async def test_resolve_is_legal_from_every_live_state(
+    service: TicketService, from_state: str
+) -> None:
+    ticket = await _ticket_in(service, from_state)
+    moved = await service.transition(ticket.id, "resolved", actor="operator:3", reason="fixed")
+    assert moved.state == "resolved"
+
+
+@pytest.mark.parametrize("from_state", ["new", "triage", "awaiting_approval", "awaiting_agent"])
+async def test_requester_may_not_resolve_their_own_ticket(
+    service: TicketService, from_state: str
+) -> None:
+    ticket = await _ticket_in(service, from_state)
+    with pytest.raises(TransitionError) as exc:
+        await service.transition(
+            ticket.id, "resolved", actor=f"user:{REQUESTER_ID}", reason="I fixed it myself"
+        )
+    assert exc.value.code == "forbidden_actor"
+    assert (await service.get(ticket.id)).state == from_state
+
+
+@pytest.mark.parametrize("to_state", ["resolved", "cancelled"])
+async def test_leaving_awaiting_approval_denies_the_open_gate_without_resuming(
+    service: TicketService, to_state: str
+) -> None:
+    """Resolving or cancelling from ``awaiting_approval`` must settle its gate.
+
+    The gate is denied so an operator's later decision can never execute a
+    held call for a case that is already closed out -- but the registered
+    ``GateResumer`` must not run, or the denial would immediately push the
+    ticket back to ``in_progress``, undoing the very transition under test.
+    """
+
+    resumed: list[str] = []
+
+    async def resumer(approval):
+        resumed.append(approval.id)
+
+    service.set_gate_resumer(resumer)
+    ticket = await _ticket_in(service, "awaiting_approval")
+    approval = await service.open_approval(
+        ticket.id, tool_use_id="tu1", tool="reboot", tool_class="admin", args={}
+    )
+
+    actor = "operator:3" if to_state == "resolved" else f"user:{REQUESTER_ID}"
+    moved = await service.transition(ticket.id, to_state, actor=actor, reason="done")
+    assert moved.state == to_state
+
+    decided = await service.store.get_approval(approval.id)
+    assert decided.status == "denied"
+    assert resumed == []
+
+    trail = [e for e in await service.events(ticket.id) if e.kind == "approval"]
+    assert trail[-1].ok is False
+    assert trail[-1].actor == "system"
+
+    # The gate is already decided; approving it now must not reopen the case.
+    with pytest.raises(ApprovalConflictError):
+        await service.decide_approval(approval.id, approve=True, actor="operator:3")
+    assert (await service.get(ticket.id)).state == to_state
 
 
 # -- the frozen routing target -------------------------------------------------

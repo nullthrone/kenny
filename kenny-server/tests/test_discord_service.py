@@ -1451,6 +1451,32 @@ async def test_status_and_close_are_owner_scoped(world: World) -> None:
     assert world.gateway.archived == [world.gateway.threads[0].thread_id]
 
 
+async def test_close_works_on_a_ticket_still_in_new(world: World) -> None:
+    """`/kenny close` used to fail on a ticket no turn has ever touched.
+
+    ``close_ticket`` resolves-then-closes; that first step used to require
+    ``in_progress`` or ``awaiting_user``, so a ticket sitting in ``new`` (no
+    turn has run against it yet) or any of the ``awaiting_*`` states could not
+    be closed at all. ``resolved`` is now a legal successor of every live
+    state, so this must work regardless of where the ticket happens to sit.
+    """
+
+    service = world.build()
+    ticket = await world.service.create(
+        title="turned out fine",
+        origin="discord",
+        requester_user_id=world.lena["id"],
+        agent_id="lena-pc",
+    )
+    assert ticket.state == "new"
+
+    assert "closed" in await service.close_ticket(
+        discord_user_id=D_LENA, guild_id=GUILD, ticket_ref=f"KEN-{ticket.number:06d}"
+    )
+    refreshed = await world.tickets_store.get(ticket.id)
+    assert refreshed is not None and refreshed.state == "closed"
+
+
 async def test_cancel_marks_the_ticket_cancelled(world: World) -> None:
     service = world.build(text_turn("on it"))
     await service.handle_event(mention("never mind"))
