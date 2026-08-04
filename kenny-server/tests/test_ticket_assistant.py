@@ -306,7 +306,6 @@ async def test_operator_turn_does_not_count_against_the_cap(world: World) -> Non
 async def test_scoped_user_turn_hits_the_cap(world: World) -> None:
     assistant = world.assistant(text_turn("one"), max_turns_per_ticket=1)
     ticket = await _open_ticket(world, profile_snapshot=None)
-    await world.tickets.transition(ticket.id, "triage", actor="system")
     ticket = await world.tickets.transition(ticket.id, "in_progress", actor="system")
     session = await assistant.session_for(ticket, actor=world.kid_principal())
     assert session is not None
@@ -316,10 +315,10 @@ async def test_scoped_user_turn_hits_the_cap(world: World) -> None:
     assert session.turns == 1
     assert events[-1]["type"] == "done"
 
-    # Mirrors what a real caller (DiscordService/the dashboard route) does
-    # between turns: move the ticket back to in_progress before driving the
-    # next one.
-    ticket = await world.tickets.transition(ticket.id, "in_progress", actor="system")
+    # A completed turn with nothing held blocks the ticket on "user"; mirrors
+    # what a real caller (DiscordService/the dashboard route) does between
+    # turns — unblock before driving the next one.
+    ticket = await world.tickets.unblock(ticket.id, actor="system")
     session.messages.append({"role": "user", "content": "second"})
     events = [e async for e in assistant.run_turn(session, ticket)]
     # No second model call: the cap tripped before drive_events ran.
@@ -329,7 +328,9 @@ async def test_scoped_user_turn_hits_the_cap(world: World) -> None:
     assert "automatic-work limit" in events[-1]["assistant_text"]
 
     refreshed = await world.ticket_store.get(ticket.id)
-    assert refreshed is not None and refreshed.state == "awaiting_agent"
+    assert refreshed is not None
+    assert refreshed.state == "in_progress"
+    assert refreshed.blocked_on == "operator"
 
 
 # -- the frozen target: a model-supplied agent_id is discarded, not adopted ----

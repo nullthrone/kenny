@@ -7,9 +7,9 @@ through the same four controls the Discord surface has always enforced
 persist the resumable turn state, and hand the result to whichever
 :class:`TicketSurface` objects are listening. It knows nothing about Discord,
 Server-Sent Events, or any other transport — a surface is a narrow
-``deliver_reply``/``announce_gate``/``on_transition`` protocol, and
-:class:`~kenny_server.discord_service.DiscordService` is simply its first
-implementation.
+``deliver_reply``/``announce_gate``/``on_transition``/``notify_stalled``
+protocol, and :class:`~kenny_server.discord_service.DiscordService` is simply
+its first implementation.
 
 **Two things are true of every turn, whichever surface drove it:**
 
@@ -17,9 +17,10 @@ implementation.
    (whoever is typing right now), not always the ticket's requester — see
    :meth:`TicketAssistant.session_for` for the exact narrowing rule.
 2. The turn cap and Discord's per-user rate limit exist to bound *autonomous*
-   work; an operator driving a turn (from the dashboard, most commonly to move
-   a ticket past ``awaiting_agent``) is the human the cap was written to defer
-   to, so an operator-driven turn is neither capped nor limited.
+   work; an operator driving a turn (from the dashboard, most commonly to
+   unblock a ticket sitting on ``blocked_on="operator"``) is the human the cap
+   was written to defer to, so an operator-driven turn is neither capped nor
+   limited.
 
 The trail is the one place a reply is durable across surfaces: every message
 this module appends goes through :meth:`TicketAssistant.append_message`, which
@@ -510,7 +511,7 @@ class TicketPolicy:
 
         kind = pending.gate_kind
         tool_class = pending.tool_class or classify(pending.tool)
-        await self._service.open_approval(
+        approval = await self._service.open_approval(
             session.id,
             tool_use_id=pending.tool_use_id,
             tool=pending.tool,
@@ -521,19 +522,20 @@ class TicketPolicy:
             ttl_secs=self._ttl_secs,
             actor="kenny",
         )
-        to_state = "awaiting_user" if kind == "user_consent" else "awaiting_approval"
+        blocked_on = "user" if kind == "user_consent" else "approval"
         try:
-            await self._service.transition(
+            await self._service.block(
                 session.id,
-                to_state,
+                blocked_on,
                 actor="system",
                 reason=f"{pending.tool} held for {kind}",
+                ref=approval.id,
             )
         except TicketError:
             logger.warning(
-                "ticket %s: could not move to %s while holding %s",
+                "ticket %s: could not block on %s while holding %s",
                 session.id,
-                to_state,
+                blocked_on,
                 pending.tool,
                 exc_info=True,
             )
@@ -758,6 +760,8 @@ class TicketSurface(Protocol):
 
     async def on_transition(self, ticket: Ticket, to_state: str) -> None: ...
 
+    async def notify_stalled(self, ticket: Ticket, blocked_on: str) -> None: ...
+
 
 # -- the assistant ------------------------------------------------------------
 
@@ -807,6 +811,7 @@ class TicketAssistant:
         self._default_surfaces: list[TicketSurface] = []
         tickets.set_gate_resumer(self.resume_expired)
         tickets.set_transition_notifier(self.notify_transition)
+        tickets.set_stall_notifier(self.notify_stalled)
 
     def register_surface(self, surface: TicketSurface) -> None:
         """Add a surface to the default set (see ``_default_surfaces`` above)."""
@@ -831,6 +836,25 @@ class TicketAssistant:
                     ticket.id,
                     getattr(surface, "name", surface),
                     to_state,
+                )
+
+    async def notify_stalled(self, ticket: Ticket, blocked_on: str) -> None:
+        """The registered ``StallNotifier`` — fan out to every default surface.
+
+        Same shape and rationale as :meth:`notify_transition`: the stall sweep
+        has no per-call caller either, so this is registered once at
+        construction and reaches whichever surfaces are configured.
+        """
+
+        for surface in self._default_surfaces:
+            try:
+                await surface.notify_stalled(ticket, blocked_on)
+            except Exception:  # noqa: BLE001 - one surface's failure must not stop another
+                logger.exception(
+                    "ticket %s: surface %r failed to notify a stall on %s",
+                    ticket.id,
+                    getattr(surface, "name", surface),
+                    blocked_on,
                 )
 
     # -- sessions ------------------------------------------------------------
@@ -960,6 +984,26 @@ class TicketAssistant:
             logger.info(
                 "ticket %s: %s -> %s refused", ticket_id, actor, to_state, exc_info=True
             )
+
+    async def _block(
+        self, ticket_id: str, blocked_on: str, *, actor: str, reason: str = "", ref: str = ""
+    ) -> None:
+        try:
+            await self.tickets.block(ticket_id, blocked_on, actor=actor, reason=reason, ref=ref)
+        except TicketError:
+            logger.info(
+                "ticket %s: %s blocking on %s refused",
+                ticket_id,
+                actor,
+                blocked_on,
+                exc_info=True,
+            )
+
+    async def _unblock(self, ticket_id: str, *, actor: str, reason: str = "") -> None:
+        try:
+            await self.tickets.unblock(ticket_id, actor=actor, reason=reason)
+        except TicketError:
+            logger.info("ticket %s: %s unblock refused", ticket_id, actor, exc_info=True)
 
     # -- the trail's verbatim rows --------------------------------------------
 
@@ -1110,7 +1154,7 @@ class TicketAssistant:
                 )
                 for surface in surfaces:
                     await surface.deliver_reply(ticket, session, text)
-                await self._transition(ticket.id, "awaiting_agent", actor="system")
+                await self._block(ticket.id, "operator", actor="system", reason="turn cap reached")
                 yield {
                     "type": "done",
                     "session_id": session.id,
@@ -1168,9 +1212,7 @@ class TicketAssistant:
             for surface in surfaces:
                 await surface.announce_gate(ticket, session)
         elif state.done:
-            await self._transition(
-                ticket.id, "awaiting_user", actor="system", reason="waiting for a reply"
-            )
+            await self._block(ticket.id, "user", actor="system", reason="waiting for a reply")
 
     # -- resuming after a gate -------------------------------------------------
 
@@ -1226,10 +1268,8 @@ class TicketAssistant:
             return
         approved = approval.status == "approved"
 
-        if ticket.state != "in_progress":
-            await self._transition(
-                ticket_id, "in_progress", actor="system", reason="gate decided"
-            )
+        if ticket.blocked_on:
+            await self._unblock(ticket_id, actor="system", reason="gate decided")
             ticket = await self.store.get(ticket_id)
 
         seed: list[dict[str, Any]] = []

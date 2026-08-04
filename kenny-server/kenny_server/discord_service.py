@@ -587,7 +587,12 @@ class DiscordService:
             )
             return
 
-        if ticket.state != "in_progress":
+        if ticket.blocked_on == "user":
+            # The common case: this message is the reply kenny was waiting for.
+            await self.assistant._unblock(ticket.id, actor=self._actor(principal))
+            ticket = await self.tickets.get(ticket.id)
+        elif ticket.state != "in_progress":
+            # A message on a resolved ticket reopens it.
             await self.assistant._transition(ticket.id, "in_progress", actor=self._actor(principal))
             ticket = await self.tickets.get(ticket.id)
         await self._drive_turn(session, ticket)
@@ -630,8 +635,9 @@ class DiscordService:
             thread_id=thread.thread_id,
             private=self.private_threads,
         )
-        await self.assistant._transition(ticket.id, "triage", actor="system", reason="opened from Discord")
-        await self.assistant._transition(ticket.id, "in_progress", actor="system")
+        await self.assistant._transition(
+            ticket.id, "in_progress", actor="system", reason="opened from Discord"
+        )
         ticket = await self.tickets.get(ticket.id)
 
         session = await self.assistant.session_for(ticket, actor=principal)
@@ -764,6 +770,39 @@ class DiscordService:
                 await self._archive(ticket.id)
         except Exception:  # noqa: BLE001 - a notification must never break the transition
             logger.exception("ticket %s: on_transition(%s) failed", ticket.id, to_state)
+
+    async def notify_stalled(self, ticket: Ticket, blocked_on: str) -> None:
+        """Post a reminder for a ticket the stall sweep just nudged.
+
+        Fires from ``TicketAssistant.notify_stalled``, itself the registered
+        ``StallNotifier`` called from ``TicketService.nudge_stalled`` after the
+        nudge is already durably recorded on the trail — best-effort by
+        construction, same as :meth:`on_transition`. A ``user`` block reminds in
+        the ticket's own thread (where the requester is); an ``operator`` block
+        reminds in the operator channel, since nobody but an operator can act
+        on it.
+        """
+
+        if blocked_on == "user":
+            binding = await self.store.get_channel(ticket.id)
+            channel_id = binding.thread_id if binding else None
+            content = (
+                "Still waiting to hear back on this one — reply here whenever "
+                "you get a chance."
+            )
+        else:
+            channel_id = self.operator_channel_id
+            content = (
+                f'Ticket KEN-{ticket.number:06d} ("{ticket.title}") has been '
+                f"waiting on an operator for a while. {self.assistant.ticket_url(ticket.id)}"
+            )
+        if not channel_id:
+            return
+        try:
+            for chunk in chunk_message(content):
+                await self.gateway.post_message(channel_id=channel_id, content=chunk)
+        except Exception:  # noqa: BLE001 - the nudge is already durably recorded
+            logger.exception("ticket %s: failed to post the stall reminder", ticket.id)
 
     # -- decisions ---------------------------------------------------------
 
@@ -1078,14 +1117,16 @@ class DiscordService:
             return "You are not linked to a kenny account."
         tickets = await self.store.list(
             requester_user_id=principal.user_id,
-            states=("new", "triage", "in_progress", "awaiting_user", "awaiting_approval",
-                    "awaiting_agent", "resolved"),
+            states=("new", "in_progress", "resolved"),
             limit=10,
         )
         if not tickets:
             return "You have no open tickets."
         lines = [
-            f"KEN-{t.number:06d} — {t.title} ({t.state.replace('_', ' ')})" for t in tickets
+            f"KEN-{t.number:06d} — {t.title}"
+            f" ({t.state.replace('_', ' ')}"
+            f"{', waiting on ' + t.blocked_on if t.blocked_on else ''})"
+            for t in tickets
         ]
         return "Your open tickets:\n" + "\n".join(lines)
 

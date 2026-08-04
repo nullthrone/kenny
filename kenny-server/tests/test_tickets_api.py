@@ -418,7 +418,6 @@ def test_user_can_close_own_resolved_ticket(tmp_path) -> None:
         ticket = await svc.create(
             title="fixed now", origin="dashboard", requester_user_id=kid["id"]
         )
-        await svc.transition(ticket.id, "triage", actor="system")
         await svc.transition(ticket.id, "in_progress", actor="system")
         await svc.transition(ticket.id, "resolved", actor="system")
         return {"kid_pat": kid_pat, "ticket_id": ticket.id}
@@ -443,7 +442,6 @@ def test_operator_can_resolve_a_ticket_a_requester_cannot(tmp_path) -> None:
         ticket = await svc.create(
             title="printer jam", origin="dashboard", requester_user_id=kid["id"]
         )
-        await svc.transition(ticket.id, "triage", actor="system")
         await svc.transition(ticket.id, "in_progress", actor="system")
         return {"kid_pat": kid_pat, "op_pat": op_pat, "ticket_id": ticket.id}
 
@@ -468,12 +466,53 @@ def test_operator_can_resolve_a_ticket_a_requester_cannot(tmp_path) -> None:
         assert r.json()["state"] == "resolved"
 
 
+def test_requester_can_cancel_their_own_ticket_via_transition(tmp_path) -> None:
+    """The route this whole change exists to open up.
+
+    ``_ACTORS`` has always let a requester cancel their own ticket, but the
+    route used to floor at ``operator`` and had no ownership check, so that
+    right had no HTTP path. It does now — the same generic ``/transition``
+    route a `user` may call, narrowed by the pre-existing ``_owned_or_operator``
+    check every other per-ticket handler already carries.
+    """
+
+    async def seed(users: UserStore, _store: TicketStore, svc: TicketService) -> dict:
+        kid = await users.create_user("kid", "pw-123456", "user")
+        sib = await users.create_user("sib", "pw-123456", "user")
+        kid_pat = await users.create_pat(kid["id"], "t")
+        sib_pat = await users.create_pat(sib["id"], "t")
+        ticket = await svc.create(
+            title="never mind", origin="dashboard", requester_user_id=kid["id"]
+        )
+        return {"kid_pat": kid_pat, "sib_pat": sib_pat, "ticket_id": ticket.id}
+
+    app = _build_app(tmp_path, seed)
+    with TestClient(app) as c:
+        s = app.state.seed
+        # A sibling cannot even reach the transition check -- ownership is
+        # refused before the lifecycle rule is consulted.
+        r = c.post(
+            f"/api/tickets/{s['ticket_id']}/transition",
+            json={"to": "cancelled"},
+            headers=_hdr(s["sib_pat"]),
+        )
+        assert r.status_code == 403
+
+        r = c.post(
+            f"/api/tickets/{s['ticket_id']}/transition",
+            json={"to": "cancelled", "reason": "sorted it myself"},
+            headers=_hdr(s["kid_pat"]),
+        )
+        assert r.status_code == 200
+        assert r.json()["state"] == "cancelled"
+
+
 def test_transition_to_an_illegal_state_is_conflict(tmp_path) -> None:
     async def seed(users: UserStore, _store: TicketStore, svc: TicketService) -> dict:
         op = await users.create_user("op", "pw-123456", "operator")
         op_pat = await users.create_pat(op["id"], "t")
-        # Freshly created tickets start in "new" -- "in_progress" is not a
-        # legal direct successor from there (it has to pass through "triage").
+        # Freshly created tickets start in "new" -- "closed" is not a legal
+        # direct successor from there (it has to pass through "resolved").
         ticket = await svc.create(title="brand new", origin="dashboard")
         return {"op_pat": op_pat, "ticket_id": ticket.id}
 
@@ -482,7 +521,7 @@ def test_transition_to_an_illegal_state_is_conflict(tmp_path) -> None:
         s = app.state.seed
         r = c.post(
             f"/api/tickets/{s['ticket_id']}/transition",
-            json={"to": "in_progress"},
+            json={"to": "closed"},
             headers=_hdr(s["op_pat"]),
         )
         assert r.status_code == 409
@@ -517,7 +556,6 @@ def test_resolve_with_and_close_chains_straight_to_closed(tmp_path) -> None:
         op = await users.create_user("op", "pw-123456", "operator")
         op_pat = await users.create_pat(op["id"], "t")
         ticket = await svc.create(title="quick fix", origin="dashboard")
-        await svc.transition(ticket.id, "triage", actor="system")
         await svc.transition(ticket.id, "in_progress", actor="system")
         return {"op_pat": op_pat, "ticket_id": ticket.id}
 
@@ -543,7 +581,6 @@ def test_operator_can_reopen_a_resolved_ticket(tmp_path) -> None:
         op = await users.create_user("op", "pw-123456", "operator")
         op_pat = await users.create_pat(op["id"], "t")
         ticket = await svc.create(title="maybe fixed", origin="dashboard")
-        await svc.transition(ticket.id, "triage", actor="system")
         await svc.transition(ticket.id, "in_progress", actor="system")
         await svc.transition(ticket.id, "resolved", actor="system")
         return {"op_pat": op_pat, "ticket_id": ticket.id}
@@ -558,6 +595,185 @@ def test_operator_can_reopen_a_resolved_ticket(tmp_path) -> None:
         )
         assert r.status_code == 200
         assert r.json()["state"] == "in_progress"
+
+
+# -- vocabulary, summary, block/unblock/assign ----------------------------------
+
+
+def test_vocabulary_matches_the_live_tickets_module(tmp_path) -> None:
+    """Seam test: the endpoint exists precisely so the dashboard never hardcodes
+    a second copy of these constants that can silently drift from the service.
+    """
+
+    from kenny_server.tickets import BLOCKED_REASONS, KNOWN_CATEGORIES, PRIORITIES, STATES
+
+    async def seed(users: UserStore, _store: TicketStore, _svc: TicketService) -> dict:
+        kid = await users.create_user("kid", "pw-123456", "user")
+        return {"kid_pat": await users.create_pat(kid["id"], "t")}
+
+    app = _build_app(tmp_path, seed)
+    with TestClient(app) as c:
+        body = c.get("/api/tickets/vocabulary", headers=_hdr(app.state.seed["kid_pat"])).json()
+        assert set(body["states"]) == STATES
+        assert set(body["blocked_reasons"]) == BLOCKED_REASONS
+        assert tuple(body["priorities"]) == PRIORITIES
+        assert set(body["categories"]) == KNOWN_CATEGORIES
+
+
+def test_summary_counts_are_narrowed_for_a_scoped_user(tmp_path) -> None:
+    async def seed(users: UserStore, _store: TicketStore, svc: TicketService) -> dict:
+        kid = await users.create_user("kid", "pw-123456", "user")
+        op = await users.create_user("op", "pw-123456", "operator")
+        kid_pat = await users.create_pat(kid["id"], "t")
+        op_pat = await users.create_pat(op["id"], "t")
+        await svc.create(title="kid's", origin="dashboard", requester_user_id=kid["id"])
+        await svc.create(title="alert", origin="alert")
+        return {"kid_pat": kid_pat, "op_pat": op_pat}
+
+    app = _build_app(tmp_path, seed)
+    with TestClient(app) as c:
+        s = app.state.seed
+        kid_summary = c.get("/api/tickets/summary", headers=_hdr(s["kid_pat"])).json()
+        assert kid_summary["new"] == 1  # kid's own ticket only
+        op_summary = c.get("/api/tickets/summary", headers=_hdr(s["op_pat"])).json()
+        assert op_summary["new"] == 1
+        assert op_summary["needs_you"] == 1  # the alert-origin ticket
+
+
+def test_block_is_operator_only_and_reachable(tmp_path) -> None:
+    async def seed(users: UserStore, _store: TicketStore, svc: TicketService) -> dict:
+        kid = await users.create_user("kid", "pw-123456", "user")
+        op = await users.create_user("op", "pw-123456", "operator")
+        kid_pat = await users.create_pat(kid["id"], "t")
+        op_pat = await users.create_pat(op["id"], "t")
+        ticket = await svc.create(
+            title="need info", origin="dashboard", requester_user_id=kid["id"]
+        )
+        await svc.transition(ticket.id, "in_progress", actor="system")
+        return {"kid_pat": kid_pat, "op_pat": op_pat, "ticket_id": ticket.id}
+
+    app = _build_app(tmp_path, seed)
+    with TestClient(app) as c:
+        s = app.state.seed
+        assert (
+            c.post(
+                f"/api/tickets/{s['ticket_id']}/block",
+                json={"blocked_on": "user"},
+                headers=_hdr(s["kid_pat"]),
+            ).status_code
+            == 403
+        )
+        r = c.post(
+            f"/api/tickets/{s['ticket_id']}/block",
+            json={"blocked_on": "user", "reason": "need the model number"},
+            headers=_hdr(s["op_pat"]),
+        )
+        assert r.status_code == 200
+        assert r.json()["blocked_on"] == "user"
+        assert r.json()["can_unblock"] is True
+
+
+def test_unblock_lets_the_requester_answer_their_own_user_block(tmp_path) -> None:
+    async def seed(users: UserStore, _store: TicketStore, svc: TicketService) -> dict:
+        kid = await users.create_user("kid", "pw-123456", "user")
+        sib = await users.create_user("sib", "pw-123456", "user")
+        kid_pat = await users.create_pat(kid["id"], "t")
+        sib_pat = await users.create_pat(sib["id"], "t")
+        ticket = await svc.create(
+            title="need info", origin="dashboard", requester_user_id=kid["id"]
+        )
+        await svc.transition(ticket.id, "in_progress", actor="system")
+        await svc.block(ticket.id, "user", actor="system")
+        return {"kid_pat": kid_pat, "sib_pat": sib_pat, "ticket_id": ticket.id}
+
+    app = _build_app(tmp_path, seed)
+    with TestClient(app) as c:
+        s = app.state.seed
+        assert (
+            c.post(
+                f"/api/tickets/{s['ticket_id']}/unblock", json={}, headers=_hdr(s["sib_pat"])
+            ).status_code
+            == 403
+        )
+        r = c.post(
+            f"/api/tickets/{s['ticket_id']}/unblock", json={}, headers=_hdr(s["kid_pat"])
+        )
+        assert r.status_code == 200
+        assert r.json()["blocked_on"] == ""
+
+
+def test_assign_claims_and_unclaims_operator_only(tmp_path) -> None:
+    async def seed(users: UserStore, _store: TicketStore, svc: TicketService) -> dict:
+        kid = await users.create_user("kid", "pw-123456", "user")
+        op = await users.create_user("op", "pw-123456", "operator")
+        kid_pat = await users.create_pat(kid["id"], "t")
+        op_pat = await users.create_pat(op["id"], "t")
+        ticket = await svc.create(title="claim me", origin="dashboard")
+        return {"kid_pat": kid_pat, "op_pat": op_pat, "op_id": op["id"], "ticket_id": ticket.id}
+
+    app = _build_app(tmp_path, seed)
+    with TestClient(app) as c:
+        s = app.state.seed
+        assert (
+            c.post(
+                f"/api/tickets/{s['ticket_id']}/assign",
+                json={"assignee_user_id": s["op_id"]},
+                headers=_hdr(s["kid_pat"]),
+            ).status_code
+            == 403
+        )
+        r = c.post(
+            f"/api/tickets/{s['ticket_id']}/assign",
+            json={"assignee_user_id": s["op_id"]},
+            headers=_hdr(s["op_pat"]),
+        )
+        assert r.status_code == 200
+        assert r.json()["assignee_user_id"] == s["op_id"]
+
+        r = c.post(
+            f"/api/tickets/{s['ticket_id']}/assign",
+            json={"assignee_user_id": None},
+            headers=_hdr(s["op_pat"]),
+        )
+        assert r.status_code == 200
+        assert r.json()["assignee_user_id"] is None
+
+
+def test_create_rejects_unknown_priority(tmp_path) -> None:
+    async def seed(users: UserStore, _store: TicketStore, _svc: TicketService) -> dict:
+        kid = await users.create_user("kid", "pw-123456", "user")
+        return {"kid_pat": await users.create_pat(kid["id"], "t")}
+
+    app = _build_app(tmp_path, seed)
+    with TestClient(app) as c:
+        h = _hdr(app.state.seed["kid_pat"])
+        r = c.post(
+            "/api/tickets",
+            json={"title": "x", "priority": "urgent!!!1"},
+            headers=h,
+        )
+        assert r.status_code == 400
+        r = c.post("/api/tickets", json={"title": "x", "priority": "urgent"}, headers=h)
+        assert r.status_code == 201
+
+
+def test_ticket_payload_carries_only_legal_affordances(tmp_path) -> None:
+    async def seed(users: UserStore, _store: TicketStore, svc: TicketService) -> dict:
+        kid = await users.create_user("kid", "pw-123456", "user")
+        kid_pat = await users.create_pat(kid["id"], "t")
+        ticket = await svc.create(
+            title="x", origin="dashboard", requester_user_id=kid["id"]
+        )
+        return {"kid_pat": kid_pat, "ticket_id": ticket.id}
+
+    app = _build_app(tmp_path, seed)
+    with TestClient(app) as c:
+        s = app.state.seed
+        body = c.get(f"/api/tickets/{s['ticket_id']}", headers=_hdr(s["kid_pat"])).json()
+        # A "new" ticket's requester may cancel it, never resolve it.
+        assert set(body["allowed_transitions"]) == {"cancelled"}
+        assert body["allowed_blocks"] == []
+        assert body["can_unblock"] is False
 
 
 # -- superuser-only surfaces: identities, members, claims, profiles ------------

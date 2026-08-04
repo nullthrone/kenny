@@ -139,7 +139,8 @@ async def drive_to_an_open_approval(bench: Bench, *blocks) -> tuple[str, str]:
     service = bench.service(calls(*blocks))
     await service.handle_event(mention("please install the things"))
     ticket = await bench.the_ticket()
-    assert ticket.state == "awaiting_approval"
+    assert ticket.state == "in_progress"
+    assert ticket.blocked_on == "approval"
     return ticket.id, bench.gateway.threads[0].thread_id
 
 
@@ -219,7 +220,7 @@ async def test_approving_from_the_dashboard_after_a_restart_executes_the_call(
     ``DiscordService.resume``, even though ``build_ticket_routes`` is handed the
     service precisely so it could. Only the Discord button path
     (``handle_component``) resumes. So the operator sees "approved", the ticket
-    stays in ``awaiting_approval`` forever, the frozen call never runs, and the
+    stays blocked on ``approval`` forever, the frozen call never runs, and the
     requester is never told — which is exactly the scenario the plan lists as
     verification step 6 ("restart during an open approval, then decide in the
     dashboard — the execution must happen").
@@ -258,7 +259,7 @@ async def test_approving_from_the_dashboard_after_a_restart_executes_the_call(
         # ...and the loop must have resumed and told the requester.
         assert "Git is installed now." in boot2.posted
         ticket = await boot2.ticket_store.get(ticket_id)
-        assert ticket is not None and ticket.state != "awaiting_approval"
+        assert ticket is not None and ticket.blocked_on != "approval"
     finally:
         await boot2.close()
 
@@ -288,7 +289,9 @@ async def test_approving_over_discord_after_a_restart_executes_the_frozen_call(
         ]
         assert "Git is installed now." in boot2.posted
         ticket = await boot2.ticket_store.get(ticket_id)
-        assert ticket is not None and ticket.state == "awaiting_user"
+        assert ticket is not None
+        assert ticket.state == "in_progress"
+        assert ticket.blocked_on == "user"
         run = await boot2.ticket_store.load_run(ticket_id)
         issued, answered = transcript_pairs(run.messages)
         assert issued == answered == {"t1"}
@@ -399,10 +402,11 @@ async def test_an_expired_approval_denies_and_does_not_park_the_ticket(
     row, and its own docstring says "resuming is the caller's job". Nobody is
     that caller: ``ticket_sweep_loop`` is wired in ``main.py`` with the
     ``TicketService`` alone, and ``DiscordService.resume`` is only ever called
-    from ``handle_component``. So an approval nobody answers leaves the ticket in
-    ``awaiting_approval`` for good — the requester is never told, and the
-    requester cannot leave that state themselves (``_ACTORS`` allows only
-    ``system``/``operator`` out of ``awaiting_approval``, by design).
+    from ``handle_component``. So an approval nobody answers leaves the ticket
+    blocked on ``approval`` for good — the requester is never told, and the
+    requester cannot clear that block themselves (``_UNBLOCK_CLEARERS``
+    allows only ``system``/``operator`` to clear an ``approval`` block, by
+    design).
 
     Worse than parked: the stored transcript still ends with an unanswered
     ``tool_use`` block. The next message the requester sends appends a plain user
@@ -426,7 +430,7 @@ async def test_an_expired_approval_denies_and_does_not_park_the_ticket(
 
     ticket = await bench.ticket_store.get(ticket_id)
     assert ticket is not None
-    assert ticket.state != "awaiting_approval", "an expired gate parked the ticket"
+    assert ticket.blocked_on != "approval", "an expired gate parked the ticket"
 
     # And the transcript is answerable: no tool_use left dangling.
     service = bench.service(says("Nobody approved that, sorry."))

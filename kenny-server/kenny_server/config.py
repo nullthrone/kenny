@@ -406,6 +406,18 @@ _SPECS: list[SettingSpec] = [
           "Auto-close resolved after (s)", lifecycle="live", min=0,
           help="Reopen window: a resolved ticket untouched for this long is "
                "closed by the sweeper. 0 disables auto-closing."),
+    _spec("KENNY_TICKET_STALL_NUDGE_SECS", "Discord & Tickets", "int", "172800",
+          "Stall reminder after (s)", lifecycle="live", min=0,
+          help="A ticket blocked on a reply (from the requester or an operator) "
+               "for this long gets one reminder from the sweeper. 0 disables "
+               "reminders."),
+    _spec("KENNY_TICKET_STALL_GIVEUP_SECS", "Discord & Tickets", "int", "604800",
+          "Stall escalate-to-operator after (s)", lifecycle="live", min=0,
+          help="A ticket still waiting on the requester after this long is "
+               "re-blocked on an operator instead — the requester was not "
+               "going to answer, so a human needs to pick it up. Never applies "
+               "to a ticket already waiting on an operator. 0 disables "
+               "escalation."),
     _spec("KENNY_TICKET_SWEEP_INTERVAL_SECS", "Discord & Tickets", "int", "300",
           "Ticket sweep interval (s)", lifecycle="live", min=0,
           help="Cadence of the housekeeping pass that expires overdue gates and "
