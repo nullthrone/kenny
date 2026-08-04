@@ -57,30 +57,45 @@ chat thread, is the thing that actually exists.
 
 ## The lifecycle, in plain language
 
-A ticket moves through a small set of states. You will see all of them as pills in the
-list and the detail view:
+A ticket's lifecycle has two parts, shown together as one pill in the list and the detail
+view: **where it is** and, while it is being worked, **who the ball is with**.
+
+Where it is — one of five states:
 
 | State | Meaning |
 |---|---|
 | `new` | Just created, nothing has happened yet. |
-| `triage` | Kenny has picked it up and is about to start. |
-| `in_progress` | Kenny (or you) is actively working it. |
-| `awaiting_user` | Kenny is waiting on a reply from the person it belongs to. |
-| `awaiting_approval` | A step needs **your** sign-off before it can continue. |
-| `awaiting_agent` | Kenny has done what it can on its own and is waiting on an operator to pick it up (including once it hits its per-ticket turn limit). |
+| `in_progress` | Being worked — by kenny, by you, or currently blocked on someone (see below). |
 | `resolved` | The problem is fixed. Still reopenable. |
-| `closed` | Done. **Terminal** — reopening creates a new ticket that references the old one. |
+| `closed` | Done. **Terminal.** |
 | `cancelled` | Withdrawn, by the requester or an operator. **Terminal.** |
+
+Who the ball is with, while `in_progress` — a ticket can be **blocked on**:
+
+| Blocked on | Meaning |
+|---|---|
+| *(none)* | Actively being worked, nobody is waiting on anyone. |
+| `user` | Kenny is waiting on a reply from the person the ticket belongs to. |
+| `approval` | A step needs **your** sign-off before it can continue. |
+| `operator` | Kenny has done what it can on its own and is waiting on an operator to pick it up (including once it hits its per-ticket turn limit). |
+
+A ticket blocked on `user` or `operator` for a while gets one reminder
+(`KENNY_TICKET_STALL_NUDGE_SECS`, default 2 days), and a `user` block still unanswered after
+longer (`KENNY_TICKET_STALL_GIVEUP_SECS`, default 7 days) is re-blocked on `operator` — the
+person it was waiting on did not answer, so a human needs to pick it up. `approval` never
+gets nudged by this: it has its own clock, the approval TTL below.
 
 A `resolved` ticket auto-closes after a while if nobody touches it (`KENNY_TICKET_AUTOCLOSE_SECS`,
 default 2 days) — a housekeeping sweep that runs alongside the alert and backup loops, not
-anything the requester has to do.
+anything the requester has to do. `closed` is final: reopening it is not possible, only the
+`resolved` window before auto-close is the undo window.
 
-An operator can call a ticket `resolved` from any state that isn't already `resolved`,
-`closed` or `cancelled` — including `new` (a duplicate, or something that fixed itself
-before kenny got to it) and `awaiting_approval`. Resolving one that is still sitting on a
-pending approval request denies that request rather than leaving it open: the sign-off is
-no longer meaningful once the ticket itself is done.
+An operator can call a ticket `resolved` from `new` or `in_progress` — including one
+blocked on `approval` (a duplicate, or something that fixed itself before kenny got to it).
+Resolving one that is still sitting on a pending approval request denies that request
+rather than leaving it open: the sign-off is no longer meaningful once the ticket itself is
+done. The requester can cancel their own ticket from `new` or `in_progress` at any time
+(withdrawing it), and close it themselves once it is `resolved`.
 
 <figure markdown>
   ![A ticket's detail view: the paraphrase, and the full event timeline.](assets/screenshots/ticket-detail.png)

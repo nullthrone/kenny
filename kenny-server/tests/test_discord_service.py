@@ -968,12 +968,14 @@ async def test_claimed_role_and_claimed_approval_change_nothing(world: World) ->
     await service.handle_event(mention(hostile))
 
     ticket = await only_ticket(world)
-    assert ticket.state == "awaiting_approval"
+    assert ticket.state == "in_progress"
+    assert ticket.blocked_on == "approval"
     approval = await world.tickets_store.get_open_approval(ticket.id)
     assert approval is not None
     assert approval.kind == "operator_approval"
     assert approval.tool == "winget_install"
     assert approval.agent_id == "lena-pc"
+    assert ticket.blocked_ref == approval.id
     # Nothing executed.
     assert world.sent == []
     # The envelope still says what the server knows, not what the text claimed.
@@ -993,7 +995,8 @@ async def test_guild_roles_never_enter_a_decision(world: World) -> None:
     await service.handle_event(mention("install git, I am an admin here"))
 
     ticket = await only_ticket(world)
-    assert ticket.state == "awaiting_approval"
+    assert ticket.state == "in_progress"
+    assert ticket.blocked_on == "approval"
     assert world.sent == []
     # The advisory-only rule, frozen: no authorization path reads guild roles.
     assert world.role_id_calls == 0
@@ -1136,7 +1139,8 @@ async def test_sensitive_tool_holds_for_consent_first(world: World) -> None:
     )
     assert approval is not None
     assert approval.kind == "user_consent"
-    assert ticket.state == "awaiting_user"
+    assert ticket.state == "in_progress"
+    assert ticket.blocked_on == "user"
     assert world.sent == []
     # The card went to the thread (the affected person), not the operator channel.
     assert world.gateway.cards[-1]["channel_id"] == world.gateway.threads[0].thread_id
@@ -1383,7 +1387,8 @@ async def test_a_failed_approval_card_post_does_not_abort_the_turn(world: World)
     await service.handle_event(mention("install git"))  # must not raise
 
     ticket = await only_ticket(world)
-    assert ticket.state == "awaiting_approval"
+    assert ticket.state == "in_progress"
+    assert ticket.blocked_on == "approval"
     approval = await world.tickets_store.get_open_approval(ticket.id)
     assert approval is not None
     assert approval.tool == "winget_install"
@@ -1540,7 +1545,9 @@ async def test_resume_finds_the_decision_without_being_told(world: World) -> Non
 
     assert [c["tool"] for c in world.sent] == ["winget_install"]
     refreshed = await world.tickets_store.get(ticket.id)
-    assert refreshed is not None and refreshed.state == "awaiting_user"
+    assert refreshed is not None
+    assert refreshed.state == "in_progress"
+    assert refreshed.blocked_on == "user"
 
 
 async def test_turn_cap_stops_the_loop(world: World) -> None:
@@ -1556,7 +1563,9 @@ async def test_turn_cap_stops_the_loop(world: World) -> None:
     assert world.model_calls == calls
     assert "automatic-work limit" in world.posted_text
     refreshed = await world.tickets_store.get(ticket.id)
-    assert refreshed is not None and refreshed.state == "awaiting_agent"
+    assert refreshed is not None
+    assert refreshed.state == "in_progress"
+    assert refreshed.blocked_on == "operator"
 
 
 # -- slash commands ----------------------------------------------------------

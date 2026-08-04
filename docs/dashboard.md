@@ -36,6 +36,9 @@ Every view shares one header:
   On narrow screens the word labels collapse to icon + number.
 - **✨ Copilot toggle** *(Fleet tab only)* — show/hide the chat rail (see
   [The copilot](#the-copilot-chat-rail)).
+- **Tickets badge** *(operator+ only)* — a message-square icon with a live count of tickets
+  needing you: blocked on your approval, blocked on an operator, or a fresh alert-origin
+  ticket. Clicking it opens [the Tickets tab](#the-tickets-tab) filtered to that group.
 - **Approvals badge** *(operator+ only)* — a shield icon with a live count of everything
   currently held for you across every ticket; see [The approvals badge](#the-approvals-badge)
   below.
@@ -403,43 +406,60 @@ user-facing view.
 
 <figure markdown>
   ![The Tickets list, filterable by state.](assets/screenshots/tickets.png)
-  <figcaption>The Tickets list: number, title, state, requester, target PC and age, filterable by state.</figcaption>
+  <figcaption>The Tickets list: number, title, state, requester, target PC and age, grouped by who the ball is with.</figcaption>
 </figure>
 
-One row per ticket — number, title, a **state pill**, the requester (or "alert" for a
-ticket with no owner), the target PC, and its age — sorted newest-first. The **state
-filter** narrows to one lifecycle state; **New ticket** opens one directly from the
-dashboard (title + optional details), which lands exactly like a Discord-opened one except
-it has no thread attached.
+One row per ticket — number, title, a **pill** showing its state and, while it is blocked,
+who it is blocked on (e.g. "in progress · needs your approval"), the requester (or "alert"
+for a ticket with no owner), the target PC, and its age — sorted newest-first. The list is
+grouped into **needs you** / **waiting** / **working** / **new** / **done**, each with a
+live count from `GET /api/tickets/summary` — "needs you" is a ticket blocked on your
+approval or an operator, or a fresh alert-origin ticket nobody has looked at yet. The same
+count appears as a header badge next to the approvals badge. **New ticket** opens one
+directly from the dashboard (title + optional details), which lands exactly like a
+Discord-opened one except it has no thread attached.
 
 ### Ticket detail
 
 <figure markdown>
   ![A ticket's detail view: the paraphrase and the full event timeline.](assets/screenshots/ticket-detail.png)
-  <figcaption>Ticket detail: number, origin, priority, category, requester and target; the paraphrase and resolution; and the full event timeline — messages, an autonomous standard-change call, a held approval and its decision, and the closing state change.</figcaption>
+  <figcaption>Ticket detail: number, origin, priority, category, requester, assignee and target; the paraphrase and resolution; and the full event timeline — messages, an autonomous standard-change call, a held approval and its decision, and the closing state change.</figcaption>
 </figure>
 
 Reached by clicking a row, or `#/tickets/{id}` directly — this is the landing page every
 "see the dashboard" link kenny posts into Discord goes to, so it works from a cold load,
 not just from clicking through the list. It shows:
 
-- The **metadata** block — number, origin (`discord` / `dashboard` / `alert`), priority,
-  category, requester, target PC, and the created/updated timestamps.
+- The **metadata** block — number, origin (`discord` / `dashboard` / `alert`), priority and
+  category (editable dropdowns, sourced from `GET /api/tickets/vocabulary`), requester,
+  assignee, target PC, and the created/updated timestamps.
 - Kenny's running **summary**, and the **resolution** once one is set.
 - An **add a note** box (operator+) for a plain operator annotation on the trail.
-- The **timeline** — every `ticket_events` row in order: state changes, messages (tagged by
-  who sent them), tool calls (with their arguments, tagged by [tier](tools.md)), approval/
-  consent requests and their decisions, and reassignment handoffs (including a *discarded*
-  retarget attempt, which is recorded even though nothing about the ticket changed).
-- **Reassign** (operator+) — point the ticket at a different PC; the only path that ever
-  changes a ticket's target.
-- **Resolve** (operator+) — mark the ticket done, from any state that isn't already
-  `resolved`, `closed` or `cancelled`. Resolving one still sitting on a pending approval
-  request denies that request instead of leaving it open. An optional reason and an
-  "also close now" checkbox that chains straight into `closed` in the same action.
+- The **timeline** — every `ticket_events` row in order: state changes, block/unblock
+  changes (who the ticket started or stopped waiting on), messages (tagged by who sent
+  them), tool calls (with their arguments, tagged by [tier](tools.md)), approval/consent
+  requests and their decisions, assignment changes, and reassignment handoffs (including a
+  *discarded* retarget attempt, which is recorded even though nothing about the ticket
+  changed).
+- Every action button below is rendered from the ticket's own `allowed_transitions`/
+  `allowed_blocks`/`can_unblock` — an option only ever appears if the API would actually
+  accept it for the account that is looking at it.
+- **Reassign host** (operator+) — point the ticket at a different PC; the only path that
+  ever changes a ticket's target.
+- **Claim** / **Unclaim** (operator+) — set or clear yourself as the operator working the
+  ticket, independent of its state.
+- **Resolve** — mark the ticket done, from `new` or `in_progress` (including one blocked on
+  approval). Resolving one still sitting on a pending approval request denies that request
+  instead of leaving it open. An optional reason and an "also close now" checkbox that
+  chains straight into `closed` in the same action.
 - **Reopen** (operator+) — while still `resolved`, move it back to `in_progress`.
 - **Close ticket** — once `resolved`, close it outright rather than waiting for the
   auto-close window.
+- **Cancel** — withdraw the ticket. Available to the ticket's own requester as well as an
+  operator+, from `new` or `in_progress`.
+- **Unblock** — clear whatever the ticket is currently blocked on. The requester sees this
+  for their own `user` block (answering kenny's question from the dashboard instead of
+  Discord); an operator sees it for any block.
 
 ---
 

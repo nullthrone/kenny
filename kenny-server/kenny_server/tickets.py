@@ -1,12 +1,26 @@
-"""Ticket lifecycle: the one place a ticket's state may change.
+"""Ticket lifecycle: the one place a ticket's state (or blocked-on reason) may change.
 
 :class:`TicketService` is the chokepoint. **Nothing else in the codebase may
-ever change a ticket's state**: :meth:`kenny_server.ticketstore.TicketStore.set_state`
-is the low-level primitive and :meth:`TicketService.transition` is its only
-sanctioned caller. Everything a state change has to be true of — the legal
-successor states (:data:`_ALLOWED`), who is allowed to drive each one
-(:data:`_ACTORS`), and the audit row that must accompany it — lives here and
-only here.
+ever change a ticket's state or its blocked-on reason**:
+:meth:`kenny_server.ticketstore.TicketStore.set_state` and
+:meth:`~kenny_server.ticketstore.TicketStore.set_blocked` are the low-level
+primitives, and :meth:`TicketService.transition`/:meth:`TicketService.block`/
+:meth:`TicketService.unblock` are their only sanctioned callers. Everything a
+change has to be true of — the legal successor states (:data:`_ALLOWED`), who
+is allowed to drive each one (:data:`_ACTORS`), who may set or clear each
+blocked-on reason (:data:`_BLOCK_SETTERS`/:data:`_UNBLOCK_CLEARERS`), and the
+audit row that must accompany it — lives here and only here.
+
+The lifecycle has two axes, deliberately kept apart:
+
+* **state** — where the ticket is in its life: ``new``, ``in_progress``,
+  ``resolved``, ``closed``, ``cancelled``.
+* **blocked_on** — who the ball is with, meaningful only while
+  ``state == "in_progress"``: ``""`` (nobody), ``"user"`` (the requester),
+  ``"approval"`` (an operator's sign-off gate), ``"operator"`` (a human needs
+  to pick the ticket up). Blocking is *not* a state transition — a blocked
+  ticket is still ``in_progress`` — so it has its own chokepoint methods
+  rather than living in :data:`_ALLOWED`.
 
 This module is transport-agnostic and model-agnostic by design: it must not
 import chat, tool-loop, tool-class, Discord or Anthropic code. ``tool_class``
@@ -25,14 +39,21 @@ from typing import Any
 from .ticketstore import Ticket, TicketApproval, TicketEvent, TicketStore, to_iso
 
 __all__ = [
+    "BLOCKED_REASONS",
     "DEFAULT_APPROVAL_TTL_SECS",
-    "GateResumer",
     "DEFAULT_AUTOCLOSE_SECS",
+    "DEFAULT_STALL_GIVEUP_SECS",
+    "DEFAULT_STALL_NUDGE_SECS",
     "DEFAULT_SWEEP_INTERVAL_SECS",
+    "GateResumer",
+    "KNOWN_CATEGORIES",
+    "PRIORITIES",
     "REDACTED",
     "STATES",
+    "StallNotifier",
     "ApprovalConflictError",
     "ApprovalNotFoundError",
+    "BlockError",
     "TicketError",
     "TicketNotFoundError",
     "TicketService",
@@ -45,50 +66,21 @@ logger = logging.getLogger("kenny.tickets")
 
 # -- lifecycle -----------------------------------------------------------------
 
-STATES: frozenset[str] = frozenset(
-    {
-        "new",
-        "triage",
-        "in_progress",
-        "awaiting_user",
-        "awaiting_approval",
-        "awaiting_agent",
-        "resolved",
-        "closed",
-        "cancelled",
-    }
-)
+STATES: frozenset[str] = frozenset({"new", "in_progress", "resolved", "closed", "cancelled"})
 
 # Legal successor states. ``closed`` and ``cancelled`` map to the empty set:
 # they are terminal, and a ticket that reached them can only be read.
 #
 # ``resolved`` is a legal successor of every live state, not just the ones
 # where work actually happened: it means "nothing is left to do", which is
-# equally true of a ticket nobody has touched yet, one still waiting on a
-# reply, or one sitting on a gate nobody needs answered anymore. Routing a
-# `new` ticket through `triage`/`in_progress` just to reach `resolved` would
-# make the trail claim work that never happened. ``closed`` stays reachable
-# only from ``resolved`` — it is always the second half of "resolve, then
-# close", never a direct exit, so it keeps the property that every closed
-# ticket passed through the reopen window first.
+# equally true of a ticket nobody has touched yet, one blocked on a reply, or
+# one sitting on a gate nobody needs answered anymore. ``closed`` stays
+# reachable only from ``resolved`` — it is always the second half of
+# "resolve, then close", never a direct exit, so it keeps the property that
+# every closed ticket passed through the reopen window first.
 _ALLOWED: dict[str, frozenset[str]] = {
-    "new": frozenset({"triage", "resolved", "cancelled"}),
-    "triage": frozenset(
-        {
-            "in_progress",
-            "awaiting_user",
-            "awaiting_approval",
-            "awaiting_agent",
-            "resolved",
-            "cancelled",
-        }
-    ),
-    "in_progress": frozenset(
-        {"awaiting_user", "awaiting_approval", "awaiting_agent", "resolved", "cancelled"}
-    ),
-    "awaiting_user": frozenset({"in_progress", "resolved", "cancelled"}),
-    "awaiting_approval": frozenset({"in_progress", "resolved", "cancelled"}),
-    "awaiting_agent": frozenset({"in_progress", "resolved", "cancelled"}),
+    "new": frozenset({"in_progress", "resolved", "cancelled"}),
+    "in_progress": frozenset({"resolved", "cancelled"}),
     # Reopening is only possible while the ticket is still ``resolved``; the
     # sweeper closes it once the window has passed, and ``closed`` is terminal.
     "resolved": frozenset({"closed", "in_progress"}),
@@ -99,43 +91,19 @@ _ALLOWED: dict[str, frozenset[str]] = {
 ROLES: frozenset[str] = frozenset({"system", "requester", "operator"})
 
 # Who may drive each transition. ``operator`` covers operator and superuser;
-# ``requester`` additionally has to *own* the ticket (see ``_authorize``).
+# ``requester`` additionally has to *own* the ticket (see ``_check_transition``).
 #
-# Two rules shape the table: a requester may cancel their ticket from any live
-# state, close it once resolved, and answer a question (``awaiting_user ->
-# in_progress``); and a requester may never leave ``awaiting_approval``, because
-# that is the state their own gate is waiting in.
-#
-# ``system`` may leave ``awaiting_approval`` so a denial or an expiry can resume
-# the loop and let the assistant tell the requester it could not proceed —
-# without it an expired gate would park the ticket forever. That is not a hole:
-# the transition executes nothing on its own. Whether the held call actually
-# runs depends solely on the approval row reading ``approved``, and only an
-# operator can put it there (see ``decide_approval``).
+# A requester may cancel their ticket from any live state and close/reopen it
+# once resolved; ``system`` may not reopen (only a human decides a resolved
+# ticket needs more work). A requester may never *start* work (``new ->
+# in_progress`` is system/operator only) — opening a ticket does not entitle
+# its author to drive its lifecycle, only to answer it or withdraw it.
 _ACTORS: dict[tuple[str, str], frozenset[str]] = {
-    ("new", "triage"): frozenset({"system", "operator"}),
+    ("new", "in_progress"): frozenset({"system", "operator"}),
     ("new", "resolved"): frozenset({"system", "operator"}),
     ("new", "cancelled"): frozenset({"system", "requester", "operator"}),
-    ("triage", "in_progress"): frozenset({"system", "operator"}),
-    ("triage", "awaiting_user"): frozenset({"system", "operator"}),
-    ("triage", "awaiting_approval"): frozenset({"system", "operator"}),
-    ("triage", "awaiting_agent"): frozenset({"system", "operator"}),
-    ("triage", "resolved"): frozenset({"system", "operator"}),
-    ("triage", "cancelled"): frozenset({"system", "requester", "operator"}),
-    ("in_progress", "awaiting_user"): frozenset({"system", "operator"}),
-    ("in_progress", "awaiting_approval"): frozenset({"system", "operator"}),
-    ("in_progress", "awaiting_agent"): frozenset({"system", "operator"}),
     ("in_progress", "resolved"): frozenset({"system", "operator"}),
     ("in_progress", "cancelled"): frozenset({"system", "requester", "operator"}),
-    ("awaiting_user", "in_progress"): frozenset({"system", "requester", "operator"}),
-    ("awaiting_user", "resolved"): frozenset({"system", "operator"}),
-    ("awaiting_user", "cancelled"): frozenset({"system", "requester", "operator"}),
-    ("awaiting_approval", "in_progress"): frozenset({"system", "operator"}),
-    ("awaiting_approval", "resolved"): frozenset({"system", "operator"}),
-    ("awaiting_approval", "cancelled"): frozenset({"requester", "operator"}),
-    ("awaiting_agent", "in_progress"): frozenset({"system", "operator"}),
-    ("awaiting_agent", "resolved"): frozenset({"system", "operator"}),
-    ("awaiting_agent", "cancelled"): frozenset({"system", "requester", "operator"}),
     ("resolved", "closed"): frozenset({"system", "requester", "operator"}),
     ("resolved", "in_progress"): frozenset({"requester", "operator"}),
 }
@@ -154,9 +122,46 @@ _ROLE_PREFIXES: dict[str, str] = {
     "superuser": "operator",
 }
 
-# Trail kinds callers may append. ``state`` and ``handoff`` are written by
-# ``transition``/``reassign`` themselves and are refused here, so the trail
-# cannot claim a state change that never happened.
+# -- the blocked-on axis --------------------------------------------------------
+
+BLOCKED_REASONS: frozenset[str] = frozenset({"user", "approval", "operator"})
+
+# Who may set a blocked-on reason. Always system or operator: nobody blocks
+# their own ticket by asking a question of themselves.
+_BLOCK_SETTERS: dict[str, frozenset[str]] = {
+    "user": frozenset({"system", "operator"}),
+    "approval": frozenset({"system", "operator"}),
+    "operator": frozenset({"system", "operator"}),
+}
+
+# Who may clear a blocked-on reason. The requester may answer their own
+# ``user`` block (that is the whole point of the block) but never an
+# ``approval`` or ``operator`` one — those are not theirs to resolve. Once a
+# ``user`` block has been escalated to ``operator`` by the stall sweep
+# (:meth:`TicketService.nudge_stalled`), only a human operator may clear it —
+# ``system`` deliberately cannot un-escalate what it just escalated.
+_UNBLOCK_CLEARERS: dict[str, frozenset[str]] = {
+    "user": frozenset({"system", "operator", "requester"}),
+    "approval": frozenset({"system", "operator"}),
+    "operator": frozenset({"operator"}),
+}
+
+# Closed vocabulary: rejected outright if a caller sends anything else.
+PRIORITIES: tuple[str, ...] = ("low", "normal", "high", "urgent")
+
+# Advertised, not enforced — the same discipline ``ticket_rules.KNOWN_SECTIONS``
+# uses (a caller may set any category; this only drives the UI's dropdown and a
+# soft warning on the API for anything unlisted). A closed list would block a
+# legitimate ad-hoc category, and unlike priority nothing downstream branches
+# on this value.
+KNOWN_CATEGORIES: frozenset[str] = frozenset(
+    {"alert", "account", "network", "software", "hardware", "performance", "other"}
+)
+
+# Trail kinds callers may append. ``state``, ``handoff``, ``block`` and
+# ``assign`` are written by transition()/reassign()/block()/unblock()/assign()
+# themselves and are refused here, so the trail cannot claim a change that
+# never happened.
 EVENT_KINDS: frozenset[str] = frozenset(
     {"note", "tool_call", "approval", "consent", "message", "error"}
 )
@@ -168,15 +173,25 @@ APPROVAL_KINDS: frozenset[str] = frozenset({"operator_approval", "user_consent"}
 #: something has to be told, never what a model or a chat platform is.
 GateResumer = Callable[[TicketApproval], Awaitable[None]]
 
+#: Called when the stall sweep sends a reminder for a ticket blocked on
+#: ``"user"`` or ``"operator"`` for longer than the nudge window. Same shape
+#: and rationale as :data:`GateResumer` — this module knows something has to
+#: be told, never what a chat platform is.
+StallNotifier = Callable[[Ticket, str], Awaitable[None]]
+
 DEFAULT_APPROVAL_TTL_SECS = 3600
 DEFAULT_AUTOCLOSE_SECS = 3 * 24 * 3600
 DEFAULT_SWEEP_INTERVAL_SECS = 300
+DEFAULT_STALL_NUDGE_SECS = 2 * 24 * 3600
+DEFAULT_STALL_GIVEUP_SECS = 7 * 24 * 3600
 
 # Settings keys the sweeper re-reads each pass through the injected getter. An
 # unknown key yields None from the getter, which falls back to the defaults
 # above — this module never reads the environment or the settings catalog.
 SWEEP_INTERVAL_SETTING = "KENNY_TICKET_SWEEP_INTERVAL_SECS"
 AUTOCLOSE_SETTING = "KENNY_TICKET_AUTOCLOSE_SECS"
+STALL_NUDGE_SETTING = "KENNY_TICKET_STALL_NUDGE_SECS"
+STALL_GIVEUP_SETTING = "KENNY_TICKET_STALL_GIVEUP_SECS"
 
 # -- redaction -----------------------------------------------------------------
 
@@ -304,6 +319,48 @@ class TransitionError(TicketError):
         }
 
 
+class BlockError(TicketError):
+    """A block/unblock was refused.
+
+    ``code`` is ``illegal_block`` (409 — the ticket is not ``in_progress``, or
+    there is nothing to unblock), ``unknown_reason`` (400) or
+    ``forbidden_actor`` (403). Deliberately not a :class:`TransitionError`: a
+    block changes ``blocked_on``, not ``state``, and conflating the two would
+    let a caller reason about a block as if it were a state.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str,
+        ticket_id: str,
+        blocked_on: str,
+        actor: str,
+        role: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.ticket_id = ticket_id
+        self.blocked_on = blocked_on
+        self.actor = actor
+        self.role = role
+        self.status_code = {
+            "forbidden_actor": 403,
+            "illegal_block": 409,
+            "unknown_reason": 400,
+        }.get(code, 400)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "error": self.code,
+            "detail": str(self),
+            "ticket_id": self.ticket_id,
+            "blocked_on": self.blocked_on,
+            "actor": self.actor,
+        }
+
+
 def parse_actor(actor: str) -> tuple[str, int | None]:
     """Split an actor string into ``(role, user_id)``.
 
@@ -331,7 +388,7 @@ def parse_actor(actor: str) -> tuple[str, int | None]:
 class TicketService:
     """Lifecycle operations over a :class:`~kenny_server.ticketstore.TicketStore`.
 
-    Holds no transport and no model: creating, transitioning, annotating and
+    Holds no transport and no model: creating, transitioning, blocking and
     gating a ticket are all expressible without knowing where the ticket came
     from. The clock is injected (``now``) so the sweeper is testable without
     sleeping.
@@ -344,23 +401,33 @@ class TicketService:
         now: Callable[[], datetime] | None = None,
         approval_ttl_secs: int = DEFAULT_APPROVAL_TTL_SECS,
         autoclose_secs: int = DEFAULT_AUTOCLOSE_SECS,
+        stall_nudge_secs: int = DEFAULT_STALL_NUDGE_SECS,
+        stall_giveup_secs: int = DEFAULT_STALL_GIVEUP_SECS,
     ) -> None:
         self.store = store
         self._now = now or (lambda: datetime.now(timezone.utc))
         self.approval_ttl_secs = approval_ttl_secs
         self.autoclose_secs = autoclose_secs
+        self.stall_nudge_secs = stall_nudge_secs
+        self.stall_giveup_secs = stall_giveup_secs
         self._gate_resumer: GateResumer | None = None
+        self._stall_notifier: StallNotifier | None = None
 
     def set_gate_resumer(self, resumer: GateResumer | None) -> None:
         """Register who answers a gate this service closes by itself.
 
         Only :meth:`expire_due` uses it: every other decision arrives from a
         surface, which resumes its own ticket. An expiry has no such caller, so
-        without a resumer the ticket would stay in ``awaiting_approval`` — a
-        state its requester is not allowed to leave — for good.
+        without a resumer the ticket would stay blocked on ``approval`` — a
+        block only ``system``/``operator`` may clear — for good.
         """
 
         self._gate_resumer = resumer
+
+    def set_stall_notifier(self, notifier: StallNotifier | None) -> None:
+        """Register who is told when :meth:`nudge_stalled` sends a reminder."""
+
+        self._stall_notifier = notifier
 
     def now(self) -> datetime:
         """Current time through the injected clock."""
@@ -429,7 +496,7 @@ class TicketService:
             raise TicketNotFoundError(ticket_id)
         return ticket
 
-    # -- the chokepoint ----------------------------------------------------
+    # -- the chokepoint (state) ---------------------------------------------
 
     async def transition(
         self, ticket_id: str, to_state: str, *, actor: str, reason: str = ""
@@ -439,7 +506,9 @@ class TicketService:
         The only sanctioned caller of ``TicketStore.set_state``. Rejects an
         illegal transition (409) and an unauthorized actor (403) with a
         :class:`TransitionError`, and records a ``kind='state'`` event in the
-        same transaction as the change.
+        same transaction as the change. Leaving ``in_progress`` for anywhere
+        else clears ``blocked_on`` at the store layer — "resolved but still
+        blocked" is not representable.
 
         There is deliberately **no** ``agent_id`` parameter: retargeting a
         ticket at another host is a separate, operator-only :meth:`reassign`.
@@ -447,14 +516,15 @@ class TicketService:
         changeable as a side effect of a routine state change.
 
         Leaving the ticket with its one open gate still ``pending`` — now
-        possible from ``awaiting_approval`` straight to ``resolved`` or
-        ``cancelled`` — denies that gate first, via :meth:`decide_approval`,
-        before the state itself moves. That deliberately does **not** run the
-        registered :data:`GateResumer`: the resumer's job is to let a denial or
-        expiry push the ticket back to ``in_progress`` so the assistant can
-        keep going, which is exactly what this transition is ending. A held
-        call must not execute, and a settled ticket must not be nudged back
-        to ``in_progress``, just because someone later decides the gate.
+        possible straight from a ``blocked_on="approval"`` ticket to
+        ``resolved`` or ``cancelled`` — denies that gate first, via
+        :meth:`decide_approval`, before the state itself moves. That
+        deliberately does **not** run the registered :data:`GateResumer`: the
+        resumer's job is to let a denial or expiry push the ticket back to
+        unblocked ``in_progress`` so the assistant can keep going, which is
+        exactly what this transition is ending. A held call must not execute,
+        and a settled ticket must not be nudged back to ``in_progress``, just
+        because someone later decides the gate.
         """
 
         ticket = await self.get(ticket_id)
@@ -533,6 +603,22 @@ class TicketService:
                 actor=actor,
                 role=role,
             )
+        # A ticket whose own gate is waiting on an operator's sign-off cannot
+        # be cancelled out from under that gate by the system — only a human
+        # (the requester withdrawing, or an operator) may do that. Denying the
+        # gate is a decision only ``decide_approval`` makes; ``system`` ending
+        # the ticket first would let a held call's fate be decided as a side
+        # effect of a lifecycle move instead of its own explicit denial.
+        if to_state == "cancelled" and role == "system" and ticket.blocked_on == "approval":
+            raise TransitionError(
+                f"{actor} may not cancel a ticket awaiting approval",
+                code="forbidden_actor",
+                ticket_id=ticket.id,
+                from_state=ticket.state,
+                to_state=to_state,
+                actor=actor,
+                role=role,
+            )
 
     async def reassign(self, ticket_id: str, agent_id: str | None, *, actor: str) -> Ticket:
         """Retarget a ticket at another host. Operator-only.
@@ -564,6 +650,156 @@ class TicketService:
             raise TicketNotFoundError(ticket_id)
         return updated
 
+    async def assign(
+        self, ticket_id: str, assignee_user_id: int | None, *, actor: str
+    ) -> Ticket:
+        """Set (or clear) which operator owns working this ticket. Operator-only.
+
+        This is the "claim" action: an operator assigning the ticket to
+        themselves. Distinct from :meth:`reassign`, which retargets the *host*
+        a ticket is about — this assigns the *person* working it. Writes a
+        ``kind='assign'`` event in the same transaction as the column change.
+        """
+
+        ticket = await self.get(ticket_id)
+        role, _ = parse_actor(actor)
+        if role != "operator":
+            raise TransitionError(
+                f"{actor} may not assign a ticket",
+                code="forbidden_actor",
+                ticket_id=ticket_id,
+                from_state=ticket.state,
+                to_state=ticket.state,
+                actor=actor,
+                role=role or None,
+            )
+        updated = await self.store.set_assignee(
+            ticket_id,
+            assignee_user_id,
+            actor=actor,
+            reason=(
+                f"assigned to {assignee_user_id}" if assignee_user_id is not None else "unassigned"
+            ),
+            now=to_iso(self.now()),
+        )
+        if updated is None:  # pragma: no cover - existence checked above
+            raise TicketNotFoundError(ticket_id)
+        return updated
+
+    # -- the chokepoint (blocked-on) -----------------------------------------
+
+    async def block(
+        self, ticket_id: str, blocked_on: str, *, actor: str, reason: str = "", ref: str = ""
+    ) -> Ticket:
+        """Mark the ticket blocked on ``blocked_on`` (see :data:`BLOCKED_REASONS`).
+
+        Only legal while the ticket is ``in_progress`` — blocking is a
+        sub-state of "being worked", not a lifecycle move of its own. Calling
+        this on an already-blocked ticket re-blocks it (resets
+        ``blocked_since`` and clears any prior nudge stamp): this is how
+        :meth:`nudge_stalled` escalates a stale ``user`` block to ``operator``.
+        ``ref`` is an opaque pointer to what is being waited on (an approval
+        id for ``"approval"``) — display-only, never interpreted here.
+        """
+
+        ticket = await self.get(ticket_id)
+        self._check_block(ticket, blocked_on, actor)
+        updated = await self.store.set_blocked(
+            ticket_id, blocked_on, actor=actor, ref=ref, reason=reason, now=to_iso(self.now())
+        )
+        if updated is None:  # pragma: no cover - existence checked above
+            raise TicketNotFoundError(ticket_id)
+        return updated
+
+    async def unblock(self, ticket_id: str, *, actor: str, reason: str = "") -> Ticket:
+        """Clear whatever the ticket is blocked on. See :meth:`block`."""
+
+        ticket = await self.get(ticket_id)
+        self._check_unblock(ticket, actor)
+        updated = await self.store.set_blocked(
+            ticket_id, "", actor=actor, ref="", reason=reason, now=to_iso(self.now())
+        )
+        if updated is None:  # pragma: no cover - existence checked above
+            raise TicketNotFoundError(ticket_id)
+        return updated
+
+    def can_block(self, ticket: Ticket, blocked_on: str, actor: str) -> bool:
+        """True if :meth:`block` would be accepted (for UI affordances)."""
+
+        try:
+            self._check_block(ticket, blocked_on, actor)
+        except BlockError:
+            return False
+        return True
+
+    def can_unblock(self, ticket: Ticket, actor: str) -> bool:
+        """True if :meth:`unblock` would be accepted (for UI affordances)."""
+
+        try:
+            self._check_unblock(ticket, actor)
+        except BlockError:
+            return False
+        return True
+
+    def _check_block(self, ticket: Ticket, blocked_on: str, actor: str) -> None:
+        if ticket.state != "in_progress":
+            raise BlockError(
+                f"cannot block a ticket in state {ticket.state!r}",
+                code="illegal_block",
+                ticket_id=ticket.id,
+                blocked_on=blocked_on,
+                actor=actor,
+            )
+        if blocked_on not in BLOCKED_REASONS:
+            raise BlockError(
+                f"unknown block reason {blocked_on!r}",
+                code="unknown_reason",
+                ticket_id=ticket.id,
+                blocked_on=blocked_on,
+                actor=actor,
+            )
+        role, _ = parse_actor(actor)
+        if role not in _BLOCK_SETTERS.get(blocked_on, frozenset()):
+            raise BlockError(
+                f"{actor} may not block a ticket on {blocked_on!r}",
+                code="forbidden_actor",
+                ticket_id=ticket.id,
+                blocked_on=blocked_on,
+                actor=actor,
+                role=role or None,
+            )
+
+    def _check_unblock(self, ticket: Ticket, actor: str) -> None:
+        if ticket.state != "in_progress" or not ticket.blocked_on:
+            raise BlockError(
+                "ticket is not blocked",
+                code="illegal_block",
+                ticket_id=ticket.id,
+                blocked_on=ticket.blocked_on,
+                actor=actor,
+            )
+        role, user_id = parse_actor(actor)
+        if role not in _UNBLOCK_CLEARERS.get(ticket.blocked_on, frozenset()):
+            raise BlockError(
+                f"{actor} may not clear a {ticket.blocked_on!r} block",
+                code="forbidden_actor",
+                ticket_id=ticket.id,
+                blocked_on=ticket.blocked_on,
+                actor=actor,
+                role=role or None,
+            )
+        if role == "requester" and (
+            ticket.requester_user_id is None or ticket.requester_user_id != user_id
+        ):
+            raise BlockError(
+                f"{actor} does not own ticket {ticket.id}",
+                code="forbidden_actor",
+                ticket_id=ticket.id,
+                blocked_on=ticket.blocked_on,
+                actor=actor,
+                role=role,
+            )
+
     # -- annotation --------------------------------------------------------
 
     async def update(
@@ -576,7 +812,7 @@ class TicketService:
         priority: str | None = None,
         category: str | None = None,
     ) -> Ticket:
-        """Patch a ticket's editable fields. Never touches ``state``."""
+        """Patch a ticket's editable fields. Never touches ``state``/``blocked_on``."""
 
         await self.get(ticket_id)
         updated = await self.store.update(
@@ -607,16 +843,16 @@ class TicketService:
     ) -> None:
         """Append one trail entry.
 
-        ``kind`` is one of :data:`EVENT_KINDS`; ``state`` and ``handoff`` rows
-        belong to :meth:`transition`/:meth:`reassign` and are refused here.
-        ``args`` (a ``tool_call``'s arguments) is redacted by key name before it
-        is persisted — see :func:`redact_args`.
+        ``kind`` is one of :data:`EVENT_KINDS`; ``state``, ``handoff``,
+        ``block`` and ``assign`` rows belong to their own chokepoint methods
+        and are refused here. ``args`` (a ``tool_call``'s arguments) is
+        redacted by key name before it is persisted — see :func:`redact_args`.
         """
 
         if kind not in EVENT_KINDS:
             raise ValueError(
                 f"kind {kind!r} must be one of {sorted(EVENT_KINDS)}; "
-                "state/handoff events are written by transition()/reassign()"
+                "state/handoff/block/assign events are written by their own methods"
             )
         payload = dict(fields) if fields else {}
         if args is not None:
@@ -718,8 +954,8 @@ class TicketService:
         Denying stays open to every actor: expiry is a denial and the sweeper
         has to issue it, and a requester may always withdraw.
 
-        Deciding does not itself move the ticket; resuming is a separate
-        transition.
+        Deciding does not itself move the ticket or clear its block; resuming
+        (unblocking) is a separate call.
         """
 
         # One derivation, used for both the guard and the trail entry: a caller
@@ -786,8 +1022,8 @@ class TicketService:
 
         An expired gate counts as a denial, and a denial has to reach the
         assistant: the held call needs its refusal ``tool_result`` and the
-        ticket needs to leave ``awaiting_approval``. This method closes and
-        records the row and then hands it to the registered
+        ticket needs to leave its ``blocked_on="approval"`` state. This method
+        closes and records the row and then hands it to the registered
         :data:`GateResumer` (see :meth:`set_gate_resumer`), which is the only
         part of this that knows what a model is. A resumer that fails is logged
         — the expiry itself is already durable and must not be rolled back.
@@ -840,28 +1076,116 @@ class TicketService:
         for ticket in await self.store.list(
             state="resolved", updated_before=cutoff, limit=200
         ):
-            updated = await self.store.set_state(
-                ticket.id,
-                "closed",
-                actor="system",
-                reason="auto-closed after the reopen window",
-                now=to_iso(at),
+            updated = await self.transition(
+                ticket.id, "closed", actor="system", reason="auto-closed after the reopen window"
             )
-            if updated is not None:
-                closed.append(updated)
+            closed.append(updated)
         return closed
 
+    async def nudge_stalled(
+        self,
+        now: datetime | None = None,
+        *,
+        nudge_secs: int | None = None,
+        giveup_secs: int | None = None,
+    ) -> list[Ticket]:
+        """Remind about, and eventually escalate, tickets stuck on a block.
+
+        Two independent passes, both scoped to ``blocked_on in ("user",
+        "operator")`` — ``"approval"`` already has the gate TTL
+        (:meth:`expire_due`) and must not be nudged again by a second clock:
+
+        * **Nudge** (default :data:`DEFAULT_STALL_NUDGE_SECS`): every ticket
+          blocked longer than the window and not yet nudged gets one reminder
+          via the registered :data:`StallNotifier`, and is marked nudged so it
+          is not reminded again next pass. A window of ``0`` disables this pass.
+        * **Give up** (default :data:`DEFAULT_STALL_GIVEUP_SECS`, always
+          longer than the nudge window): a ``user`` block still unanswered
+          after the longer window is re-blocked as ``operator`` — a human
+          needs to pick it up, since the person it was waiting on has not
+          answered. This never applies to ``operator`` blocks: there is
+          nowhere further to escalate an operator's own queue. A window of
+          ``0`` disables this pass.
+
+        Neither pass resolves or cancels a ticket on its own — only reminds
+        and re-routes who is being waited on.
+        """
+
+        at = now or self.now()
+        nudge_window = self.stall_nudge_secs if nudge_secs is None else nudge_secs
+        giveup_window = self.stall_giveup_secs if giveup_secs is None else giveup_secs
+        touched: list[Ticket] = []
+
+        if nudge_window > 0:
+            nudge_cutoff = to_iso(at - timedelta(seconds=nudge_window))
+            for ticket in await self.store.list(
+                blocked_on_in=("user", "operator"),
+                blocked_before=nudge_cutoff,
+                nudged=False,
+                limit=200,
+            ):
+                updated = await self.store.mark_nudged(ticket.id, now=to_iso(at))
+                if updated is None:  # pragma: no cover - deleted mid-sweep
+                    continue
+                touched.append(updated)
+                if self._stall_notifier is not None:
+                    try:
+                        await self._stall_notifier(updated, updated.blocked_on)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:  # noqa: BLE001 - one stuck ticket must not stop the sweep
+                        logger.exception(
+                            "ticket %s: stall notifier failed", updated.id
+                        )
+
+        if giveup_window > 0:
+            giveup_cutoff = to_iso(at - timedelta(seconds=giveup_window))
+            for ticket in await self.store.list(
+                blocked_on="user", blocked_before=giveup_cutoff, limit=200
+            ):
+                updated = await self.block(
+                    ticket.id,
+                    "operator",
+                    actor="system",
+                    reason=f"escalated: no reply from the requester in over {giveup_window}s",
+                    ref=ticket.blocked_ref,
+                )
+                touched.append(updated)
+
+        return touched
+
     async def sweep(
-        self, now: datetime | None = None, *, autoclose_secs: int | None = None
+        self,
+        now: datetime | None = None,
+        *,
+        autoclose_secs: int | None = None,
+        stall_nudge_secs: int | None = None,
+        stall_giveup_secs: int | None = None,
     ) -> None:
-        """One housekeeping pass: expire due gates, auto-close stale resolutions."""
+        """One housekeeping pass: expire due gates, nudge/escalate stalls, auto-close."""
 
         at = now or self.now()
         await self.expire_due(at)
+        await self.nudge_stalled(at, nudge_secs=stall_nudge_secs, giveup_secs=stall_giveup_secs)
         await self.auto_close_resolved(at, after_secs=autoclose_secs)
 
 
 def _as_int(value: Any, fallback: int) -> int:
+    """Coerce a settings value to a non-negative int, falling back on anything else.
+
+    Unlike the interval settings this backs, ``0`` is a meaningful value here
+    (the stall passes' "disabled" sentinel), so this deliberately does not
+    reject it the way an interval's "must be positive" coercion would.
+    """
+
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    return parsed if parsed >= 0 else fallback
+
+
+def _as_positive_int(value: Any, fallback: int) -> int:
     """Coerce a settings value to a positive int, falling back on anything else."""
 
     try:
@@ -877,7 +1201,7 @@ async def ticket_sweep_loop(
     interval_secs: int = DEFAULT_SWEEP_INTERVAL_SECS,
     initial_delay: float = 30.0,
 ) -> None:
-    """Periodically expire overdue approvals and auto-close resolved tickets.
+    """Periodically expire overdue approvals, nudge/escalate stalls, auto-close.
 
     Same shape as ``main._backup_loop``: an initial delay, the cadence re-read
     from the injected getter each pass so a dashboard change retimes the loop,
@@ -889,11 +1213,19 @@ async def ticket_sweep_loop(
     while True:
         interval = interval_secs
         try:
-            interval = _as_int(settings_getter(SWEEP_INTERVAL_SETTING), interval_secs)
-            autoclose = _as_int(
+            interval = _as_positive_int(settings_getter(SWEEP_INTERVAL_SETTING), interval_secs)
+            autoclose = _as_positive_int(
                 settings_getter(AUTOCLOSE_SETTING), service.autoclose_secs
             )
-            await service.sweep(autoclose_secs=autoclose)
+            stall_nudge = _as_int(settings_getter(STALL_NUDGE_SETTING), service.stall_nudge_secs)
+            stall_giveup = _as_int(
+                settings_getter(STALL_GIVEUP_SETTING), service.stall_giveup_secs
+            )
+            await service.sweep(
+                autoclose_secs=autoclose,
+                stall_nudge_secs=stall_nudge,
+                stall_giveup_secs=stall_giveup,
+            )
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - never let the loop die

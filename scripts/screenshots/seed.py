@@ -254,8 +254,9 @@ async def _seed_tickets(tickets: Any, base: datetime) -> None:
             actor="user:7",
             reason="opened from Discord",
         )
-        await tickets.transition(flush.id, "triage", actor="system", reason="opened from Discord")
-        await tickets.transition(flush.id, "in_progress", actor="system")
+        await tickets.transition(
+            flush.id, "in_progress", actor="system", reason="opened from Discord"
+        )
         await tickets.append_event(
             flush.id, kind="message", actor="user:7", summary="opening message",
             fields={"actionable": True, "discord_id": "441029938271"},
@@ -283,15 +284,15 @@ async def _seed_tickets(tickets: Any, base: datetime) -> None:
             tool_class="normal_change", args={"id": "Realtek.WiFiDriver"},
             kind="operator_approval", agent_id="grandpa-pc", actor="kenny",
         )
-        await tickets.transition(
-            flush.id, "awaiting_approval", actor="system",
-            reason="winget_install held for operator_approval",
+        await tickets.block(
+            flush.id, "approval", actor="system",
+            reason="winget_install held for operator_approval", ref=approval.id,
         )
         _at(hours=1, minutes=40)
         await tickets.decide_approval(
             approval.id, approve=True, decided_by=1, decided_via="dashboard", actor="operator:1",
         )
-        await tickets.transition(flush.id, "in_progress", actor="system", reason="gate decided")
+        await tickets.unblock(flush.id, actor="system", reason="gate decided")
         _at(hours=1, minutes=38)
         await tickets.append_event(
             flush.id, kind="tool_call", actor="kenny", tool="winget_install",
@@ -318,21 +319,22 @@ async def _seed_tickets(tickets: Any, base: datetime) -> None:
             actor="user:4",
             reason="opened from Discord",
         )
-        await tickets.transition(printer.id, "triage", actor="system", reason="opened from Discord")
-        await tickets.transition(printer.id, "in_progress", actor="system")
+        await tickets.transition(
+            printer.id, "in_progress", actor="system", reason="opened from Discord"
+        )
         await tickets.append_event(
             printer.id, kind="message", actor="user:4", summary="opening message",
             fields={"actionable": True, "discord_id": "552017744102"},
         )
         _at(minutes=39)
-        await tickets.open_approval(
+        printer_approval = await tickets.open_approval(
             printer.id, tool_use_id="toolu_demo2", tool="winget_install",
             tool_class="normal_change", args={"id": "Brother.iPrintScan"},
             kind="operator_approval", agent_id="living-room-pc", actor="kenny",
         )
-        await tickets.transition(
-            printer.id, "awaiting_approval", actor="system",
-            reason="winget_install held for operator_approval",
+        await tickets.block(
+            printer.id, "approval", actor="system",
+            reason="winget_install held for operator_approval", ref=printer_approval.id,
         )
 
         # -- a fresh, untouched ticket opened straight from the dashboard -----
@@ -361,9 +363,9 @@ async def _seed_tickets(tickets: Any, base: datetime) -> None:
             actor="system",
             reason="opened from an alert",
         )
-        await tickets.transition(defender.id, "triage", actor="system")
-        await tickets.transition(
-            defender.id, "awaiting_agent", actor="system",
+        await tickets.transition(defender.id, "in_progress", actor="system")
+        await tickets.block(
+            defender.id, "operator", actor="system",
             reason="waiting for an operator to pick this up",
         )
     finally:

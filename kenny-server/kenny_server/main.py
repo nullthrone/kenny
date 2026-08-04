@@ -259,6 +259,8 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         ticket_store,
         approval_ttl_secs=int(settings.get("KENNY_TICKET_APPROVAL_TTL_SECS")),
         autoclose_secs=int(settings.get("KENNY_TICKET_AUTOCLOSE_SECS")),
+        stall_nudge_secs=int(settings.get("KENNY_TICKET_STALL_NUDGE_SECS")),
+        stall_giveup_secs=int(settings.get("KENNY_TICKET_STALL_GIVEUP_SECS")),
     )
     discord_identities = DiscordIdentityStore(db_path)
 
@@ -400,6 +402,8 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         # a dashboard override is in force from the first sweep of this boot.
         ticket_service.approval_ttl_secs = int(settings.get("KENNY_TICKET_APPROVAL_TTL_SECS"))
         ticket_service.autoclose_secs = int(settings.get("KENNY_TICKET_AUTOCLOSE_SECS"))
+        ticket_service.stall_nudge_secs = int(settings.get("KENNY_TICKET_STALL_NUDGE_SECS"))
+        ticket_service.stall_giveup_secs = int(settings.get("KENNY_TICKET_STALL_GIVEUP_SECS"))
         ticket_store.run_retention_days = int(settings.get("KENNY_TICKET_RETENTION_DAYS"))
         if applied:
             await event_store.insert_alert(

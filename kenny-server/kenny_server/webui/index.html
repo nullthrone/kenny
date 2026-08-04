@@ -1940,26 +1940,59 @@
     // posted into Discord, so it has to work from a cold load, not just from
     // clicking through the list.
     // ====================================================================
-    const TICKET_STATES = ["new", "triage", "in_progress", "awaiting_user",
-      "awaiting_approval", "awaiting_agent", "resolved", "closed", "cancelled"];
-    const TICKET_TERMINAL = ["resolved", "closed", "cancelled"];
+    // Vocabulary (states/blocked-reasons/priorities/categories) comes from the
+    // server, fetched once and cached — this is the fix for the thing this
+    // whole rework exists to close off: a hardcoded second copy of the
+    // lifecycle here that could silently drift from what the service enforces.
+    // ``ticketActionsHtml`` below renders exactly a ticket's own
+    // ``allowed_transitions``/``allowed_blocks``/``can_unblock`` — no
+    // client-side legality logic survives.
+    async function ticketVocab() {
+      if (!state.ticketVocab) {
+        state.ticketVocab = await getJSON("/api/tickets/vocabulary")
+          .catch(() => ({ states: [], blocked_reasons: [], priorities: [], categories: [] }));
+      }
+      return state.ticketVocab;
+    }
 
-    function ticketStateClass(s) {
-      if (s === "resolved" || s === "closed") return "k-pill--ok";
-      if (s === "cancelled") return "k-pill--muted";
-      if (String(s).startsWith("awaiting")) return "k-pill--warn";
-      if (s === "in_progress") return "k-pill--role";
-      return "k-pill--muted"; // new, triage
+    function ticketStateClass(t) {
+      if (t.state === "resolved" || t.state === "closed") return "k-pill--ok";
+      if (t.state === "cancelled") return "k-pill--muted";
+      if (t.blocked_on) return "k-pill--warn";
+      if (t.state === "in_progress") return "k-pill--role";
+      return "k-pill--muted"; // new
     }
     function ticketStateLabel(s) { return String(s || "").replace(/_/g, " "); }
-    // Target states a transition can legally land on — "new" is only ever a
-    // starting state, so it is left out of the bulk-action picker.
-    const TICKET_BULK_TARGET_STATES = TICKET_STATES.filter(s => s !== "new");
+    // Phrased relative to the viewer: the ticket's own requester reads
+    // "waiting on you" for their own block, an operator reads "needs you" for
+    // one only an operator can clear — the same blocked_on value means a
+    // different person depending on who is looking at it.
+    function ticketBlockedLabel(t) {
+      if (!t.blocked_on) return "";
+      const isRequester = state.me && state.me.id != null && t.requester_user_id === state.me.id;
+      const who = t.blocked_on === "user"
+        ? (isRequester ? "waiting on you" : "waiting on requester")
+        : t.blocked_on === "approval"
+        ? (canOperate() ? "needs your approval" : "waiting on approval")
+        : (canOperate() ? "needs you" : "waiting on an operator");
+      return t.blocked_since ? `${who} · ${relTime(t.blocked_since)}` : who;
+    }
+    function ticketPillHtml(t) {
+      const blocked = ticketBlockedLabel(t);
+      const label = blocked ? `${ticketStateLabel(t.state)} · ${blocked}` : ticketStateLabel(t.state);
+      return `<span class="k-pill ${ticketStateClass(t)}">${esc(label)}</span>`;
+    }
 
     async function renderTickets() {
       const nav = navToken;
-      if (!state.fleet) state.fleet = await getJSON("/api/fleet").catch(() => ({ agents: [] }));
+      const [fleet, , summary] = await Promise.all([
+        state.fleet ? Promise.resolve(state.fleet) : getJSON("/api/fleet").catch(() => ({ agents: [] })),
+        ticketVocab(),
+        getJSON("/api/tickets/summary").catch(() => null),
+      ]);
       if (nav !== navToken) return;  // navigated away while this was loading
+      state.fleet = fleet;
+      state.ticketsSummary = summary;
       renderHeaderRight(state.fleet, state.fleet.agents || []);
       app.innerHTML = `<div class="ktk"><div class="k-muted">loading…</div></div>`;
       let data;
@@ -1974,26 +2007,43 @@
       if (nav !== navToken) return;  // navigated away while this was loading
       app.innerHTML = ticketsPageHtml();
     }
+    // Bucket a ticket the same way TicketStore.counts() does server-side, so
+    // the group filter and the header counts always agree with each other.
+    function ticketBucket(t) {
+      if (t.state === "resolved" || t.state === "closed" || t.state === "cancelled") return "done";
+      if (t.state === "new") return t.requester_user_id == null ? "needs_you" : "new";
+      if (t.blocked_on === "operator" || t.blocked_on === "approval") return "needs_you";
+      if (t.blocked_on === "user") return "waiting";
+      return "working";
+    }
+    const TICKET_GROUPS = [
+      ["", "all"], ["needs_you", "needs you"], ["waiting", "waiting"],
+      ["working", "working"], ["new", "new"], ["done", "done"],
+    ];
     function ticketsVisible() {
-      const filter = state.ticketsStateFilter || "";
-      return filter ? state.tickets.filter(t => t.state === filter) : state.tickets;
+      const group = state.ticketsGroup || "";
+      return group ? state.tickets.filter(t => ticketBucket(t) === group) : state.tickets;
     }
     function ticketsPageHtml() {
-      const filter = state.ticketsStateFilter || "";
+      const group = state.ticketsGroup || "";
       const isOp = canOperate();
       const sel = state.ticketsSelected || (state.ticketsSelected = new Set());
       const visible = ticketsVisible();
       const rows = visible.map(t => ticketRowHtml(t, isOp, sel.has(t.id))).join("");
       const allChecked = isOp && visible.length > 0 && visible.every(t => sel.has(t.id));
-      const options = `<option value="">all states</option>` + TICKET_STATES.map(s =>
-        `<option value="${s}" ${s === filter ? "selected" : ""}>${esc(ticketStateLabel(s))}</option>`).join("");
-      const bulkStateOptions = TICKET_BULK_TARGET_STATES.map(s =>
+      const counts = state.ticketsSummary || {};
+      const tabs = TICKET_GROUPS.map(([key, label]) => {
+        const n = key ? (counts[key] || 0) : state.tickets.length;
+        return `<button class="k-btn k-btn--sm ${key === group ? "k-btn--primary" : "k-btn--ghost"}"
+          onclick="onTicketsGroupChange(${jsArg(key)})">${esc(label)}${key ? ` (${n})` : ""}</button>`;
+      }).join("");
+      const bulkOptions = (state.ticketVocab.states || []).filter(s => s !== "new").map(s =>
         `<option value="${s}">${esc(ticketStateLabel(s))}</option>`).join("");
       const bulkBar = isOp && sel.size > 0 ? `<div class="k-row"
           style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px;padding:8px 10px;background:var(--surface-raised);border-radius:var(--radius-sm)">
           <span class="k-muted">${sel.size} ticket${sel.size === 1 ? "" : "s"} selected</span>
           <div class="k-row" style="gap:8px">
-            <select class="k-input" id="tk-bulk-state">${bulkStateOptions}</select>
+            <select class="k-input" id="tk-bulk-state">${bulkOptions}</select>
             <button class="k-btn k-btn--primary k-btn--sm" onclick="applyBulkTicketState()">${icon('check', 13)}Apply</button>
             <button class="k-btn k-btn--ghost k-btn--sm" onclick="clearTicketSelection()">Clear</button>
           </div>
@@ -2002,8 +2052,8 @@
         <div class="k-panel">
           <div class="k-row" style="justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:10px">
             <div class="kc-section-lbl">tickets</div>
-            <div class="k-row" style="gap:8px">
-              <select class="k-input" id="tk-state-filter" onchange="onTicketsFilterChange(this.value)">${options}</select>
+            <div class="k-row" style="gap:8px;flex-wrap:wrap">
+              <div class="k-row" style="gap:6px;flex-wrap:wrap">${tabs}</div>
               <button class="k-btn k-btn--primary k-btn--sm" onclick="openCreateTicketModal()">${icon('plus', 13)}New ticket</button>
             </div>
           </div>
@@ -2023,14 +2073,14 @@
           onchange="onTicketCheckChange(${jsArg(t.id)}, this.checked)"></td>` : ""}
         <td class="k-mono">#${t.number}</td>
         <td>${esc(t.title)}</td>
-        <td><span class="k-pill ${ticketStateClass(t.state)}">${esc(ticketStateLabel(t.state))}</span></td>
+        <td>${ticketPillHtml(t)}</td>
         <td>${t.requester_user_id != null ? "#" + esc(t.requester_user_id) : '<span class="k-muted">alert</span>'}</td>
         <td class="k-mono">${t.agent_id ? esc(t.agent_id) : '<span class="k-muted">—</span>'}</td>
         <td class="k-muted">${esc(relTime(t.created_at))}</td>
       </tr>`;
     }
-    function onTicketsFilterChange(v) {
-      state.ticketsStateFilter = v;
+    function onTicketsGroupChange(v) {
+      state.ticketsGroup = v;
       app.innerHTML = ticketsPageHtml();
     }
     function toggleAllTickets(checked) {
@@ -2098,8 +2148,12 @@
 
     async function renderTicketDetail(id) {
       const nav = navToken;
-      if (!state.fleet) state.fleet = await getJSON("/api/fleet").catch(() => ({ agents: [] }));
+      const [fleet] = await Promise.all([
+        state.fleet ? Promise.resolve(state.fleet) : getJSON("/api/fleet").catch(() => ({ agents: [] })),
+        ticketVocab(),
+      ]);
       if (nav !== navToken) return;  // navigated away while this was loading
+      state.fleet = fleet;
       renderHeaderRight(state.fleet, state.fleet.agents || []);
       app.innerHTML = `<div class="ktk"><div class="k-muted">loading…</div></div>`;
       let ticket, events;
@@ -2121,18 +2175,33 @@
         <div class="k-row" style="gap:10px;flex-wrap:wrap">
           <a class="k-btn k-btn--ghost k-btn--sm" href="#/tickets">${icon('chevron-left', 13)}All tickets</a>
           <span style="font-size:var(--text-md);font-weight:600">${esc(t.title)}</span>
-          <span class="k-pill ${ticketStateClass(t.state)}">${esc(ticketStateLabel(t.state))}</span>
+          ${ticketPillHtml(t)}
         </div>
         ${ticketActionsHtml(t)}
       </div>`;
+      const vocab = state.ticketVocab || {};
+      const canEdit = canOperate() || (state.me && state.me.id === t.requester_user_id);
+      const priorityField = canEdit ? `<select class="k-input k-input--sm" style="width:auto;display:inline-block"
+          onchange="updateTicketField(${jsArg(t.id)}, 'priority', this.value)">
+          ${(vocab.priorities || []).map(p =>
+            `<option value="${p}" ${p === t.priority ? "selected" : ""}>${esc(p)}</option>`).join("")}
+        </select>` : esc(t.priority);
+      const categoryField = canEdit ? `<select class="k-input k-input--sm" style="width:auto;display:inline-block"
+          onchange="updateTicketField(${jsArg(t.id)}, 'category', this.value)">
+          <option value="">—</option>
+          ${(vocab.categories || []).map(c =>
+            `<option value="${c}" ${c === t.category ? "selected" : ""}>${esc(c)}</option>`).join("")}
+        </select>` : (t.category ? esc(t.category) : "—");
       const meta = `<div class="k-panel kset__grp">
         <div class="k-deflist">
           <div class="k-deflist__k">number</div><div class="k-deflist__v k-mono">#${t.number}</div>
           <div class="k-deflist__k">origin</div><div class="k-deflist__v">${esc(t.origin)}</div>
-          <div class="k-deflist__k">priority</div><div class="k-deflist__v">${esc(t.priority)}</div>
-          <div class="k-deflist__k">category</div><div class="k-deflist__v">${t.category ? esc(t.category) : "—"}</div>
+          <div class="k-deflist__k">priority</div><div class="k-deflist__v">${priorityField}</div>
+          <div class="k-deflist__k">category</div><div class="k-deflist__v">${categoryField}</div>
           <div class="k-deflist__k">requester</div>
           <div class="k-deflist__v">${t.requester_user_id != null ? "#" + esc(t.requester_user_id) : "alert (no requester)"}</div>
+          <div class="k-deflist__k">assignee</div>
+          <div class="k-deflist__v">${t.assignee_user_id != null ? "#" + esc(t.assignee_user_id) : '<span class="k-muted">unclaimed</span>'}</div>
           <div class="k-deflist__k">agent</div><div class="k-deflist__v k-mono">${t.agent_id ? esc(t.agent_id) : "—"}</div>
           <div class="k-deflist__k">created</div><div class="k-deflist__v">${esc(fmtValue("at", t.created_at))}</div>
           <div class="k-deflist__k">updated</div><div class="k-deflist__v">${esc(fmtValue("at", t.updated_at))}</div>
@@ -2154,26 +2223,45 @@
       </div>`;
       return `<div class="ktk">${head}${meta}${noteForm}${timeline}</div>`;
     }
+    // Renders exactly what the ticket's own ``allowed_transitions``/
+    // ``allowed_blocks``/``can_unblock`` say a legal move is for *this*
+    // principal — computed server-side by TicketService.can_transition/
+    // can_block/can_unblock, so this can never offer a move the API would
+    // then refuse. No client-side legality logic survives here.
     function ticketActionsHtml(t) {
+      const allowed = t.allowed_transitions || [];
       const btns = [];
       if (canOperate()) {
         btns.push(`<button class="k-btn k-btn--ghost k-btn--sm"
           onclick="openReassignModal(${jsArg(t.id)}, ${jsArg(t.agent_id || "")})">${icon('network', 13)}Reassign host</button>`);
-        if (!TICKET_TERMINAL.includes(t.state)) {
-          btns.push(`<button class="k-btn k-btn--primary k-btn--sm"
-            onclick="openResolveModal(${jsArg(t.id)}, ${jsArg(t.state)})">${icon('check', 13)}Resolve</button>`);
-        }
-        if (t.state === "resolved") {
-          btns.push(`<button class="k-btn k-btn--ghost k-btn--sm"
-            onclick="reopenTicket(${jsArg(t.id)})">${icon('rotate-ccw', 13)}Reopen</button>`);
-        }
+        const mine = state.me && state.me.id != null && t.assignee_user_id === state.me.id;
+        const claimTarget = mine ? "null" : jsArg(state.me && state.me.id);
+        btns.push(`<button class="k-btn k-btn--ghost k-btn--sm"
+          onclick="submitAssign(${jsArg(t.id)}, ${claimTarget})">${icon('user-round', 13)}${mine ? "Unclaim" : "Claim"}</button>`);
       }
-      if (t.state === "resolved") {
+      if (allowed.includes("resolved")) {
+        btns.push(`<button class="k-btn k-btn--primary k-btn--sm"
+          onclick="openResolveModal(${jsArg(t.id)}, ${jsArg(t.blocked_on || "")})">${icon('check', 13)}Resolve</button>`);
+      }
+      if (t.state === "resolved" && allowed.includes("in_progress")) {
+        btns.push(`<button class="k-btn k-btn--ghost k-btn--sm"
+          onclick="reopenTicket(${jsArg(t.id)})">${icon('rotate-ccw', 13)}Reopen</button>`);
+      }
+      if (allowed.includes("closed")) {
         btns.push(`<button class="k-btn k-btn--primary k-btn--sm" onclick="closeTicket(${jsArg(t.id)})">${icon('check', 13)}Close ticket</button>`);
       }
-      return btns.length ? `<div class="k-row" style="gap:8px">${btns.join("")}</div>` : "";
+      if (allowed.includes("cancelled")) {
+        btns.push(`<button class="k-btn k-btn--ghost k-btn--sm"
+          onclick="cancelTicket(${jsArg(t.id)})">${icon('x', 13)}Cancel</button>`);
+      }
+      if (t.can_unblock) {
+        btns.push(`<button class="k-btn k-btn--ghost k-btn--sm"
+          onclick="unblockTicket(${jsArg(t.id)})">${icon('refresh-cw', 13)}Unblock</button>`);
+      }
+      return btns.length ? `<div class="k-row" style="gap:8px;flex-wrap:wrap">${btns.join("")}</div>` : "";
     }
-    const TICKET_EVENT_ICON = { state: "activity", handoff: "network", tool_call: "cpu",
+    const TICKET_EVENT_ICON = { state: "activity", handoff: "network", block: "shield-alert",
+      assign: "user-round", tool_call: "cpu",
       approval: "shield-check", consent: "shield-check", note: "message-square",
       message: "message-square", error: "triangle-alert" };
     function ticketEventHtml(e) {
@@ -2185,6 +2273,14 @@
       } else if (e.kind === "handoff") {
         const f = e.fields || {};
         body = `reassigned <b>${esc(f.from_agent_id || "—")}</b> → <b>${esc(f.to_agent_id || "—")}</b>`;
+      } else if (e.kind === "block") {
+        const f = e.fields || {};
+        const from = f.from_blocked_on || "unblocked", to = f.to_blocked_on || "unblocked";
+        body = `blocked: <b>${esc(from)}</b> → <b>${esc(to)}</b>` + (e.summary ? " — " + esc(e.summary) : "");
+      } else if (e.kind === "assign") {
+        const f = e.fields || {};
+        body = `assignee: <b>${f.from_assignee_user_id != null ? "#" + esc(f.from_assignee_user_id) : "—"}</b>` +
+          ` → <b>${f.to_assignee_user_id != null ? "#" + esc(f.to_assignee_user_id) : "—"}</b>`;
       } else if (e.kind === "tool_call") {
         const args = e.fields && e.fields.args !== undefined ? esc(JSON.stringify(e.fields.args)) : "";
         const err = e.fields && e.fields.error;
@@ -2234,8 +2330,8 @@
         await renderTicketDetail(id);
       } catch (e) { notify(e.message, "err"); }
     }
-    function openResolveModal(id, currentState) {
-      const gateWarning = currentState === "awaiting_approval"
+    function openResolveModal(id, currentBlockedOn) {
+      const gateWarning = currentBlockedOn === "approval"
         ? `<div class="k-muted" style="margin-bottom:8px">This ticket has a pending approval
             request. Resolving it now denies that request instead of waiting for a decision.</div>`
         : "";
@@ -2282,6 +2378,40 @@
         try { await api("/api/tickets/" + encodeURIComponent(id) + "/close", "POST", {}); notify("ticket closed"); }
         catch (e) { notify(e.message, "err"); }
       }
+      await renderTicketDetail(id);
+    }
+    async function cancelTicket(id) {
+      const ok = await confirmModal({ title: "Cancel ticket", ico: "x",
+        body: "Withdraw this ticket? This cannot be undone.",
+        confirmLabel: "Cancel ticket", confirmClass: "k-btn--danger" });
+      if (ok) {
+        try {
+          await api("/api/tickets/" + encodeURIComponent(id) + "/transition", "POST",
+            { to: "cancelled", reason: "cancelled from dashboard" });
+          notify("ticket cancelled");
+        } catch (e) { notify(e.message, "err"); }
+      }
+      await renderTicketDetail(id);
+    }
+    async function unblockTicket(id) {
+      try {
+        await api("/api/tickets/" + encodeURIComponent(id) + "/unblock", "POST", {});
+        notify("unblocked");
+      } catch (e) { notify(e.message, "err"); }
+      await renderTicketDetail(id);
+    }
+    async function submitAssign(id, assignee_user_id) {
+      try {
+        await api("/api/tickets/" + encodeURIComponent(id) + "/assign", "POST", { assignee_user_id });
+        notify(assignee_user_id != null ? "claimed" : "unclaimed");
+      } catch (e) { notify(e.message, "err"); }
+      await renderTicketDetail(id);
+    }
+    async function updateTicketField(id, field, value) {
+      try {
+        await api("/api/tickets/" + encodeURIComponent(id), "PATCH", { [field]: value || null });
+        notify(`${field} updated`);
+      } catch (e) { notify(e.message, "err"); }
       await renderTicketDetail(id);
     }
     async function addTicketNote(id) {
@@ -3449,6 +3579,7 @@
       headerRight.innerHTML =
         fleetMetricsHtml(agents) +
         copilotBtn +
+        ticketsBadgeHtml() +
         approvalsBadgeHtml() +
         identityHtml();
       if (canOperate()) {
@@ -3456,9 +3587,30 @@
           const data = await getJSON("/api/approvals");
           state.approvalsCount = (data.approvals || []).length;
         } catch (e) { state.approvalsCount = 0; }
+        try {
+          const summary = await getJSON("/api/tickets/summary");
+          state.ticketsNeedsYouCount = summary.needs_you || 0;
+        } catch (e) { state.ticketsNeedsYouCount = 0; }
         const btn = document.getElementById("approvals-badge");
         if (btn) btn.outerHTML = approvalsBadgeHtml();
+        const tbtn = document.getElementById("tickets-needs-you-badge");
+        if (tbtn) tbtn.outerHTML = ticketsBadgeHtml();
       }
+    }
+
+    // Tickets needing an operator's attention (blocked on approval/operator, or
+    // a fresh alert-origin ticket) — the sibling of the approvals badge, next
+    // to it for the same reason: both are "something is waiting on you".
+    function ticketsBadgeHtml() {
+      if (!canOperate()) return "";
+      const n = state.ticketsNeedsYouCount || 0;
+      return `<button class="kc-icon-btn${n ? " is-active" : ""}" id="tickets-needs-you-badge"
+          onclick="openTicketsGroup('needs_you')" title="tickets needing you" aria-label="tickets needing you">
+          ${icon('message-square', 16)}${n ? `<span class="k-badge">${n > 99 ? "99+" : n}</span>` : ""}</button>`;
+    }
+    function openTicketsGroup(group) {
+      state.ticketsGroup = group;
+      location.hash = "#/tickets";
     }
 
     // A pending-approvals count badge (operator+) opening the approvals modal —
