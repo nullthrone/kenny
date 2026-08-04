@@ -412,6 +412,20 @@ filter** narrows to one lifecycle state; **New ticket** opens one directly from 
 dashboard (title + optional details), which lands exactly like a Discord-opened one except
 it has no thread attached.
 
+### Auto-ticket rules (operator+)
+
+Below the ticket list, an **auto-ticket rules** panel (operator+ only — see
+[ADR-0053](adr/0053-operator-configurable-auto-ticket-rules.md)) lists the operator's
+exceptions to the default alert-ticket policy: by default every genuine alert opens a
+ticket and nothing else does, and each rule here either narrows that (`never` on a noisy
+offline PC) or widens it (`open_all` on an inventory change, e.g. a new local admin
+account). A rule names an event type, an optional section and host, and a decision
+(`open` / `open if crit` / `never`); rules are most-specific-wins, so a host-scoped rule
+beats a fleet-wide one. Removing a fleet-wide rule asks for confirmation, since it changes
+behaviour on every PC. See [Alerting → which events open a ticket is
+configurable](alerting.md#which-events-open-a-ticket-is-configurable-adr-0053) for the full
+model.
+
 ### Ticket detail
 
 <figure markdown>

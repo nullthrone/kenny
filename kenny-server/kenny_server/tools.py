@@ -359,6 +359,7 @@ def register_tools(
     call_log: CallLog,
     webfilter: WebFilterService | None = None,
     suppression: Any = None,
+    ticket_rules: Any = None,
 ) -> None:
     """Register all MCP tools on ``mcp``."""
 
@@ -581,6 +582,76 @@ def register_tools(
             principal = _mcp_principal()
             _require_role(principal, "operator")
             removed, rules = await suppression.remove(rule_id)
+            return {"ok": True, "removed": removed, "rules": rules}
+
+    # -- auto-ticket rules server-only tools (ADR-0053) ---------------------
+    #
+    # Server-held operator policy, not a per-agent capability -- like the
+    # suppression trio above, this never forwards a request frame to an agent.
+    # Operator-only on every tool, including the read: an alert-origin ticket
+    # is itself operator-only (its requester_user_id is always None), so a
+    # scoped `user` has no legitimate use for the rules that decide when one
+    # opens, and listing them would leak fleet host names for no benefit.
+
+    if ticket_rules is not None:
+
+        @mcp.tool(
+            name="ticket_rule_list",
+            description=(
+                "List auto-ticket rules: which alerts open a ticket automatically "
+                "(read-only, operator+). Without agent_id, all rules; with it, "
+                "fleet-wide + that host's rules."
+            ),
+        )
+        async def ticket_rule_list(agent_id: str | None = None) -> dict[str, Any]:
+            principal = _mcp_principal()
+            _require_role(principal, "operator")
+            if agent_id:
+                _require_scope(principal, agent_id)
+            return {"rules": ticket_rules.rules(agent_id or None)}
+
+        @mcp.tool(
+            name="ticket_rule_set",
+            description=(
+                "Add (or replace) a rule deciding whether an alert event opens a "
+                "ticket (state-changing, operator+). event_type is one of health/"
+                "offline/disk_forecast/change; decision is one of open_all/"
+                "open_crit/never. section empty/omitted means any section; "
+                "agent_id empty/omitted means fleet-wide."
+            ),
+        )
+        async def ticket_rule_set(
+            event_type: str,
+            decision: str,
+            section: str | None = None,
+            agent_id: str | None = None,
+            note: str | None = None,
+        ) -> dict[str, Any]:
+            principal = _mcp_principal()
+            _require_role(principal, "operator")
+            if agent_id:
+                _require_scope(principal, agent_id)
+            try:
+                rules, warnings = await ticket_rules.add(
+                    event_type=event_type,
+                    decision=decision,
+                    section=section or "",
+                    agent_id=agent_id or "",
+                    note=note or "",
+                    created_by=getattr(principal, "username", "") or "",
+                )
+            except ValueError as exc:
+                raise ToolError("bad_args", str(exc)) from exc
+            return {"rules": rules, "warnings": warnings}
+
+        @mcp.tool(
+            name="ticket_rule_remove",
+            description="Remove an auto-ticket rule by id (state-changing, operator+).",
+        )
+        async def ticket_rule_remove(rule_id: str) -> dict[str, Any]:
+            principal = _mcp_principal()
+            _require_role(principal, "operator")
+            removed, rules = await ticket_rules.remove(rule_id)
             return {"ok": True, "removed": removed, "rules": rules}
 
     # -- parental-controls (webfilter) server-only tools ------------------

@@ -101,6 +101,10 @@ TOOL_CLASSES: dict[str, str] = {
     "reliability_suppression_list": READ_ONLY,
     "reliability_suppression_add": NORMAL_CHANGE,
     "reliability_suppression_remove": NORMAL_CHANGE,
+    # -- auto-ticket rules (ADR-0053) ---------------------------------------
+    "ticket_rule_list": READ_ONLY,
+    "ticket_rule_set": NORMAL_CHANGE,
+    "ticket_rule_remove": NORMAL_CHANGE,
     # -- account governance (ADR-0046) -------------------------------------
     # Deciding who may sign in to a family PC — and being able to lock the
     # household out by getting it wrong — is never routine.

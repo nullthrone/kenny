@@ -37,6 +37,10 @@ approval and state change underneath it. Three things can open one:
   automatically, so a Defender-disabled or a failing-disk notification arrives with
   somewhere to work it, not just a push you have to remember. An alert-origin ticket has no
   requester — it belongs to the fleet, not a person — so only an operator can see or drive it.
+  **Which events do this is configurable** — the **auto-ticket rules** panel on this tab lets
+  you narrow it (e.g. stop offline PCs from opening tickets) or widen it (e.g. promote an
+  inventory change, like a new local admin account, into one). See
+  [Alerting → which events open a ticket](alerting.md#which-events-open-a-ticket-is-configurable-adr-0053).
 
 <figure markdown>
   ![The Tickets list, filterable by state.](assets/screenshots/tickets.png)
@@ -356,8 +360,8 @@ for why Discord roles are never read as authorization, however tempting that sho
 - [`dashboard.md`](dashboard.md) — the Tickets tab, the approvals badge, and the Discord
   Settings panel, widget by widget.
 - [`tools.md`](tools.md) — the three tool tiers and the full confirm-gate table.
-- [`alerting.md`](alerting.md) — how an alert opens a ticket, and the Discord webhook
-  notification channel.
+- [`alerting.md`](alerting.md) — how an alert opens a ticket, how to configure which ones do,
+  and the Discord webhook notification channel.
 - [ADR-0048](adr/0048-delegated-identity-from-a-chat-platform.md) — delegated identity,
   no parallel authorization.
 - [ADR-0049](adr/0049-tiered-tool-classification.md) — the tier belongs to the tool, the
@@ -366,3 +370,5 @@ for why Discord roles are never read as authorization, however tempting that sho
   entity; the chat thread is a binding.
 - [ADR-0051](adr/0051-capability-profiles.md) — capability profiles as a third
   authorization axis.
+- [ADR-0053](adr/0053-operator-configurable-auto-ticket-rules.md) — operator-configurable
+  auto-ticket rules.

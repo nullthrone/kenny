@@ -702,6 +702,125 @@ class ReliabilitySuppressionStore:
         return cur.rowcount or 0
 
 
+_TICKET_RULE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS ticket_rules (
+    id         TEXT PRIMARY KEY,
+    agent_id   TEXT NOT NULL DEFAULT '',
+    event_type TEXT NOT NULL,
+    section    TEXT NOT NULL DEFAULT '',
+    decision   TEXT NOT NULL,
+    note       TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    created_by TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_ticket_rules_created ON ticket_rules (created_at);
+"""
+
+
+class TicketRuleStore:
+    """Async SQLite-backed store for operator-declared auto-ticket rules
+    (ADR-0053).
+
+    A rule decides whether a given ``(agent_id, event_type, section)`` alert
+    subject opens a ticket: ``open_all`` always opens it, ``open_crit`` only
+    for a ``crit``-severity subject, ``never`` suppresses it. ``agent_id``
+    empty means fleet-wide; ``section`` empty means any section. Same
+    empty-string-sentinel reasoning as :class:`ReliabilitySuppressionStore`
+    (NULL would let SQLite treat wildcard rows as pairwise-distinct). ``id``
+    is the deterministic ``"<agent_id>|<event_type>|<section>"`` key built by
+    the caller (:mod:`kenny_server.ticket_rules`), which both enforces
+    uniqueness of the triple and makes the row directly addressable for
+    removal without a lookup. The table records only *deviations* from the
+    coded default in ``ticket_rules.DEFAULT_DECISION`` -- an empty table
+    reproduces the pre-ADR-0053 behavior exactly.
+    """
+
+    def __init__(self, db_path: str = DEFAULT_DB_PATH) -> None:
+        self.db_path = db_path
+        self._db: aiosqlite.Connection | None = None
+
+    async def connect(self) -> None:
+        if self._db is not None:
+            return
+        self._db = await aiosqlite.connect(self.db_path)
+        await _configure_connection(self._db)
+        await self._db.executescript(_TICKET_RULE_SCHEMA)
+        await self._db.commit()
+
+    async def close(self) -> None:
+        if self._db is not None:
+            await self._db.close()
+            self._db = None
+
+    @property
+    def _conn(self) -> aiosqlite.Connection:
+        if self._db is None:
+            raise RuntimeError("TicketRuleStore is not connected; call connect() first")
+        return self._db
+
+    async def list(self) -> list[dict[str, Any]]:
+        """Return all ticket rules, oldest-first."""
+
+        async with self._conn.execute(
+            "SELECT id, agent_id, event_type, section, decision, note, "
+            "created_at, created_by FROM ticket_rules ORDER BY created_at, id"
+        ) as cur:
+            rows = await cur.fetchall()
+        return [
+            {
+                "id": r["id"],
+                "agent_id": r["agent_id"],
+                "event_type": r["event_type"],
+                "section": r["section"],
+                "decision": r["decision"],
+                "note": r["note"],
+                "created_at": r["created_at"],
+                "created_by": r["created_by"],
+            }
+            for r in rows
+        ]
+
+    async def add(
+        self,
+        *,
+        id: str,
+        agent_id: str,
+        event_type: str,
+        section: str,
+        decision: str,
+        note: str = "",
+        created_by: str = "",
+    ) -> None:
+        """Insert (or replace) a ticket rule, stamping ``created_at``."""
+
+        created_at = datetime.now(timezone.utc).isoformat()
+        await self._conn.execute(
+            "INSERT OR REPLACE INTO ticket_rules "
+            "(id, agent_id, event_type, section, decision, note, created_at, created_by) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (id, agent_id, event_type, section, decision, note, created_at, created_by),
+        )
+        await self._conn.commit()
+
+    async def remove(self, id: str) -> bool:
+        """Delete one ticket rule by id. Returns True if a row was removed."""
+
+        cur = await self._conn.execute("DELETE FROM ticket_rules WHERE id = ?", (id,))
+        await self._conn.commit()
+        return (cur.rowcount or 0) > 0
+
+    async def delete_agent(self, agent_id: str) -> int:
+        """Delete host-scoped rules for a removed host. Fleet-wide rules
+        (``agent_id == ''``) are untouched -- they are fleet policy, not tied
+        to this specific PC."""
+
+        cur = await self._conn.execute(
+            "DELETE FROM ticket_rules WHERE agent_id = ?", (agent_id,)
+        )
+        await self._conn.commit()
+        return cur.rowcount or 0
+
+
 _BACKUP_TARGET_SCHEMA = """
 CREATE TABLE IF NOT EXISTS backup_targets (
     id         TEXT PRIMARY KEY,

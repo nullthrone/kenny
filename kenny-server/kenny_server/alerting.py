@@ -20,11 +20,18 @@ skipped for offline agents so stale snapshots cannot flap.
 Every emitted notification is also persisted to the events table
 (``kind='alert'``) as the audit trail and the weekly digest's input.
 
-An optional ``open_ticket`` callable may be injected to turn an ``alert``-kind
-notification into a ticket. It is opt-in (a server without the ticket surface
-simply passes nothing) and best-effort: delivery happens first and a failing
-ticket call is logged, never raised — alerting must not become less reliable by
-gaining a side effect (ADR-0029).
+An optional ``open_ticket`` callable may be injected to turn a notification
+into a ticket. It is opt-in (a server without the ticket surface simply passes
+nothing) and best-effort: delivery happens first and a failing ticket call is
+logged, never raised — alerting must not become less reliable by gaining a
+side effect (ADR-0029). *Which* notifications actually open a ticket is
+operator policy (ADR-0053), decided by an optional ``ticket_rules`` mirror
+(:class:`kenny_server.ticket_rules.TicketRuleList`) consulted through the same
+``ticket_rules.decide`` function whether or not any rule is configured -- with
+no rules the outcome is byte-for-byte the old hardcoded rule (a genuine alert
+opens a ticket, a recovery/change/digest does not), so the default cannot
+drift from the ruled case. A recovery or the digest can never open a ticket,
+no matter what any rule says (see ``ticket_rules.NEVER_TICKETED_KINDS``).
 """
 
 from __future__ import annotations
@@ -35,6 +42,7 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
 
+from . import ticket_rules as ticket_rules_module
 from .diffs import diff_snapshots
 from .health_rules import evaluate_snapshot
 from .notify import Notification, Notifier
@@ -90,6 +98,7 @@ class AlertEngine:
         digest_day: str = "mon",
         digest_hour: int = 8,
         open_ticket: Callable[[Notification], Awaitable[Any]] | None = None,
+        ticket_rules: Any = None,
     ) -> None:
         self._store = store
         self._alert_state = alert_state
@@ -112,6 +121,11 @@ class AlertEngine:
         # ``_dispatch``. None means alerts never open tickets, which is the
         # behaviour of every server that does not wire one.
         self._open_ticket = open_ticket
+        # Operator-authored auto-ticket rules (ADR-0053), consulted in
+        # ``_dispatch``. None mirrors an empty rule set -- ``ticket_rules.decide``
+        # is called either way, so "no mirror wired" and "mirror with zero rules"
+        # produce the identical decision.
+        self._ticket_rules = ticket_rules
 
     # -- live config accessors -------------------------------------------------
 
@@ -194,6 +208,7 @@ class AlertEngine:
                     tags=["electric_plug"],
                     agent_id=agent_id,
                     kind="alert",
+                    event_type="offline",
                 )
         elif self._episode_was_notified(row):
             note = Notification(
@@ -203,6 +218,7 @@ class AlertEngine:
                 tags=["white_check_mark"],
                 agent_id=agent_id,
                 kind="recovery",
+                event_type="offline",
             )
         await self._alert_state.upsert(
             agent_id,
@@ -227,6 +243,12 @@ class AlertEngine:
         alert_lines: list[str] = []
         recovery_lines: list[str] = []
         alert_worst = "ok"
+        # Which sections actually escalated/recovered in this pass, for the
+        # ticket-rule matcher (ADR-0053) -- only sections whose lines made it
+        # into the notification body are subjects, so a rule fires exactly on
+        # what the operator would read.
+        alert_sections: dict[str, str] = {}
+        recovery_sections: dict[str, str] = {}
 
         for name, section in evaluation["sections"].items():
             scope = f"section:{name}"
@@ -242,12 +264,14 @@ class AlertEngine:
                 # Escalations to crit always fire; warn respects the cooldown.
                 if new == "crit" or self._cooldown_passed(row, now):
                     alert_lines.append(line)
+                    alert_sections[name] = new
                     alert_worst = "crit" if new == "crit" else alert_worst
                     if alert_worst == "ok":
                         alert_worst = "warn"
                     notified = True
             elif new == "ok" and self._episode_was_notified(row):
                 recovery_lines.append(line)
+                recovery_sections[name] = old
                 notified = True
             # crit -> warn improvements update state silently.
             await self._alert_state.upsert(
@@ -281,6 +305,8 @@ class AlertEngine:
                     tags=["rotating_light" if alert_worst == "crit" else "warning"],
                     agent_id=agent_id,
                     kind="alert",
+                    event_type="health",
+                    sections=alert_sections,
                 )
             )
         if recovery_lines:
@@ -292,6 +318,8 @@ class AlertEngine:
                     tags=["white_check_mark"],
                     agent_id=agent_id,
                     kind="recovery",
+                    event_type="health",
+                    sections=recovery_sections,
                 )
             )
         return out
@@ -352,6 +380,12 @@ class AlertEngine:
 
         lines: list[str] = []
         priority = "default"
+        # Sections that actually contributed a line, for the ticket-rule
+        # matcher (ADR-0053). ``change`` has no severity axis of its own, so
+        # each subject carries "" -- it lands on the severity-wildcard slot,
+        # which is the correct behaviour for a producer with nothing to say
+        # about severity (see ticket_rules.decide).
+        changed_sections: dict[str, str] = {}
         for section, section_changes in sorted(by_section.items()):
             scope = f"change:{section}"
             row = state.get(scope)
@@ -360,6 +394,7 @@ class AlertEngine:
             for c in section_changes:
                 detail = f" ({c['detail']})" if c.get("detail") else ""
                 lines.append(f"{section}: {c['kind']} {c['key']}{detail}")
+            changed_sections[section] = ""
             if section == "local_accounts":
                 priority = "high"
             await self._alert_state.upsert(
@@ -378,6 +413,8 @@ class AlertEngine:
             tags=["mag"],
             agent_id=agent_id,
             kind="change",
+            event_type="change",
+            sections=changed_sections,
         )
 
     async def _forecast_alert(
@@ -427,6 +464,7 @@ class AlertEngine:
             tags=["chart_with_upwards_trend"],
             agent_id=agent_id,
             kind="alert",
+            event_type="disk_forecast",
         )
 
     # -- helpers ----------------------------------------------------------------
@@ -459,15 +497,27 @@ class AlertEngine:
         )
         for notifier in self._notifiers:
             await notifier.send(note)  # best-effort; send() never raises
-        # Only a genuine alert becomes a ticket: a recovery, an inventory change
-        # and the weekly digest are all notifications about work that does not
-        # need doing. Runs after delivery and swallows everything, so the ticket
-        # surface can never make a notification late or lost.
-        if self._open_ticket is not None and note.kind == "alert":
+        # Which notifications become a ticket is operator policy (ADR-0053),
+        # decided by ``ticket_rules.decide`` -- called the same way whether or
+        # not a mirror is wired, so "no rules configured" and "no mirror at
+        # all" can never diverge. Runs after delivery and inside this swallow,
+        # so neither the rule lookup nor the ticket surface can ever make a
+        # notification late or lost.
+        if self._open_ticket is not None:
             try:
-                await self._open_ticket(note)
+                rules_map = self._ticket_rules.mapping() if self._ticket_rules is not None else {}
+                decision = ticket_rules_module.decide(
+                    rules_map,
+                    kind=note.kind,
+                    agent_id=note.agent_id or "",
+                    event_type=note.event_type,
+                    priority=note.priority,
+                    sections=note.sections,
+                )
+                if decision.open:
+                    await self._open_ticket(note)
             except Exception:  # noqa: BLE001 - alerting stays best-effort
-                logger.exception("opening a ticket for %r failed", note.title)
+                logger.exception("the ticket decision for %r failed", note.title)
 
     # -- loop ---------------------------------------------------------------------
 
@@ -535,6 +585,11 @@ class AlertEngine:
                 tags=["newspaper"],
                 agent_id=None,
                 kind="digest",
+                # "digest" is not a member of ticket_rules.EVENT_TYPES -- kind
+                # alone already guarantees NEVER_TICKETED_KINDS catches it, this
+                # label just keeps every producer identifiable in the webhook
+                # payload and in the seam tests.
+                event_type="digest",
             ),
             now,
         )

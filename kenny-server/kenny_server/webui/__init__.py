@@ -82,6 +82,7 @@ def build_api_routes(
     update_mgr: Any = None,
     client_factory: Any = None,
     suppression: Any = None,
+    ticket_rules: Any = None,
 ) -> list[Route]:
     """Build the dashboard's static + JSON routes.
 
@@ -511,6 +512,7 @@ def build_api_routes(
             user_store=user_store,
             screenshots=screenshots,
             suppression=suppression,
+            ticket_rules=ticket_rules,
         )
         await call_log.record(agent_id, "remove_host", {}, ok=True)
         return JSONResponse({"ok": True, "agent_id": agent_id, "purged": result})
