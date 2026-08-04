@@ -32,6 +32,7 @@ from kenny_server.auth import OperatorAuthMiddleware
 from kenny_server.discord_adapter import GuildMember
 from kenny_server.discord_identity import DiscordIdentityStore
 from kenny_server.discord_service import DiscordService
+from kenny_server.ticket_assistant import TicketAssistant
 from kenny_server.ticketstore import TicketStore
 from kenny_server.tickets import TicketService
 from kenny_server.userstore import UserStore
@@ -52,21 +53,28 @@ def _build_app(tmp_path, seed: Seed, *, with_discord: bool = False) -> Starlette
     service = TicketService(ticket_store, now=lambda: NOW)
     identities: DiscordIdentityStore | None = None
     discord: DiscordService | None = None
+    assistant: TicketAssistant | None = None
     if with_discord:
         identities = DiscordIdentityStore(db_path)
         gateway = FakeDiscordGateway(
             members={GUILD: [GuildMember(user_id="900", display_hint="Kid")]}
+        )
+        # The routes only read diagnostics/guild list/members; they never drive
+        # a turn, so there is no executor or model client to inject.
+        assistant = TicketAssistant(
+            tickets=service,
+            users=user_store,
+            executor=None,  # type: ignore[arg-type]
+            client=None,
+            model="",
         )
         discord = DiscordService(
             gateway=gateway,
             identities=identities,
             tickets=service,
             users=user_store,
-            # The routes only read diagnostics/guild list/members; they never
-            # drive a turn, so there is no executor or model client to inject.
             executor=None,  # type: ignore[arg-type]
-            client=None,
-            model="",
+            assistant=assistant,
             guild_ids={GUILD},
         )
     routes = build_ticket_routes(
@@ -75,6 +83,7 @@ def _build_app(tmp_path, seed: Seed, *, with_discord: bool = False) -> Starlette
         identities=identities,
         user_store=user_store,
         discord=discord,
+        assistant=assistant,
     )
 
     @contextlib.asynccontextmanager

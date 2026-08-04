@@ -27,6 +27,7 @@ from .ticketstore import Ticket, TicketApproval, TicketEvent, TicketStore, to_is
 __all__ = [
     "DEFAULT_APPROVAL_TTL_SECS",
     "GateResumer",
+    "TransitionNotifier",
     "DEFAULT_AUTOCLOSE_SECS",
     "DEFAULT_SWEEP_INTERVAL_SECS",
     "REDACTED",
@@ -167,6 +168,14 @@ APPROVAL_KINDS: frozenset[str] = frozenset({"operator_approval", "user_consent"}
 #: drives the assistant for a ticket registers one; this module only knows that
 #: something has to be told, never what a model or a chat platform is.
 GateResumer = Callable[[TicketApproval], Awaitable[None]]
+
+#: Called with ``(ticket, to_state)`` right after a transition (or an
+#: auto-close) commits. Same shape of seam as :data:`GateResumer`: this module
+#: stays transport- and model-blind (see the module docstring), so it only
+#: knows that *someone* wants to hear about a state change, never who Discord
+#: or a dashboard surface is. Registered by whoever drives the ticket
+#: assistant — see ``ticket_assistant.TicketAssistant``.
+TransitionNotifier = Callable[[Ticket, str], Awaitable[None]]
 
 DEFAULT_APPROVAL_TTL_SECS = 3600
 DEFAULT_AUTOCLOSE_SECS = 3 * 24 * 3600
@@ -350,6 +359,7 @@ class TicketService:
         self.approval_ttl_secs = approval_ttl_secs
         self.autoclose_secs = autoclose_secs
         self._gate_resumer: GateResumer | None = None
+        self._transition_notifier: TransitionNotifier | None = None
 
     def set_gate_resumer(self, resumer: GateResumer | None) -> None:
         """Register who answers a gate this service closes by itself.
@@ -361,6 +371,33 @@ class TicketService:
         """
 
         self._gate_resumer = resumer
+
+    def set_transition_notifier(self, fn: TransitionNotifier | None) -> None:
+        """Register who gets told about a state change, once it has committed.
+
+        Called from :meth:`transition` and from :meth:`auto_close_resolved`
+        (the sweeper's own ``resolved -> closed`` move) — the two places a
+        ticket's state actually changes outside a gate resume. See
+        :data:`TransitionNotifier`.
+        """
+
+        self._transition_notifier = fn
+
+    async def _notify_transition(self, ticket: Ticket, to_state: str) -> None:
+        """Best-effort fan-out to the registered notifier, mirroring ``expire_due``'s
+        handling of :data:`GateResumer`: never let a notification failure look
+        like the transition itself failed, since it already committed."""
+
+        if self._transition_notifier is None:
+            return
+        try:
+            await self._transition_notifier(ticket, to_state)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - the transition already committed
+            logger.exception(
+                "ticket %s: notifying the transition to %s failed", ticket.id, to_state
+            )
 
     def now(self) -> datetime:
         """Current time through the injected clock."""
@@ -473,6 +510,7 @@ class TicketService:
         )
         if updated is None:  # pragma: no cover - existence checked above
             raise TicketNotFoundError(ticket_id)
+        await self._notify_transition(updated, to_state)
         return updated
 
     def can_transition(self, ticket: Ticket, to_state: str, actor: str) -> bool:
@@ -849,6 +887,7 @@ class TicketService:
             )
             if updated is not None:
                 closed.append(updated)
+                await self._notify_transition(updated, "closed")
         return closed
 
     async def sweep(

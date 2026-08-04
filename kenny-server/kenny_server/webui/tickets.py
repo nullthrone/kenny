@@ -38,12 +38,13 @@ that module for the matching algorithm.
 
 from __future__ import annotations
 
+import json
 import logging
 from functools import wraps
 from typing import TYPE_CHECKING, Any, Callable
 
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
 from .. import tool_classes
@@ -57,6 +58,23 @@ from .authz import Forbidden, guard, require_user
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle-free typing only
     from ..discord_service import DiscordService
+    from ..ticket_assistant import TicketAssistant
+
+# SSE response headers: disable proxy/browser buffering so events flush live —
+# the same headers ``webui/__init__.py``'s streaming routes use.
+_STREAM_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+
+
+def _sse(event: dict[str, Any]) -> bytes:
+    """Encode one ``drive_events`` event as a Server-Sent Events ``data:`` frame.
+
+    A small, deliberate duplicate of ``webui/__init__.py``'s helper of the same
+    name: this module documents itself as a thin, standalone skin, and a
+    one-line encoder is cheaper to duplicate than to couple two otherwise
+    independent route modules over.
+    """
+
+    return f"data: {json.dumps(event, default=str)}\n\n".encode()
 
 logger = logging.getLogger("kenny.webui.tickets")
 
@@ -160,8 +178,15 @@ def build_ticket_routes(
     user_store: UserStore | None = None,
     discord: DiscordService | None = None,
     ticket_rules: TicketRuleList | None = None,
+    assistant: TicketAssistant | None = None,
 ) -> list[Route]:
-    """Ticket/approval/Discord/tool-class routes. See module docstring."""
+    """Ticket/approval/Discord/tool-class routes. See module docstring.
+
+    ``assistant`` is optional exactly like ``discord``: a server with no usable
+    Anthropic client has none, and only the one route that genuinely needs it
+    (``/chat/stream``) answers ``503`` without it — every other ticket route
+    works whether or not an assistant is configured.
+    """
 
     # -- tickets -------------------------------------------------------------
 
@@ -196,7 +221,9 @@ def build_ticket_routes(
                 agent_id=agent_id,
                 limit=limit,
             )
-        return JSONResponse({"tickets": [t.as_dict() for t in rows]})
+        return JSONResponse(
+            {"tickets": [{**t.as_dict(), "assistant_available": assistant is not None} for t in rows]}
+        )
 
     async def api_tickets_create(request: Request) -> JSONResponse:
         principal = require_user(request)
@@ -226,7 +253,16 @@ def build_ticket_routes(
         principal = require_user(request)
         ticket = await tickets.get(request.path_params["tid"])
         _owned_or_operator(principal, ticket)
-        return JSONResponse(ticket.as_dict())
+        return JSONResponse(
+            {
+                **ticket.as_dict(),
+                # The dashboard's composer/mirror-checkbox affordances key off
+                # these: whether a chat turn can be driven at all, and whether
+                # there is a Discord thread to optionally mirror one into.
+                "assistant_available": assistant is not None,
+                "discord_thread": (await store.get_channel(ticket.id)) is not None,
+            }
+        )
 
     async def api_ticket_patch(request: Request) -> JSONResponse:
         principal = require_user(request)
@@ -286,6 +322,83 @@ def build_ticket_routes(
         )
         return JSONResponse({"ok": True}, status_code=201)
 
+    async def api_ticket_chat_stream(request: Request) -> Response:
+        """Drive one turn of the ticket assistant, forwarding events as SSE.
+
+        Mirrors ``webui/__init__.py``'s ``/api/chat/stream``: every check that
+        can fail is done *before* the first byte, as a plain JSON error
+        response, so the caller never has to distinguish a 4xx/5xx from a
+        stream that merely emitted an in-band ``error`` event. Once streaming
+        starts the status is fixed at 200 and ``run_turn`` itself is the only
+        thing that can still fail, in-band.
+
+        The event vocabulary is exactly ``toolloop.drive_events``'s:
+        ``text_delta``, ``tool_result``, ``pending``, ``denied``, ``done``,
+        ``error`` — the same one ``handleChatEvent`` already renders for the
+        copilot, so the dashboard's ticket chat needs no new client-side event
+        handling, only a new place to point ``streamSSE`` at.
+        """
+
+        principal = require_user(request)
+        ticket = await tickets.get(request.path_params["tid"])
+        _owned_or_operator(principal, ticket)
+        body = await _body(request)
+        message = str(body.get("message", "")).strip()
+        if not message:
+            return _err("message is required")
+        mirror_to_discord = bool(body.get("mirror_to_discord", False))
+
+        if assistant is None:
+            return _err("the AI assistant is not configured", 503)
+        if ticket.agent_id is None:
+            return _err("this ticket has no target machine", 400)
+        if ticket.state in ("closed", "cancelled"):
+            return _err("this ticket is closed", 409)
+        # The partial unique index (``idx_ticket_approvals_open``) enforces
+        # this too, but checking here turns "a gate is already open" into a
+        # clean pre-stream 409 instead of a mid-turn failure the model has to
+        # be told about — the same reasoning ``_handle_thread_message`` uses.
+        if await store.get_open_approval(ticket.id) is not None:
+            return _err(
+                "a request is already waiting for a decision on this ticket", 409
+            )
+        if mirror_to_discord and (
+            discord is None or (await store.get_channel(ticket.id)) is None
+        ):
+            return _err("this ticket has no Discord thread to mirror to", 400)
+
+        session = await assistant.session_for(ticket, actor=principal)
+        if session is None:
+            # Shouldn't normally happen given the checks above (the caller is
+            # already an authenticated, enabled account with a live ticket) —
+            # handled anyway, since ``session_for``'s contract is to return
+            # ``None`` on failure rather than raise.
+            return _err("could not build a session for this ticket", 400)
+
+        assistant.append_user_message(session, message)
+        await assistant.append_message(
+            ticket,
+            actor=_actor(principal),
+            text=message,
+            actionable=True,
+            surface="dashboard",
+            verbatim=True,
+        )
+
+        surfaces = (discord,) if mirror_to_discord and discord is not None else ()
+
+        async def gen() -> Any:
+            try:
+                async for event in assistant.run_turn(session, ticket, surfaces=surfaces):
+                    yield _sse(event)
+            except Exception as exc:  # noqa: BLE001 - surface to the UI in-band
+                logger.exception("ticket %s: chat stream failed", ticket.id)
+                yield _sse({"type": "error", "error": str(exc)})
+
+        return StreamingResponse(
+            gen(), media_type="text/event-stream", headers=_STREAM_HEADERS
+        )
+
     async def api_ticket_close(request: Request) -> JSONResponse:
         principal = require_user(request)
         body = await _body(request)
@@ -342,12 +455,22 @@ def build_ticket_routes(
         Deciding is only half of it: the frozen call runs when the ticket is
         *resumed*, so a dashboard decision that stopped at the row would leave
         an operator reading "approved" while the ticket sat in
-        ``awaiting_approval`` and nothing ever executed. The resume goes through
-        the same :meth:`DiscordService.resume` the Discord button uses.
+        ``awaiting_approval`` and nothing ever executed. The resume goes
+        through :meth:`TicketAssistant.resume` directly — not gated on
+        ``discord is not None``, since a dashboard-only ticket (no Discord
+        configured at all) must resume too. When Discord *is* configured it is
+        still passed as a surface, exactly as the Discord button's own resume
+        path always has: a ticket with no Discord thread bound just makes that
+        surface a no-op (``deliver_reply``/``announce_gate`` check the binding
+        themselves).
 
         The decision is durable before the resume starts, so a resume failure is
         logged and reported (``resumed``), never raised: failing the request
-        would tell the caller their decision did not happen when it did.
+        would tell the caller their decision did not happen when it did. If a
+        Discord approval card produced this gate, it is also resolved
+        (made non-clickable) here — best-effort, independent of ``resumed`` —
+        so a card decided from the dashboard does not sit in Discord looking
+        like it is still awaiting a click.
         """
 
         principal = require_user(request)
@@ -363,13 +486,28 @@ def build_ticket_routes(
             actor=_actor(principal),
         )
         resumed = False
-        if discord is not None:
+        if assistant is not None:
+            surfaces = (discord,) if discord is not None else ()
             try:
-                await discord.resume(decided.ticket_id, approval=decided)
+                await assistant.resume(decided.ticket_id, approval=decided, surfaces=surfaces)
                 resumed = True
             except Exception:  # noqa: BLE001 - the decision already happened
                 logger.exception(
                     "ticket %s: resuming after a dashboard decision on %s failed",
+                    decided.ticket_id,
+                    decided.id,
+                )
+        if discord is not None and decided.discord_channel_id and decided.discord_message_id:
+            try:
+                await discord.gateway.resolve_card(
+                    channel_id=decided.discord_channel_id,
+                    message_id=decided.discord_message_id,
+                    outcome="approved" if approve else "denied",
+                    decided_by=str(principal.user_id),
+                )
+            except Exception:  # noqa: BLE001 - the decision already happened
+                logger.exception(
+                    "ticket %s: resolving the Discord approval card for %s failed",
                     decided.ticket_id,
                     decided.id,
                 )
@@ -641,6 +779,11 @@ def build_ticket_routes(
         Route(
             "/api/tickets/{tid}/note",
             g(api_ticket_note, min_role="operator"),
+            methods=["POST"],
+        ),
+        Route(
+            "/api/tickets/{tid}/chat/stream",
+            g(api_ticket_chat_stream, min_role="user"),
             methods=["POST"],
         ),
         Route(
