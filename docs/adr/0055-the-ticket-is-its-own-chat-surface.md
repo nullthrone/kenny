@@ -1,9 +1,16 @@
-# 0054. The ticket is its own chat surface
+# 0055. The ticket is its own chat surface
 
 - Status: proposed
 - Date: 2026-08-04
 - Amends: [ADR-0049](0049-tiered-tool-classification.md), [ADR-0050](0050-ticket-as-entity-chat-thread-as-binding.md)
-- Touches: [ADR-0048](0048-delegated-identity-from-a-chat-platform.md)
+- Touches: [ADR-0048](0048-delegated-identity-from-a-chat-platform.md), [ADR-0054](0054-ticket-blocked-on-axis.md)
+
+> Numbered 0055, not 0054: this record and
+> [ADR-0054](0054-ticket-blocked-on-axis.md) (the lifecycle's two-axis split) were developed
+> concurrently and both first claimed 0054. That record landed first, so `on_hold`/the turn
+> cap/`resume` below are written against its `blocked_on` axis (`block()`/`unblock()`), not
+> the nine-state model this record's own extraction started from — the extraction moved the
+> code, ADR-0054 changed what it says.
 
 ## Context and Problem Statement
 
@@ -147,9 +154,10 @@ new, deliberate behavior for the dashboard, not a side effect of the extraction.
 
 The turn cap (`KENNY_DISCORD_MAX_TURNS_PER_TICKET`) and Discord's per-account rate limit both
 exist to bound *autonomous* work — the volume of turns a ticket runs with nobody watching.
-An operator+-driven turn, from either surface, is exempt from both: the cap exists to hand a
-ticket to an operator once it has run too long unattended, and an operator is by definition
-the human `awaiting_agent` was already waiting for. A scoped `user` chatting from the
+An operator+-driven turn, from either surface, is exempt from both: the cap exists to block
+a ticket on `"operator"` once it has run too long unattended
+([ADR-0054](0054-ticket-blocked-on-axis.md)'s blocked-on axis), and an operator is by
+definition the human that block was already waiting for. A scoped `user` chatting from the
 dashboard is capped and rate-limited exactly like a Discord requester — the env vars keep
 their historical, Discord-flavored names, but the cap they enforce is ticket-wide now,
 across whichever surface drove the turn.
