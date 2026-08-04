@@ -43,6 +43,13 @@ approval and state change underneath it. Three things can open one:
   account, into one). See
   [Alerting → which events open a ticket](alerting.md#which-events-open-a-ticket-is-configurable-adr-0053).
 
+The dashboard is no longer just where you read, note, reassign and close a ticket — the
+ticket detail view has its own **chat with kenny**, gated the same way Discord always was,
+so a ticket opened without a Discord thread at all (or worked by an operator who isn't the
+requester) is just as fully workable as one that came in over `@kenny`. See
+[Ticket detail](dashboard.md#ticket-detail) and
+[ADR-0054](adr/0054-the-ticket-is-its-own-chat-surface.md).
+
 <figure markdown>
   ![The Tickets list, filterable by state.](assets/screenshots/tickets.png)
   <figcaption>The Tickets tab: every ticket you can see, filterable by state — an operator+ sees the whole queue, a scoped user only ever their own.</figcaption>
@@ -90,7 +97,12 @@ no longer meaningful once the ticket itself is done.
 ## What kenny may do on its own, and what waits for you
 
 Every tool kenny can call is one of three tiers — see [Tool reference](tools.md) for the
-full breakdown. On the Discord surface specifically:
+full breakdown. On the **ticket's own chat** — whether it's reached over Discord or from the
+ticket detail view in the dashboard — the rules below apply identically: the same
+`TicketPolicy` gate drives both, it just has two transports now. Whoever is typing on a
+given turn (the ticket's own requester, or an operator working someone else's ticket from
+the dashboard) decides which host-scope/capability-profile applies to *that* turn, but never
+which host it targets — the target PC stays exactly as frozen as it always was:
 
 - **Read-only** tools (looking at telemetry, listing processes, checking service status)
   run immediately.
@@ -101,12 +113,14 @@ full breakdown. On the Discord surface specifically:
   installing or removing software, touching who may sign in to a PC — **always stop and
   wait for an operator**, no matter who is asking or what PC it is on.
 
-This is a **property of the Discord surface**, not of the tools themselves — the same
-tiers exist in the dashboard chat, which still confirms *both* change tiers exactly as it
-always has. See [Tool reference § the confirm-gate](tools.md#three-tiers-and-who-enforces-what)
-for the surface-by-surface table, and
-[ADR-0049](adr/0049-tiered-tool-classification.md) for why the tier and the gate are kept
-apart on purpose.
+This is a **property of the ticket's chat**, not of the tools themselves — and it is
+distinct from the dashboard's separate **copilot** chat (the operator-only assistant tab, not
+tied to any one ticket), which still confirms *both* change tiers exactly as it always has.
+See [Tool reference § the confirm-gate](tools.md#three-tiers-and-who-enforces-what) for the
+surface-by-surface table, [ADR-0049](adr/0049-tiered-tool-classification.md) for why the
+tier and the gate are kept apart on purpose, and
+[ADR-0054](adr/0054-the-ticket-is-its-own-chat-surface.md) for why the ticket detail view
+qualifies for the same autonomy Discord always had.
 
 When a step needs you, kenny posts an **approval card** — in the operator channel if you
 configured one, otherwise in the ticket's own thread — with the exact tool and arguments,
@@ -223,6 +237,21 @@ read in the dashboard — and a **machine-readable event trail**: every message,
 attributed. That trail is what the [ticket detail timeline](#the-lifecycle-in-plain-language)
 shows you, and it is never pruned.
 
+**Whether a `message` row carries the actual wording depends on where it came from.** A
+message you type into the ticket's own chat in the dashboard, and every reply kenny sends —
+whichever surface(s) it went out on — carries its verbatim text in the trail, so it survives
+a restart and a raw-transcript prune and reads back exactly as written. A message from a
+Discord thread still carries only a short summary, unchanged from before: the reasoning is
+that a dashboard message (or an operator's own note) is curated work you chose to put on the
+record, the same way an unbounded copilot chat history already is, while a family member's
+side of a Discord conversation is not something kenny needs to keep verbatim to operate the
+system — kenny's own words are never a private conversation regardless of which door they
+went out, so they are always kept in full. See
+[ADR-0054](adr/0054-the-ticket-is-its-own-chat-surface.md) for the full reasoning, which
+amends [ADR-0050](adr/0050-ticket-as-entity-chat-thread-as-binding.md) on this point. One
+practical consequence: the trail was already never pruned, and it now grows with how much a
+ticket's chat is actually used — there is still no knob to bound that.
+
 The **raw transcript** — the verbatim back-and-forth kenny needs only to resume a ticket
 after a restart — is working state, not the record. It is pruned after
 `KENNY_TICKET_RETENTION_DAYS` (default 30 days) once a ticket is closed. Nothing about the
@@ -233,7 +262,17 @@ Screenshots, file contents, event-log text and browsing history **never leave th
 toward Discord** — kenny summarises what it found in plain language and links to the
 ticket in the authenticated dashboard for the detail. Discord threads are private (invite
 the requester only) and slash commands answer ephemerally, but the output-redaction rule
-holds regardless of thread privacy.
+holds regardless of thread privacy. **The same rule applies to the "also post in the
+Discord thread" checkbox** in the dashboard's ticket chat: mirroring a reply to Discord is
+opt-in per message, off by default, and only offered when the ticket has a bound thread —
+and it goes through the same redaction a Discord-bound reply has always gone through, so
+checking it never lets anything reach Discord that couldn't already reach it before.
+
+**Lifecycle moves now reach the thread, too.** Resolving, cancelling or closing a ticket from
+the dashboard — and the auto-close sweeper doing the same — used to be silent in Discord: the
+thread just sat there while the ticket itself moved on. It now posts a short message and, at
+a terminal state, archives the thread, the same way the Discord-driven `/close` path always
+has.
 
 ## Setting up the Discord application
 
@@ -373,3 +412,5 @@ for why Discord roles are never read as authorization, however tempting that sho
   authorization axis.
 - [ADR-0053](adr/0053-operator-configurable-auto-ticket-rules.md) — operator-configurable
   auto-ticket rules.
+- [ADR-0054](adr/0054-the-ticket-is-its-own-chat-surface.md) — the ticket detail view as a
+  second chat surface, verbatim trail wording, and the closed lifecycle-notification gap.
