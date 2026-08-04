@@ -37,7 +37,10 @@ def _timeout_mark_value() -> float:
 def test_e2e_mark_covers_its_own_declared_budget() -> None:
     """The mark must be at least as generous as the budgets it's built from."""
     declared_budget = (
-        e2e._REGISTER_BUDGET_S + e2e._TELEMETRY_BUDGET_S + e2e._TOOLCALL_BUDGET_S
+        e2e._REGISTER_BUDGET_S
+        + e2e._SMOKE_CALL_TIMEOUT_S
+        + e2e._TELEMETRY_BUDGET_S
+        + e2e._TOOLCALL_BUDGET_S
     )
     mark_value = _timeout_mark_value()
     assert mark_value >= declared_budget, (
