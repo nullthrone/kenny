@@ -1968,7 +1968,6 @@
       state.tickets = data.tickets || [];
       if (nav !== navToken) return;  // navigated away while this was loading
       app.innerHTML = ticketsPageHtml();
-      if (canOperate()) await mountTicketRulesPanel();
     }
     function ticketsPageHtml() {
       const filter = state.ticketsStateFilter || "";
@@ -1989,7 +1988,6 @@
             <th>#</th><th>Title</th><th>State</th><th>Requester</th><th>Agent</th><th>Age</th></tr></thead>
             <tbody>${rows || `<tr><td colspan="6" class="kacc-empty">no tickets</td></tr>`}</tbody></table>
         </div>
-        ${canOperate() ? `<div class="k-panel" id="k-tkrules-panel"><div class="k-muted">loading auto-ticket rules…</div></div>` : ""}
       </div>`;
     }
     function openTicket(id) { location.hash = "#/tickets/" + id; }
@@ -2006,113 +2004,6 @@
     function onTicketsFilterChange(v) {
       state.ticketsStateFilter = v;
       app.innerHTML = ticketsPageHtml();
-      if (canOperate()) mountTicketRulesPanel();
-    }
-
-    // Auto-ticket rules (ADR-0053): which alerts open a ticket on their own.
-    // Fetch → render, re-run after every mutation. Mirrors
-    // mountReliabilitySuppressionPanel/renderReliabilitySuppressionPanel.
-    async function mountTicketRulesPanel() {
-      const panel = document.getElementById("k-tkrules-panel");
-      if (!panel) return;
-      let vocab, data;
-      try {
-        [vocab, data] = await Promise.all([
-          getJSON("/api/ticket-rules/vocabulary"),
-          getJSON("/api/ticket-rules"),
-        ]);
-      } catch (e) {
-        panel.innerHTML = `<div class="k-airec__err">auto-ticket rules unavailable: ${esc(e.message)}</div>`;
-        return;
-      }
-      state.ticketRuleVocab = vocab;
-      renderTicketRulesPanel(vocab, data);
-    }
-    const TK_RULE_DECISION_LABEL = { open_all: "open", open_crit: "open if crit", never: "never" };
-    function renderTicketRulesPanel(vocab, d) {
-      const panel = document.getElementById("k-tkrules-panel");
-      if (!panel) return;
-      const rules = d.rules || [];
-      const rows = rules.length ? rules.map(r => {
-        const known = !r.section || (vocab.sections[r.event_type] || []).includes(r.section);
-        return `<div class="kwf-row">
-          <span class="k-mono">${esc(r.event_type)} / ${esc(r.section || "any section")}</span>
-          ${!known ? `<span class="k-pill k-pill--warn" title="not a known section for this event type">unknown section</span>` : ""}
-          <span class="k-pill ${r.decision === "never" ? "k-pill--muted" : "k-pill--ok"}">${esc(TK_RULE_DECISION_LABEL[r.decision] || r.decision)}</span>
-          <span class="k-pill k-pill--muted">${esc(r.agent_id || "fleet-wide")}</span>
-          ${r.note ? `<span class="k-muted">${esc(r.note)}</span>` : ""}
-          <button class="k-btn k-btn--danger k-btn--sm" style="margin-left:auto"
-            title="remove" onclick="removeTicketRule(${jsArg(r.id)}, ${jsArg(r.agent_id ? "host" : "fleet")})">${icon('x', 12)}</button>
-        </div>`;
-      }).join("") : `<div class="k-muted">no rules — every genuine alert opens a ticket; recoveries, inventory changes and the weekly digest never do</div>`;
-      const eventTypeOpts = vocab.event_types.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join("");
-      const decisionOpts = vocab.decisions.map(a =>
-        `<option value="${esc(a)}">${esc(TK_RULE_DECISION_LABEL[a] || a)}</option>`).join("");
-      const agentOpts = (state.fleet.agents || []).map(a =>
-        `<option value="${esc(a.agent_id)}">${esc(a.agent_id)}</option>`).join("");
-      panel.innerHTML = `
-        <div class="k-row" style="justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:10px">
-          <div class="kc-section-lbl">auto-ticket rules — which events open a ticket by themselves</div>
-        </div>
-        <div class="k-muted" style="margin-bottom:8px">With no rules: every alert — a health escalation, an agent going offline, a
-          disk-fill forecast — opens a ticket; recoveries, inventory changes and the weekly digest never do.
-          Each rule below is an exception to that.</div>
-        <div class="kwf-add">
-          <select class="k-input" id="tkr-event-type" onchange="onTkRuleEventTypeChange()">${eventTypeOpts}</select>
-          <select class="k-input" id="tkr-section"><option value="">any section</option></select>
-          <select class="k-input" id="tkr-scope"><option value="">all PCs</option>${agentOpts}</select>
-          <select class="k-input" id="tkr-decision">${decisionOpts}</select>
-          <input class="k-input" id="tkr-note" autocomplete="off" placeholder="note (optional)"
-            onkeydown="if(event.key==='Enter')addTicketRuleFromForm()"/>
-          <button class="k-btn k-btn--primary k-btn--sm" onclick="addTicketRuleFromForm()">${icon('plus', 13)}add</button>
-        </div>
-        <div class="kwf-list">${rows}</div>
-        <div id="k-tkrules-msg"></div>`;
-      onTkRuleEventTypeChange();
-    }
-    // The section select is populated per event type, and disabled for the two
-    // event types that carry no section axis at all (offline, disk_forecast) --
-    // client-side mirror of ticket_rules.KNOWN_SECTIONS so a 400 stays the
-    // exception, not the workflow.
-    function onTkRuleEventTypeChange() {
-      const vocab = state.ticketRuleVocab || { sections: {} };
-      const et = (document.getElementById("tkr-event-type") || {}).value;
-      const sel = document.getElementById("tkr-section");
-      if (!sel) return;
-      const sections = vocab.sections[et] || [];
-      sel.innerHTML = `<option value="">any section</option>` +
-        sections.map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join("");
-      sel.disabled = sections.length === 0;
-    }
-    function addTicketRuleFromForm() {
-      const eventType = (document.getElementById("tkr-event-type") || {}).value || "";
-      const section = (document.getElementById("tkr-section") || {}).value || "";
-      const agentId = (document.getElementById("tkr-scope") || {}).value || "";
-      const decision = (document.getElementById("tkr-decision") || {}).value || "";
-      const note = ((document.getElementById("tkr-note") || {}).value || "").trim();
-      addTicketRulePost({ event_type: eventType, section, agent_id: agentId, decision, note });
-    }
-    async function addTicketRulePost(body) {
-      try {
-        const res = await getJSON("/api/ticket-rules",
-          { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-        if ((res.warnings || []).length) tkRuleMsg(res.warnings.join("; "), false);
-        else tkRuleMsg("", false);
-        await mountTicketRulesPanel();
-      } catch (e) { tkRuleMsg("could not add rule: " + e.message, true); }
-    }
-    async function removeTicketRule(id, scope) {
-      // Removing a fleet-wide rule changes behaviour on every PC, so confirm it.
-      if (scope !== "host" && !confirm(
-        "This rule is fleet-wide — removing it changes which alerts open a ticket on every PC. Continue?")) return;
-      try {
-        await getJSON("/api/ticket-rules/" + encodeURIComponent(id), { method: "DELETE" });
-        await mountTicketRulesPanel();
-      } catch (e) { tkRuleMsg("could not remove rule: " + e.message, true); }
-    }
-    function tkRuleMsg(text, isErr) {
-      const m = document.getElementById("k-tkrules-msg");
-      if (m) m.innerHTML = text ? `<div class="${isErr ? "k-airec__err" : "k-muted"}" style="margin-top:6px">${esc(text)}</div>` : "";
     }
 
     function openCreateTicketModal() {
@@ -2415,7 +2306,7 @@
       "logging": "monitor", "backup": "hard-drive", "updates": "download",
       "discord-tickets": "life-buoy", "network-process": "network",
       "operator-agent-auth": "key", "telemetry-limits": "activity",
-      "agent-distribution": "box",
+      "agent-distribution": "box", "ticket-rules": "link",
     };
     function settingsGroupIcon(slug) { return _SETTINGS_ICONS[slug] || "sliders"; }
 
@@ -2423,7 +2314,16 @@
       // No .settings array: an operator can't reach /api/settings at all, so
       // there is no row count to show — an empty array would misleadingly
       // read as "Updates has 0 settings" instead of "not shown to you".
-      return [{ name: "Updates", slug: "updates" }];
+      return withTicketRulesSection([{ name: "Updates", slug: "updates" }]);
+    }
+
+    // Auto-ticket rules (ADR-0053) is a second section with no settings-catalog
+    // group behind it, same shape as Updates: operator+ visible, appended after
+    // whatever /api/settings returned (superuser) or after the synthetic
+    // Updates-only list (operator) so both roles see it last, right after
+    // "Discord & Tickets" (config.py's GROUP_ORDER ends there).
+    function withTicketRulesSection(groups) {
+      return [...groups, { name: "Auto-ticket rules", slug: "ticket-rules" }];
     }
 
     function settingsGroupIsReadonly(g) {
@@ -2453,7 +2353,7 @@
 
       if (isSuperuser()) {
         try {
-          settingsGroups = (await getJSON("/api/settings")).groups || [];
+          settingsGroups = withTicketRulesSection((await getJSON("/api/settings")).groups || []);
         } catch (e) {
           app.innerHTML = `<div class="k-airec__err">could not load settings: ${esc(e.message)}</div>`;
           return;
@@ -2545,6 +2445,7 @@
       if (slug === "backup" && isSuperuser()) { await renderBackup(); return; }
       if (slug === "updates") { await renderUpdates(); return; }
       if (slug === "discord-tickets" && isSuperuser()) { await renderDiscordSection(); return; }
+      if (slug === "ticket-rules") { await renderTicketRulesSection(); return; }
       const group = settingsGroups.find(g => g.slug === slug);
       setSettingsPane(group ? settingsGroupHtml(group) : `<div class="k-muted">nothing here yet.</div>`);
     }
@@ -2556,13 +2457,120 @@
     // catalog snapshot from whenever the section was first opened.
     async function refreshSettingsSection() {
       if (isSuperuser()) {
-        try { settingsGroups = (await getJSON("/api/settings")).groups || []; }
+        try { settingsGroups = withTicketRulesSection((await getJSON("/api/settings")).groups || []); }
         catch (e) { /* keep the previous snapshot rather than blanking the page */ }
       }
       backupState.data = null;
       updatesState.data = null;
       renderSettingsNavList();
       await renderSettingsSection(state.settingsSection);
+    }
+
+    // The "Auto-ticket rules" section (ADR-0053): which alerts open a ticket
+    // on their own. No settings-catalog group behind it — same shape as
+    // Updates — so this fetches straight from /api/ticket-rules* and fills
+    // #kset-pane directly. Fetch → render, re-run after every mutation.
+    async function renderTicketRulesSection() {
+      setSettingsPane(`<div class="k-muted">loading…</div>`);
+      let vocab, data;
+      try {
+        [vocab, data] = await Promise.all([
+          getJSON("/api/ticket-rules/vocabulary"),
+          getJSON("/api/ticket-rules"),
+        ]);
+      } catch (e) {
+        setSettingsPane(`<div class="k-airec__err">auto-ticket rules unavailable: ${esc(e.message)}</div>`);
+        return;
+      }
+      state.ticketRuleVocab = vocab;
+      setSettingsPane(ticketRulesSectionHtml(vocab, data));
+      // The section select's options depend on the event-type select's current
+      // value, which only exists in the DOM once the HTML above has landed.
+      onTkRuleEventTypeChange();
+    }
+    const TK_RULE_DECISION_LABEL = { open_all: "open", open_crit: "open if crit", never: "never" };
+    function ticketRulesSectionHtml(vocab, d) {
+      const rules = d.rules || [];
+      const rows = rules.length ? rules.map(r => {
+        const known = !r.section || (vocab.sections[r.event_type] || []).includes(r.section);
+        return `<div class="kwf-row">
+          <span class="k-mono">${esc(r.event_type)} / ${esc(r.section || "any section")}</span>
+          ${!known ? `<span class="k-pill k-pill--warn" title="not a known section for this event type">unknown section</span>` : ""}
+          <span class="k-pill ${r.decision === "never" ? "k-pill--muted" : "k-pill--ok"}">${esc(TK_RULE_DECISION_LABEL[r.decision] || r.decision)}</span>
+          <span class="k-pill k-pill--muted">${esc(r.agent_id || "fleet-wide")}</span>
+          ${r.note ? `<span class="k-muted">${esc(r.note)}</span>` : ""}
+          <button class="k-btn k-btn--danger k-btn--sm" style="margin-left:auto"
+            title="remove" onclick="removeTicketRule(${jsArg(r.id)}, ${jsArg(r.agent_id ? "host" : "fleet")})">${icon('x', 12)}</button>
+        </div>`;
+      }).join("") : `<div class="k-muted">no rules — every genuine alert opens a ticket; recoveries, inventory changes and the weekly digest never do</div>`;
+      const eventTypeOpts = vocab.event_types.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join("");
+      const decisionOpts = vocab.decisions.map(a =>
+        `<option value="${esc(a)}">${esc(TK_RULE_DECISION_LABEL[a] || a)}</option>`).join("");
+      const agentOpts = (state.fleet.agents || []).map(a =>
+        `<option value="${esc(a.agent_id)}">${esc(a.agent_id)}</option>`).join("");
+      return `<div class="k-panel kset__grp">
+        <div class="k-detail-grp__lbl">auto-ticket rules — which events open a ticket by themselves</div>
+        <div class="k-muted" style="margin-bottom:8px">With no rules: every alert — a health escalation, an agent going offline, a
+          disk-fill forecast — opens a ticket; recoveries, inventory changes and the weekly digest never do.
+          Each rule below is an exception to that.</div>
+        <div class="kwf-add">
+          <select class="k-input" id="tkr-event-type" onchange="onTkRuleEventTypeChange()">${eventTypeOpts}</select>
+          <select class="k-input" id="tkr-section"><option value="">any section</option></select>
+          <select class="k-input" id="tkr-scope"><option value="">all PCs</option>${agentOpts}</select>
+          <select class="k-input" id="tkr-decision">${decisionOpts}</select>
+          <input class="k-input" id="tkr-note" autocomplete="off" placeholder="note (optional)"
+            onkeydown="if(event.key==='Enter')addTicketRuleFromForm()"/>
+          <button class="k-btn k-btn--primary k-btn--sm" onclick="addTicketRuleFromForm()">${icon('plus', 13)}add</button>
+        </div>
+        <div class="kwf-list">${rows}</div>
+        <div id="k-tkrules-msg"></div>
+      </div>`;
+    }
+    // The section select is populated per event type, and disabled for the
+    // two event types that carry no section axis at all (offline,
+    // disk_forecast) -- client-side mirror of ticket_rules.KNOWN_SECTIONS so
+    // a 400 stays the exception, not the workflow. Also the trigger for the
+    // event-type <select>'s own onchange; renderTicketRulesSection calls it
+    // once right after the section HTML lands in the DOM.
+    function onTkRuleEventTypeChange() {
+      const vocab = state.ticketRuleVocab || { sections: {} };
+      const et = (document.getElementById("tkr-event-type") || {}).value;
+      const sel = document.getElementById("tkr-section");
+      if (!sel) return;
+      const sections = vocab.sections[et] || [];
+      sel.innerHTML = `<option value="">any section</option>` +
+        sections.map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join("");
+      sel.disabled = sections.length === 0;
+    }
+    function addTicketRuleFromForm() {
+      const eventType = (document.getElementById("tkr-event-type") || {}).value || "";
+      const section = (document.getElementById("tkr-section") || {}).value || "";
+      const agentId = (document.getElementById("tkr-scope") || {}).value || "";
+      const decision = (document.getElementById("tkr-decision") || {}).value || "";
+      const note = ((document.getElementById("tkr-note") || {}).value || "").trim();
+      addTicketRulePost({ event_type: eventType, section, agent_id: agentId, decision, note });
+    }
+    async function addTicketRulePost(body) {
+      try {
+        const res = await getJSON("/api/ticket-rules",
+          { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+        if ((res.warnings || []).length) tkRuleMsg(res.warnings.join("; "), false);
+        else tkRuleMsg("", false);
+        await renderTicketRulesSection();
+      } catch (e) { tkRuleMsg("could not add rule: " + e.message, true); }
+    }
+    async function removeTicketRule(id, scope) {
+      // Removing a fleet-wide rule changes behaviour on every PC, so confirm it.
+      if (scope !== "host" && !confirm(
+        "This rule is fleet-wide — removing it changes which alerts open a ticket on every PC. Continue?")) return;
+      try {
+        await getJSON("/api/ticket-rules/" + encodeURIComponent(id), { method: "DELETE" });
+        await renderTicketRulesSection();
+      } catch (e) { tkRuleMsg("could not remove rule: " + e.message, true); }
+    }
+    function tkRuleMsg(text, isErr) {
+      const m = document.getElementById("k-tkrules-msg");
+      if (m) m.innerHTML = text ? `<div class="${isErr ? "k-airec__err" : "k-muted"}" style="margin-top:6px">${esc(text)}</div>` : "";
     }
 
     // The "Discord & Tickets" section: its catalog group's panel, then the

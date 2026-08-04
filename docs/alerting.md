@@ -68,11 +68,11 @@ notification and `normal` otherwise, with the alert's own message as its opening
 
 By default, every genuine alert — a health escalation, an agent going offline, a disk-fill
 forecast — opens a ticket, and a recovery, an inventory change, and the weekly digest never
-do. An operator can narrow or widen that per fleet or per host from the **auto-ticket rules**
-panel on the [Tickets tab](dashboard.md#the-tickets-tab), or via the `ticket_rule_*` MCP
-tools. Each rule names an event type (`health` / `offline` / `disk_forecast` / `change`), an
-optional section and host, and a decision: `open_all` (always), `open_crit` (only when the
-subject is `crit`) or `never`.
+do. An operator can narrow or widen that per fleet or per host from the **Auto-ticket
+rules** section of [Settings](dashboard.md#auto-ticket-rules), or via the `ticket_rule_*`
+MCP tools. Each rule names an event type (`health` / `offline` / `disk_forecast` /
+`change`), an optional section and host, and a decision: `open_all` (always), `open_crit`
+(only when the subject is `crit`) or `never`.
 
 Two practical cases this solves:
 

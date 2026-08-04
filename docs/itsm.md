@@ -37,9 +37,10 @@ approval and state change underneath it. Three things can open one:
   automatically, so a Defender-disabled or a failing-disk notification arrives with
   somewhere to work it, not just a push you have to remember. An alert-origin ticket has no
   requester — it belongs to the fleet, not a person — so only an operator can see or drive it.
-  **Which events do this is configurable** — the **auto-ticket rules** panel on this tab lets
-  you narrow it (e.g. stop offline PCs from opening tickets) or widen it (e.g. promote an
-  inventory change, like a new local admin account, into one). See
+  **Which events do this is configurable** — the **Auto-ticket rules** section of
+  [Settings](dashboard.md#auto-ticket-rules) lets you narrow it (e.g. stop offline PCs from
+  opening tickets) or widen it (e.g. promote an inventory change, like a new local admin
+  account, into one). See
   [Alerting → which events open a ticket](alerting.md#which-events-open-a-ticket-is-configurable-adr-0053).
 
 <figure markdown>
