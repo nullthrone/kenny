@@ -780,7 +780,12 @@ SLASH_COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec(
         name="close",
         description="Close one of your tickets",
-        options=(CommandOption(name="ticket", description="Ticket number, e.g. KEN-000123"),),
+        options=(
+            CommandOption(
+                name="ticket",
+                description='Ticket number, e.g. KEN-000123, or "this" inside the ticket\'s thread',
+            ),
+        ),
     ),
     CommandSpec(
         name="cancel",
@@ -1877,6 +1882,7 @@ class DiscordService:
                 discord_user_id=event.user_id,
                 guild_id=event.guild_id,
                 ticket_ref=options.get("ticket", ""),
+                thread_id=event.thread_id,
             )
         elif command == "cancel":
             content = await self.cancel_ticket(
@@ -2024,11 +2030,19 @@ class DiscordService:
         return f"Opened KEN-{ticket.number:06d} for `{target}` — see the thread."
 
     async def _own_ticket(
-        self, ticket_ref: str, principal: Principal
+        self, ticket_ref: str, principal: Principal, *, thread_id: str | None = None
     ) -> Ticket | str:
         ref = (ticket_ref or "").strip().upper().removeprefix("KEN-")
         ticket: Ticket | None = None
-        if ref.isdigit():
+        if ref == "THIS":
+            # "this" resolves via the thread the command was typed in, not a
+            # number -- it only ever means something inside a ticket's own
+            # private thread, so a missing/unbound thread_id is a plain miss,
+            # not a special-cased error.
+            binding = await self.store.channel_by_thread(thread_id) if thread_id else None
+            if binding is not None:
+                ticket = await self.store.get(binding.ticket_id)
+        elif ref.isdigit():
             ticket = await self.store.get_by_number(int(ref))
         if ticket is None:
             ticket = await self.store.get(ticket_ref.strip())
@@ -2041,12 +2055,17 @@ class DiscordService:
         return ticket
 
     async def close_ticket(
-        self, *, discord_user_id: str, guild_id: str, ticket_ref: str
+        self,
+        *,
+        discord_user_id: str,
+        guild_id: str,
+        ticket_ref: str,
+        thread_id: str | None = None,
     ) -> str:
         principal = await self._principal_for(discord_user_id, guild_id)
         if principal is None:
             return "You are not linked to a kenny account."
-        found = await self._own_ticket(ticket_ref, principal)
+        found = await self._own_ticket(ticket_ref, principal, thread_id=thread_id)
         if isinstance(found, str):
             return found
         actor = self._actor(principal)

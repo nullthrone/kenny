@@ -1624,6 +1624,54 @@ async def test_status_and_close_are_owner_scoped(world: World) -> None:
     assert world.gateway.archived == [world.gateway.threads[0].thread_id]
 
 
+async def test_close_this_resolves_the_ticket_bound_to_the_calling_thread(
+    world: World,
+) -> None:
+    service = world.build(text_turn("on it"))
+    await service.handle_event(mention("my pc is slow"))
+    ticket = await only_ticket(world)
+    thread_id = world.gateway.threads[0].thread_id
+
+    assert "closed" in await service.close_ticket(
+        discord_user_id=D_LENA, guild_id=GUILD, ticket_ref="this", thread_id=thread_id
+    )
+    refreshed = await world.tickets_store.get(ticket.id)
+    assert refreshed is not None and refreshed.state == "closed"
+
+
+async def test_close_this_via_handle_slash_uses_the_events_thread_id(
+    world: World,
+) -> None:
+    """`/close this` typed inside the ticket's own thread closes that ticket
+    without the caller having to know or type its number."""
+
+    service = world.build(text_turn("on it"))
+    await service.handle_event(mention("my pc is slow"))
+    ticket = await only_ticket(world)
+    thread_id = world.gateway.threads[0].thread_id
+
+    await service.handle_slash(
+        slash("close", author=D_LENA, thread_id=thread_id, options={"ticket": "this"})
+    )
+    refreshed = await world.tickets_store.get(ticket.id)
+    assert refreshed is not None and refreshed.state == "closed"
+
+
+async def test_close_this_outside_a_ticket_thread_is_a_plain_miss(world: World) -> None:
+    service = world.build(text_turn("on it"))
+    await service.handle_event(mention("my pc is slow"))
+    await only_ticket(world)
+
+    # No thread_id at all (typed in the support channel).
+    assert "could not find" in await service.close_ticket(
+        discord_user_id=D_LENA, guild_id=GUILD, ticket_ref="this", thread_id=None
+    )
+    # A thread that is not bound to any ticket.
+    assert "could not find" in await service.close_ticket(
+        discord_user_id=D_LENA, guild_id=GUILD, ticket_ref="this", thread_id="not-a-ticket-thread"
+    )
+
+
 async def test_close_works_on_a_ticket_still_in_new(world: World) -> None:
     """`/close` used to fail on a ticket no turn has ever touched.
 
