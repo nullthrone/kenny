@@ -68,11 +68,17 @@ CREATE TABLE IF NOT EXISTS tickets (
     resolution        TEXT,
     created_at        TEXT NOT NULL,
     updated_at        TEXT NOT NULL,
-    closed_at         TEXT
+    closed_at         TEXT,
+    blocked_on        TEXT NOT NULL DEFAULT '',  -- '' | user | approval | operator
+    blocked_since     TEXT,
+    blocked_ref       TEXT NOT NULL DEFAULT '',  -- opaque pointer (e.g. an approval id)
+    blocked_nudged_at TEXT,
+    assignee_user_id  INTEGER                    -- the operator working it, if claimed
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tickets_number ON tickets (number);
 CREATE INDEX IF NOT EXISTS idx_tickets_state ON tickets (state, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tickets_req   ON tickets (requester_user_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tickets_blocked ON tickets (blocked_on, blocked_since);
 
 CREATE TABLE IF NOT EXISTS ticket_runs (
     ticket_id      TEXT PRIMARY KEY,
@@ -191,6 +197,11 @@ class Ticket:
     created_at: str
     updated_at: str
     closed_at: str | None
+    blocked_on: str
+    blocked_since: str | None
+    blocked_ref: str
+    blocked_nudged_at: str | None
+    assignee_user_id: int | None
 
     @classmethod
     def from_row(cls, row: aiosqlite.Row) -> Ticket:
@@ -213,6 +224,13 @@ class Ticket:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             closed_at=row["closed_at"],
+            blocked_on=row["blocked_on"] or "",
+            blocked_since=row["blocked_since"],
+            blocked_ref=row["blocked_ref"] or "",
+            blocked_nudged_at=row["blocked_nudged_at"],
+            assignee_user_id=(
+                None if row["assignee_user_id"] is None else int(row["assignee_user_id"])
+            ),
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -407,7 +425,8 @@ class PendingRequest:
 _TICKET_COLUMNS = (
     "id, number, title, state, origin, priority, category, requester_user_id, "
     "agent_id, role_snapshot, profile_snapshot, summary, resolution, "
-    "created_at, updated_at, closed_at"
+    "created_at, updated_at, closed_at, "
+    "blocked_on, blocked_since, blocked_ref, blocked_nudged_at, assignee_user_id"
 )
 _EVENT_COLUMNS = (
     "id, ticket_id, at, kind, actor, tool, tool_class, ok, from_state, to_state, "
@@ -429,13 +448,27 @@ _PENDING_COLUMNS = (
 # stays free of the lifecycle module.
 _CLOSING_STATES = frozenset({"closed", "cancelled"})
 
+# Columns added after the table's original release, migrated in for existing
+# DB files the same way ``UpdateStore._migrate`` adds its channel column
+# (ADR-0052) — ``PRAGMA table_info`` + ``ALTER TABLE ADD COLUMN`` for whatever
+# is missing.
+_TICKET_MIGRATED_COLUMNS: dict[str, str] = {
+    "blocked_on": "TEXT NOT NULL DEFAULT ''",
+    "blocked_since": "TEXT",
+    "blocked_ref": "TEXT NOT NULL DEFAULT ''",
+    "blocked_nudged_at": "TEXT",
+    "assignee_user_id": "INTEGER",
+}
+
 
 class TicketStore:
     """Async SQLite-backed store for tickets, their run state, trail and gates.
 
     Shares the DB file with the stores in :mod:`kenny_server.store` but owns its
-    own connection. There is no migration framework: the schema is
-    ``CREATE ... IF NOT EXISTS`` only, so ``connect()`` is idempotent.
+    own connection. There is no migration framework beyond
+    ``PRAGMA table_info`` + ``ALTER TABLE ADD COLUMN`` for columns added after
+    a table's original release (see :meth:`_migrate`) — otherwise the schema is
+    ``CREATE ... IF NOT EXISTS`` only, so ``connect()`` stays idempotent.
     """
 
     def __init__(
@@ -453,7 +486,46 @@ class TicketStore:
         self._db = await aiosqlite.connect(self.db_path)
         await _configure_connection(self._db)
         await self._db.executescript(_SCHEMA)
+        await self._migrate()
         await self._db.commit()
+
+    async def _migrate(self) -> None:
+        """Add the blocked-on axis to a ``tickets`` table created before it
+        existed, and fold the retired ``triage``/``awaiting_*`` states into the
+        new five-state model plus that axis.
+
+        No commit here — the caller (:meth:`connect`) commits once, after the
+        schema script and this. The backfill ``UPDATE``s are idempotent by
+        *content*, not by a migration-ran flag: once a row's ``state`` has been
+        folded it no longer matches ``state = 'awaiting_user'`` etc., so a
+        second ``connect()`` finds nothing left to touch and this is a no-op.
+        """
+
+        async with self._conn.execute("PRAGMA table_info(tickets)") as cur:
+            cols = {row["name"] for row in await cur.fetchall()}
+        for col, ddl in _TICKET_MIGRATED_COLUMNS.items():
+            if col not in cols:
+                await self._conn.execute(f"ALTER TABLE tickets ADD COLUMN {col} {ddl}")
+        # blocked_since best-approximates "since when" as the row's last
+        # updated_at (the moment the old awaiting_* state was entered) — the
+        # exact original transition timestamp is not retrievable without
+        # rewriting ticket_events, which ADR-0050 makes the authority and this
+        # migration must not touch (see module docstring).
+        await self._conn.execute(
+            "UPDATE tickets SET state = 'in_progress', blocked_on = 'user', "
+            "blocked_since = updated_at WHERE state = 'awaiting_user'"
+        )
+        await self._conn.execute(
+            "UPDATE tickets SET state = 'in_progress', blocked_on = 'approval', "
+            "blocked_since = updated_at WHERE state = 'awaiting_approval'"
+        )
+        await self._conn.execute(
+            "UPDATE tickets SET state = 'in_progress', blocked_on = 'operator', "
+            "blocked_since = updated_at WHERE state = 'awaiting_agent'"
+        )
+        await self._conn.execute(
+            "UPDATE tickets SET state = 'in_progress' WHERE state = 'triage'"
+        )
 
     async def close(self) -> None:
         if self._db is not None:
@@ -495,10 +567,16 @@ class TicketStore:
 
         ticket_id = id or uuid.uuid4().hex
         stamp = _stamp(now)
+        # A new ticket is never created already blocked or claimed — the
+        # trailing five columns (blocked_on, blocked_since, blocked_ref,
+        # blocked_nudged_at, assignee_user_id) are their unblocked/unclaimed
+        # defaults, spelled out because this is an INSERT...SELECT enumerating
+        # every column rather than a bare INSERT that would fall back to the
+        # schema's own DEFAULTs.
         await self._conn.execute(
             f"INSERT INTO tickets ({_TICKET_COLUMNS}) "
             "SELECT ?, COALESCE(MAX(number), 0) + 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
-            "NULL, ?, ?, NULL FROM tickets",
+            "NULL, ?, ?, NULL, '', NULL, '', NULL, NULL FROM tickets",
             (
                 ticket_id,
                 title,
@@ -546,10 +624,21 @@ class TicketStore:
         states: Sequence[str] | None = None,
         requester_user_id: int | None = None,
         agent_id: str | None = None,
+        assignee_user_id: int | None = None,
+        blocked_on: str | None = None,
+        blocked_on_in: Sequence[str] | None = None,
+        blocked_before: str | None = None,
+        nudged: bool | None = None,
         updated_before: str | None = None,
         limit: int = 50,
     ) -> list[Ticket]:
-        """Return tickets newest-updated first, filtered and capped by ``limit``."""
+        """Return tickets newest-updated first, filtered and capped by ``limit``.
+
+        ``blocked_on``/``blocked_on_in`` filter the blocked-on axis;
+        ``blocked_before`` narrows to tickets blocked since before a cutoff
+        (paired with ``blocked_on_in`` this is what the stall sweep queries);
+        ``nudged`` narrows to whether ``blocked_nudged_at`` has been stamped.
+        """
 
         clauses: list[str] = []
         params: list[Any] = []
@@ -565,6 +654,20 @@ class TicketStore:
         if agent_id is not None:
             clauses.append("agent_id = ?")
             params.append(agent_id)
+        if assignee_user_id is not None:
+            clauses.append("assignee_user_id = ?")
+            params.append(assignee_user_id)
+        if blocked_on is not None:
+            clauses.append("blocked_on = ?")
+            params.append(blocked_on)
+        if blocked_on_in:
+            clauses.append(f"blocked_on IN ({', '.join('?' for _ in blocked_on_in)})")
+            params.extend(blocked_on_in)
+        if blocked_before is not None:
+            clauses.append("blocked_since IS NOT NULL AND blocked_since < ?")
+            params.append(blocked_before)
+        if nudged is not None:
+            clauses.append("blocked_nudged_at IS " + ("NOT NULL" if nudged else "NULL"))
         if updated_before is not None:
             clauses.append("updated_at < ?")
             params.append(updated_before)
@@ -577,6 +680,44 @@ class TicketStore:
         ) as cur:
             rows = await cur.fetchall()
         return [Ticket.from_row(r) for r in rows]
+
+    async def counts(self, *, requester_user_id: int | None = None) -> dict[str, int]:
+        """Bucket counts for the dashboard's grouped ticket list.
+
+        Buckets: ``needs_you`` (blocked on ``approval``/``operator``, or a
+        ``new`` alert-origin ticket — nobody but an operator can act on
+        either), ``waiting`` (blocked on ``user``), ``working`` (``in_progress``
+        and unblocked), ``new`` (not yet started, has a requester), ``done``
+        (``resolved``/``closed``/``cancelled`` collapsed — this tile only needs
+        "no longer open"). Narrowed to one requester's tickets when given,
+        mirroring :meth:`list`'s own scoping rule for a non-operator caller.
+
+        Computed by one full scan in Python rather than a ``CASE``-heavy SQL
+        aggregate: a household fleet's ticket count is small, and the bucket
+        rule is easier to keep in sync with :meth:`list`'s filters this way.
+        """
+
+        where = "WHERE requester_user_id = ?" if requester_user_id is not None else ""
+        params = [requester_user_id] if requester_user_id is not None else []
+        async with self._conn.execute(
+            f"SELECT state, blocked_on, requester_user_id FROM tickets {where}", params
+        ) as cur:
+            rows = await cur.fetchall()
+        counts = {"needs_you": 0, "waiting": 0, "working": 0, "new": 0, "done": 0}
+        for row in rows:
+            state, blocked_on, req = row["state"], row["blocked_on"], row["requester_user_id"]
+            if state in ("resolved", "closed", "cancelled"):
+                counts["done"] += 1
+            elif state == "new":
+                counts["needs_you" if req is None else "new"] += 1
+            elif state == "in_progress":
+                if blocked_on in ("operator", "approval"):
+                    counts["needs_you"] += 1
+                elif blocked_on == "user":
+                    counts["waiting"] += 1
+                else:
+                    counts["working"] += 1
+        return counts
 
     async def update(
         self,
@@ -627,6 +768,10 @@ class TicketStore:
         ``ticket_events`` row are written on the same connection and committed
         together, so a state change that left no trace is not representable.
         Returns None if the ticket does not exist.
+
+        Leaving ``to_state != "in_progress"`` also clears the blocked-on axis
+        in the same UPDATE: ``blocked_on`` is only meaningful while a ticket is
+        being worked, so "resolved but still blocked" must not be representable.
         """
 
         stamp = _stamp(now)
@@ -634,10 +779,18 @@ class TicketStore:
         if current is None:
             return None
         closed_at = stamp if to_state in _CLOSING_STATES else None
-        await self._conn.execute(
-            "UPDATE tickets SET state = ?, updated_at = ?, closed_at = ? WHERE id = ?",
-            (to_state, stamp, closed_at, ticket_id),
-        )
+        if to_state == "in_progress":
+            await self._conn.execute(
+                "UPDATE tickets SET state = ?, updated_at = ?, closed_at = ? WHERE id = ?",
+                (to_state, stamp, closed_at, ticket_id),
+            )
+        else:
+            await self._conn.execute(
+                "UPDATE tickets SET state = ?, updated_at = ?, closed_at = ?, "
+                "blocked_on = '', blocked_since = NULL, blocked_ref = '', "
+                "blocked_nudged_at = NULL WHERE id = ?",
+                (to_state, stamp, closed_at, ticket_id),
+            )
         await self._insert_event(
             ticket_id=ticket_id,
             at=stamp,
@@ -681,6 +834,125 @@ class TicketStore:
             actor=actor,
             summary=reason,
             fields={"from_agent_id": current.agent_id, "to_agent_id": agent_id},
+        )
+        await self._conn.commit()
+        return await self.get(ticket_id)
+
+    async def set_blocked(
+        self,
+        ticket_id: str,
+        blocked_on: str,
+        *,
+        actor: str,
+        ref: str = "",
+        reason: str = "",
+        now: datetime | str | None = None,
+    ) -> Ticket | None:
+        """Low-level block/unblock write. Do not call this directly.
+
+        The only sanctioned caller is
+        :meth:`kenny_server.tickets.TicketService.block`/:meth:`~kenny_server.tickets.TicketService.unblock`,
+        which owns legality and authorization. Empty ``blocked_on`` clears the
+        axis (unblock). Writes the UPDATE and the ``kind='block'``
+        ``ticket_events`` row on the same connection and commits together,
+        mirroring :meth:`set_state`/:meth:`set_agent_id` — a block that left no
+        trace must not be representable either. Re-blocking an already-blocked
+        ticket resets ``blocked_since`` and clears any prior nudge stamp — this
+        is how the stall sweep's escalation (a stale ``user`` block becoming an
+        ``operator`` one) restarts the clock.
+        """
+
+        stamp = _stamp(now)
+        current = await self.get(ticket_id)
+        if current is None:
+            return None
+        blocked_since = stamp if blocked_on else None
+        await self._conn.execute(
+            "UPDATE tickets SET blocked_on = ?, blocked_since = ?, blocked_ref = ?, "
+            "blocked_nudged_at = NULL, updated_at = ? WHERE id = ?",
+            (blocked_on, blocked_since, ref, stamp, ticket_id),
+        )
+        await self._insert_event(
+            ticket_id=ticket_id,
+            at=stamp,
+            kind="block",
+            actor=actor,
+            summary=reason,
+            fields={
+                "from_blocked_on": current.blocked_on,
+                "to_blocked_on": blocked_on,
+                "ref": ref,
+            },
+        )
+        await self._conn.commit()
+        return await self.get(ticket_id)
+
+    async def set_assignee(
+        self,
+        ticket_id: str,
+        assignee_user_id: int | None,
+        *,
+        actor: str,
+        reason: str = "",
+        now: datetime | str | None = None,
+    ) -> Ticket | None:
+        """Low-level operator-assignment write. Do not call this directly.
+
+        The only sanctioned caller is
+        :meth:`kenny_server.tickets.TicketService.assign`. Writes the
+        ``kind='assign'`` event in the same transaction as the column change.
+        """
+
+        stamp = _stamp(now)
+        current = await self.get(ticket_id)
+        if current is None:
+            return None
+        await self._conn.execute(
+            "UPDATE tickets SET assignee_user_id = ?, updated_at = ? WHERE id = ?",
+            (assignee_user_id, stamp, ticket_id),
+        )
+        await self._insert_event(
+            ticket_id=ticket_id,
+            at=stamp,
+            kind="assign",
+            actor=actor,
+            summary=reason,
+            fields={
+                "from_assignee_user_id": current.assignee_user_id,
+                "to_assignee_user_id": assignee_user_id,
+            },
+        )
+        await self._conn.commit()
+        return await self.get(ticket_id)
+
+    async def mark_nudged(
+        self,
+        ticket_id: str,
+        *,
+        reason: str = "",
+        actor: str = "system",
+        now: datetime | str | None = None,
+    ) -> Ticket | None:
+        """Stamp ``blocked_nudged_at`` and record the reminder, same commit.
+
+        Only sanctioned caller: :meth:`kenny_server.tickets.TicketService.nudge_stalled`.
+        A ``note`` event, not a dedicated kind: the reminder itself changes
+        nothing about the ticket's state or block, it is purely informational.
+        """
+
+        stamp = _stamp(now)
+        current = await self.get(ticket_id)
+        if current is None:
+            return None
+        await self._conn.execute(
+            "UPDATE tickets SET blocked_nudged_at = ? WHERE id = ?", (stamp, ticket_id)
+        )
+        await self._insert_event(
+            ticket_id=ticket_id,
+            at=stamp,
+            kind="note",
+            actor=actor,
+            summary=reason or f"stall reminder sent (blocked on {current.blocked_on})",
         )
         await self._conn.commit()
         return await self.get(ticket_id)

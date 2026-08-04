@@ -112,10 +112,10 @@ async def test_set_state_writes_event_and_stamps_closed_at(tmp_path) -> None:
     try:
         ticket = await store.create(title="a", origin="alert", now=NOW)
         moved = await store.set_state(
-            ticket.id, "triage", actor="system", reason="picked up", now=NOW
+            ticket.id, "in_progress", actor="system", reason="picked up", now=NOW
         )
         assert moved is not None
-        assert moved.state == "triage"
+        assert moved.state == "in_progress"
         assert moved.closed_at is None
 
         closed = await store.set_state(
@@ -126,11 +126,37 @@ async def test_set_state_writes_event_and_stamps_closed_at(tmp_path) -> None:
 
         events = await store.list_events(ticket.id, kind="state")
         assert [(e.from_state, e.to_state, e.actor) for e in events] == [
-            ("new", "triage", "system"),
-            ("triage", "cancelled", "operator:3"),
+            ("new", "in_progress", "system"),
+            ("in_progress", "cancelled", "operator:3"),
         ]
         assert events[0].summary == "picked up"
-        assert await store.set_state("nope", "triage", actor="system") is None
+        assert await store.set_state("nope", "in_progress", actor="system") is None
+    finally:
+        await store.close()
+
+
+async def test_set_state_clears_the_block_when_leaving_in_progress(tmp_path) -> None:
+    store = await _store(tmp_path)
+    try:
+        ticket = await store.create(title="a", origin="discord", now=NOW)
+        await store.set_state(ticket.id, "in_progress", actor="system", now=NOW)
+        await store.set_blocked(ticket.id, "user", actor="system", ref="tu-1", now=NOW)
+
+        resolved = await store.set_state(
+            ticket.id, "resolved", actor="operator:3", now=NOW + timedelta(minutes=1)
+        )
+        assert resolved is not None
+        assert resolved.blocked_on == ""
+        assert resolved.blocked_since is None
+        assert resolved.blocked_ref == ""
+        assert resolved.blocked_nudged_at is None
+
+        # Re-entering in_progress does not resurrect the old block.
+        reopened = await store.set_state(
+            ticket.id, "in_progress", actor="operator:3", now=NOW + timedelta(minutes=2)
+        )
+        assert reopened is not None
+        assert reopened.blocked_on == ""
     finally:
         await store.close()
 
@@ -147,6 +173,217 @@ async def test_set_agent_id_records_handoff(tmp_path) -> None:
         assert event.fields == {"from_agent_id": "pc-a", "to_agent_id": "pc-b"}
     finally:
         await store.close()
+
+
+async def test_set_blocked_records_block_event_and_resets_nudge(tmp_path) -> None:
+    store = await _store(tmp_path)
+    try:
+        ticket = await store.create(title="a", origin="discord", now=NOW)
+        blocked = await store.set_blocked(
+            ticket.id, "user", actor="system", ref="tu-1", reason="waiting", now=NOW
+        )
+        assert blocked is not None
+        assert blocked.blocked_on == "user"
+        assert blocked.blocked_since == to_iso(NOW)
+        assert blocked.blocked_ref == "tu-1"
+
+        await store.mark_nudged(ticket.id, now=NOW + timedelta(hours=1))
+        nudged = await store.get(ticket.id)
+        assert nudged is not None and nudged.blocked_nudged_at == to_iso(NOW + timedelta(hours=1))
+
+        # Re-blocking (escalation) resets the nudge stamp and blocked_since.
+        escalated = await store.set_blocked(
+            ticket.id,
+            "operator",
+            actor="system",
+            ref="tu-1",
+            now=NOW + timedelta(hours=2),
+        )
+        assert escalated is not None
+        assert escalated.blocked_on == "operator"
+        assert escalated.blocked_since == to_iso(NOW + timedelta(hours=2))
+        assert escalated.blocked_nudged_at is None
+
+        (b1, b2) = await store.list_events(ticket.id, kind="block")
+        assert b1.fields == {"from_blocked_on": "", "to_blocked_on": "user", "ref": "tu-1"}
+        assert b2.fields == {
+            "from_blocked_on": "user",
+            "to_blocked_on": "operator",
+            "ref": "tu-1",
+        }
+
+        unblocked = await store.set_blocked(
+            ticket.id, "", actor="operator:3", now=NOW + timedelta(hours=3)
+        )
+        assert unblocked is not None
+        assert unblocked.blocked_on == ""
+        assert unblocked.blocked_since is None
+
+        assert await store.set_blocked("nope", "user", actor="system") is None
+    finally:
+        await store.close()
+
+
+async def test_set_assignee_records_assign_event(tmp_path) -> None:
+    store = await _store(tmp_path)
+    try:
+        ticket = await store.create(title="a", origin="dashboard", now=NOW)
+        claimed = await store.set_assignee(ticket.id, 3, actor="operator:3", now=NOW)
+        assert claimed is not None and claimed.assignee_user_id == 3
+        unclaimed = await store.set_assignee(
+            ticket.id, None, actor="operator:3", now=NOW + timedelta(minutes=1)
+        )
+        assert unclaimed is not None and unclaimed.assignee_user_id is None
+        (e1, e2) = await store.list_events(ticket.id, kind="assign")
+        assert e1.fields == {"from_assignee_user_id": None, "to_assignee_user_id": 3}
+        assert e2.fields == {"from_assignee_user_id": 3, "to_assignee_user_id": None}
+        assert await store.set_assignee("nope", 1, actor="operator:3") is None
+    finally:
+        await store.close()
+
+
+async def test_list_filters_by_blocked_on_and_nudged(tmp_path) -> None:
+    store = await _store(tmp_path)
+    try:
+        a = await store.create(title="a", origin="discord", now=NOW)
+        b = await store.create(title="b", origin="discord", now=NOW)
+        c = await store.create(title="c", origin="discord", now=NOW)
+        for t in (a, b, c):
+            await store.set_state(t.id, "in_progress", actor="system", now=NOW)
+        await store.set_blocked(a.id, "user", actor="system", now=NOW)
+        await store.set_blocked(b.id, "operator", actor="system", now=NOW)
+        # c stays unblocked.
+
+        assert [t.id for t in await store.list(blocked_on="user")] == [a.id]
+        assert {t.id for t in await store.list(blocked_on_in=("user", "operator"))} == {
+            a.id,
+            b.id,
+        }
+        assert [t.id for t in await store.list(nudged=False, blocked_on="user")] == [a.id]
+        await store.mark_nudged(a.id, now=NOW + timedelta(minutes=1))
+        assert await store.list(nudged=False, blocked_on="user") == []
+        assert [t.id for t in await store.list(nudged=True, blocked_on="user")] == [a.id]
+
+        cutoff = to_iso(NOW + timedelta(minutes=1))
+        assert {t.id for t in await store.list(blocked_on_in=("user", "operator"), blocked_before=cutoff)} == {
+            a.id,
+            b.id,
+        }
+        assert await store.list(blocked_before=to_iso(NOW - timedelta(minutes=1))) == []
+    finally:
+        await store.close()
+
+
+async def test_counts_buckets_by_state_and_blocked_on(tmp_path) -> None:
+    store = await _store(tmp_path)
+    try:
+        new_owned = await store.create(
+            title="new", origin="discord", requester_user_id=1, now=NOW
+        )
+        new_alert = await store.create(title="alert", origin="alert", now=NOW)
+        working = await store.create(
+            title="working", origin="discord", requester_user_id=1, now=NOW
+        )
+        await store.set_state(working.id, "in_progress", actor="system", now=NOW)
+        waiting = await store.create(
+            title="waiting", origin="discord", requester_user_id=1, now=NOW
+        )
+        await store.set_state(waiting.id, "in_progress", actor="system", now=NOW)
+        await store.set_blocked(waiting.id, "user", actor="system", now=NOW)
+        gated = await store.create(title="gated", origin="discord", now=NOW)
+        await store.set_state(gated.id, "in_progress", actor="system", now=NOW)
+        await store.set_blocked(gated.id, "approval", actor="system", now=NOW)
+        done = await store.create(title="done", origin="discord", now=NOW)
+        await store.set_state(done.id, "in_progress", actor="system", now=NOW)
+        await store.set_state(done.id, "resolved", actor="system", now=NOW)
+
+        counts = await store.counts()
+        assert counts == {"needs_you": 2, "waiting": 1, "working": 1, "new": 1, "done": 1}
+        assert new_owned.id and new_alert.id  # both counted, one per bucket above
+
+        scoped = await store.counts(requester_user_id=1)
+        assert scoped == {"needs_you": 0, "waiting": 1, "working": 1, "new": 1, "done": 0}
+    finally:
+        await store.close()
+
+
+async def test_migration_folds_legacy_states_into_the_two_axis_model(tmp_path) -> None:
+    """A DB file written by the nine-state model must come up clean.
+
+    Simulates a pre-migration row by inserting directly against the bare
+    ``CREATE TABLE`` schema (no ``blocked_on`` columns yet, the legacy state
+    strings) and then connecting the current :class:`TicketStore` over it --
+    exactly what happens to a real operator's ``kenny.db`` on upgrade.
+    """
+
+    import aiosqlite
+
+    from kenny_server.ticketstore import _SCHEMA
+    from kenny_server.store import _configure_connection
+
+    db_path = str(tmp_path / "legacy.sqlite")
+    legacy_ids = {}
+    raw = await aiosqlite.connect(db_path)
+    try:
+        await _configure_connection(raw)
+        await raw.executescript(_SCHEMA)
+        for i, state in enumerate(
+            ["new", "triage", "in_progress", "awaiting_user", "awaiting_approval", "awaiting_agent"]
+        ):
+            ticket_id = f"legacy-{i}"
+            legacy_ids[state] = ticket_id
+            await raw.execute(
+                "INSERT INTO tickets (id, number, title, state, origin, priority, "
+                "requester_user_id, summary, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, 'discord', 'normal', 1, '', ?, ?)",
+                (ticket_id, i + 1, state, state, to_iso(NOW), to_iso(NOW)),
+            )
+            await raw.execute(
+                "INSERT INTO ticket_events (ticket_id, at, kind, actor, from_state, "
+                "to_state, summary) VALUES (?, ?, 'state', 'system', NULL, ?, 'created')",
+                (ticket_id, to_iso(NOW), state),
+            )
+        await raw.commit()
+    finally:
+        await raw.close()
+
+    store = TicketStore(db_path)
+    await store.connect()
+    try:
+        expect = {
+            "new": ("new", ""),
+            "triage": ("in_progress", ""),
+            "in_progress": ("in_progress", ""),
+            "awaiting_user": ("in_progress", "user"),
+            "awaiting_approval": ("in_progress", "approval"),
+            "awaiting_agent": ("in_progress", "operator"),
+        }
+        for legacy_state, (state, blocked_on) in expect.items():
+            ticket = await store.get(legacy_ids[legacy_state])
+            assert ticket is not None
+            assert ticket.state == state
+            assert ticket.blocked_on == blocked_on
+            if blocked_on:
+                assert ticket.blocked_since == to_iso(NOW)
+
+        # The pre-migration trail is untouched -- ADR-0050 makes it the
+        # authority, and back-dating it would be exactly what that forbids.
+        events = await store.list_events(legacy_ids["awaiting_approval"], kind="state")
+        assert events[-1].to_state == "awaiting_approval"
+    finally:
+        await store.close()
+
+    # A second connect() over the same file changes nothing further.
+    again = TicketStore(db_path)
+    await again.connect()
+    try:
+        for legacy_state, (state, blocked_on) in expect.items():
+            ticket = await again.get(legacy_ids[legacy_state])
+            assert ticket is not None
+            assert ticket.state == state
+            assert ticket.blocked_on == blocked_on
+    finally:
+        await again.close()
 
 
 async def test_event_round_trips(tmp_path) -> None:

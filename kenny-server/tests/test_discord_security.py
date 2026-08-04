@@ -745,7 +745,8 @@ async def test_normal_change_holds_for_an_operator_and_executes_nothing(
     await service.handle_event(mention("install git please"))
 
     ticket = await bench.the_ticket()
-    assert ticket.state == "awaiting_approval"
+    assert ticket.state == "in_progress"
+    assert ticket.blocked_on == "approval"
     approval = await bench.ticket_store.get_open_approval(ticket.id)
     assert approval is not None
     assert (approval.kind, approval.tool, approval.agent_id) == (
@@ -807,7 +808,8 @@ async def test_claimed_operator_role_still_produces_a_pending_approval(
     )
 
     ticket = await bench.the_ticket()
-    assert ticket.state == "awaiting_approval"
+    assert ticket.state == "in_progress"
+    assert ticket.blocked_on == "approval"
     assert ticket.role_snapshot == "user"
     approval = await bench.ticket_store.get_open_approval(ticket.id)
     assert approval is not None and approval.kind == "operator_approval"
@@ -926,7 +928,8 @@ async def test_only_the_requester_may_grant_consent(bench: Bench) -> None:
     ticket = await bench.the_ticket()
     approval = await bench.ticket_store.get_open_approval(ticket.id)
     assert approval is not None and approval.kind == "user_consent"
-    assert ticket.state == "awaiting_user"
+    assert ticket.state == "in_progress"
+    assert ticket.blocked_on == "user"
     # It was asked in the thread, of the affected person.
     assert bench.gateway.cards[-1]["channel_id"] == bench.gateway.threads[0].thread_id
 

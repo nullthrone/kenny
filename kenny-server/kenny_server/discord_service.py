@@ -487,7 +487,7 @@ class TicketPolicy:
 
         kind = pending.gate_kind
         tool_class = pending.tool_class or classify(pending.tool)
-        await self._service.open_approval(
+        approval = await self._service.open_approval(
             session.id,
             tool_use_id=pending.tool_use_id,
             tool=pending.tool,
@@ -498,19 +498,20 @@ class TicketPolicy:
             ttl_secs=self._ttl_secs,
             actor="kenny",
         )
-        to_state = "awaiting_user" if kind == "user_consent" else "awaiting_approval"
+        blocked_on = "user" if kind == "user_consent" else "approval"
         try:
-            await self._service.transition(
+            await self._service.block(
                 session.id,
-                to_state,
+                blocked_on,
                 actor="system",
                 reason=f"{pending.tool} held for {kind}",
+                ref=approval.id,
             )
         except TicketError:
             logger.warning(
-                "ticket %s: could not move to %s while holding %s",
+                "ticket %s: could not block on %s while holding %s",
                 session.id,
-                to_state,
+                blocked_on,
                 pending.tool,
                 exc_info=True,
             )
@@ -838,13 +839,16 @@ class DiscordService:
         self.base_url = base_url
         self._limiter = _RateLimiter(rate_limit_per_hour, clock=clock)
         # An expired gate is a denial, and a denial nobody feeds back to the
-        # assistant parks the ticket in ``awaiting_approval`` — a state its
-        # requester may not leave — behind a transcript that still ends in an
+        # assistant parks the ticket blocked on ``approval`` — a block its
+        # requester may not clear — behind a transcript that still ends in an
         # unanswered tool_use. The sweeper lives in ``tickets.py``, which knows
         # nothing about models or Discord, so the surface that drives the
         # assistant registers itself as the thing that can answer for it.
         # Constructor-time on purpose: this cannot be forgotten at a wiring site.
         tickets.set_gate_resumer(self.resume_expired)
+        # Same reasoning, for the stall sweep's reminders: ``tickets.py`` knows
+        # a ticket has been blocked too long, never how to reach a person about it.
+        tickets.set_stall_notifier(self.notify_stalled)
         # Set once when a mention arrives with empty content — the symptom of a
         # missing Message Content intent, which otherwise looks like a dead bot.
         self.missing_message_content = False
@@ -1167,7 +1171,12 @@ class DiscordService:
             )
             return
 
-        if ticket.state != "in_progress":
+        if ticket.blocked_on == "user":
+            # The common case: this message is the reply kenny was waiting for.
+            await self._unblock(ticket.id, actor=self._actor(principal))
+            ticket = await self.tickets.get(ticket.id)
+        elif ticket.state != "in_progress":
+            # A message on a resolved ticket reopens it.
             await self._transition(ticket.id, "in_progress", actor=self._actor(principal))
             ticket = await self.tickets.get(ticket.id)
         await self._run_turn(session, ticket)
@@ -1210,8 +1219,9 @@ class DiscordService:
             thread_id=thread.thread_id,
             private=self.private_threads,
         )
-        await self._transition(ticket.id, "triage", actor="system", reason="opened from Discord")
-        await self._transition(ticket.id, "in_progress", actor="system")
+        await self._transition(
+            ticket.id, "in_progress", actor="system", reason="opened from Discord"
+        )
         ticket = await self.tickets.get(ticket.id)
 
         session = await self._session_for(ticket)
@@ -1331,6 +1341,26 @@ class DiscordService:
                 "ticket %s: %s -> %s refused", ticket_id, actor, to_state, exc_info=True
             )
 
+    async def _block(
+        self, ticket_id: str, blocked_on: str, *, actor: str, reason: str = "", ref: str = ""
+    ) -> None:
+        try:
+            await self.tickets.block(ticket_id, blocked_on, actor=actor, reason=reason, ref=ref)
+        except TicketError:
+            logger.info(
+                "ticket %s: %s blocking on %s refused",
+                ticket_id,
+                actor,
+                blocked_on,
+                exc_info=True,
+            )
+
+    async def _unblock(self, ticket_id: str, *, actor: str, reason: str = "") -> None:
+        try:
+            await self.tickets.unblock(ticket_id, actor=actor, reason=reason)
+        except TicketError:
+            logger.info("ticket %s: %s unblock refused", ticket_id, actor, exc_info=True)
+
     # -- driving the loop --------------------------------------------------
 
     async def _run_turn(
@@ -1356,7 +1386,9 @@ class DiscordService:
                 "This ticket has reached its automatic-work limit. An operator will "
                 "pick it up from here.",
             )
-            await self._transition(ticket.id, "awaiting_agent", actor="system")
+            await self._block(
+                ticket.id, "operator", actor="system", reason="turn cap reached"
+            )
             return
         if count_turn:
             session.turns += 1
@@ -1391,8 +1423,8 @@ class DiscordService:
         if state.held:
             await self._announce_gate(session, ticket)
         elif state.done:
-            await self._transition(
-                ticket.id, "awaiting_user", actor="system", reason="waiting for a reply"
+            await self._block(
+                ticket.id, "user", actor="system", reason="waiting for a reply"
             )
 
     async def _absorb(
@@ -1737,11 +1769,47 @@ class DiscordService:
         Registered on the :class:`~kenny_server.tickets.TicketService` at
         construction time and called from ``expire_due``. It takes the same
         :meth:`resume` path a Discord "Deny" click takes, so the held call gets
-        its refusal ``tool_result``, the ticket leaves ``awaiting_approval`` and
-        the assistant tells the requester nothing was run.
+        its refusal ``tool_result``, the ticket's ``approval`` block is cleared
+        and the assistant tells the requester nothing was run.
         """
 
         await self.resume(approval.ticket_id, approval=approval)
+
+    async def notify_stalled(self, ticket: Ticket, blocked_on: str) -> None:
+        """Post a reminder for a ticket the stall sweep just nudged.
+
+        Registered on the :class:`~kenny_server.tickets.TicketService` at
+        construction time, mirroring :meth:`resume_expired`'s registration —
+        this is the one place in this module that knows how to reach a
+        ticket's channel without an active :class:`TicketSession`. A ``user``
+        block reminds in the ticket's own thread (where the requester is); an
+        ``operator`` block reminds in the operator channel, since nobody but an
+        operator can act on it. Best-effort: the reminder is already durably
+        recorded on the trail by :meth:`~kenny_server.tickets.TicketService.nudge_stalled`
+        before this runs, so a failed post here must not be treated as the
+        reminder never having happened.
+        """
+
+        if blocked_on == "user":
+            binding = await self.store.get_channel(ticket.id)
+            channel_id = binding.thread_id if binding else None
+            content = (
+                "Still waiting to hear back on this one — reply here whenever "
+                "you get a chance."
+            )
+        else:
+            channel_id = self.operator_channel_id
+            content = (
+                f"Ticket KEN-{ticket.number:06d} (\"{ticket.title}\") has been "
+                f"waiting on an operator for a while. {self.ticket_url(ticket.id)}"
+            )
+        if not channel_id:
+            return
+        try:
+            for chunk in chunk_message(content):
+                await self.gateway.post_message(channel_id=channel_id, content=chunk)
+        except Exception:  # noqa: BLE001 - the nudge is already durably recorded
+            logger.exception("ticket %s: failed to post the stall reminder", ticket.id)
 
     async def _last_decision(self, ticket_id: str) -> TicketApproval | None:
         """The most recently decided gate of a ticket, from its trail."""
@@ -1784,10 +1852,8 @@ class DiscordService:
             return
         approved = approval.status == "approved"
 
-        if ticket.state != "in_progress":
-            await self._transition(
-                ticket_id, "in_progress", actor="system", reason="gate decided"
-            )
+        if ticket.blocked_on:
+            await self._unblock(ticket_id, actor="system", reason="gate decided")
             ticket = await self.store.get(ticket_id)
 
         seed: list[dict[str, Any]] = []
@@ -1948,14 +2014,16 @@ class DiscordService:
             return "You are not linked to a kenny account."
         tickets = await self.store.list(
             requester_user_id=principal.user_id,
-            states=("new", "triage", "in_progress", "awaiting_user", "awaiting_approval",
-                    "awaiting_agent", "resolved"),
+            states=("new", "in_progress", "resolved"),
             limit=10,
         )
         if not tickets:
             return "You have no open tickets."
         lines = [
-            f"KEN-{t.number:06d} — {t.title} ({t.state.replace('_', ' ')})" for t in tickets
+            f"KEN-{t.number:06d} — {t.title}"
+            f" ({t.state.replace('_', ' ')}"
+            f"{', waiting on ' + t.blocked_on if t.blocked_on else ''})"
+            for t in tickets
         ]
         return "Your open tickets:\n" + "\n".join(lines)
 

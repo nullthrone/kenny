@@ -51,7 +51,15 @@ from ..auth import Principal
 from ..discord_identity import DiscordIdentityStore, IdentityConflict
 from ..ticket_rules import DECISIONS, EVENT_TYPES, KNOWN_SECTIONS, TicketRuleList
 from ..ticketstore import Ticket, TicketStore
-from ..tickets import TicketError, TicketService, TransitionError
+from ..tickets import (
+    BLOCKED_REASONS,
+    KNOWN_CATEGORIES,
+    PRIORITIES,
+    STATES as TICKET_STATES,
+    TicketError,
+    TicketService,
+    TransitionError,
+)
 from ..userstore import UserStore
 from .authz import Forbidden, guard, require_user
 
@@ -152,6 +160,48 @@ def _owned_or_operator(principal: Principal, ticket: Ticket) -> None:
         raise Forbidden(403, "not your ticket")
 
 
+def _affordances(tickets: TicketService, ticket: Ticket, principal: Principal) -> dict[str, Any]:
+    """A ticket's ``as_dict()`` plus what *this* principal may legally do to it.
+
+    Computed from :meth:`TicketService.can_transition`/``can_block``/
+    ``can_unblock`` rather than duplicated here, so the dashboard's buttons can
+    only ever offer a move the service would actually accept — the point of
+    this whole change. Kept out of ``Ticket.as_dict()`` itself: that dataclass
+    has no principal and should not grow one.
+    """
+
+    actor = _actor(principal)
+    payload = ticket.as_dict()
+    payload["allowed_transitions"] = sorted(
+        s for s in TICKET_STATES if tickets.can_transition(ticket, s, actor)
+    )
+    payload["allowed_blocks"] = sorted(
+        r for r in BLOCKED_REASONS if tickets.can_block(ticket, r, actor)
+    )
+    payload["can_unblock"] = tickets.can_unblock(ticket, actor)
+    return payload
+
+
+def _validate_priority(value: str) -> str | None:
+    """Return an error message if ``value`` is outside the closed vocabulary."""
+
+    if value not in PRIORITIES:
+        return f"priority must be one of {', '.join(PRIORITIES)}"
+    return None
+
+
+def _warn_if_unknown_category(category: Any) -> None:
+    """Log (never reject) a category outside the advertised vocabulary.
+
+    Matches ``ticket_rules.KNOWN_SECTIONS``' discipline: the vocabulary is
+    advertised for the dashboard's dropdown, not enforced, because nothing
+    downstream branches on a ticket's category the way it does on priority.
+    """
+
+    if category and category not in KNOWN_CATEGORIES:
+        logger.info("ticket category %r is outside the advertised vocabulary", category)
+
+
 def build_ticket_routes(
     *,
     tickets: TicketService,
@@ -196,7 +246,37 @@ def build_ticket_routes(
                 agent_id=agent_id,
                 limit=limit,
             )
-        return JSONResponse({"tickets": [t.as_dict() for t in rows]})
+        return JSONResponse({"tickets": [_affordances(tickets, t, principal) for t in rows]})
+
+    async def api_tickets_vocabulary(_request: Request) -> JSONResponse:
+        """The vocabulary the dashboard's ticket UI actually accepts.
+
+        Derived from ``tickets.py``'s live constants so the dashboard never
+        hardcodes a second copy that can drift from what the service enforces
+        — the exact failure mode this endpoint exists to close off (see
+        ADR amending ADR-0050).
+        """
+
+        return JSONResponse(
+            {
+                "states": sorted(TICKET_STATES),
+                "blocked_reasons": sorted(BLOCKED_REASONS),
+                "priorities": list(PRIORITIES),
+                "categories": sorted(KNOWN_CATEGORIES),
+            }
+        )
+
+    async def api_tickets_summary(request: Request) -> JSONResponse:
+        """Bucket counts for the dashboard's grouped ticket list.
+
+        Narrowed to one requester's tickets for a scoped `user`, mirroring
+        ``api_tickets_list``'s own scoping rule.
+        """
+
+        principal = require_user(request)
+        requester_user_id = None if principal.at_least("operator") else principal.user_id
+        counts = await store.counts(requester_user_id=requester_user_id)
+        return JSONResponse(counts)
 
     async def api_tickets_create(request: Request) -> JSONResponse:
         principal = require_user(request)
@@ -204,6 +284,12 @@ def build_ticket_routes(
         title = str(body.get("title", "")).strip()
         if not title:
             return _err("title is required")
+        priority = str(body.get("priority", "normal"))
+        priority_error = _validate_priority(priority)
+        if priority_error:
+            return _err(priority_error)
+        category = body.get("category")
+        _warn_if_unknown_category(category)
         if principal.at_least("operator"):
             requester = body.get("requester_user_id")
             requester_user_id = int(requester) if requester is not None else None
@@ -215,33 +301,41 @@ def build_ticket_routes(
             origin=str(body.get("origin", "dashboard")),
             requester_user_id=requester_user_id,
             agent_id=body.get("agent_id"),
-            priority=str(body.get("priority", "normal")),
-            category=body.get("category"),
+            priority=priority,
+            category=category,
             summary=str(body.get("summary", "")),
             actor=_actor(principal),
         )
-        return JSONResponse(ticket.as_dict(), status_code=201)
+        return JSONResponse(_affordances(tickets, ticket, principal), status_code=201)
 
     async def api_ticket_get(request: Request) -> JSONResponse:
         principal = require_user(request)
         ticket = await tickets.get(request.path_params["tid"])
         _owned_or_operator(principal, ticket)
-        return JSONResponse(ticket.as_dict())
+        return JSONResponse(_affordances(tickets, ticket, principal))
 
     async def api_ticket_patch(request: Request) -> JSONResponse:
         principal = require_user(request)
         ticket = await tickets.get(request.path_params["tid"])
         _owned_or_operator(principal, ticket)
         body = await _body(request)
+        priority = body.get("priority")
+        if priority is not None:
+            priority_error = _validate_priority(str(priority))
+            if priority_error:
+                return _err(priority_error)
+        category = body.get("category")
+        if category is not None:
+            _warn_if_unknown_category(category)
         updated = await tickets.update(
             ticket.id,
             title=body.get("title"),
             summary=body.get("summary"),
             resolution=body.get("resolution"),
-            priority=body.get("priority"),
-            category=body.get("category"),
+            priority=priority,
+            category=category,
         )
-        return JSONResponse(updated.as_dict())
+        return JSONResponse(_affordances(tickets, updated, principal))
 
     async def api_ticket_reassign(request: Request) -> JSONResponse:
         principal = require_user(request)
@@ -256,7 +350,27 @@ def build_ticket_routes(
         updated = await tickets.reassign(
             request.path_params["tid"], agent_id, actor=_actor(principal)
         )
-        return JSONResponse(updated.as_dict())
+        return JSONResponse(_affordances(tickets, updated, principal))
+
+    async def api_ticket_assign(request: Request) -> JSONResponse:
+        """Claim (or unclaim) which operator owns working this ticket.
+
+        The dashboard's "Claim" button sends ``{"assignee_user_id":
+        <principal.user_id>}``; a ``null`` unclaims. Distinct from
+        ``reassign``, which retargets the *host* a ticket is about.
+        """
+
+        principal = require_user(request)
+        body = await _body(request)
+        has_key = "assignee_user_id" in body
+        if not has_key:
+            return _err("assignee_user_id is required (null to unclaim)")
+        raw = body.get("assignee_user_id")
+        assignee_user_id = int(raw) if raw is not None else None
+        updated = await tickets.assign(
+            request.path_params["tid"], assignee_user_id, actor=_actor(principal)
+        )
+        return JSONResponse(_affordances(tickets, updated, principal))
 
     async def api_ticket_events(request: Request) -> JSONResponse:
         principal = require_user(request)
@@ -295,23 +409,31 @@ def build_ticket_routes(
             actor=_actor(principal),
             reason=str(body.get("reason", "")),
         )
-        return JSONResponse(updated.as_dict())
+        return JSONResponse(_affordances(tickets, updated, principal))
 
     async def api_ticket_transition(request: Request) -> JSONResponse:
-        """Operator-driven lifecycle moves: resolve, reopen, cancel.
+        """Lifecycle moves: start work, resolve, reopen, cancel.
 
         One generic route rather than one per verb: ``transition()`` already
         enforces legality (``_check_transition``) and actor authority, so this
-        covers resolve/reopen/cancel without duplicating that logic per action.
+        covers every edge without duplicating that logic per action.
         ``and_close`` (only meaningful when ``to == "resolved"``) chains straight
         into ``closed`` in the same call, mirroring what the Discord `/close`
         path already does for a requester — without removing the
         separate, later "Close ticket" action, since the ``resolved`` dwell
         window (and the sweeper's auto-close) is the intended undo window.
+
+        Floor is ``user``, not ``operator``: a requester's own right to cancel
+        their ticket (``_ACTORS`` in ``tickets.py``) needs an HTTP route, and
+        ``transition()``'s own actor/ownership checks are the real gate — this
+        handler only adds the ownership check every other per-ticket handler
+        already carries (``_owned_or_operator``), so a `user` cannot even name
+        someone else's ticket id.
         """
 
         principal = require_user(request)
         ticket = await tickets.get(request.path_params["tid"])
+        _owned_or_operator(principal, ticket)
         body = await _body(request)
         to_state = str(body.get("to") or "").strip()
         if not to_state:
@@ -327,7 +449,47 @@ def build_ticket_routes(
                 actor=_actor(principal),
                 reason=reason or "resolved and closed together",
             )
-        return JSONResponse(updated.as_dict())
+        return JSONResponse(_affordances(tickets, updated, principal))
+
+    async def api_ticket_block(request: Request) -> JSONResponse:
+        """Operator-driven: mark a ticket blocked on a reason (see ``BLOCKED_REASONS``).
+
+        No ``requester`` role ever appears in ``_BLOCK_SETTERS`` (see
+        ``tickets.py``) — a scoped `user` can never legally set a block, so this
+        route's floor is ``operator`` rather than repeating an ownership check
+        that would never let a `user` through anyway.
+        """
+
+        principal = require_user(request)
+        body = await _body(request)
+        blocked_on = str(body.get("blocked_on") or "").strip()
+        if not blocked_on:
+            return _err("blocked_on is required")
+        updated = await tickets.block(
+            request.path_params["tid"],
+            blocked_on,
+            actor=_actor(principal),
+            reason=str(body.get("reason", "")),
+        )
+        return JSONResponse(_affordances(tickets, updated, principal))
+
+    async def api_ticket_unblock(request: Request) -> JSONResponse:
+        """Clear whatever a ticket is blocked on.
+
+        Floor is ``user``: a requester may clear their own ticket's ``user``
+        block (answering kenny's question from the dashboard instead of
+        Discord) — ``unblock()``'s own ``_check_unblock`` still refuses an
+        ``approval``/``operator`` block to anyone but an operator.
+        """
+
+        principal = require_user(request)
+        ticket = await tickets.get(request.path_params["tid"])
+        _owned_or_operator(principal, ticket)
+        body = await _body(request)
+        updated = await tickets.unblock(
+            ticket.id, actor=_actor(principal), reason=str(body.get("reason", ""))
+        )
+        return JSONResponse(_affordances(tickets, updated, principal))
 
     # -- approvals -------------------------------------------------------------
 
@@ -341,8 +503,8 @@ def build_ticket_routes(
 
         Deciding is only half of it: the frozen call runs when the ticket is
         *resumed*, so a dashboard decision that stopped at the row would leave
-        an operator reading "approved" while the ticket sat in
-        ``awaiting_approval`` and nothing ever executed. The resume goes through
+        an operator reading "approved" while the ticket sat blocked on
+        ``approval`` and nothing ever executed. The resume goes through
         the same :meth:`DiscordService.resume` the Discord button uses.
 
         The decision is durable before the resume starts, so a resume failure is
@@ -626,6 +788,8 @@ def build_ticket_routes(
     g = lambda handler, **kw: guard(_catches_ticket_errors(handler), **kw)  # noqa: E731
 
     return [
+        Route("/api/tickets/vocabulary", g(api_tickets_vocabulary, min_role="user")),
+        Route("/api/tickets/summary", g(api_tickets_summary, min_role="user")),
         Route("/api/tickets", g(api_tickets_list, min_role="user")),
         Route("/api/tickets", g(api_tickets_create, min_role="user"), methods=["POST"]),
         Route("/api/tickets/{tid}", g(api_ticket_get, min_role="user")),
@@ -635,6 +799,11 @@ def build_ticket_routes(
         Route(
             "/api/tickets/{tid}/reassign",
             g(api_ticket_reassign, min_role="operator"),
+            methods=["POST"],
+        ),
+        Route(
+            "/api/tickets/{tid}/assign",
+            g(api_ticket_assign, min_role="operator"),
             methods=["POST"],
         ),
         Route("/api/tickets/{tid}/events", g(api_ticket_events, min_role="user")),
@@ -650,7 +819,17 @@ def build_ticket_routes(
         ),
         Route(
             "/api/tickets/{tid}/transition",
-            g(api_ticket_transition, min_role="operator"),
+            g(api_ticket_transition, min_role="user"),
+            methods=["POST"],
+        ),
+        Route(
+            "/api/tickets/{tid}/block",
+            g(api_ticket_block, min_role="operator"),
+            methods=["POST"],
+        ),
+        Route(
+            "/api/tickets/{tid}/unblock",
+            g(api_ticket_unblock, min_role="user"),
             methods=["POST"],
         ),
         Route("/api/approvals", g(api_approvals_list, min_role="operator")),
