@@ -472,6 +472,10 @@
     .kc-tab:hover { background: var(--surface-raised); color: var(--fg); }
     .kc-tab.is-active { background: var(--surface-raised); color: var(--fg); border-color: var(--border-strong); }
     .kc-tab svg { width: 16px; height: 16px; }
+    /* the ticket chat composer's mode toggle (Send to kenny / Add a note)
+       reuses .kc-tab's look, but as <button>s rather than nav <a>s — reset the
+       browser's own button chrome so it doesn't peek through */
+    .tk-mode-btn { font: inherit; background: none; cursor: pointer; }
 
     .kc-main { display: flex; flex-direction: column; gap: 14px; padding-top: 16px; }
 
@@ -2006,10 +2010,18 @@
       app.innerHTML = ticketsPageHtml();
     }
 
-    function openCreateTicketModal() {
+    async function openCreateTicketModal() {
+      // A host picker, sourced the same way openReassignModal's is: without a
+      // target here a dashboard-created ticket starts with agent_id = null and
+      // its chat composer is permanently disabled (no target machine).
+      if (!state.fleet) state.fleet = await getJSON("/api/fleet").catch(() => ({ agents: [] }));
+      const agentOpts = (state.fleet.agents || []).map(a =>
+        `<option value="${esc(a.agent_id)}">${esc(a.agent_id)}</option>`).join("");
       const body = `
         <div class="kfield"><span class="kfield__lbl">Title</span>
           <input class="k-input" id="nt-title" autocomplete="off"></div>
+        <div class="kfield"><span class="kfield__lbl">Host (optional — leave unassigned for triage)</span>
+          <select class="k-input" id="nt-agent"><option value="">(unassigned)</option>${agentOpts}</select></div>
         <div class="kfield"><span class="kfield__lbl">Details (optional)</span>
           <textarea class="k-input" id="nt-summary" rows="4"></textarea></div>
         <div class="k-modal__actions">
@@ -2021,9 +2033,11 @@
     async function createTicket() {
       const title = document.getElementById("nt-title").value.trim();
       const summary = document.getElementById("nt-summary").value.trim();
+      const agentEl = document.getElementById("nt-agent");
+      const agent_id = agentEl && agentEl.value ? agentEl.value : null;
       if (!title) { notify("title is required", "err"); return; }
       try {
-        const t = await api("/api/tickets", "POST", { title, summary });
+        const t = await api("/api/tickets", "POST", { title, summary, agent_id });
         closeModal();
         location.hash = "#/tickets/" + t.id;
       } catch (e) { notify(e.message, "err"); }
@@ -2073,19 +2087,21 @@
         ${t.summary ? `<div class="kacc-sec"><div class="kacc-sec__lbl">Summary</div><div>${esc(t.summary)}</div></div>` : ""}
         ${t.resolution ? `<div class="kacc-sec"><div class="kacc-sec__lbl">Resolution</div><div>${esc(t.resolution)}</div></div>` : ""}
       </div>`;
-      const noteForm = canOperate() ? `<div class="k-panel kset__grp">
-        <div class="k-detail-grp__lbl">add a note</div>
-        <div class="kfield__row">
-          <input class="k-input" id="tk-note-input" placeholder="operator note" autocomplete="off">
-          <button class="k-btn k-btn--primary" onclick="addTicketNote(${jsArg(t.id)})">${icon('plus', 13)}Add</button>
-        </div>
-      </div>` : "";
+      // Timeline = Chat: the composer below replaces what used to be a plain
+      // "add a note" box, and inline gate controls live on the approval row
+      // itself instead of only being reachable through the header badge.
+      // Default the mode to whichever is actually usable: an operator on a
+      // ticket with no assistant configured lands on "note", not on a chat
+      // tab they'd have to switch away from before they could do anything.
+      tkComposerMode = (canOperate() && !t.assistant_available) ? "note" : "chat";
+      const gate = ticketOpenGate(d);
+      const composer = ticketComposerHtml(t);
       const timeline = `<div class="k-panel kset__grp">
         <div class="k-detail-grp__lbl">timeline</div>
-        <div class="kc-timeline">${(d.events || []).map(ticketEventHtml).join("")
+        <div class="kc-timeline" id="tk-timeline">${(d.events || []).map(e => ticketEventHtml(e, gate, t.id)).join("")
           || '<div class="k-muted">no activity yet</div>'}</div>
       </div>`;
-      return `<div class="ktk">${head}${meta}${noteForm}${timeline}</div>`;
+      return `<div class="ktk">${head}${meta}${composer}${timeline}</div>`;
     }
     function ticketActionsHtml(t) {
       const btns = [];
@@ -2109,7 +2125,30 @@
     const TICKET_EVENT_ICON = { state: "activity", handoff: "network", tool_call: "cpu",
       approval: "shield-check", consent: "shield-check", note: "message-square",
       message: "message-square", error: "triangle-alert" };
-    function ticketEventHtml(e) {
+    // The one open gate on a ticket (at most one, per the partial unique index
+    // idx_ticket_approvals_open), derived from the trail rather than a second
+    // fetch: open_approval() always writes a kind="approval" row with
+    // fields.approval_id BEFORE the ticket transitions to awaiting_approval/
+    // awaiting_user, and decide_approval()'s row for the decision carries an
+    // "ok" (approved/denied) that the request row never does. So the open
+    // gate — if the ticket is currently sitting in one of those two states —
+    // is the last "approval" row with an approval_id and no "ok" yet.
+    // Doing it this way (instead of GET /api/approvals?ticket_id=…, which is
+    // operator-only) also works for a scoped `user` looking at their own
+    // ticket, who needs to see "waiting" even though they can't decide it.
+    function ticketOpenGate(d) {
+      const t = d.ticket;
+      if (!t || (t.state !== "awaiting_approval" && t.state !== "awaiting_user")) return null;
+      const events = d.events || [];
+      for (let i = events.length - 1; i >= 0; i--) {
+        const e = events[i];
+        if (e.kind === "approval" && e.fields && e.fields.approval_id != null && e.ok == null) {
+          return { approvalId: e.fields.approval_id, eventId: e.id };
+        }
+      }
+      return null;
+    }
+    function ticketEventHtml(e, gate, ticketId) {
       const time = e.at ? esc(new Date(e.at).toLocaleString()) : "";
       let body;
       if (e.kind === "state") {
@@ -2131,13 +2170,44 @@
         const args = f.args !== undefined
           ? `<pre class="k-mono" style="margin:4px 0 0;max-height:160px;overflow:auto;white-space:pre-wrap;word-break:break-word">${esc(JSON.stringify(f.args, null, 2))}</pre>`
           : "";
-        body = esc(e.summary || "approval") + (f.decided_via ? " via " + esc(f.decided_via) : "") + args;
+        const isOpen = !!(gate && e.id === gate.eventId);
+        let gateHtml = "";
+        if (isOpen && canOperate()) {
+          gateHtml = `<div class="k-row" style="gap:8px;margin-top:8px">
+            <button class="k-btn k-btn--primary k-btn--sm"
+              onclick="decideTicketApproval(${jsArg(ticketId)}, ${jsArg(gate.approvalId)}, true)">${icon('check', 13)}Approve</button>
+            <button class="k-btn k-btn--danger k-btn--sm"
+              onclick="decideTicketApproval(${jsArg(ticketId)}, ${jsArg(gate.approvalId)}, false)">${icon('x', 13)}Deny</button>
+          </div>`;
+        } else if (isOpen) {
+          // A non-operator (or, for a user_consent gate, anyone but the
+          // requester it belongs to) can see that something is pending but
+          // never decides someone else's gate — same rule as everywhere else.
+          gateHtml = `<div style="margin-top:8px"><span class="k-pill k-pill--warn">awaiting decision</span></div>`;
+        }
+        body = esc(e.summary || "approval") + (f.decided_via ? " via " + esc(f.decided_via) : "") + args + gateHtml;
+      } else if (e.kind === "message") {
+        const f = e.fields || {};
+        if (f.text !== undefined && f.text !== null) {
+          // kenny's replies can contain markdown (same renderer the copilot
+          // uses, escape-first by construction); a human's message is plain
+          // text, never interpreted as markup.
+          body = e.actor === "kenny"
+            ? `<div class="k-bubble k-bubble--assistant">${renderMarkdown(f.text)}</div>`
+            : `<span>${esc(f.text)}</span>`;
+        } else {
+          // Discord-origin human message: no verbatim text is stored (privacy),
+          // so this stays the existing summary-only line, unchanged.
+          body = esc(e.summary || "");
+        }
       } else {
         body = esc(e.summary || "");
       }
       // Every dynamic piece above already went through esc()/JSON.stringify —
       // tool args and ticket text originate from chat messages and monitored
       // machines, so this innerHTML must never carry an unescaped value.
+      // renderMarkdown() is the one exception: it is escape-first by
+      // construction (see its own comment), so its output is exempt too.
       return `<div class="kc-timeline__row">
         <span class="k-audit__time">${time}</span>
         ${icon(TICKET_EVENT_ICON[e.kind] || "circle-help", 14)}
@@ -2149,8 +2219,11 @@
       if (!state.fleet) state.fleet = await getJSON("/api/fleet").catch(() => ({ agents: [] }));
       const opts = (state.fleet.agents || []).map(a =>
         `<option value="${esc(a.agent_id)}" ${a.agent_id === current ? "selected" : ""}>${esc(a.agent_id)}</option>`).join("");
+      // No "(unassigned)" option here, deliberately: unlike ticket creation,
+      // POST /api/tickets/{tid}/reassign rejects an empty/absent agent_id with
+      // 400 ("agent_id is required") — reassign literally cannot unassign.
       const body = `<div class="kfield"><span class="kfield__lbl">Host</span>
-          <select class="k-input" id="tk-reassign-agent"><option value="">(unassigned)</option>${opts}</select></div>
+          <select class="k-input" id="tk-reassign-agent">${opts}</select></div>
         <div class="k-modal__actions">
           <button class="k-btn k-btn--ghost" onclick="closeModal()">Cancel</button>
           <button class="k-btn k-btn--primary" onclick="submitReassign(${jsArg(id)})">${icon('check', 14)}Reassign</button>
@@ -2218,7 +2291,10 @@
       await renderTicketDetail(id);
     }
     async function addTicketNote(id) {
-      const el = document.getElementById("tk-note-input");
+      // Shares the composer's textarea with "send to kenny" (#tk-chat-input) —
+      // the mode toggle decides which action the Add button drives, not a
+      // second input element.
+      const el = document.getElementById("tk-chat-input");
       const summary = el ? el.value.trim() : "";
       if (!summary) return;
       try {
@@ -2226,6 +2302,266 @@
         notify("note added");
       } catch (e) { notify(e.message, "err"); }
       await renderTicketDetail(id);
+    }
+
+    // -- inline gate decision (approval row in the timeline) ---------------
+    // Same underlying call the approvals-badge modal's decideApproval() makes
+    // (POST /api/approvals/{id}), but that function's post-decision step is
+    // "reopen the approvals modal" — wrong here, where the point is to stay
+    // on the ticket and see the trail update in place. So this is its own
+    // small function rather than a shared one with two different endings.
+    async function decideTicketApproval(ticketId, approvalId, approve) {
+      const ok = await confirmModal({
+        title: approve ? "Approve tool call" : "Deny tool call",
+        ico: approve ? "shield-check" : "shield-alert",
+        body: approve
+          ? "Allow this held tool call to run on the target host?"
+          : "Deny this held tool call? It will not run.",
+        confirmLabel: approve ? "Approve" : "Deny",
+        confirmClass: approve ? "k-btn--primary" : "k-btn--danger",
+      });
+      if (ok) {
+        try {
+          await api("/api/approvals/" + encodeURIComponent(approvalId), "POST", { approve });
+          notify(approve ? "approved" : "denied");
+        } catch (e) { notify(e.message, "err"); }
+      }
+      await renderTicketDetail(ticketId);
+      refreshHeader();
+    }
+
+    // ====================================================================
+    // TICKET CHAT COMPOSER — replaces the old plain "add a note" box.
+    // "Send to kenny" drives one turn of the ticket assistant over SSE
+    // (POST /api/tickets/{tid}/chat/stream, same event vocabulary
+    // handleChatEvent already renders for the copilot); "Add a note" keeps
+    // today's plain note behavior. Own element ids (tk-chat-*) — chatHtml()
+    // hardcodes #transcript/#chat-input/#chat-send and a ticket page mounted
+    // alongside the copilot rail must not collide with that DOM.
+    // ====================================================================
+    let tkComposerMode = "chat";
+    let tkChatAbort = null;
+
+    // Why the composer (or the "send to kenny" half of it) is locked, in the
+    // priority the checks are meant to be read: an unconfigured assistant
+    // first, then the structural reasons (no target, terminal state), then
+    // the transient one (a gate is already open). Mirrors the same order the
+    // server checks in api_ticket_chat_stream.
+    function ticketChatDisabledReason(t) {
+      if (!t.assistant_available) return "The AI assistant is not configured.";
+      if (!t.agent_id) return "This ticket has no target machine.";
+      if (TICKET_TERMINAL.includes(t.state)) return "This ticket is closed.";
+      if (t.state === "awaiting_approval" || t.state === "awaiting_user") return "Waiting on a decision above.";
+      return null;
+    }
+    function ticketComposerHtml(t) {
+      const canNote = canOperate();
+      // A scoped `user` never had note-adding and still doesn't; "send to
+      // kenny" is the only mode they get, so there is nothing to toggle.
+      const mode = canNote ? tkComposerMode : "chat";
+      const isNote = mode === "note";
+      const chatReason = ticketChatDisabledReason(t);
+      const disabled = isNote ? false : !!chatReason;
+      const modeToggle = canNote ? `<div class="k-row" style="gap:4px;margin-bottom:8px">
+          <button type="button" class="kc-tab tk-mode-btn${!isNote ? " is-active" : ""}"
+            onclick="setTicketComposerMode('chat')">${icon('message-square', 13)}Send to kenny</button>
+          <button type="button" class="kc-tab tk-mode-btn${isNote ? " is-active" : ""}"
+            onclick="setTicketComposerMode('note')">${icon('plus', 13)}Add a note</button>
+        </div>` : "";
+      const mirror = (!isNote && t.discord_thread) ? `<label class="k-row" style="gap:6px;margin-top:8px">
+          <input type="checkbox" id="tk-chat-mirror" ${disabled ? "disabled" : ""}> also post in the Discord thread</label>` : "";
+      const reasonText = isNote ? "" : (chatReason || "");
+      const placeholder = isNote ? "operator note" : "Ask kenny about this ticket…";
+      const btnLabel = isNote ? `${icon('plus', 13)}Add` : `${icon('send-horizontal', 13)}Send`;
+      const btnOnclick = isNote ? `addTicketNote(${jsArg(t.id)})` : `sendTicketChat(${jsArg(t.id)})`;
+      return `<div class="k-panel kset__grp" id="tk-composer">
+        <div class="k-detail-grp__lbl">${isNote ? "add a note" : "chat"}</div>
+        ${modeToggle}
+        <textarea class="k-input" id="tk-chat-input" rows="3" placeholder="${esc(placeholder)}"
+          ${disabled ? "disabled" : ""}></textarea>
+        ${mirror}
+        <div class="k-row" style="justify-content:space-between;align-items:center;margin-top:8px;gap:10px">
+          <span class="k-muted" id="tk-chat-reason">${esc(reasonText)}</span>
+          <button class="k-btn k-btn--primary k-btn--sm" id="tk-chat-send"
+            ${disabled ? "disabled" : ""} onclick="${btnOnclick}">${btnLabel}</button>
+        </div>
+      </div>`;
+    }
+    // Swaps between modes without losing whatever the operator already typed
+    // — re-renders the composer from the already-loaded ticket (no refetch)
+    // rather than reloading the whole page.
+    function setTicketComposerMode(mode) {
+      const ta = document.getElementById("tk-chat-input");
+      const val = ta ? ta.value : "";
+      tkComposerMode = mode;
+      const host = document.getElementById("tk-composer");
+      if (host && state.ticketDetail) {
+        host.outerHTML = ticketComposerHtml(state.ticketDetail.ticket);
+        const ta2 = document.getElementById("tk-chat-input");
+        if (ta2) ta2.value = val;
+      }
+    }
+    // Swap Send -> Stop while a turn streams, mirroring setComposerStreaming's
+    // pattern in the copilot. Locking the textarea/checkbox is separate (see
+    // setTicketComposerLocked) so a mid-turn 'pending' can lock immediately
+    // without waiting on this.
+    function setTicketComposerStreaming(on, ticketId) {
+      const send = document.getElementById("tk-chat-send");
+      if (send) {
+        if (on) {
+          send.innerHTML = `${icon('square', 13)}Stop`;
+          send.onclick = stopTicketChat;
+          send.disabled = false;
+        } else {
+          send.innerHTML = `${icon('send-horizontal', 13)}Send`;
+          send.onclick = () => sendTicketChat(ticketId);
+        }
+      }
+      setTicketComposerLocked(on);
+    }
+    function setTicketComposerLocked(on, reasonText) {
+      const ta = document.getElementById("tk-chat-input");
+      const mirror = document.getElementById("tk-chat-mirror");
+      const reasonEl = document.getElementById("tk-chat-reason");
+      if (ta) ta.disabled = on;
+      if (mirror) mirror.disabled = on;
+      if (reasonEl && reasonText !== undefined) reasonEl.textContent = reasonText;
+    }
+    function stopTicketChat() {
+      if (tkChatAbort) tkChatAbort.abort();
+    }
+    async function sendTicketChat(id) {
+      if (tkChatAbort) return; // a turn is already streaming
+      const ta = document.getElementById("tk-chat-input");
+      const message = ta ? ta.value.trim() : "";
+      if (!message) return;
+      const mirrorEl = document.getElementById("tk-chat-mirror");
+      const mirror = !!(mirrorEl && mirrorEl.checked);
+      ta.value = "";
+      await startTicketChatTurn(id, message, mirror);
+    }
+
+    // -- appending provisional (in-progress) rows to the live timeline ------
+    // These are a preview only: "done" (or the abort/error fallback in
+    // startTicketChatTurn) always follows with a full renderTicketDetail(),
+    // which replaces every row here with the durable trail. Kept visually
+    // consistent with ticketEventHtml's own rows (same time/icon/actor
+    // chrome) so a live turn doesn't look like a different widget.
+    function tkTimelineRow(actorLabel, iconName) {
+      const t = document.getElementById("tk-timeline");
+      if (!t) return null;
+      const row = document.createElement("div");
+      row.className = "kc-timeline__row";
+      const time = document.createElement("span");
+      time.className = "k-audit__time";
+      time.textContent = new Date().toLocaleString();
+      row.appendChild(time);
+      row.insertAdjacentHTML("beforeend", icon(iconName, 14));
+      const actor = document.createElement("span");
+      actor.className = "kc-timeline__actor";
+      actor.textContent = actorLabel;
+      row.appendChild(actor);
+      const body = document.createElement("span");
+      row.appendChild(body);
+      t.appendChild(row);
+      t.scrollTop = t.scrollHeight;
+      return body;
+    }
+    function tkTimelineBubble(actorLabel, text) {
+      const body = tkTimelineRow(actorLabel, "message-square");
+      if (!body) return document.createElement("div");
+      const div = document.createElement("div");
+      // Same class as the durable trail's kenny-authored rows (see
+      // ticketEventHtml) and the copilot's own assistant bubble — kenny's
+      // text is markdown, a human's is plain, never interpreted as markup.
+      if (actorLabel === "kenny") {
+        div.className = "k-bubble k-bubble--assistant";
+        div.innerHTML = renderMarkdown(text);
+      } else {
+        div.textContent = text;
+      }
+      body.appendChild(div);
+      return div;
+    }
+    function tkTimelineToolRun(label, ok) {
+      const body = tkTimelineRow("kenny", ok ? "check" : "octagon-alert");
+      if (!body) return;
+      const span = document.createElement("span");
+      span.className = "k-toolrun" + (ok ? " k-toolrun--auto" : " k-toolrun--err");
+      span.textContent = label;
+      body.appendChild(span);
+    }
+    // ctx.bubble() lazily creates the one in-progress kenny bubble the first
+    // time a text token arrives, same lazy-creation reason newChatCtx() has
+    // in the copilot (a tool-only/gate-only turn shouldn't leave a blank row).
+    function newTicketChatCtx() {
+      return { _div: null, _raw: "", bubble() { return (this._div ||= tkTimelineBubble("kenny", "")); } };
+    }
+    function handleTicketChatEvent(ev, ctx) {
+      if (ev.type === "text_delta") {
+        const div = ctx.bubble();
+        ctx._raw += ev.text;
+        // Re-render the whole buffered reply per token, not an incremental
+        // append — a delta can land mid-token, same reasoning as the
+        // copilot's handleChatEvent.
+        div.innerHTML = renderMarkdown(ctx._raw);
+        const t = document.getElementById("tk-timeline");
+        if (t) t.scrollTop = t.scrollHeight;
+      } else if (ev.type === "tool_result") {
+        tkTimelineToolRun(ev.tool, ev.ok !== false);
+      } else if (ev.type === "denied") {
+        tkTimelineToolRun("denied " + ev.tool + (ev.message ? " — " + ev.message : ""), false);
+      } else if (ev.type === "pending") {
+        // The trail row + ticket state transition are already durable by the
+        // time this event arrives (TicketAssistant.on_hold runs before the
+        // loop yields it) — this is just a snappier local lock; the 'done'
+        // event that immediately follows does the authoritative reload that
+        // shows the new approval row with its inline Approve/Deny controls.
+        setTicketComposerLocked(true, "Waiting on a decision above.");
+      } else if (ev.type === "error") {
+        notify(ev.error || "chat failed", "err");
+      }
+      // 'done' is handled by the caller (startTicketChatTurn), which is the
+      // one place that knows whether a reload already happened.
+    }
+    // Drive one turn of the ticket assistant. The trail is the truth, these
+    // provisional rows are only a preview: on a normal end ('done') or on any
+    // abnormal end (Stop, a network error, an in-band 'error' with no 'done'
+    // behind it) this always finishes with one clean renderTicketDetail(),
+    // which replaces every provisional row with the durable ones and
+    // re-derives the composer's disabled state from the fresh ticket.
+    async function startTicketChatTurn(ticketId, message, mirrorToDiscord) {
+      if (tkChatAbort) return;
+      tkTimelineBubble("you", message);
+      const ctx = newTicketChatCtx();
+      let sawDone = false;
+      tkChatAbort = new AbortController();
+      setTicketComposerStreaming(true, ticketId);
+      try {
+        for await (const ev of streamSSE(
+          "/api/tickets/" + encodeURIComponent(ticketId) + "/chat/stream",
+          { message, mirror_to_discord: mirrorToDiscord },
+          { signal: tkChatAbort.signal }
+        )) {
+          if (ev.type === "done") {
+            sawDone = true;
+            await renderTicketDetail(ticketId);
+          } else {
+            handleTicketChatEvent(ev, ctx);
+          }
+        }
+      } catch (e) {
+        if (e.name !== "AbortError") notify(e.message, "err");
+      } finally {
+        tkChatAbort = null;
+        // A normal end already reloaded inside the loop (the 'done' branch
+        // above); any abnormal end (Stop, a network error, a pre-stream
+        // failure streamSSE threw on) has not, so catch it up here. Either
+        // way the render that follows is a fresh, authoritative composer —
+        // no separate "un-stream" step, that would just re-enable inputs a
+        // fresh disabled-reason render may have deliberately locked.
+        if (!sawDone) await renderTicketDetail(ticketId);
+      }
     }
 
     // -- approvals badge modal: the frozen tool call, args and target, one
