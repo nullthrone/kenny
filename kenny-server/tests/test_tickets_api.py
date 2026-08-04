@@ -19,9 +19,11 @@ neither, which is what a server without Discord configuration serves.
 from __future__ import annotations
 
 import contextlib
+import json
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from functools import partial
+from pathlib import Path
 from typing import Any, AsyncIterator
 
 from starlette.applications import Starlette
@@ -46,27 +48,93 @@ GUILD = "guild-1"
 Seed = Callable[[UserStore, TicketStore, TicketService], Awaitable[dict[str, Any]]]
 
 
-def _build_app(tmp_path, seed: Seed, *, with_discord: bool = False) -> Starlette:
-    db_path = str(tmp_path / "tickets_api.sqlite")
+# -- a scripted fake Anthropic client, for the chat/stream route's own tests ---
+# (shape copied from tests/test_discord_service.py: a text-only end_turn is all
+# these routes need to script, since none of them exercises a capability tool.)
+
+
+class _Block:
+    def __init__(self, **kw: Any) -> None:
+        self.__dict__.update(kw)
+
+
+class _Response:
+    def __init__(self, content: list[_Block], stop_reason: str) -> None:
+        self.content = content
+        self.stop_reason = stop_reason
+
+
+def text_turn(text: str) -> _Response:
+    return _Response([_Block(type="text", text=text)], "end_turn")
+
+
+class _StreamCtx:
+    def __init__(self, response: _Response) -> None:
+        self._response = response
+        self.text_stream = [b.text for b in response.content if getattr(b, "type", None) == "text"]
+
+    def __enter__(self) -> _StreamCtx:
+        return self
+
+    def __exit__(self, *_exc: Any) -> bool:
+        return False
+
+    def get_final_message(self) -> _Response:
+        return self._response
+
+
+class _FakeMessages:
+    def __init__(self, scripted: list[_Response]) -> None:
+        self._scripted = scripted
+        self.calls: list[dict[str, Any]] = []
+
+    def stream(self, **kwargs: Any) -> _StreamCtx:
+        self.calls.append(kwargs)
+        return _StreamCtx(self._scripted.pop(0))
+
+
+class _FakeAnthropic:
+    def __init__(self, scripted: list[_Response]) -> None:
+        self.messages = _FakeMessages(scripted)
+
+
+def _build_app(
+    tmp_path,
+    seed: Seed,
+    *,
+    with_discord: bool = False,
+    with_assistant: bool = False,
+    scripted: list[_Response] | None = None,
+) -> Starlette:
+    """Build the standalone ticket API app.
+
+    ``with_assistant`` (or ``with_discord``, which always implies it) builds a
+    real :class:`TicketAssistant` — with a scripted fake Anthropic client when
+    ``scripted`` is given, or a client-less one (never driven, just present for
+    the routes that only check ``assistant is not None``) otherwise.
+    """
+
+    Path(tmp_path).mkdir(parents=True, exist_ok=True)
+    db_path = str(Path(tmp_path) / "tickets_api.sqlite")
     user_store = UserStore(db_path)
     ticket_store = TicketStore(db_path)
     service = TicketService(ticket_store, now=lambda: NOW)
     identities: DiscordIdentityStore | None = None
     discord: DiscordService | None = None
     assistant: TicketAssistant | None = None
+    client = _FakeAnthropic(list(scripted)) if scripted is not None else None
+    if with_assistant or with_discord:
+        assistant = TicketAssistant(
+            tickets=service,
+            users=user_store,
+            executor=None,  # type: ignore[arg-type] - no test here drives a tool call
+            client=client,
+            model="scripted",
+        )
     if with_discord:
         identities = DiscordIdentityStore(db_path)
         gateway = FakeDiscordGateway(
             members={GUILD: [GuildMember(user_id="900", display_hint="Kid")]}
-        )
-        # The routes only read diagnostics/guild list/members; they never drive
-        # a turn, so there is no executor or model client to inject.
-        assistant = TicketAssistant(
-            tickets=service,
-            users=user_store,
-            executor=None,  # type: ignore[arg-type]
-            client=None,
-            model="",
         )
         discord = DiscordService(
             gateway=gateway,
@@ -112,11 +180,25 @@ def _build_app(tmp_path, seed: Seed, *, with_discord: bool = False) -> Starlette
     )
     app.state.identities = identities
     app.state.discord = discord
+    app.state.assistant = assistant
+    app.state.gateway = discord.gateway if discord is not None else None
+    app.state.tickets = service
+    app.state.ticket_store = ticket_store
     return app
 
 
 def _hdr(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
+
+
+def _sse_events(text: str) -> list[dict[str, Any]]:
+    """Parse an SSE response body into its ``data:`` event payloads, in order."""
+
+    events: list[dict[str, Any]] = []
+    for line in text.splitlines():
+        if line.startswith("data: "):
+            events.append(json.loads(line[len("data: ") :]))
+    return events
 
 
 # -- ownership: a `user` reads their own ticket, not another's -----------------
@@ -717,3 +799,223 @@ def test_superuser_can_set_capability_profile(tmp_path) -> None:
         assert r.status_code == 200
         assert r.json()["capability_profile"] == "self-service-basic"
         assert c.put("/api/users/999999/profile", json={}, headers=h).status_code == 404
+
+
+# -- POST /api/tickets/{tid}/chat/stream ----------------------------------------
+
+
+def test_chat_stream_needs_assistant_agent_and_no_open_gate(tmp_path) -> None:
+    async def seed(users: UserStore, store: TicketStore, svc: TicketService) -> dict:
+        kid = await users.create_user("kid", "pw-123456", "user")
+        sib = await users.create_user("sib", "pw-123456", "user")
+        kid_pat = await users.create_pat(kid["id"], "t")
+        sib_pat = await users.create_pat(sib["id"], "t")
+        owned = await svc.create(
+            title="slow pc", origin="dashboard", requester_user_id=kid["id"], agent_id="pc-1"
+        )
+        no_agent = await svc.create(
+            title="no target", origin="dashboard", requester_user_id=kid["id"]
+        )
+        alert = await svc.create(title="disk full", origin="alert", requester_user_id=None)
+        gated = await svc.create(
+            title="gate open", origin="dashboard", requester_user_id=kid["id"], agent_id="pc-1"
+        )
+        await svc.open_approval(
+            gated.id, tool_use_id="tu-1", tool="winget_install", tool_class="normal_change",
+            args={},
+        )
+        closed = await svc.create(
+            title="already closed", origin="dashboard", requester_user_id=kid["id"],
+            agent_id="pc-1",
+        )
+        await store.set_state(closed.id, "closed", actor="system")
+        return {
+            "kid_pat": kid_pat,
+            "sib_pat": sib_pat,
+            "owned_id": owned.id,
+            "no_agent_id": no_agent.id,
+            "alert_id": alert.id,
+            "gated_id": gated.id,
+            "closed_id": closed.id,
+        }
+
+    # No assistant configured at all -> 503, before any other check.
+    app = _build_app(tmp_path, seed)
+    with TestClient(app) as c:
+        s = app.state.seed
+        r = c.post(
+            f"/api/tickets/{s['owned_id']}/chat/stream",
+            json={"message": "hi"},
+            headers=_hdr(s["kid_pat"]),
+        )
+        assert r.status_code == 503
+
+    app = _build_app(tmp_path / "2", seed, with_assistant=True)
+    with TestClient(app) as c:
+        s = app.state.seed
+        kid_h = _hdr(s["kid_pat"])
+
+        # Someone else's ticket: 403, before anything assistant-related runs.
+        assert (
+            c.post(
+                f"/api/tickets/{s['owned_id']}/chat/stream", json={"message": "hi"},
+                headers=_hdr(s["sib_pat"]),
+            ).status_code == 403
+        )
+        # An alert-origin ticket has no owner: 403 for a scoped user.
+        assert (
+            c.post(
+                f"/api/tickets/{s['alert_id']}/chat/stream", json={"message": "hi"}, headers=kid_h
+            ).status_code == 403
+        )
+        # Empty message: 400, pre-stream.
+        assert (
+            c.post(
+                f"/api/tickets/{s['owned_id']}/chat/stream", json={"message": "  "}, headers=kid_h
+            ).status_code == 400
+        )
+        # No target machine: 400.
+        assert (
+            c.post(
+                f"/api/tickets/{s['no_agent_id']}/chat/stream", json={"message": "hi"},
+                headers=kid_h,
+            ).status_code == 400
+        )
+        # A gate is already open on this ticket: 409.
+        assert (
+            c.post(
+                f"/api/tickets/{s['gated_id']}/chat/stream", json={"message": "hi"},
+                headers=kid_h,
+            ).status_code == 409
+        )
+        # Closed ticket: 409.
+        assert (
+            c.post(
+                f"/api/tickets/{s['closed_id']}/chat/stream", json={"message": "hi"},
+                headers=kid_h,
+            ).status_code == 409
+        )
+        # Asking to mirror without a Discord thread bound (and no Discord at
+        # all here): 400.
+        assert (
+            c.post(
+                f"/api/tickets/{s['owned_id']}/chat/stream",
+                json={"message": "hi", "mirror_to_discord": True},
+                headers=kid_h,
+            ).status_code == 400
+        )
+
+
+def test_chat_stream_drives_a_turn_and_records_verbatim_text(tmp_path) -> None:
+    async def seed(users: UserStore, _store: TicketStore, svc: TicketService) -> dict:
+        kid = await users.create_user("kid", "pw-123456", "user")
+        kid_pat = await users.create_pat(kid["id"], "t")
+        ticket = await svc.create(
+            title="slow pc", origin="dashboard", requester_user_id=kid["id"], agent_id="pc-1"
+        )
+        return {"kid_pat": kid_pat, "ticket_id": ticket.id}
+
+    app = _build_app(
+        tmp_path, seed, with_assistant=True, scripted=[text_turn("I'll take a look.")]
+    )
+    with TestClient(app) as c:
+        s = app.state.seed
+        r = c.post(
+            f"/api/tickets/{s['ticket_id']}/chat/stream",
+            json={"message": "my pc is being slow today"},
+            headers=_hdr(s["kid_pat"]),
+        )
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("text/event-stream")
+        events = _sse_events(r.text)
+        assert events, "expected at least one SSE event"
+        assert events[-1]["type"] == "done"
+        assert events[-1]["assistant_text"] == "I'll take a look."
+
+        trail = c.portal.call(app.state.tickets.events, s["ticket_id"])
+        messages = [e for e in trail if e.kind == "message"]
+        assert len(messages) == 2
+        human, kenny = messages
+        assert human.fields["text"] == "my pc is being slow today"
+        assert human.fields["surface"] == "dashboard"
+        assert human.fields["actionable"] is True
+        assert kenny.actor == "kenny"
+        assert kenny.fields["text"] == "I'll take a look."
+        assert kenny.fields["surface"] == "dashboard"
+
+
+def test_chat_stream_mirrors_to_discord_only_when_asked(tmp_path) -> None:
+    async def seed(users: UserStore, store: TicketStore, svc: TicketService) -> dict:
+        kid = await users.create_user("kid", "pw-123456", "user")
+        kid_pat = await users.create_pat(kid["id"], "t")
+        ticket = await svc.create(
+            title="slow pc", origin="dashboard", requester_user_id=kid["id"], agent_id="pc-1"
+        )
+        await store.bind_channel(
+            ticket_id=ticket.id,
+            guild_id=GUILD,
+            channel_id="chan-1",
+            thread_id="thread-1",
+            private=True,
+        )
+        return {"kid_pat": kid_pat, "ticket_id": ticket.id}
+
+    # mirror_to_discord=False (the default): nothing reaches the gateway.
+    app = _build_app(
+        tmp_path, seed, with_discord=True, scripted=[text_turn("no mirror here")]
+    )
+    with TestClient(app) as c:
+        s = app.state.seed
+        r = c.post(
+            f"/api/tickets/{s['ticket_id']}/chat/stream",
+            json={"message": "just dashboard, please"},
+            headers=_hdr(s["kid_pat"]),
+        )
+        assert r.status_code == 200
+        assert app.state.gateway.posted == []
+
+    # mirror_to_discord=True: exactly one post lands in the bound thread.
+    app = _build_app(
+        tmp_path / "2", seed, with_discord=True, scripted=[text_turn("mirrored reply")]
+    )
+    with TestClient(app) as c:
+        s = app.state.seed
+        r = c.post(
+            f"/api/tickets/{s['ticket_id']}/chat/stream",
+            json={"message": "also tell discord", "mirror_to_discord": True},
+            headers=_hdr(s["kid_pat"]),
+        )
+        assert r.status_code == 200
+        assert len(app.state.gateway.posted) == 1
+        channel_id, content = app.state.gateway.posted[0]
+        assert channel_id == "thread-1"
+        assert content == "mirrored reply"
+
+
+def test_approval_decide_resolves_the_discord_card(tmp_path) -> None:
+    async def seed(users: UserStore, store: TicketStore, svc: TicketService) -> dict:
+        op = await users.create_user("op", "pw-123456", "operator")
+        op_pat = await users.create_pat(op["id"], "t")
+        ticket = await svc.create(title="risky change", origin="discord", agent_id="pc-1")
+        approval = await svc.open_approval(
+            ticket.id, tool_use_id="tu-1", tool="winget_install", tool_class="normal_change",
+            args={},
+        )
+        await store.set_approval_message(
+            approval.id, channel_id="chan-1", message_id="card-1"
+        )
+        return {"op_pat": op_pat, "approval_id": approval.id}
+
+    app = _build_app(tmp_path, seed, with_discord=True)
+    with TestClient(app) as c:
+        s = app.state.seed
+        r = c.post(
+            f"/api/approvals/{s['approval_id']}", json={"approve": True},
+            headers=_hdr(s["op_pat"]),
+        )
+        assert r.status_code == 200
+        assert len(app.state.gateway.resolved) == 1
+        resolved = app.state.gateway.resolved[0]
+        assert resolved["channel_id"] == "chan-1"
+        assert resolved["message_id"] == "card-1"
+        assert resolved["outcome"] == "approved"
