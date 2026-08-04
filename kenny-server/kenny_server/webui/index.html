@@ -1989,7 +1989,7 @@
         `<option value="${s}" ${s === filter ? "selected" : ""}>${esc(ticketStateLabel(s))}</option>`).join("");
       const bulkStateOptions = TICKET_BULK_TARGET_STATES.map(s =>
         `<option value="${s}">${esc(ticketStateLabel(s))}</option>`).join("");
-      const bulkBar = isOp && sel.size > 0 ? `<div class="k-row"
+      const bulkBar = isOp && sel.size > 0 ? `<div class="k-row" id="tk-bulk-bar"
           style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px;padding:8px 10px;background:var(--surface-raised);border-radius:var(--radius-sm)">
           <span class="k-muted">${sel.size} ticket${sel.size === 1 ? "" : "s"} selected</span>
           <div class="k-row" style="gap:8px">
