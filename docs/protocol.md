@@ -576,6 +576,9 @@ rule: a governance call must never be able to lock everyone out of the machine.
 | `reliability_suppression_list` | `{agent_id?}` | reliability alarm suppression rules (fleet-wide + host) |
 | `reliability_suppression_add` | `{event_id, source?, agent_id?, note?}` | exclude a `(source, event_id)` pattern from severity scoring |
 | `reliability_suppression_remove` | `{rule_id}` | remove a suppression rule |
+| `ticket_rule_list` | `{agent_id?}` | auto-ticket rules (fleet-wide + host) |
+| `ticket_rule_set` | `{event_type, decision, section?, agent_id?, note?}` | add/replace a rule deciding whether an alert opens a ticket |
+| `ticket_rule_remove` | `{rule_id}` | remove an auto-ticket rule |
 
 The `webfilter_*` server-only tools manage the per-host list and trigger a push; they wrap
 the forwarded `webfilter_apply`/`webfilter_clear` capability tools (ADR-0026). `webfilter_set`
@@ -584,6 +587,10 @@ and `webfilter_push` are state-changing (they pass the operator confirm-gate, AD
 The `reliability_suppression_*` server-only tools manage the suppression-rule table behind
 the Reliability card (ADR-0045); `_add`/`_remove` are state-changing (ADR-0009). They forward
 nothing to an agent — `agent_id` is an optional scope filter, not a routing target.
+
+The `ticket_rule_*` server-only tools manage which alerts open a ticket automatically
+(ADR-0053); `_set`/`_remove` are state-changing (ADR-0009). Like the suppression tools, they
+forward nothing to an agent — `agent_id` is an optional scope filter, not a routing target.
 
 ## Telemetry sections
 

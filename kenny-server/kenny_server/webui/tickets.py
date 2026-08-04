@@ -1,4 +1,5 @@
-"""Ticket, approval, Discord-identity and tool-class routes for the dashboard API.
+"""Ticket, approval, Discord-identity, tool-class and auto-ticket-rule routes
+for the dashboard API.
 
 Everything here is a thin HTTP skin over :class:`~kenny_server.tickets.TicketService`
 and :class:`~kenny_server.ticketstore.TicketStore` — the lifecycle rules (legal
@@ -28,6 +29,11 @@ approval route, and the routes that genuinely need a Discord collaborator answer
 mapping is a plain SQLite store that exists whether or not a bot is connected,
 while the guild member list and the connection status can only come from a live
 gateway (:class:`~kenny_server.discord_service.DiscordService`).
+
+**Auto-ticket rules** (ADR-0053) live here too, as a thin CRUD skin over
+:class:`~kenny_server.ticket_rules.TicketRuleList` — the mirror
+``AlertEngine._dispatch`` consults to decide which alerts open a ticket. See
+that module for the matching algorithm.
 """
 
 from __future__ import annotations
@@ -43,6 +49,7 @@ from starlette.routing import Route
 from .. import tool_classes
 from ..auth import Principal
 from ..discord_identity import DiscordIdentityStore, IdentityConflict
+from ..ticket_rules import DECISIONS, EVENT_TYPES, KNOWN_SECTIONS, TicketRuleList
 from ..ticketstore import Ticket, TicketStore
 from ..tickets import TicketError, TicketService, TransitionError
 from ..userstore import UserStore
@@ -152,6 +159,7 @@ def build_ticket_routes(
     identities: DiscordIdentityStore | None = None,
     user_store: UserStore | None = None,
     discord: DiscordService | None = None,
+    ticket_rules: TicketRuleList | None = None,
 ) -> list[Route]:
     """Ticket/approval/Discord/tool-class routes. See module docstring."""
 
@@ -560,6 +568,61 @@ def build_ticket_routes(
             {"id": uid, "capability_profile": await user_store.get_capability_profile(uid)}
         )
 
+    # -- auto-ticket rules (ADR-0053) --------------------------------------------
+    #
+    # Which alerts open a ticket is operator policy, decided by AlertEngine
+    # through ``ticket_rules.decide`` -- this is the CRUD skin over the same
+    # mirror the engine consults. Operator+ only, on every route including the
+    # read: an alert-origin ticket is itself operator-only by
+    # ``_owned_or_operator`` above, so a scoped `user` has no legitimate use for
+    # the rules that decide when one gets minted, and showing them would leak
+    # fleet host names for no benefit.
+
+    async def api_ticket_rules_vocabulary(_request: Request) -> JSONResponse:
+        """The vocabulary the add form / API validation actually accepts.
+
+        Derived from ``ticket_rules.py``'s live registries so the dashboard
+        never hardcodes a second copy that can drift from what the engine
+        emits or the store validates.
+        """
+
+        return JSONResponse(
+            {
+                "event_types": list(EVENT_TYPES),
+                "decisions": list(DECISIONS),
+                "sections": {k: sorted(v) for k, v in KNOWN_SECTIONS.items()},
+            }
+        )
+
+    async def api_ticket_rules_list(_request: Request) -> JSONResponse:
+        if ticket_rules is None:
+            return _err("ticket rules are not configured", 503)
+        return JSONResponse({"rules": ticket_rules.rules()})
+
+    async def api_ticket_rules_add(request: Request) -> JSONResponse:
+        if ticket_rules is None:
+            return _err("ticket rules are not configured", 503)
+        principal = require_user(request, "operator")
+        body = await _body(request)
+        try:
+            rules, warnings = await ticket_rules.add(
+                event_type=str(body.get("event_type") or ""),
+                decision=str(body.get("decision") or ""),
+                section=str(body.get("section") or ""),
+                agent_id=str(body.get("agent_id") or ""),
+                note=str(body.get("note") or ""),
+                created_by=getattr(principal, "username", "") or "",
+            )
+        except ValueError as exc:
+            return _err(str(exc))
+        return JSONResponse({"rules": rules, "warnings": warnings}, status_code=201)
+
+    async def api_ticket_rules_remove(request: Request) -> JSONResponse:
+        if ticket_rules is None:
+            return _err("ticket rules are not configured", 503)
+        removed, rules = await ticket_rules.remove(request.path_params["rule_id"])
+        return JSONResponse({"ok": True, "removed": removed, "rules": rules})
+
     g = lambda handler, **kw: guard(_catches_ticket_errors(handler), **kw)  # noqa: E731
 
     return [
@@ -623,6 +686,19 @@ def build_ticket_routes(
             methods=["PUT"],
         ),
         Route("/api/tool-classes", g(api_tool_classes, min_role="operator")),
+        Route(
+            "/api/ticket-rules/vocabulary",
+            g(api_ticket_rules_vocabulary, min_role="operator"),
+        ),
+        Route("/api/ticket-rules", g(api_ticket_rules_list, min_role="operator")),
+        Route(
+            "/api/ticket-rules", g(api_ticket_rules_add, min_role="operator"), methods=["POST"]
+        ),
+        Route(
+            "/api/ticket-rules/{rule_id}",
+            g(api_ticket_rules_remove, min_role="operator"),
+            methods=["DELETE"],
+        ),
     ]
 
 

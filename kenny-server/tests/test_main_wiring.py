@@ -352,3 +352,61 @@ async def test_a_failing_ticket_hook_never_breaks_alert_delivery(tmp_path) -> No
     assert len(await events.query(kind="alert")) == 1  # and recorded anyway
     for s in (store, events, state, ticket_store):
         await s.close()
+
+
+# -- auto-ticket rules (ADR-0053) --------------------------------------------
+
+
+def test_ticket_rules_are_wired_and_a_seeded_rule_survives_a_boot(tmp_path) -> None:
+    """Seed a rule through the real API, reboot the app against the same DB,
+    and assert the freshly-loaded mirror (not just the store) enforces it --
+    the ``ticket_rules.load()`` seam in the lifespan."""
+
+    db_path = str(tmp_path / "ticket_rules_wiring.sqlite")
+    app1 = build_app(db_path=db_path)
+    with TestClient(app1) as c:
+        h = _bearer(app1)
+        assert app1.state.ticket_rules is not None
+        resp = c.post(
+            "/api/ticket-rules", headers=h,
+            json={"event_type": "offline", "decision": "never"},
+        )
+        assert resp.status_code == 201
+
+    app2 = build_app(db_path=db_path)
+    with TestClient(app2):
+        # The lifespan's ``await ticket_rules.load()`` ran before any request
+        # could be served -- the mirror already reflects the seeded row.
+        rules = app2.state.ticket_rules.rules()
+        assert len(rules) == 1
+        assert rules[0]["event_type"] == "offline"
+        assert rules[0]["decision"] == "never"
+
+        # And it is the exact mirror the alert engine consults.
+        assert app2.state.alert_engine._ticket_rules is app2.state.ticket_rules
+
+        asyncio.run(
+            app2.state.store.insert(
+                "pc1",
+                (NOW - timedelta(hours=3)).isoformat(),
+                _snapshot(50.0),
+                received_at=(NOW - timedelta(hours=3)).isoformat(),
+            )
+        )
+        opened: list[Any] = []
+
+        async def spy_open_ticket(note: Notification) -> None:
+            opened.append(note)
+
+        app2.state.alert_engine._open_ticket = spy_open_ticket
+
+        # An empty registry (no live connection) makes this host read offline.
+        class _OfflineRegistry:
+            def get(self, agent_id: str) -> Any:
+                return None
+
+        app2.state.alert_engine._registry = _OfflineRegistry()
+        sent = asyncio.run(app2.state.alert_engine.evaluate_once(NOW))
+        assert len(sent) == 1
+        assert sent[0].event_type == "offline"
+        assert opened == []  # suppressed by the seeded rule

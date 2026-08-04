@@ -66,3 +66,4 @@ implementation detail", see *When (not) to write an ADR* in the repository `CLAU
 | [0050](0050-ticket-as-entity-chat-thread-as-binding.md) | The ticket is the entity; the chat thread is a binding | proposed |
 | [0051](0051-capability-profiles.md) | Capability profiles: named per-user tool allowlists that only narrow | proposed |
 | [0052](0052-second-release-channel-dev-prereleases.md) | Second release channel: `dev` prereleases via the GitHub `prerelease` flag | proposed |
+| [0053](0053-operator-configurable-auto-ticket-rules.md) | Operator-configurable rules for which events open a ticket | proposed |

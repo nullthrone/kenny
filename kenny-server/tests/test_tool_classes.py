@@ -54,6 +54,8 @@ LEGACY_STATE_CHANGING = frozenset(
         "webfilter_push",
         "reliability_suppression_add",
         "reliability_suppression_remove",
+        "ticket_rule_set",
+        "ticket_rule_remove",
         "account_set_enabled",
         "account_set_admin",
         "account_set_logon_rights",
@@ -75,6 +77,9 @@ MCP_ONLY_SERVER_TOOLS = frozenset(
         "reliability_suppression_list",
         "reliability_suppression_add",
         "reliability_suppression_remove",
+        "ticket_rule_list",
+        "ticket_rule_set",
+        "ticket_rule_remove",
     }
 )
 

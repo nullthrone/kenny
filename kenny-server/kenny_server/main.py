@@ -57,9 +57,11 @@ from .store import (
     ReliabilitySuppressionStore,
     SettingsStore,
     TelemetryStore,
+    TicketRuleStore,
     UpdateStore,
     WebFilterStore,
 )
+from .ticket_rules import TicketRuleList
 from .ticketstore import TicketStore
 from .tickets import TicketService, ticket_sweep_loop
 from .tokenstore import AgentTokenStore
@@ -194,6 +196,14 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
     suppression_store = ReliabilitySuppressionStore(db_path)
     suppression = SuppressionList(suppression_store)
     store.annotate = suppression.mark
+    # Auto-ticket rules (ADR-0053): which alerts open a ticket is operator
+    # policy, not a hardcoded predicate. Same shape as the suppression rules
+    # above -- an operator-authored table + an in-memory mirror consulted
+    # synchronously by the alert engine on every dispatch. An empty table
+    # reproduces the pre-ADR-0053 behaviour exactly (every genuine alert opens
+    # a ticket, nothing else does) -- see ticket_rules.py.
+    ticket_rule_store = TicketRuleStore(db_path)
+    ticket_rules = TicketRuleList(ticket_rule_store)
     # Shared-catalog mirror + operator deny rules (ADR-0021). The engine loads the
     # catalog at construction and never raises if it is missing (fail-open).
     policy_store = PolicyStore(db_path)
@@ -288,6 +298,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         settings=settings,
         prunables=[store, event_store, webfilter_store, ticket_store, discord_identities],
         open_ticket=open_alert_ticket,
+        ticket_rules=ticket_rules,
     )
 
     # Discord bot surface (optional). The service is constructed only when a bot
@@ -345,6 +356,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         call_log=call_log,
         webfilter=webfilter,
         suppression=suppression,
+        ticket_rules=ticket_rules,
     )
     # mcp_app owns "/mcp" internally and is mounted at the app root below (not
     # re-prefixed with another "/mcp"). A Mount always requires a trailing slash
@@ -376,6 +388,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         await policy_store.connect()
         await webfilter_store.connect()
         await suppression_store.connect()
+        await ticket_rule_store.connect()
         await chat_history_store.connect()
         await alert_state.connect()
         await backup_target_store.connect()
@@ -400,6 +413,9 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         # Load persisted reliability suppression rules into their mirror too
         # (ADR-0045 / issue #166) -- before any health evaluation can run.
         await suppression.load()
+        # Load persisted auto-ticket rules (ADR-0053) before the alert loop
+        # below can dispatch a single notification.
+        await ticket_rules.load()
         await store.prune()
         await event_store.prune()
         await webfilter_store.prune()
@@ -534,6 +550,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
             await policy_store.close()
             await webfilter_store.close()
             await suppression_store.close()
+            await ticket_rule_store.close()
             await chat_history_store.close()
             await alert_state.close()
             await backup_target_store.close()
@@ -562,6 +579,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         backup_target_store=backup_target_store,
         update_mgr=update_mgr,
         suppression=suppression,
+        ticket_rules=ticket_rules,
     )
     user_routes = build_user_routes(
         user_store=user_store, registry=registry, store=store, oauth_store=oauth_store
@@ -597,6 +615,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         identities=discord_identities,
         user_store=user_store,
         discord=discord_service,
+        ticket_rules=ticket_rules,
     )
     download_routes = build_download_routes(
         registry=registry,
@@ -654,6 +673,8 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
     app.state.webfilter = webfilter
     app.state.suppression_store = suppression_store
     app.state.suppression = suppression
+    app.state.ticket_rule_store = ticket_rule_store
+    app.state.ticket_rules = ticket_rules
     app.state.backup_mgr = backup_mgr
     app.state.backup_target_store = backup_target_store
     app.state.update_store = update_store

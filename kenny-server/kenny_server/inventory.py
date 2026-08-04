@@ -45,6 +45,7 @@ async def purge_agent(
     user_store,
     screenshots,
     suppression=None,
+    ticket_rules=None,
 ) -> dict[str, str]:
     """Delete every trace of ``agent_id``; return a per-store outcome map."""
 
@@ -69,6 +70,10 @@ async def purge_agent(
         # Only this host's own suppression rules go -- fleet-wide rules mute a
         # Windows quirk, not a specific PC, and must survive its removal.
         await _try("reliability_suppressions", suppression.delete_agent(agent_id))
+    if ticket_rules is not None:
+        # Same asymmetry as suppression rules: only this host's own auto-ticket
+        # rules go, fleet-wide policy survives its removal.
+        await _try("ticket_rules", ticket_rules.delete_agent(agent_id))
     # In-memory teardown: dropping the agent also nulls its send_fn reference, so
     # a still-connected socket can't be forwarded to; its token/key are gone so it
     # cannot re-authenticate.

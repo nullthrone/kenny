@@ -38,6 +38,18 @@ class Notification:
     tags: list[str] = field(default_factory=list)
     agent_id: str | None = None
     kind: str = "alert"  # "alert" | "recovery" | "change" | "digest"
+    # -- structured discriminator for auto-ticket rules (ADR-0053) ------------
+    # ``kind`` says whether this is a genuine alert vs. a recovery/change/digest;
+    # ``event_type``/``sections`` say *which* alert, so an operator rule can name
+    # it without parsing the free-text ``body``. Both default to empty so every
+    # existing construction site (and every notifier that ignores them) keeps
+    # working unchanged -- an empty ``event_type`` matches no rule and falls
+    # through to the coded default in ``ticket_rules.decide``.
+    event_type: str = ""  # "health" | "offline" | "disk_forecast" | "change" | "digest"
+    # section name -> the severity this notification is about ("warn"/"crit"),
+    # or "" for a producer with no severity axis (e.g. an inventory change).
+    # Empty dict means "no per-section subject" (offline, disk_forecast, digest).
+    sections: dict[str, str] = field(default_factory=dict)
 
 
 class Notifier(Protocol):
@@ -113,6 +125,8 @@ class WebhookNotifier(_HttpNotifier):
                 "priority": notification.priority,
                 "tags": notification.tags,
                 "agent_id": notification.agent_id,
+                "event_type": notification.event_type,
+                "sections": notification.sections,
                 "at": datetime.now(timezone.utc).isoformat(),
             }
         )

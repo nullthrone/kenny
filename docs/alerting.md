@@ -63,7 +63,30 @@ An alert-origin ticket has **no requester** — it belongs to the fleet, not a p
 is operator-only in the [Tickets tab](dashboard.md#the-tickets-tab): a scoped `user` never
 sees it. It starts life pinned to the alerting agent, at `high` priority for a `high`/`urgent`
 notification and `normal` otherwise, with the alert's own message as its opening summary.
-Nothing about this is configurable per alert type today — every genuine alert opens one.
+
+### Which events open a ticket is configurable (ADR-0053)
+
+By default, every genuine alert — a health escalation, an agent going offline, a disk-fill
+forecast — opens a ticket, and a recovery, an inventory change, and the weekly digest never
+do. An operator can narrow or widen that per fleet or per host from the **auto-ticket rules**
+panel on the [Tickets tab](dashboard.md#the-tickets-tab), or via the `ticket_rule_*` MCP
+tools. Each rule names an event type (`health` / `offline` / `disk_forecast` / `change`), an
+optional section and host, and a decision: `open_all` (always), `open_crit` (only when the
+subject is `crit`) or `never`.
+
+Two practical cases this solves:
+
+- **A family PC that is simply switched off overnight** re-opens an offline ticket every
+  cooldown window. A `never` rule on `offline` (fleet-wide or for just that host) stops the
+  tickets without silencing the offline *alert* itself — delivery and the events-table audit
+  trail are unaffected.
+- **Inventory changes never open a ticket by default**, even though a new local administrator
+  account is exactly the kind of thing worth a ticket. An `open_all` rule on `change` with
+  section `local_accounts` promotes it.
+
+Recoveries and the weekly digest can never open a ticket, no matter what rule is written — the
+rule engine only ever narrows or widens *genuine alerts*, and running the empty rule table
+through the same decision path reproduces this section's pre-ADR-0053 behaviour exactly.
 
 ## Change notifications
 
@@ -127,7 +150,7 @@ HTTP POST each):
 | Channel | Configure with | Payload |
 |---------|----------------|---------|
 | **ntfy** | `KENNY_NTFY_URL` (+ optional `KENNY_NTFY_TOKEN` bearer) | POST body to an ntfy topic; title/priority/tags as headers — works out of the box with the ntfy phone apps |
-| **Generic webhook** | `KENNY_WEBHOOK_URL` | JSON POST (`kind`, `title`, `body`, `priority`, `tags`, `agent_id`, `at`) |
+| **Generic webhook** | `KENNY_WEBHOOK_URL` | JSON POST (`kind`, `title`, `body`, `priority`, `tags`, `agent_id`, `event_type`, `sections`, `at`) |
 | **Discord** | `KENNY_DISCORD_WEBHOOK_URL` | JSON POST of a Discord embed — title, body as the description, priority as the embed colour, and `kind` / `agent_id` as fields |
 
 Delivery is strictly best-effort: send errors are logged and swallowed, a dead target
@@ -159,3 +182,5 @@ Alerting environment variables (see [`setup.md`](setup.md) for the full list):
 - [`itsm.md`](itsm.md) — tickets, the Discord bot, and what an alert-opened ticket looks like
 - [ADR-0029](adr/0029-push-alerting-ntfy-webhook-and-weekly-digest.md) — push alerting & weekly digest
 - [ADR-0030](adr/0030-server-side-diff-and-trend-engine.md) — server-side diff & trend engine
+- [ADR-0053](adr/0053-operator-configurable-auto-ticket-rules.md) — operator-configurable
+  auto-ticket rules

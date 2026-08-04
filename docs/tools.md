@@ -284,6 +284,17 @@ are `normal_change` (they hit the ADR-0009 confirm-gate in the dashboard chat).
 | `reliability_suppression_add` | `event_id`, `source?`, `agent_id?`, `note?` | `normal_change` |
 | `reliability_suppression_remove` | `rule_id` | `normal_change` |
 
+Auto-ticket rules (ADR-0053) are also server-only: they decide which alerts open a ticket
+automatically, by default every genuine alert and nothing else. Operator+ on every one of
+these, including the read — an alert-origin ticket is itself operator-only, so a scoped
+`user` has no legitimate use for the rules that decide when one opens.
+
+| Tool | Arguments | Tier |
+|------|-----------|------|
+| `ticket_rule_list` | `agent_id?` | `read_only` |
+| `ticket_rule_set` | `event_type`, `decision`, `section?`, `agent_id?`, `note?` | `normal_change` |
+| `ticket_rule_remove` | `rule_id` | `normal_change` |
+
 ## Auditing
 
 Every forwarded capability call is appended to the **tool-call audit log**, annotated
