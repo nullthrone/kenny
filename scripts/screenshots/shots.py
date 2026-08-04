@@ -280,8 +280,29 @@ MANIFEST: list[Shot] = [
         actions=[{"wait_for": ".kc-timeline"}, {"sleep": 300}],
     ),
     Shot(
-        name="discord-settings",
+        name="settings",
         hash="#/settings",
+        mode="full_page",
+        actions=[
+            {"wait_for": ".kc-navitem"},
+            {"wait_for": "#set-KENNY_ALERT_COOLDOWN_SECS"},
+            {"sleep": 300},
+        ],
+    ),
+    Shot(
+        name="settings-backup",
+        hash="#/settings/backup",
+        mode="full_page",
+        actions=[
+            # The catalog row is always present regardless of whether any demo
+            # backup has been seeded (the backup list itself may be empty).
+            {"wait_for": "#set-KENNY_BACKUP_INTERVAL_SECS"},
+            {"sleep": 300},
+        ],
+    ),
+    Shot(
+        name="discord-settings",
+        hash="#/settings/discord-tickets",
         mode="element",
         selector="#discord-panel",
         actions=[{"wait_for": "#discord-panel .kacc-tbl"}, {"sleep": 300}],

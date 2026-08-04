@@ -104,6 +104,9 @@ def test_settings_list_shape_and_secret_masking(tmp_path, monkeypatch):
         assert r.status_code == 200
         groups = r.json()["groups"]
         assert [g["name"] for g in groups][0] == "Alerting & Digest"
+        # the settings sidebar routes on this slug (#/settings/{slug})
+        assert {g["name"]: g["slug"] for g in groups}["Alerting & Digest"] == "alerting-digest"
+        assert all(g["slug"] for g in groups)
         flat = {s["key"]: s for g in groups for s in g["settings"]}
         # env source is reported
         assert flat["KENNY_DIGEST_HOUR"]["value"] == 9

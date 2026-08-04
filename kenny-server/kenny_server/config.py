@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -149,6 +150,18 @@ GROUP_ORDER: tuple[str, ...] = (
     "Discord & Tickets",
 )
 
+
+def group_slug(name: str) -> str:
+    """URL-stable slug for a group name (the settings sidebar's ``#/settings/{slug}``).
+
+    Derived from the display name rather than hand-assigned so every group is
+    guaranteed one; a slug only changes if the group's *name* changes, at which
+    point ``test_config.py`` pins the mapping so the break is caught, not silent.
+    """
+
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+
+
 _SPECS: list[SettingSpec] = [
     # -- Alerting & Digest (live; consumed by AlertEngine each pass) -----------
     _spec("KENNY_ALERT_COOLDOWN_SECS", "Alerting & Digest", "int", "3600",
@@ -172,6 +185,20 @@ _SPECS: list[SettingSpec] = [
           "Digest day", lifecycle="live", choices=_DAYS),
     _spec("KENNY_DIGEST_HOUR", "Alerting & Digest", "int", "8",
           "Digest hour (0-23)", lifecycle="live", min=0, max=23),
+    # -- Alert push channels (env_only; read directly by notify.load_notifiers()
+    # at startup, not through Settings — advertising them as writable would be a
+    # lie about what actually takes effect). ------------------------------------
+    _spec("KENNY_NTFY_URL", "Alerting & Digest", "str", "",
+          "ntfy topic URL", lifecycle="env_only", sensitive=True,
+          help="ntfy.sh (or self-hosted) topic URL alerts are pushed to. "
+               "Treated as sensitive: a topic URL is bearer-equivalent."),
+    _spec("KENNY_NTFY_TOKEN", "Alerting & Digest", "secret", "",
+          "ntfy access token", lifecycle="env_only", sensitive=True,
+          help="Optional bearer token for an access-controlled ntfy topic."),
+    _spec("KENNY_WEBHOOK_URL", "Alerting & Digest", "secret", "",
+          "Generic alert webhook URL", lifecycle="env_only", sensitive=True,
+          help="Incoming-webhook URL alerts are POSTed to, independent of the "
+               "Discord alert webhook below."),
     # -- Web filter (live; consumed by the refresh loop / ExternalListCache) ---
     _spec("KENNY_WEBFILTER_REFRESH_SECS", "Web filter", "int", "86400",
           "External list refresh (s)", lifecycle="live", min=0,
@@ -233,6 +260,14 @@ _SPECS: list[SettingSpec] = [
           "Login session lifetime (s)", lifecycle="env_only", min=60,
           help="How long a browser login session stays valid before re-login "
                "(default 7 days). Read at login time (ADR-0037)."),
+    _spec("KENNY_OAUTH_ACCESS_TTL_SECS", "Operator & Agent Auth", "int", "3600",
+          "OAuth access token lifetime (s)", lifecycle="env_only", min=1,
+          help="MCP/Claude OAuth bearer token lifetime (default 1 hour). Read "
+               "per-issuance by oauth.py, not through Settings."),
+    _spec("KENNY_OAUTH_REFRESH_TTL_SECS", "Operator & Agent Auth", "int", "2592000",
+          "OAuth refresh token lifetime (s)", lifecycle="env_only", min=1,
+          help="MCP/Claude OAuth refresh token lifetime (default 30 days). Read "
+               "per-issuance by oauth.py, not through Settings."),
     _spec("KENNY_FORWARDED_ALLOW_IPS", "Operator & Agent Auth", "str", "127.0.0.1",
           "Trusted proxy IPs (X-Forwarded-For)", lifecycle="env_only",
           help="Upstream addresses allowed to set X-Forwarded-For so the login "
@@ -518,7 +553,7 @@ class Settings:
                 row["default"] = spec.parse(spec.default_raw)
             by_group.setdefault(spec.group, []).append(row)
         return [
-            {"name": group, "settings": by_group[group]}
+            {"name": group, "slug": group_slug(group), "settings": by_group[group]}
             for group in GROUP_ORDER
             if by_group.get(group)
         ]

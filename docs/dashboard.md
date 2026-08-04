@@ -47,10 +47,10 @@ Every view shares one header:
       stays open, and the item names the theme it switches *to*). The choice is saved in
       `localStorage` and applied before first paint (no flash); charts repaint from the cached
       data on toggle.
-    - **Settings** *(superuser only)* — opens the [`#/settings`](#the-settings-panel)
-      config panel.
-    - **Backup** *(superuser only)* — opens the [`#/backup`](#the-backup-page) database
-      backup/restore page.
+    - **Settings** *(superuser only)* — opens the [`#/settings`](#the-settings-page) sidebar,
+      which also carries Backup and Updates (see below).
+    - **Updates** *(operator+, shown instead of Settings for an operator — a superuser reaches
+      it through Settings)* — opens [`#/settings/updates`](#updates) directly.
     - **About** — opens the [About box](#the-about-box).
     - **Documentation** — opens the project's docs site (this GitHub Pages site) in a new tab.
     - **Log out** (`/logout`).
@@ -514,54 +514,57 @@ by version, or view the full list on GitHub).
 
 ---
 
-## The Settings panel
+## The Settings page
 
-*(superuser only, [`#/settings`](#the-shell-header-global-controls))*
-
-The runtime configuration catalog — every setting resolves **custom override → environment
-→ coded default**, grouped the same way as `config.py`. Each row shows its label, a badge
-for where its current value came from (`custom` / `env` / `default`), and — for a setting
-whose new value only takes effect on restart — a **restart** pill. Editable settings apply
-immediately (or on next restart, per that pill) and can be **reset** back to
-environment/default; a setting managed only via the environment (secrets, wire-contract
-knobs, process-bind options) is shown read-only, with a sensitive one displayed as *set* /
-*not set* rather than echoed back.
-
-### Discord panel
+*([`#/settings/{section}`](#the-shell-header-global-controls) — superuser sees every
+section, an operator only [Updates](#updates))*
 
 <figure markdown>
-  ![The Discord panel in Settings.](assets/screenshots/discord-settings.png)
-  <figcaption>The Discord panel: connection status, linked accounts, pending link claims, and the guild-member picker.</figcaption>
+  ![The Settings page, showing the sidebar and the Alerting & Digest section.](assets/screenshots/settings.png)
+  <figcaption>The Settings sidebar: catalog sections split into configurable and read-only (environment), plus Backup, Updates, and Discord & Tickets.</figcaption>
 </figure>
 
-Below the settings groups, superusers get a **Discord** panel: a connection-status pill,
-the table of linked accounts (with an unlink button), the **pending claims** table for
-enrollment path A (`/link` in Discord — pick the kenny account it belongs to and
-confirm), and **Pick a guild member** for enrollment path B (a direct picker from the
-server's member list). See [Enrollment: linking a Discord account](itsm.md#enrollment-linking-a-discord-account)
-for what each path means and why the mapping matters. On a server with no Discord identity
-store configured, the panel says so instead of erroring.
+A left sidebar picks one section at a time instead of one long scroll. The sidebar has two
+blocks — **configuration** (every group with at least one editable setting: Alerting &
+Digest, Web filter, Chat & AI, Logging, Backup, Updates, Discord & Tickets) and
+**environment, read-only** (Network & Process, Operator & Agent Auth, Telemetry limits,
+Agent distribution — process-bind values, wire-contract knobs, and secrets, none of them
+writable from here) — grouped exactly as `config.py`'s catalog. A **search** box above the
+sidebar filters by label, key, or help text across every section at once, so `#/settings`
+still doubles as the one place to Ctrl-F the whole runtime configuration even though only
+one section renders at a time.
 
----
+Within a section, every setting resolves **custom override → environment → coded
+default**. Each row shows its label, a badge for where its current value came from
+(`custom` / `env` / `default`), and — for a setting whose new value only takes effect on
+restart — a **restart** pill. Editable settings apply immediately (or on next restart, per
+that pill) and can be **reset** back to environment/default; a setting managed only via the
+environment (secrets, wire-contract knobs, process-bind options) is shown read-only, with a
+sensitive one displayed as *set* / *not set* rather than echoed back.
 
-## The Backup page
+`#/settings` (bare), `#/backup`, and `#/updates` all resolve into this page — old bookmarks
+and the Discord "see the dashboard" links keep working, landing on the matching section.
 
-*(superuser only, [`#/backup`](#the-shell-header-global-controls))*
+### Backup
+
+<figure markdown>
+  ![The Backup section of Settings.](assets/screenshots/settings-backup.png)
+  <figcaption>Status, remote targets, and the backup list, followed by the Backup catalog group (interval, retention).</figcaption>
+</figure>
 
 kenny persists everything — telemetry, chat history, accounts, tokens, settings — in one
 SQLite file on the `/data` volume. Syncing that *live* file with an external tool (e.g.
 Syncthing) causes lock contention, because the sync tool watches and hashes a file the
-server is concurrently writing to. The Backup page is kenny's own answer: it produces
+server is concurrently writing to. The Backup section is kenny's own answer: it produces
 finished, static snapshot files that are safe to hand to any external sync/backup tool,
 and gives an operator a way to trigger, inspect, and restore them without touching the
 host filesystem by hand. See [ADR-0043](adr/0043-server-database-backup-and-restore.md)
 for the full rationale.
 
-- **Status card** — the most recent backup's age, the total count and size on disk, the
-  configured **interval** and **retention** (editable inline — the same live-apply
-  settings as the [Settings panel](#the-settings-panel)), and the local
-  `backups/` directory path. *Point your sync tool at this directory, never at
-  `kenny.sqlite` itself.*
+- **Status card** — the most recent backup's age, the total count and size on disk, and the
+  local `backups/` directory path. *Point your sync tool at this directory, never at
+  `kenny.sqlite` itself.* Interval and retention are set in the **Backup** catalog group
+  below the status card, not as separate inline fields.
 - **Backup now** — triggers an out-of-schedule snapshot immediately (`VACUUM INTO`, so it
   never blocks concurrent reads/writes).
 - **Remote targets** — optional, operator-configured push destinations in addition to the
@@ -580,11 +583,10 @@ for the full rationale.
       restored data automatically (container restart policy).
     - **Delete** removes a snapshot from one or all targets.
 
----
+### Updates
 
-## The Updates page
-
-*(operator+, [`#/updates`](#the-shell-header-global-controls))*
+*(operator+ — the only section an operator's sidebar shows; the catalog group at the
+bottom is superuser only, so an operator sees this section without it)*
 
 kenny checks for newer agent releases (GitHub Releases) and a newer server image (GHCR,
 read-only) on a schedule and shows both here — see
@@ -596,9 +598,9 @@ operator action.
   exists: a **digest-pinned** `docker pull …@sha256:… && docker compose up -d` for you to
   run. kenny cannot replace its own running container, so this stays a shown command rather
   than an automated pull.
-- **Agent fleet card** — the latest known agent version, the **check interval** (editable
-  inline, the same live-apply settings as the [Settings panel](#the-settings-panel)),
-  a **check now** button, and the **auto-apply on connect** toggle.
+- **Agent fleet card** — the latest known agent version, whether auto-apply-on-connect is
+  on, and a **check now** button. Check interval and auto-apply-on-connect are set in the
+  **Updates** catalog group below (superuser only).
 - **Rollout campaign card** — with no active campaign, **approve rollout** pins the latest
   known agent version into a new campaign. Once approved, the campaign shows its pinned
   version, whether on-connect auto-apply is on, and when it expires, plus:
@@ -615,17 +617,34 @@ A campaign always pins one exact version at approval time: a later check finding
 newer never changes what an already-approved campaign pushes — it just becomes a new,
 separately-approvable candidate.
 
-### Dev channel (ADR-0052)
+#### Dev channel (ADR-0052)
 
-Alongside the stable server/agent cards, the page shows a **latest dev** row for each and a
-second, independent **rollout campaign (dev)** card — a stable and a dev campaign can be
-active at the same time, since they target different agents. The per-agent channel column
-shows the agent's **built** channel (read-only — what the connected binary actually is,
-`stable` unless it was built with `KENNY_AGENT_CHANNEL=dev`) next to a **desired** channel
-selector an operator sets per agent. A dev campaign's eligibility — and what an on-connect
-auto-apply pushes — is decided by an agent's *desired* channel, not its currently-built one,
-so flipping an agent to `dev` and approving a dev campaign is what moves it, one PC at a
-time, onto the dev stream while the rest of the fleet stays on stable.
+Alongside the stable server/agent cards, the section shows a **latest dev** row for each
+and a second, independent **rollout campaign (dev)** card — a stable and a dev campaign can
+be active at the same time, since they target different agents. The per-agent channel
+column shows the agent's **built** channel (read-only — what the connected binary actually
+is, `stable` unless it was built with `KENNY_AGENT_CHANNEL=dev`) next to a **desired**
+channel selector an operator sets per agent. A dev campaign's eligibility — and what an
+on-connect auto-apply pushes — is decided by an agent's *desired* channel, not its
+currently-built one, so flipping an agent to `dev` and approving a dev campaign is what
+moves it, one PC at a time, onto the dev stream while the rest of the fleet stays on
+stable.
+
+### Discord & Tickets
+
+<figure markdown>
+  ![The Discord panel in Settings.](assets/screenshots/discord-settings.png)
+  <figcaption>The Discord panel: connection status, linked accounts, pending link claims, and the guild-member picker.</figcaption>
+</figure>
+
+Below the Discord & Tickets catalog group, superusers get a **Discord** panel: a
+connection-status pill, the table of linked accounts (with an unlink button), the
+**pending claims** table for enrollment path A (`/link` in Discord — pick the kenny account
+it belongs to and confirm), and **Pick a guild member** for enrollment path B (a direct
+picker from the server's member list). See [Enrollment: linking a Discord
+account](itsm.md#enrollment-linking-a-discord-account) for what each path means and why the
+mapping matters. On a server with no Discord identity store configured, the panel says so
+instead of erroring.
 
 ---
 
@@ -645,7 +664,9 @@ time, onto the dev stream while the rest of the fleet stays on stable.
   console is legible without colour.
 - **Deep links** — every view is a URL hash you can bookmark or share (`#/overview`,
   `#/fleet`, `#/activity/audit`, `#/activity/events`, `#/flagged/warn`, `#/flagged/crit`,
-  `#/tickets`, `#/tickets/{id}`, `#/settings`, `#/backup`, `#/updates`).
+  `#/tickets`, `#/tickets/{id}`, `#/settings/{section}`). `#/backup` and `#/updates` still
+  resolve too, straight into the matching Settings section, for old bookmarks and the
+  Discord "see the dashboard" links.
 - **Keyboard & motion** — Escape closes modals and the copilot drawer; animations respect
   `prefers-reduced-motion`.
 

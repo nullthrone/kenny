@@ -145,6 +145,66 @@ def test_catalog_groups_are_declared() -> None:
         assert spec.group in GROUP_ORDER, f"{spec.key} in undeclared group {spec.group}"
 
 
+def test_describe_carries_a_slug_per_group() -> None:
+    # The dashboard sidebar routes on this slug (#/settings/{slug}); a group
+    # rename that silently changes it would break every bookmark and the
+    # discord-settings screenshot target, so the exact mapping is pinned here.
+    s = _settings()
+    slugs = {g["name"]: g["slug"] for g in s.describe()}
+    assert slugs == {
+        "Alerting & Digest": "alerting-digest",
+        "Web filter": "web-filter",
+        "Chat & AI": "chat-ai",
+        "Logging": "logging",
+        "Network & Process": "network-process",
+        "Operator & Agent Auth": "operator-agent-auth",
+        "Telemetry limits": "telemetry-limits",
+        "Agent distribution": "agent-distribution",
+        "Backup": "backup",
+        "Updates": "updates",
+        "Discord & Tickets": "discord-tickets",
+    }
+    assert len(slugs) == len(set(slugs.values())), "group slugs must be unique"
+
+
+def test_group_slug_is_stable_and_unique() -> None:
+    from kenny_server.config import GROUP_ORDER, group_slug
+
+    slugs = [group_slug(g) for g in GROUP_ORDER]
+    assert len(slugs) == len(set(slugs))
+    assert all(slug and " " not in slug for slug in slugs)
+
+
+# -- catalog gaps: env vars the server reads but the old catalog didn't list --
+
+
+def test_alert_push_channels_are_in_catalog() -> None:
+    # notify.load_notifiers() reads these three directly from os.environ, not
+    # through Settings, so they must stay env_only — but they still belong in
+    # the catalog or the Settings page silently omits real configuration.
+    for key in ("KENNY_NTFY_URL", "KENNY_NTFY_TOKEN", "KENNY_WEBHOOK_URL"):
+        spec = CATALOG[key]
+        assert spec.group == "Alerting & Digest"
+        assert spec.lifecycle == "env_only"
+        assert spec.sensitive is True
+        assert spec.writable is False
+
+
+def test_oauth_ttls_are_in_catalog_with_matching_defaults() -> None:
+    # oauth.py's _access_ttl()/_refresh_ttl() fall back to module constants
+    # that never flow through Settings; the catalog's coded default must match
+    # them exactly or the read-only row on the page would lie about what the
+    # server actually uses.
+    from kenny_server.oauth import _DEFAULT_ACCESS_TTL_SECS, _DEFAULT_REFRESH_TTL_SECS
+
+    access = CATALOG["KENNY_OAUTH_ACCESS_TTL_SECS"]
+    refresh = CATALOG["KENNY_OAUTH_REFRESH_TTL_SECS"]
+    assert access.group == refresh.group == "Operator & Agent Auth"
+    assert access.lifecycle == refresh.lifecycle == "env_only"
+    assert access.parse(access.default_raw) == _DEFAULT_ACCESS_TTL_SECS
+    assert refresh.parse(refresh.default_raw) == _DEFAULT_REFRESH_TTL_SECS
+
+
 # -- SettingsStore persistence -------------------------------------------------
 
 
