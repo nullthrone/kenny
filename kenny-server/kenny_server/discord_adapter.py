@@ -161,6 +161,15 @@ _READY_TIMEOUT_SECS = 30
 _REGISTER_ATTEMPTS = 3
 _REGISTER_RETRY_DELAY_SECS = 1.0
 
+# Cap on live Interaction objects held in DiscordPyGateway._interactions. Most
+# entries are popped by a terminal respond_ephemeral, but any path that
+# returns without ever answering (an unmapped user's click, an unrecognized
+# custom_id) leaks its entry forever. Interactions are unusable ~15 minutes
+# after creation anyway, so evicting the oldest once the dict grows past this
+# many just bounds a long-lived bot's memory without changing behaviour for
+# any interaction actually still in play.
+_MAX_TRACKED_INTERACTIONS = 1000
+
 
 def chunk_message(content: str, limit: int = CHUNK_TARGET_LIMIT) -> list[str]:
     """Split ``content`` into chunks of at most ``limit`` characters.
@@ -700,6 +709,12 @@ class DiscordPyGateway:
     def _handle_interaction(self, interaction: Any) -> None:
         discord = self._discord
         self._interactions[str(interaction.id)] = interaction
+        while len(self._interactions) > _MAX_TRACKED_INTERACTIONS:
+            # dict preserves insertion order -- the first key is the oldest,
+            # and by the time there are this many untouched entries it is
+            # long past its ~15 minute token lifetime anyway.
+            oldest = next(iter(self._interactions))
+            del self._interactions[oldest]
         try:
             if interaction.type == discord.InteractionType.application_command:
                 event: InboundEvent = _translate_slash_command(interaction)
