@@ -522,7 +522,7 @@ knobs, process-bind options) is shown read-only, with a sensitive one displayed 
 
 Below the settings groups, superusers get a **Discord** panel: a connection-status pill,
 the table of linked accounts (with an unlink button), the **pending claims** table for
-enrollment path A (`/kenny link` in Discord — pick the kenny account it belongs to and
+enrollment path A (`/link` in Discord — pick the kenny account it belongs to and
 confirm), and **Pick a guild member** for enrollment path B (a direct picker from the
 server's member list). See [Enrollment: linking a Discord account](itsm.md#enrollment-linking-a-discord-account)
 for what each path means and why the mapping matters. On a server with no Discord identity

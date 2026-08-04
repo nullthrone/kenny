@@ -25,10 +25,10 @@ paraphrase of what happened, and a machine-readable trail of every message, tool
 approval and state change underneath it. Three things can open one:
 
 - **A Discord mention.** Someone `@kenny`s the bot in the support channel (or runs
-  `/kenny help-me`), kenny opens a private thread for it, and the ticket is born already
+  `/help-me`), kenny opens a private thread for it, and the ticket is born already
   pointed at that person's PC. If more than one PC could be meant, kenny asks first with a
   row of buttons and opens nothing until one is clicked — publicly, replying to the
-  mention, or privately to the caller alone for `/kenny help-me` — see
+  mention, or privately to the caller alone for `/help-me` — see
   [Which PC a request is about](#which-pc-a-request-is-about).
 - **The dashboard.** Any signed-in account — including a scoped `user` — can open a ticket
   with **New ticket** on the [Tickets tab](dashboard.md). This is the same record type, it
@@ -139,7 +139,7 @@ from a display name, never from a Discord role. **That mapping is what decides w
 machines a person may ask about**, so it is worth getting right. There are two ways to
 create it, both landing in the same table and both logged:
 
-**A — the person links themselves.** They run `/kenny link` in Discord. Kenny opens a
+**A — the person links themselves.** They run `/link` in Discord. Kenny opens a
 short-lived claim and hands back a code; you confirm it in **Settings → Discord →
 Pending claims**, picking which kenny account it belongs to. The claim expires on its own
 if nobody confirms it.
@@ -153,7 +153,7 @@ bind one straight to a kenny account, no code required.
   <figcaption>Settings → Discord: connection status, linked accounts, pending claims, and the guild-member picker.</figcaption>
 </figure>
 
-Either way, the person can check what kenny thinks of them with `/kenny whoami` — their
+Either way, the person can check what kenny thinks of them with `/whoami` — their
 kenny account, role, capability profile, and which PCs it can see. That command exists
 specifically so a mis-mapping is visible to the person it affects, not silent.
 
@@ -177,7 +177,7 @@ Two things decide it, and they are **not** the same question:
 
 An unqualified request goes to the second list. One host on it → the ticket opens straight
 away. More than one → kenny posts one button per host and opens nothing until the asker
-clicks. A bare mention gets a public card replying to it; `/kenny help-me` gets the same
+clicks. A bare mention gets a public card replying to it; `/help-me` gets the same
 buttons back as its own private reply, wherever the command was typed — including inside
 an existing ticket thread, so it never leaks into the public support channel. Only the
 person who asked can answer, the click is good once, and the chosen host is re-checked
@@ -188,7 +188,7 @@ Set the host scope for an operator too. Without it every bare mention from an op
 account has to be answered with a question first, because reaching the whole fleet is
 indistinguishable from owning all of it.
 
-`/kenny help-me host:<id>` still names any host the account may reach, whether or not it
+`/help-me host:<id>` still names any host the account may reach, whether or not it
 is one of its own — the shortlist steers the default, it does not shrink the reach.
 
 ## Capability profiles
@@ -264,7 +264,7 @@ Still on the **Bot** tab, under **Privileged Gateway Intents**:
 | Intent | Needed for | If missing |
 |---|---|---|
 | **Message Content** | **Required.** Reading what someone actually wrote. | Mentions arrive with **empty content**. kenny cannot tell what was asked and the bot looks dead. This exact symptom is detected and reported once in the operator channel and in `/api/discord/status`, so it does not read as a silent hang. |
-| **Server Members** | The guild-member picker (enrollment path B). | The picker returns an empty list with a warning; enrollment path A (`/kenny link`) still works. |
+| **Server Members** | The guild-member picker (enrollment path B). | The picker returns an empty list with a warning; enrollment path A (`/link`) still works. |
 | Presence | nothing — leave it off. | — |
 
 kenny asks for no other intent. Under 100 servers these are toggles; above that Discord
@@ -277,7 +277,7 @@ permission bits for you.
 
 **Scopes:** `bot` **and** `applications.commands`. The second one is easy to forget and is
 what allows the slash commands to be registered; without it the bot joins and the
-`/kenny …` commands never appear.
+the slash commands never appear.
 
 **Bot permissions** — check exactly these:
 
@@ -338,7 +338,7 @@ before that, and nothing happens at all without a token.
 - a **Message Content** warning — the intent is off; mentions are arriving empty.
 
 Then mention the bot in the support channel. You should get a private thread. If nothing
-happens at all, work down: is the account linked (`/kenny whoami`), is the guild on the
+happens at all, work down: is the account linked (`/whoami`), is the guild on the
 allowlist, can the bot see the channel?
 
 An unmapped Discord account is **completely inert** by design — no thread, no reply, not
