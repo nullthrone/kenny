@@ -115,7 +115,7 @@ clients share one bucket). The bundled TLS profile sets this for you.
 | `KENNY_NTFY_URL` / `KENNY_NTFY_TOKEN` | — | ntfy topic URL (+ optional bearer) for push alerts. |
 | `KENNY_WEBHOOK_URL` | — | Generic JSON webhook for alerts. |
 
-**Database backups** (see the **[Backup page](dashboard.md#the-backup-page)**,
+**Database backups** (see the **[Backup section](dashboard.md#backup)**,
 [ADR-0043](adr/0043-server-database-backup-and-restore.md)):
 
 | Variable | Default | Purpose |
@@ -387,20 +387,21 @@ is wired but off by default:
 - **Data**: the SQLite telemetry store lives on the `kenny-data` volume (`/data`). Telemetry
   snapshots auto-prune after ~30 days.
 - **Backups**: kenny has a built-in backup manager ([ADR-0043](adr/0043-server-database-backup-and-restore.md),
-  dashboard **Backup** page, superuser only) — do **not** point an external sync/backup tool at
-  `kenny.sqlite` directly; syncing the *live* WAL file causes lock contention. Instead, on a
-  schedule (`KENNY_BACKUP_INTERVAL_SECS`, default 6 h) or on demand, it writes a consistent
-  `VACUUM INTO` snapshot to `<KENNY_DB_PATH dir>/backups/` — this directory holds only
-  finished, static files and is what you should point Syncthing/rsync/whatever at. Optionally
-  fan snapshots out to a remote **HTTP/SCP-SFTP/FTP(S)** target too, configured from the same
-  page. Restore stages a chosen backup and restarts the server to apply it (see the
-  [Backup page reference](dashboard.md#the-backup-page)).
+  dashboard **Settings → Backup** section, superuser only) — do **not** point an external
+  sync/backup tool at `kenny.sqlite` directly; syncing the *live* WAL file causes lock
+  contention. Instead, on a schedule (`KENNY_BACKUP_INTERVAL_SECS`, default 6 h) or on
+  demand, it writes a consistent `VACUUM INTO` snapshot to `<KENNY_DB_PATH dir>/backups/` —
+  this directory holds only finished, static files and is what you should point
+  Syncthing/rsync/whatever at. Optionally fan snapshots out to a remote **HTTP/SCP-SFTP/FTP(S)**
+  target too, configured from the same section. Restore stages a chosen backup and restarts
+  the server to apply it (see the [Backup section reference](dashboard.md#backup)).
 - **Server upgrade**: `docker compose pull && docker compose up -d` (or bump the image tag). The
-  **Updates** page (below) tells you when a newer tag exists and gives you the exact,
-  digest-pinned command — it never pulls or restarts the container for you.
+  **Settings → Updates** section (below) tells you when a newer tag exists and gives you the
+  exact, digest-pinned command — it never pulls or restarts the container for you.
 - **Agent upgrade**: click **update** on one agent in the dashboard (server-triggered
-  self-update, unchanged) — or approve a fleet-wide **update campaign** from the **Updates** page
-  to roll a pinned version out to every agent, on both Windows and Linux (ADR-0038, ADR-0044).
+  self-update, unchanged) — or approve a fleet-wide **update campaign** from the
+  **Settings → Updates** section to roll a pinned version out to every agent, on both
+  Windows and Linux (ADR-0038, ADR-0044).
 
 ### Scheduled updates (ADR-0044)
 

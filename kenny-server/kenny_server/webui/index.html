@@ -719,6 +719,13 @@
       .kset__row { flex-direction: column; }
       .kset__ctl { max-width: 100%; justify-content: flex-start; }
     }
+    /* Settings sidebar + pane (superuser catalog groups, plus the Backup and
+       Updates sections, all living under #/settings/{slug}). Same
+       flex-column-of-panels shape as .kset, but it is the right-hand column
+       of the .kc-console sidebar grid rather than a page centred on its own
+       — the sidebar (nav + search) is the left column, built from the same
+       .kc-fleet/.kc-navitem primitives the Activity tab uses. */
+    .ksetpane { display: flex; flex-direction: column; gap: var(--space-4); min-width: 0; max-width: 820px; }
 
     /* ====================================================================
        IDENTITY — header control, dropdown menu, avatars, account modals
@@ -1268,7 +1275,7 @@
     }
 
     // -- console state -----------------------------------------------------
-    let state = { tab: "overview", activityView: "audit",
+    let state = { tab: "overview", activityView: "audit", settingsSection: null,
       fleet: null, bin: null, selected: null, detail: null,
       overview: null, trend: null, overviewAt: 0, topMetric: "disk", sankeyByOs: false, trendDays: 30,
       audit: [], auditQuery: "", auditPage: 1,
@@ -1298,14 +1305,18 @@
         return { tab: "flagged", flaggedSev: parts[1] === "crit" ? "crit" : "warn",
                  activityView: state.activityView };
       }
+      // Settings, Backup and Updates all live under one sidebar (#/settings);
+      // #/backup and #/updates are kept as aliases for old bookmarks and the
+      // Discord "see the dashboard" links, resolving straight to that section.
       if (parts[0] === "settings") {
-        return { tab: "settings", activityView: state.activityView };
+        return { tab: "settings", settingsSection: parts[1] || null,
+                 activityView: state.activityView };
       }
       if (parts[0] === "backup") {
-        return { tab: "backup", activityView: state.activityView };
+        return { tab: "settings", settingsSection: "backup", activityView: state.activityView };
       }
       if (parts[0] === "updates") {
-        return { tab: "updates", activityView: state.activityView };
+        return { tab: "settings", settingsSection: "updates", activityView: state.activityView };
       }
       // #/tickets is the list; #/tickets/{id} is one ticket's detail — the
       // landing page for every "see the dashboard" link posted into Discord.
@@ -1334,7 +1345,7 @@
       navToken++;
       disposeOvCharts();  // tear down Overview charts when leaving/re-entering
       const prevTab = state.tab;
-      const { tab, activityView, flaggedSev, ticketId } = parseHash();
+      const { tab, activityView, flaggedSev, ticketId, settingsSection } = parseHash();
       state.tab = tab;
       state.activityView = activityView;
       state.flaggedSev = flaggedSev || "warn";
@@ -1353,20 +1364,13 @@
         else await renderTickets();
       }
       else if (tab === "settings") {
-        // Guard direct navigation (typed/bookmarked #/settings) for non-superusers.
-        if (!isSuperuser()) { history.replaceState(null, "", "#/overview"); state.tab = "overview"; renderTabs(); await renderOverview(); }
-        else await renderSettings();
-      }
-      else if (tab === "backup") {
-        // Same guard as #/settings: direct navigation for non-superusers bounces home.
-        if (!isSuperuser()) { history.replaceState(null, "", "#/overview"); state.tab = "overview"; renderTabs(); await renderOverview(); }
-        else await renderBackup();
-      }
-      else if (tab === "updates") {
-        // Update campaigns are an operator+ action (same tier as policy/webfilter
-        // mutation) — guard direct navigation for the scoped `user` role.
+        // Least permissive first: a scoped `user` has no section here at all
+        // (not even Updates). renderSettings() itself resolves settingsSection
+        // against what the signed-in role is actually allowed to see — an
+        // operator hitting a superuser-only slug falls back inside there, not
+        // here, so it stays the single place that decides.
         if (!canOperate()) { history.replaceState(null, "", "#/overview"); state.tab = "overview"; renderTabs(); await renderOverview(); }
-        else await renderUpdates();
+        else { state.settingsSection = settingsSection; await renderSettings(); }
       }
       else await renderFleet();
     }
@@ -2388,36 +2392,188 @@
     }
 
     // ====================================================================
-    // SETTINGS TAB — structured view of the runtime configuration catalog.
-    // Values resolve DB override > environment > coded default. Editable
-    // (live/restart) settings are written back via /api/settings; env_only
-    // ones (secrets, wire-contract, process-bind) are shown read-only.
+    // SETTINGS — one admin surface behind a left sidebar: the runtime
+    // configuration catalog (grouped exactly as config.py's GROUP_ORDER,
+    // values resolving DB override > environment > coded default) plus the
+    // Backup and Updates sections, which are catalog groups too and share
+    // this same shell. #/settings/{slug} picks one section; bare #/settings,
+    // #/backup and #/updates all resolve into it (old bookmarks and the
+    // Discord "see the dashboard" links keep working). Editable (live/
+    // restart) settings write back via /api/settings; env_only ones
+    // (secrets, wire-contract, process-bind) are shown read-only, grouped
+    // under a separate "environment" nav block.
+    //
+    // /api/settings is superuser-only; Updates is operator+ (ADR-0044), so an
+    // operator gets a single synthetic "Updates" section with no catalog
+    // panel and never calls /api/settings at all (it would just 403).
     // ====================================================================
+    let settingsGroups = [];   // last /api/settings payload — the nav's shape
+    let settingsQuery = "";    // cross-section search text; not reflected in the hash
+
+    const _SETTINGS_ICONS = {
+      "alerting-digest": "bell", "web-filter": "globe", "chat-ai": "message-square",
+      "logging": "monitor", "backup": "hard-drive", "updates": "download",
+      "discord-tickets": "life-buoy", "network-process": "network",
+      "operator-agent-auth": "key", "telemetry-limits": "activity",
+      "agent-distribution": "box",
+    };
+    function settingsGroupIcon(slug) { return _SETTINGS_ICONS[slug] || "sliders"; }
+
+    function settingsOperatorSections() {
+      // No .settings array: an operator can't reach /api/settings at all, so
+      // there is no row count to show — an empty array would misleadingly
+      // read as "Updates has 0 settings" instead of "not shown to you".
+      return [{ name: "Updates", slug: "updates" }];
+    }
+
+    function settingsGroupIsReadonly(g) {
+      const settings = g.settings || [];
+      return settings.length > 0 && settings.every(s => s.lifecycle === "env_only");
+    }
+
+    function settingsGroupMatches(g, q) {
+      return (g.settings || []).filter(s =>
+        s.label.toLowerCase().includes(q) || s.key.toLowerCase().includes(q) ||
+        (s.help || "").toLowerCase().includes(q));
+    }
+
+    function setSettingsPane(html) {
+      const pane = document.getElementById("kset-pane");
+      if (pane) pane.innerHTML = html;
+    }
+
     async function renderSettings() {
+      const nav = navToken;
       // The header metrics need fleet data in every tab; fetch it if missing.
       if (!state.fleet) {
         state.fleet = await getJSON("/api/fleet").catch(() => ({ agents: [] }));
       }
+      if (nav !== navToken) return;  // navigated away while this was loading
       renderHeaderRight(state.fleet, state.fleet.agents || []);
-      app.innerHTML = `<div class="kset"><div class="k-muted">loading…</div></div>`;
-      let data;
-      try {
-        data = await getJSON("/api/settings");
-      } catch (e) {
-        app.innerHTML = `<div class="kset"><div class="k-airec__err">could not load settings: ${esc(e.message)}</div></div>`;
-        return;
+
+      if (isSuperuser()) {
+        try {
+          settingsGroups = (await getJSON("/api/settings")).groups || [];
+        } catch (e) {
+          app.innerHTML = `<div class="k-airec__err">could not load settings: ${esc(e.message)}</div>`;
+          return;
+        }
+        if (nav !== navToken) return;
+      } else {
+        settingsGroups = settingsOperatorSections();
       }
-      const groups = data.groups || [];
-      app.innerHTML = `<div class="kset">
-        <div class="kset__intro k-muted">Settings resolve <b>custom override → environment → default</b>.
-          Editable settings apply immediately; read-only ones are managed via the environment.</div>
-        ${groups.map(settingsGroupHtml).join("")}
-        ${isSuperuser()
-          ? `<div class="k-panel kset__grp" id="discord-panel"><div class="k-detail-grp__lbl">Discord</div>
-               <div class="k-muted">loading…</div></div>`
-          : ""}
+      // A real navigation into Settings always shows fresh Backup/Updates
+      // data; a search-text toggle mid-section (below) reuses whatever is
+      // already cached instead of refetching on every keystroke.
+      backupState.data = null;
+      updatesState.data = null;
+
+      const active = settingsGroups.find(g => g.slug === state.settingsSection) || settingsGroups[0];
+      state.settingsSection = active.slug;
+      const wantHash = "#/settings/" + active.slug;
+      if (location.hash !== wantHash) history.replaceState(null, "", wantHash);
+
+      app.innerHTML = `<div class="kc-console no-copilot">
+        <div class="k-panel kc-fleet">
+          ${isSuperuser() ? `<div class="k-muted" style="font-size:var(--text-xs);margin-bottom:10px">
+            settings resolve <b>custom override → environment → default</b>; read-only ones are
+            managed via the environment</div>
+          <div class="k-audit__bar" style="margin-bottom:14px">
+            <span class="k-audit__search">${icon('search', 15)}
+              <input class="k-input" id="kset-search" placeholder="search settings…"
+                autocomplete="off" oninput="settingsSearchInput(this.value)" value="${esc(settingsQuery)}" />
+            </span>
+          </div>` : ""}
+          <div id="kset-navlist"></div>
+        </div>
+        <div class="ksetpane" id="kset-pane"></div>
       </div>`;
-      if (isSuperuser()) await renderDiscordPanel();
+      renderSettingsNavList();
+      await renderSettingsSection(active.slug);
+    }
+
+    function renderSettingsNavList() {
+      const host = document.getElementById("kset-navlist");
+      if (!host) return;
+      const q = settingsQuery.trim().toLowerCase();
+      const item = (g) => {
+        const count = q ? settingsGroupMatches(g, q).length : (g.settings || []).length;
+        const sub = !g.settings ? ""
+          : q ? `${count} match${count === 1 ? "" : "es"}` : `${count} setting${count === 1 ? "" : "s"}`;
+        return `<a class="kc-navitem${state.settingsSection === g.slug ? " is-active" : ""}" href="#/settings/${g.slug}">
+           ${icon(settingsGroupIcon(g.slug), 16)}
+           <span class="kc-agent__body">
+             <span class="kc-navitem__name">${esc(g.name)}</span>
+             <span class="kc-navitem__sub">${sub}</span>
+           </span></a>`;
+      };
+      const visible = q ? settingsGroups.filter(g => settingsGroupMatches(g, q).length) : settingsGroups;
+      const configurable = visible.filter(g => !settingsGroupIsReadonly(g));
+      const readonly = visible.filter(g => settingsGroupIsReadonly(g));
+      host.innerHTML =
+        `<div class="kc-section-lbl">configuration</div>
+         <div class="kc-fleet__list">${configurable.map(item).join("")
+            || `<div class="k-muted" style="font-size:var(--text-sm);padding:4px">no matches</div>`}</div>` +
+        (readonly.length
+          ? `<div class="kc-section-lbl" style="margin-top:14px">environment (read-only)</div>
+             <div class="kc-fleet__list">${readonly.map(item).join("")}</div>`
+          : "");
+    }
+
+    function settingsSearchInput(v) {
+      settingsQuery = v;
+      renderSettingsNavList();
+      if (settingsQuery.trim()) renderSettingsPaneFiltered();
+      else renderSettingsSection(state.settingsSection);
+    }
+
+    function renderSettingsPaneFiltered() {
+      const q = settingsQuery.trim().toLowerCase();
+      const matches = settingsGroups
+        .map(g => ({ name: g.name, slug: g.slug, settings: settingsGroupMatches(g, q) }))
+        .filter(g => g.settings.length);
+      setSettingsPane(matches.length
+        ? matches.map(settingsGroupHtml).join("")
+        : `<div class="k-panel"><div class="k-muted">no settings match “${esc(settingsQuery)}”.</div></div>`);
+    }
+
+    // Fills #kset-pane for one section. Backup/Updates/Discord & Tickets
+    // compose their existing page content with the matching catalog group
+    // (see backupSectionHtml/updatesSectionHtml/renderDiscordSection below);
+    // every other section is just its catalog group's panel.
+    async function renderSettingsSection(slug) {
+      if (slug === "backup" && isSuperuser()) { await renderBackup(); return; }
+      if (slug === "updates") { await renderUpdates(); return; }
+      if (slug === "discord-tickets" && isSuperuser()) { await renderDiscordSection(); return; }
+      const group = settingsGroups.find(g => g.slug === slug);
+      setSettingsPane(group ? settingsGroupHtml(group) : `<div class="k-muted">nothing here yet.</div>`);
+    }
+
+    // The single "something changed, redraw the current section with fresh
+    // everything" entry point: settingsSet()/settingsReset() call this after
+    // every write so a badge flip, a Backup/Updates catalog row, or the nav's
+    // match counts never show stale data — without it silently reusing the
+    // catalog snapshot from whenever the section was first opened.
+    async function refreshSettingsSection() {
+      if (isSuperuser()) {
+        try { settingsGroups = (await getJSON("/api/settings")).groups || []; }
+        catch (e) { /* keep the previous snapshot rather than blanking the page */ }
+      }
+      backupState.data = null;
+      updatesState.data = null;
+      renderSettingsNavList();
+      await renderSettingsSection(state.settingsSection);
+    }
+
+    // The "Discord & Tickets" section: its catalog group's panel, then the
+    // Discord identity panel below it (kept at id="discord-panel" — the
+    // discord-settings screenshot target selects on that id).
+    async function renderDiscordSection() {
+      const group = settingsGroups.find(g => g.slug === "discord-tickets");
+      setSettingsPane((group ? settingsGroupHtml(group) : "") +
+        `<div class="k-panel kset__grp" id="discord-panel"><div class="k-detail-grp__lbl">Discord</div>
+           <div class="k-muted">loading…</div></div>`);
+      await renderDiscordPanel();
     }
 
     // ====================================================================
@@ -2631,7 +2787,7 @@
           body: JSON.stringify({ value }),
         });
         notify("saved " + key, "ok");
-        await renderSettings();
+        await refreshSettingsSection();
       } catch (e) { notify("could not save: " + e.message, "err"); }
     }
     function settingsSetFromInput(key) {
@@ -2642,16 +2798,18 @@
       try {
         await getJSON("/api/settings/" + encodeURIComponent(key), { method: "DELETE" });
         notify("reset " + key, "ok");
-        await renderSettings();
+        await refreshSettingsSection();
       } catch (e) { notify("could not reset: " + e.message, "err"); }
     }
 
     // ====================================================================
-    // BACKUP TAB — DB snapshot list/create/verify/restore/delete + the
-    // operator-configured remote fan-out targets (http/scp/ftp). Superuser
-    // only (the API 403s lower roles anyway). The local `backups/` directory
-    // reported here is what an external sync tool (e.g. Syncthing) should
-    // watch instead of the live database file.
+    // BACKUP SECTION — DB snapshot list/create/verify/restore/delete + the
+    // operator-configured remote fan-out targets (http/scp/ftp), followed by
+    // the "Backup" catalog group (interval/retention live here now instead
+    // of in a duplicate pair of inline inputs — see backupSectionHtml).
+    // Superuser only (the API 403s lower roles anyway). The local `backups/`
+    // directory reported here is what an external sync tool (e.g. Syncthing)
+    // should watch instead of the live database file.
     // ====================================================================
     let backupState = { data: null, restoring: false, targetForm: null };
     let updatesState = { data: null };
@@ -2675,20 +2833,21 @@
     }
 
     async function renderBackup() {
-      if (!state.fleet) {
-        state.fleet = await getJSON("/api/fleet").catch(() => ({ agents: [] }));
-      }
-      renderHeaderRight(state.fleet, state.fleet.agents || []);
-      app.innerHTML = `<div class="kset"><div class="k-muted">loading…</div></div>`;
+      setSettingsPane(`<div class="k-muted">loading…</div>`);
       let data;
       try {
         data = await getJSON("/api/backups");
       } catch (e) {
-        app.innerHTML = `<div class="kset"><div class="k-airec__err">could not load backups: ${esc(e.message)}</div></div>`;
+        setSettingsPane(`<div class="k-airec__err">could not load backups: ${esc(e.message)}</div>`);
         return;
       }
       backupState.data = data;
-      app.innerHTML = backupPageHtml(data);
+      setSettingsPane(backupSectionHtml());
+    }
+
+    function backupSectionHtml() {
+      const group = settingsGroups.find(g => g.slug === "backup");
+      return backupPageHtml(backupState.data) + (group ? settingsGroupHtml(group) : "");
     }
 
     function backupPageHtml(data) {
@@ -2702,8 +2861,7 @@
              the database was replaced from a backup; the server process is
              restarting to apply it and should be back within a few seconds.
            </div>` : "";
-      return `<div class="kset">
-        ${restoringBanner}
+      return `${restoringBanner}
         <div class="k-panel kset__grp">
           <div class="k-detail-grp__lbl">status</div>
           <div class="k-deflist">
@@ -2720,25 +2878,10 @@
             Point your sync tool (e.g. Syncthing) at this directory instead of the
             live database file — it only ever holds finished, static snapshots, so
             syncing it never causes lock contention on the running server.
+            Backup interval and retention are set below, in the "Backup" group.
           </div>
-          <div class="k-row" style="gap:16px;margin-top:14px;flex-wrap:wrap">
-            <div class="kfield" style="margin-bottom:0">
-              <span class="kfield__lbl">backup interval (s)</span>
-              <div class="k-row" style="gap:6px">
-                <input class="k-input" id="bk-interval" style="width:110px" value="${esc(cfg.interval_secs ?? "")}"
-                  onkeydown="if(event.key==='Enter')backupSaveSetting('KENNY_BACKUP_INTERVAL_SECS','bk-interval')"/>
-                <button class="k-btn k-btn--sm" onclick="backupSaveSetting('KENNY_BACKUP_INTERVAL_SECS','bk-interval')">save</button>
-              </div>
-            </div>
-            <div class="kfield" style="margin-bottom:0">
-              <span class="kfield__lbl">retention (count)</span>
-              <div class="k-row" style="gap:6px">
-                <input class="k-input" id="bk-retention" style="width:90px" value="${esc(cfg.retention ?? "")}"
-                  onkeydown="if(event.key==='Enter')backupSaveSetting('KENNY_BACKUP_RETENTION','bk-retention')"/>
-                <button class="k-btn k-btn--sm" onclick="backupSaveSetting('KENNY_BACKUP_RETENTION','bk-retention')">save</button>
-              </div>
-            </div>
-            <button class="k-btn k-btn--primary" style="align-self:flex-end" onclick="backupNow()" ${backupState.restoring ? "disabled" : ""}>${icon('hard-drive', 14)}Backup now</button>
+          <div class="k-row" style="margin-top:14px">
+            <button class="k-btn k-btn--primary" onclick="backupNow()" ${backupState.restoring ? "disabled" : ""}>${icon('hard-drive', 14)}Backup now</button>
           </div>
         </div>
 
@@ -2750,28 +2893,7 @@
         <div class="k-panel kset__grp">
           <div class="k-detail-grp__lbl">backups</div>
           ${backupTableHtml(backups)}
-        </div>
-      </div>`;
-    }
-
-    async function backupSaveSetting(key, inputId) {
-      const el = document.getElementById(inputId);
-      if (!el) return;
-      await settingsApiSet(key, el.value);
-    }
-    // A thin local twin of settingsSet() that posts the same /api/settings/{key}
-    // write but re-renders the Backup page afterward instead of the Settings
-    // page — settingsSet() itself always re-renders renderSettings(), which
-    // would otherwise swap the visible tab out from under the operator.
-    async function settingsApiSet(key, value) {
-      try {
-        await getJSON("/api/settings/" + encodeURIComponent(key), {
-          method: "PUT", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ value }),
-        });
-        notify("saved " + key, "ok");
-        await renderBackup();
-      } catch (e) { notify("could not save: " + e.message, "err"); }
+        </div>`;
     }
 
     async function backupNow() {
@@ -2812,21 +2934,21 @@
 
     function backupTargetAddForm() {
       backupState.targetForm = { mode: "add", kind: "http", id: null, label: "", config: {} };
-      app.innerHTML = backupPageHtml(backupState.data);
+      setSettingsPane(backupSectionHtml());
     }
     function backupTargetEditForm(id) {
       const t = (backupState.data.targets || []).find(x => x.id === id);
       if (!t) return;
       backupState.targetForm = { mode: "edit", kind: t.kind, id: t.id, label: t.label, config: t.config || {} };
-      app.innerHTML = backupPageHtml(backupState.data);
+      setSettingsPane(backupSectionHtml());
     }
     function backupTargetFormCancel() {
       backupState.targetForm = null;
-      app.innerHTML = backupPageHtml(backupState.data);
+      setSettingsPane(backupSectionHtml());
     }
     function backupTargetFormKindChanged(kind) {
       backupState.targetForm.kind = kind;
-      app.innerHTML = backupPageHtml(backupState.data);
+      setSettingsPane(backupSectionHtml());
     }
 
     function backupTargetFieldsHtml(kind, c) {
@@ -3012,7 +3134,7 @@
         await api("/api/backups/" + encodeURIComponent(name) + "/restore", "POST", { source: "local" });
         backupState.restoring = true;
         notify("restore staged — server is restarting…", "ok");
-        app.innerHTML = backupPageHtml(backupState.data);
+        setSettingsPane(backupSectionHtml());
       } catch (e) { notify("restore failed: " + e.message, "err"); }
     }
 
@@ -3023,20 +3145,23 @@
     // one snapshots an exact version, so a later detection pass finding something
     // newer never changes what an already-approved campaign pushes.
     async function renderUpdates() {
-      if (!state.fleet) {
-        state.fleet = await getJSON("/api/fleet").catch(() => ({ agents: [] }));
-      }
-      renderHeaderRight(state.fleet, state.fleet.agents || []);
-      app.innerHTML = `<div class="kset"><div class="k-muted">loading…</div></div>`;
+      setSettingsPane(`<div class="k-muted">loading…</div>`);
       let data;
       try {
         data = await getJSON("/api/updates");
       } catch (e) {
-        app.innerHTML = `<div class="kset"><div class="k-airec__err">could not load updates: ${esc(e.message)}</div></div>`;
+        setSettingsPane(`<div class="k-airec__err">could not load updates: ${esc(e.message)}</div>`);
         return;
       }
       updatesState.data = data;
-      app.innerHTML = updatesPageHtml(data);
+      setSettingsPane(updatesSectionHtml());
+    }
+
+    function updatesSectionHtml() {
+      // Updates is operator+ (ADR-0044) but the catalog is superuser-only, so
+      // an operator sees this page with no catalog panel appended.
+      const group = isSuperuser() ? settingsGroups.find(g => g.slug === "updates") : null;
+      return updatesPageHtml(updatesState.data) + (group ? settingsGroupHtml(group) : "");
     }
 
     function updatesPageHtml(data) {
@@ -3080,21 +3205,13 @@
           <div class="k-deflist__k">latest dev</div>
           <div class="k-deflist__v">${agentAvailDev.version ? esc(agentAvailDev.version) : "—"}
             ${agentAvailDev.checked_at ? `<span class="k-muted"> · checked ${esc(relTime(agentAvailDev.checked_at))}</span>` : ""}</div>
+          <div class="k-deflist__k">auto-apply on connect</div>
+          <div class="k-deflist__v">${cfg.rollout_on_connect ? "on" : "off"}</div>
         </div>
-        <div class="k-row" style="gap:16px;margin-top:14px;flex-wrap:wrap;align-items:flex-end">
-          <div class="kfield" style="margin-bottom:0">
-            <span class="kfield__lbl">check interval (s)</span>
-            <div class="k-row" style="gap:6px">
-              <input class="k-input" id="upd-interval" style="width:110px" value="${esc(cfg.check_interval_secs ?? "")}"
-                onkeydown="if(event.key==='Enter')updatesSaveSetting('KENNY_UPDATE_CHECK_INTERVAL_SECS','upd-interval')"/>
-              <button class="k-btn k-btn--sm" onclick="updatesSaveSetting('KENNY_UPDATE_CHECK_INTERVAL_SECS','upd-interval')">save</button>
-            </div>
-          </div>
-          <label class="kwf-tog">
-            <input type="checkbox" id="upd-on-connect" ${cfg.rollout_on_connect ? "checked" : ""}
-              onchange="updatesSaveSetting('KENNY_AGENT_ROLLOUT_ON_CONNECT','upd-on-connect',true)"/>
-            <span>auto-apply the approved campaign as agents connect</span>
-          </label>
+        ${isSuperuser() ? `<div class="k-muted" style="margin-top:8px">
+          Check interval and auto-apply-on-connect are set below, in the "Updates" group.
+        </div>` : ""}
+        <div class="k-row" style="margin-top:14px">
           <button class="k-btn k-btn--ghost k-btn--sm" onclick="updatesCheckNow()">${icon('refresh-cw', 13)}check now</button>
         </div>
       </div>`;
@@ -3112,7 +3229,7 @@
         ${campaignHtml(data.active_campaign_dev, agentAvailDev, data.agents_dev || [], "dev")}
       </div>`;
 
-      return `<div class="kset">${serverCard}${agentCard}${campaignCard}${campaignCardDev}</div>`;
+      return `${serverCard}${agentCard}${campaignCard}${campaignCardDev}`;
     }
 
     function campaignHtml(campaign, agentAvail, agents, channel) {
@@ -3186,20 +3303,6 @@
         notify(`${agentId}: desired channel set to ${channel}`, "ok");
         await renderUpdates();
       } catch (e) { notify("could not set channel: " + e.message, "err"); }
-    }
-
-    async function updatesSaveSetting(key, inputId, isCheckbox) {
-      const el = document.getElementById(inputId);
-      if (!el) return;
-      const value = isCheckbox ? (el.checked ? "1" : "0") : el.value;
-      try {
-        await getJSON("/api/settings/" + encodeURIComponent(key), {
-          method: "PUT", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ value }),
-        });
-        notify("saved " + key, "ok");
-        await renderUpdates();
-      } catch (e) { notify("could not save: " + e.message, "err"); }
     }
 
     async function updatesCheckNow() {
@@ -3330,18 +3433,16 @@
       if (open) { open.remove(); return; }
       const admin = isSuperuser()
         ? `<button class="kc-usermenu__item" onclick="closeUserMenu();openUsersModal()">${icon('users', 16)}Users</button>` : "";
-      // Settings mutate server-wide runtime config — superuser only (the API
-      // 403s lower roles anyway). The link drives the same #/settings route.
+      // Settings mutates server-wide runtime config — superuser only (the API
+      // 403s lower roles anyway). It now covers Backup and Updates too (one
+      // sidebar, #/settings/{slug}), so this is the only entry point here.
       const settings = isSuperuser()
         ? `<a class="kc-usermenu__item" href="#/settings" onclick="closeUserMenu()">${icon('sliders', 16)}Settings</a>` : "";
-      // Backup/restore mutates the live DB and carries secrets (remote target
-      // credentials) — superuser only, same gating as Settings.
-      const backupLink = isSuperuser()
-        ? `<a class="kc-usermenu__item" href="#/backup" onclick="closeUserMenu()">${icon('hard-drive', 16)}Backup</a>` : "";
-      // Updates approves/rolls out fleet software — operator+ (ADR-0044), same
-      // tier as policy/webfilter mutation, one step below Settings/Backup.
-      const updatesLink = canOperate()
-        ? `<a class="kc-usermenu__item" href="#/updates" onclick="closeUserMenu()">${icon('download', 16)}Updates</a>` : "";
+      // A superuser reaches Updates via Settings above; an operator (who
+      // cannot open Settings at all) still needs a way in — Updates
+      // approves/rolls out fleet software, operator+ (ADR-0044).
+      const updatesLink = (canOperate() && !isSuperuser())
+        ? `<a class="kc-usermenu__item" href="#/settings/updates" onclick="closeUserMenu()">${icon('download', 16)}Updates</a>` : "";
       const menu = document.createElement("div");
       menu.className = "kc-usermenu";
       menu.setAttribute("role", "menu");
@@ -3353,7 +3454,6 @@
         // theme it switches to.
         `<button class="kc-usermenu__item" id="theme-menu-item" onclick="toggleTheme()">${themeMenuItemInner(currentTheme())}</button>` +
         settings +
-        backupLink +
         updatesLink +
         `<button class="kc-usermenu__item" onclick="closeUserMenu();openAboutModal()">${icon('info', 16)}About</button>` +
         `<a class="kc-usermenu__item" href="${esc(docsUrl())}" target="_blank" rel="noopener">${icon('book-open', 16)}Documentation</a>` +
