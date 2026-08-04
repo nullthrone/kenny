@@ -45,7 +45,7 @@ __all__ = [
     "to_iso",
 ]
 
-# How long a ``/kenny link`` claim stays confirmable in the dashboard.
+# How long a ``/link`` claim stays confirmable in the dashboard.
 DEFAULT_CLAIM_TTL_SECS = 900
 
 # Claim codes are typed/read by a human out of an ephemeral Discord reply, so
@@ -156,7 +156,7 @@ class DiscordIdentity:
 
 @dataclass(slots=True)
 class DiscordLinkClaim:
-    """A pending ``/kenny link`` request, waiting for an operator to confirm it."""
+    """A pending ``/link`` request, waiting for an operator to confirm it."""
 
     code: str
     discord_user_id: str

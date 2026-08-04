@@ -201,7 +201,7 @@ class _StubDiscordService:
 async def test_discord_loop_registers_the_slash_commands_on_every_allowed_guild() -> None:
     """Reproduces the v2.0.1 gap: the gateway could register commands, the
     service could dispatch them, but nothing ever called the former — so
-    ``/kenny …`` never appeared in Discord regardless of config. Pins the fix:
+    the slash commands never appeared in Discord regardless of config. Pins the fix:
     ``_discord_loop`` must register ``SLASH_COMMANDS`` for every guild in the
     allowlist right after the gateway connects, before it starts consuming
     events.

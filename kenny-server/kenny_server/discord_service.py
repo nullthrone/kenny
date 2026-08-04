@@ -154,7 +154,7 @@ _SYSTEM_PROMPT = (
     "suggest what would unblock it. Never work around a refusal.\n"
     "- You cannot resolve, close, cancel, or reassign this ticket yourself — there is "
     "no tool for it. If asked to, say so plainly and point at the real mechanism: "
-    "`/kenny close` or `/kenny cancel` (the requester can run these), or ask an "
+    "`/close` or `/cancel` (the requester can run these), or ask an "
     "operator to do it from the dashboard. Never say you closed, resolved, cancelled, "
     "or reassigned the ticket — you didn't, and you can't.\n"
     "- Screenshots, file contents, event-log text and browsing history must NOT "
@@ -1072,7 +1072,7 @@ class DiscordService:
         command's option syntax.
 
         Deliberately send-free: a bare mention answers this publicly in the
-        channel it was sent to, while `/kenny help-me` answers it as the
+        channel it was sent to, while `/help-me` answers it as the
         interaction's own ephemeral reply — the two callers decide that, this
         just does the parking and wording shared by both. ``request_id is
         None`` means the fleet does not fit on one message's buttons (see
@@ -1083,7 +1083,7 @@ class DiscordService:
         if not _picker_fits(candidates):
             fallback = (
                 f"You have several PCs ({listed}). Tell me which one with "
-                "`/kenny help-me` and pick the host there — I will not guess."
+                "`/help-me` and pick the host there — I will not guess."
             )
             return HostPrompt(prompt=fallback, request_id=None, hosts=candidates)
 
@@ -1840,8 +1840,6 @@ class DiscordService:
 
         await self.gateway.defer_interaction(interaction_id=event.interaction_id)
         command = (event.command or "").strip().lower()
-        if command.startswith("kenny "):
-            command = command[len("kenny ") :].strip()
         options = event.options or {}
         content: str | None
         if command == "link":
@@ -1874,13 +1872,13 @@ class DiscordService:
                 host=options.get("host"),
                 content=options.get("problem", ""),
             )
-        elif command in ("ticket close", "close"):
+        elif command == "close":
             content = await self.close_ticket(
                 discord_user_id=event.user_id,
                 guild_id=event.guild_id,
                 ticket_ref=options.get("ticket", ""),
             )
-        elif command in ("ticket cancel", "cancel"):
+        elif command == "cancel":
             content = await self.cancel_ticket(
                 discord_user_id=event.user_id,
                 guild_id=event.guild_id,
@@ -1902,7 +1900,7 @@ class DiscordService:
             return "kenny is not available in this server."
         existing = await self.identities.resolve(discord_user_id, guild_id)
         if existing is not None:
-            return "You are already linked to a kenny account. Use `/kenny whoami`."
+            return "You are already linked to a kenny account. Use `/whoami`."
         claim = await self.identities.open_claim(
             discord_user_id=discord_user_id,
             display_hint=display_hint or discord_user_id,
@@ -1921,7 +1919,7 @@ class DiscordService:
             return "kenny is not available in this server."
         principal = await self._principal_for(discord_user_id, guild_id)
         if principal is None:
-            return "You are not linked to a kenny account. Use `/kenny link` to ask."
+            return "You are not linked to a kenny account. Use `/link` to ask."
         hosts, candidates = await self._target_candidates(principal)
         profile = await self.users.get_capability_profile(principal.user_id or 0)
         allowed = allowed_tools_for(profile=profile, scoped=principal.scoped)

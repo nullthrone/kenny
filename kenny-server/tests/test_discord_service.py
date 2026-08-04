@@ -501,7 +501,7 @@ def test_system_prompt_forbids_claiming_ticket_lifecycle_actions() -> None:
     """
 
     assert "cannot resolve, close, cancel" in _SYSTEM_PROMPT
-    assert "/kenny close" in _SYSTEM_PROMPT
+    assert "/close" in _SYSTEM_PROMPT
 
 
 async def test_a_claimed_close_in_chat_does_not_change_ticket_state(world: World) -> None:
@@ -811,7 +811,7 @@ async def test_a_picker_answers_once(world: World) -> None:
 
 
 async def test_help_me_asks_with_the_same_picker(world: World) -> None:
-    """`/kenny help-me` used to answer "please say which PC" — the command the
+    """`/help-me` used to answer "please say which PC" — the command the
     caller had just run. It offers the choice instead — once, as this
     interaction's own ephemeral reply, with buttons and no public channel
     post (see `test_help_me_picker_is_ephemeral_and_sent_once` for the
@@ -836,7 +836,7 @@ async def test_help_me_asks_with_the_same_picker(world: World) -> None:
 
 
 async def test_help_me_picker_is_ephemeral_and_sent_once(world: World) -> None:
-    """Regression: `/kenny help-me` used to post the "which PC" prompt twice —
+    """Regression: `/help-me` used to post the "which PC" prompt twice —
     once as a public channel message with the buttons, once as an ephemeral
     text copy with none — and the public one leaked into the parent channel
     whenever the command was typed inside a private ticket thread.
@@ -1625,7 +1625,7 @@ async def test_status_and_close_are_owner_scoped(world: World) -> None:
 
 
 async def test_close_works_on_a_ticket_still_in_new(world: World) -> None:
-    """`/kenny close` used to fail on a ticket no turn has ever touched.
+    """`/close` used to fail on a ticket no turn has ever touched.
 
     ``close_ticket`` resolves-then-closes; that first step used to require
     ``in_progress`` or ``awaiting_user``, so a ticket sitting in ``new`` (no

@@ -629,7 +629,7 @@ def test_member_picker_links_and_unlinks_an_identity(tmp_path) -> None:
 
 
 def test_pending_claim_is_listed_and_confirmed_once(tmp_path) -> None:
-    """Enrollment path A: `/kenny link` opens a claim, an operator confirms it."""
+    """Enrollment path A: `/link` opens a claim, an operator confirms it."""
 
     async def seed(users: UserStore, _store: TicketStore, _svc: TicketService) -> dict:
         kid = await users.create_user("kid", "pw-123456", "user")

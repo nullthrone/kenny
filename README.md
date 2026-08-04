@@ -109,7 +109,7 @@ _The Overview dashboard — see the **[dashboard reference](docs/dashboard.md)**
   as before. Privacy-sensitive tools (screen, files, browsing history) additionally need the
   **affected person's own consent**, a separate axis from authorization.
 - A Discord account only ever reaches the PCs you assign it, via an explicit enrollment
-  mapping (self-service `/kenny link` + your confirmation, or you pick them from the guild
+  mapping (self-service `/link` + your confirmation, or you pick them from the guild
   member list directly) and an optional per-account **capability profile** that narrows
   which tools it may use. An alert can open a ticket too. See
   **[Tickets & the Discord bot](docs/itsm.md)**.

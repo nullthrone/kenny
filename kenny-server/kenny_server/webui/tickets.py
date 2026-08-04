@@ -296,8 +296,8 @@ def build_ticket_routes(
         enforces legality (``_check_transition``) and actor authority, so this
         covers resolve/reopen/cancel without duplicating that logic per action.
         ``and_close`` (only meaningful when ``to == "resolved"``) chains straight
-        into ``closed`` in the same call, mirroring what the Discord `/kenny
-        close` path already does for a requester — without removing the
+        into ``closed`` in the same call, mirroring what the Discord `/close`
+        path already does for a requester — without removing the
         separate, later "Close ticket" action, since the ``resolved`` dwell
         window (and the sweeper's auto-close) is the intended undo window.
         """
@@ -498,7 +498,7 @@ def build_ticket_routes(
         return JSONResponse({"claims": [c.as_dict() for c in claims]})
 
     async def api_discord_claim_confirm(request: Request) -> JSONResponse:
-        """Enrollment path A: an operator confirms a ``/kenny link`` claim code.
+        """Enrollment path A: an operator confirms a ``/link`` claim code.
 
         The claim carries the snowflake and the guild; the operator supplies the
         kenny account it maps to. A code that is unknown, expired or already
