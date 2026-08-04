@@ -412,20 +412,6 @@ filter** narrows to one lifecycle state; **New ticket** opens one directly from 
 dashboard (title + optional details), which lands exactly like a Discord-opened one except
 it has no thread attached.
 
-### Auto-ticket rules (operator+)
-
-Below the ticket list, an **auto-ticket rules** panel (operator+ only — see
-[ADR-0053](adr/0053-operator-configurable-auto-ticket-rules.md)) lists the operator's
-exceptions to the default alert-ticket policy: by default every genuine alert opens a
-ticket and nothing else does, and each rule here either narrows that (`never` on a noisy
-offline PC) or widens it (`open_all` on an inventory change, e.g. a new local admin
-account). A rule names an event type, an optional section and host, and a decision
-(`open` / `open if crit` / `never`); rules are most-specific-wins, so a host-scoped rule
-beats a fleet-wide one. Removing a fleet-wide rule asks for confirmation, since it changes
-behaviour on every PC. See [Alerting → which events open a ticket is
-configurable](alerting.md#which-events-open-a-ticket-is-configurable-adr-0053) for the full
-model.
-
 ### Ticket detail
 
 <figure markdown>
@@ -517,22 +503,23 @@ by version, or view the full list on GitHub).
 ## The Settings page
 
 *([`#/settings/{section}`](#the-shell-header-global-controls) — superuser sees every
-section, an operator only [Updates](#updates))*
+section, an operator only [Updates](#updates) and [Auto-ticket rules](#auto-ticket-rules))*
 
 <figure markdown>
   ![The Settings page, showing the sidebar and the Alerting & Digest section.](assets/screenshots/settings.png)
-  <figcaption>The Settings sidebar: catalog sections split into configurable and read-only (environment), plus Backup, Updates, and Discord & Tickets.</figcaption>
+  <figcaption>The Settings sidebar: catalog sections split into configurable and read-only (environment), plus Backup, Updates, Discord & Tickets, and Auto-ticket rules.</figcaption>
 </figure>
 
 A left sidebar picks one section at a time instead of one long scroll. The sidebar has two
 blocks — **configuration** (every group with at least one editable setting: Alerting &
-Digest, Web filter, Chat & AI, Logging, Backup, Updates, Discord & Tickets) and
-**environment, read-only** (Network & Process, Operator & Agent Auth, Telemetry limits,
-Agent distribution — process-bind values, wire-contract knobs, and secrets, none of them
-writable from here) — grouped exactly as `config.py`'s catalog. A **search** box above the
-sidebar filters by label, key, or help text across every section at once, so `#/settings`
-still doubles as the one place to Ctrl-F the whole runtime configuration even though only
-one section renders at a time.
+Digest, Web filter, Chat & AI, Logging, Backup, Updates, Discord & Tickets, plus
+[Auto-ticket rules](#auto-ticket-rules) — which has no settings-catalog group at all, but
+lives in this same block) and **environment, read-only** (Network & Process, Operator &
+Agent Auth, Telemetry limits, Agent distribution — process-bind values, wire-contract
+knobs, and secrets, none of them writable from here) — grouped exactly as `config.py`'s
+catalog. A **search** box above the sidebar filters by label, key, or help text across
+every section at once, so `#/settings` still doubles as the one place to Ctrl-F the whole
+runtime configuration even though only one section renders at a time.
 
 Within a section, every setting resolves **custom override → environment → coded
 default**. Each row shows its label, a badge for where its current value came from
@@ -585,8 +572,9 @@ for the full rationale.
 
 ### Updates
 
-*(operator+ — the only section an operator's sidebar shows; the catalog group at the
-bottom is superuser only, so an operator sees this section without it)*
+*(operator+ — one of the two sections an operator's sidebar shows (the other is
+[Auto-ticket rules](#auto-ticket-rules)); the catalog group at the bottom is superuser
+only, so an operator sees this section without it)*
 
 kenny checks for newer agent releases (GitHub Releases) and a newer server image (GHCR,
 read-only) on a schedule and shows both here — see
@@ -645,6 +633,23 @@ picker from the server's member list). See [Enrollment: linking a Discord
 account](itsm.md#enrollment-linking-a-discord-account) for what each path means and why the
 mapping matters. On a server with no Discord identity store configured, the panel says so
 instead of erroring.
+
+### Auto-ticket rules
+
+*(operator+ — like Updates, this section has no settings-catalog group behind it, so it's
+the same for every operator+ role)*
+
+Which alerts open a ticket automatically is operator policy, not a fixed rule — see
+[ADR-0053](adr/0053-operator-configurable-auto-ticket-rules.md) and [Alerting → which
+events open a ticket is
+configurable](alerting.md#which-events-open-a-ticket-is-configurable-adr-0053) for the full
+model. This section lists the operator's exceptions to the default: by default every
+genuine alert opens a ticket and nothing else does, and each rule here either narrows that
+(`never` on a noisy offline PC) or widens it (`open_all` on an inventory change, e.g. a new
+local admin account). A rule names an event type, an optional section and host, and a
+decision (`open` / `open if crit` / `never`); rules are most-specific-wins, so a
+host-scoped rule beats a fleet-wide one. Removing a fleet-wide rule asks for confirmation,
+since it changes behaviour on every PC.
 
 ---
 
