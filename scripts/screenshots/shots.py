@@ -271,7 +271,14 @@ MANIFEST: list[Shot] = [
         name="tickets",
         hash="#/tickets",
         mode="full_page",
-        actions=[{"wait_for": "table.kacc-tbl tbody tr"}, {"sleep": 300}],
+        # Check the first row so the bulk-action bar (state picker + Apply,
+        # operator+ only) renders in the figure alongside the list itself.
+        actions=[
+            {"wait_for": "table.kacc-tbl tbody tr"},
+            {"eval": "document.querySelector('table.kacc-tbl tbody tr td input[type=checkbox]').click()"},
+            {"wait_for": "#tk-bulk-bar"},
+            {"sleep": 300},
+        ],
     ),
     Shot(
         name="ticket-detail",

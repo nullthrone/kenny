@@ -402,8 +402,8 @@ user-facing view.
 ### Ticket list
 
 <figure markdown>
-  ![The Tickets list, filterable by state.](assets/screenshots/tickets.png)
-  <figcaption>The Tickets list: number, title, state, requester, target PC and age, filterable by state.</figcaption>
+  ![The Tickets list, filterable by state and with a row selected for a bulk state change.](assets/screenshots/tickets.png)
+  <figcaption>The Tickets list: number, title, state, requester, target PC and age, filterable by state; operator+ also gets a selection checkbox per row for bulk state changes.</figcaption>
 </figure>
 
 One row per ticket — number, title, a **state pill**, the requester (or "alert" for a
@@ -411,6 +411,15 @@ ticket with no owner), the target PC, and its age — sorted newest-first. The *
 filter** narrows to one lifecycle state; **New ticket** opens one directly from the
 dashboard (title + optional details), which lands exactly like a Discord-opened one except
 it has no thread attached.
+
+For an operator+, each row carries a **selection checkbox** (plus a "select all" in the
+header, scoped to whatever the state filter currently shows). Selecting one or more
+tickets opens a **bulk-action bar** above the table: pick a target state and **Apply** to
+drive every selected ticket through the same [`/transition`](itsm.md) call the single-ticket
+actions use. A ticket for which that transition isn't legal from its current state (see the
+lifecycle in [Tickets & the Discord bot](itsm.md)) is skipped rather than failing the whole
+batch, and the result ("N updated, M failed") shows as a toast. `new` never appears as a
+bulk target — no transition ever lands on it.
 
 ### Ticket detail
 

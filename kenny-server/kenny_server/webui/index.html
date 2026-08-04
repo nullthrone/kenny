@@ -182,6 +182,7 @@
     .k-btn { display: inline-flex; align-items: center; gap: 7px; cursor: pointer;
       font-family: var(--font-sans); font-size: var(--text-sm); font-weight: var(--weight-bold);
       padding: 8px 14px; border-radius: var(--radius-sm); border: var(--border-width) solid transparent;
+      white-space: nowrap; flex-shrink: 0;
       transition: background var(--dur) var(--ease), transform var(--dur-fast) var(--ease),
         border-color var(--dur) var(--ease), color var(--dur) var(--ease); }
     .k-btn svg { width: 15px; height: 15px; }
@@ -1955,6 +1956,9 @@
       return "k-pill--muted"; // new, triage
     }
     function ticketStateLabel(s) { return String(s || "").replace(/_/g, " "); }
+    // Target states a transition can legally land on — "new" is only ever a
+    // starting state, so it is left out of the bulk-action picker.
+    const TICKET_BULK_TARGET_STATES = TICKET_STATES.filter(s => s !== "new");
 
     async function renderTickets() {
       const nav = navToken;
@@ -1970,15 +1974,34 @@
         return;
       }
       state.tickets = data.tickets || [];
+      state.ticketsSelected = new Set();
       if (nav !== navToken) return;  // navigated away while this was loading
       app.innerHTML = ticketsPageHtml();
     }
+    function ticketsVisible() {
+      const filter = state.ticketsStateFilter || "";
+      return filter ? state.tickets.filter(t => t.state === filter) : state.tickets;
+    }
     function ticketsPageHtml() {
       const filter = state.ticketsStateFilter || "";
-      const rows = (filter ? state.tickets.filter(t => t.state === filter) : state.tickets)
-        .map(ticketRowHtml).join("");
+      const isOp = canOperate();
+      const sel = state.ticketsSelected || (state.ticketsSelected = new Set());
+      const visible = ticketsVisible();
+      const rows = visible.map(t => ticketRowHtml(t, isOp, sel.has(t.id))).join("");
+      const allChecked = isOp && visible.length > 0 && visible.every(t => sel.has(t.id));
       const options = `<option value="">all states</option>` + TICKET_STATES.map(s =>
         `<option value="${s}" ${s === filter ? "selected" : ""}>${esc(ticketStateLabel(s))}</option>`).join("");
+      const bulkStateOptions = TICKET_BULK_TARGET_STATES.map(s =>
+        `<option value="${s}">${esc(ticketStateLabel(s))}</option>`).join("");
+      const bulkBar = isOp && sel.size > 0 ? `<div class="k-row" id="tk-bulk-bar"
+          style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px;padding:8px 10px;background:var(--surface-raised);border-radius:var(--radius-sm)">
+          <span class="k-muted">${sel.size} ticket${sel.size === 1 ? "" : "s"} selected</span>
+          <div class="k-row" style="gap:8px">
+            <select class="k-input" id="tk-bulk-state">${bulkStateOptions}</select>
+            <button class="k-btn k-btn--primary k-btn--sm" onclick="applyBulkTicketState()">${icon('check', 13)}Apply</button>
+            <button class="k-btn k-btn--ghost k-btn--sm" onclick="clearTicketSelection()">Clear</button>
+          </div>
+        </div>` : "";
       return `<div class="ktk">
         <div class="k-panel">
           <div class="k-row" style="justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:10px">
@@ -1988,15 +2011,20 @@
               <button class="k-btn k-btn--primary k-btn--sm" onclick="openCreateTicketModal()">${icon('plus', 13)}New ticket</button>
             </div>
           </div>
+          ${bulkBar}
           <table class="kacc-tbl"><thead><tr>
+            ${isOp ? `<th style="width:26px"><input type="checkbox" id="tk-select-all"
+              ${allChecked ? "checked" : ""} onchange="toggleAllTickets(this.checked)"></th>` : ""}
             <th>#</th><th>Title</th><th>State</th><th>Requester</th><th>Agent</th><th>Age</th></tr></thead>
-            <tbody>${rows || `<tr><td colspan="6" class="kacc-empty">no tickets</td></tr>`}</tbody></table>
+            <tbody>${rows || `<tr><td colspan="${isOp ? 7 : 6}" class="kacc-empty">no tickets</td></tr>`}</tbody></table>
         </div>
       </div>`;
     }
     function openTicket(id) { location.hash = "#/tickets/" + id; }
-    function ticketRowHtml(t) {
+    function ticketRowHtml(t, isOp, checked) {
       return `<tr style="cursor:pointer" onclick="openTicket(${jsArg(t.id)})">
+        ${isOp ? `<td onclick="event.stopPropagation()"><input type="checkbox" ${checked ? "checked" : ""}
+          onchange="onTicketCheckChange(${jsArg(t.id)}, this.checked)"></td>` : ""}
         <td class="k-mono">#${t.number}</td>
         <td>${esc(t.title)}</td>
         <td><span class="k-pill ${ticketStateClass(t.state)}">${esc(ticketStateLabel(t.state))}</span></td>
@@ -2008,6 +2036,45 @@
     function onTicketsFilterChange(v) {
       state.ticketsStateFilter = v;
       app.innerHTML = ticketsPageHtml();
+    }
+    function toggleAllTickets(checked) {
+      const sel = state.ticketsSelected || (state.ticketsSelected = new Set());
+      ticketsVisible().forEach(t => checked ? sel.add(t.id) : sel.delete(t.id));
+      app.innerHTML = ticketsPageHtml();
+    }
+    function onTicketCheckChange(id, checked) {
+      const sel = state.ticketsSelected || (state.ticketsSelected = new Set());
+      if (checked) sel.add(id); else sel.delete(id);
+      app.innerHTML = ticketsPageHtml();
+    }
+    function clearTicketSelection() {
+      state.ticketsSelected = new Set();
+      app.innerHTML = ticketsPageHtml();
+    }
+    async function applyBulkTicketState() {
+      const sel = state.ticketsSelected || new Set();
+      if (!sel.size) return;
+      const to = document.getElementById("tk-bulk-state").value;
+      const ok = await confirmModal({
+        title: "Bulk update tickets", ico: "check",
+        body: `Set state to "${ticketStateLabel(to)}" for ${sel.size} ticket${sel.size === 1 ? "" : "s"}? ` +
+          `Tickets for which this is not a valid transition are skipped.`,
+        confirmLabel: "Apply", confirmClass: "k-btn--primary",
+      });
+      if (!ok) return;
+      const ids = [...sel];
+      let okCount = 0, failCount = 0;
+      for (const id of ids) {
+        try {
+          await api("/api/tickets/" + encodeURIComponent(id) + "/transition", "POST",
+            { to, reason: "bulk action from dashboard" });
+          okCount++;
+        } catch (e) { failCount++; }
+      }
+      state.ticketsSelected = new Set();
+      notify(failCount ? `${okCount} updated, ${failCount} failed` : `${okCount} ticket${okCount === 1 ? "" : "s"} updated`,
+        failCount ? "err" : "ok");
+      await renderTickets();
     }
 
     async function openCreateTicketModal() {
