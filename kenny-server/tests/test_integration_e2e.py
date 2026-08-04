@@ -56,6 +56,16 @@ _REGISTER_POLL_INTERVAL_S = 0.1
 _REGISTER_POLLS = 100  # ~10s for the real agent to dial in and register
 _REGISTER_BUDGET_S = _REGISTER_POLLS * _REGISTER_POLL_INTERVAL_S
 
+# Timeout for the very first tool call after registration (a bare "echo hi"
+# smoke test, before telemetry or the OS-specific assertions). On a Windows
+# release runner this is the *first* PowerShell process the freshly-built
+# release binary ever spawns, which observably hit real-time antivirus
+# scanning of the new .exe/child process and blew a 20s ceiling outright
+# (see the "Release (dev channel)" run that failed on this exact line).
+# Later PowerShell calls in `_assert_windows_tools` are not nearly this slow
+# once the runner is warm -- their aggregate budget below is ~7-9s/call.
+_SMOKE_CALL_TIMEOUT_S = 60 if sys.platform == "win32" else 20
+
 _TELEMETRY_POLL_INTERVAL_S = 0.2
 # Windows collectors spawn PowerShell/CIM and are far slower on a cold hosted
 # runner than the Linux sysinfo collectors, so they get a much longer window.
@@ -74,7 +84,9 @@ _TELEMETRY_BUDGET_S = _TELEMETRY_POLLS * _TELEMETRY_POLL_INTERVAL_S
 # that doesn't actually exceed the ini bound would be dead weight.
 _TOOLCALL_BUDGET_S = 180 if sys.platform == "win32" else 90
 
-_TEST_TIMEOUT_S = _REGISTER_BUDGET_S + _TELEMETRY_BUDGET_S + _TOOLCALL_BUDGET_S
+_TEST_TIMEOUT_S = (
+    _REGISTER_BUDGET_S + _SMOKE_CALL_TIMEOUT_S + _TELEMETRY_BUDGET_S + _TOOLCALL_BUDGET_S
+)
 
 
 def _agent_bin() -> Path | None:
@@ -164,14 +176,16 @@ async def test_real_agent_end_to_end(tmp_path) -> None:
                 if sys.platform == "win32":
                     res = await client.call_tool(
                         "powershell_exec",
-                        {"args": {"script": "echo hi", "timeout_s": 20, "agent_id": "dev"}},
+                        {"args": {"script": "echo hi", "timeout_s": _SMOKE_CALL_TIMEOUT_S,
+                                  "agent_id": "dev"}},
                     )
                 else:
                     # shell_exec is powershell_exec's OS-scoped mirror; the real
                     # agent runs it via `sh -c "echo hi"` on Linux.
                     res = await client.call_tool(
                         "shell_exec",
-                        {"args": {"command": "echo hi", "timeout_s": 20, "agent_id": "dev"}},
+                        {"args": {"command": "echo hi", "timeout_s": _SMOKE_CALL_TIMEOUT_S,
+                                  "agent_id": "dev"}},
                     )
                 assert res.data["exit_code"] == 0
                 assert "hi" in res.data["stdout"]
