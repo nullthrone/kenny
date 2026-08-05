@@ -129,7 +129,7 @@ which host it targets — the target PC stays exactly as frozen as it always was
   wait for an operator**, no matter who is asking or what PC it is on.
 
 This is a **property of the ticket's chat**, not of the tools themselves — and it is
-distinct from the dashboard's separate **copilot** chat (the operator-only assistant tab, not
+distinct from the dashboard's separate **Ask kenny** chat (the operator-only assistant rail, not
 tied to any one ticket), which still confirms *both* change tiers exactly as it always has.
 See [Tool reference § the confirm-gate](tools.md#three-tiers-and-who-enforces-what) for the
 surface-by-surface table, [ADR-0049](adr/0049-tiered-tool-classification.md) for why the
@@ -139,7 +139,7 @@ qualifies for the same autonomy Discord always had.
 
 When a step needs you, kenny posts an **approval card** — in the operator channel if you
 configured one, otherwise in the ticket's own thread — with the exact tool and arguments,
-and the header's **approvals badge** (a shield icon next to the copilot toggle, with a
+and the header's **approvals badge** (a shield icon next to the Ask kenny toggle, with a
 count) opens the same queue from anywhere in the dashboard. Approvals are **persistent**:
 they survive a server restart, and they expire after `KENNY_TICKET_APPROVAL_TTL_SECS`
 (default 24 h) — an expiry counts as a denial, and kenny tells the requester so. See
@@ -258,7 +258,7 @@ whichever surface(s) it went out on — carries its verbatim text in the trail, 
 a restart and a raw-transcript prune and reads back exactly as written. A message from a
 Discord thread still carries only a short summary, unchanged from before: the reasoning is
 that a dashboard message (or an operator's own note) is curated work you chose to put on the
-record, the same way an unbounded copilot chat history already is, while a family member's
+record, the same way an unbounded Ask kenny chat history already is, while a family member's
 side of a Discord conversation is not something kenny needs to keep verbatim to operate the
 system — kenny's own words are never a private conversation regardless of which door they
 went out, so they are always kept in full. See

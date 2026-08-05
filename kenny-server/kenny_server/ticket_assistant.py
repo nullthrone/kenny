@@ -37,13 +37,13 @@ import logging
 import re
 import time
 from collections import deque
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncIterator, Callable, Collection, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from . import security, urls
 from .auth import Principal
-from .ticketstore import Ticket, TicketApproval
+from .ticketstore import ASSISTANT_ACTOR, Ticket, TicketApproval
 from .tickets import TicketError, TicketService
 from .tool_classes import (
     NORMAL_CHANGE,
@@ -64,13 +64,16 @@ from .toolloop import (
     apply_confirmation,
     build_tool_schemas,
     drive_events,
+    stage_missing_tool_results,
 )
+from .toolloop import _tool_result_block
 from .tools import CAPABILITY_TOOLS
 from .userstore import UserStore
 
 __all__ = [
     "EXCLUDED_TOOLS",
     "FLEET_WIDE_TOOLS",
+    "ResumeStatus",
     "TicketAssistant",
     "TicketPolicy",
     "TicketSession",
@@ -107,6 +110,18 @@ _RATE_WINDOW_SECS = 3600.0
 #: still lives in ``ticket_runs`` — this only bounds what one SQLite row in the
 #: (never-pruned, per ADR-0050's amendment) trail holds.
 _MAX_TRAIL_TEXT_CHARS = 20_000
+
+#: Ceiling on an exception's ``str()`` carried on a failed-turn trail row (see
+#: :meth:`TicketAssistant.run_turn`). An exception repr is not curated prose
+#: like :data:`_MAX_TRAIL_TEXT_CHARS` bounds — this is just a sanity ceiling so
+#: a pathological ``__str__`` cannot blow up one trail row.
+_MAX_TRAIL_ERROR_CHARS = 500
+
+#: What :meth:`TicketAssistant.resume` ends in. ``"resumed"`` ran a real model
+#: turn; ``"degraded"`` closed the gate durably without one (no usable
+#: principal, or an exception while driving the turn); the rest are early-outs
+#: describing why there was nothing to resume.
+ResumeStatus = Literal["resumed", "degraded", "no_ticket", "no_decision", "no_session"]
 
 
 _SYSTEM_PROMPT = (
@@ -280,7 +295,7 @@ async def _principal_from_row(users: UserStore, row: Any, *, role: str | None = 
 class TicketSession:
     """One ticket's working state, shaped for :func:`toolloop.drive_events`.
 
-    Declares the same attribute names the dashboard's ``ChatSession`` does
+    Declares the same attribute names the dashboard's ``FleetSession`` does
     (``id``/``messages``/``agent_id``/``pending``/``_queue``/``_staged_results``)
     — duck typing, no shared base class — plus the authorization context the
     ticket policy needs. It is rebuilt from SQLite on every touch, so nothing
@@ -310,6 +325,10 @@ class TicketSession:
     # needs to reproduce Discord's "never leak a redacted payload" scrub.
     turn_blobs: list[str] = field(default_factory=list)
     turn_redacted_tools: list[str] = field(default_factory=list)
+    # tool_use ids ``session_for`` healed (staged an error tool_result for)
+    # while rebuilding this session — see :func:`toolloop.stage_missing_tool_results`.
+    # ``run_turn`` writes one trail row per id, then clears this list.
+    healed: list[str] = field(default_factory=list)
 
     def record_retarget(self, tool: str, claimed: str) -> None:
         self._retargets.append((tool, claimed))
@@ -413,7 +432,7 @@ class TicketPolicy:
             await self._service.store.append_event(
                 ticket_id=session.id,
                 kind="handoff",
-                actor="kenny",
+                actor=ASSISTANT_ACTOR,
                 tool=tool,
                 summary=f"discarded attempt to target {claimed}",
                 fields={
@@ -491,7 +510,7 @@ class TicketPolicy:
             await self._service.append_event(
                 session.id,
                 kind="tool_call",
-                actor="kenny",
+                actor=ASSISTANT_ACTOR,
                 summary=f"{tool} authorized autonomously as a standard change",
                 tool=tool,
                 tool_class=tier,
@@ -520,7 +539,7 @@ class TicketPolicy:
             kind=kind,
             agent_id=pending.agent_id,
             ttl_secs=self._ttl_secs,
-            actor="kenny",
+            actor=ASSISTANT_ACTOR,
         )
         blocked_on = "user" if kind == "user_consent" else "approval"
         try:
@@ -859,7 +878,13 @@ class TicketAssistant:
 
     # -- sessions ------------------------------------------------------------
 
-    async def session_for(self, ticket: Ticket | None, *, actor: Principal) -> TicketSession | None:
+    async def session_for(
+        self,
+        ticket: Ticket | None,
+        *,
+        actor: Principal,
+        spare_tool_use_ids: Collection[str] = (),
+    ) -> TicketSession | None:
         """Rebuild a ticket's session for the principal driving *this* turn.
 
         The authorization context is the acting principal's own — their
@@ -872,6 +897,19 @@ class TicketAssistant:
         driving this turn instead. For Discord this changes nothing — there,
         the acting principal is always the requester on every actionable
         message.
+
+        The persisted transcript is healed here too (see
+        :func:`toolloop.stage_missing_tool_results`): a trailing ``tool_use``
+        nothing ever answered would otherwise reject the next model call
+        outright. ``spare_tool_use_ids`` is a caller's explicit "leave this
+        one alone" set — :meth:`resume` uses it for the gate it is about to
+        answer itself. A gate the store still shows as open
+        (:meth:`~kenny_server.ticketstore.TicketStore.get_open_approval`) is
+        always spared too, whether or not the caller named it, so a ticket
+        currently waiting on a live decision is never healed out from under
+        itself. The healed ids are recorded on ``session.healed`` for
+        :meth:`run_turn` to write a trail row for — this method stays a pure
+        rebuild otherwise, with no trail writes of its own.
 
         Returns ``None`` when there is no ticket, or when the acting account
         cannot act (disabled, or — for the env-token superuser, which has no
@@ -926,6 +964,11 @@ class TicketAssistant:
         )
         session._queue = list(run.queue)
         session._staged_results = list(run.staged_results)
+        exempt = set(spare_tool_use_ids)
+        open_approval = await self.store.get_open_approval(ticket.id)
+        if open_approval is not None:
+            exempt.add(open_approval.tool_use_id)
+        session.healed = stage_missing_tool_results(session, exempt=exempt)
         return session
 
     async def _requester_principal(self, ticket: Ticket) -> Principal | None:
@@ -951,8 +994,18 @@ class TicketAssistant:
         single user message keeps the strict user/assistant alternation the
         Messages API expects. Only plain-text user messages are merged — a
         message carrying staged ``tool_result`` blocks is never touched.
+
+        A non-empty ``session._staged_results`` (a healed or otherwise staged
+        ``tool_result`` block, not yet folded into ``session.messages``) takes
+        priority over both: the text joins it as a plain ``text`` content
+        block instead of starting a new message, so it lands *after* the
+        staged result once the loop folds it in — never ahead of it, which
+        would leave the eventual ``tool_result`` orphaned mid-transcript.
         """
 
+        if session._staged_results:
+            session._staged_results.append({"type": "text", "text": text})
+            return
         last = session.messages[-1] if session.messages else None
         if last is not None and last.get("role") == "user" and isinstance(last.get("content"), str):
             last["content"] = f"{last['content']}\n{text}"
@@ -975,6 +1028,31 @@ class TicketAssistant:
             turns=session.turns,
         )
 
+    async def _ensure_in_progress(self, ticket: Ticket) -> Ticket:
+        """Move a fresh ticket into ``in_progress`` before any turn touches it.
+
+        ``TicketService.block()`` refuses outright unless the ticket is
+        already ``in_progress`` (``tickets.py``'s own chokepoint discipline —
+        ``blocked_on`` is meaningful only then). Every call that blocks a
+        ticket (the turn cap, the ordinary end-of-turn hold, and
+        ``TicketPolicy.on_hold``'s approval gate) goes through that method, so
+        a ticket opened straight into ``new`` — an alert, with no requester to
+        ever send an actionable message that would otherwise trigger this via
+        Discord's own transition — would never pick up a ``blocked_on`` value
+        at all without this. Called once, at the top of :meth:`run_turn`, so
+        every caller benefits regardless of which of the three holds fires;
+        the degraded path of :meth:`resume` calls it too, for the same reason.
+
+        A no-op past ``new``; the refusal (already possible, e.g. a race with
+        another transition) is swallowed the same way :meth:`_transition`
+        always has — this never blocks a turn from proceeding.
+        """
+
+        if ticket.state != "new":
+            return ticket
+        await self._transition(ticket.id, "in_progress", actor="system", reason="work started")
+        return await self.store.get(ticket.id) or ticket
+
     async def _transition(
         self, ticket_id: str, to_state: str, *, actor: str, reason: str = ""
     ) -> None:
@@ -991,7 +1069,12 @@ class TicketAssistant:
         try:
             await self.tickets.block(ticket_id, blocked_on, actor=actor, reason=reason, ref=ref)
         except TicketError:
-            logger.info(
+            # A refusal here is not routine: it means a gate/turn-cap/end-of-turn
+            # hold silently failed to mark the ticket blocked (this was the root
+            # cause of the alert-origin-ticket wedge fixed by ``_ensure_in_progress``
+            # — see the module docstring). Worth an operator's attention at WARNING,
+            # not buried at INFO.
+            logger.warning(
                 "ticket %s: %s blocking on %s refused",
                 ticket_id,
                 actor,
@@ -1081,7 +1164,7 @@ class TicketAssistant:
             await self.tickets.append_event(
                 ticket.id,
                 kind="tool_call",
-                actor="kenny",
+                actor=ASSISTANT_ACTOR,
                 summary=(
                     f"{tool} failed: {error.get('code', 'error')}"
                     if error
@@ -1098,7 +1181,7 @@ class TicketAssistant:
             await self.tickets.append_event(
                 ticket.id,
                 kind="error",
-                actor="kenny",
+                actor=ASSISTANT_ACTOR,
                 summary=f"{event.get('tool')} was refused: {code}",
                 tool=str(event.get("tool", "")),
                 tool_class=classify(str(event.get("tool", ""))),
@@ -1138,6 +1221,33 @@ class TicketAssistant:
 
         if ticket is None:  # pragma: no cover - callers pass a live ticket
             return
+        ticket = await self._ensure_in_progress(ticket)
+
+        if session.healed:
+            # One trail row per tool_use ``session_for`` had to answer on this
+            # session's behalf — named from the trailing assistant message,
+            # which is still intact (the healer never touches ``messages``).
+            tool_names: dict[str, str] = {}
+            if session.messages:
+                last_message = session.messages[-1]
+                if last_message.get("role") == "assistant" and isinstance(
+                    last_message.get("content"), list
+                ):
+                    tool_names = {
+                        b.get("id"): b.get("name")
+                        for b in last_message["content"]
+                        if isinstance(b, dict) and b.get("type") == "tool_use"
+                    }
+            for tool_use_id in session.healed:
+                tool_name = tool_names.get(tool_use_id) or "a tool"
+                await self.tickets.append_event(
+                    ticket.id,
+                    kind="note",
+                    actor="system",
+                    summary=f"an earlier {tool_name} call was never completed",
+                )
+            session.healed = []
+
         operator_driven = session.principal.at_least("operator")
         if count_turn and not operator_driven:
             if session.turns >= self.max_turns_per_ticket:
@@ -1181,12 +1291,22 @@ class TicketAssistant:
             ):
                 await self._absorb(event, state, ticket)
                 yield event
-        except Exception:  # noqa: BLE001 - report, persist, do not lose the ticket
+        except Exception as exc:  # noqa: BLE001 - report, persist, do not lose the ticket
             logger.exception("ticket %s: turn failed", ticket.id)
             await self.tickets.append_event(
-                ticket.id, kind="error", actor="kenny", summary="the assistant turn failed"
+                ticket.id,
+                kind="error",
+                actor=ASSISTANT_ACTOR,
+                summary="the assistant turn failed",
+                fields={
+                    "error": {
+                        "code": type(exc).__name__,
+                        "message": str(exc)[:_MAX_TRAIL_ERROR_CHARS],
+                    }
+                },
             )
-            await self._save_run(session)
+            # The ``finally`` below already persists the run; a second save
+            # here would be redundant (and was the double-save this replaced).
             text = "Something went wrong on my side. An operator has been notified."
             for surface in surfaces:
                 await surface.deliver_reply(ticket, session, text)
@@ -1200,7 +1320,7 @@ class TicketAssistant:
         if state.text:
             await self.append_message(
                 ticket,
-                actor="kenny",
+                actor=ASSISTANT_ACTOR,
                 text=state.text,
                 actionable=False,
                 surface=self._surface_label(surfaces),
@@ -1230,84 +1350,207 @@ class TicketAssistant:
                 return approval
         return None
 
+    async def _resume_degraded(self, ticket: Ticket, approval: TicketApproval) -> ResumeStatus:
+        """Close a decided gate durably without a model turn.
+
+        Reached when neither the requester nor a passed-in operator can stand
+        in as the turn's authorization context — most commonly an alert-origin
+        ticket (no requester at all) decided from the header badge with no
+        ``decided_by``, or by the sweeper, which structurally has no decider.
+        There is deliberately no fallback beyond this: running a model turn
+        under nobody's authorization would be worse than not running it.
+
+        Stages an error ``tool_result`` for the held call directly into the
+        persisted run (never through :meth:`session_for`/:meth:`run_turn` —
+        there is no session to build), saves it, ensures the ticket is
+        ``in_progress`` (so the block below is legal), unblocks the decided
+        gate and re-blocks on ``"operator"`` so a human picks it up, and
+        records one explanatory trail row.
+        """
+
+        approved = approval.status == "approved"
+        if approved:
+            code = "not_carried_out"
+            message = (
+                f"{approval.tool} was approved but could not be run: no requester "
+                "or operator context was available to carry it out. Nothing was "
+                "changed on the machine."
+            )
+        elif approval.status == "expired":
+            code = "expired"
+            message = "this request expired before it was decided"
+        else:
+            code = "denied"
+            message = "operator denied this action"
+
+        run = await self.store.load_run(ticket.id)
+        staged = list(run.staged_results)
+        staged.append(
+            _tool_result_block(
+                approval.tool_use_id,
+                {"error": {"code": code, "message": message}},
+                is_error=True,
+            )
+        )
+        await self.store.save_run(ticket.id, staged_results=staged)
+
+        ticket = await self._ensure_in_progress(ticket)
+        await self._unblock(ticket.id, actor="system", reason="gate decided")
+        await self._block(
+            ticket.id,
+            "operator",
+            actor="system",
+            reason="the decision could not be continued automatically",
+        )
+        await self.tickets.append_event(
+            ticket.id,
+            kind="error",
+            actor="system",
+            summary="could not continue this ticket automatically after its gate was decided",
+            fields={
+                "error": {
+                    "code": "no_principal",
+                    "message": (
+                        "no requester or operator context was available to "
+                        "continue this ticket after its gate was decided"
+                    ),
+                },
+                "approval_id": approval.id,
+            },
+        )
+        return "degraded"
+
     async def resume(
         self,
         ticket_id: str,
         *,
         approval: TicketApproval | None = None,
+        decided_by: Principal | None = None,
         surfaces: Sequence[TicketSurface] = (),
         model_override: str | None = None,
-    ) -> None:
+    ) -> ResumeStatus:
         """Continue a ticket after its open gate was decided.
 
         Rebuilds the session from SQLite — transcript, queue, staged results,
         turn count and the frozen call from ``ticket_approvals`` — so this works
-        in a process that never saw the turn that opened the gate. The session's
-        authorization context is always the ticket's requester (see
-        :meth:`_requester_principal`): resuming continues the requester's own
-        turn, whoever happened to click the button.
+        in a process that never saw the turn that opened the gate.
 
-        The two gate kinds resume differently on purpose. An approved
-        **operator approval** executes exactly the call that was held, with the
-        arguments and target frozen at hold time. A granted **consent** is not an
-        execution order: the call is put back at the head of the queue and
-        re-enters the gate, so a tool that also needs an operator still gets one.
+        The session's authorization context, in order:
+
+        1. The ticket's own requester (see :meth:`_requester_principal`) —
+           resuming continues the requester's own turn, whoever happened to
+           click the button. Unchanged, and the only branch Discord's
+           ``user_consent`` gates ever reach (``decide_approval`` already
+           requires the requester to grant those).
+        2. ``decided_by``, but *only* if it is at least an operator — reached
+           only when the ticket has no requester at all (or that account is
+           gone). A non-operator third party must never become the turn's
+           authorization context: :meth:`session_for`'s non-requester branch
+           adopts the acting principal's role/scope/profile wholesale, so a
+           scoped ``user`` who isn't the requester would silently re-scope the
+           rest of the turn.
+        3. Neither — :meth:`_resume_degraded`: the gate is still closed
+           durably, but no model turn ever runs.
+
+        The two gate kinds resume differently on purpose (once a usable
+        principal is found). An approved **operator approval** executes
+        exactly the call that was held, with the arguments and target frozen
+        at hold time. A granted **consent** is not an execution order: the
+        call is put back at the head of the queue and re-enters the gate, so a
+        tool that also needs an operator still gets one.
+
+        Returns a :data:`ResumeStatus` rather than silently doing nothing —
+        the historical bug this closes is exactly a caller reading a hardcoded
+        "resumed" while the ticket sat wedged.
         """
 
         ticket = await self.store.get(ticket_id)
         if ticket is None:
-            return
+            return "no_ticket"
         approval = approval or await self._last_decision(ticket_id)
         if approval is None or approval.status == "pending":
-            return
+            return "no_decision"
         actor = await self._requester_principal(ticket)
+        if actor is None and decided_by is not None and decided_by.at_least("operator"):
+            actor = decided_by
         if actor is None:
-            return
-        session = await self.session_for(ticket, actor=actor)
+            return await self._resume_degraded(ticket, approval)
+
+        session = await self.session_for(
+            ticket, actor=actor, spare_tool_use_ids=(approval.tool_use_id,)
+        )
         if session is None:
-            return
+            return "no_session"
         approved = approval.status == "approved"
 
-        if ticket.blocked_on:
-            await self._unblock(ticket_id, actor="system", reason="gate decided")
-            ticket = await self.store.get(ticket_id)
+        try:
+            if ticket.blocked_on:
+                await self._unblock(ticket_id, actor="system", reason="gate decided")
+                ticket = await self.store.get(ticket_id) or ticket
 
-        seed: list[dict[str, Any]] = []
-        if approval.kind == "user_consent" and approved:
-            session.consented.add(approval.tool)
-            session._queue.insert(
-                0,
-                {
-                    "type": "tool_use",
-                    "id": approval.tool_use_id,
-                    "name": approval.tool,
-                    "input": dict(approval.args),
+            seed: list[dict[str, Any]] = []
+            if approval.kind == "user_consent" and approved:
+                session.consented.add(approval.tool)
+                session._queue.insert(
+                    0,
+                    {
+                        "type": "tool_use",
+                        "id": approval.tool_use_id,
+                        "name": approval.tool,
+                        "input": dict(approval.args),
+                    },
+                )
+            else:
+                session.pending = PendingCall(
+                    id=approval.id,
+                    tool_use_id=approval.tool_use_id,
+                    tool=approval.tool,
+                    args=dict(approval.args),
+                    agent_id=approval.agent_id,
+                    tool_class=approval.tool_class,
+                    gate_kind=approval.kind,
+                )
+                resume_event = await apply_confirmation(
+                    session, approve=approved, executor=self.executor
+                )
+                seed.append(resume_event)
+
+            async for _ in self.run_turn(
+                session,
+                ticket,
+                seed_events=seed,
+                count_turn=False,
+                surfaces=surfaces,
+                model_override=model_override,
+            ):
+                pass
+        except Exception as exc:  # noqa: BLE001 - never leave the ticket silently wedged
+            logger.exception(
+                "ticket %s: resuming after gate %s was decided failed",
+                ticket_id,
+                approval.id,
+            )
+            await self._save_run(session)
+            await self.tickets.append_event(
+                ticket_id,
+                kind="error",
+                actor="system",
+                summary="resuming after the decision could not complete",
+                fields={
+                    "error": {
+                        "code": type(exc).__name__,
+                        "message": str(exc)[:_MAX_TRAIL_ERROR_CHARS],
+                    }
                 },
             )
-        else:
-            session.pending = PendingCall(
-                id=approval.id,
-                tool_use_id=approval.tool_use_id,
-                tool=approval.tool,
-                args=dict(approval.args),
-                agent_id=approval.agent_id,
-                tool_class=approval.tool_class,
-                gate_kind=approval.kind,
+            ticket = await self._ensure_in_progress(ticket)
+            await self._unblock(ticket_id, actor="system", reason="resume failed")
+            await self._block(
+                ticket_id, "operator", actor="system", reason="resume did not complete"
             )
-            resume_event = await apply_confirmation(
-                session, approve=approved, executor=self.executor
-            )
-            seed.append(resume_event)
+            return "degraded"
 
-        async for _ in self.run_turn(
-            session,
-            ticket,
-            seed_events=seed,
-            count_turn=False,
-            surfaces=surfaces,
-            model_override=model_override,
-        ):
-            pass
+        return "resumed"
 
     async def resume_expired(self, approval: TicketApproval) -> None:
         """Answer a gate the sweeper timed out, exactly as a denial is answered.
@@ -1316,7 +1559,12 @@ class TicketAssistant:
         construction time and called from ``expire_due``. It takes the same
         :meth:`resume` path any other decision takes, notifying whichever
         surfaces were registered via :meth:`register_surface` (there is no
-        per-call caller here to name its own).
+        per-call caller here to name its own). Structurally has no decider —
+        the sweeper is never a person — so it passes no ``decided_by`` and
+        always takes the degraded path on a ticket with no requester.
+        :class:`~kenny_server.tickets.GateResumer` is typed
+        ``-> Awaitable[None]``, so this stays ``-> None`` and does not
+        propagate :meth:`resume`'s status.
         """
 
         await self.resume(approval.ticket_id, approval=approval, surfaces=tuple(self._default_surfaces))

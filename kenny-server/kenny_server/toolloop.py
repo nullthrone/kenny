@@ -7,7 +7,7 @@ prompt to send, which tools to expose, where a call is routed, or whether a call
 may proceed — a policy object answers all four.
 
 That split is what makes a second surface possible without forking the loop: the
-dashboard's policy (``chat.DashboardPolicy``) holds every state-changing call for
+dashboard's policy (``chat.FleetPolicy``) holds every state-changing call for
 an operator confirmation, and a different surface can hold, deny or allow on its
 own terms while the loop's event shapes, ordering and truncation stay identical.
 
@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Collection
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -329,6 +329,37 @@ def _tool_result_block(tool_use_id: str, payload: Any, *, is_error: bool = False
     if is_error:
         block["is_error"] = True
     return block
+
+
+def _fold_staged_results(session: Any) -> None:
+    """Feed ``session._staged_results`` back, clearing it.
+
+    Ordinarily this is the first content of a fresh user turn, so it starts a
+    new message. The one exception: a ticket session can have a plain user
+    message land on it *between* a hold and its resume (rebuilt from SQLite
+    each time — see ``ticket_assistant.session_for``'s and
+    ``discord_service.py``'s context-message path) — a third party's message,
+    appended and saved with no turn driven, while the gate that will
+    eventually stage this ``tool_result`` is still open. Appending
+    unconditionally there would produce two consecutive ``"user"`` messages,
+    which the Messages API rejects; joining into the existing trailing user
+    message keeps the transcript valid instead. A string content is
+    normalized to a text block first so the join is always list + list.
+    """
+
+    last = session.messages[-1] if session.messages else None
+    if last is not None and last.get("role") == "user":
+        content = last.get("content")
+        if isinstance(content, str):
+            last["content"] = [{"type": "text", "text": content}, *session._staged_results]
+            session._staged_results = []
+            return
+        if isinstance(content, list):
+            content.extend(session._staged_results)
+            session._staged_results = []
+            return
+    session.messages.append({"role": "user", "content": session._staged_results})
+    session._staged_results = []
 
 
 # -- execution --------------------------------------------------------------
@@ -666,8 +697,7 @@ async def drive_events(
 
         # All queued tools ran; if we have staged results, feed them back.
         if session._staged_results:
-            session.messages.append({"role": "user", "content": session._staged_results})
-            session._staged_results = []
+            _fold_staged_results(session)
 
         # Ask the model for the next step, streaming the assistant text token by token.
         with client.messages.stream(
@@ -708,6 +738,97 @@ async def drive_events(
         "pending": None,
         "done": True,
     }
+
+
+def stage_missing_tool_results(
+    session: Any, *, exempt: Collection[str] = ()
+) -> list[str]:
+    """Answer any ``tool_use`` in the trailing assistant message left dangling.
+
+    A session can be rebuilt mid-turn (a restart, a crashed process, an
+    abandoned resume) with its trailing message holding one or more
+    ``tool_use`` blocks that nothing ever answered — the next model call would
+    be rejected outright (a ``tool_use`` with no matching ``tool_result``).
+    This finds exactly those ids: not already answered anywhere in
+    ``session.messages``, not staged in ``session._staged_results``, not still
+    parked in ``session._queue`` (queued for execution, not abandoned), not
+    ``session.pending``'s id (a live gate waiting on a decision), and not in
+    ``exempt`` (a caller-supplied "leave this one alone" set — notably a gate
+    a caller is about to answer itself). Each survivor gets an error
+    ``tool_result`` staged for it, so the next model call is always valid.
+
+    Deliberately narrower than :func:`kenny_server.chat.heal_session`: this
+    never touches ``session.messages``, ``session._queue`` or
+    ``session.pending`` — only ``session._staged_results`` grows. See that
+    function's docstring for why the two must not be unified.
+
+    Returns the healed ids, in the order they appear in the trailing message.
+    """
+
+    messages = session.messages
+    if not messages:
+        return []
+    last = messages[-1]
+    if last.get("role") != "assistant":
+        return []
+    content = last.get("content")
+    if not isinstance(content, list):
+        return []
+    tool_use_ids = [
+        b.get("id") for b in content if isinstance(b, dict) and b.get("type") == "tool_use"
+    ]
+    if not tool_use_ids:
+        return []
+
+    answered: set[str] = set()
+    for msg in messages:
+        msg_content = msg.get("content")
+        if not isinstance(msg_content, list):
+            continue
+        for block in msg_content:
+            if isinstance(block, dict) and block.get("type") == "tool_result":
+                tool_use_id = block.get("tool_use_id")
+                if tool_use_id:
+                    answered.add(tool_use_id)
+    for block in session._staged_results:
+        if isinstance(block, dict) and block.get("type") == "tool_result":
+            tool_use_id = block.get("tool_use_id")
+            if tool_use_id:
+                answered.add(tool_use_id)
+    queued_ids = {
+        block.get("id") for block in session._queue if isinstance(block, dict)
+    }
+    pending_id = session.pending.tool_use_id if session.pending is not None else None
+    exempt_set = set(exempt)
+
+    healed: list[str] = []
+    for tool_use_id in tool_use_ids:
+        if not tool_use_id:
+            continue
+        if (
+            tool_use_id in answered
+            or tool_use_id in queued_ids
+            or tool_use_id == pending_id
+            or tool_use_id in exempt_set
+        ):
+            continue
+        session._staged_results.append(
+            _tool_result_block(
+                tool_use_id,
+                {
+                    "error": {
+                        "code": "not_completed",
+                        "message": (
+                            "this call was interrupted and never ran; nothing was "
+                            "changed on the machine."
+                        ),
+                    }
+                },
+                is_error=True,
+            )
+        )
+        healed.append(tool_use_id)
+    return healed
 
 
 async def apply_confirmation(

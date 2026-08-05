@@ -218,7 +218,7 @@ _SPECS: list[SettingSpec] = [
     # -- Chat & AI -------------------------------------------------------------
     _spec("KENNY_CHAT_MODEL", "Chat & AI", "str", "claude-sonnet-4-6",
           "Chat model", lifecycle="live",
-          help="Anthropic model id used by the server-hosted copilot chat."),
+          help="Anthropic model id used by Ask kenny."),
     _spec("ANTHROPIC_API_KEY", "Chat & AI", "secret", "",
           "Anthropic API key", lifecycle="env_only", sensitive=True,
           help="Gates the chat/recommendation features. Managed via environment."),

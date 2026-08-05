@@ -34,8 +34,8 @@ Every view shares one header:
   *critical* counts are **section totals** across the fleet (one PC can contribute several),
   and when either is above zero it becomes a **link into the [Flagged view](#the-flagged-view)**.
   On narrow screens the word labels collapse to icon + number.
-- **✨ Copilot toggle** *(Fleet tab only)* — show/hide the chat rail (see
-  [The copilot](#the-copilot-chat-rail)).
+- **✨ Ask kenny toggle** *(Fleet tab only)* — show/hide the chat rail (see
+  [Ask kenny](#ask-kenny-chat-rail)).
 - **Tickets badge** *(operator+ only)* — a message-square icon with a live count of tickets
   needing you: blocked on your approval, blocked on an operator, or a fresh alert-origin
   ticket. Clicking it opens [the Tickets tab](#the-tickets-tab) filtered to that group.
@@ -60,7 +60,7 @@ Every view shares one header:
 
 ### The approvals badge
 
-A shield icon lives in the header for **operator+** accounts, next to the copilot toggle,
+A shield icon lives in the header for **operator+** accounts, next to the Ask kenny toggle,
 with a live count of every tool call currently held for a decision — across every ticket,
 not just the one you happen to have open. Clicking it opens the same queue as a modal:
 each row shows the **tool**, its **tier**, the frozen **arguments**, a link straight to the
@@ -211,11 +211,11 @@ with the value and a one-line detail. Click a host id to jump to its
 ## The Fleet tab
 
 The working view: a three-column console — the **fleet list**, the selected PC's **agent
-detail**, and the docked **copilot** chat rail.
+detail**, and the docked **Ask kenny** chat rail.
 
 <figure markdown>
   ![The Fleet console](assets/screenshots/fleet-console.png)
-  <figcaption>The Fleet tab: the fleet list (left), the selected agent's drill-down (centre), and the copilot rail (right).</figcaption>
+  <figcaption>The Fleet tab: the fleet list (left), the selected agent's drill-down (centre), and the Ask kenny rail (right).</figcaption>
 </figure>
 
 ### Fleet list (left)
@@ -280,7 +280,7 @@ rule-reason chip.
 - **AI Recommendation** — for a flagged section, when an Anthropic API key is configured, a
   short **Diagnosis / Action / Urgency** advisory streams in at the top. If the advisor judges
   the issue fixable with kenny's tools it adds an **Auto-Remediate** button that hands a
-  suggested prompt to the copilot (state-changing steps still hit the confirm-gate). See
+  suggested prompt to Ask kenny (state-changing steps still hit the confirm-gate). See
   [ADR-0019](adr/0019-ai-recommendations-and-auto-remediation.md).
 - **Reliability** has a custom renderer — a category × day heatmap plus expandable event
   groups, each row showing a **severity badge** (`benign`/`notable`/`serious`/`unknown`) and
@@ -327,11 +327,11 @@ rule-reason chip.
   collect, so the panel shows the machine rather than what was requested. See
   [Account governance](account-governance.md).
 
-### The copilot (chat rail)
+### Ask kenny (chat rail)
 
 <figure markdown>
-  ![The copilot with a confirm-gate](assets/screenshots/copilot-confirm.png)
-  <figcaption>The copilot: an assistant reply, an auto-run read-only tool, and the amber confirm-gate pausing a state-changing winget_update until the operator approves.</figcaption>
+  ![Ask kenny with a confirm-gate](assets/screenshots/copilot-confirm.png)
+  <figcaption>Ask kenny: an assistant reply, an auto-run read-only tool, and the amber confirm-gate pausing a state-changing winget_update until the operator approves.</figcaption>
 </figure>
 
 The **server-hosted Claude** chat, docked on the right. No local client needed — ask in plain
@@ -443,16 +443,16 @@ not just from clicking through the list. It shows:
   category (editable dropdowns, sourced from `GET /api/tickets/vocabulary`), requester,
   assignee, target PC, and the created/updated timestamps.
 - Kenny's running **summary**, and the **resolution** once one is set.
-- A **composer** that replaced the old plain note box, with a mode toggle between **send to
+- A **composer** that replaced the old plain note box, with a mode toggle between **Ask
   kenny** and **add a note** (operator+ only sees the toggle at all — a scoped `user` only
-  ever gets "send to kenny"). "Add a note" keeps its existing operator+ gating; "send to
+  ever gets "Ask kenny"). "Add a note" keeps its existing operator+ gating; "Ask
   kenny" does not — any `user` may chat on their own ticket the same way they always could
   over Discord. Sending streams `POST /api/tickets/{tid}/chat/stream` through the same SSE
-  event vocabulary the copilot chat already renders, so a reply appears token-by-token in the
+  event vocabulary Ask kenny already renders, so a reply appears token-by-token in the
   timeline. A checkbox — **"also post in the Discord thread"** — appears only when the ticket
   has a bound thread, defaults off, and applies the same redaction a Discord-bound reply has
-  always gone through. The composer (its "send to kenny" side) is disabled with a visible
-  reason when it can't be used right now: *"The AI assistant is not configured."*, *"This
+  always gone through. The composer (its "Ask kenny" side) is disabled with a visible
+  reason when it can't be used right now: *"Ask kenny is not configured."*, *"This
   ticket has no target machine."*, *"This ticket is closed."*, or, while a gate is open,
   *"Waiting on a decision above."*
 - The **timeline** — every `ticket_events` row in order: state changes, block/unblock
@@ -461,7 +461,7 @@ not just from clicking through the list. It shows:
   requests and their decisions, assignment changes, and reassignment handoffs (including a
   *discarded* retarget attempt, which is recorded even though nothing about the ticket
   changed). A **message** row now renders its actual content where the trail has it: kenny's
-  replies through the same markdown renderer the copilot chat uses, a human's dashboard
+  replies through the same markdown renderer Ask kenny uses, a human's dashboard
   message as plain escaped text. A Discord-origin family message still shows only its
   existing one-line summary — no verbatim text is stored for it, unchanged from before. A
   **held gate** (an open approval or consent request) gets inline **Approve**/**Deny** buttons
@@ -493,10 +493,10 @@ it at a terminal state; this used to be silent in Discord.
 
 The **New ticket** modal also gained an optional host picker, so a ticket opened straight
 from the dashboard can start with a real target machine instead of always unassigned —
-without one, the new composer's "send to kenny" side has nothing to run against and stays
+without one, the new composer's "Ask kenny" side has nothing to run against and stays
 disabled. See [`itsm.md`](itsm.md#what-is-recorded-and-what-is-not) for what the composer's
 messages record, and [ADR-0055](adr/0055-the-ticket-is-its-own-chat-surface.md) for why this
-is a second, equally-gated chat surface rather than an extension of the copilot.
+is a second, equally-gated chat surface rather than an extension of Ask kenny.
 
 ---
 
@@ -729,7 +729,7 @@ since it changes behaviour on every PC.
   `#/tickets`, `#/tickets/{id}`, `#/settings/{section}`). `#/backup` and `#/updates` still
   resolve too, straight into the matching Settings section, for old bookmarks and the
   Discord "see the dashboard" links.
-- **Keyboard & motion** — Escape closes modals and the copilot drawer; animations respect
+- **Keyboard & motion** — Escape closes modals and the Ask kenny drawer; animations respect
   `prefers-reduced-motion`.
 
 ---
