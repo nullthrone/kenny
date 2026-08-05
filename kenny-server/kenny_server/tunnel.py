@@ -181,7 +181,10 @@ class AgentTunnel:
                 )
                 raise ToolError("blocked", reason)
 
-        send_fn = self.registry.send_fn_for(agent_id)
+        try:
+            send_fn = self.registry.send_fn_for(agent_id)
+        except AuthError as exc:
+            raise ToolError("offline", f"{agent_id} is not connected") from exc
         request_id = str(uuid.uuid4())
         loop = asyncio.get_running_loop()
         future: asyncio.Future[Response] = loop.create_future()

@@ -23,6 +23,7 @@ from kenny_server.auth import Principal
 from kenny_server.registry import AgentRegistry
 from kenny_server.store import EventStore, TelemetryStore
 from kenny_server.ticket_assistant import (
+    _MAX_TRAIL_ERROR_CHARS,
     _MAX_TRAIL_TEXT_CHARS,
     TicketAssistant,
     TicketPolicy,
@@ -205,6 +206,41 @@ async def _open_ticket(world: World, *, profile_snapshot: str | None = "self-ser
         profile_snapshot=profile_snapshot,
         actor=f"user:{world.kid['id']}",
     )
+
+
+async def _open_alert_ticket(world: World):
+    """An alert-origin ticket: no requester at all, straight into ``new``."""
+
+    return await world.tickets.create(
+        title="disk usage critical",
+        origin="alert",
+        agent_id=AGENT,
+        actor="system",
+        reason="opened from an alert",
+    )
+
+
+def _transcript_pairs(messages: list[dict[str, Any]]) -> tuple[set[str], set[str]]:
+    """``(tool_use ids, answered tool_use ids)`` in a stored transcript.
+
+    Local copy of ``tests/test_approval_persistence.py``'s helper of the same
+    name -- kept in sync by inspection rather than a cross-test-module import.
+    """
+
+    issued: set[str] = set()
+    answered: set[str] = set()
+    for message in messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "tool_use":
+                issued.add(block["id"])
+            elif block.get("type") == "tool_result":
+                answered.add(block["tool_use_id"])
+    return issued, answered
 
 
 # -- session_for: built from the actor, snapshot narrows only the requester ----
@@ -431,3 +467,334 @@ async def test_append_message_truncates_past_the_trail_cap(world: World) -> None
     stored = [e for e in events if e.kind == "message"][0].fields["text"]
     assert stored.endswith("\n\n[truncated]")
     assert len(stored) == _MAX_TRAIL_TEXT_CHARS + len("\n\n[truncated]")
+
+
+# =============================================================================
+# The stalled turn (§7): _ensure_in_progress, healing, resume()'s real status
+# =============================================================================
+
+
+async def test_a_read_only_turn_on_a_new_ticket_ends_in_progress_and_blocked_on_user(
+    world: World,
+) -> None:
+    """The turn-cap/end-of-turn hold half of the bug: a *plain* turn, no gate
+    involved at all, must still leave the ticket in a state ``block()`` can
+    act on -- which it could not before ``_ensure_in_progress``."""
+
+    assistant = world.assistant(text_turn("all good, nothing to worry about"))
+    ticket = await _open_ticket(world)
+    assert ticket.state == "new"
+    session = await assistant.session_for(ticket, actor=world.kid_principal())
+    assert session is not None
+    session.messages.append({"role": "user", "content": "how is my pc doing?"})
+
+    async for _event in assistant.run_turn(session, ticket):
+        pass
+
+    refreshed = await world.ticket_store.get(ticket.id)
+    assert refreshed is not None
+    assert refreshed.state == "in_progress"
+    assert refreshed.blocked_on == "user"
+
+
+async def test_normal_change_on_an_alert_origin_ticket_sets_blocked_on_approval(
+    world: World,
+) -> None:
+    """The joined seam between ``on_hold`` and ``_check_block``: today each
+    half passes alone and the pair fails on a requester-less ``new`` ticket --
+    exactly the reported wedge's origin."""
+
+    assistant = world.assistant(tool_turn(tool_use_block("t1", "winget_install", {"id": "Git.Git"})))
+    ticket = await _open_alert_ticket(world)
+    assert ticket.requester_user_id is None
+    assert ticket.state == "new"
+    session = await assistant.session_for(ticket, actor=world.root_principal())
+    assert session is not None
+    session.messages.append({"role": "user", "content": "please fix the disk"})
+
+    async for _event in assistant.run_turn(session, ticket):
+        pass
+
+    refreshed = await world.ticket_store.get(ticket.id)
+    assert refreshed is not None
+    assert refreshed.state == "in_progress"
+    assert refreshed.blocked_on == "approval"
+    approval = await world.ticket_store.get_open_approval(ticket.id)
+    assert approval is not None
+    assert refreshed.blocked_ref == approval.id
+
+
+async def test_resume_with_an_operator_decided_by_forwards_the_call_on_a_requesterless_ticket(
+    world: World,
+) -> None:
+    """The requester-less ticket's own fallback: an operator's ``decided_by``
+    stands in for the missing requester and the frozen call actually runs."""
+
+    ticket = await _open_alert_ticket(world)
+    approval = await world.tickets.open_approval(
+        ticket.id,
+        tool_use_id="t1",
+        tool="winget_install",
+        tool_class="normal_change",
+        args={"id": "Git.Git"},
+        agent_id=AGENT,
+    )
+    decided = await world.tickets.decide_approval(
+        approval.id,
+        approve=True,
+        decided_by=world.root["id"],
+        decided_via="dashboard",
+        actor=f"operator:{world.root['id']}",
+    )
+    assistant = world.assistant(text_turn("Installed."))
+
+    status = await assistant.resume(
+        ticket.id, approval=decided, decided_by=world.root_principal()
+    )
+
+    assert status == "resumed"
+    assert world.sent == [{"agent_id": AGENT, "tool": "winget_install", "args": {"id": "Git.Git"}}]
+
+
+async def test_resume_with_a_non_operator_decided_by_degrades_and_forwards_nothing(
+    world: World,
+) -> None:
+    ticket = await _open_alert_ticket(world)
+    approval = await world.tickets.open_approval(
+        ticket.id,
+        tool_use_id="t1",
+        tool="winget_install",
+        tool_class="normal_change",
+        args={"id": "Git.Git"},
+        agent_id=AGENT,
+    )
+    decided = await world.tickets.decide_approval(
+        approval.id,
+        approve=True,
+        decided_by=world.root["id"],
+        decided_via="dashboard",
+        actor=f"operator:{world.root['id']}",
+    )
+    assistant = world.assistant()  # no scripted turn: a model call would fail closed
+
+    status = await assistant.resume(
+        ticket.id, approval=decided, decided_by=world.kid_principal(role="user")
+    )
+
+    assert status == "degraded"
+    assert world.sent == []
+    refreshed = await world.ticket_store.get(ticket.id)
+    assert refreshed is not None
+    assert refreshed.state == "in_progress"
+    assert refreshed.blocked_on == "operator"
+    error_rows = [e for e in await world.tickets.events(ticket.id) if e.kind == "error"]
+    assert any(e.fields and e.fields.get("error", {}).get("code") == "no_principal" for e in error_rows)
+
+
+async def test_the_reported_wedge_end_to_end_is_healed_and_answerable(world: World) -> None:
+    """The exact reported scenario: an assistant message ending in text +
+    ``tool_use`` (an abandoned gate), a follow-up user message, then one more
+    driven turn. Before the fix this leaves an unanswered ``tool_use`` and a
+    non-alternating transcript; after it, both are clean."""
+
+    ticket = await _open_ticket(world)
+    ticket = await world.tickets.transition(ticket.id, "in_progress", actor="system")
+    await world.ticket_store.save_run(
+        ticket.id,
+        messages=[
+            {"role": "user", "content": "please install git"},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Installing now."},
+                    {
+                        "type": "tool_use",
+                        "id": "abandoned-1",
+                        "name": "winget_install",
+                        "input": {"id": "Git.Git"},
+                    },
+                ],
+            },
+        ],
+    )
+
+    assistant = world.assistant(text_turn("all set now"))
+    session = await assistant.session_for(ticket, actor=world.kid_principal())
+    assert session is not None
+    assistant.append_user_message(session, "are you still there?")
+
+    async for _event in assistant.run_turn(session, ticket):
+        pass
+
+    run = await world.ticket_store.load_run(ticket.id)
+    issued, answered = _transcript_pairs(run.messages)
+    assert issued == answered, f"unanswered tool_use ids: {sorted(issued - answered)}"
+
+    roles = [m["role"] for m in run.messages]
+    for a, b in zip(roles, roles[1:]):
+        assert a != b, f"two consecutive {a!r}-role messages: {roles}"
+
+    # And the trail says an earlier call was healed, not silently dropped.
+    notes = [e for e in await world.tickets.events(ticket.id) if e.kind == "note"]
+    assert any("never completed" in e.summary for e in notes)
+
+
+async def test_an_open_gate_is_never_healed_away_and_resume_answers_it_once(
+    world: World,
+) -> None:
+    """Guards the double-answer regression a naive unconditional healer would
+    introduce: the still-open gate's own id must never be staged by
+    ``session_for``, and resuming it must produce exactly one ``tool_result``."""
+
+    ticket = await _open_ticket(world, profile_snapshot=None)
+    ticket = await world.tickets.transition(ticket.id, "in_progress", actor="system")
+    approval = await world.tickets.open_approval(
+        ticket.id,
+        tool_use_id="held-1",
+        tool="winget_install",
+        tool_class="normal_change",
+        args={"id": "Git.Git"},
+        agent_id=AGENT,
+    )
+    await world.ticket_store.save_run(
+        ticket.id,
+        messages=[
+            {"role": "user", "content": "please install git"},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Installing now."},
+                    {
+                        "type": "tool_use",
+                        "id": "held-1",
+                        "name": "winget_install",
+                        "input": {"id": "Git.Git"},
+                    },
+                ],
+            },
+        ],
+    )
+    await world.tickets.block(ticket.id, "approval", actor="system", ref=approval.id)
+
+    assistant = world.assistant(text_turn("Installed."))
+    session = await assistant.session_for(ticket, actor=world.kid_principal())
+    assert session is not None
+    assert session.healed == []
+    assert session._staged_results == []
+
+    decided = await world.tickets.decide_approval(
+        approval.id,
+        approve=True,
+        decided_by=world.root["id"],
+        decided_via="dashboard",
+        actor=f"operator:{world.root['id']}",
+    )
+    status = await assistant.resume(ticket.id, approval=decided)
+    assert status == "resumed"
+
+    run = await world.ticket_store.load_run(ticket.id)
+    tool_results_for_held = [
+        b
+        for m in run.messages
+        if isinstance(m.get("content"), list)
+        for b in m["content"]
+        if isinstance(b, dict)
+        and b.get("type") == "tool_result"
+        and b.get("tool_use_id") == "held-1"
+    ]
+    assert len(tool_results_for_held) == 1
+
+
+async def test_a_context_message_during_an_open_gate_does_not_wedge_the_transcript(
+    world: World,
+) -> None:
+    """The Discord ``discord_service.py:564-568`` scenario, reproduced without
+    Discord: a non-actionable message lands (appended + saved, no turn) while
+    a gate is open, then the gate is decided and resumed. No unanswered
+    ``tool_use`` and no two consecutive user-role messages."""
+
+    ticket = await _open_ticket(world, profile_snapshot=None)
+    ticket = await world.tickets.transition(ticket.id, "in_progress", actor="system")
+    approval = await world.tickets.open_approval(
+        ticket.id,
+        tool_use_id="held-2",
+        tool="winget_install",
+        tool_class="normal_change",
+        args={"id": "Vim.Vim"},
+        agent_id=AGENT,
+    )
+    await world.ticket_store.save_run(
+        ticket.id,
+        messages=[
+            {"role": "user", "content": "install vim"},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "On it."},
+                    {
+                        "type": "tool_use",
+                        "id": "held-2",
+                        "name": "winget_install",
+                        "input": {"id": "Vim.Vim"},
+                    },
+                ],
+            },
+        ],
+    )
+    await world.tickets.block(ticket.id, "approval", actor="system", ref=approval.id)
+
+    assistant = world.assistant(text_turn("Installed vim too."))
+    # Context-only: append + save, no turn -- exactly the Discord path's shape.
+    context_session = await assistant.session_for(ticket, actor=world.root_principal())
+    assert context_session is not None
+    assistant.append_user_message(context_session, "context: sibling says hi")
+    await assistant._save_run(context_session)
+
+    decided = await world.tickets.decide_approval(
+        approval.id,
+        approve=True,
+        decided_by=world.root["id"],
+        decided_via="dashboard",
+        actor=f"operator:{world.root['id']}",
+    )
+    status = await assistant.resume(ticket.id, approval=decided)
+    assert status == "resumed"
+
+    run = await world.ticket_store.load_run(ticket.id)
+    issued, answered = _transcript_pairs(run.messages)
+    assert issued == answered, f"unanswered tool_use ids: {sorted(issued - answered)}"
+
+    roles = [m["role"] for m in run.messages]
+    for a, b in zip(roles, roles[1:]):
+        assert a != b, f"two consecutive {a!r}-role messages: {roles}"
+
+
+async def test_a_failed_turn_records_the_real_error_on_the_trail(world: World) -> None:
+    """F5: the "turn failed" row must carry ``fields.error``, truncated, not
+    just a bare summary -- the real cause used to exist only in the process
+    log."""
+
+    class _ExplodingClient:
+        class _Messages:
+            def stream(self, **_kwargs: Any) -> Any:
+                raise RuntimeError("x" * (_MAX_TRAIL_ERROR_CHARS + 100))
+
+        messages = _Messages()
+
+    assistant = world.assistant()
+    assistant.client = _ExplodingClient()
+    ticket = await _open_ticket(world)
+    session = await assistant.session_for(ticket, actor=world.kid_principal())
+    assert session is not None
+    session.messages.append({"role": "user", "content": "hello"})
+
+    events = [e async for e in assistant.run_turn(session, ticket)]
+    assert events[-1]["type"] == "error"
+
+    error_rows = [e for e in await world.tickets.events(ticket.id) if e.kind == "error"]
+    assert error_rows, "no error trail row was written"
+    fields = error_rows[-1].fields
+    assert fields is not None
+    error = fields["error"]
+    assert error["code"] == "RuntimeError"
+    assert len(error["message"]) == _MAX_TRAIL_ERROR_CHARS

@@ -962,7 +962,10 @@ class DiscordService:
             content="Recorded — thank you." if approve else "Recorded: declined.",
         )
         await self.assistant.resume(
-            ticket.id, surfaces=(self,), model_override=self._model_override
+            ticket.id,
+            decided_by=principal,
+            surfaces=(self,),
+            model_override=self._model_override,
         )
 
     async def _decide_consent(

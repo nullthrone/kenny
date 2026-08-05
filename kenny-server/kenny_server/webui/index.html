@@ -2363,6 +2363,10 @@
           // so this stays the existing summary-only line, unchanged.
           body = esc(e.summary || "");
         }
+      } else if (e.kind === "error") {
+        const err = e.fields && e.fields.error;
+        body = esc(e.summary || "error") +
+          (err ? ` <span class="k-pill k-pill--crit" title="${esc(err.message || "")}">${esc(err.code || "failed")}</span>` : "");
       } else {
         body = esc(e.summary || "");
       }
@@ -2519,8 +2523,12 @@
       });
       if (ok) {
         try {
-          await api("/api/approvals/" + encodeURIComponent(approvalId), "POST", { approve });
-          notify(approve ? "approved" : "denied");
+          const res = await api("/api/approvals/" + encodeURIComponent(approvalId), "POST", { approve });
+          if (res && res.resumed === false) {
+            notify("recorded — kenny could not continue this ticket automatically", "err");
+          } else {
+            notify(approve ? "approved" : "denied");
+          }
         } catch (e) { notify(e.message, "err"); }
       }
       await renderTicketDetail(ticketId);
@@ -2804,8 +2812,12 @@
       });
       if (ok) {
         try {
-          await api("/api/approvals/" + encodeURIComponent(id), "POST", { approve });
-          notify(approve ? "approved" : "denied");
+          const res = await api("/api/approvals/" + encodeURIComponent(id), "POST", { approve });
+          if (res && res.resumed === false) {
+            notify("recorded — kenny could not continue this ticket automatically", "err");
+          } else {
+            notify(approve ? "approved" : "denied");
+          }
         } catch (e) { notify(e.message, "err"); }
       }
       // confirmModal() replaces/closes the single shared modal, so reopen the

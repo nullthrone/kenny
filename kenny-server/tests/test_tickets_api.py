@@ -1235,3 +1235,114 @@ def test_approval_decide_resolves_the_discord_card(tmp_path) -> None:
         assert resolved["channel_id"] == "chan-1"
         assert resolved["message_id"] == "card-1"
         assert resolved["outcome"] == "approved"
+
+
+# =============================================================================
+# §7: the stalled turn -- _ensure_in_progress, honest resume_status, the gate
+# =============================================================================
+
+
+def test_chat_stream_on_a_new_ticket_flips_it_to_in_progress(tmp_path) -> None:
+    """F2, over the real HTTP route: a dashboard turn on a fresh ``new``
+    ticket must leave it ``in_progress`` by the time the stream ends -- the
+    half of the bug that isn't about the approval gate at all."""
+
+    async def seed(users: UserStore, _store: TicketStore, svc: TicketService) -> dict:
+        kid = await users.create_user("kid", "pw-123456", "user")
+        kid_pat = await users.create_pat(kid["id"], "t")
+        ticket = await svc.create(
+            title="slow pc", origin="dashboard", requester_user_id=kid["id"], agent_id="pc-1"
+        )
+        return {"kid_pat": kid_pat, "ticket_id": ticket.id}
+
+    app = _build_app(
+        tmp_path, seed, with_assistant=True, scripted=[text_turn("Looking into it.")]
+    )
+    with TestClient(app) as c:
+        s = app.state.seed
+        kid_h = _hdr(s["kid_pat"])
+        before = c.get(f"/api/tickets/{s['ticket_id']}", headers=kid_h).json()
+        assert before["state"] == "new"
+
+        r = c.post(
+            f"/api/tickets/{s['ticket_id']}/chat/stream",
+            json={"message": "please help"},
+            headers=kid_h,
+        )
+        assert r.status_code == 200
+        events = _sse_events(r.text)
+        assert events[-1]["type"] == "done"
+
+        after = c.get(f"/api/tickets/{s['ticket_id']}", headers=kid_h).json()
+        assert after["state"] == "in_progress"
+
+
+def test_approval_decide_reports_an_honest_resume_status_when_it_degrades(tmp_path) -> None:
+    """F4/F5: the response body must never hardcode ``resumed: true`` --
+    an alert-origin ticket (no requester) whose resume cannot complete (no
+    executor wired here) must report ``resumed: false`` and a real
+    ``resume_status``, not the historical unconditional success."""
+
+    async def seed(users: UserStore, store: TicketStore, svc: TicketService) -> dict:
+        op = await users.create_user("op", "pw-123456", "operator")
+        op_pat = await users.create_pat(op["id"], "t")
+        ticket = await svc.create(title="disk alert", origin="alert", agent_id="pc-1")
+        assert ticket.requester_user_id is None
+        approval = await svc.open_approval(
+            ticket.id, tool_use_id="tu-1", tool="winget_install", tool_class="normal_change",
+            args={"id": "Git.Git"},
+        )
+        return {"op_pat": op_pat, "approval_id": approval.id, "ticket_id": ticket.id}
+
+    # with_assistant=True and no scripted client builds a real TicketAssistant
+    # with executor=None (see _build_app's docstring) -- exactly a resume that
+    # cannot complete, the same shape the reported bug hit.
+    app = _build_app(tmp_path, seed, with_assistant=True)
+    with TestClient(app) as c:
+        s = app.state.seed
+        r = c.post(
+            f"/api/approvals/{s['approval_id']}", json={"approve": True},
+            headers=_hdr(s["op_pat"]),
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["resumed"] is False
+        assert isinstance(body["resume_status"], str) and body["resume_status"] != "resumed"
+
+
+def test_ticket_with_an_open_gate_reports_blocked_on_approval_and_an_approval_event(
+    tmp_path,
+) -> None:
+    """The exact condition the frontend's ``ticketOpenGate()`` derives from:
+    ``blocked_on == "approval"`` on the ticket, and an ``approval``-kind
+    event with ``fields.approval_id`` set and ``ok`` still null."""
+
+    async def seed(users: UserStore, store: TicketStore, svc: TicketService) -> dict:
+        kid = await users.create_user("kid", "pw-123456", "user")
+        kid_pat = await users.create_pat(kid["id"], "t")
+        ticket = await svc.create(
+            title="risky change", origin="dashboard", requester_user_id=kid["id"],
+            agent_id="pc-1",
+        )
+        await store.set_state(ticket.id, "in_progress", actor="system")
+        approval = await svc.open_approval(
+            ticket.id, tool_use_id="tu-1", tool="winget_install", tool_class="normal_change",
+            args={"id": "Git.Git"},
+        )
+        await svc.block(ticket.id, "approval", actor="system", ref=approval.id)
+        return {"kid_pat": kid_pat, "ticket_id": ticket.id, "approval_id": approval.id}
+
+    app = _build_app(tmp_path, seed)
+    with TestClient(app) as c:
+        s = app.state.seed
+        kid_h = _hdr(s["kid_pat"])
+
+        detail = c.get(f"/api/tickets/{s['ticket_id']}", headers=kid_h).json()
+        assert detail["blocked_on"] == "approval"
+
+        events = c.get(f"/api/tickets/{s['ticket_id']}/events", headers=kid_h).json()["events"]
+        approval_rows = [e for e in events if e["kind"] == "approval"]
+        assert approval_rows, "no approval-kind event on the trail"
+        row = approval_rows[-1]
+        assert row["fields"]["approval_id"] == s["approval_id"]
+        assert row["ok"] is None

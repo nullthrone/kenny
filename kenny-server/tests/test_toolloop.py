@@ -34,6 +34,7 @@ from kenny_server.toolloop import (
     apply_confirmation,
     build_tool_schemas,
     drive_events,
+    stage_missing_tool_results,
 )
 from kenny_server.tools import CAPABILITY_TOOLS, CallLog, ScreenshotStore
 from kenny_server.tunnel import AgentTunnel, ToolError
@@ -482,3 +483,165 @@ async def test_an_allowed_call_that_fails_reports_its_error(store: TelemetryStor
     results = [e for e in events if e["type"] == "tool_result"]
     assert results and results[0]["ok"] is False
     assert results[0]["error"] == {"code": "timeout", "message": "tool powershell_exec exceeded 60s"}
+
+
+# -- an offline agent must yield a tool_result, never an escaped exception --
+#
+# ``registry.send_fn_for`` raises the unrelated ``AuthError`` for an agent that
+# is registered but not currently connected (``tunnel.py`` § F1). Before that
+# fix this escaped ``_execute_one``'s ``except ToolError`` entirely and
+# propagated out of the loop/``apply_confirmation`` — exactly the second wedge
+# the ticket-assistant report hit (an approval that took long enough for the
+# agent to go offline in the meantime).
+
+
+async def _register_offline(registry: AgentRegistry, agent_id: str) -> None:
+    async def _noop_send(_payload: dict[str, Any]) -> None:  # pragma: no cover - never called
+        raise AssertionError("an offline agent's send_fn must never be invoked")
+
+    registry.register(agent_id, "dev-token", {}, _noop_send)
+    registry.mark_offline(agent_id)
+
+
+async def test_offline_agent_yields_a_tool_result_not_an_exception(store: TelemetryStore) -> None:
+    executor, registry, _tunnel = _executor(store)
+    await _register_offline(registry, "dev")
+
+    session = FakeSession(id="offline", agent_id="dev")
+    policy = StubPolicy()
+    client = FakeAnthropic(
+        [
+            _Response([tool_use_block("tu10", "diag_processes", {})], "tool_use"),
+            _Response([text_block("couldn't reach it.")], "end_turn"),
+        ]
+    )
+    session.messages.append({"role": "user", "content": "list processes"})
+
+    events = await _drive(session, executor, client, policy)
+
+    results = [e for e in events if e["type"] == "tool_result"]
+    assert results and results[0]["ok"] is False
+    assert results[0]["error"]["code"] == "offline"
+    # The turn still completed -- the model was told, nothing escaped.
+    assert events[-1]["type"] == "done" and events[-1]["done"] is True
+
+
+async def test_apply_confirmation_reports_offline_not_an_exception(store: TelemetryStore) -> None:
+    """Same assertion through ``apply_confirmation`` -- the path the report hit:
+    an agent that went offline during a long approval wait."""
+
+    executor, registry, _tunnel = _executor(store)
+    await _register_offline(registry, "dev")
+
+    session = FakeSession(id="offline-confirm", agent_id="dev")
+    session.pending = PendingCall(
+        id="p1", tool_use_id="tu11", tool="winget_install", args={"id": "Git.Git"}, agent_id="dev"
+    )
+
+    resume = await apply_confirmation(session, approve=True, executor=executor)
+
+    assert resume["type"] == "tool_result" and resume["ok"] is False
+    assert resume["error"]["code"] == "offline"
+    staged = session._staged_results[0]
+    assert staged["is_error"] is True
+    assert json.loads(staged["content"])["error"]["code"] == "offline"
+
+
+# -- stage_missing_tool_results -----------------------------------------------
+
+
+def test_stage_missing_tool_results_only_heals_the_true_orphan() -> None:
+    """A queued, still-pending, or explicitly exempt id survives untouched;
+    only the genuinely unanswered id gets an error tool_result staged."""
+
+    session = FakeSession(id="heal", agent_id="dev")
+    session.messages = [
+        {"role": "user", "content": "do stuff"},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "on it"},
+                {"type": "tool_use", "id": "queued", "name": "diag_processes", "input": {}},
+                {"type": "tool_use", "id": "held", "name": "winget_install", "input": {}},
+                {"type": "tool_use", "id": "spared", "name": "fs_read", "input": {}},
+                {"type": "tool_use", "id": "orphan", "name": "net_dns_flush", "input": {}},
+            ],
+        },
+    ]
+    session._queue = [{"type": "tool_use", "id": "queued", "name": "diag_processes", "input": {}}]
+    session.pending = PendingCall(
+        id="p", tool_use_id="held", tool="winget_install", args={}, agent_id="dev"
+    )
+
+    healed = stage_missing_tool_results(session, exempt={"spared"})
+
+    assert healed == ["orphan"]
+    staged_ids = {b["tool_use_id"] for b in session._staged_results}
+    assert staged_ids == {"orphan"}
+    assert session._staged_results[0]["is_error"] is True
+    assert (
+        json.loads(session._staged_results[0]["content"])["error"]["code"] == "not_completed"
+    )
+    # Never touched: messages, the queue, and the live pending call.
+    assert [b["id"] for b in session.messages[-1]["content"] if b.get("type") == "tool_use"] == [
+        "queued",
+        "held",
+        "spared",
+        "orphan",
+    ]
+    assert session._queue == [{"type": "tool_use", "id": "queued", "name": "diag_processes", "input": {}}]
+    assert session.pending is not None and session.pending.tool_use_id == "held"
+
+
+def test_stage_missing_tool_results_is_a_noop_when_nothing_is_orphaned() -> None:
+    session = FakeSession(id="clean", agent_id="dev")
+    session.messages = [{"role": "user", "content": "hi"}]
+
+    assert stage_missing_tool_results(session) == []
+    assert session._staged_results == []
+
+
+# -- the deliberate divergence from chat.heal_session -------------------------
+#
+# ``chat.heal_session`` drops the trailing assistant message outright and
+# unconditionally clears ``_queue``/``_staged_results`` -- both wrong for the
+# ticket surface (kenny's own words are already durably in the trail per
+# ADR-0055, and a second parked gate in ``_queue`` must survive). This test
+# pins the two apart so nobody "unifies" them later.
+
+
+def _dangling_transcript() -> list[dict[str, Any]]:
+    return [
+        {"role": "user", "content": "do x"},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "kenny's own words"},
+                {"type": "tool_use", "id": "tu1", "name": "winget_install", "input": {}},
+            ],
+        },
+    ]
+
+
+def test_stage_missing_tool_results_diverges_from_chat_heal_session() -> None:
+    from kenny_server.chat import heal_session
+
+    healed_session = FakeSession(id="healed", messages=_dangling_transcript())
+    dropped_session = FakeSession(id="dropped", messages=_dangling_transcript())
+
+    healed_ids = stage_missing_tool_results(healed_session)
+    heal_session(dropped_session)
+
+    # stage_missing_tool_results: the assistant message (kenny's own words)
+    # survives, and the orphaned call is answered in place.
+    assert healed_ids == ["tu1"]
+    assert len(healed_session.messages) == 2
+    assert healed_session.messages[-1]["role"] == "assistant"
+    assert healed_session._staged_results
+    assert healed_session._staged_results[0]["tool_use_id"] == "tu1"
+
+    # heal_session: the trailing assistant message is dropped wholesale --
+    # kenny's words are gone from the transcript -- and nothing is staged.
+    assert len(dropped_session.messages) == 1
+    assert dropped_session.messages[-1]["role"] == "user"
+    assert dropped_session._staged_results == []
