@@ -588,6 +588,12 @@
     .kc-history-row__meta { font-size: 11px; color: var(--fg-muted); margin-top: 2px; }
     .kc-transcript { display: flex; flex-direction: column; gap: 9px; max-height: 46vh; overflow-y: auto;
       padding: 4px; min-height: 96px; }
+    /* ticket detail's own chat/trail scroll container — same bounded-scroll
+       shape as .kc-transcript above, sized for the timeline panel rather than
+       the docked rail. Without this the timeline had no max-height/overflow at
+       all, so it grew the whole page instead of scrolling in place. */
+    .kc-timeline { display: flex; flex-direction: column; max-height: 52vh; overflow-y: auto;
+      min-height: 96px; }
     .kc-composer { display: flex; gap: 8px; }
     .kc-composer .k-input { flex: 1; }
     .kc-suggest { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -615,6 +621,8 @@
         box-shadow: -18px 0 40px -22px rgba(0,0,0,.7); }
       .kc-copilot .kc-transcript { flex: none; max-height: 46vh; }
       .kc-console.copilot-drawer-open .kc-copilot { transform: none; }
+      /* keep the ticket timeline readable rather than letterboxed on a phone */
+      .kc-timeline { max-height: 60vh; }
     }
     /* dimming backdrop behind the tablet drawer; click to dismiss */
     .kc-backdrop { position: fixed; inset: 0; z-index: 65; background: rgba(0,0,0,.45);
@@ -1279,6 +1287,18 @@
       // Overview charts read their colours from CSS tokens at build time, so
       // repaint them from the cached payload when the theme flips.
       if (state.tab === "overview" && state.overview) paintOverview();
+    }
+
+    // -- "Enter to send" preference (ticket composer + Add-a-note) ---------
+    // Same localStorage/try-catch shape as the theme and copilot-rail
+    // preferences above: a per-browser setting, not a cookie. Default is off
+    // (Enter inserts a newline) so the multi-line composer doesn't send on a
+    // stray Enter until an operator opts in.
+    function enterToSend() {
+      try { return localStorage.getItem("kenny-enter-send") === "on"; } catch (e) { return false; }
+    }
+    function setEnterToSend(on) {
+      try { localStorage.setItem("kenny-enter-send", on ? "on" : "off"); } catch (e) {}
     }
 
     // -- console state -----------------------------------------------------
@@ -2184,6 +2204,12 @@
       state.ticketDetail = { ticket, events: events.events || [] };
       if (nav !== navToken) return;  // navigated away while this was loading
       app.innerHTML = ticketDetailPageHtml(state.ticketDetail);
+      tkScrollTimeline();
+      mountTicketComposer();
+      // Navigating straight to a ticket that is already waiting on a decision
+      // surfaces the popup too, not just a live turn's own 'pending' event —
+      // guarded by tkGateShownFor so this doesn't reopen one just dismissed.
+      maybeOpenTicketGateModal(ticket.id, ticketOpenGate(state.ticketDetail));
     }
     function ticketDetailPageHtml(d) {
       const t = d.ticket;
@@ -2239,7 +2265,7 @@
         <div class="kc-timeline" id="tk-timeline">${(d.events || []).map(e => ticketEventHtml(e, gate, t.id)).join("")
           || '<div class="k-muted">no activity yet</div>'}</div>
       </div>`;
-      return `<div class="ktk">${head}${meta}${composer}${timeline}</div>`;
+      return `<div class="ktk">${head}${meta}${timeline}${composer}</div>`;
     }
     // Renders exactly what the ticket's own ``allowed_transitions``/
     // ``allowed_blocks``/``can_unblock`` say a legal move is for *this*
@@ -2300,7 +2326,14 @@
       for (let i = events.length - 1; i >= 0; i--) {
         const e = events[i];
         if (e.kind === "approval" && e.fields && e.fields.approval_id != null && e.ok == null) {
-          return { approvalId: e.fields.approval_id, eventId: e.id };
+          // tool/tool_class/args ride along so a caller can open the gate
+          // popup (see openTicketGateModal) straight from this row, without a
+          // second fetch for the same call open_approval() already wrote here.
+          return {
+            approvalId: e.fields.approval_id, eventId: e.id,
+            tool: e.tool, tool_class: e.tool_class, args: (e.fields || {}).args,
+            agent_id: t.agent_id,
+          };
         }
       }
       return null;
@@ -2500,6 +2533,13 @@
       // the mode toggle decides which action the Add button drives, not a
       // second input element.
       const el = document.getElementById("tk-chat-input");
+      // Same guard sendTicketChat applies to itself: never post while a chat
+      // turn is streaming, or while the textarea is disabled for any other
+      // reason (a gate is open, the assistant isn't configured, ...) — the
+      // keyboard shortcut (tkComposerKeydown) can reach this path too, not
+      // just the Add button, which today's disabled attribute alone doesn't
+      // cover in "note" mode.
+      if (tkChatAbort || (el && el.disabled)) return;
       const summary = el ? el.value.trim() : "";
       if (!summary) return;
       try {
@@ -2537,6 +2577,57 @@
       }
       await renderTicketDetail(ticketId);
       refreshHeader();
+    }
+
+    // -- gate popup (shared with the Fleet rail's openGateModal) -----------
+    // Ticket view's own gate popup: reuses the fleet rail's wide modal
+    // (openGateModal/gateModalHtml, defined with the rest of the confirm-gate
+    // code) via its onDecide/dismissible opts, but decides through the
+    // ticket's own existing path — decideTicketApproval already does the
+    // confirm dialog + API call + renderTicketDetail + refreshHeader — so
+    // this stays a thin wrapper, not a second copy of that logic.
+    function openTicketGateModal(ticketId, gate) {
+      openGateModal(
+        { tool: gate.tool, args: gate.args, agent_id: gate.agent_id, tool_class: gate.tool_class },
+        {
+          // Dismissible, unlike the fleet rail (see openGateModal's own
+          // comment for why): a ticket's gate can legitimately wait hours and
+          // be decided by a different operator than whoever has this ticket
+          // open right now, so "Decide later" must stay a true no-op, not a
+          // denial — the inline Approve/Deny row in the timeline (and the
+          // header approvals badge) remain the durable way back to it.
+          dismissible: true,
+          onDecide: approve => decideTicketApproval(ticketId, gate.approvalId, approve),
+        }
+      );
+    }
+    // Guards openTicketGateModal so a re-render mid-turn (renderTicketDetail
+    // runs again on every streamed turn's 'done') never reopens a dialog the
+    // operator already dismissed with "Decide later" — one popup per gate,
+    // not per render.
+    let tkGateShownFor = null;
+    function maybeOpenTicketGateModal(ticketId, gate) {
+      if (!gate || !canOperate() || tkGateShownFor === gate.approvalId) return;
+      tkGateShownFor = gate.approvalId;
+      openTicketGateModal(ticketId, gate);
+    }
+    // The 'pending' SSE event (handleTicketChatEvent, below) carries only
+    // toolloop's raw {tool, args, agent_id} — no approval id, since it is the
+    // same event shape the fleet chat uses and tickets are not its concern.
+    // TicketAssistant.on_hold has already durably written the approval row
+    // and blocked the ticket *before* that event is yielded (see the comment
+    // on ticketOpenGate), so a small refetch reliably finds it — this is what
+    // lets the popup appear right when the hold happens instead of only after
+    // the turn's later 'done' reload.
+    async function ticketPendingGate(ticketId) {
+      if (!canOperate()) return;
+      try {
+        const [ticket, events] = await Promise.all([
+          getJSON("/api/tickets/" + encodeURIComponent(ticketId)),
+          getJSON("/api/tickets/" + encodeURIComponent(ticketId) + "/events"),
+        ]);
+        maybeOpenTicketGateModal(ticketId, ticketOpenGate({ ticket, events: events.events || [] }));
+      } catch (e) { /* the 'done' event's own renderTicketDetail() is the fallback */ }
     }
 
     // ====================================================================
@@ -2583,6 +2674,11 @@
       const placeholder = isNote ? "operator note" : "Ask kenny about this ticket…";
       const btnLabel = isNote ? `${icon('plus', 13)}Add` : `${icon('send-horizontal', 13)}Send`;
       const btnOnclick = isNote ? `addTicketNote(${jsArg(t.id)})` : `sendTicketChat(${jsArg(t.id)})`;
+      // Rendered in both modes — it's the same textarea/keydown handler
+      // underneath either one (see mountTicketComposer/tkComposerKeydown).
+      const enterSend = `<label class="k-row" style="gap:6px">
+          <input type="checkbox" id="tk-enter-send" onchange="setEnterToSend(this.checked)"
+            ${enterToSend() ? "checked" : ""}> Enter to send</label>`;
       return `<div class="k-panel kset__grp" id="tk-composer">
         <div class="k-detail-grp__lbl">${isNote ? "add a note" : "ask kenny"}</div>
         ${modeToggle}
@@ -2591,10 +2687,38 @@
         ${mirror}
         <div class="k-row" style="justify-content:space-between;align-items:center;margin-top:8px;gap:10px">
           <span class="k-muted" id="tk-chat-reason">${esc(reasonText)}</span>
-          <button class="k-btn k-btn--primary k-btn--sm" id="tk-chat-send"
-            ${disabled ? "disabled" : ""} onclick="${btnOnclick}">${btnLabel}</button>
+          <div class="k-row" style="gap:14px;align-items:center">
+            ${enterSend}
+            <button class="k-btn k-btn--primary k-btn--sm" id="tk-chat-send"
+              ${disabled ? "disabled" : ""} onclick="${btnOnclick}">${btnLabel}</button>
+          </div>
         </div>
       </div>`;
+    }
+    // Bind the composer textarea's keydown handler after every place its HTML
+    // is (re)inserted — outerHTML replacement (setTicketComposerMode) and a
+    // full renderTicketDetail both create a fresh element with no listeners
+    // of its own. Mirrors how mountChat() binds the copilot rail's own
+    // #chat-input after each of its renders.
+    function mountTicketComposer() {
+      const ta = document.getElementById("tk-chat-input");
+      if (ta) ta.addEventListener("keydown", tkComposerKeydown);
+    }
+    // Enter without Shift/Alt sends when either the "Enter to send" preference
+    // is on, or Cmd/Ctrl is held (the escape hatch when it's off); Shift+Enter
+    // always inserts a newline, regardless of the preference. Never dispatches
+    // while a turn is already streaming or the textarea is disabled (a gate is
+    // open, the assistant isn't configured, ...) — the same guard
+    // sendTicketChat/addTicketNote apply to their own button.
+    function tkComposerKeydown(e) {
+      if (e.key !== "Enter" || e.shiftKey || e.altKey) return;
+      const forceSend = e.metaKey || e.ctrlKey;
+      if (!forceSend && !enterToSend()) return; // let the browser insert a newline
+      e.preventDefault();
+      if (tkChatAbort || e.target.disabled) return;
+      const id = state.ticketDetail && state.ticketDetail.ticket && state.ticketDetail.ticket.id;
+      if (id == null) return;
+      if (tkComposerMode === "note") addTicketNote(id); else sendTicketChat(id);
     }
     // Swaps between modes without losing whatever the operator already typed
     // — re-renders the composer from the already-loaded ticket (no refetch)
@@ -2608,6 +2732,7 @@
         host.outerHTML = ticketComposerHtml(state.ticketDetail.ticket);
         const ta2 = document.getElementById("tk-chat-input");
         if (ta2) ta2.value = val;
+        mountTicketComposer();
       }
     }
     // Swap Send -> Stop while a turn streams, mirroring setComposerStreaming's
@@ -2650,6 +2775,13 @@
       await startTicketChatTurn(id, message, mirror);
     }
 
+    // Scroll #tk-timeline to its newest row. Shared by the live-append helpers
+    // below and by renderTicketDetail, so a freshly loaded ticket also lands on
+    // the newest message rather than only auto-scrolling on later live events.
+    function tkScrollTimeline() {
+      const t = document.getElementById("tk-timeline");
+      if (t) t.scrollTop = t.scrollHeight;
+    }
     // -- appending provisional (in-progress) rows to the live timeline ------
     // These are a preview only: "done" (or the abort/error fallback in
     // startTicketChatTurn) always follows with a full renderTicketDetail(),
@@ -2673,7 +2805,7 @@
       const body = document.createElement("span");
       row.appendChild(body);
       t.appendChild(row);
-      t.scrollTop = t.scrollHeight;
+      tkScrollTimeline();
       return body;
     }
     function tkTimelineBubble(actorLabel, text) {
@@ -2706,7 +2838,7 @@
     function newTicketChatCtx() {
       return { _div: null, _raw: "", bubble() { return (this._div ||= tkTimelineBubble("kenny", "")); } };
     }
-    function handleTicketChatEvent(ev, ctx) {
+    function handleTicketChatEvent(ev, ctx, ticketId) {
       if (ev.type === "text_delta") {
         const div = ctx.bubble();
         ctx._raw += ev.text;
@@ -2714,8 +2846,7 @@
         // append — a delta can land mid-token, same reasoning as the
         // copilot's handleChatEvent.
         div.innerHTML = renderMarkdown(ctx._raw);
-        const t = document.getElementById("tk-timeline");
-        if (t) t.scrollTop = t.scrollHeight;
+        tkScrollTimeline();
       } else if (ev.type === "tool_result") {
         tkTimelineToolRun(ev.tool, ev.ok !== false);
       } else if (ev.type === "denied") {
@@ -2727,6 +2858,10 @@
         // event that immediately follows does the authoritative reload that
         // shows the new approval row with its inline Approve/Deny controls.
         setTicketComposerLocked(true, "Waiting on a decision above.");
+        // Also surface the gate popup right here, not just once the 'done'
+        // reload lands (see ticketPendingGate) — same guard (tkGateShownFor)
+        // as the renderTicketDetail path, so the two never double-open it.
+        ticketPendingGate(ticketId);
       } else if (ev.type === "error") {
         notify(ev.error || "chat failed", "err");
       }
@@ -2756,7 +2891,7 @@
             sawDone = true;
             await renderTicketDetail(ticketId);
           } else {
-            handleTicketChatEvent(ev, ctx);
+            handleTicketChatEvent(ev, ctx, ticketId);
           }
         }
       } catch (e) {
@@ -6015,7 +6150,14 @@
     }
     function mountChat() {
       const input = document.getElementById("chat-input");
-      if (input) input.addEventListener("keydown", e => { if (e.key === "Enter") sendChat(); });
+      // Plain Enter always sends here, regardless of the "Enter to send"
+      // preference — that preference is about the ticket view's multi-line
+      // textarea, and this is a single-line <input> with no newline concept
+      // of its own. Shift+Enter is still not swallowed, though, matching the
+      // ticket composer's own convention (tkComposerKeydown) rather than
+      // silently eating a modifier combo the operator may be using for
+      // something else (an IME, a browser/extension shortcut, ...).
+      if (input) input.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) sendChat(); });
       setChatContext(state.selected);
     }
     function suggest(btn) {
@@ -6256,22 +6398,56 @@
     // ~380px and a PowerShell script is unreadable in it. The decision itself
     // moves to a dialog wide enough to actually read the call, which is what
     // the assistant's own instructions already promise the operator.
-    function openGateModal(p) {
+    //
+    // Shared with the ticket view's own gate (see openTicketGateModal in the
+    // ticket-detail section): just the tool+args body, reusing gateCall()
+    // verbatim. `tool_class` is accepted for shape-parity with the pending
+    // event/approval row callers pass around, even though this body doesn't
+    // render it (same as before this was split out).
+    function gateModalHtml({ tool, args, agent_id, tool_class }) {
+      return `<div class="k-gate__desc" style="margin-bottom:12px">This will <b>change state</b> on
+           <b>${esc(agent_id || "the active PC")}</b>. Review the exact call below.</div>
+         <div class="k-gate__call">${gateCall(tool, args)}</div>`;
+    }
+    // The gate modal's decision callback for whichever dialog is currently
+    // open. A module-level slot rather than a closure baked into the button's
+    // onclick markup, because an inline HTML attribute can only call a named
+    // function — mirrors how modalOnClose already works for openModal/closeModal.
+    let gateModalOnDecide = null;
+    function gateModalDecide(approve, btn) {
+      if (btn) btn.disabled = true;
+      const cb = gateModalOnDecide;
+      gateModalOnDecide = null;
+      closeModal();
+      if (cb) cb(approve);
+    }
+    // opts.onDecide(approve) lets a second surface (the ticket view) reuse this
+    // exact dialog with its own decision path; opts.dismissible lets it opt
+    // into being closable without deciding (see the "Decide later" button
+    // below). With no opts this is the fleet rail's original behavior:
+    // non-dismissible, decides via confirmChat.
+    function openGateModal(p, opts) {
+      const o = opts || {};
+      gateModalOnDecide = o.onDecide || (approve => confirmChat(approve, null));
+      // The fleet rail's gate is non-dismissible on purpose: that session's
+      // composer is locked and nothing else can proceed until this dialog is
+      // answered, so there is no "close without deciding" to offer. A ticket's
+      // gate legitimately waits hours and may be decided by a different
+      // operator than the one looking at it now, so its caller opts into
+      // `dismissible: true` and gets a "Decide later" button that only closes
+      // the dialog instead of a cancel that would deny the call.
+      const dismissible = o.dismissible === true;
+      const secondaryBtn = dismissible
+        ? `<button class="k-btn k-btn--ghost" onclick="closeModal()">Decide later</button>`
+        : `<button class="k-btn k-btn--ghost" onclick="gateModalDecide(false, this)">cancel</button>`;
       openModal(
         `${icon('shield-alert', 20)}<span>Confirm before this runs</span>`,
-        `<div class="k-gate__desc" style="margin-bottom:12px">This will <b>change state</b> on
-           <b>${esc(p.agent_id || "the active PC")}</b>. Review the exact call below.</div>
-         <div class="k-gate__call">${gateCall(p.tool, p.args)}</div>
+        `${gateModalHtml(p)}
          <div class="k-row" style="gap:8px;justify-content:flex-end;margin-top:16px">
-           <button class="k-btn k-btn--ghost" onclick="confirmChatFromModal(false, this)">cancel</button>
-           <button class="k-btn k-btn--primary" onclick="confirmChatFromModal(true, this)">${icon('check', 15)}confirm &amp; run</button>
+           ${secondaryBtn}
+           <button class="k-btn k-btn--primary" onclick="gateModalDecide(true, this)">${icon('check', 15)}confirm &amp; run</button>
          </div>`,
-        "k-modal--wide", null, { dismissible: false });
-    }
-    function confirmChatFromModal(approve, btn) {
-      btn.disabled = true;
-      closeModal();
-      confirmChat(approve, null);
+        "k-modal--wide", null, { dismissible });
     }
     async function sendChat() {
       if (chatAbort) return; // a turn is already streaming (Enter while busy)
