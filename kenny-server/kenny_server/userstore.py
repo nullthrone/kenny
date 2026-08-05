@@ -225,6 +225,24 @@ class UserStore:
             rows = await cur.fetchall()
         return [_public_user(r) for r in rows]
 
+    async def list_directory(self) -> list[dict]:
+        """A minimal, auth-safe projection for resolving ids to usernames.
+
+        Unlike :meth:`list_users` (superuser-only, full account row), this is
+        exposed to any operator+ account so it can render another account's
+        id as a name: just ``{id, username, role}``, no email, avatar,
+        capability profile, or any other auth-sensitive field.
+        """
+
+        async with self._conn.execute(
+            "SELECT id, username, role FROM users ORDER BY username"
+        ) as cur:
+            rows = await cur.fetchall()
+        return [
+            {"id": r["id"], "username": r["username"], "role": r["role"]}
+            for r in rows
+        ]
+
     async def verify_login(self, username: str, password: str) -> aiosqlite.Row | None:
         """Return the account row iff username+password match and it's enabled.
 

@@ -81,6 +81,21 @@ async def test_totp_and_superuser_count(store) -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_directory_minimal_projection(store) -> None:
+    su = await store.create_user("admin", "pw-123456", "superuser", email="a@x.de")
+    op = await store.create_user("op", "pw-123456", "operator", avatar="dog-pug")
+    directory = await store.list_directory()
+    # Ordered by username, like list_users(): "admin" sorts before "op".
+    assert directory == [
+        {"id": su["id"], "username": "admin", "role": "superuser"},
+        {"id": op["id"], "username": "op", "role": "operator"},
+    ]
+    # No auth-sensitive fields leak through this projection.
+    for entry in directory:
+        assert set(entry) == {"id", "username", "role"}
+
+
+@pytest.mark.asyncio
 async def test_delete_cascades(store) -> None:
     u = await store.create_user("kid", "pw-123456", "user")
     await store.set_user_hosts(u["id"], ["PC-A"])

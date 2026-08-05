@@ -72,6 +72,39 @@ def test_role_matrix_via_pats(tmp_path) -> None:
         assert c.post("/api/agent/PC-OTHER/refresh", headers=h).status_code == 403
 
 
+def test_users_directory_operator_readable_user_forbidden(tmp_path) -> None:
+    """``/api/users/directory`` is the operator-floor id->username projection
+    that lets an operator (who cannot reach superuser-only ``/api/users``)
+    resolve another account's id to a name (§6: requester/assignee/actor
+    labels on the tickets UI)."""
+
+    app = _app(tmp_path)
+    with TestClient(app) as c:
+        _setup_admin(c)
+        c.post("/api/users", json={
+            "username": "op", "password": "pw-123456", "role": "operator"})
+        c.post("/api/users", json={
+            "username": "kid", "password": "pw-123456", "role": "user",
+            "email": "kid@example.com", "avatar": "dog-corgi"})
+        op_pat = _pat_for(c, "op")
+        kid_pat = _pat_for(c, "kid")
+
+    with TestClient(app) as c:
+        h = {"Authorization": f"Bearer {op_pat}"}
+        r = c.get("/api/users/directory", headers=h)
+        assert r.status_code == 200
+        users = {u["username"]: u for u in r.json()["users"]}
+        assert set(users) == {"admin", "op", "kid"}
+        # Minimal, auth-safe projection only — no email/avatar/capability
+        # profile/PAT state, unlike the superuser-only /api/users.
+        assert set(users["kid"]) == {"id", "username", "role"}
+        assert users["kid"]["role"] == "user"
+
+    with TestClient(app) as c:
+        h = {"Authorization": f"Bearer {kid_pat}"}
+        assert c.get("/api/users/directory", headers=h).status_code == 403
+
+
 def test_operator_can_remove_host_user_cannot(tmp_path) -> None:
     app = _app(tmp_path)
     with TestClient(app) as c:
