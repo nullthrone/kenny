@@ -467,7 +467,8 @@
 
     /* top-level tab navigation (Fleet / Activity) */
     .kc-tabs { display: flex; align-items: center; gap: 6px; }
-    .kc-tab { display: inline-flex; align-items: center; gap: 7px; padding: 7px 14px; border-radius: var(--radius-sm);
+    .kc-tab { position: relative; display: inline-flex; align-items: center; gap: 7px; padding: 7px 20px 7px 14px;
+      border-radius: var(--radius-sm);
       font-size: var(--text-sm); font-weight: 500; color: var(--fg-muted); text-decoration: none;
       border: 1px solid transparent; transition: background var(--dur) var(--ease), color var(--dur) var(--ease); }
     .kc-tab:hover { background: var(--surface-raised); color: var(--fg); }
@@ -1004,6 +1005,48 @@
     async function loadMe() {
       try { state.me = await api("/api/me"); }
       catch (e) { state.me = null; }
+      // The id->username/role directory backs userLabel()/actorLabel() (see
+      // below). It's operator-floor server-side, so a scoped `user` account
+      // has no route to it — don't even try, and never let a fetch failure
+      // here break the rest of bootstrap.
+      if (canOperate()) {
+        try { state.users = (await api("/api/users/directory")).users || []; }
+        catch (e) { state.users = []; }
+      } else {
+        state.users = [];
+      }
+    }
+
+    // Resolve a kenny account id to its username — the only mandatory,
+    // unique name an account has (no separate display-name column). Falls
+    // back to "#" + id for an id not in the directory (a deleted account, or
+    // a scoped `user` account that couldn't load the directory at all) and
+    // "—" for a null/undefined id (no requester/assignee).
+    function userLabel(uid) {
+      if (uid === null || uid === undefined) return "—";
+      const u = (state.users || []).find(u => u.id === uid);
+      return u ? u.username : "#" + uid;
+    }
+
+    // Render a ticket-event actor. The server writes "operator:<id>" /
+    // "user:<id>" for a human actor (see webui/tickets.py's `_actor`,
+    // mirrored by tickets.py's parse_actor server-side) — resolve the id via
+    // userLabel() and carry the role as a tooltip. "assistant"/"system" (and
+    // a bare "operator"/"user" with no id, the legacy shared-token case)
+    // produce exactly what the existing naming-consistency mapping already
+    // does — "kenny" for "assistant", the raw string otherwise — this
+    // composes with that mapping rather than duplicating or replacing it.
+    // Returns {label, title}; callers esc() both before use, same as every
+    // other dynamic value in this file.
+    function actorLabel(actor) {
+      if (actor == null) return { label: "", title: null };
+      if (actor === "assistant") return { label: "kenny", title: null };
+      const m = /^(operator|user):(\d+)$/.exec(String(actor));
+      if (m) {
+        const [, role, idStr] = m;
+        return { label: userLabel(Number(idStr)), title: role };
+      }
+      return { label: actor, title: null };
     }
 
     // POST a JSON body and yield parsed Server-Sent Events ({type, ...}) as they
@@ -1307,7 +1350,8 @@
       overview: null, trend: null, overviewAt: 0, topMetric: "disk", sankeyByOs: false, trendDays: 30,
       audit: [], auditQuery: "", auditPage: 1,
       events: [], eventsQuery: "", eventsPage: 1,
-      tickets: [], ticketsStateFilter: "", ticketDetail: null, approvalsCount: 0 };
+      tickets: [], ticketsStateFilter: "", ticketDetail: null, approvalsCount: 0,
+      ticketsNeedsYouCount: 0 };
     const AUDIT_PAGE_SIZE = 25;
     const EVENTS_PAGE_SIZE = 25;
     // Bumped by router() on every navigation. An async render captures it on
@@ -1355,17 +1399,26 @@
     }
 
     function renderTabs() {
-      const tab = (name, href, ico, label) =>
-        `<a class="kc-tab${state.tab === name ? " is-active" : ""}" href="${href}">${icon(ico, 16)}${label}</a>`;
+      const tab = (name, href, ico, label, extra) =>
+        `<a class="kc-tab${state.tab === name ? " is-active" : ""}" href="${href}">${icon(ico, 16)}${label}${extra || ""}</a>`;
       // Settings has moved into the user menu (superuser only); it is no longer
       // a top-level tab. The #/settings route still renders it (see router).
       // Tickets is visible to every role — it is the first genuinely
       // user-facing view (a scoped `user` only ever sees their own tickets).
+      // The tickets tab carries a count badge (moved off the header in favor
+      // of the nav item it actually refers to) when something needs an
+      // operator's attention; the href stays a plain #/tickets on purpose —
+      // filtering to "needs you" is a separate, deliberate action via the
+      // group chips on the tickets list page, not an automatic side effect
+      // of clicking the tab.
+      const n = state.ticketsNeedsYouCount || 0;
+      const ticketsBadge = (n > 0 && canOperate())
+        ? `<span class="k-badge">${n > 99 ? "99+" : n}</span>` : "";
       tabsEl.innerHTML =
         tab("overview", "#/overview", "activity", "Overview") +
         tab("fleet", "#/fleet", "network", "Fleet") +
         tab("activity", "#/activity/" + state.activityView, "activity", "Activity") +
-        tab("tickets", "#/tickets", "message-square", "Tickets");
+        tab("tickets", "#/tickets", "message-square", "Tickets", ticketsBadge);
     }
 
     async function router() {
@@ -2100,7 +2153,7 @@
         <td class="k-mono">#${t.number}</td>
         <td>${esc(t.title)}</td>
         <td>${ticketPillHtml(t)}</td>
-        <td>${t.requester_user_id != null ? "#" + esc(t.requester_user_id) : '<span class="k-muted">alert</span>'}</td>
+        <td>${t.requester_user_id != null ? esc(userLabel(t.requester_user_id)) : '<span class="k-muted">alert</span>'}</td>
         <td class="k-mono">${t.agent_id ? esc(t.agent_id) : '<span class="k-muted">—</span>'}</td>
         <td class="k-muted">${esc(relTime(t.created_at))}</td>
       </tr>`;
@@ -2241,9 +2294,9 @@
           <div class="k-deflist__k">priority</div><div class="k-deflist__v">${priorityField}</div>
           <div class="k-deflist__k">category</div><div class="k-deflist__v">${categoryField}</div>
           <div class="k-deflist__k">requester</div>
-          <div class="k-deflist__v">${t.requester_user_id != null ? "#" + esc(t.requester_user_id) : "alert (no requester)"}</div>
+          <div class="k-deflist__v">${t.requester_user_id != null ? esc(userLabel(t.requester_user_id)) : "alert (no requester)"}</div>
           <div class="k-deflist__k">assignee</div>
-          <div class="k-deflist__v">${t.assignee_user_id != null ? "#" + esc(t.assignee_user_id) : '<span class="k-muted">unclaimed</span>'}</div>
+          <div class="k-deflist__v">${t.assignee_user_id != null ? esc(userLabel(t.assignee_user_id)) : '<span class="k-muted">unclaimed</span>'}</div>
           <div class="k-deflist__k">agent</div><div class="k-deflist__v k-mono">${t.agent_id ? esc(t.agent_id) : "—"}</div>
           <div class="k-deflist__k">created</div><div class="k-deflist__v">${esc(fmtValue("at", t.created_at))}</div>
           <div class="k-deflist__k">updated</div><div class="k-deflist__v">${esc(fmtValue("at", t.updated_at))}</div>
@@ -2353,8 +2406,8 @@
         body = `blocked: <b>${esc(from)}</b> → <b>${esc(to)}</b>` + (e.summary ? " — " + esc(e.summary) : "");
       } else if (e.kind === "assign") {
         const f = e.fields || {};
-        body = `assignee: <b>${f.from_assignee_user_id != null ? "#" + esc(f.from_assignee_user_id) : "—"}</b>` +
-          ` → <b>${f.to_assignee_user_id != null ? "#" + esc(f.to_assignee_user_id) : "—"}</b>`;
+        body = `assignee: <b>${f.from_assignee_user_id != null ? esc(userLabel(f.from_assignee_user_id)) : "—"}</b>` +
+          ` → <b>${f.to_assignee_user_id != null ? esc(userLabel(f.to_assignee_user_id)) : "—"}</b>`;
       } else if (e.kind === "tool_call") {
         const args = e.fields && e.fields.args !== undefined ? esc(JSON.stringify(e.fields.args)) : "";
         const err = e.fields && e.fields.error;
@@ -2410,12 +2463,15 @@
       // machines, so this innerHTML must never carry an unescaped value.
       // renderMarkdown() is the one exception: it is escape-first by
       // construction (see its own comment), so its output is exempt too.
+      const al = actorLabel(e.actor);
       return `<div class="kc-timeline__row">
         <span class="k-audit__time">${time}</span>
         ${icon(TICKET_EVENT_ICON[e.kind] || "circle-help", 14)}
         <!-- "assistant" is the stored actor value (ticketstore.ASSISTANT_ACTOR);
-             the person-facing name is always "kenny", never the raw identifier. -->
-        <span class="kc-timeline__actor">${esc(e.actor === "assistant" ? "kenny" : e.actor || "")}</span>
+             the person-facing name is always "kenny", never the raw identifier.
+             "operator:<id>"/"user:<id>" render as the account's username via
+             actorLabel(), with the role as a tooltip. -->
+        <span class="kc-timeline__actor"${al.title ? ` title="${esc(al.title)}"` : ""}>${esc(al.label)}</span>
         <span>${body}</span>
       </div>`;
     }
@@ -3326,10 +3382,12 @@
         return head + `<div class="k-muted">Discord identity linking is not configured on
           this server yet.</div>`;
       }
-      const userName = uid => {
-        const u = discordUsers.find(x => String(x.id) === String(uid));
-        return u ? u.username : (uid != null ? "#" + uid : "—");
-      };
+      // i.user_id is a *kenny* account id (the account a Discord identity is
+      // linked to, not a Discord snowflake — that's i.discord_user_id, its
+      // own column below) — the same id space userLabel() resolves, so this
+      // delegates to it rather than keeping its own lookup over discordUsers
+      // (which stays around for discordUserOptions' role-qualified picker).
+      const userName = uid => userLabel(uid);
       const linkedRows = identities.map(i => `<tr${i.disabled ? ' class="k-muted"' : ""}>
           <td>${esc(userName(i.user_id))}</td>
           <td class="k-mono">${esc(i.discord_user_id || "")}</td>
@@ -4066,7 +4124,6 @@
       headerRight.innerHTML =
         fleetMetricsHtml(agents) +
         copilotBtn +
-        ticketsBadgeHtml() +
         approvalsBadgeHtml() +
         identityHtml();
       if (canOperate()) {
@@ -4080,24 +4137,8 @@
         } catch (e) { state.ticketsNeedsYouCount = 0; }
         const btn = document.getElementById("approvals-badge");
         if (btn) btn.outerHTML = approvalsBadgeHtml();
-        const tbtn = document.getElementById("tickets-needs-you-badge");
-        if (tbtn) tbtn.outerHTML = ticketsBadgeHtml();
+        renderTabs();
       }
-    }
-
-    // Tickets needing an operator's attention (blocked on approval/operator, or
-    // a fresh alert-origin ticket) — the sibling of the approvals badge, next
-    // to it for the same reason: both are "something is waiting on you".
-    function ticketsBadgeHtml() {
-      if (!canOperate()) return "";
-      const n = state.ticketsNeedsYouCount || 0;
-      return `<button class="kc-icon-btn${n ? " is-active" : ""}" id="tickets-needs-you-badge"
-          onclick="openTicketsGroup('needs_you')" title="tickets needing you" aria-label="tickets needing you">
-          ${icon('message-square', 16)}${n ? `<span class="k-badge">${n > 99 ? "99+" : n}</span>` : ""}</button>`;
-    }
-    function openTicketsGroup(group) {
-      state.ticketsGroup = group;
-      location.hash = "#/tickets";
     }
 
     // A pending-approvals count badge (operator+) opening the approvals modal —
