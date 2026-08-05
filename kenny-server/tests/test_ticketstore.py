@@ -730,3 +730,63 @@ async def test_prune_clears_dead_pending_requests_only(tmp_path) -> None:
         assert await store.get_pending_request(live.id) is not None
     finally:
         await store.close()
+
+
+# -- write_lock (ADR-0056): the _insert_event nesting must not deadlock -----
+#
+# set_state/set_agent_id/set_blocked/set_assignee/mark_nudged/append_event all
+# hold write_lock() around an UPDATE + _insert_event() + commit, and
+# _insert_event() itself takes write_lock() again on the same task. A
+# non-reentrant lock would deadlock here; wait_for gives a hard ceiling so a
+# regression fails fast instead of hanging the test run.
+
+
+async def test_nested_event_write_does_not_deadlock(tmp_path) -> None:
+    store = await _store(tmp_path)
+    try:
+        ticket = await store.create(title="a", origin="alert", now=NOW)
+        moved = await asyncio.wait_for(
+            store.set_state(ticket.id, "in_progress", actor="system", now=NOW),
+            timeout=5,
+        )
+        assert moved is not None and moved.state == "in_progress"
+
+        blocked = await asyncio.wait_for(
+            store.set_blocked(ticket.id, "user", actor="system", now=NOW),
+            timeout=5,
+        )
+        assert blocked is not None and blocked.blocked_on == "user"
+
+        await asyncio.wait_for(
+            store.append_event(ticket_id=ticket.id, kind="note", actor="system", now=NOW),
+            timeout=5,
+        )
+
+        events = await store.list_events(ticket.id)
+        assert [e.kind for e in events] == ["state", "block", "note"]
+    finally:
+        await store.close()
+
+
+async def test_concurrent_set_state_calls_stay_exclusive(tmp_path) -> None:
+    """The lock must still serialize across *different* tasks, not just make
+    the same-task nesting a no-op — two concurrent set_state calls on two
+    different tickets must both land cleanly rather than racing.
+    """
+
+    store = await _store(tmp_path)
+    try:
+        a = await store.create(title="a", origin="alert", now=NOW)
+        b = await store.create(title="b", origin="alert", now=NOW)
+        results = await asyncio.wait_for(
+            asyncio.gather(
+                store.set_state(a.id, "in_progress", actor="system", now=NOW),
+                store.set_state(b.id, "in_progress", actor="system", now=NOW),
+            ),
+            timeout=5,
+        )
+        assert all(r is not None and r.state == "in_progress" for r in results)
+        assert len(await store.list_events(a.id, kind="state")) == 1
+        assert len(await store.list_events(b.id, kind="state")) == 1
+    finally:
+        await store.close()

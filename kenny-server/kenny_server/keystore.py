@@ -33,6 +33,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PublicKey,
 )
 
+from .store import _configure_connection
+
 logger = logging.getLogger("kenny.keystore")
 
 # Domain-separation label for the mutual-auth transcript (ADR-0023). Must stay
@@ -109,7 +111,7 @@ class KeyStore:
         if self._db is not None:
             return
         self._db = await aiosqlite.connect(self.db_path)
-        self._db.row_factory = aiosqlite.Row
+        await _configure_connection(self._db)
         await self._db.executescript(_SCHEMA)
         await self._migrate()
         await self._db.commit()

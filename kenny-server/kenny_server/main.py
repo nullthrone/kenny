@@ -299,7 +299,17 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         registry=registry,
         notifiers=notifiers,
         settings=settings,
-        prunables=[store, event_store, webfilter_store, ticket_store, discord_identities],
+        # (store, settings_key) pairs -- only ``store`` (snapshots) has an
+        # operator-facing retention setting so far (ADR-0056): it dominates
+        # this database's size (~90 KB/row). The rest keep pruning on their
+        # own hardcoded default until a key is added for them too.
+        prunables=[
+            (store, "KENNY_TELEMETRY_RETENTION_DAYS"),
+            (event_store, None),
+            (webfilter_store, None),
+            (ticket_store, None),
+            (discord_identities, None),
+        ],
         open_ticket=open_alert_ticket,
         ticket_rules=ticket_rules,
     )
@@ -424,6 +434,10 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         ticket_service.stall_nudge_secs = int(settings.get("KENNY_TICKET_STALL_NUDGE_SECS"))
         ticket_service.stall_giveup_secs = int(settings.get("KENNY_TICKET_STALL_GIVEUP_SECS"))
         ticket_store.run_retention_days = int(settings.get("KENNY_TICKET_RETENTION_DAYS"))
+        # Same reasoning for telemetry retention (ADR-0056): re-read before the
+        # boot-time prune below, so a dashboard override applies from this
+        # boot's first sweep instead of only from the next periodic pass.
+        store.retention_days = int(settings.get("KENNY_TELEMETRY_RETENTION_DAYS"))
         if applied:
             await event_store.insert_alert(
                 agent_id=None,

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sqlite3
+
 from starlette.testclient import TestClient
 
 from kenny_server.main import build_app
@@ -377,3 +379,49 @@ def test_agent_trends_endpoint(tmp_path):
         (forecast,) = body["disk"]
         assert forecast["mount"] == "C:"
         assert forecast["days_until_full"] == 10.0
+
+
+# -- POST /api/agent/{id}/refresh: a storage hiccup must not 500 -------------
+#
+# The tunnel round-trip already succeeded by the time store.insert runs; a
+# transient write failure there (e.g. SQLite lock contention) must not turn a
+# working refresh into a 500. Both cases stub tunnel.send_request instead of
+# driving a real mock agent (see test_server_e2e.py) — the behaviour under
+# test lives entirely after the tunnel call returns.
+
+
+async def _fake_send_request(agent_id, tool, args, timeout_s=60):
+    return {"disk": {"status": "ok", "summary": ""}}
+
+
+def test_refresh_reports_stored_false_on_write_failure(tmp_path, monkeypatch):
+    app = build_app(db_path=str(tmp_path / "refresh.sqlite"))
+    monkeypatch.setattr(app.state.tunnel, "send_request", _fake_send_request)
+
+    async def _raise_locked(*a, **kw):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(app.state.store, "insert", _raise_locked)
+
+    with TestClient(app) as c:
+        r = c.post("/api/agent/example-pc/refresh", headers=_bearer(app))
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["stored"] is False
+    assert "warning" in body and body["warning"]
+
+
+def test_refresh_reports_stored_true_on_success(tmp_path):
+    app = build_app(db_path=str(tmp_path / "refresh-ok.sqlite"))
+    app.state.tunnel.send_request = _fake_send_request  # type: ignore[method-assign]
+
+    with TestClient(app) as c:
+        r = c.post("/api/agent/example-pc/refresh", headers=_bearer(app))
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["stored"] is True
+    assert "warning" not in body

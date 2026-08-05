@@ -205,6 +205,32 @@ def test_oauth_ttls_are_in_catalog_with_matching_defaults() -> None:
     assert refresh.parse(refresh.default_raw) == _DEFAULT_REFRESH_TTL_SECS
 
 
+def test_sqlite_busy_timeout_is_env_only_and_matches_coded_default() -> None:
+    # store._BUSY_TIMEOUT_MS is read once from os.environ at import time
+    # (ADR-0056) -- it cannot be changed live, and the catalog's coded default
+    # must match it or the read-only row on the settings page would lie.
+    from kenny_server.store import _BUSY_TIMEOUT_MS
+
+    spec = CATALOG["KENNY_SQLITE_BUSY_TIMEOUT_MS"]
+    assert spec.lifecycle == "env_only"
+    assert spec.parse(spec.default_raw) == _BUSY_TIMEOUT_MS
+
+
+def test_telemetry_retention_is_live_and_matches_coded_default() -> None:
+    # store.TELEMETRY_RETENTION_DAYS is TelemetryStore's fallback when no live
+    # setting value is resolved; the catalog default must match it or an
+    # operator who never touches the setting would be shown the wrong
+    # effective value. Deliberately its own constant, not store.RETENTION_DAYS
+    # (which EventStore/WebFilterStore still default to) -- so this assertion
+    # cannot be satisfied by a change that silently moves their retention too.
+    from kenny_server.store import TELEMETRY_RETENTION_DAYS
+
+    spec = CATALOG["KENNY_TELEMETRY_RETENTION_DAYS"]
+    assert spec.lifecycle == "live"
+    assert spec.min == 1
+    assert spec.parse(spec.default_raw) == TELEMETRY_RETENTION_DAYS
+
+
 # -- SettingsStore persistence -------------------------------------------------
 
 

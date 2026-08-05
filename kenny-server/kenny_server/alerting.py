@@ -66,7 +66,7 @@ _DAY_INDEX = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun":
 
 
 class _Prunable(Protocol):
-    async def prune(self) -> int: ...
+    async def prune(self, *, retention_days: int | None = None) -> int: ...
 
 
 def _parse_ts(value: Any) -> datetime | None:
@@ -93,7 +93,7 @@ class AlertEngine:
         settings: Any = None,
         cooldown_s: int = DEFAULT_COOLDOWN_S,
         offline_after_s: int = DEFAULT_OFFLINE_AFTER_S,
-        prunables: list[_Prunable] | None = None,
+        prunables: list[tuple[_Prunable, str | None]] | None = None,
         digest_enabled: bool = True,
         digest_day: str = "mon",
         digest_hour: int = 8,
@@ -115,8 +115,17 @@ class AlertEngine:
         self._digest_enabled_fb = digest_enabled
         self._digest_day_fb = digest_day
         self._digest_hour_fb = digest_hour
+        # Each entry is (store, settings_key). ``settings_key`` is None for a
+        # store with no operator-facing retention setting yet (ADR-0056) --
+        # those keep pruning on their own hardcoded default. A key present
+        # here must also carry a live-reread ``@property`` below or a spec
+        # lookup in ``_maybe_prune``; see ``KENNY_TELEMETRY_RETENTION_DAYS``.
         self._prunables = prunables or []
         self._last_prune: datetime | None = None
+        # Last resolved value per settings key, so a *decrease* (operator
+        # tightens retention in the dashboard) can force an immediate prune
+        # pass instead of waiting up to _PRUNE_EVERY -- see _maybe_prune.
+        self._last_retention: dict[str, int] = {}
         # Injected by the composition root when the ticket surface exists; see
         # ``_dispatch``. None means alerts never open tickets, which is the
         # behaviour of every server that does not wire one.
@@ -599,12 +608,35 @@ class AlertEngine:
         return True
 
     async def _maybe_prune(self, now: datetime | None = None) -> None:
+        """Run each prunable store's retention sweep, at most every _PRUNE_EVERY --
+        except a settings-backed retention key that just *decreased* forces an
+        immediate pass, so tightening it from the dashboard (ADR-0056) is
+        visible within one alert cycle (~60s) instead of up to a day later.
+        Loosening a key never forces a pass -- there is nothing extra to delete.
+        """
+
         now = now or datetime.now(timezone.utc)
-        if self._last_prune is not None and now - self._last_prune < _PRUNE_EVERY:
+        due = self._last_prune is None or now - self._last_prune >= _PRUNE_EVERY
+        forced = False
+        for _store, key in self._prunables:
+            if key is None:
+                continue
+            days = self._cfg(key, None)
+            if days is None:
+                continue
+            prev = self._last_retention.get(key)
+            if prev is not None and days < prev:
+                forced = True
+            self._last_retention[key] = days
+        if not due and not forced:
             return
         self._last_prune = now
-        for store in self._prunables:
+        for store, key in self._prunables:
+            days = self._cfg(key, None) if key is not None else None
             try:
-                await store.prune()
+                if days is None:
+                    await store.prune()
+                else:
+                    await store.prune(retention_days=days)
             except Exception:  # noqa: BLE001
                 logger.exception("periodic prune failed for %r", store)
