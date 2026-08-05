@@ -294,6 +294,19 @@ _SPECS: list[SettingSpec] = [
           "Agent push interval (s)", lifecycle="env_only",
           help="Advertised to agents at install time. Agent-facing "
                "(deferred to a future ADR)."),
+    _spec("KENNY_TELEMETRY_RETENTION_DAYS", "Telemetry limits", "int", "30",
+          "Snapshot retention (days)", lifecycle="live", min=1,
+          help="How long raw telemetry snapshots are kept. Snapshots dominate "
+               "this database's size (~90 KB per row); lowering this is the "
+               "main lever on disk usage. Lowering it prunes on the next alert "
+               "cycle (~60s), not on a restart. Deleting rows frees space for "
+               "reuse but does not shrink the database file — restore from a "
+               "backup (ADR-0043) or VACUUM offline to reclaim disk."),
+    _spec("KENNY_SQLITE_BUSY_TIMEOUT_MS", "Telemetry limits", "int", "20000",
+          "SQLite busy timeout (ms)", lifecycle="env_only",
+          help="How long a write waits for a contended SQLite lock before "
+               "raising 'database is locked' (ADR-0056). Read once at import "
+               "time, so it cannot be changed live from the dashboard."),
     # -- Agent distribution (read-only this iteration) -------------------------
     _spec("KENNY_GITHUB_REPO", "Agent distribution", "str", "t11z/kenny",
           "Agent GitHub repo", lifecycle="env_only"),

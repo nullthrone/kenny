@@ -480,12 +480,19 @@ class DiscordIdentityStore:
 
     # -- retention ---------------------------------------------------------
 
-    async def prune(self, *, now: datetime | str | None = None) -> int:
+    async def prune(
+        self, *, now: datetime | str | None = None, retention_days: int | None = None
+    ) -> int:
         """Delete dead claims (expired or consumed). Identities are never pruned.
 
         A consumed claim's outcome already lives on the identity row
         (``linked_at``/``linked_by``/``linked_via``), so nothing auditable is
         lost; an expired one never produced anything.
+
+        ``retention_days`` is accepted and ignored: this store has no
+        duration-based retention window to override (a claim is deleted the
+        moment it is dead, not after N days) — the parameter exists only for
+        conformance with the ``AlertEngine`` prunable protocol (ADR-0056).
         """
 
         cur = await self._conn.execute(

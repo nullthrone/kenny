@@ -10,16 +10,26 @@ See ADR 0007 for the push-model + SQLite rationale.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import uuid
+import weakref
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable
+from typing import Any, AsyncIterator, Callable
 
 import aiosqlite
 
 DEFAULT_DB_PATH = "kenny.sqlite"
 RETENTION_DAYS = 30
+# TelemetryStore's own default (ADR-0056), deliberately its own constant and
+# not a reuse of RETENTION_DAYS above: KENNY_TELEMETRY_RETENTION_DAYS's catalog
+# default is asserted against this one specifically, so changing the shared
+# constant EventStore/WebFilterStore still fall back to cannot silently move
+# telemetry retention (or vice versa) without the seam test in test_config.py
+# catching it.
+TELEMETRY_RETENTION_DAYS = 30
 
 # Every store opens its own aiosqlite connection to the *same* file. WAL lets
 # readers and writers proceed concurrently; ``busy_timeout`` makes a connection
@@ -27,7 +37,11 @@ RETENTION_DAYS = 30
 # "database is locked" (SQLite's default busy_timeout is 0). Without it, any
 # momentary write contention on the shared file raised OperationalError out of a
 # telemetry INSERT and tore down the agent WebSocket tunnel (connection flapping).
-_BUSY_TIMEOUT_MS = int(os.environ.get("KENNY_SQLITE_BUSY_TIMEOUT_MS", "5000"))
+# 20000 (not SQLite's usual "a couple seconds" folk-default): this DB carries
+# ~90 KB telemetry blobs across ~16 long-lived connections plus several
+# background writers (alert engine, log drain, ticket sweep); under real
+# contention a short timeout raises well before a queued writer gets its turn.
+_BUSY_TIMEOUT_MS = int(os.environ.get("KENNY_SQLITE_BUSY_TIMEOUT_MS", "20000"))
 
 
 async def _configure_connection(db: aiosqlite.Connection) -> None:
@@ -38,6 +52,16 @@ async def _configure_connection(db: aiosqlite.Connection) -> None:
     unclosed PRAGMA cursor is otherwise enough to make a later ``VACUUM``/
     ``VACUUM INTO`` on the same connection fail with "SQL statements in
     progress" (see :mod:`kenny_server.backup`).
+
+    ``synchronous=NORMAL`` trades one specific, bounded risk for materially
+    shorter write transactions: in WAL mode NORMAL still guarantees the
+    database can never be *corrupted*, but a commit no longer fsyncs before
+    returning, so the most recent commit(s) can be lost if the **OS/host**
+    crashes or loses power outright (a killed/crashed *process* is fine — the
+    WAL survives that). Worth it here: every write is competing for the same
+    single-writer file, and FULL's fsync-per-commit was directly widening the
+    contention window this module exists to avoid. ADR-0043's backups cover
+    the durability gap this leaves.
     """
 
     db.row_factory = aiosqlite.Row
@@ -45,6 +69,111 @@ async def _configure_connection(db: aiosqlite.Connection) -> None:
         pass
     async with db.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}"):
         pass
+    async with db.execute("PRAGMA synchronous=NORMAL"):
+        pass
+
+
+# -- process-wide write serialization (ADR-0056) ------------------------------
+#
+# SQLite already allows only one writer at a time; ``busy_timeout`` bounds how
+# long a second writer waits for that single slot before raising. That bound
+# was still not enough: a connection that has *no* ``busy_timeout`` (see the
+# five stores this module's docstring above used to omit it for) can leave a
+# multi-statement write half-finished — the driver never rolls back on error —
+# and hold the WAL writer lock indefinitely, so every other writer's full
+# timeout elapses and it raises "database is locked" anyway. Fixing that gap
+# closes the trigger; this lock removes the blast radius: this process's own
+# writers queue on an ``asyncio.Lock`` instead of racing SQLite's single-writer
+# slot, so a stuck or merely slow writer delays the next one rather than
+# starving it out from under a busy_timeout.
+#
+# Two properties that are easy to get wrong:
+#
+# * **Re-entrant per task.** ``ticketstore._insert_event`` writes on its
+#   caller's transaction and is called *inside* other write methods
+#   (``set_state``, ``set_agent_id``, ``append_event``). A plain
+#   ``asyncio.Lock`` taken at both levels self-deadlocks. Re-entrancy is keyed
+#   on ``asyncio.current_task()`` identity, not a ``ContextVar`` — a task
+#   spawned *while* the lock is held inherits the parent's context, and a
+#   ContextVar flag would make that child believe it already holds the lock.
+# * **Bound to one event loop.** ``asyncio.Lock`` binds to the loop of its
+#   first ``acquire`` and raises if reused from another (pytest-asyncio gives
+#   each test its own loop). State lives in a ``WeakKeyDictionary`` keyed by
+#   the running loop instead of a single module-level lock.
+#
+# The rule that makes the ticket-store case the *only* nesting, and therefore
+# keeps this deadlock-free: take the lock only inside individual store
+# methods, immediately around the statements it protects — never around a
+# loop, and never around an ``await`` that reaches the tunnel, an LLM call, or
+# any callback the caller supplied (e.g. a ticket gate resumer). A write held
+# across I/O like that would stall every other writer in the process for the
+# duration of that I/O.
+
+
+class _WriteLockState:
+    __slots__ = ("lock", "owner", "depth")
+
+    def __init__(self) -> None:
+        self.lock = asyncio.Lock()
+        self.owner: asyncio.Task | None = None
+        self.depth = 0
+
+
+_WRITE_LOCKS: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, _WriteLockState]" = (
+    weakref.WeakKeyDictionary()
+)
+
+
+@asynccontextmanager
+async def write_lock() -> AsyncIterator[None]:
+    """Serialize this process's SQLite writers. Re-entrant within one task.
+
+    See the module-level comment above for why this exists and the rule that
+    keeps it deadlock-free (never hold it across a loop or non-DB I/O).
+    """
+
+    loop = asyncio.get_running_loop()
+    state = _WRITE_LOCKS.get(loop)
+    if state is None:
+        state = _WRITE_LOCKS[loop] = _WriteLockState()
+    task = asyncio.current_task()
+    if state.owner is not None and task is state.owner:
+        # Re-entrant hop: the current task already holds the lock (e.g.
+        # ticketstore.set_state -> _insert_event). Do not acquire again.
+        state.depth += 1
+        try:
+            yield
+        finally:
+            state.depth -= 1
+        return
+    await state.lock.acquire()
+    state.owner, state.depth = task, 1
+    try:
+        yield
+    finally:
+        state.depth -= 1
+        state.owner = None
+        state.lock.release()
+
+
+async def _begin_immediate(db: aiosqlite.Connection) -> None:
+    """Take the WAL writer lock as the transaction's first act.
+
+    Insurance, not the fix for the failure this module's writer contention
+    caused (see ADR-0056): every read in this codebase runs to completion
+    (``async with ... execute(...)``) before any write, under the legacy
+    ``isolation_level=""`` that only opens an implicit transaction on the
+    first DML statement — so there is no read-then-upgrade-to-write path here
+    for ``BEGIN IMMEDIATE`` to rescue. Its value is narrower: a multi-statement
+    writer takes the writer lock up front instead of partway through, bounding
+    how long it can hold a half-finished transaction, and it also protects
+    against a writer outside this process (the ``sqlite3`` CLI, a future
+    second worker) that :func:`write_lock` cannot see.
+    """
+
+    async with db.execute("BEGIN IMMEDIATE"):
+        pass
+
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS snapshots (
@@ -62,7 +191,9 @@ CREATE INDEX IF NOT EXISTS idx_snapshots_agent_time
 class TelemetryStore:
     """Async SQLite-backed store for telemetry snapshots."""
 
-    def __init__(self, db_path: str = DEFAULT_DB_PATH, retention_days: int = RETENTION_DAYS) -> None:
+    def __init__(
+        self, db_path: str = DEFAULT_DB_PATH, retention_days: int = TELEMETRY_RETENTION_DAYS
+    ) -> None:
         self.db_path = db_path
         self.retention_days = retention_days
         self._db: aiosqlite.Connection | None = None
@@ -108,12 +239,13 @@ class TelemetryStore:
         """Store a snapshot for an agent."""
 
         received_at = received_at or datetime.now(timezone.utc).isoformat()
-        await self._conn.execute(
-            "INSERT INTO snapshots (agent_id, collected_at, received_at, snapshot) "
-            "VALUES (?, ?, ?, ?)",
-            (agent_id, collected_at, received_at, json.dumps(snapshot)),
-        )
-        await self._conn.commit()
+        async with write_lock():
+            await self._conn.execute(
+                "INSERT INTO snapshots (agent_id, collected_at, received_at, snapshot) "
+                "VALUES (?, ?, ?, ?)",
+                (agent_id, collected_at, received_at, json.dumps(snapshot)),
+            )
+            await self._conn.commit()
 
     async def latest(self, agent_id: str) -> dict[str, Any] | None:
         """Return the most recent stored snapshot for an agent, or None."""
@@ -172,24 +304,53 @@ class TelemetryStore:
             rows = await cur.fetchall()
         return [r["agent_id"] for r in rows]
 
-    async def prune(self, *, now: datetime | None = None) -> int:
-        """Delete snapshots older than the retention window. Returns rows deleted."""
+    _PRUNE_CHUNK = 500
+
+    async def prune(
+        self, *, now: datetime | None = None, retention_days: int | None = None
+    ) -> int:
+        """Delete snapshots older than the retention window. Returns rows deleted.
+
+        ``retention_days`` overrides ``self.retention_days`` for this call —
+        the operator-configurable live setting (ADR-0056) resolves it fresh on
+        every scheduled pass instead of freezing it at store construction.
+
+        Snapshots are the largest table in this database by a wide margin
+        (~90 KB per row); an unbounded ``DELETE`` here can hold the write lock
+        — and so block every other writer in the process, see
+        :func:`write_lock` — for as long as it takes to delete everything past
+        the cutoff. Deleted in small chunks, each its own transaction, with a
+        scheduling yield between them, so a large prune interleaves with
+        telemetry inserts instead of stalling them.
+        """
 
         now = now or datetime.now(timezone.utc)
-        cutoff = (now - timedelta(days=self.retention_days)).isoformat()
-        cur = await self._conn.execute(
-            "DELETE FROM snapshots WHERE collected_at < ?", (cutoff,)
-        )
-        await self._conn.commit()
-        return cur.rowcount or 0
+        days = retention_days if retention_days is not None else self.retention_days
+        cutoff = (now - timedelta(days=days)).isoformat()
+        total = 0
+        while True:
+            async with write_lock():
+                cur = await self._conn.execute(
+                    "DELETE FROM snapshots WHERE id IN "
+                    "(SELECT id FROM snapshots WHERE collected_at < ? LIMIT ?)",
+                    (cutoff, self._PRUNE_CHUNK),
+                )
+                await self._conn.commit()
+            deleted = cur.rowcount or 0
+            total += deleted
+            if deleted < self._PRUNE_CHUNK:
+                break
+            await asyncio.sleep(0)
+        return total
 
     async def delete_agent(self, agent_id: str) -> int:
         """Delete all snapshots for ``agent_id`` (host removed from inventory)."""
 
-        cur = await self._conn.execute(
-            "DELETE FROM snapshots WHERE agent_id = ?", (agent_id,)
-        )
-        await self._conn.commit()
+        async with write_lock():
+            cur = await self._conn.execute(
+                "DELETE FROM snapshots WHERE agent_id = ?", (agent_id,)
+            )
+            await self._conn.commit()
         return cur.rowcount or 0
 
     def _row_to_record(self, row: aiosqlite.Row) -> dict[str, Any]:
@@ -273,20 +434,21 @@ class EventStore:
     ) -> None:
         """Store a structured log line (kind='log')."""
 
-        await self._conn.execute(
-            "INSERT INTO events (at, agent_id, source, level, kind, target, message, fields) "
-            "VALUES (?, ?, ?, ?, 'log', ?, ?, ?)",
-            (
-                at,
-                agent_id,
-                source,
-                level,
-                target,
-                message,
-                json.dumps(fields) if fields is not None else None,
-            ),
-        )
-        await self._conn.commit()
+        async with write_lock():
+            await self._conn.execute(
+                "INSERT INTO events (at, agent_id, source, level, kind, target, message, fields) "
+                "VALUES (?, ?, ?, ?, 'log', ?, ?, ?)",
+                (
+                    at,
+                    agent_id,
+                    source,
+                    level,
+                    target,
+                    message,
+                    json.dumps(fields) if fields is not None else None,
+                ),
+            )
+            await self._conn.commit()
 
     async def insert_audit(
         self,
@@ -300,12 +462,13 @@ class EventStore:
         """Store a forwarded tool-call audit event (kind='audit', source='server')."""
 
         at = at or datetime.now(timezone.utc).isoformat()
-        await self._conn.execute(
-            "INSERT INTO events (at, agent_id, source, kind, tool, ok, error) "
-            "VALUES (?, ?, 'server', 'audit', ?, ?, ?)",
-            (at, agent_id, tool, 1 if ok else 0, error),
-        )
-        await self._conn.commit()
+        async with write_lock():
+            await self._conn.execute(
+                "INSERT INTO events (at, agent_id, source, kind, tool, ok, error) "
+                "VALUES (?, ?, 'server', 'audit', ?, ?, ?)",
+                (at, agent_id, tool, 1 if ok else 0, error),
+            )
+            await self._conn.commit()
 
     async def insert_alert(
         self,
@@ -323,18 +486,19 @@ class EventStore:
         """
 
         at = at or datetime.now(timezone.utc).isoformat()
-        await self._conn.execute(
-            "INSERT INTO events (at, agent_id, source, level, kind, target, message, fields) "
-            "VALUES (?, ?, 'server', ?, 'alert', 'kenny.alert', ?, ?)",
-            (
-                at,
-                agent_id,
-                level,
-                message,
-                json.dumps(fields) if fields is not None else None,
-            ),
-        )
-        await self._conn.commit()
+        async with write_lock():
+            await self._conn.execute(
+                "INSERT INTO events (at, agent_id, source, level, kind, target, message, fields) "
+                "VALUES (?, ?, 'server', ?, 'alert', 'kenny.alert', ?, ?)",
+                (
+                    at,
+                    agent_id,
+                    level,
+                    message,
+                    json.dumps(fields) if fields is not None else None,
+                ),
+            )
+            await self._conn.commit()
 
     async def query(
         self,
@@ -367,22 +531,34 @@ class EventStore:
             rows = await cur.fetchall()
         return [self._row_to_event(r) for r in rows]
 
-    async def prune(self, *, now: datetime | None = None) -> int:
-        """Delete events older than the retention window. Returns rows deleted."""
+    async def prune(
+        self, *, now: datetime | None = None, retention_days: int | None = None
+    ) -> int:
+        """Delete events older than the retention window. Returns rows deleted.
+
+        ``retention_days`` overrides ``self.retention_days`` for this call —
+        see :meth:`TelemetryStore.prune` for why (ADR-0056's live-retention
+        setting). No operator-facing key is wired to this store yet; the
+        parameter exists so one can be added later without a second signature
+        change.
+        """
 
         now = now or datetime.now(timezone.utc)
-        cutoff = (now - timedelta(days=self.retention_days)).isoformat()
-        cur = await self._conn.execute("DELETE FROM events WHERE at < ?", (cutoff,))
-        await self._conn.commit()
+        days = retention_days if retention_days is not None else self.retention_days
+        cutoff = (now - timedelta(days=days)).isoformat()
+        async with write_lock():
+            cur = await self._conn.execute("DELETE FROM events WHERE at < ?", (cutoff,))
+            await self._conn.commit()
         return cur.rowcount or 0
 
     async def delete_agent(self, agent_id: str) -> int:
         """Delete all events for ``agent_id`` (host removed from inventory)."""
 
-        cur = await self._conn.execute(
-            "DELETE FROM events WHERE agent_id = ?", (agent_id,)
-        )
-        await self._conn.commit()
+        async with write_lock():
+            cur = await self._conn.execute(
+                "DELETE FROM events WHERE agent_id = ?", (agent_id,)
+            )
+            await self._conn.commit()
         return cur.rowcount or 0
 
     @staticmethod
@@ -476,23 +652,25 @@ class AlertStateStore:
         since: str,
         last_notified_at: str | None,
     ) -> None:
-        await self._conn.execute(
-            "INSERT INTO alert_state (agent_id, scope, status, since, last_notified_at) "
-            "VALUES (?, ?, ?, ?, ?) "
-            "ON CONFLICT (agent_id, scope) DO UPDATE SET "
-            "status = excluded.status, since = excluded.since, "
-            "last_notified_at = excluded.last_notified_at",
-            (agent_id, scope, status, since, last_notified_at),
-        )
-        await self._conn.commit()
+        async with write_lock():
+            await self._conn.execute(
+                "INSERT INTO alert_state (agent_id, scope, status, since, last_notified_at) "
+                "VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT (agent_id, scope) DO UPDATE SET "
+                "status = excluded.status, since = excluded.since, "
+                "last_notified_at = excluded.last_notified_at",
+                (agent_id, scope, status, since, last_notified_at),
+            )
+            await self._conn.commit()
 
     async def delete_agent(self, agent_id: str) -> int:
         """Delete all alert state for ``agent_id`` (host removed from inventory)."""
 
-        cur = await self._conn.execute(
-            "DELETE FROM alert_state WHERE agent_id = ?", (agent_id,)
-        )
-        await self._conn.commit()
+        async with write_lock():
+            cur = await self._conn.execute(
+                "DELETE FROM alert_state WHERE agent_id = ?", (agent_id,)
+            )
+            await self._conn.commit()
         return cur.rowcount or 0
 
 
@@ -1407,8 +1585,7 @@ class SettingsStore:
         if self._db is not None:
             return
         self._db = await aiosqlite.connect(self.db_path)
-        self._db.row_factory = aiosqlite.Row
-        await self._db.execute("PRAGMA journal_mode=WAL")
+        await _configure_connection(self._db)
         await self._db.executescript(_SETTINGS_SCHEMA)
         await self._db.commit()
 
@@ -1669,48 +1846,57 @@ class WebFilterStore:
     # -- observed events ---------------------------------------------------
 
     async def upsert_events(self, agent_id: str, events: list[dict[str, Any]]) -> None:
-        """Merge observed domains: min(first_seen), max(last_seen), hits +=, sources ∪."""
+        """Merge observed domains: min(first_seen), max(last_seen), hits +=, sources ∪.
 
-        for event in events:
-            domain = event["domain"]
-            async with self._conn.execute(
-                "SELECT first_seen, last_seen, hits, sources FROM web_activity_events "
-                "WHERE agent_id = ? AND domain = ?",
-                (agent_id, domain),
-            ) as cur:
-                existing = await cur.fetchone()
-            first_seen = event.get("first_seen")
-            last_seen = event.get("last_seen")
-            hits = int(event.get("hits") or 0)
-            sources = set(event.get("sources") or [])
-            if existing is not None:
-                firsts = [x for x in (existing["first_seen"], first_seen) if x]
-                lasts = [x for x in (existing["last_seen"], last_seen) if x]
-                first_seen = min(firsts) if firsts else None
-                last_seen = max(lasts) if lasts else None
-                hits += int(existing["hits"] or 0)
-                if existing["sources"]:
-                    sources |= set(json.loads(existing["sources"]))
-            await self._conn.execute(
-                "INSERT INTO web_activity_events "
-                "(agent_id, domain, first_seen, last_seen, hits, sources, flagged, category) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
-                "ON CONFLICT(agent_id, domain) DO UPDATE SET "
-                "first_seen=excluded.first_seen, last_seen=excluded.last_seen, "
-                "hits=excluded.hits, sources=excluded.sources, "
-                "flagged=excluded.flagged, category=excluded.category",
-                (
-                    agent_id,
-                    domain,
-                    first_seen,
-                    last_seen,
-                    hits,
-                    json.dumps(sorted(sources)),
-                    1 if event.get("flagged") else 0,
-                    event.get("category"),
-                ),
-            )
-        await self._conn.commit()
+        A SELECT-then-INSERT pair per event, all one transaction with a single
+        commit at the end — the longest-held write transaction in this module,
+        so it holds :func:`write_lock` for its whole duration (never released
+        mid-loop) and opens with ``BEGIN IMMEDIATE`` to take the writer lock up
+        front rather than partway through the loop.
+        """
+
+        async with write_lock():
+            await _begin_immediate(self._conn)
+            for event in events:
+                domain = event["domain"]
+                async with self._conn.execute(
+                    "SELECT first_seen, last_seen, hits, sources FROM web_activity_events "
+                    "WHERE agent_id = ? AND domain = ?",
+                    (agent_id, domain),
+                ) as cur:
+                    existing = await cur.fetchone()
+                first_seen = event.get("first_seen")
+                last_seen = event.get("last_seen")
+                hits = int(event.get("hits") or 0)
+                sources = set(event.get("sources") or [])
+                if existing is not None:
+                    firsts = [x for x in (existing["first_seen"], first_seen) if x]
+                    lasts = [x for x in (existing["last_seen"], last_seen) if x]
+                    first_seen = min(firsts) if firsts else None
+                    last_seen = max(lasts) if lasts else None
+                    hits += int(existing["hits"] or 0)
+                    if existing["sources"]:
+                        sources |= set(json.loads(existing["sources"]))
+                await self._conn.execute(
+                    "INSERT INTO web_activity_events "
+                    "(agent_id, domain, first_seen, last_seen, hits, sources, flagged, category) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(agent_id, domain) DO UPDATE SET "
+                    "first_seen=excluded.first_seen, last_seen=excluded.last_seen, "
+                    "hits=excluded.hits, sources=excluded.sources, "
+                    "flagged=excluded.flagged, category=excluded.category",
+                    (
+                        agent_id,
+                        domain,
+                        first_seen,
+                        last_seen,
+                        hits,
+                        json.dumps(sorted(sources)),
+                        1 if event.get("flagged") else 0,
+                        event.get("category"),
+                    ),
+                )
+            await self._conn.commit()
 
     async def activity(
         self, agent_id: str, since_iso: str, flagged_only: bool = False
@@ -1740,25 +1926,36 @@ class WebFilterStore:
             for r in rows
         ]
 
-    async def prune(self, *, now: datetime | None = None) -> int:
-        """Delete events whose ``last_seen`` is older than retention. Returns count."""
+    async def prune(
+        self, *, now: datetime | None = None, retention_days: int | None = None
+    ) -> int:
+        """Delete events whose ``last_seen`` is older than retention. Returns count.
+
+        ``retention_days`` overrides ``self.retention_days`` for this call —
+        see :meth:`TelemetryStore.prune` for why (ADR-0056's live-retention
+        setting). No operator-facing key is wired to this store yet.
+        """
 
         now = now or datetime.now(timezone.utc)
-        cutoff = (now - timedelta(days=self.retention_days)).isoformat()
-        cur = await self._conn.execute(
-            "DELETE FROM web_activity_events WHERE last_seen < ?", (cutoff,)
-        )
-        await self._conn.commit()
+        days = retention_days if retention_days is not None else self.retention_days
+        cutoff = (now - timedelta(days=days)).isoformat()
+        async with write_lock():
+            cur = await self._conn.execute(
+                "DELETE FROM web_activity_events WHERE last_seen < ?", (cutoff,)
+            )
+            await self._conn.commit()
         return cur.rowcount or 0
 
     async def delete_agent(self, agent_id: str) -> None:
         """Delete all web-filter state for ``agent_id`` (host removed from inventory)."""
 
-        for table in ("webfilter_config", "webfilter_domains", "web_activity_events"):
-            await self._conn.execute(
-                f"DELETE FROM {table} WHERE agent_id = ?", (agent_id,)
-            )
-        await self._conn.commit()
+        async with write_lock():
+            await _begin_immediate(self._conn)
+            for table in ("webfilter_config", "webfilter_domains", "web_activity_events"):
+                await self._conn.execute(
+                    f"DELETE FROM {table} WHERE agent_id = ?", (agent_id,)
+                )
+            await self._conn.commit()
 
 
 _CHAT_HISTORY_SCHEMA = """

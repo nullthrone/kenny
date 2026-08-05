@@ -5843,7 +5843,10 @@
     }
 
     async function refreshNow(id) {
-      try { await getJSON("/api/agent/" + encodeURIComponent(id) + "/refresh", { method: "POST" }); }
+      try {
+        const r = await getJSON("/api/agent/" + encodeURIComponent(id) + "/refresh", { method: "POST" });
+        if (r && r.stored === false) notify(r.warning || "refresh collected, but was not stored", "err");
+      }
       catch (e) { notify("refresh failed: " + e.message, "err"); }
       selectAgent(id);
     }

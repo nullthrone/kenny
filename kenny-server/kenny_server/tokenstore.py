@@ -26,6 +26,7 @@ from datetime import datetime, timedelta, timezone
 import aiosqlite
 
 from .registry import load_tokens
+from .store import _configure_connection
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS agent_tokens (
@@ -76,7 +77,7 @@ class AgentTokenStore:
         if self._db is not None:
             return
         self._db = await aiosqlite.connect(self.db_path)
-        self._db.row_factory = aiosqlite.Row
+        await _configure_connection(self._db)
         await self._db.executescript(_SCHEMA)
         await self._migrate()
         await self._db.commit()

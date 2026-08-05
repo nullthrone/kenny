@@ -24,7 +24,7 @@ from typing import Any
 
 import aiosqlite
 
-from .store import DEFAULT_DB_PATH, _configure_connection
+from .store import DEFAULT_DB_PATH, _begin_immediate, _configure_connection, write_lock
 
 __all__ = [
     "DEFAULT_DB_PATH",
@@ -794,28 +794,29 @@ class TicketStore:
         if current is None:
             return None
         closed_at = stamp if to_state in _CLOSING_STATES else None
-        if to_state == "in_progress":
-            await self._conn.execute(
-                "UPDATE tickets SET state = ?, updated_at = ?, closed_at = ? WHERE id = ?",
-                (to_state, stamp, closed_at, ticket_id),
+        async with write_lock():
+            if to_state == "in_progress":
+                await self._conn.execute(
+                    "UPDATE tickets SET state = ?, updated_at = ?, closed_at = ? WHERE id = ?",
+                    (to_state, stamp, closed_at, ticket_id),
+                )
+            else:
+                await self._conn.execute(
+                    "UPDATE tickets SET state = ?, updated_at = ?, closed_at = ?, "
+                    "blocked_on = '', blocked_since = NULL, blocked_ref = '', "
+                    "blocked_nudged_at = NULL WHERE id = ?",
+                    (to_state, stamp, closed_at, ticket_id),
+                )
+            await self._insert_event(
+                ticket_id=ticket_id,
+                at=stamp,
+                kind="state",
+                actor=actor,
+                from_state=current.state,
+                to_state=to_state,
+                summary=reason,
             )
-        else:
-            await self._conn.execute(
-                "UPDATE tickets SET state = ?, updated_at = ?, closed_at = ?, "
-                "blocked_on = '', blocked_since = NULL, blocked_ref = '', "
-                "blocked_nudged_at = NULL WHERE id = ?",
-                (to_state, stamp, closed_at, ticket_id),
-            )
-        await self._insert_event(
-            ticket_id=ticket_id,
-            at=stamp,
-            kind="state",
-            actor=actor,
-            from_state=current.state,
-            to_state=to_state,
-            summary=reason,
-        )
-        await self._conn.commit()
+            await self._conn.commit()
         return await self.get(ticket_id)
 
     async def set_agent_id(
@@ -838,19 +839,20 @@ class TicketStore:
         current = await self.get(ticket_id)
         if current is None:
             return None
-        await self._conn.execute(
-            "UPDATE tickets SET agent_id = ?, updated_at = ? WHERE id = ?",
-            (agent_id, stamp, ticket_id),
-        )
-        await self._insert_event(
-            ticket_id=ticket_id,
-            at=stamp,
-            kind="handoff",
-            actor=actor,
-            summary=reason,
-            fields={"from_agent_id": current.agent_id, "to_agent_id": agent_id},
-        )
-        await self._conn.commit()
+        async with write_lock():
+            await self._conn.execute(
+                "UPDATE tickets SET agent_id = ?, updated_at = ? WHERE id = ?",
+                (agent_id, stamp, ticket_id),
+            )
+            await self._insert_event(
+                ticket_id=ticket_id,
+                at=stamp,
+                kind="handoff",
+                actor=actor,
+                summary=reason,
+                fields={"from_agent_id": current.agent_id, "to_agent_id": agent_id},
+            )
+            await self._conn.commit()
         return await self.get(ticket_id)
 
     async def set_blocked(
@@ -882,24 +884,25 @@ class TicketStore:
         if current is None:
             return None
         blocked_since = stamp if blocked_on else None
-        await self._conn.execute(
-            "UPDATE tickets SET blocked_on = ?, blocked_since = ?, blocked_ref = ?, "
-            "blocked_nudged_at = NULL, updated_at = ? WHERE id = ?",
-            (blocked_on, blocked_since, ref, stamp, ticket_id),
-        )
-        await self._insert_event(
-            ticket_id=ticket_id,
-            at=stamp,
-            kind="block",
-            actor=actor,
-            summary=reason,
-            fields={
-                "from_blocked_on": current.blocked_on,
-                "to_blocked_on": blocked_on,
-                "ref": ref,
-            },
-        )
-        await self._conn.commit()
+        async with write_lock():
+            await self._conn.execute(
+                "UPDATE tickets SET blocked_on = ?, blocked_since = ?, blocked_ref = ?, "
+                "blocked_nudged_at = NULL, updated_at = ? WHERE id = ?",
+                (blocked_on, blocked_since, ref, stamp, ticket_id),
+            )
+            await self._insert_event(
+                ticket_id=ticket_id,
+                at=stamp,
+                kind="block",
+                actor=actor,
+                summary=reason,
+                fields={
+                    "from_blocked_on": current.blocked_on,
+                    "to_blocked_on": blocked_on,
+                    "ref": ref,
+                },
+            )
+            await self._conn.commit()
         return await self.get(ticket_id)
 
     async def set_assignee(
@@ -922,22 +925,23 @@ class TicketStore:
         current = await self.get(ticket_id)
         if current is None:
             return None
-        await self._conn.execute(
-            "UPDATE tickets SET assignee_user_id = ?, updated_at = ? WHERE id = ?",
-            (assignee_user_id, stamp, ticket_id),
-        )
-        await self._insert_event(
-            ticket_id=ticket_id,
-            at=stamp,
-            kind="assign",
-            actor=actor,
-            summary=reason,
-            fields={
-                "from_assignee_user_id": current.assignee_user_id,
-                "to_assignee_user_id": assignee_user_id,
-            },
-        )
-        await self._conn.commit()
+        async with write_lock():
+            await self._conn.execute(
+                "UPDATE tickets SET assignee_user_id = ?, updated_at = ? WHERE id = ?",
+                (assignee_user_id, stamp, ticket_id),
+            )
+            await self._insert_event(
+                ticket_id=ticket_id,
+                at=stamp,
+                kind="assign",
+                actor=actor,
+                summary=reason,
+                fields={
+                    "from_assignee_user_id": current.assignee_user_id,
+                    "to_assignee_user_id": assignee_user_id,
+                },
+            )
+            await self._conn.commit()
         return await self.get(ticket_id)
 
     async def mark_nudged(
@@ -959,26 +963,31 @@ class TicketStore:
         current = await self.get(ticket_id)
         if current is None:
             return None
-        await self._conn.execute(
-            "UPDATE tickets SET blocked_nudged_at = ? WHERE id = ?", (stamp, ticket_id)
-        )
-        await self._insert_event(
-            ticket_id=ticket_id,
-            at=stamp,
-            kind="note",
-            actor=actor,
-            summary=reason or f"stall reminder sent (blocked on {current.blocked_on})",
-        )
-        await self._conn.commit()
+        async with write_lock():
+            await self._conn.execute(
+                "UPDATE tickets SET blocked_nudged_at = ? WHERE id = ?", (stamp, ticket_id)
+            )
+            await self._insert_event(
+                ticket_id=ticket_id,
+                at=stamp,
+                kind="note",
+                actor=actor,
+                summary=reason or f"stall reminder sent (blocked on {current.blocked_on})",
+            )
+            await self._conn.commit()
         return await self.get(ticket_id)
 
     async def delete(self, ticket_id: str) -> bool:
         """Delete a ticket and everything hanging off it. Operator action only."""
 
-        cur = await self._conn.execute("DELETE FROM tickets WHERE id = ?", (ticket_id,))
-        for table in ("ticket_runs", "ticket_events", "ticket_approvals", "ticket_channels"):
-            await self._conn.execute(f"DELETE FROM {table} WHERE ticket_id = ?", (ticket_id,))
-        await self._conn.commit()
+        async with write_lock():
+            await _begin_immediate(self._conn)
+            cur = await self._conn.execute("DELETE FROM tickets WHERE id = ?", (ticket_id,))
+            for table in ("ticket_runs", "ticket_events", "ticket_approvals", "ticket_channels"):
+                await self._conn.execute(
+                    f"DELETE FROM {table} WHERE ticket_id = ?", (ticket_id,)
+                )
+            await self._conn.commit()
         return (cur.rowcount or 0) > 0
 
     # -- run state ---------------------------------------------------------
@@ -1067,26 +1076,33 @@ class TicketStore:
         summary: str = "",
         fields: dict[str, Any] | None = None,
     ) -> None:
-        """Write one trail row on the current transaction (no commit)."""
+        """Write one trail row on the current transaction (no commit).
 
-        await self._conn.execute(
-            "INSERT INTO ticket_events "
-            "(ticket_id, at, kind, actor, tool, tool_class, ok, from_state, to_state, "
-            "summary, fields) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                ticket_id,
-                at,
-                kind,
-                actor,
-                tool,
-                tool_class,
-                None if ok is None else (1 if ok else 0),
-                from_state,
-                to_state,
-                summary,
-                json.dumps(fields, default=str) if fields is not None else None,
-            ),
-        )
+        Every caller already holds :func:`write_lock` around its own
+        UPDATE + this call + commit; taking it here too is the re-entrant
+        hop (same task, same lock, depth+1 — see :func:`write_lock`), kept
+        so a future direct caller cannot bypass serialization by accident.
+        """
+
+        async with write_lock():
+            await self._conn.execute(
+                "INSERT INTO ticket_events "
+                "(ticket_id, at, kind, actor, tool, tool_class, ok, from_state, to_state, "
+                "summary, fields) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    ticket_id,
+                    at,
+                    kind,
+                    actor,
+                    tool,
+                    tool_class,
+                    None if ok is None else (1 if ok else 0),
+                    from_state,
+                    to_state,
+                    summary,
+                    json.dumps(fields, default=str) if fields is not None else None,
+                ),
+            )
 
     async def append_event(
         self,
@@ -1105,20 +1121,21 @@ class TicketStore:
     ) -> None:
         """Append one row to a ticket's audit trail and commit."""
 
-        await self._insert_event(
-            ticket_id=ticket_id,
-            at=_stamp(now),
-            kind=kind,
-            actor=actor,
-            tool=tool,
-            tool_class=tool_class,
-            ok=ok,
-            from_state=from_state,
-            to_state=to_state,
-            summary=summary,
-            fields=fields,
-        )
-        await self._conn.commit()
+        async with write_lock():
+            await self._insert_event(
+                ticket_id=ticket_id,
+                at=_stamp(now),
+                kind=kind,
+                actor=actor,
+                tool=tool,
+                tool_class=tool_class,
+                ok=ok,
+                from_state=from_state,
+                to_state=to_state,
+                summary=summary,
+                fields=fields,
+            )
+            await self._conn.commit()
 
     async def list_events(
         self, ticket_id: str, *, kind: str | None = None, limit: int = 500
@@ -1433,7 +1450,9 @@ class TicketStore:
         await self._conn.commit()
         return await self.get_pending_request(request_id)
 
-    async def prune(self, *, now: datetime | None = None) -> int:
+    async def prune(
+        self, *, now: datetime | None = None, retention_days: int | None = None
+    ) -> int:
         """Delete run state of tickets closed longer than retention ago.
 
         Only ``ticket_runs`` rows go: the ticket and its event trail are the
@@ -1442,21 +1461,28 @@ class TicketStore:
         (consumed or expired) go too — an unanswered picker leaves nothing worth
         keeping, and a consumed one's outcome is already the ticket it opened.
         Returns rows deleted.
+
+        ``retention_days`` overrides ``self.run_retention_days`` for this call
+        — accepted for conformance with the ``AlertEngine`` prunable protocol
+        (ADR-0056); no operator-facing settings key is wired to this store yet.
         """
 
         now = now or datetime.now(timezone.utc)
-        cutoff = to_iso(now - timedelta(days=self.run_retention_days))
-        cur = await self._conn.execute(
-            "DELETE FROM ticket_runs WHERE ticket_id IN ("
-            "SELECT id FROM tickets WHERE closed_at IS NOT NULL AND closed_at < ?)",
-            (cutoff,),
-        )
-        deleted = cur.rowcount or 0
-        cur = await self._conn.execute(
-            "DELETE FROM discord_pending_requests "
-            "WHERE consumed_at IS NOT NULL OR expires_at <= ?",
-            (to_iso(now),),
-        )
-        deleted += cur.rowcount or 0
-        await self._conn.commit()
+        days = retention_days if retention_days is not None else self.run_retention_days
+        cutoff = to_iso(now - timedelta(days=days))
+        async with write_lock():
+            await _begin_immediate(self._conn)
+            cur = await self._conn.execute(
+                "DELETE FROM ticket_runs WHERE ticket_id IN ("
+                "SELECT id FROM tickets WHERE closed_at IS NOT NULL AND closed_at < ?)",
+                (cutoff,),
+            )
+            deleted = cur.rowcount or 0
+            cur = await self._conn.execute(
+                "DELETE FROM discord_pending_requests "
+                "WHERE consumed_at IS NOT NULL OR expires_at <= ?",
+                (to_iso(now),),
+            )
+            deleted += cur.rowcount or 0
+            await self._conn.commit()
         return deleted

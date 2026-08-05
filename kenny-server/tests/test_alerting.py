@@ -505,3 +505,101 @@ async def test_restart_does_not_refire_persisted_state(stores) -> None:
     engine2 = make_engine(stores, notifier2)
     assert await engine2.evaluate_once(NOW + timedelta(minutes=5)) == []
     assert notifier2.sent == []
+
+
+# -- _maybe_prune: live retention (ADR-0056) -----------------------------------
+#
+# ``_prunables`` entries are (store, settings_key) pairs. A key resolves fresh
+# from ``settings`` on every call -- never frozen at store construction -- and
+# a *decrease* forces an immediate pass instead of waiting up to _PRUNE_EVERY,
+# so tightening retention from the dashboard is visible within one alert
+# cycle. A ``None`` key means "no live setting yet"; the store keeps whatever
+# retention it was constructed with.
+
+
+class _FakeSettings:
+    """Minimal live-settings stand-in: just enough for AlertEngine._cfg."""
+
+    def __init__(self, initial: dict) -> None:
+        self._values = dict(initial)
+
+    def get(self, key: str):
+        return self._values.get(key)
+
+
+class _SpyPrunable:
+    """Records every ``prune()`` call instead of touching a real DB."""
+
+    def __init__(self) -> None:
+        self.calls: list[int | None] = []
+
+    async def prune(self, *, retention_days: int | None = None) -> int:
+        self.calls.append(retention_days)
+        return 0
+
+
+async def test_maybe_prune_resolves_retention_key_fresh_each_pass(stores) -> None:
+    notifier = FakeNotifier()
+    spy = _SpyPrunable()
+    settings = _FakeSettings({"KENNY_TELEMETRY_RETENTION_DAYS": 30})
+    engine = make_engine(
+        stores, notifier, settings=settings, prunables=[(spy, "KENNY_TELEMETRY_RETENTION_DAYS")]
+    )
+
+    await engine._maybe_prune(NOW)
+    assert spy.calls == [30]
+
+    # A change between passes must be picked up -- nothing frozen at wiring time.
+    settings._values["KENNY_TELEMETRY_RETENTION_DAYS"] = 14
+    await engine._maybe_prune(NOW + timedelta(hours=25))  # past _PRUNE_EVERY
+    assert spy.calls == [30, 14]
+
+
+async def test_maybe_prune_ignores_unkeyed_prunables(stores) -> None:
+    """A (store, None) pair keeps pruning on its own default -- no kwarg passed."""
+
+    notifier = FakeNotifier()
+    spy = _SpyPrunable()
+    engine = make_engine(stores, notifier, prunables=[(spy, None)])
+
+    await engine._maybe_prune(NOW)
+    assert spy.calls == [None]
+
+
+async def test_maybe_prune_forces_an_immediate_pass_when_retention_shrinks(stores) -> None:
+    notifier = FakeNotifier()
+    spy = _SpyPrunable()
+    settings = _FakeSettings({"KENNY_TELEMETRY_RETENTION_DAYS": 30})
+    engine = make_engine(
+        stores, notifier, settings=settings, prunables=[(spy, "KENNY_TELEMETRY_RETENTION_DAYS")]
+    )
+
+    await engine._maybe_prune(NOW)
+    assert spy.calls == [30]
+
+    # Well within _PRUNE_EVERY (24h): a normal pass would be a no-op here...
+    settings._values["KENNY_TELEMETRY_RETENTION_DAYS"] = 7
+    await engine._maybe_prune(NOW + timedelta(minutes=1))
+    # ...but the decrease forces one anyway.
+    assert spy.calls == [30, 7]
+
+
+async def test_maybe_prune_does_not_force_when_retention_grows(stores) -> None:
+    notifier = FakeNotifier()
+    spy = _SpyPrunable()
+    settings = _FakeSettings({"KENNY_TELEMETRY_RETENTION_DAYS": 7})
+    engine = make_engine(
+        stores, notifier, settings=settings, prunables=[(spy, "KENNY_TELEMETRY_RETENTION_DAYS")]
+    )
+
+    await engine._maybe_prune(NOW)
+    assert spy.calls == [7]
+
+    # Loosening retention has nothing extra to delete -- must not force a pass.
+    settings._values["KENNY_TELEMETRY_RETENTION_DAYS"] = 30
+    await engine._maybe_prune(NOW + timedelta(minutes=1))
+    assert spy.calls == [7]
+
+    # The regular cadence still applies once due.
+    await engine._maybe_prune(NOW + timedelta(hours=25))
+    assert spy.calls == [7, 30]

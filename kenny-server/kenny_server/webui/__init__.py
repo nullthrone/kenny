@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import os
 import re
 import signal
@@ -45,6 +46,8 @@ from ..tools import CallLog, ScreenshotStore, build_health, supports_tool
 from ..tunnel import AgentTunnel, ToolError
 from ..webfilter import WebFilterService, load_seed, normalize_domain
 from .authz import guard, principal_of, visible_ids
+
+logger = logging.getLogger("kenny.webui")
 
 _INDEX = Path(__file__).parent / "index.html"
 _ASSETS = Path(__file__).parent / "assets"
@@ -347,12 +350,34 @@ def build_api_routes(
             message = exc.message if isinstance(exc, ToolError) else str(exc)
             await call_log.record(agent_id, "telemetry_collect", {}, ok=False, error=message)
             return JSONResponse({"ok": False, "error": message}, status_code=502)
-        # Store the freshly collected snapshot so the drill-down updates.
+        # Store the freshly collected snapshot so the drill-down updates. The
+        # agent round-trip above already succeeded, so a storage hiccup here
+        # (e.g. transient SQLite write contention) must not turn a working
+        # refresh into a 500 — same reasoning as the tunnel push path
+        # (tunnel.py) and CallLog.record above, both of which already swallow
+        # this. Report it truthfully instead: 200 with stored=False, since a
+        # 502 here would be a second lie (the tunnel call did not fail).
+        stored = False
+        warning: str | None = None
         if result:
             from datetime import datetime, timezone
 
-            await store.insert(agent_id, datetime.now(timezone.utc).isoformat(), result)
-        return JSONResponse({"ok": True})
+            try:
+                await store.insert(agent_id, datetime.now(timezone.utc).isoformat(), result)
+                stored = True
+            except Exception:  # noqa: BLE001 - see comment above
+                logger.exception(
+                    "storing refreshed snapshot failed for %s; panel may show stale data",
+                    agent_id,
+                )
+                warning = (
+                    "collected, but storing the snapshot failed; the panel may "
+                    "show the previous reading"
+                )
+        payload: dict[str, Any] = {"ok": True, "stored": stored}
+        if warning:
+            payload["warning"] = warning
+        return JSONResponse(payload)
 
     async def api_screenshot(request: Request) -> Response:
         """Return the latest stored screenshot for an agent as a PNG (or 404)."""
