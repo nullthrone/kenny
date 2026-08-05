@@ -596,16 +596,18 @@
       transition: border-color var(--dur) var(--ease), color var(--dur) var(--ease); }
     .kc-chip:hover { border-color: var(--accent); color: var(--fg); }
 
-    /* docked copilot rail: full-height sticky column whose transcript fills and
-       scrolls inside the rail, so the agent cards never move as the chat grows.
-       Below 1180px (see the tablet media query) it becomes an overlay drawer. */
+    /* docked "Ask kenny" rail: full-height sticky column whose transcript fills
+       and scrolls inside the rail, so the agent cards never move as the chat
+       grows. Below 1180px (see the tablet media query) it becomes an overlay
+       drawer. The .kc-copilot* class names stay as-is on purpose: they name a
+       layout rail, not the persona, so renaming them is not part of this. */
     .kc-copilot { position: sticky; top: 16px; align-self: start; height: calc(100vh - 32px); }
     .kc-copilot .kc-transcript { flex: 1 1 auto; max-height: none; min-height: 0; }
     /* Tablet/narrow: the rail is a right-anchored overlay drawer that slides in
        over a dimming backdrop, instead of stacking far below the agent cards
        (where toggling it had no visible effect). It is fixed (out of flow), so it
        no longer reserves a bottom row. Hidden off-screen until .copilot-drawer-open
-       is set on the console (see toggleCopilot / openCopilotDrawer). */
+       is set on the console (see toggleAskRail / openAskDrawer). */
     @media (max-width: 1180px) {
       .kc-copilot { position: fixed; top: 0; right: 0; z-index: 70; height: 100vh;
         width: min(380px, 92vw); margin: 0; border-radius: 0; overflow-y: auto;
@@ -618,7 +620,7 @@
     .kc-backdrop { position: fixed; inset: 0; z-index: 65; background: rgba(0,0,0,.45);
       opacity: 0; pointer-events: none; transition: opacity var(--dur) var(--ease); }
     .kc-backdrop.is-visible { opacity: 1; pointer-events: auto; }
-    /* one-shot slide+fade when the docked rail is toggled (see toggleCopilot):
+    /* one-shot slide+fade when the docked rail is toggled (see toggleAskRail):
        it slides in from the right on open, and back out to the right on close. */
     @keyframes kCopilotIn { from { opacity: 0; transform: translateX(14px); } to { opacity: 1; transform: none; } }
     @keyframes kCopilotOut { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateX(14px); } }
@@ -2355,7 +2357,7 @@
           // kenny's replies can contain markdown (same renderer the copilot
           // uses, escape-first by construction); a human's message is plain
           // text, never interpreted as markup.
-          body = e.actor === "kenny"
+          body = e.actor === "assistant"
             ? `<div class="k-bubble k-bubble--assistant">${renderMarkdown(f.text)}</div>`
             : `<span>${esc(f.text)}</span>`;
         } else {
@@ -2363,6 +2365,10 @@
           // so this stays the existing summary-only line, unchanged.
           body = esc(e.summary || "");
         }
+      } else if (e.kind === "error") {
+        const err = e.fields && e.fields.error;
+        body = esc(e.summary || "error") +
+          (err ? ` <span class="k-pill k-pill--crit" title="${esc(err.message || "")}">${esc(err.code || "failed")}</span>` : "");
       } else {
         body = esc(e.summary || "");
       }
@@ -2374,7 +2380,9 @@
       return `<div class="kc-timeline__row">
         <span class="k-audit__time">${time}</span>
         ${icon(TICKET_EVENT_ICON[e.kind] || "circle-help", 14)}
-        <span class="kc-timeline__actor">${esc(e.actor || "")}</span>
+        <!-- "assistant" is the stored actor value (ticketstore.ASSISTANT_ACTOR);
+             the person-facing name is always "kenny", never the raw identifier. -->
+        <span class="kc-timeline__actor">${esc(e.actor === "assistant" ? "kenny" : e.actor || "")}</span>
         <span>${body}</span>
       </div>`;
     }
@@ -2519,8 +2527,12 @@
       });
       if (ok) {
         try {
-          await api("/api/approvals/" + encodeURIComponent(approvalId), "POST", { approve });
-          notify(approve ? "approved" : "denied");
+          const res = await api("/api/approvals/" + encodeURIComponent(approvalId), "POST", { approve });
+          if (res && res.resumed === false) {
+            notify("recorded — kenny could not continue this ticket automatically", "err");
+          } else {
+            notify(approve ? "approved" : "denied");
+          }
         } catch (e) { notify(e.message, "err"); }
       }
       await renderTicketDetail(ticketId);
@@ -2545,7 +2557,7 @@
     // the transient one (a gate is already open). Mirrors the same order the
     // server checks in api_ticket_chat_stream.
     function ticketChatDisabledReason(t) {
-      if (!t.assistant_available) return "The AI assistant is not configured.";
+      if (!t.assistant_available) return "Ask kenny is not configured.";
       if (!t.agent_id) return "This ticket has no target machine.";
       if (t.state === "closed" || t.state === "cancelled") return "This ticket is closed.";
       if (t.blocked_on === "approval" || t.blocked_on === "user") return "Waiting on a decision above.";
@@ -2561,7 +2573,7 @@
       const disabled = isNote ? false : !!chatReason;
       const modeToggle = canNote ? `<div class="k-row" style="gap:4px;margin-bottom:8px">
           <button type="button" class="kc-tab tk-mode-btn${!isNote ? " is-active" : ""}"
-            onclick="setTicketComposerMode('chat')">${icon('message-square', 13)}Send to kenny</button>
+            onclick="setTicketComposerMode('chat')">${icon('message-square', 13)}Ask kenny</button>
           <button type="button" class="kc-tab tk-mode-btn${isNote ? " is-active" : ""}"
             onclick="setTicketComposerMode('note')">${icon('plus', 13)}Add a note</button>
         </div>` : "";
@@ -2572,7 +2584,7 @@
       const btnLabel = isNote ? `${icon('plus', 13)}Add` : `${icon('send-horizontal', 13)}Send`;
       const btnOnclick = isNote ? `addTicketNote(${jsArg(t.id)})` : `sendTicketChat(${jsArg(t.id)})`;
       return `<div class="k-panel kset__grp" id="tk-composer">
-        <div class="k-detail-grp__lbl">${isNote ? "add a note" : "chat"}</div>
+        <div class="k-detail-grp__lbl">${isNote ? "add a note" : "ask kenny"}</div>
         ${modeToggle}
         <textarea class="k-input" id="tk-chat-input" rows="3" placeholder="${esc(placeholder)}"
           ${disabled ? "disabled" : ""}></textarea>
@@ -2804,8 +2816,12 @@
       });
       if (ok) {
         try {
-          await api("/api/approvals/" + encodeURIComponent(id), "POST", { approve });
-          notify(approve ? "approved" : "denied");
+          const res = await api("/api/approvals/" + encodeURIComponent(id), "POST", { approve });
+          if (res && res.resumed === false) {
+            notify("recorded — kenny could not continue this ticket automatically", "err");
+          } else {
+            notify(approve ? "approved" : "denied");
+          }
         } catch (e) { notify(e.message, "err"); }
       }
       // confirmModal() replaces/closes the single shared modal, so reopen the
@@ -3910,7 +3926,7 @@
     async function renderHeaderRight(fleet, agents) {
       // The copilot toggle only applies to the Fleet tab (the rail lives there).
       const copilotBtn = state.tab === "fleet"
-        ? `<button class="kc-icon-btn" id="copilot-btn" onclick="toggleCopilot()" title="toggle copilot panel" aria-label="toggle copilot panel">${icon('sparkles', 16)}</button>`
+        ? `<button class="kc-icon-btn" id="copilot-btn" onclick="toggleAskRail()" title="toggle Ask kenny panel" aria-label="toggle Ask kenny panel">${icon('sparkles', 16)}</button>`
         : "";
       headerRight.innerHTML =
         fleetMetricsHtml(agents) +
@@ -4512,12 +4528,14 @@
     const copilotNarrowMq = window.matchMedia("(max-width: 1180px)");
     let copilotDrawerOpen = false; // transient tablet-drawer state (not persisted)
 
-    function copilotOn() {
+    function askRailOn() {
+      // "kenny-copilot" stays the storage key on purpose: renaming it would
+      // silently discard every operator's saved rail-open/closed preference.
       try { return localStorage.getItem("kenny-copilot") !== "off"; } catch (e) { return true; }
     }
     function applyCopilot() {
       const c = document.querySelector(".kc-console");
-      if (c) c.classList.toggle("no-copilot", !copilotOn());
+      if (c) c.classList.toggle("no-copilot", !askRailOn());
       // On tablet the drawer is closed unless explicitly opened; reconcile both
       // the drawer class and backdrop so a stale state can't linger after render.
       if (!copilotNarrowMq.matches) copilotDrawerOpen = false;
@@ -4526,18 +4544,18 @@
       if (bd) bd.classList.toggle("is-visible", copilotNarrowMq.matches && copilotDrawerOpen);
       const btn = document.getElementById("copilot-btn");
       // The button's active state reflects whichever mode is in effect.
-      if (btn) btn.classList.toggle("is-active", copilotNarrowMq.matches ? copilotDrawerOpen : copilotOn());
+      if (btn) btn.classList.toggle("is-active", copilotNarrowMq.matches ? copilotDrawerOpen : askRailOn());
     }
-    function openCopilotDrawer() { copilotDrawerOpen = true; applyCopilot(); }
+    function openAskDrawer() { copilotDrawerOpen = true; applyCopilot(); }
     function closeCopilotDrawer() { copilotDrawerOpen = false; applyCopilot(); }
-    function toggleCopilot() {
+    function toggleAskRail() {
       // Tablet: just flip the overlay drawer; CSS transitions the slide.
       if (copilotNarrowMq.matches) {
-        copilotDrawerOpen ? closeCopilotDrawer() : openCopilotDrawer();
+        copilotDrawerOpen ? closeCopilotDrawer() : openAskDrawer();
         return;
       }
       // Desktop: toggle the persisted docked column with the slide+fade animation.
-      const on = !copilotOn();
+      const on = !askRailOn();
       try { localStorage.setItem("kenny-copilot", on ? "on" : "off"); } catch (e) {}
       const rail = document.querySelector(".kc-copilot");
       const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -5677,7 +5695,8 @@
     // chat to this PC, close the popup, and start the turn. State-changing steps
     // still hit the confirm-gate — Auto-Remediate does not bypass confirmation.
     function autoRemediate(agentId, prompt) {
-      if (!copilotOn()) {
+      if (!askRailOn()) {
+        // "kenny-copilot" stays the storage key on purpose (see askRailOn).
         try { localStorage.setItem("kenny-copilot", "on"); } catch (e) {}
         applyCopilot();
       }
@@ -5972,7 +5991,7 @@
     function chatHtml() {
       return `<div class="k-panel kc-chat kc-copilot">
         <div class="kc-chat__head">
-          <span class="k-row kc-chat__title" style="gap:8px">${icon('message-square', 16)}chat · server-hosted</span>
+          <span class="k-row kc-chat__title" style="gap:8px">${icon('message-square', 16)}Ask kenny · server-hosted</span>
           <span class="k-row" style="gap:6px">
             <button class="k-btn k-btn--ghost k-btn--sm" onclick="newChat()" title="start a new chat">${icon('plus', 13)}new</button>
             <button class="k-btn k-btn--ghost k-btn--sm" onclick="openHistoryPanel()" title="browse past conversations">${icon('clock', 13)}history</button>

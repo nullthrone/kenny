@@ -33,6 +33,7 @@ from kenny_server.auth import OperatorAuthMiddleware
 from kenny_server.webui.tickets import build_ticket_routes
 
 from test_discord_security import (
+    GUILD,
     MIA_PC,
     ROOT,
     Bench,
@@ -128,6 +129,27 @@ def transcript_pairs(messages: list[dict[str, Any]]) -> tuple[set[str], set[str]
     return issued, answered
 
 
+def run_pairs(run: Any) -> tuple[set[str], set[str]]:
+    """:func:`transcript_pairs` plus ``run.staged_results`` on the answered side.
+
+    §7's degraded resume (:meth:`TicketAssistant._resume_degraded`) stages the
+    held call's answer directly into ``ticket_runs.staged_results`` without
+    driving a turn, so it is not yet folded into ``messages`` — the fold is
+    ``drive_events``' job, on the ticket's *next* turn. An id answered there is
+    just as un-orphaned as one already folded: the next Messages API call is
+    still valid either way, since ``drive_events`` folds staged results before
+    ever calling the model again.
+    """
+
+    issued, answered = transcript_pairs(run.messages)
+    for block in run.staged_results:
+        if isinstance(block, dict) and block.get("type") == "tool_result":
+            tool_use_id = block.get("tool_use_id")
+            if tool_use_id:
+                answered.add(tool_use_id)
+    return issued, answered
+
+
 async def drive_to_an_open_approval(bench: Bench, *blocks) -> tuple[str, str]:
     """Open a ticket whose turn ends in a held ``normal_change``.
 
@@ -142,6 +164,34 @@ async def drive_to_an_open_approval(bench: Bench, *blocks) -> tuple[str, str]:
     assert ticket.state == "in_progress"
     assert ticket.blocked_on == "approval"
     return ticket.id, bench.gateway.threads[0].thread_id
+
+
+async def drive_alert_origin_ticket_to_an_open_approval(bench: Bench, *blocks) -> str:
+    """Same shape as :func:`drive_to_an_open_approval`, for a ticket with no
+    requester at all (``requester_user_id IS NULL``) — the alert-origin case
+    §7 of the plan is about. No Discord thread/message is involved in opening
+    it (an alert has no author); an operator drives the one turn that gates it,
+    the same way the dashboard would for a ticket nobody "owns".
+    """
+
+    ticket = await bench.tickets.create(
+        title="disk usage critical", origin="alert", agent_id=MIA_PC,
+        actor="system", reason="opened from an alert",
+    )
+    assert ticket.requester_user_id is None
+    service = bench.service(calls(*blocks))
+    operator = await service._principal_for(ROOT, GUILD)
+    assert operator is not None
+    session = await bench.assistant.session_for(ticket, actor=operator)
+    assert session is not None
+    session.messages.append({"role": "user", "content": "please fix the disk"})
+    async for _event in bench.assistant.run_turn(session, ticket):
+        pass
+    refreshed = await bench.ticket_store.get(ticket.id)
+    assert refreshed is not None
+    assert refreshed.state == "in_progress"
+    assert refreshed.blocked_on == "approval"
+    return ticket.id
 
 
 # =============================================================================
@@ -514,3 +564,104 @@ async def test_the_executed_call_comes_from_the_frozen_row_not_the_transcript(
         ]
     finally:
         await boot2.close()
+
+
+# =============================================================================
+# §7: every decision route must leave a fully-answered transcript
+# =============================================================================
+#
+# The reported wedge: a requester-less (alert-origin) ticket's gate, decided by
+# whichever route, must never leave an unanswered ``tool_use`` behind — several
+# of these six cases failed before the fix (the dashboard and Discord routes
+# silently did nothing for an alert-origin ticket; the sweeper parked it on
+# ``blocked_on="approval"`` forever).
+
+
+@pytest.mark.parametrize("origin", ["requester", "alert"])
+@pytest.mark.parametrize("route", ["dashboard", "discord", "sweeper"])
+async def test_every_decision_route_leaves_issued_equal_to_answered(
+    benches, route: str, origin: str
+) -> None:
+    bench = await benches(f"{route}-{origin}")
+    if origin == "requester":
+        ticket_id, _thread = await drive_to_an_open_approval(
+            bench, use("t1", "winget_install", {"id": "Git.Git"})
+        )
+    else:
+        ticket_id = await drive_alert_origin_ticket_to_an_open_approval(
+            bench, use("t1", "winget_install", {"id": "Git.Git"})
+        )
+    approval = await bench.ticket_store.get_open_approval(ticket_id)
+    assert approval is not None
+
+    if route == "dashboard":
+        operator_pat = await bench.users.create_pat(bench.root["id"], "dash")
+        service = bench.service(says("done via the dashboard"))
+        dash = Dashboard(bench, service)
+        try:
+            r = await dash.post(
+                f"/api/approvals/{approval.id}", operator_pat, {"approve": True}
+            )
+            assert r.status_code == 200
+        finally:
+            await dash.aclose()
+    elif route == "discord":
+        service = bench.service(says("done via discord"))
+        await service.handle_event(button(approval.id, by=ROOT, approve=True))
+    else:
+        bench.service(says("(the sweeper resumed this)"))
+        await bench.tickets.sweep(bench.tickets.now() + timedelta(days=30))
+
+    run = await bench.ticket_store.load_run(ticket_id)
+    issued, answered = run_pairs(run)
+    assert issued == answered, f"unanswered tool_use ids: {sorted(issued - answered)}"
+
+
+async def test_an_alert_origin_gate_expiring_with_no_decider_degrades_cleanly(
+    benches,
+) -> None:
+    """The case the architect asked for: an alert-origin ticket's gate expires
+    with no decider anywhere reachable (pure sweeper path — ``resume_expired``
+    passes no ``decided_by``, and there is no requester either). No unanswered
+    ``tool_use``, the ticket is usable again (``in_progress``/``blocked_on ==
+    "operator"``, not stuck on ``"approval"``), an explanatory trail row
+    exists, and — the part that makes this a regression guard rather than a
+    state assertion — a following operator turn on the same ticket succeeds.
+    """
+
+    bench = await benches("alert-no-decider")
+    ticket_id = await drive_alert_origin_ticket_to_an_open_approval(
+        bench, use("t1", "winget_install", {"id": "Git.Git"})
+    )
+
+    await bench.tickets.sweep(bench.tickets.now() + timedelta(days=30))
+
+    run = await bench.ticket_store.load_run(ticket_id)
+    issued, answered = run_pairs(run)
+    assert issued == answered, f"unanswered tool_use ids: {sorted(issued - answered)}"
+
+    ticket = await bench.ticket_store.get(ticket_id)
+    assert ticket is not None
+    assert ticket.state == "in_progress"
+    assert ticket.blocked_on == "operator"
+
+    error_rows = await bench.trail(ticket_id, "error")
+    assert any(
+        e.fields and (e.fields.get("error") or {}).get("code") == "no_principal"
+        for e in error_rows
+    )
+
+    # And the ticket is not merely "unstuck" in name -- an operator can
+    # actually keep working it afterward.
+    service = bench.service(says("Back on it, an operator here."))
+    operator = await service._principal_for(ROOT, GUILD)
+    assert operator is not None
+    session = await bench.assistant.session_for(ticket, actor=operator)
+    assert session is not None
+    bench.assistant.append_user_message(session, "any update?")
+    events = [e async for e in bench.assistant.run_turn(session, ticket)]
+    assert events[-1]["type"] == "done"
+
+    run = await bench.ticket_store.load_run(ticket_id)
+    issued, answered = transcript_pairs(run.messages)
+    assert issued == answered, f"unanswered tool_use ids after the follow-up: {sorted(issued - answered)}"

@@ -632,8 +632,10 @@ def build_ticket_routes(
         themselves).
 
         The decision is durable before the resume starts, so a resume failure is
-        logged and reported (``resumed``), never raised: failing the request
-        would tell the caller their decision did not happen when it did. If a
+        logged and reported (``resumed``/``resume_status`` — the latter is
+        :data:`~kenny_server.ticket_assistant.ResumeStatus`'s real value, not a
+        hardcoded success), never raised: failing the request would tell the
+        caller their decision did not happen when it did. If a
         Discord approval card produced this gate, it is also resolved
         (made non-clickable) here — best-effort, independent of ``resumed`` —
         so a card decided from the dashboard does not sit in Discord looking
@@ -652,12 +654,18 @@ def build_ticket_routes(
             decided_via="dashboard",
             actor=_actor(principal),
         )
-        resumed = False
+        # Not a ``ResumeStatus`` member — the assistant is a deployment-time
+        # optional, distinct from every reason ``resume()`` itself can give up.
+        resume_status = "not_configured"
         if assistant is not None:
             surfaces = (discord,) if discord is not None else ()
             try:
-                await assistant.resume(decided.ticket_id, approval=decided, surfaces=surfaces)
-                resumed = True
+                resume_status = await assistant.resume(
+                    decided.ticket_id,
+                    approval=decided,
+                    decided_by=principal,
+                    surfaces=surfaces,
+                )
             except Exception:  # noqa: BLE001 - the decision already happened
                 logger.exception(
                     "ticket %s: resuming after a dashboard decision on %s failed",
@@ -678,7 +686,13 @@ def build_ticket_routes(
                     decided.ticket_id,
                     decided.id,
                 )
-        return JSONResponse({**decided.as_dict(), "resumed": resumed})
+        return JSONResponse(
+            {
+                **decided.as_dict(),
+                "resumed": resume_status == "resumed",
+                "resume_status": resume_status,
+            }
+        )
 
     # -- Discord (superuser-managed identities; operator-visible status) -------
 

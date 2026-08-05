@@ -237,6 +237,14 @@ class Ticket:
         return asdict(self)
 
 
+#: The ``actor`` value recorded for turns the assistant itself drove (as
+#: opposed to ``"user"``, ``"operator"`` or ``"system"``). A named constant
+#: because it is a stored column value, not just a UI label — see
+#: ``TicketStore._migrate`` for the one-time rename from the old ``"kenny"``
+#: value.
+ASSISTANT_ACTOR = "assistant"
+
+
 @dataclass(slots=True)
 class TicketEvent:
     """One entry of a ticket's audit trail."""
@@ -525,6 +533,13 @@ class TicketStore:
         )
         await self._conn.execute(
             "UPDATE tickets SET state = 'in_progress' WHERE state = 'triage'"
+        )
+        # Rename the assistant's actor label from the old "kenny" value to
+        # "assistant" (see ASSISTANT_ACTOR above). This is a label rename for
+        # the same acting entity, not a change to who acted, so it is not the
+        # sort of ``ticket_events`` rewrite the note above warns against.
+        await self._conn.execute(
+            "UPDATE ticket_events SET actor = 'assistant' WHERE actor = 'kenny'"
         )
 
     async def close(self) -> None:

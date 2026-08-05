@@ -127,7 +127,7 @@ It appears as horizontal per-day bars in the `screen_time` section detail and is
 in the **weekly digest**. No health rule judges it — the section is always `ok`; kenny
 reports, parents judge. See [ADR-0032](adr/0032-screen-time-aggregated-session-minutes.md).
 
-## Driving it from the copilot
+## Driving it from Ask kenny
 
 The dashboard chat and any MCP client can drive parental controls too. The server-only tools:
 
