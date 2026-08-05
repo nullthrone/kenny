@@ -47,6 +47,7 @@ from kenny_server.discord_service import (
 )
 from kenny_server.registry import AgentRegistry
 from kenny_server.store import EventStore, TelemetryStore
+from kenny_server.ticket_assistant import TicketAssistant
 from kenny_server.ticketstore import TicketStore
 from kenny_server.tickets import TicketService
 from kenny_server.tool_classes import (
@@ -228,14 +229,24 @@ class Bench:
 
     def service(self, *scripted: _Response, guilds=(GUILD,), **kw: Any) -> DiscordService:
         self.client = FakeAnthropic(list(scripted))
+        assistant_kw = {
+            k: kw.pop(k) for k in ("max_turns_per_ticket", "approval_ttl_secs") if k in kw
+        }
+        self.assistant = TicketAssistant(
+            tickets=self.tickets,
+            users=self.users,
+            executor=self.executor,
+            client=self.client,
+            model="scripted",
+            **assistant_kw,
+        )
         return DiscordService(
             gateway=self.gateway,
             identities=self.identities,
             tickets=self.tickets,
             users=self.users,
             executor=self.executor,
-            client=self.client,
-            model="scripted",
+            assistant=self.assistant,
             guild_ids=frozenset(guilds),
             support_channel_id=SUPPORT,
             operator_channel_id=OPERATORS,

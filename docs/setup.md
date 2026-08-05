@@ -150,8 +150,8 @@ connected, install the optional dependency first: `pip install -e ".[discord]"`.
 | `KENNY_DISCORD_OPERATOR_CHANNEL_ID` | — | Where operator approval cards are posted; empty posts them into the ticket's own thread. |
 | `KENNY_DISCORD_PRIVATE_THREADS` | `1` | Open each ticket in a private thread with only the requester invited. |
 | `KENNY_DISCORD_MODEL` | — | Anthropic model id for the Discord surface; empty falls back to `KENNY_CHAT_MODEL`. |
-| `KENNY_DISCORD_MAX_TURNS_PER_TICKET` | `40` | Autonomous turn cap per ticket before it is handed to an operator. |
-| `KENNY_DISCORD_RATE_LIMIT_PER_USER_HOUR` | `20` | Per-account throttle on opening/driving tickets from Discord; `0` = unlimited. |
+| `KENNY_DISCORD_MAX_TURNS_PER_TICKET` | `40` | Autonomous turn cap per ticket before it is handed to an operator. Ticket-wide (any turn on the ticket, from Discord or the dashboard's ticket chat), except an operator+-driven turn from either surface never counts against it. |
+| `KENNY_DISCORD_RATE_LIMIT_PER_USER_HOUR` | `20` | Per-account throttle on opening/driving tickets, ticket-wide across both surfaces; `0` = unlimited. An operator+-driven turn, from either surface, is exempt. |
 | `KENNY_DISCORD_WEBHOOK_URL` | — | Discord incoming-webhook URL for the alert push channel — independent of the bot; see [Alerting & digests](alerting.md#notification-channels). |
 | `KENNY_TICKET_APPROVAL_TTL_SECS` | `86400` | How long a held approval/consent waits for a decision before the sweeper expires it (an expiry counts as a denial); `0` never expires. |
 | `KENNY_TICKET_AUTOCLOSE_SECS` | `172800` | Reopen window: a `resolved` ticket untouched this long is auto-closed; `0` disables. |

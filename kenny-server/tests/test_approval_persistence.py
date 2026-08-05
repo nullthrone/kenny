@@ -79,6 +79,7 @@ class Dashboard:
             identities=bench.identities,
             user_store=bench.users,
             discord=service,
+            assistant=getattr(service, "assistant", None),
         )
         self.app = Starlette(
             routes=routes,

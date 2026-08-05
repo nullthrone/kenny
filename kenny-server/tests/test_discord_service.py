@@ -37,6 +37,7 @@ from kenny_server.discord_service import (
 )
 from kenny_server.registry import AgentRegistry
 from kenny_server.store import EventStore, TelemetryStore
+from kenny_server.ticket_assistant import TicketAssistant
 from kenny_server.ticketstore import TicketStore
 from kenny_server.tickets import TicketService
 from kenny_server.tools import CallLog, ScreenshotStore
@@ -211,14 +212,26 @@ class World:
 
     def build(self, *scripted: _Response, guilds=(GUILD,), **kwargs: Any) -> DiscordService:
         self.client = FakeAnthropic(list(scripted))
+        assistant_kw = {
+            k: kwargs.pop(k)
+            for k in ("max_turns_per_ticket", "approval_ttl_secs")
+            if k in kwargs
+        }
+        self.assistant = TicketAssistant(
+            tickets=self.service,
+            users=self.users,
+            executor=self.executor,
+            client=self.client,
+            model="fake-model",
+            **assistant_kw,
+        )
         return DiscordService(
             gateway=self.gateway,
             identities=self.identities,
             tickets=self.service,
             users=self.users,
             executor=self.executor,
-            client=self.client,
-            model="fake-model",
+            assistant=self.assistant,
             guild_ids=frozenset(guilds),
             support_channel_id=SUPPORT,
             operator_channel_id=OPERATORS,
@@ -1541,7 +1554,7 @@ async def test_resume_finds_the_decision_without_being_told(world: World) -> Non
     await world.service.decide_approval(
         approval.id, approve=True, decided_by=world.dad["id"], decided_via="dashboard"
     )
-    await service.resume(ticket.id)
+    await service.assistant.resume(ticket.id, surfaces=(service,))
 
     assert [c["tool"] for c in world.sent] == ["winget_install"]
     refreshed = await world.tickets_store.get(ticket.id)

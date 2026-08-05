@@ -267,6 +267,28 @@ async def _seed_tickets(tickets: Any, base: datetime) -> None:
             tool_class="read_only", ok=True, summary="diag_processes succeeded",
             fields={"agent_id": "grandpa-pc"},
         )
+        # A dashboard-chat exchange (ADR-0054): unlike a Discord-origin message, a
+        # dashboard message and every kenny reply carry their verbatim wording in
+        # the trail, which is what the ticket-detail screenshot needs to show off.
+        _at(hours=2, minutes=5)
+        await tickets.append_event(
+            flush.id, kind="message", actor="user:7", summary="message",
+            fields={
+                "text": "While you're at it, is grandpa-pc running low on disk space?",
+                "actionable": True,
+                "surface": "dashboard",
+            },
+        )
+        await tickets.append_event(
+            flush.id, kind="message", actor="kenny", summary="message",
+            fields={
+                "text": (
+                    "No, plenty of room — 128 GB free out of 512 GB on the main drive. "
+                    "That's not what's causing the Wi-Fi drops."
+                ),
+                "surface": "dashboard",
+            },
+        )
         _at(hours=2, minutes=4)
         await tickets.append_event(
             flush.id, kind="tool_call", actor="kenny", tool="net_dns_flush",

@@ -448,6 +448,65 @@ async def test_leaving_a_blocked_ticket_denies_the_open_gate_without_resuming(
     assert (await service.get(ticket.id)).state == to_state
 
 
+# -- the transition notifier ----------------------------------------------------
+
+
+async def test_transition_notifier_fires_after_a_successful_transition(
+    service: TicketService,
+) -> None:
+    seen: list[tuple[str, str]] = []
+
+    async def notifier(ticket, to_state):
+        seen.append((ticket.id, to_state))
+
+    service.set_transition_notifier(notifier)
+    ticket = await _new_ticket(service)
+
+    moved = await service.transition(ticket.id, "in_progress", actor="system")
+
+    assert seen == [(ticket.id, "in_progress")]
+    assert moved.state == "in_progress"
+
+
+async def test_transition_notifier_fires_on_auto_close_resolved(tmp_path) -> None:
+    store = TicketStore(str(tmp_path / "tickets.sqlite"))
+    await store.connect()
+    clock = Clock()
+    svc = TicketService(store, now=clock, autoclose_secs=3600)
+    seen: list[tuple[str, str]] = []
+
+    async def notifier(ticket, to_state):
+        seen.append((ticket.id, to_state))
+
+    svc.set_transition_notifier(notifier)
+    try:
+        stale = await _ticket_in(svc, "resolved")
+        clock.advance(3601)
+
+        closed = await svc.auto_close_resolved()
+
+        assert [t.id for t in closed] == [stale.id]
+        assert seen == [(stale.id, "closed")]
+    finally:
+        await store.close()
+
+
+async def test_a_raising_transition_notifier_does_not_block_the_transition(
+    service: TicketService,
+) -> None:
+    """The transition already committed; a broken notifier must not undo that."""
+
+    async def broken(ticket, to_state):
+        raise RuntimeError("boom")
+
+    service.set_transition_notifier(broken)
+    ticket = await _new_ticket(service)
+
+    moved = await service.transition(ticket.id, "in_progress", actor="system")
+
+    assert moved.state == "in_progress"
+    assert (await service.get(ticket.id)).state == "in_progress"
+
 # -- the blocked-on axis ---------------------------------------------------------
 
 

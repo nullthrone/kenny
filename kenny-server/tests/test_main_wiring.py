@@ -98,6 +98,46 @@ def test_server_without_discord_serves_fleet_and_tickets(tmp_path) -> None:
         assert c.get("/api/discord/status", headers=h).json()["configured"] is False
 
 
+def test_assistant_exists_without_a_discord_token(tmp_path) -> None:
+    """The ticket assistant only needs a usable Anthropic client.
+
+    Independent of ``KENNY_DISCORD_BOT_TOKEN`` — a self-hoster with an API key
+    but no Discord bot still gets a working ticket chat, and the dashboard
+    route it powers is registered on every server that has one.
+    """
+
+    app = build_app(
+        db_path=str(tmp_path / "assistant_only.sqlite"), client_factory=_FakeAnthropic
+    )
+    assert app.state.discord_service is None
+    assert app.state.ticket_assistant is not None
+
+    chat_routes = [
+        r for r in app.router.routes if getattr(r, "path", None) == "/api/tickets/{tid}/chat/stream"
+    ]
+    assert len(chat_routes) == 1
+    assert "POST" in (chat_routes[0].methods or set())
+
+    with TestClient(app) as c:
+        h = _bearer(app)
+        created = c.post("/api/tickets", json={"title": "no discord here"}, headers=h)
+        assert created.status_code == 201
+        body = c.get(f"/api/tickets/{created.json()['id']}", headers=h).json()
+        assert body["assistant_available"] is True
+        assert body["discord_thread"] is False
+
+
+def test_no_assistant_without_a_usable_anthropic_client(tmp_path) -> None:
+    """A client factory that raises (no API key) disables the assistant too."""
+
+    def _boom() -> None:
+        raise RuntimeError("no ANTHROPIC_API_KEY")
+
+    app = build_app(db_path=str(tmp_path / "no_client.sqlite"), client_factory=_boom)
+    assert app.state.ticket_assistant is None
+    assert app.state.discord_service is None
+
+
 # -- the sweeper's start/no-start convention -----------------------------------
 
 

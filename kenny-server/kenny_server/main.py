@@ -61,6 +61,7 @@ from .store import (
     UpdateStore,
     WebFilterStore,
 )
+from .ticket_assistant import TicketAssistant
 from .ticket_rules import TicketRuleList
 from .ticketstore import TicketStore
 from .tickets import TicketService, ticket_sweep_loop
@@ -303,29 +304,20 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         ticket_rules=ticket_rules,
     )
 
-    # Discord bot surface (optional). The service is constructed only when a bot
-    # token exists — an env-only secret, so its presence is already known here —
-    # and started only when KENNY_DISCORD_ENABLED is set, which is re-read in the
-    # lifespan after the operator's DB overrides load. Constructing
-    # ``DiscordPyGateway`` imports nothing: discord.py is imported lazily inside
-    # ``start()``, so a server without the optional dependency builds normally.
-    discord_token = str(settings.get("KENNY_DISCORD_BOT_TOKEN") or "").strip()
-    discord_service: DiscordService | None = None
-    discord_client: Any = None
-    if discord_token:
-        try:
-            discord_client = client_factory()
-        except Exception as exc:  # noqa: BLE001 - e.g. no ANTHROPIC_API_KEY
-            logging.getLogger("kenny.discord").warning(
-                "Discord surface disabled: no usable Anthropic client (%s)", exc
-            )
-    if discord_token and discord_client is not None:
-        guild_allowlist = _guild_ids(settings.get("KENNY_DISCORD_GUILD_IDS"))
-        discord_service = DiscordService(
-            gateway=DiscordPyGateway(
-                token=discord_token, guild_allowlist=guild_allowlist
-            ),
-            identities=discord_identities,
+    # The ticket assistant (dashboard chat +, if configured, Discord) is built
+    # whenever a usable Anthropic client exists — independent of whether a
+    # Discord bot token is set. This is the one place both surfaces' turns are
+    # actually driven from; a server with no API key gets neither.
+    ticket_client: Any = None
+    try:
+        ticket_client = client_factory()
+    except Exception as exc:  # noqa: BLE001 - e.g. no ANTHROPIC_API_KEY
+        logging.getLogger("kenny.tickets").info(
+            "the ticket assistant is disabled: no usable Anthropic client (%s)", exc
+        )
+    ticket_assistant: TicketAssistant | None = None
+    if ticket_client is not None:
+        ticket_assistant = TicketAssistant(
             tickets=ticket_service,
             users=user_store,
             executor=ToolExecutor(
@@ -335,18 +327,45 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
                 call_log=call_log,
                 screenshots=screenshots,
             ),
-            client=discord_client,
-            model=(
-                str(settings.get("KENNY_DISCORD_MODEL") or "").strip()
-                or str(settings.get("KENNY_CHAT_MODEL"))
+            client=ticket_client,
+            model=str(settings.get("KENNY_CHAT_MODEL")),
+            max_turns_per_ticket=int(settings.get("KENNY_DISCORD_MAX_TURNS_PER_TICKET")),
+            approval_ttl_secs=int(settings.get("KENNY_TICKET_APPROVAL_TTL_SECS")),
+        )
+
+    # Discord bot surface (optional). The service is constructed only when a bot
+    # token exists — an env-only secret, so its presence is already known here —
+    # and started only when KENNY_DISCORD_ENABLED is set, which is re-read in the
+    # lifespan after the operator's DB overrides load. Constructing
+    # ``DiscordPyGateway`` imports nothing: discord.py is imported lazily inside
+    # ``start()``, so a server without the optional dependency builds normally.
+    # It shares the assistant above rather than owning its own model client —
+    # ``KENNY_DISCORD_MODEL``, when set, only overrides which model a
+    # Discord-driven turn uses (threaded through as a per-call
+    # ``model_override``, never mutating the shared assistant's own model).
+    discord_token = str(settings.get("KENNY_DISCORD_BOT_TOKEN") or "").strip()
+    discord_service: DiscordService | None = None
+    if discord_token and ticket_assistant is None:
+        logging.getLogger("kenny.discord").warning(
+            "Discord surface disabled: no usable Anthropic client"
+        )
+    if discord_token and ticket_assistant is not None:
+        guild_allowlist = _guild_ids(settings.get("KENNY_DISCORD_GUILD_IDS"))
+        discord_service = DiscordService(
+            gateway=DiscordPyGateway(
+                token=discord_token, guild_allowlist=guild_allowlist
             ),
+            identities=discord_identities,
+            tickets=ticket_service,
+            users=user_store,
+            executor=ticket_assistant.executor,
+            assistant=ticket_assistant,
             guild_ids=guild_allowlist,
             support_channel_id=str(settings.get("KENNY_DISCORD_SUPPORT_CHANNEL_ID")) or None,
             operator_channel_id=str(settings.get("KENNY_DISCORD_OPERATOR_CHANNEL_ID")) or None,
             private_threads=bool(settings.get("KENNY_DISCORD_PRIVATE_THREADS")),
-            max_turns_per_ticket=int(settings.get("KENNY_DISCORD_MAX_TURNS_PER_TICKET")),
             rate_limit_per_hour=int(settings.get("KENNY_DISCORD_RATE_LIMIT_PER_USER_HOUR")),
-            approval_ttl_secs=int(settings.get("KENNY_TICKET_APPROVAL_TTL_SECS")),
+            model_override=str(settings.get("KENNY_DISCORD_MODEL") or "").strip() or None,
         )
 
     mcp = FastMCP("kenny")
@@ -620,6 +639,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         user_store=user_store,
         discord=discord_service,
         ticket_rules=ticket_rules,
+        assistant=ticket_assistant,
     )
     download_routes = build_download_routes(
         registry=registry,
@@ -694,6 +714,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
     app.state.tickets = ticket_service
     app.state.discord_identities = discord_identities
     app.state.discord_service = discord_service
+    app.state.ticket_assistant = ticket_assistant
     # Replaced by the lifespan with the tasks it actually started (if any).
     app.state.ticket_task = None
     app.state.discord_task = None

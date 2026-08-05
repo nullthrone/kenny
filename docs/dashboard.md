@@ -443,13 +443,30 @@ not just from clicking through the list. It shows:
   category (editable dropdowns, sourced from `GET /api/tickets/vocabulary`), requester,
   assignee, target PC, and the created/updated timestamps.
 - Kenny's running **summary**, and the **resolution** once one is set.
-- An **add a note** box (operator+) for a plain operator annotation on the trail.
+- A **composer** that replaced the old plain note box, with a mode toggle between **send to
+  kenny** and **add a note** (operator+ only sees the toggle at all — a scoped `user` only
+  ever gets "send to kenny"). "Add a note" keeps its existing operator+ gating; "send to
+  kenny" does not — any `user` may chat on their own ticket the same way they always could
+  over Discord. Sending streams `POST /api/tickets/{tid}/chat/stream` through the same SSE
+  event vocabulary the copilot chat already renders, so a reply appears token-by-token in the
+  timeline. A checkbox — **"also post in the Discord thread"** — appears only when the ticket
+  has a bound thread, defaults off, and applies the same redaction a Discord-bound reply has
+  always gone through. The composer (its "send to kenny" side) is disabled with a visible
+  reason when it can't be used right now: *"The AI assistant is not configured."*, *"This
+  ticket has no target machine."*, *"This ticket is closed."*, or, while a gate is open,
+  *"Waiting on a decision above."*
 - The **timeline** — every `ticket_events` row in order: state changes, block/unblock
   changes (who the ticket started or stopped waiting on), messages (tagged by who sent
   them), tool calls (with their arguments, tagged by [tier](tools.md)), approval/consent
   requests and their decisions, assignment changes, and reassignment handoffs (including a
   *discarded* retarget attempt, which is recorded even though nothing about the ticket
-  changed).
+  changed). A **message** row now renders its actual content where the trail has it: kenny's
+  replies through the same markdown renderer the copilot chat uses, a human's dashboard
+  message as plain escaped text. A Discord-origin family message still shows only its
+  existing one-line summary — no verbatim text is stored for it, unchanged from before. A
+  **held gate** (an open approval or consent request) gets inline **Approve**/**Deny** buttons
+  directly on its timeline row for an operator+, in addition to (not instead of) the header's
+  approvals badge — both paths decide the same gate.
 - Every action button below is rendered from the ticket's own `allowed_transitions`/
   `allowed_blocks`/`can_unblock` — an option only ever appears if the API would actually
   accept it for the account that is looking at it.
@@ -469,6 +486,17 @@ not just from clicking through the list. It shows:
 - **Unblock** — clear whatever the ticket is currently blocked on. The requester sees this
   for their own `user` block (answering kenny's question from the dashboard instead of
   Discord); an operator sees it for any block.
+
+Resolving, cancelling or closing a ticket here — and the auto-close sweeper doing the same —
+also now posts a short message into the ticket's Discord thread (if it has one) and archives
+it at a terminal state; this used to be silent in Discord.
+
+The **New ticket** modal also gained an optional host picker, so a ticket opened straight
+from the dashboard can start with a real target machine instead of always unassigned —
+without one, the new composer's "send to kenny" side has nothing to run against and stays
+disabled. See [`itsm.md`](itsm.md#what-is-recorded-and-what-is-not) for what the composer's
+messages record, and [ADR-0055](adr/0055-the-ticket-is-its-own-chat-surface.md) for why this
+is a second, equally-gated chat surface rather than an extension of the copilot.
 
 ---
 

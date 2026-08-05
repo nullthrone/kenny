@@ -68,3 +68,4 @@ implementation detail", see *When (not) to write an ADR* in the repository `CLAU
 | [0052](0052-second-release-channel-dev-prereleases.md) | Second release channel: `dev` prereleases via the GitHub `prerelease` flag | proposed |
 | [0053](0053-operator-configurable-auto-ticket-rules.md) | Operator-configurable rules for which events open a ticket | proposed |
 | [0054](0054-ticket-blocked-on-axis.md) | The ticket lifecycle splits into two axes: state and blocked-on | proposed |
+| [0055](0055-the-ticket-is-its-own-chat-surface.md) | The ticket is its own chat surface | proposed |
