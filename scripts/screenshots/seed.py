@@ -28,6 +28,12 @@ state is exactly what driving the real gate would have produced. And a couple
 of **Discord identities** plus one pending link claim (``DiscordIdentityStore``,
 still no gateway) so the Settings Discord panel has real rows instead of the
 "nothing linked yet" empty state.
+
+A handful of ``UserStore`` accounts back the requester/assignee/decided-by ids
+the tickets and identities above reference (``_seed_users``) — without them,
+every id shown in a screenshot would fall back to its bare ``#id`` form
+(``GET /api/users/directory`` returning nothing to resolve against), which
+would not demonstrate the dashboard's own username-resolution at all.
 """
 
 from __future__ import annotations
@@ -52,6 +58,8 @@ async def seed_app(app: Any, base: datetime | None = None) -> list[str]:
     base = base or datetime.now(timezone.utc)
     state = app.state
     hosts = demo_fleet.build_fleet(base)
+
+    user_ids = await _seed_users(state.user_store)
 
     _seed_reliability_categories()
     if getattr(state, "suppression", None) is not None:
@@ -78,11 +86,29 @@ async def seed_app(app: Any, base: datetime | None = None) -> list[str]:
     await _seed_activity(state.event_store, base)
     await _seed_chat_history(state.chat_history_store, base)
     if getattr(state, "tickets", None) is not None:
-        await _seed_tickets(state.tickets, base)
+        await _seed_tickets(state.tickets, base, user_ids)
     if getattr(state, "discord_identities", None) is not None:
-        await _seed_discord_identities(state.discord_identities, base)
+        await _seed_discord_identities(state.discord_identities, base, user_ids)
 
     return [h.agent_id for h in hosts]
+
+
+async def _seed_users(user_store: Any) -> dict[str, int]:
+    """A few real accounts backing the ids ``_seed_tickets``/``_seed_discord_identities``
+    reference, keyed by role in this demo story rather than by number.
+
+    Real rows (not just numbers) matter here: ``GET /api/users/directory`` — the
+    dashboard's id -> username resolver — has nothing to resolve against
+    otherwise, and every requester/assignee/actor in the captured screenshots
+    would show its bare ``#id`` fallback instead of demonstrating the feature.
+    IDs are whatever ``UserStore`` assigns (autoincrement from an empty demo
+    DB); callers thread the returned dict through rather than assuming 1/2/3.
+    """
+
+    operator = await user_store.create_user("mama", "demo-password-1", "operator")
+    grandpa = await user_store.create_user("grandpa", "demo-password-2", "user")
+    papa = await user_store.create_user("papa", "demo-password-3", "user")
+    return {"operator": operator["id"], "grandpa": grandpa["id"], "papa": papa["id"]}
 
 
 def _seed_reliability_categories() -> None:
@@ -224,7 +250,7 @@ async def _seed_chat_history(store: Any, base: datetime) -> None:
     )
 
 
-async def _seed_tickets(tickets: Any, base: datetime) -> None:
+async def _seed_tickets(tickets: Any, base: datetime, user_ids: dict[str, int]) -> None:
     """Four demo tickets across states/origins for the Tickets tab.
 
     Driven entirely through ``TicketService`` — create/transition/append_event/
@@ -233,7 +259,15 @@ async def _seed_tickets(tickets: Any, base: datetime) -> None:
     service's clock is temporarily backdated per step (restored in ``finally``)
     so the list's age column and the detail timeline read like a fleet that has
     been running for a while, not "just now" for everything.
+
+    ``user_ids`` (see ``_seed_users``) is who plays each role in this story:
+    "grandpa" opens the Wi-Fi ticket, "papa" opens the other two, "operator"
+    (mama) is the one who decides the held approval.
     """
+
+    grandpa_id = user_ids["grandpa"]
+    papa_id = user_ids["papa"]
+    operator_id = user_ids["operator"]
 
     original_now = tickets._now  # noqa: SLF001 - screenshot-only backdating
 
@@ -247,18 +281,18 @@ async def _seed_tickets(tickets: Any, base: datetime) -> None:
             id="demo-tkt-flush",
             title="Wi-Fi keeps dropping and games lag on grandpa-pc",
             origin="discord",
-            requester_user_id=7,
+            requester_user_id=grandpa_id,
             agent_id="grandpa-pc",
             role_snapshot="user",
             profile_snapshot="self-service-basic",
-            actor="user:7",
+            actor=f"user:{grandpa_id}",
             reason="opened from Discord",
         )
         await tickets.transition(
             flush.id, "in_progress", actor="system", reason="opened from Discord"
         )
         await tickets.append_event(
-            flush.id, kind="message", actor="user:7", summary="opening message",
+            flush.id, kind="message", actor=f"user:{grandpa_id}", summary="opening message",
             fields={"actionable": True, "discord_id": "441029938271"},
         )
         _at(hours=2, minutes=6)
@@ -272,7 +306,7 @@ async def _seed_tickets(tickets: Any, base: datetime) -> None:
         # the trail, which is what the ticket-detail screenshot needs to show off.
         _at(hours=2, minutes=5)
         await tickets.append_event(
-            flush.id, kind="message", actor="user:7", summary="message",
+            flush.id, kind="message", actor=f"user:{grandpa_id}", summary="message",
             fields={
                 "text": "While you're at it, is grandpa-pc running low on disk space?",
                 "actionable": True,
@@ -312,7 +346,7 @@ async def _seed_tickets(tickets: Any, base: datetime) -> None:
         )
         _at(hours=1, minutes=40)
         await tickets.decide_approval(
-            approval.id, approve=True, decided_by=1, decided_via="dashboard", actor="operator:1",
+            approval.id, approve=True, decided_by=operator_id, decided_via="dashboard", actor=f"operator:{operator_id}",
         )
         await tickets.unblock(flush.id, actor="system", reason="gate decided")
         _at(hours=1, minutes=38)
@@ -334,18 +368,18 @@ async def _seed_tickets(tickets: Any, base: datetime) -> None:
             id="demo-tkt-printer",
             title="Install printer driver on living-room-pc",
             origin="discord",
-            requester_user_id=4,
+            requester_user_id=papa_id,
             agent_id="living-room-pc",
             role_snapshot="user",
             profile_snapshot="power-user",
-            actor="user:4",
+            actor=f"user:{papa_id}",
             reason="opened from Discord",
         )
         await tickets.transition(
             printer.id, "in_progress", actor="system", reason="opened from Discord"
         )
         await tickets.append_event(
-            printer.id, kind="message", actor="user:4", summary="opening message",
+            printer.id, kind="message", actor=f"user:{papa_id}", summary="opening message",
             fields={"actionable": True, "discord_id": "552017744102"},
         )
         _at(minutes=39)
@@ -365,9 +399,9 @@ async def _seed_tickets(tickets: Any, base: datetime) -> None:
             id="demo-tkt-webcam",
             title="Webcam not detected in Teams",
             origin="dashboard",
-            requester_user_id=4,
+            requester_user_id=papa_id,
             agent_id="papa-pc",
-            actor="user:4",
+            actor=f"user:{papa_id}",
             reason="opened from the dashboard",
         )
 
@@ -397,27 +431,31 @@ async def _seed_tickets(tickets: Any, base: datetime) -> None:
 _DEMO_GUILD_ID = "123456789012345678"
 
 
-async def _seed_discord_identities(identities: Any, base: datetime) -> None:
+async def _seed_discord_identities(
+    identities: Any, base: datetime, user_ids: dict[str, int]
+) -> None:
     """Two linked accounts (one per enrollment path) and one pending claim.
 
     The same two Discord snowflakes used in :func:`_seed_tickets`, so the
-    Settings panel and the ticket timeline agree with each other.
+    Settings panel and the ticket timeline agree with each other — and the
+    same two accounts from :func:`_seed_users`, so the Discord panel's own
+    id -> username resolution has something real to show too.
     """
 
     await identities.link(
         discord_user_id="441029938271",
-        user_id=7,
+        user_id=user_ids["grandpa"],
         guild_id=_DEMO_GUILD_ID,
         linked_via="claim",
-        linked_by=1,
+        linked_by=user_ids["operator"],
         now=base - timedelta(days=12),
     )
     await identities.link(
         discord_user_id="552017744102",
-        user_id=4,
+        user_id=user_ids["papa"],
         guild_id=_DEMO_GUILD_ID,
         linked_via="member_list",
-        linked_by=1,
+        linked_by=user_ids["operator"],
         now=base - timedelta(days=5),
     )
     await identities.open_claim(

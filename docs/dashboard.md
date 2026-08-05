@@ -28,7 +28,11 @@ here when you want to know what a particular control does.
 Every view shares one header:
 
 - **Brand** — the kenny mark and the "fleet console" subtitle (top-left).
-- **Tab navigation** — **Overview · Fleet · Activity**. The active tab is highlighted.
+- **Tab navigation** — **Overview · Fleet · Activity · Tickets**. The active tab is
+  highlighted; **Tickets** carries a live count badge (operator+ only) when something needs
+  your attention — blocked on your approval, blocked on an operator, or a fresh alert-origin
+  ticket. Clicking the tab always opens [the Tickets tab](#the-tickets-tab) itself; the badge
+  is informational, not a filter — use the list's own **needs you** group chip for that.
 - **Fleet-metrics pill** — a compact, always-visible summary of the whole fleet:
   **online `x/y`** · **warnings** · **critical** · **last push**. The *warnings* and
   *critical* counts are **section totals** across the fleet (one PC can contribute several),
@@ -36,9 +40,6 @@ Every view shares one header:
   On narrow screens the word labels collapse to icon + number.
 - **✨ Ask kenny toggle** *(Fleet tab only)* — show/hide the chat rail (see
   [Ask kenny](#ask-kenny-chat-rail)).
-- **Tickets badge** *(operator+ only)* — a message-square icon with a live count of tickets
-  needing you: blocked on your approval, blocked on an operator, or a fresh alert-origin
-  ticket. Clicking it opens [the Tickets tab](#the-tickets-tab) filtered to that group.
 - **Approvals badge** *(operator+ only)* — a shield icon with a live count of everything
   currently held for you across every ticket; see [The approvals badge](#the-approvals-badge)
   below.
@@ -410,14 +411,19 @@ user-facing view.
 </figure>
 
 One row per ticket — number, title, a **pill** showing its state and, while it is blocked,
-who it is blocked on (e.g. "in progress · needs your approval"), the requester (or "alert"
-for a ticket with no owner), the target PC, and its age — sorted newest-first. The list is
-grouped into **needs you** / **waiting** / **working** / **new** / **done**, each with a
-live count from `GET /api/tickets/summary` — "needs you" is a ticket blocked on your
+who it is blocked on (e.g. "in progress · needs your approval"), the requester by name (or
+"alert" for a ticket with no owner), the target PC, and its age — sorted newest-first. The
+list is grouped into **needs you** / **waiting** / **working** / **new** / **done**, each
+with a live count from `GET /api/tickets/summary` — "needs you" is a ticket blocked on your
 approval or an operator, or a fresh alert-origin ticket nobody has looked at yet. The same
-count appears as a header badge next to the approvals badge. **New ticket** opens one
-directly from the dashboard (title + optional details), which lands exactly like a
-Discord-opened one except it has no thread attached.
+count is what the **Tickets** tab's own badge shows (see [the header](#the-shell-header-global-controls)).
+**New ticket** opens one directly from the dashboard (title + optional details), which lands
+exactly like a Discord-opened one except it has no thread attached.
+
+A requester, assignee, or trail-row actor is always shown by **username** — an operator+
+account can resolve any other account's id to a name via `GET /api/users/directory` (a
+narrower projection than the superuser-only `GET /api/users`: just id, username, and role,
+nothing else). An id with no matching account (a deleted one) falls back to `#id`.
 
 For an operator+, each row carries a **selection checkbox** (plus a "select all" in the
 header, scoped to whatever the selected group currently shows). Selecting one or more
@@ -441,32 +447,42 @@ not just from clicking through the list. It shows:
 
 - The **metadata** block — number, origin (`discord` / `dashboard` / `alert`), priority and
   category (editable dropdowns, sourced from `GET /api/tickets/vocabulary`), requester,
-  assignee, target PC, and the created/updated timestamps.
+  assignee (both shown by username, not a bare id), target PC, and the created/updated
+  timestamps.
 - Kenny's running **summary**, and the **resolution** once one is set.
-- A **composer** that replaced the old plain note box, with a mode toggle between **Ask
-  kenny** and **add a note** (operator+ only sees the toggle at all — a scoped `user` only
-  ever gets "Ask kenny"). "Add a note" keeps its existing operator+ gating; "Ask
-  kenny" does not — any `user` may chat on their own ticket the same way they always could
-  over Discord. Sending streams `POST /api/tickets/{tid}/chat/stream` through the same SSE
-  event vocabulary Ask kenny already renders, so a reply appears token-by-token in the
-  timeline. A checkbox — **"also post in the Discord thread"** — appears only when the ticket
-  has a bound thread, defaults off, and applies the same redaction a Discord-bound reply has
-  always gone through. The composer (its "Ask kenny" side) is disabled with a visible
-  reason when it can't be used right now: *"Ask kenny is not configured."*, *"This
+- The **timeline**, above the composer — every `ticket_events` row in order, oldest first,
+  scrolling inside its own bounded panel rather than growing the whole page: state changes,
+  block/unblock changes (who the ticket started or stopped waiting on), messages (tagged by
+  who sent them, by username), tool calls (with their arguments, tagged by
+  [tier](tools.md)), approval/consent requests and their decisions, assignment changes, and
+  reassignment handoffs (including a *discarded* retarget attempt, which is recorded even
+  though nothing about the ticket changed). A **message** row renders its actual content
+  where the trail has it: kenny's replies through the same markdown renderer Ask kenny uses,
+  a human's dashboard message as plain escaped text. A Discord-origin family message still
+  shows only its existing one-line summary — no verbatim text is stored for it, unchanged
+  from before. A **held gate** (an open approval or consent request) gets inline
+  **Approve**/**Deny** buttons directly on its timeline row for an operator+, *and* — the
+  instant it's held, or on opening a ticket that's already waiting — the same wide
+  confirm-gate dialog [Ask kenny](#ask-kenny-chat-rail) uses, showing the exact tool and
+  frozen arguments. Unlike Ask kenny's version, a ticket's dialog is dismissible: it gets a
+  **"Decide later"** button rather than a deny, since a ticket's gate can legitimately wait
+  hours for a different operator than whoever has it open right now. All three paths —
+  inline row, popup, and the header's approvals badge — decide the same gate.
+- A **composer** below the timeline, with a mode toggle between **Ask kenny** and **add a
+  note** (operator+ only sees the toggle at all — a scoped `user` only ever gets "Ask
+  kenny"). "Add a note" keeps its existing operator+ gating; "Ask kenny" does not — any
+  `user` may chat on their own ticket the same way they always could over Discord. Sending
+  streams `POST /api/tickets/{tid}/chat/stream` through the same SSE event vocabulary Ask
+  kenny already renders, so a reply appears token-by-token in the timeline. An **"Enter to
+  send"** checkbox (off by default, remembered per browser) controls whether Enter sends the
+  message or inserts a newline — Cmd/Ctrl+Enter always sends regardless, and Shift+Enter
+  always inserts a newline regardless; it applies to "add a note" too, since both share the
+  same box. A checkbox — **"also post in the Discord thread"** — appears only when the
+  ticket has a bound thread, defaults off, and applies the same redaction a Discord-bound
+  reply has always gone through. The composer (its "Ask kenny" side) is disabled with a
+  visible reason when it can't be used right now: *"Ask kenny is not configured."*, *"This
   ticket has no target machine."*, *"This ticket is closed."*, or, while a gate is open,
   *"Waiting on a decision above."*
-- The **timeline** — every `ticket_events` row in order: state changes, block/unblock
-  changes (who the ticket started or stopped waiting on), messages (tagged by who sent
-  them), tool calls (with their arguments, tagged by [tier](tools.md)), approval/consent
-  requests and their decisions, assignment changes, and reassignment handoffs (including a
-  *discarded* retarget attempt, which is recorded even though nothing about the ticket
-  changed). A **message** row now renders its actual content where the trail has it: kenny's
-  replies through the same markdown renderer Ask kenny uses, a human's dashboard
-  message as plain escaped text. A Discord-origin family message still shows only its
-  existing one-line summary — no verbatim text is stored for it, unchanged from before. A
-  **held gate** (an open approval or consent request) gets inline **Approve**/**Deny** buttons
-  directly on its timeline row for an operator+, in addition to (not instead of) the header's
-  approvals badge — both paths decide the same gate.
 - Every action button below is rendered from the ticket's own `allowed_transitions`/
   `allowed_blocks`/`can_unblock` — an option only ever appears if the API would actually
   accept it for the account that is looking at it.
