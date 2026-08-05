@@ -1155,7 +1155,7 @@ def test_chat_stream_drives_a_turn_and_records_verbatim_text(tmp_path) -> None:
         assert human.fields["text"] == "my pc is being slow today"
         assert human.fields["surface"] == "dashboard"
         assert human.fields["actionable"] is True
-        assert kenny.actor == "kenny"
+        assert kenny.actor == "assistant"
         assert kenny.fields["text"] == "I'll take a look."
         assert kenny.fields["surface"] == "dashboard"
 

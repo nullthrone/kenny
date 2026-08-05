@@ -7,7 +7,7 @@ prompt to send, which tools to expose, where a call is routed, or whether a call
 may proceed — a policy object answers all four.
 
 That split is what makes a second surface possible without forking the loop: the
-dashboard's policy (``chat.DashboardPolicy``) holds every state-changing call for
+dashboard's policy (``chat.FleetPolicy``) holds every state-changing call for
 an operator confirmation, and a different surface can hold, deny or allow on its
 own terms while the loop's event shapes, ordering and truncation stay identical.
 

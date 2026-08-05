@@ -17,7 +17,7 @@ surface both change tiers are held: a state-changing ``tool_use`` does not
 execute — the loop pauses, surfaces a pending-confirmation item to the UI, and
 only runs after an explicit operator confirm (default is deny/confirm, never
 auto-allow). The tier is a property of the tool; holding it is a property of
-this surface, and :class:`DashboardPolicy` is where that is said.
+this surface, and :class:`FleetPolicy` is where that is said.
 
 The Anthropic client is injected (``run_turn(..., client=...)``) so tests pass a
 fake client and no real API key is required. Prompt caching is applied to the
@@ -128,7 +128,7 @@ def _cached_tools() -> list[dict[str, Any]]:
     return tools
 
 
-def _context_note(session: "ChatSession") -> list[dict[str, Any]]:
+def _context_note(session: "FleetSession") -> list[dict[str, Any]]:
     """An extra, uncached system block naming the dashboard's selected agent.
 
     The dashboard shows the operator a "context: <agent>" pill and scopes
@@ -157,7 +157,7 @@ def _context_note(session: "ChatSession") -> list[dict[str, Any]]:
 
 
 @dataclass
-class ChatSession:
+class FleetSession:
     """Server-side conversation state for one chat session."""
 
     id: str
@@ -186,18 +186,18 @@ class ChatSessions:
     """
 
     def __init__(self, store: ChatHistoryStore | None = None) -> None:
-        self._sessions: dict[str, ChatSession] = {}
+        self._sessions: dict[str, FleetSession] = {}
         self._store = store
 
-    def get_or_create(self, session_id: str | None) -> ChatSession:
+    def get_or_create(self, session_id: str | None) -> FleetSession:
         if session_id and session_id in self._sessions:
             return self._sessions[session_id]
         sid = session_id or uuid.uuid4().hex
-        session = ChatSession(id=sid)
+        session = FleetSession(id=sid)
         self._sessions[sid] = session
         return session
 
-    async def get(self, session_id: str) -> ChatSession | None:
+    async def get(self, session_id: str) -> FleetSession | None:
         """In-memory hit first; else rehydrate from the store, if any.
 
         A row loaded from the store is healed the same way an aborted stream
@@ -213,7 +213,7 @@ class ChatSessions:
         row = await self._store.get(session_id)
         if row is None:
             return None
-        session = ChatSession(
+        session = FleetSession(
             id=row["id"],
             messages=row["messages"],
             title=row["title"],
@@ -249,7 +249,7 @@ class TurnResult:
         }
 
 
-class DashboardPolicy:
+class FleetPolicy:
     """The operator dashboard's answers to the loop's questions.
 
     Nothing here is new behaviour: it is the confirm-gate the chat loop has
@@ -257,32 +257,32 @@ class DashboardPolicy:
     different one without forking the loop.
     """
 
-    def system_blocks(self, session: "ChatSession") -> list[dict[str, Any]]:
+    def system_blocks(self, session: "FleetSession") -> list[dict[str, Any]]:
         return _cached_system() + _context_note(session)
 
     def tool_schemas(self) -> list[dict[str, Any]]:
         return _cached_tools()
 
     def resolve_target(
-        self, session: "ChatSession", tool: str, args: dict[str, Any]
+        self, session: "FleetSession", tool: str, args: dict[str, Any]
     ) -> str | None:
         # Server-only tools name their own host via `id`, if any.
         return None if tool in SERVER_TOOLS else _resolve_chat_target(session, args)
 
     async def gate(
-        self, session: "ChatSession", tool: str, args: dict[str, Any], agent_id: str | None
+        self, session: "FleetSession", tool: str, args: dict[str, Any], agent_id: str | None
     ) -> GateDecision:
         # Both change tiers hold on this surface — identical to the previous
         # binary gate. A tier is not permission to skip the operator's dialog.
         return Allow() if classify(tool) == READ_ONLY else Hold("operator_approval")
 
-    async def on_hold(self, session: "ChatSession", pending: PendingCall) -> None:
+    async def on_hold(self, session: "FleetSession", pending: PendingCall) -> None:
         # Nothing to record: the dashboard's confirmation is transient by design
         # and is never persisted (ADR-0027).
         return None
 
 
-_DASHBOARD_POLICY = DashboardPolicy()
+_FLEET_POLICY = FleetPolicy()
 
 
 def _tool_result_is_denied(content: Any) -> bool:
@@ -371,7 +371,7 @@ def public_transcript(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 async def _drive(
-    session: ChatSession,
+    session: FleetSession,
     executor: ChatExecutor,
     *,
     client: Any,
@@ -382,7 +382,7 @@ async def _drive(
     tool_events: list[dict[str, Any]] = []
     final: dict[str, Any] | None = None
     async for ev in drive_events(
-        session, executor, client=client, model=model, policy=_DASHBOARD_POLICY
+        session, executor, client=client, model=model, policy=_FLEET_POLICY
     ):
         if ev["type"] in ("tool_result", "pending", "denied"):
             tool_events.append(ev)
@@ -431,7 +431,7 @@ def _derive_title(text: str) -> str:
     return collapsed[:79].rstrip() + "…"
 
 
-def heal_session(session: ChatSession) -> None:
+def heal_session(session: FleetSession) -> None:
     """Repair a session left mid-turn by an aborted stream (the operator's Stop).
 
     The assistant turn is only committed to ``session.messages`` after its stream
@@ -467,7 +467,7 @@ def heal_session(session: ChatSession) -> None:
         msgs.pop()
 
 
-async def persist_session(store: ChatHistoryStore | None, session: ChatSession) -> None:
+async def persist_session(store: ChatHistoryStore | None, session: FleetSession) -> None:
     """Save a session's committed messages once a turn settles.
 
     No-op when ``store`` is None (persistence not configured). Derives and
@@ -491,7 +491,7 @@ async def persist_session(store: ChatHistoryStore | None, session: ChatSession) 
 
 
 async def run_turn(
-    session: ChatSession,
+    session: FleetSession,
     user_text: str,
     *,
     executor: ChatExecutor,
@@ -515,7 +515,7 @@ async def run_turn(
 
 
 async def run_turn_events(
-    session: ChatSession,
+    session: FleetSession,
     user_text: str,
     *,
     executor: ChatExecutor,
@@ -537,13 +537,13 @@ async def run_turn_events(
     heal_session(session)
     session.messages.append({"role": "user", "content": user_text})
     async for ev in drive_events(
-        session, executor, client=client, model=model, policy=_DASHBOARD_POLICY
+        session, executor, client=client, model=model, policy=_FLEET_POLICY
     ):
         yield ev
 
 
 async def confirm_pending(
-    session: ChatSession,
+    session: FleetSession,
     *,
     approve: bool,
     executor: ChatExecutor,
@@ -569,7 +569,7 @@ async def confirm_pending(
 
 
 async def confirm_pending_events(
-    session: ChatSession,
+    session: FleetSession,
     *,
     approve: bool,
     executor: ChatExecutor,
@@ -590,6 +590,6 @@ async def confirm_pending_events(
     resume_event = await apply_confirmation(session, approve=approve, executor=executor)
     yield resume_event
     async for ev in drive_events(
-        session, executor, client=client, model=model, policy=_DASHBOARD_POLICY
+        session, executor, client=client, model=model, policy=_FLEET_POLICY
     ):
         yield ev

@@ -3,7 +3,7 @@
 ``toolloop.drive_events`` is the surface-independent core: the dashboard's
 confirm-gate is one policy over it, not part of it. These tests drive it with a
 policy that can answer ``Allow``/``Deny``/``Hold`` per tool and a session object
-that is *not* a :class:`~kenny_server.chat.ChatSession` — the loop must stay
+that is *not* a :class:`~kenny_server.chat.FleetSession` — the loop must stay
 duck-typed over ``.id``, ``.messages``, ``.agent_id``, ``.pending``, ``._queue``
 and ``._staged_results``.
 

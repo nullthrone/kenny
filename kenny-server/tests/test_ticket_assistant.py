@@ -28,7 +28,7 @@ from kenny_server.ticket_assistant import (
     TicketAssistant,
     TicketPolicy,
 )
-from kenny_server.ticketstore import TicketStore
+from kenny_server.ticketstore import ASSISTANT_ACTOR, TicketStore
 from kenny_server.tickets import TicketService
 from kenny_server.tool_classes import STANDARD_CHANGE, classify
 from kenny_server.tools import CallLog, ScreenshotStore
@@ -435,7 +435,7 @@ async def test_append_message_writes_text_only_when_verbatim(world: World) -> No
     assistant = world.assistant()
 
     await assistant.append_message(
-        ticket, actor="kenny", text="the full reply", actionable=False,
+        ticket, actor=ASSISTANT_ACTOR, text="the full reply", actionable=False,
         surface="dashboard", verbatim=True,
     )
     await assistant.append_message(
@@ -459,7 +459,7 @@ async def test_append_message_truncates_past_the_trail_cap(world: World) -> None
     long_text = "x" * (_MAX_TRAIL_TEXT_CHARS + 500)
 
     await assistant.append_message(
-        ticket, actor="kenny", text=long_text, actionable=False,
+        ticket, actor=ASSISTANT_ACTOR, text=long_text, actionable=False,
         surface="dashboard", verbatim=True,
     )
 

@@ -43,7 +43,7 @@ from typing import Any, Literal, Protocol
 
 from . import security, urls
 from .auth import Principal
-from .ticketstore import Ticket, TicketApproval
+from .ticketstore import ASSISTANT_ACTOR, Ticket, TicketApproval
 from .tickets import TicketError, TicketService
 from .tool_classes import (
     NORMAL_CHANGE,
@@ -295,7 +295,7 @@ async def _principal_from_row(users: UserStore, row: Any, *, role: str | None = 
 class TicketSession:
     """One ticket's working state, shaped for :func:`toolloop.drive_events`.
 
-    Declares the same attribute names the dashboard's ``ChatSession`` does
+    Declares the same attribute names the dashboard's ``FleetSession`` does
     (``id``/``messages``/``agent_id``/``pending``/``_queue``/``_staged_results``)
     — duck typing, no shared base class — plus the authorization context the
     ticket policy needs. It is rebuilt from SQLite on every touch, so nothing
@@ -432,7 +432,7 @@ class TicketPolicy:
             await self._service.store.append_event(
                 ticket_id=session.id,
                 kind="handoff",
-                actor="kenny",
+                actor=ASSISTANT_ACTOR,
                 tool=tool,
                 summary=f"discarded attempt to target {claimed}",
                 fields={
@@ -510,7 +510,7 @@ class TicketPolicy:
             await self._service.append_event(
                 session.id,
                 kind="tool_call",
-                actor="kenny",
+                actor=ASSISTANT_ACTOR,
                 summary=f"{tool} authorized autonomously as a standard change",
                 tool=tool,
                 tool_class=tier,
@@ -539,7 +539,7 @@ class TicketPolicy:
             kind=kind,
             agent_id=pending.agent_id,
             ttl_secs=self._ttl_secs,
-            actor="kenny",
+            actor=ASSISTANT_ACTOR,
         )
         blocked_on = "user" if kind == "user_consent" else "approval"
         try:
@@ -1164,7 +1164,7 @@ class TicketAssistant:
             await self.tickets.append_event(
                 ticket.id,
                 kind="tool_call",
-                actor="kenny",
+                actor=ASSISTANT_ACTOR,
                 summary=(
                     f"{tool} failed: {error.get('code', 'error')}"
                     if error
@@ -1181,7 +1181,7 @@ class TicketAssistant:
             await self.tickets.append_event(
                 ticket.id,
                 kind="error",
-                actor="kenny",
+                actor=ASSISTANT_ACTOR,
                 summary=f"{event.get('tool')} was refused: {code}",
                 tool=str(event.get("tool", "")),
                 tool_class=classify(str(event.get("tool", ""))),
@@ -1296,7 +1296,7 @@ class TicketAssistant:
             await self.tickets.append_event(
                 ticket.id,
                 kind="error",
-                actor="kenny",
+                actor=ASSISTANT_ACTOR,
                 summary="the assistant turn failed",
                 fields={
                     "error": {
@@ -1320,7 +1320,7 @@ class TicketAssistant:
         if state.text:
             await self.append_message(
                 ticket,
-                actor="kenny",
+                actor=ASSISTANT_ACTOR,
                 text=state.text,
                 actionable=False,
                 surface=self._surface_label(surfaces),
