@@ -1,6 +1,6 @@
 """SQLite-backed user store: accounts, PATs, sessions, and host scope.
 
-Backs the multi-user auth model (ADR-0037). Four tables in the shared
+Backs the multi-user auth model (ADR-0033). Four tables in the shared
 ``KENNY_DB_PATH`` database, following the same conventions as the other stores
 (own aiosqlite connection, ``CREATE TABLE IF NOT EXISTS`` at connect, timestamps
 as ISO-8601 UTC):

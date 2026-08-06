@@ -175,7 +175,7 @@ def test_classification() -> None:
     assert is_state_changing("shell_exec")
     assert is_state_changing("net_dns_flush")
     # remotehelp_start/_stop are mutating on the agent (control.rs); the chat
-    # confirm-gate must agree so they aren't auto-invoked (ADR-0022, issue #55).
+    # confirm-gate must agree so they aren't auto-invoked (ADR-0021, issue #55).
     assert is_state_changing("remotehelp_start")
     assert is_state_changing("remotehelp_stop")
 
@@ -558,7 +558,7 @@ async def test_sessions_registry_round_trips() -> None:
     assert b is a
 
 
-# -- persistence (ADR-0027) -------------------------------------------------
+# -- persistence (ADR-0025) -------------------------------------------------
 
 
 @pytest.fixture
@@ -711,7 +711,7 @@ def test_public_transcript_flattens_text_and_tool_result_and_omits_pending() -> 
     assert events[-1]["text"] == "Understood, I won't install it."
 
 
-# -- session-scoped agent targeting (ADR-0042) -----------------------------
+# -- session-scoped agent targeting (ADR-0038) -----------------------------
 #
 # The chat path used to forward every capability call to the process-global
 # ``registry.active_agent`` slot (``require_active()`` with no key) — shared by

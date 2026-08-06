@@ -259,7 +259,7 @@ _SPECS: list[SettingSpec] = [
     _spec("KENNY_SESSION_TTL_SECS", "Operator & Agent Auth", "int", "604800",
           "Login session lifetime (s)", lifecycle="env_only", min=60,
           help="How long a browser login session stays valid before re-login "
-               "(default 7 days). Read at login time (ADR-0037)."),
+               "(default 7 days). Read at login time (ADR-0033)."),
     _spec("KENNY_OAUTH_ACCESS_TTL_SECS", "Operator & Agent Auth", "int", "3600",
           "OAuth access token lifetime (s)", lifecycle="env_only", min=1,
           help="MCP/Claude OAuth bearer token lifetime (default 1 hour). Read "
@@ -301,11 +301,11 @@ _SPECS: list[SettingSpec] = [
                "main lever on disk usage. Lowering it prunes on the next alert "
                "cycle (~60s), not on a restart. Deleting rows frees space for "
                "reuse but does not shrink the database file — restore from a "
-               "backup (ADR-0043) or VACUUM offline to reclaim disk."),
+               "backup (ADR-0039) or VACUUM offline to reclaim disk."),
     _spec("KENNY_SQLITE_BUSY_TIMEOUT_MS", "Telemetry limits", "int", "20000",
           "SQLite busy timeout (ms)", lifecycle="env_only",
           help="How long a write waits for a contended SQLite lock before "
-               "raising 'database is locked' (ADR-0056). Read once at import "
+               "raising 'database is locked' (ADR-0051). Read once at import "
                "time, so it cannot be changed live from the dashboard."),
     # -- Agent distribution (read-only this iteration) -------------------------
     _spec("KENNY_GITHUB_REPO", "Agent distribution", "str", "t11z/kenny",
@@ -337,7 +337,7 @@ _SPECS: list[SettingSpec] = [
           "Backup directory (env only)", lifecycle="env_only",
           help="Overrides the local backup directory. Empty derives it from "
                "KENNY_DB_PATH (a sibling 'backups' directory)."),
-    # -- Updates (live; scheduled detection + operator-approved rollout, ADR-0044) --
+    # -- Updates (live; scheduled detection + operator-approved rollout, ADR-0040) --
     _spec("KENNY_UPDATE_CHECK_INTERVAL_SECS", "Updates", "int", "86400",
           "Update check interval (s)", lifecycle="live", min=0,
           help="Cadence of the scheduled check for newer agent releases (GitHub) "

@@ -11,7 +11,7 @@ const TOP_N: usize = 15;
 
 /// Collect the `processes` section.
 ///
-/// While a protected game is running (anti-cheat coexistence, ADR-0039) this reports a
+/// While a protected game is running (anti-cheat coexistence, ADR-0035) this reports a
 /// "paused" section with no process list instead of enumerating the whole machine — the
 /// enumeration is one of the behaviours a kernel anti-cheat flags.
 pub fn collect() -> Section {

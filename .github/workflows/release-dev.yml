@@ -1,7 +1,7 @@
 name: Release (dev channel)
 
 # Publishes a prerelease build on every push to main: agent + server built together,
-# tagged v<next-patch>-dev.<run_number> (ADR-0052). Because GitHub Releases marks it
+# tagged v<next-patch>-dev.<run_number> (ADR-0048). Because GitHub Releases marks it
 # `prerelease: true`, `GET /repos/{repo}/releases/latest` (used by the stable resolution
 # path everywhere on the server) never sees it — the stable channel is unaffected by
 # construction. A dev-channel detection pass instead reads `GET /releases` and picks the
@@ -74,7 +74,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       # Keep only the newest 10 dev prereleases (by publish time) so the release list
-      # doesn't grow without bound (ADR-0052) — this step is required, not optional.
+      # doesn't grow without bound (ADR-0048) — this step is required, not optional.
       # `gh release delete --cleanup-tag` removes both the Release and its git tag.
       - name: Delete old dev releases and tags
         env:

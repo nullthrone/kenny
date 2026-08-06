@@ -1,4 +1,4 @@
-"""Seamless upgrade from a pre-ADR-0037 single-token install.
+"""Seamless upgrade from a pre-ADR-0033 single-token install.
 
 Simulates an existing database (a host with telemetry, no user accounts) and
 asserts that booting the new server: creates the new tables idempotently, keeps
@@ -65,7 +65,7 @@ def test_upgrade_preserves_hosts_and_shared_token(tmp_path, monkeypatch) -> None
     tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     conn.close()
     assert {"users", "user_tokens", "sessions", "user_hosts"} <= tables
-    # The reliability alarm suppression table (ADR-0045 / issue #166) too.
+    # The reliability alarm suppression table (ADR-0041 / issue #166) too.
     assert "reliability_suppressions" in tables
 
 

@@ -14,7 +14,7 @@ on the Linux build — see `_assert_windows_tools`. Set `KENNY_E2E_FULL=1` (inte
 for a self-hosted runner with an interactive desktop) to also exercise
 `screen_capture`.
 
-On a Linux runner it instead drives the real Linux paths (ADR-0035): the portable
+On a Linux runner it instead drives the real Linux paths (ADR-0031): the portable
 `diag_processes`/`net_config` tools, the boundary where a Windows-only tool
 (`winget_list`) returns `unsupported`, and the `#[cfg(target_os = "linux")]`
 collectors read back through the snapshot — `installed_software` from dpkg,
@@ -170,7 +170,7 @@ async def test_real_agent_end_to_end(tmp_path) -> None:
                 headers={"Authorization": f"Bearer {token}"},
             )
             async with Client(transport) as client:
-                # select_agent is advisory only (ADR-0042); forwarded capability
+                # select_agent is advisory only (ADR-0038); forwarded capability
                 # calls require their own agent_id naming the target host.
                 await client.call_tool("select_agent", {"id": "dev"})
                 if sys.platform == "win32":
@@ -229,7 +229,7 @@ async def test_real_agent_end_to_end(tmp_path) -> None:
 async def _call(client, tool: str, args: dict | None = None):
     """Forward a capability tool to the single "dev" agent and return its result.
 
-    Forwarded calls require an explicit agent_id (ADR-0042); every test in this
+    Forwarded calls require an explicit agent_id (ADR-0038); every test in this
     module targets the one real agent it spawned, so it's injected here once.
     """
     call_args = {"agent_id": "dev", **(args or {})}
@@ -296,7 +296,7 @@ async def _assert_windows_tools(client) -> None:
 
 
 async def _assert_linux(client) -> None:
-    """Drive the real Linux tool and collector paths (ADR-0035).
+    """Drive the real Linux tool and collector paths (ADR-0031).
 
     The portable tools (`diag_processes`, `net_config`) run their real
     non-Windows arms; the Windows-only `winget_list` returns ``unsupported`` on the

@@ -188,7 +188,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
     registry = AgentRegistry(token_store=token_store, key_store=key_store)
     store = TelemetryStore(db_path)
     event_store = EventStore(db_path)
-    # Reliability alarm suppression (ADR-0045 / issue #166): an operator-authored
+    # Reliability alarm suppression (ADR-0041 / issue #166): an operator-authored
     # rule table + an in-memory mirror consulted synchronously by every health
     # read. Installed as `store`'s read-path annotator so every consumer of
     # TelemetryStore (alerting, digest, the fleet list, the dashboard, MCP) sees
@@ -197,19 +197,19 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
     suppression_store = ReliabilitySuppressionStore(db_path)
     suppression = SuppressionList(suppression_store)
     store.annotate = suppression.mark
-    # Auto-ticket rules (ADR-0053): which alerts open a ticket is operator
+    # Auto-ticket rules (see ticket_rules.py): which alerts open a ticket is operator
     # policy, not a hardcoded predicate. Same shape as the suppression rules
     # above -- an operator-authored table + an in-memory mirror consulted
     # synchronously by the alert engine on every dispatch. An empty table
-    # reproduces the pre-ADR-0053 behaviour exactly (every genuine alert opens
+    # reproduces the coded default exactly (every genuine alert opens
     # a ticket, nothing else does) -- see ticket_rules.py.
     ticket_rule_store = TicketRuleStore(db_path)
     ticket_rules = TicketRuleList(ticket_rule_store)
-    # Shared-catalog mirror + operator deny rules (ADR-0021). The engine loads the
+    # Shared-catalog mirror + operator deny rules (ADR-0020). The engine loads the
     # catalog at construction and never raises if it is missing (fail-open).
     policy_store = PolicyStore(db_path)
     policy_engine = PolicyEngine()
-    # Parental controls (ADR-0026): per-host store + external-list cache under a
+    # Parental controls (ADR-0024): per-host store + external-list cache under a
     # dir derived from the DB path, wrapped in the service the tunnel/API/tools use.
     webfilter_store = WebFilterStore(db_path)
     cache_dir = os.path.dirname(os.path.abspath(db_path)) or "."
@@ -235,7 +235,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
     chat_history_store = ChatHistoryStore(db_path)
     chat_sessions = ChatSessions(store=chat_history_store)
     share_links = ShareLinks()
-    # Scheduled update detection + operator-approved rollout (ADR-0044). Built
+    # Scheduled update detection + operator-approved rollout (ADR-0040). Built
     # after `tunnel`/`share_links` (it calls through both) but `tunnel` needs
     # its on-connect hook wired the other way around, so the tunnel is
     # patched with the manager's bound method right after construction —
@@ -266,7 +266,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
     discord_identities = DiscordIdentityStore(db_path)
 
     async def open_alert_ticket(note: Notification) -> None:
-        """Open the ticket an alert asks for (ADR-0029 stays best-effort).
+        """Open the ticket an alert asks for (ADR-0027 stays best-effort).
 
         ``origin='alert'`` and no requester: nobody asked for it, so it has no
         owner and is operator-only by the ticket API's own listing rule. The
@@ -286,7 +286,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
             reason="opened from an alert",
         )
 
-    # Push alerting (ADR-0029): transition detection over the health rules,
+    # Push alerting (ADR-0027): transition detection over the health rules,
     # delivered best-effort via the env-configured channels (possibly none).
     alert_state = AlertStateStore(db_path)
     notifiers = load_notifiers()
@@ -300,7 +300,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         notifiers=notifiers,
         settings=settings,
         # (store, settings_key) pairs -- only ``store`` (snapshots) has an
-        # operator-facing retention setting so far (ADR-0056): it dominates
+        # operator-facing retention setting so far (ADR-0051): it dominates
         # this database's size (~90 KB/row). The rest keep pruning on their
         # own hardcoded default until a key is added for them too.
         prunables=[
@@ -434,7 +434,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         ticket_service.stall_nudge_secs = int(settings.get("KENNY_TICKET_STALL_NUDGE_SECS"))
         ticket_service.stall_giveup_secs = int(settings.get("KENNY_TICKET_STALL_GIVEUP_SECS"))
         ticket_store.run_retention_days = int(settings.get("KENNY_TICKET_RETENTION_DAYS"))
-        # Same reasoning for telemetry retention (ADR-0056): re-read before the
+        # Same reasoning for telemetry retention (ADR-0051): re-read before the
         # boot-time prune below, so a dashboard override applies from this
         # boot's first sweep instead of only from the next periodic pass.
         store.retention_days = int(settings.get("KENNY_TELEMETRY_RETENTION_DAYS"))
@@ -448,16 +448,16 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         # Load persisted operator rules into the mirror engine at startup.
         policy_engine.set_operator_rules(await policy_store.list())
         # Load persisted reliability suppression rules into their mirror too
-        # (ADR-0045 / issue #166) -- before any health evaluation can run.
+        # (ADR-0041 / issue #166) -- before any health evaluation can run.
         await suppression.load()
-        # Load persisted auto-ticket rules (ADR-0053) before the alert loop
+        # Load persisted auto-ticket rules before the alert loop
         # below can dispatch a single notification.
         await ticket_rules.load()
         await store.prune()
         await event_store.prune()
         await webfilter_store.prune()
         await oauth_store.prune_expired()
-        # Periodically refresh the external adult/bypass lists (ADR-0026). The
+        # Periodically refresh the external adult/bypass lists (ADR-0024). The
         # initial fetch is delayed so short-lived test app instances never reach
         # out; set KENNY_WEBFILTER_REFRESH_SECS=0 to disable entirely. The
         # enable/disable gate is decided here at startup (a "restart" decision);
@@ -469,7 +469,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
             webfilter_task = asyncio.create_task(
                 _webfilter_refresh_loop(webfilter_cache, settings, refresh_secs, initial_delay)
             )
-        # Alert evaluation loop (ADR-0029). The initial delay keeps short-lived
+        # Alert evaluation loop (ADR-0027). The initial delay keeps short-lived
         # test app instances silent; KENNY_ALERT_INTERVAL_SECS=0 disables.
         alert_secs = int(settings.get("KENNY_ALERT_INTERVAL_SECS"))
         alert_task: asyncio.Task | None = None
@@ -486,7 +486,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
             backup_task = asyncio.create_task(
                 _backup_loop(backup_mgr, settings, backup_secs, backup_delay)
             )
-        # Scheduled update-detection loop (ADR-0044). KENNY_UPDATE_CHECK_INTERVAL_SECS=0
+        # Scheduled update-detection loop (ADR-0040). KENNY_UPDATE_CHECK_INTERVAL_SECS=0
         # disables entirely (a "restart" decision, like the loops above); the
         # cadence itself is re-read live inside the loop. Detection only records
         # what's available — it never rolls anything out on its own.
@@ -632,7 +632,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         client_factory=client_factory,
     )
     # The server-hosted copilot drives arbitrary capability tools over the
-    # process-global active agent, so it is gated to operator+ (ADR-0037). The
+    # process-global active agent, so it is gated to operator+ (ADR-0033). The
     # scoped ``user`` role uses the structured, per-host dashboard instead.
     chat_routes = [
         Route(
@@ -683,8 +683,8 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
 
     # Operator auth gates /mcp, /api, and the UI; /agent/ws (agent token) is exempt.
     # The user store resolves per-user PATs and sessions; the OAuth store resolves
-    # audience-bound OAuth access tokens (ADR-0041); the shared token stays accepted
-    # as a back-compat superuser (ADR-0037).
+    # audience-bound OAuth access tokens (ADR-0037); the shared token stays accepted
+    # as a back-compat superuser (ADR-0033).
     middleware = [
         Middleware(
             OperatorAuthMiddleware,

@@ -51,7 +51,7 @@ pub use protocol::PROTOCOL_VERSION;
 pub const BUILD_VERSION: &str = env!("KENNY_BUILD_VERSION");
 
 /// Release channel this binary was built from (`stable`/`dev`, see `build.rs` and
-/// ADR-0052). `stable` unless CI set `KENNY_AGENT_CHANNEL=dev` (the `release-dev.yml`
+/// ADR-0048). `stable` unless CI set `KENNY_AGENT_CHANNEL=dev` (the `release-dev.yml`
 /// build) — every other build, including local `cargo build`, gets `stable`.
 pub const BUILD_CHANNEL: &str = env!("KENNY_BUILD_CHANNEL");
 

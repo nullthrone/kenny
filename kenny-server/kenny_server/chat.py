@@ -181,7 +181,7 @@ class ChatSessions:
 
     The in-memory dict is a fast path for the lifetime of one process; when a
     store is given, ``get()`` falls back to it on a cache miss so a session
-    survives a restart (ADR-0027). SQLite is the source of truth; the dict is
+    survives a restart (ADR-0025). SQLite is the source of truth; the dict is
     just an accelerator a restart trivially discards.
     """
 
@@ -278,7 +278,7 @@ class FleetPolicy:
 
     async def on_hold(self, session: "FleetSession", pending: PendingCall) -> None:
         # Nothing to record: the dashboard's confirmation is transient by design
-        # and is never persisted (ADR-0027).
+        # and is never persisted (ADR-0025).
         return None
 
 

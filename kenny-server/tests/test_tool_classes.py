@@ -12,7 +12,7 @@ rot silently:
    registered in ``tools.py`` without a tier here would only be caught at
    runtime, by the fail-closed default.
 3. **Unknown fails closed**, so that runtime default is the safe one.
-4. **The agent agrees.** ADR-0024 requires the server's gate to match
+4. **The agent agrees.** ADR-0023 requires the server's gate to match
    ``control::is_mutating``; nothing but a test keeps the two lists in step.
 """
 
@@ -153,7 +153,7 @@ def test_standard_change_is_the_short_deliberate_list() -> None:
 
 
 def test_agent_mutating_parity() -> None:
-    """Everything the agent calls mutating is state-changing here (ADR-0024)."""
+    """Everything the agent calls mutating is state-changing here (ADR-0023)."""
 
     for tool in AGENT_MUTATING:
         assert tool in TOOL_CLASSES, f"{tool} is mutating on the agent but has no tier"

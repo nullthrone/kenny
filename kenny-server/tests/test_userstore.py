@@ -1,4 +1,4 @@
-"""UserStore: accounts, PATs, sessions, and host scope (ADR-0037)."""
+"""UserStore: accounts, PATs, sessions, and host scope (ADR-0033)."""
 
 from __future__ import annotations
 

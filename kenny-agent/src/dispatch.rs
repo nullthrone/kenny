@@ -35,15 +35,15 @@ async fn run(tool: &str, args: Value) -> Result<Value, (ErrorCode, String)> {
 
     // Deterministic, always-on safety guard: refuse individually dangerous calls
     // regardless of approval or kill-switch state. Cannot be disabled remotely. See
-    // ADR-0020. Runs for every tool before reaching a handler. On a block, emit a
+    // ADR-0019. Runs for every tool before reaching a handler. On a block, emit a
     // structured warn (forwarded to the server's event store via the `log` frame,
-    // ADR-0017/0021) naming the matched rule, then refuse the call.
+    // ADR-0017/0020) naming the matched rule, then refuse the call.
     if let Err((code, message)) = policy::check(tool, &args) {
         warn!(tool = %tool, reason = %message, "tool call refused by safety guard");
         return Err((code, message));
     }
 
-    // Anti-cheat coexistence (ADR-0039): while a protected game is running, voluntarily
+    // Anti-cheat coexistence (ADR-0035): while a protected game is running, voluntarily
     // step back from the most anti-cheat-visible tools (today `screen_capture`) and
     // report `paused`. Transparent, not evasive — see `coexist`.
     if let Err((code, message)) = coexist::gate(tool) {

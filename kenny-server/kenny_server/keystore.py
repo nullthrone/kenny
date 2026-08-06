@@ -1,6 +1,6 @@
 """SQLite-backed per-agent Ed25519 public-key store (aiosqlite) + server identity.
 
-Mutual agent⇄server authentication (ADR-0023). Each agent holds its own Ed25519
+Mutual agent⇄server authentication (ADR-0022). Each agent holds its own Ed25519
 keypair; the server stores that agent's **public** key (base64, standard padding)
 in an ``agent_keys`` table and verifies the agent's ``auth`` signature against it.
 The server itself holds one server-wide Ed25519 keypair: the private seed comes
@@ -15,7 +15,7 @@ new one is first seen or ``KENNY_KEY_GRACE_SECS`` elapses, so re-keying never
 instantly bricks a still-connected agent.
 
 Shares the same DB file as the other stores (``KENNY_DB_PATH``); it opens its own
-aiosqlite connection to keep the stores independent and simple. See ADR-0023.
+aiosqlite connection to keep the stores independent and simple. See ADR-0022.
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ from .store import _configure_connection
 
 logger = logging.getLogger("kenny.keystore")
 
-# Domain-separation label for the mutual-auth transcript (ADR-0023). Must stay
+# Domain-separation label for the mutual-auth transcript (ADR-0022). Must stay
 # byte-identical to the Rust agent and the golden vectors.
 _TRANSCRIPT_LABEL = b"kenny-mutual-auth-v1"
 
@@ -264,7 +264,7 @@ class KeyStore:
             return await cur.fetchone() is not None
 
     async def delete(self, agent_id: str) -> None:
-        """Forget an agent's public key (host removed from inventory, ADR-0037).
+        """Forget an agent's public key (host removed from inventory, ADR-0033).
 
         Only the per-agent ``agent_keys`` row is removed; the server identity is
         left untouched.

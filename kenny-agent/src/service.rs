@@ -14,7 +14,7 @@ pub(crate) use windows_impl::launch_tray_in_active_session;
 #[cfg(windows)]
 pub use windows_impl::{install, run_service, uninstall};
 
-// Linux uses the systemd-unit lifecycle (parallel to the Windows SCM path, ADR-0035).
+// Linux uses the systemd-unit lifecycle (parallel to the Windows SCM path, ADR-0031).
 // `require_root` is also reused by the Linux `setup` bootstrap.
 #[cfg(target_os = "linux")]
 pub(crate) use linux_impl::require_root;
@@ -69,12 +69,12 @@ pub struct ServiceConfig {
 #[cfg_attr(not(windows), allow(dead_code))]
 pub const CONFIG_FILE: &str = "kenny-agent.config.json";
 
-/// Linux systemd-unit lifecycle: the parallel to the Windows SCM path (ADR-0035).
+/// Linux systemd-unit lifecycle: the parallel to the Windows SCM path (ADR-0031).
 ///
 /// `install` writes the connection config to `/etc/kenny`, renders a systemd unit into
 /// `/etc/systemd/system`, and `enable --now`s it. `run-service` reads the persisted
 /// config and runs the tunnel until `SIGTERM` (systemd stop). There is no SCM and no
-/// tray/session-0 model here (Linux has no session-0 construct — see ADR-0035).
+/// tray/session-0 model here (Linux has no session-0 construct — see ADR-0031).
 #[cfg(target_os = "linux")]
 mod linux_impl {
     use anyhow::Context as _;

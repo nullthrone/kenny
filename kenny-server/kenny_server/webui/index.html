@@ -361,7 +361,7 @@
     .k-relcat table { margin: 0; }
     .k-relcat th { white-space: nowrap; }
     /* A suppressed pattern reads as de-emphasised without being hidden — its
-       count and severity stay fully legible (ADR-0045 / issue #166). */
+       count and severity stay fully legible (ADR-0041 / issue #166). */
     .k-relrow--sup > td { opacity: .65; }
     .k-deflist { display: grid; grid-template-columns: minmax(120px, max-content) 1fr; gap: 6px 16px; align-items: baseline; }
     .k-deflist__k { color: var(--fg-muted); font-size: var(--text-sm); }
@@ -414,7 +414,7 @@
     .k-airec__foot { margin-top: 9px; }
     .k-airec__foot:empty { display: none; }
     /* Forecast card: same spark/prose treatment as the AI Recommendation, but
-       pinned at the top of the drill-down (ADR-0034). A shorter reserved body —
+       pinned at the top of the drill-down. A shorter reserved body —
        the forecast is a few sentences, not a Diagnosis/Action/Urgency reply. */
     .kc-forecast { margin-bottom: 16px; }
     .kc-forecast .k-airec__body { min-height: 3.4em; }
@@ -939,7 +939,7 @@
     const sev = s => ["ok", "warn", "crit"].includes(s) ? s : "unknown";
 
     // A tiny per-OS glyph so Linux hosts read at a glance next to Windows ones
-    // (ADR-0035). Inference is text-based so it also works on the OS pie labels
+    // (ADR-0031). Inference is text-based so it also works on the OS pie labels
     // (e.g. "Ubuntu 24.04", "Windows 11 23H2"). Returns "" with a trailing space
     // when set, so callers can concatenate it unconditionally.
     function osIcon(s) {
@@ -3034,7 +3034,7 @@
     // (secrets, wire-contract, process-bind) are shown read-only, grouped
     // under a separate "environment" nav block.
     //
-    // /api/settings is superuser-only; Updates is operator+ (ADR-0044), so an
+    // /api/settings is superuser-only; Updates is operator+ (ADR-0040), so an
     // operator gets a single synthetic "Updates" section with no catalog
     // panel and never calls /api/settings at all (it would just 403).
     // ====================================================================
@@ -3057,7 +3057,7 @@
       return withTicketRulesSection([{ name: "Updates", slug: "updates" }]);
     }
 
-    // Auto-ticket rules (ADR-0053) is a second section with no settings-catalog
+    // Auto-ticket rules is a second section with no settings-catalog
     // group behind it, same shape as Updates: operator+ visible, appended after
     // whatever /api/settings returned (superuser) or after the synthetic
     // Updates-only list (operator) so both roles see it last, right after
@@ -3206,7 +3206,7 @@
       await renderSettingsSection(state.settingsSection);
     }
 
-    // The "Auto-ticket rules" section (ADR-0053): which alerts open a ticket
+    // The "Auto-ticket rules" section: which alerts open a ticket
     // on their own. No settings-catalog group behind it — same shape as
     // Updates — so this fetches straight from /api/ticket-rules* and fills
     // #kset-pane directly. Fetch → render, re-run after every mutation.
@@ -3888,7 +3888,7 @@
       } catch (e) { notify("restore failed: " + e.message, "err"); }
     }
 
-    // -- Updates: scheduled detection + operator-approved rollout (ADR-0044) --
+    // -- Updates: scheduled detection + operator-approved rollout (ADR-0040) --
     // Server apply is detect-and-show-command only: a container cannot replace
     // its own running image, so the page shows a digest-pinned `docker` command
     // instead of an "apply" button. Agent rollout is a pinned campaign: approving
@@ -3908,7 +3908,7 @@
     }
 
     function updatesSectionHtml() {
-      // Updates is operator+ (ADR-0044) but the catalog is superuser-only, so
+      // Updates is operator+ (ADR-0040) but the catalog is superuser-only, so
       // an operator sees this page with no catalog panel appended.
       const group = isSuperuser() ? settingsGroups.find(g => g.slug === "updates") : null;
       return updatesPageHtml(updatesState.data) + (group ? settingsGroupHtml(group) : "");
@@ -3971,7 +3971,7 @@
         ${campaignHtml(campaign, agentAvail, data.agents || [], "stable")}
       </div>`;
 
-      // Dev-channel campaign card (ADR-0052): same control, pinned to channel
+      // Dev-channel campaign card (ADR-0048): same control, pinned to channel
       // "dev" — a mixed fleet can have a stable and a dev campaign active at
       // once, so this is additive, not a toggle over the stable card above.
       const campaignCardDev = `<div class="k-panel kset__grp">
@@ -4034,7 +4034,7 @@
         </div>`;
     }
 
-    // Soll/ist channel badges (ADR-0052): "channel" is what the connected
+    // Soll/ist channel badges (ADR-0048): "channel" is what the connected
     // binary actually reports about itself (read-only here); "desired_channel"
     // is the operator-set target a campaign's eligibility is checked against.
     // The select lets an operator flip the latter without leaving this table.
@@ -4195,7 +4195,7 @@
         ? `<a class="kc-usermenu__item" href="#/settings" onclick="closeUserMenu()">${icon('sliders', 16)}Settings</a>` : "";
       // A superuser reaches Updates via Settings above; an operator (who
       // cannot open Settings at all) still needs a way in — Updates
-      // approves/rolls out fleet software, operator+ (ADR-0044).
+      // approves/rolls out fleet software, operator+ (ADR-0040).
       const updatesLink = (canOperate() && !isSuperuser())
         ? `<a class="kc-usermenu__item" href="#/settings/updates" onclick="closeUserMenu()">${icon('download', 16)}Updates</a>` : "";
       const menu = document.createElement("div");
@@ -4791,13 +4791,13 @@
     }
 
     // Human label for an (os,arch) target. Only Linux distinguishes arch today
-    // (Windows has ever only shipped one target) — see ADR-0040.
+    // (Windows has ever only shipped one target) — see ADR-0036.
     function targetLabel(os, arch) {
       if (os === "windows") return "Windows";
       return arch === "aarch64" ? "Linux (ARM64)" : "Linux (x86_64)";
     }
     // Options for the "Add a PC" target picker, built from the server's actual
-    // binary availability (`bin.targets`, ADR-0040) so the dropdown can never
+    // binary availability (`bin.targets`, ADR-0036) so the dropdown can never
     // offer a combination we don't ship. Falls back to a static Windows/Linux
     // pair if `bin.targets` isn't present yet (e.g. a stale cached page hitting
     // an older API during rollout).
@@ -4906,7 +4906,7 @@
       const osGlyph = osIcon(osFamily);
 
       // Sections a collector can't report on this OS come back as an
-      // "n/a on this platform" stub (see ADR-0035). They carry no signal, so
+      // "n/a on this platform" stub (see ADR-0031). They carry no signal, so
       // hide their tiles rather than filling the grid with dead cards.
       const secs = Object.entries(h.sections || {})
         .filter(([, s]) => (s.summary || "").trim().toLowerCase() !== "n/a on this platform")
@@ -4968,7 +4968,7 @@
       mountForecast(data.agent_id);
     }
 
-    // Stream the near-term forecast into the top card (ADR-0034). The server
+    // Stream the near-term forecast into the top card. The server
     // synthesizes the disk/battery trends and inventory diff into a short prose
     // outlook; with no API key it streams a deterministic prose summary of the
     // same signals, so the card is never empty. Re-queries the target each event
@@ -5046,7 +5046,7 @@
       local_accounts: renderAccountsDetail,
     };
 
-    // Parental awareness (ADR-0032): whole-machine interactive minutes per day
+    // Parental awareness (ADR-0029): whole-machine interactive minutes per day
     // as simple horizontal bars — deliberately nothing finer than day buckets.
     function renderScreenTimeDetail(raw, s) {
       let body = "";
@@ -5118,7 +5118,7 @@
         }).join("");
         body += `<div class="k-detail-grp"><div class="k-detail-grp__lbl">details — click a category to expand</div>${groups}</div>`;
       }
-      // Alarm suppression (ADR-0045 / issue #166): exclude a (source, event_id)
+      // Alarm suppression (ADR-0041 / issue #166): exclude a (source, event_id)
       // pattern from severity scoring while leaving its count and heatmap
       // contribution untouched. Mounted async after the modal DOM exists — see
       // mountReliabilitySuppressionPanel, called from openSectionDetail.
@@ -5130,7 +5130,7 @@
       const cls = level === "critical" ? "crit" : "warn";
       return `<span class="k-pill k-pill--${cls}">${esc(level || "error")}</span>`;
     }
-    // Severity badge from the read-path LLM annotation (ADR-0028) — how
+    // Severity badge from the read-path LLM annotation (ADR-0026) — how
     // much this *pattern* matters, independent of how often it repeats. Absent on
     // events from before annotation ran (e.g. no API key yet), in which case we
     // show nothing rather than guess.
@@ -5139,7 +5139,7 @@
       const cls = { serious: "crit", notable: "warn", unknown: "warn", benign: "ok" }[severity] || "warn";
       return `<span class="k-pill k-pill--${cls}">${esc(severity)}</span>`;
     }
-    // An operator suppression rule matched this pattern (ADR-0045 / issue
+    // An operator suppression rule matched this pattern (ADR-0041 / issue
     // #166): it stays fully visible with its raw count and its LLM severity,
     // but is excluded from severity/health scoring. Deliberately the neutral
     // `muted` pill, never the green `ok` pill used for an LLM `benign`
@@ -5260,7 +5260,7 @@
         renderReliabCell(p.data._cat, p.data._day, events);
       });
     }
-    // Alarm suppression panel (ADR-0045 / issue #166): the reliability card's
+    // Alarm suppression panel (ADR-0041 / issue #166): the reliability card's
     // editable list of operator rules that exclude a (source, event_id)
     // pattern from severity scoring while leaving its counts and heatmap
     // contribution untouched. Fetch → render, re-run after every mutation; a
@@ -5394,7 +5394,7 @@
       body += `<div class="k-detail-grp" id="kwf-panel"><div class="k-muted">loading parental-controls list…</div></div>`;
       return body;
     }
-    // -- account governance (ADR-0046, ADR-0047) --------------------------
+    // -- account governance (ADR-0042, ADR-0043) --------------------------
     // One control set for local, Microsoft and Linux accounts alike. Below the
     // account-database layer neither Windows nor Linux draws the distinctions
     // above it, so neither does this panel: same rows, same badges, same
@@ -6066,7 +6066,7 @@
     }
 
     // -- agent distribution (installer / share / update) ------------------
-    // `arch` (ADR-0040) is only ever passed from the "Add a PC" flow, where the
+    // `arch` (ADR-0036) is only ever passed from the "Add a PC" flow, where the
     // operator picked a specific target from the dropdown; the per-agent detail
     // "reinstall"/"re-share" buttons call these with just `id` (arch is already
     // known for an enrolled host) and get today's unpinned behavior unchanged.
@@ -6242,7 +6242,7 @@
     // easy to audit: every code path HTML-escapes raw text (via esc()) before
     // any tag is layered on, and link hrefs are allow-listed to http(s)/mailto.
     // That matters here specifically because assistant text isn't fully
-    // trusted either (ADR-0024) — a compromised agent's tool output can end
+    // trusted either (ADR-0023) — a compromised agent's tool output can end
     // up quoted back by the model, so nothing in this text should be treated
     // as real HTML. User messages are never run through this; they keep using
     // textContent, unchanged.

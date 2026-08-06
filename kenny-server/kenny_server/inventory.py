@@ -1,4 +1,4 @@
-"""Remove a host from inventory (ADR-0037).
+"""Remove a host from inventory (ADR-0033).
 
 ``purge_agent`` fans out across every store that keys data by ``agent_id`` plus
 the in-memory registry and screenshot cache, so a removed host leaves no trace

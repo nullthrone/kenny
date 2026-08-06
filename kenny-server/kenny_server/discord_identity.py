@@ -492,7 +492,7 @@ class DiscordIdentityStore:
         ``retention_days`` is accepted and ignored: this store has no
         duration-based retention window to override (a claim is deleted the
         moment it is dead, not after N days) — the parameter exists only for
-        conformance with the ``AlertEngine`` prunable protocol (ADR-0056).
+        conformance with the ``AlertEngine`` prunable protocol (ADR-0051).
         """
 
         cur = await self._conn.execute(

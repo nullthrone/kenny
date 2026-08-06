@@ -30,7 +30,7 @@ mapping is a plain SQLite store that exists whether or not a bot is connected,
 while the guild member list and the connection status can only come from a live
 gateway (:class:`~kenny_server.discord_service.DiscordService`).
 
-**Auto-ticket rules** (ADR-0053) live here too, as a thin CRUD skin over
+**Auto-ticket rules** (``ticket_rules.py``) live here too, as a thin CRUD skin over
 :class:`~kenny_server.ticket_rules.TicketRuleList` — the mirror
 ``AlertEngine._dispatch`` consults to decide which alerts open a ticket. See
 that module for the matching algorithm.
@@ -286,7 +286,7 @@ def build_ticket_routes(
         Derived from ``tickets.py``'s live constants so the dashboard never
         hardcodes a second copy that can drift from what the service enforces
         — the exact failure mode this endpoint exists to close off (see
-        ADR amending ADR-0050).
+        ADR amending ADR-0046).
         """
 
         return JSONResponse(
@@ -887,7 +887,7 @@ def build_ticket_routes(
             {"id": uid, "capability_profile": await user_store.get_capability_profile(uid)}
         )
 
-    # -- auto-ticket rules (ADR-0053) --------------------------------------------
+    # -- auto-ticket rules (ticket_rules.py) -------------------------------------
     #
     # Which alerts open a ticket is operator policy, decided by AlertEngine
     # through ``ticket_rules.decide`` -- this is the CRUD skin over the same

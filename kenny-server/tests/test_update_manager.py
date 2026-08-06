@@ -1,4 +1,4 @@
-"""UpdateManager: pinned campaign approval, on-connect rollout, attempt budget (ADR-0044).
+"""UpdateManager: pinned campaign approval, on-connect rollout, attempt budget (ADR-0040).
 
 Uses a duck-typed fake tunnel (an object exposing async ``send_request``) rather
 than a real ``AgentTunnel``/WebSocket, matching how the project already
@@ -279,7 +279,7 @@ async def test_on_agent_connect_applies_pinned_campaign_when_enabled(tmp_path, m
 
 
 async def test_on_agent_connect_swallows_errors(tmp_path, monkeypatch):
-    """A hook failure must never raise into the tunnel (ADR-0044)."""
+    """A hook failure must never raise into the tunnel (ADR-0040)."""
 
     monkeypatch.setattr(update_manager, "ON_CONNECT_DELAY_S", 0)
     settings = _settings({"KENNY_AGENT_ROLLOUT_ON_CONNECT": "1"})
@@ -362,7 +362,7 @@ async def test_expire_stale_campaign_transitions_and_cleans_up(tmp_path, monkeyp
     await mgr.store.close()
 
 
-# -- channel (ADR-0052): desired-channel eligibility, stable/dev campaign
+# -- channel (ADR-0048): desired-channel eligibility, stable/dev campaign
 # independence, dev-channel detection ------------------------------------------
 
 

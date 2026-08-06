@@ -1,7 +1,7 @@
 """SQLite-backed OAuth 2.1 store: clients, authorization codes, and tokens.
 
 Backs the co-hosted OAuth Authorization Server that lets Claude Desktop connect
-to ``/mcp`` via an OAuth handshake instead of a pasted PAT (ADR-0041). Four
+to ``/mcp`` via an OAuth handshake instead of a pasted PAT (ADR-0037). Four
 tables in the shared ``KENNY_DB_PATH`` database, following the same conventions
 as :mod:`userstore` (own aiosqlite connection, ``CREATE TABLE IF NOT EXISTS`` at
 connect, timestamps as ISO-8601 UTC, opaque tokens stored as sha256 digests):

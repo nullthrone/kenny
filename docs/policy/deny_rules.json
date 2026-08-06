@@ -1,6 +1,6 @@
 {
   "catalog_version": 2,
-  "comment": "Shared deny-rule catalog for the deterministic agent-side safety guard (ADR-0020/0021). Single source of truth: the Rust agent embeds this via include_str! and the Python server loads it for its best-effort mirror. applies_to is one of powershell|posix|self_protection|path. Patterns must use the portable regex subset common to Rust `regex` and Python `re` (no backreferences/lookaround). Path rules are matched after normalising / to \\.",
+  "comment": "Shared deny-rule catalog for the deterministic agent-side safety guard (ADR-0019/0020). Single source of truth: the Rust agent embeds this via include_str! and the Python server loads it for its best-effort mirror. applies_to is one of powershell|posix|self_protection|path. Patterns must use the portable regex subset common to Rust `regex` and Python `re` (no backreferences/lookaround). Path rules are matched after normalising / to \\.",
   "rules": [
     {
       "id": "ps_format_drive",

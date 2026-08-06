@@ -1,9 +1,9 @@
-"""Operator-configurable rules for which events open a ticket (ADR-0053).
+"""Operator-configurable rules for which events open a ticket.
 
 `alerting.AlertEngine` used to hardcode "every genuine alert opens a ticket,
 nothing else does" as a single `if note.kind == "alert"` check. This module
 replaces that with an operator-authored rule table, following the same shape
-as :mod:`kenny_server.reliability_suppression` (ADR-0045): a deterministic
+as :mod:`kenny_server.reliability_suppression` (ADR-0041): a deterministic
 `"<agent_id>|<event_type>|<section>"` primary key, a most-specific-wins
 in-memory matcher, and a store that persists only *deviations* from a coded
 default. An empty rule table therefore reproduces today's behavior exactly.
@@ -234,7 +234,7 @@ class TicketRuleList:
     Same idiom as ``reliability_suppression.SuppressionList``: a synchronous,
     lock-free dict lookup for the hot path (every dispatched alert), backed by
     a store touched only on write and once at startup (single-process,
-    single-event-loop, per ADR-0036's reasoning for ``Settings``).
+    single-event-loop, per ADR-0032's reasoning for ``Settings``).
     """
 
     def __init__(self, store: TicketRuleStore | None) -> None:

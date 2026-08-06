@@ -159,7 +159,7 @@ for Ask kenny in detail.
 
 ### Option B — a local Claude client over MCP
 
-kenny is a remote MCP server with a built-in **OAuth 2.1** authorization flow ([ADR-0041](adr/0041-oauth2-authorization-server-for-mcp.md)),
+kenny is a remote MCP server with a built-in **OAuth 2.1** authorization flow ([ADR-0037](adr/0037-oauth2-authorization-server-for-mcp.md)),
 so connecting Claude Desktop takes no token copy-paste:
 
 1. In Claude Desktop, open **Settings → Connectors → Add custom connector**.

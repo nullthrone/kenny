@@ -108,7 +108,7 @@ _RATE_WINDOW_SECS = 3600.0
 #: Ceiling on the verbatim text a trail row carries (see
 #: :meth:`TicketAssistant.append_message`). The full, uncapped text always
 #: still lives in ``ticket_runs`` — this only bounds what one SQLite row in the
-#: (never-pruned, per ADR-0050's amendment) trail holds.
+#: (never-pruned, per ADR-0046's amendment) trail holds.
 _MAX_TRAIL_TEXT_CHARS = 20_000
 
 #: Ceiling on an exception's ``str()`` carried on a failed-turn trail row (see

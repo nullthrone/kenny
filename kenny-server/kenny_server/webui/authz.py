@@ -1,4 +1,4 @@
-"""Role/scope enforcement for the dashboard API (ADR-0037).
+"""Role/scope enforcement for the dashboard API (ADR-0033).
 
 The auth middleware resolves each request to a :class:`~kenny_server.auth.Principal`
 on ``scope["kenny_principal"]``. These helpers read it and enforce the role

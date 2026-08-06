@@ -5,7 +5,7 @@
 //! For dev/CI builds without the tag set, we fall back to the Cargo package
 //! version, so the binary always reports a sensible version.
 //!
-//! Also stamps the release channel (ADR-0052): CI sets `KENNY_AGENT_CHANNEL=dev` on
+//! Also stamps the release channel (ADR-0048): CI sets `KENNY_AGENT_CHANNEL=dev` on
 //! the `release-dev.yml` build; every other build (stable release, local `cargo
 //! build`, CI's own test builds) leaves it unset and gets `stable`.
 
@@ -33,14 +33,14 @@ fn main() {
 
     // Embed a Windows application manifest. asInvoker (NOT requireAdministrator) is
     // deliberate: the same binary launches the tray in the standard-user session, which a
-    // require-admin manifest would block. `setup` elevates at runtime instead. See ADR-0033.
+    // require-admin manifest would block. `setup` elevates at runtime instead. See ADR-0030.
     if std::env::var_os("CARGO_CFG_WINDOWS").is_some() {
         use embed_manifest::{embed_manifest, new_manifest};
         embed_manifest(new_manifest("Kenny.Agent")).expect("unable to embed manifest");
 
         // Embed a Windows VERSIONINFO resource + the exe icon so AV/anti-cheat heuristics
         // and the user see identifiable publisher software instead of an anonymous binary
-        // (ADR-0039). We do NOT set a manifest on `winresource` — `embed_manifest` above
+        // (ADR-0035). We do NOT set a manifest on `winresource` — `embed_manifest` above
         // owns the (asInvoker) manifest, and `winresource` only emits a manifest when
         // `set_manifest`/`set_manifest_file` is called, so there is no duplicate resource.
         let mut res = winresource::WindowsResource::new();
@@ -65,7 +65,7 @@ fn main() {
 }
 
 /// Copy the shared deny-rule catalog (`docs/policy/deny_rules.json`, the single source of
-/// truth shared with the Python server, ADR-0021) into `OUT_DIR` so `src/policy.rs` can
+/// truth shared with the Python server, ADR-0020) into `OUT_DIR` so `src/policy.rs` can
 /// embed it with `include_str!` without reaching outside the crate.
 ///
 /// A raw `include_str!("../../docs/policy/deny_rules.json")` works for native builds (the

@@ -1,6 +1,6 @@
 name: Release artifacts (reusable)
 
-# Shared release-publishing body for both channels (ADR-0052): builds and publishes the
+# Shared release-publishing body for both channels (ADR-0048): builds and publishes the
 # kenny-server image to GHCR, the Windows agent binary, and the two Linux musl agent
 # binaries, as GitHub Release assets + GHCR image tags for the given `version`/`channel`.
 #
@@ -12,7 +12,7 @@ name: Release artifacts (reusable)
 # runs (image smoke test; e2e against the release binary): a failing check fails the job and
 # the later push/publish steps never execute. This gate applies identically to both channels
 # — a dev build that breaks the self-update loop would brick a real PC exactly as a stable
-# one would (ADR-0038's rejected-autonomous-update reasoning applies unchanged, see ADR-0052).
+# one would (ADR-0034's rejected-autonomous-update reasoning applies unchanged, see ADR-0048).
 
 on:
   workflow_call:
@@ -26,7 +26,7 @@ on:
         required: true
         type: boolean
       channel:
-        description: 'Release channel: "stable" or "dev" (ADR-0052).'
+        description: 'Release channel: "stable" or "dev" (ADR-0048).'
         required: true
         type: string
       extra_image_tags:
@@ -97,7 +97,7 @@ jobs:
           ok=0
           for i in $(seq 1 30); do
             # A fresh image has no accounts yet, so GET /login redirects to the
-            # first-run /setup page (ADR-0037). Follow redirects (-L) and accept
+            # first-run /setup page (ADR-0033). Follow redirects (-L) and accept
             # the final 200 as proof the web UI is served.
             code=$(curl -sL -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/login || true)
             echo "attempt $i -> HTTP $code"
@@ -143,7 +143,7 @@ jobs:
         working-directory: kenny-agent
         # The release tag is the leading source of the agent version (ADR-0015):
         # build.rs stamps it into the binary (reported as meta.version). The channel
-        # (ADR-0052) is stamped the same way; stable never sets it, so build.rs's
+        # (ADR-0048) is stamped the same way; stable never sets it, so build.rs's
         # "stable" default covers that job unchanged.
         env:
           KENNY_AGENT_VERSION: ${{ inputs.version }}
@@ -232,7 +232,7 @@ jobs:
         working-directory: kenny-agent
         # The release tag leads the agent version (ADR-0015): build.rs stamps it.
         # KENNY_DENY_RULES_DIR points build.rs at the shared deny-rule catalog
-        # (docs/policy/, ADR-0021), which lives outside the crate; Cross.toml mounts this
+        # (docs/policy/, ADR-0020), which lives outside the crate; Cross.toml mounts this
         # directory into the build container so the cross build can embed it.
         env:
           KENNY_AGENT_VERSION: ${{ inputs.version }}

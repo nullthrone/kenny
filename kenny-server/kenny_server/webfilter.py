@@ -1,7 +1,7 @@
 """Parental-controls web filtering: matching, external lists, and the service facade.
 
 This module owns the server-side half of the ``web_activity`` / ``webfilter_*``
-feature (ADR-0026):
+feature (ADR-0024):
 
 * :func:`normalize_domain` / :func:`matches` / :func:`classify` — the pure
   domain-matching core (suffix match, allow-precedence, layered categories).
@@ -16,7 +16,7 @@ feature (ADR-0026):
   :class:`ExternalListCache`.
 
 The server is the authoritative matcher; the agent is a dumb, idempotent
-enforcer. See ADR-0026 and ``docs/protocol.md`` for the contract shapes.
+enforcer. See ADR-0024 and ``docs/protocol.md`` for the contract shapes.
 """
 
 from __future__ import annotations

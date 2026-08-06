@@ -1,4 +1,4 @@
-"""Server-side LLM categorization of reliability events (ADR-0028).
+"""Server-side LLM categorization of reliability events (ADR-0026).
 
 The agent reports raw Windows event groups (``source`` + ``event_id`` + a sample
 message). To draw the reliability heatmaps — and to *score* health — the server
@@ -384,7 +384,7 @@ async def annotate_snapshots(
     One batched LLM call for the whole set, cached and deduped by
     :func:`categorize_events`; a no-op when there are no events, and — with no
     API key, or a cold cache the classify call doesn't finish within ``wait``
-    seconds — every event resolves to the safe defaults (ADR-0028). A slow
+    seconds — every event resolves to the safe defaults (ADR-0026). A slow
     batch keeps running in the background and warms the cache for the next
     read. ``client_factory`` defaults to :func:`default_client`.
     """

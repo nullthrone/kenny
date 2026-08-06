@@ -4,7 +4,7 @@ Two kinds of tools (names match ``docs/protocol.md`` § Tool catalog exactly):
 
 * **Forwarding capability tools** — require an explicit ``agent_id`` argument
   naming the target host, and forward a ``request`` frame to it through the
-  tunnel (see ADR-0042). ``agent_id`` is routing metadata: it is popped off the
+  tunnel (see ADR-0038). ``agent_id`` is routing metadata: it is popped off the
   call's ``args`` before the wire frame is built, so it never reaches the agent
   and the wire contract is untouched.
 * **Server-only tools** — ``list_agents``, ``select_agent``, ``fleet_overview``,
@@ -14,9 +14,9 @@ Two kinds of tools (names match ``docs/protocol.md`` § Tool catalog exactly):
 Every forwarded call is appended to an in-memory ``call_log`` for the dashboard
 tool-call log.
 
-``select_agent``/the registry's active-agent slot (ADR-0037) remain as an
+``select_agent``/the registry's active-agent slot (ADR-0033) remain as an
 advisory discovery/back-compat helper only — they no longer decide where a
-forwarded MCP call lands (ADR-0042). Remote MCP clients (Claude Desktop,
+forwarded MCP call lands (ADR-0038). Remote MCP clients (Claude Desktop,
 claude.ai) send no reliable per-conversation identifier, so two concurrent
 sessions authenticated with the same credential (PAT/OAuth token) would
 otherwise share one sticky slot and silently clobber each other's selection.
@@ -47,7 +47,7 @@ logger = logging.getLogger("kenny.tools")
 # tools").
 #
 # Account governance was pinned to ``windows`` in v0.15 and is deliberately no
-# longer OS-scoped at all (ADR-0047): it is served on Windows and Linux alike, and
+# longer OS-scoped at all (ADR-0043): it is served on Windows and Linux alike, and
 # what a *particular account on a particular host* can do is published per account
 # in the ``local_accounts`` inventory's ``unsupported`` map. A whole-tool OS scope
 # would be both coarser and less true. macOS keeps no implementation, so the seven
@@ -78,7 +78,7 @@ def supports_tool(tool_name: str, agent_os: str) -> bool:
 
     The single answer for both the MCP forwarder and the dashboard's write route,
     so the two surfaces cannot refuse the same call differently (they did until
-    ADR-0047: MCP refused pre-flight, the dashboard forwarded and surfaced the
+    ADR-0043: MCP refused pre-flight, the dashboard forwarded and surfaced the
     agent's refusal as a 502).
     """
 
@@ -89,7 +89,7 @@ def supports_tool(tool_name: str, agent_os: str) -> bool:
 # Minimum operator role for a forwarded capability tool. Absent means the
 # default: seeing the host is enough.
 #
-# Account governance is the first forwarded family to need this (ADR-0046).
+# Account governance is the first forwarded family to need this (ADR-0042).
 # Everything else in the catalog affects software, files or the network, all of
 # which a scoped ``user`` may already reach; deciding who can sign in to a
 # family PC — and being able to lock the household out by getting it wrong — is
@@ -138,12 +138,12 @@ CAPABILITY_TOOLS: dict[str, list[str]] = {
     "remotehelp_stop": [],
     "telemetry_collect": ["sections?"],
     "agent_update": ["version", "url", "sha256"],
-    # Parental-controls enforcement (ADR-0026). apply/clear are mutating; status
+    # Parental-controls enforcement (ADR-0024). apply/clear are mutating; status
     # is read-only. The server pre-merges the effective block set for apply.
     "webfilter_status": [],
     "webfilter_apply": ["domains", "doh_policy", "list_hash"],
     "webfilter_clear": [],
-    # Account governance (ADR-0046). `principal` is the SAM account name, which
+    # Account governance (ADR-0042). `principal` is the SAM account name, which
     # local and Microsoft accounts share — there is deliberately no per-kind
     # variant of any of these. The inventory lives in the `local_accounts`
     # telemetry section, so there is no `account_list` tool.
@@ -239,7 +239,7 @@ class ScreenshotStore:
         return self._latest.get(agent_id)
 
     def forget(self, agent_id: str) -> None:
-        """Drop the cached screenshot for a removed host (ADR-0037)."""
+        """Drop the cached screenshot for a removed host (ADR-0033)."""
 
         self._latest.pop(agent_id, None)
 
@@ -251,7 +251,7 @@ def build_health(
 
     ``agent_os`` is the agent's OS family; it is forwarded to
     :func:`health_rules.evaluate_snapshot` so a non-Windows agent's Windows-only
-    sections are not scored (ADR-0035). Defaults to ``windows`` for callers that
+    sections are not scored (ADR-0031). Defaults to ``windows`` for callers that
     have no agent context, preserving prior behavior.
     """
 
@@ -324,7 +324,7 @@ def _active_key(principal) -> str | None:
 
 
 def _resolve_target(principal, args: dict[str, Any]) -> str:
-    """Routing target for a forwarded MCP call (ADR-0042).
+    """Routing target for a forwarded MCP call (ADR-0038).
 
     Requires an explicit ``agent_id`` in ``args`` and pops it off — it is
     routing metadata consumed here, never forwarded to the agent, so the wire
@@ -475,7 +475,7 @@ def register_tools(
         snapshot = latest["snapshot"] if latest else None
         if snapshot is not None:
             # Annotate reliability events (category/severity/suspected_cause,
-            # ADR-0028) before scoring, so the reliability reason names
+            # ADR-0026) before scoring, so the reliability reason names
             # the dominant pattern here too — not just in the dashboard — and a
             # caller never needs a manual diag_eventlog to judge it. Deferred
             # import avoids a module-load cycle (tools -> chat -> ... -> tools);
@@ -511,12 +511,12 @@ def register_tools(
             "snapshot": snapshot,
         }
 
-    # -- reliability alarm suppression server-only tools (ADR-0045 / #166) --
+    # -- reliability alarm suppression server-only tools (ADR-0041 / #166) --
     #
     # Server-held operator state, not a per-agent capability -- like
     # webfilter_get/web_activity_query, these never forward a request frame to
     # an agent, so `agent_id` here is an optional scope filter, not a routing
-    # target (no `_resolve_target`/ADR-0042 concern). `agent_snapshot` above
+    # target (no `_resolve_target`/ADR-0038 concern). `agent_snapshot` above
     # already carries the `suppressed`/`suppressed_by` markers for free (the
     # TelemetryStore read-path hook), so a caller comparing a fresh breakdown
     # against these rules needs no extra round-trip.
@@ -584,7 +584,7 @@ def register_tools(
             removed, rules = await suppression.remove(rule_id)
             return {"ok": True, "removed": removed, "rules": rules}
 
-    # -- auto-ticket rules server-only tools (ADR-0053) ---------------------
+    # -- auto-ticket rules server-only tools (ticket_rules.py) --------------
     #
     # Server-held operator policy, not a per-agent capability -- like the
     # suppression trio above, this never forwards a request frame to an agent.

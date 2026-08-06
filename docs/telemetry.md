@@ -64,7 +64,7 @@ rule column).
 | `win_update` | Recent Windows Update results | any `recent[].result == "failed"` → **warn** |
 | `app_updates` | Available third-party app updates | *no rule — agent-reported* |
 | `reboot_pending` | Pending-reboot flag and reasons | `pending` true → **warn** (reasons joined into the reason string) |
-| `os_support` | OS edition/end-of-life date, plus `arch` (`x86_64`/`aarch64`, mirrors `register.meta.arch`, protocol 0.13) and `channel` (`stable`/`dev`, mirrors `register.meta.channel`, protocol 0.17, [ADR-0052](adr/0052-second-release-channel-dev-prereleases.md)) | `eol` true **or** `eol_date` in the past → **crit**; `eol_date` within 90 days → **warn** |
+| `os_support` | OS edition/end-of-life date, plus `arch` (`x86_64`/`aarch64`, mirrors `register.meta.arch`, protocol 0.13) and `channel` (`stable`/`dev`, mirrors `register.meta.channel`, protocol 0.17, [ADR-0048](adr/0048-second-release-channel-dev-prereleases.md)) | `eol` true **or** `eol_date` in the past → **crit**; `eol_date` within 90 days → **warn** |
 | `memory` | RAM usage | `percent_used` > 95 → **crit**; > 85 → **warn** |
 | `thermals` | Temperature sensors | hottest sensor ≥ 95 °C → **crit**; ≥ 85 °C → **warn** |
 | `battery` | Battery health and charge (laptops) | `health_percent` < 50 → **crit**; < 70 → **warn**. Laptops only; `battery.present` drives the device (laptop/desktop) pie |
@@ -132,7 +132,7 @@ Windows `level` is plain `"error"`.
 <figcaption>The reliability section detail — a category × day heatmap plus expandable event groups down to sample messages, each with a severity badge and suspected cause.</figcaption>
 </figure>
 
-See [ADR-0028](adr/0028-llm-categorization-of-reliability-events.md) for the categorization
+See [ADR-0026](adr/0026-llm-categorization-of-reliability-events.md) for the categorization
 decision.
 
 ## Alarm suppression
@@ -166,7 +166,7 @@ it reaches every health consumer, not just the two read paths that run the categ
 push alerting, the weekly digest, the fleet list, and MCP's `agent_health`/`agent_snapshot`
 all see the same `suppressed` marker. Rules are managed via `/api/reliability/suppressions`
 (operator+ to write) or the `reliability_suppression_list`/`_add`/`_remove` MCP tools. See
-[ADR-0045](adr/0045-reliability-alarm-suppression.md).
+[ADR-0041](adr/0041-reliability-alarm-suppression.md).
 
 ## Screen time
 
@@ -180,7 +180,7 @@ of the payload *cannot* express them.
     No health rule judges screen time — a number of hours is neither `warn` nor `crit`. The
     section always carries `status: "ok"` and surfaces as 7-day bars in the drill-down.
 
-See [ADR-0032](adr/0032-screen-time-aggregated-session-minutes.md), and the
+See [ADR-0029](adr/0029-screen-time-aggregated-session-minutes.md), and the
 [`parental-controls.md`](parental-controls.md) guide.
 
 ## Retention & limits
@@ -204,6 +204,6 @@ See [`setup.md`](setup.md) for these and other environment variables, and
 - [`dashboard.md`](dashboard.md) — the dashboard panels in detail
 - [`protocol.md`](protocol.md) — the agent ⇄ server wire contract
 - [ADR-0007](adr/0007-telemetry-push-model-and-sqlite-storage.md) — push model & SQLite storage
-- [ADR-0028](adr/0028-llm-categorization-of-reliability-events.md) — LLM reliability categorization
-- [ADR-0031](adr/0031-security-and-resilience-telemetry-sections.md) — security & resilience sections
-- [ADR-0032](adr/0032-screen-time-aggregated-session-minutes.md) — screen-time aggregation
+- [ADR-0026](adr/0026-llm-categorization-of-reliability-events.md) — LLM reliability categorization
+- [ADR-0028](adr/0028-security-and-resilience-telemetry-sections.md) — security & resilience sections
+- [ADR-0029](adr/0029-screen-time-aggregated-session-minutes.md) — screen-time aggregation

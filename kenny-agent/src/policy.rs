@@ -4,11 +4,11 @@
 //! reach a handler — regardless of operator approval (ADR-0009) or the local kill-switch
 //! (ADR-0011). It is the last, authoritative line of defence: even if the server, Claude,
 //! or the operator is wrong or compromised, the agent still refuses. The guard cannot be
-//! turned off remotely. Refusals surface as `error.code = "blocked"`. See ADR-0020.
+//! turned off remotely. Refusals surface as `error.code = "blocked"`. See ADR-0019.
 //!
 //! The built-in rules live in the shared catalog `docs/policy/deny_rules.json`, embedded
 //! at build time so both the Rust agent and the Python server consume one source of truth
-//! (ADR-0021). On top of the built-ins, the operator can deliver an **append-only** set of
+//! (ADR-0020). On top of the built-ins, the operator can deliver an **append-only** set of
 //! extra deny rules over the `policy` frame; they are additive and can never weaken or
 //! remove a built-in. The `agent_update` host allowlist stays in code (it is agent-only:
 //! it needs the agent's configured server host).
@@ -129,7 +129,7 @@ fn operator() -> &'static RwLock<Grouped> {
     OPERATOR.get_or_init(|| RwLock::new(Grouped::default()))
 }
 
-/// Replace the operator rule set (ADR-0021 `policy` frame). Additive to the built-ins,
+/// Replace the operator rule set (ADR-0020 `policy` frame). Additive to the built-ins,
 /// which it can never weaken or remove. A rule whose pattern fails to compile is skipped
 /// and logged, never fatal.
 pub fn set_operator_rules(rules: Vec<PolicyRule>) {

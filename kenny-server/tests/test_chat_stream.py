@@ -215,7 +215,7 @@ def test_stream_requires_auth(tmp_path):
         assert c.post("/api/chat/stream", json={"message": "hi"}).status_code == 401
 
 
-# -- persistence (ADR-0027) --------------------------------------------------
+# -- persistence (ADR-0025) --------------------------------------------------
 
 
 def test_stream_persists_after_turn_completes(tmp_path):
@@ -235,7 +235,7 @@ def test_stream_confirm_gate_persists_and_heals_cleanly_on_reload(tmp_path):
     (that's the honest state of the turn — pending state itself is never
     persisted). Loading it back through ``ChatSessions.get`` — as happens after
     a restart — runs ``heal_session`` and produces a usable session with that
-    dangling call dropped, per ADR-0027.
+    dangling call dropped, per ADR-0025.
     """
 
     app = _build_app(

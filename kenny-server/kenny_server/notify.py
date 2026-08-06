@@ -1,6 +1,6 @@
 """Outbound operator notifications: ntfy, a generic JSON webhook, and Discord.
 
-Alert delivery is best-effort by design (ADR-0029): a dead or slow
+Alert delivery is best-effort by design (ADR-0027): a dead or slow
 notification target must never stall or kill the evaluation loop, so every
 ``send`` swallows and logs transport errors. Channels are configured purely
 via environment variables (``KENNY_NTFY_URL``, ``KENNY_NTFY_TOKEN``,
@@ -38,7 +38,7 @@ class Notification:
     tags: list[str] = field(default_factory=list)
     agent_id: str | None = None
     kind: str = "alert"  # "alert" | "recovery" | "change" | "digest"
-    # -- structured discriminator for auto-ticket rules (ADR-0053) ------------
+    # -- structured discriminator for auto-ticket rules (ticket_rules.py) ------
     # ``kind`` says whether this is a genuine alert vs. a recovery/change/digest;
     # ``event_type``/``sections`` say *which* alert, so an operator rule can name
     # it without parsing the free-text ``body``. Both default to empty so every

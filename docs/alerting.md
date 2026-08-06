@@ -6,8 +6,8 @@ dashboard routinely. This page covers the **push channel** that reaches the oper
 phone when something changes for the worse (or recovers), the **change and forecast**
 findings that ride the same channel, and the **weekly digest**. It is entirely
 server-side: no protocol bump, no agent involvement, thresholds stay in `health_rules.py`
-(see [ADR-0029](adr/0029-push-alerting-ntfy-webhook-and-weekly-digest.md) and
-[ADR-0030](adr/0030-server-side-diff-and-trend-engine.md)).
+(see [ADR-0027](adr/0027-push-alerting-ntfy-webhook-and-weekly-digest.md) and
+`diffs.py` / `trends.py`).
 
 ## Push alerting
 
@@ -26,7 +26,7 @@ The persisted flap-suppression state means a server restart never re-fires alert
 conditions that were already notified.
 
 !!! note "Reliability alarm suppression also dampens this loop"
-    An operator-suppressed reliability event pattern (ADR-0045, issue #166) is excluded from
+    An operator-suppressed reliability event pattern (ADR-0041, issue #166) is excluded from
     the `reliability` section's severity scoring wherever that scoring runs — including this
     push-alert loop and the weekly digest below, not just the dashboard. Muting a known-noisy
     Windows quirk (e.g. a `CryptSvc` pattern rotating hundreds of times a day) stops it from
@@ -64,7 +64,7 @@ is operator-only in the [Tickets tab](dashboard.md#the-tickets-tab): a scoped `u
 sees it. It starts life pinned to the alerting agent, at `high` priority for a `high`/`urgent`
 notification and `normal` otherwise, with the alert's own message as its opening summary.
 
-### Which events open a ticket is configurable (ADR-0053)
+### Which events open a ticket is configurable
 
 By default, every genuine alert — a health escalation, an agent going offline, a disk-fill
 forecast — opens a ticket, and a recovery, an inventory change, and the weekly digest never
@@ -86,7 +86,7 @@ Two practical cases this solves:
 
 Recoveries and the weekly digest can never open a ticket, no matter what rule is written — the
 rule engine only ever narrows or widens *genuine alerts*, and running the empty rule table
-through the same decision path reproduces this section's pre-ADR-0053 behaviour exactly.
+through the same decision path reproduces this section's coded default exactly.
 
 ## Change notifications
 
@@ -180,7 +180,6 @@ Alerting environment variables (see [`setup.md`](setup.md) for the full list):
 - [`dashboard.md`](dashboard.md) — the Overview KPIs and the per-agent AI Forecast card
 - [`telemetry.md`](telemetry.md) — the sections and health rules these alerts evaluate
 - [`itsm.md`](itsm.md) — tickets, the Discord bot, and what an alert-opened ticket looks like
-- [ADR-0029](adr/0029-push-alerting-ntfy-webhook-and-weekly-digest.md) — push alerting & weekly digest
-- [ADR-0030](adr/0030-server-side-diff-and-trend-engine.md) — server-side diff & trend engine
-- [ADR-0053](adr/0053-operator-configurable-auto-ticket-rules.md) — operator-configurable
-  auto-ticket rules
+- [ADR-0027](adr/0027-push-alerting-ntfy-webhook-and-weekly-digest.md) — push alerting & weekly digest
+- `kenny-server/kenny_server/ticket_rules.py` — the auto-ticket rule model, and why an
+  empty rule table reproduces the coded default

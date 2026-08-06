@@ -1,4 +1,4 @@
-"""OAuth 2.1 connector flow (ADR-0041): discovery, DCR, auth-code+PKCE, refresh.
+"""OAuth 2.1 connector flow (ADR-0037): discovery, DCR, auth-code+PKCE, refresh.
 
 Exercises kenny acting as its own Authorization Server + Resource Server over
 HTTP, and asserts the existing PAT / legacy-token bearer paths still work.

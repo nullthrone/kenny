@@ -274,7 +274,7 @@ def test_reliability_categories_flags_crit_on_serious_severity():
 
 
 def test_reliability_categories_suppressed_group_does_not_flag_crit():
-    # A pattern the operator has suppressed (ADR-0045 / issue #166) must not
+    # A pattern the operator has suppressed (ADR-0041 / issue #166) must not
     # flag its heatmap cell crit -- but its raw count still colours the cell,
     # and is surfaced separately so a hot-but-not-crit cell is explained.
     a1 = _agent("pc1", {"reliability": {

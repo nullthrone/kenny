@@ -15,7 +15,7 @@ integration makes rather than a property of any single component:
   swallowed.
 
 Plus the alert -> ticket hook, which is injected into the alert engine and must
-not make alert delivery any less best-effort (ADR-0029).
+not make alert delivery any less best-effort (ADR-0027).
 """
 
 from __future__ import annotations
@@ -394,7 +394,7 @@ async def test_a_failing_ticket_hook_never_breaks_alert_delivery(tmp_path) -> No
         await s.close()
 
 
-# -- auto-ticket rules (ADR-0053) --------------------------------------------
+# -- auto-ticket rules (ticket_rules.py) -------------------------------------
 
 
 def test_ticket_rules_are_wired_and_a_seeded_rule_survives_a_boot(tmp_path) -> None:

@@ -178,7 +178,7 @@ def _capability_schema(tool: str, arg_keys: list[str]) -> dict[str, Any]:
         if not optional:
             required.append(key)
     # Every forwarded call accepts an optional per-call timeout, and an optional
-    # agent_id override (ADR-0042): the chat session already tracks a selected
+    # agent_id override (ADR-0038): the chat session already tracks a selected
     # agent (the dashboard's "context" pill), so this is only needed to target a
     # different host for one call; omitted, it falls back to the session's
     # selection and fails closed if neither is set.
@@ -392,7 +392,7 @@ class ToolExecutor:
             result = await self._select_agent(str(args["id"]))
             if session is not None:
                 # The session's own selection is the only state this changes
-                # (ADR-0042) — no shared registry slot is written, so concurrent
+                # (ADR-0038) — no shared registry slot is written, so concurrent
                 # sessions can never clobber each other's target.
                 session.agent_id = result.get("active_agent") or session.agent_id
             return result
@@ -413,7 +413,7 @@ class ToolExecutor:
         the session's selected agent or an explicit per-call override — never
         the process-global registry slot, which is shared by every concurrent
         chat session and would let one session's selection bleed into another's
-        forwarded call (ADR-0042).
+        forwarded call (ADR-0038).
         """
 
         if not agent_id:
@@ -462,7 +462,7 @@ class ToolExecutor:
     async def _select_agent(self, agent_id: str) -> dict[str, Any]:
         """Validate ``agent_id`` and report it.
 
-        Deliberately does **not** write any registry slot (ADR-0042): the
+        Deliberately does **not** write any registry slot (ADR-0038): the
         session's own ``agent_id`` (set by the caller in :meth:`run_server_tool`)
         is the only state that carries this selection forward, so it can never
         be shared with — or clobbered by — another concurrent session.
@@ -515,7 +515,7 @@ class ToolExecutor:
 
 
 def _resolve_chat_target(session: Any, args: dict[str, Any]) -> str:
-    """Routing target for a chat-forwarded capability call (ADR-0042).
+    """Routing target for a chat-forwarded capability call (ADR-0038).
 
     An explicit ``agent_id`` in ``args`` overrides for this one call; otherwise
     falls back to the session's own selection (safe — each chat session is a
@@ -611,7 +611,7 @@ async def drive_events(
             # Resolve + freeze the routing target now, before any confirm-gate
             # pause, so a dashboard agent switch that happens while a
             # state-changing call awaits confirmation can't retarget it
-            # (ADR-0042). Server-only tools name their own host via `id`, if any.
+            # (ADR-0038). Server-only tools name their own host via `id`, if any.
             target: str | None = None
             try:
                 target = policy.resolve_target(session, tool, args)

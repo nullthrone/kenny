@@ -552,7 +552,7 @@ async def test_requester_without_a_host_gets_no_ticket(world: World) -> None:
 
 async def test_operator_mention_can_target_any_registered_host(world: World) -> None:
     """``user_hosts`` only ever has rows for scoped ``user``-role accounts
-    (ADR-0037) — an operator's own account never gets one, since it can
+    (ADR-0033) — an operator's own account never gets one, since it can
     already reach every host from the dashboard. Before the fix, ``dad``
     (role ``operator``) mentioning kenny always hit the same "no PC assigned"
     reply as an unassigned family member, even with agents in the fleet.
@@ -571,7 +571,7 @@ async def test_operator_mention_can_target_any_registered_host(world: World) -> 
 async def test_several_hosts_are_never_guessed(world: World) -> None:
     """The host is asked for, never inferred — the picker only changes how.
 
-    ADR-0048 control 1: no ticket exists until a target does, and no model turn
+    ADR-0044 control 1: no ticket exists until a target does, and no model turn
     runs before one. What the caller is offered is a set of buttons rather than
     a sentence, but nothing about the request itself decided anything.
     """
@@ -730,7 +730,7 @@ async def test_host_click_defers_before_any_slow_work(world: World) -> None:
 async def test_an_unmapped_users_host_click_is_deferred_and_answered_with_nothing(
     world: World,
 ) -> None:
-    """A stranger's click must be genuinely inert (ADR-0048), not merely
+    """A stranger's click must be genuinely inert (ADR-0044), not merely
     silent -- an interaction Discord never sees acked shows the user a red
     "interaction failed", which is itself a signal that something is there.
     """

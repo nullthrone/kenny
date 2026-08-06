@@ -43,7 +43,7 @@ def _num(value: Any) -> float | None:
 def _agent_os(agent: Agent) -> str:
     """The agent's OS family from its ``meta`` (registry ``Agent.os``), lower-cased.
 
-    Legacy agents that never reported an OS default to ``windows`` (see ADR-0035).
+    Legacy agents that never reported an OS default to ``windows`` (see ADR-0031).
     """
 
     return str((agent.get("meta") or {}).get("os") or "windows").lower()
@@ -93,7 +93,7 @@ def aggregate_overview(
 def _reliability_categories(agents: list[Agent]) -> dict[str, Any]:
     """Heatmap grid: how many error/critical events of each friendly category each
     host has. Reads the server-annotated ``category`` on the reliability events
-    (see ADR-0028); an unannotated event falls back to its raw ``source``.
+    (see ADR-0026); an unannotated event falls back to its raw ``source``.
 
     Returns ``{agents, categories, cells:[{agent_id, category, count, crit,
     suppressed, detail, members}]}`` — cells sum event counts per host+category
@@ -101,7 +101,7 @@ def _reliability_categories(agents: list[Agent]) -> dict[str, Any]:
     volume). ``crit`` flags any critical-level group, OR any group the
     read-path LLM classified as ``severity="serious"`` — a pattern can be
     worth flagging even when the agent didn't mark the Windows event itself
-    "critical" — but a pattern the operator has suppressed (ADR-0045 / issue
+    "critical" — but a pattern the operator has suppressed (ADR-0041 / issue
     #166) never sets ``crit``, matching the same exclusion the health rule
     applies. ``suppressed`` is the portion of ``count`` behind muted patterns,
     surfaced in the tooltip so a hot-but-not-crit cell is explained rather than
@@ -367,7 +367,7 @@ def _security_posture(agents: list[Agent]) -> dict[str, Any]:
         # These three controls are Windows concepts (BitLocker, Microsoft
         # Defender, Windows Firewall profiles). For a non-Windows agent they do
         # not apply — mark them "n/a"/excluded rather than counting them as
-        # "unknown", which would dilute the Windows compliance ratios (ADR-0035).
+        # "unknown", which would dilute the Windows compliance ratios (ADR-0031).
         if _agent_os(a) == "linux":
             for m in metrics.values():
                 m["na"].append(_member(aid, "n/a", "not applicable on Linux"))

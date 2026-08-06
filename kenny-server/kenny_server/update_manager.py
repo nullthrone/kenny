@@ -1,4 +1,4 @@
-"""Scheduled update detection + pinned, operator-approved rollout (ADR-0044).
+"""Scheduled update detection + pinned, operator-approved rollout (ADR-0040).
 
 Two independent halves, orchestrated by :class:`UpdateManager`:
 
@@ -22,7 +22,7 @@ Two independent halves, orchestrated by :class:`UpdateManager`:
 
 Server-image rollout is **detect-only** in this iteration: a container cannot
 replace its own running image, and a docker-socket-holding auto-apply sidecar
-is a deferred, additive follow-up (ADR-0044) — not built here. The dashboard
+is a deferred, additive follow-up (ADR-0040) — not built here. The dashboard
 shows the digest-pinned ``docker compose`` command; the operator runs it.
 """
 
@@ -218,7 +218,7 @@ class UpdateManager:
         detection pass overwriting the shared release cache can never change
         what this campaign pushes. Supersedes (and cleans up) any prior active
         campaign **for the same channel** — an active stable campaign and an
-        active dev campaign coexist independently (ADR-0052). Raises
+        active dev campaign coexist independently (ADR-0048). Raises
         :class:`ValueError` if no cached binary matches ``version``.
         """
 
@@ -311,7 +311,7 @@ class UpdateManager:
             if not self.settings.get("KENNY_AGENT_ROLLOUT_ON_CONNECT"):
                 return
             # Look up the active campaign for *this agent's desired channel*
-            # (ADR-0052) — an agent an operator just flipped to dev, but which
+            # (ADR-0048) — an agent an operator just flipped to dev, but which
             # hasn't updated yet, still reports its old (stable) actual
             # channel, so the campaign lookup must key off desired, not actual.
             desired_channel = await self.store.get_desired_channel(agent_id)
@@ -333,7 +333,7 @@ class UpdateManager:
         campaign = await self.store.get_active_campaign()
         campaigns = await self.store.list_campaigns()
         agents_out = await self._agents_for_campaign(campaign)
-        # Dev-channel counterparts, additive (ADR-0052): a stable and a dev
+        # Dev-channel counterparts, additive (ADR-0048): a stable and a dev
         # campaign can be active simultaneously (store.py keys them apart by
         # channel), so the dashboard needs to see both to approve/track a dev
         # rollout without disturbing the existing stable fields above.
@@ -353,7 +353,7 @@ class UpdateManager:
     async def _agents_for_campaign(self, campaign: dict[str, Any] | None) -> list[dict[str, Any]]:
         """Per-agent eligibility/progress rows for ``campaign`` (or ``[]`` if None).
 
-        Eligibility (ADR-0044, ADR-0052) requires both a matching (os, arch)
+        Eligibility (ADR-0040, ADR-0048) requires both a matching (os, arch)
         target under the campaign *and* the agent's **desired** channel (soll,
         operator-set) matching the campaign's channel — not the agent's
         actual/reported channel (ist), so an agent an operator just flipped to
@@ -391,7 +391,7 @@ class UpdateManager:
         return out
 
     async def set_desired_channel(self, agent_id: str, channel: str) -> None:
-        """Set the operator-desired release channel for ``agent_id`` (ADR-0052).
+        """Set the operator-desired release channel for ``agent_id`` (ADR-0048).
 
         Thin passthrough to ``store.UpdateStore.set_desired_channel`` so the
         web API layer doesn't reach into the store directly — this module owns
@@ -405,7 +405,7 @@ class UpdateManager:
     async def _apply_to_agent(self, campaign: dict[str, Any], agent: Any) -> None:
         desired_channel = await self.store.get_desired_channel(agent.agent_id)
         if desired_channel != campaign.get("channel", "stable"):
-            # Not eligible under this campaign's channel (ADR-0052) — same
+            # Not eligible under this campaign's channel (ADR-0048) — same
             # no-op-without-penalty treatment as a missing (os, arch) target.
             return
         targets = await self.store.campaign_targets(campaign["id"])
@@ -439,7 +439,7 @@ class UpdateManager:
             )
             await self.store.record_attempt(campaign["id"], agent.agent_id, ok=True)
         except ToolError as exc:
-            # An anti-cheat "paused" refusal (ADR-0039) is expected to clear on
+            # An anti-cheat "paused" refusal (ADR-0035) is expected to clear on
             # its own — retry later without spending the attempt budget.
             # disabled (kill-switch, ADR-0011) and blocked (deny-guard) count.
             await self.store.record_attempt(
@@ -486,7 +486,7 @@ class UpdateManager:
             self._cleanup_campaign_dir(campaign["id"])
 
     async def _expire_stale_campaign(self) -> None:
-        # A stable and a dev campaign can be active simultaneously (ADR-0052,
+        # A stable and a dev campaign can be active simultaneously (ADR-0048,
         # store.py's per-channel active-campaign uniqueness) — both need their
         # own expiry check, independently.
         for channel in ("stable", "dev"):

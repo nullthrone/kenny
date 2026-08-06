@@ -17,8 +17,8 @@ out with the reason** instead of hiding it or offering a button that cannot work
     consent of the people who use them. kenny names accounts and can change who signs in;
     it deliberately still does **not** attribute behaviour to a person — screen time and
     web activity stay whole-machine (see [Parental controls](parental-controls.md)).
-    See [ADR-0046](adr/0046-account-governance-local-and-microsoft.md) and
-    [ADR-0047](adr/0047-account-governance-on-linux.md).
+    See [ADR-0042](adr/0042-account-governance-local-and-microsoft.md) and
+    [ADR-0043](adr/0043-account-governance-on-linux.md).
 
 ## Why administrator rights come first
 
@@ -179,5 +179,5 @@ the boot loader. kenny cannot help from the server.
 - [Parental controls](parental-controls.md) — web activity, filtering, screen time
 - [Dashboard reference](dashboard.md) — where the accounts panel lives
 - [Telemetry reference](telemetry.md) — the raw section shapes
-- [ADR-0046](adr/0046-account-governance-local-and-microsoft.md) — why it is built this way
-- [ADR-0047](adr/0047-account-governance-on-linux.md) — how Linux fits into the same surface
+- [ADR-0042](adr/0042-account-governance-local-and-microsoft.md) — why it is built this way
+- [ADR-0043](adr/0043-account-governance-on-linux.md) — how Linux fits into the same surface

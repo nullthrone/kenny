@@ -9,12 +9,12 @@
 //!
 //! **The allow-list is the trust boundary.** The tray launches *only* the apps in
 //! [`ALLOWED_APPS`]; the session-0 service can never have it start an arbitrary program.
-//! See ADR-0022. Wire framing is shared with [`crate::ipc`].
+//! See ADR-0021. Wire framing is shared with [`crate::ipc`].
 
 use serde::{Deserialize, Serialize};
 
 /// An app the tray may launch on the session-0 service's behalf. The set of entries IS the
-/// trust boundary (ADR-0022): the service can never have the tray start anything not listed
+/// trust boundary (ADR-0021): the service can never have the tray start anything not listed
 /// here. `aumid` decides *how* it is launched — a packaged (MSIX/Store) app is activated by
 /// its Application User Model ID, exactly the way the Start menu does it; a classic desktop
 /// binary is launched by a plain spawn.
@@ -32,7 +32,7 @@ struct AllowedApp {
 /// does not resolve, and the packaged binary under `%ProgramFiles%\WindowsApps` denies
 /// direct execution (ACL). It is therefore activated by AUMID instead. Room is left to add
 /// classic desktop binaries later (`msra.exe` / `mstsc.exe` for LAN/VPN) with `aumid: None`,
-/// without widening the mechanism. See ADR-0022.
+/// without widening the mechanism. See ADR-0021.
 #[cfg_attr(not(windows), allow(dead_code))]
 const ALLOWED_APPS: &[AllowedApp] = &[AllowedApp {
     exe: "quickassist.exe",

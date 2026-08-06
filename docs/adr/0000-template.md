@@ -1,6 +1,9 @@
 # NNNN. Title of the decision
 
 - Status: proposed | accepted | superseded by [ADR-XXXX](xxxx-...)
+- Boundary moved: <the structural boundary this decision moves — required. If you cannot
+  name one, this is not an ADR: put the reasoning in the code and the commit message
+  instead (`CLAUDE.md`, *When (not) to write an ADR*).>
 - Date: YYYY-MM-DD
 
 ## Context and Problem Statement

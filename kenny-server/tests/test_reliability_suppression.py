@@ -1,4 +1,4 @@
-"""Operator-managed reliability alarm suppression (issue #166 / ADR-0045).
+"""Operator-managed reliability alarm suppression (issue #166 / ADR-0041).
 
 Covers the pure matcher/mirror (:mod:`kenny_server.reliability_suppression`),
 the ``ReliabilitySuppressionStore`` CRUD round-trip, the ``/api/reliability/

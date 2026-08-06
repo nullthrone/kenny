@@ -1,6 +1,6 @@
 """Shared deny-rule catalog loader + best-effort server-side mirror.
 
-ADR-0021: the agent embeds ``docs/policy/deny_rules.json`` at build time and is
+ADR-0020: the agent embeds ``docs/policy/deny_rules.json`` at build time and is
 the authoritative enforcement point; the server loads the same file for an
 optional best-effort mirror that refuses an obviously dangerous call *before*
 forwarding it (earlier feedback for Claude/the operator).
@@ -182,7 +182,7 @@ class PolicyEngine:
     def check(self, tool: str, args: dict[str, Any]) -> tuple[str, str] | None:
         """Return ``("blocked", reason)`` on a hit, else ``None``.
 
-        Mirrors the agent's matching exactly per ADR-0021.
+        Mirrors the agent's matching exactly per ADR-0020.
         """
 
         if tool == "powershell_exec":

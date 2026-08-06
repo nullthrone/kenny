@@ -606,7 +606,7 @@ def test_stage_missing_tool_results_is_a_noop_when_nothing_is_orphaned() -> None
 # ``chat.heal_session`` drops the trailing assistant message outright and
 # unconditionally clears ``_queue``/``_staged_results`` -- both wrong for the
 # ticket surface (kenny's own words are already durably in the trail per
-# ADR-0055, and a second parked gate in ``_queue`` must survive). This test
+# ADR-0050, and a second parked gate in ``_queue`` must survive). This test
 # pins the two apart so nobody "unifies" them later.
 
 

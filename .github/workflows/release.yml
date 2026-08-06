@@ -4,7 +4,7 @@ name: Release
 # (sha256, optionally code-signed) as a GitHub Release asset.
 #   git tag v0.1.0 && git push origin v0.1.0
 #
-# This is the stable channel (ADR-0052): a non-prerelease GitHub Release, so
+# This is the stable channel (ADR-0048): a non-prerelease GitHub Release, so
 # `GET /repos/{repo}/releases/latest` (which excludes prereleases by definition)
 # always resolves to it. See release-dev.yml for the dev channel and
 # _release-artifacts.yml for the shared job bodies both call.

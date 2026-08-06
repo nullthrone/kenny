@@ -7,12 +7,14 @@ detect a condition and feed instructions back. This script runs on two events:
 * ``SessionStart`` (with ``--record-base``): stamps the current HEAD as the
   session baseline so the Stop pass knows exactly what THIS session changed,
   regardless of clone depth or how far the branch has diverged from the default.
-* ``Stop`` (default): diffs the working tree against that baseline and - if
-  doc-relevant or GUI-relevant code changed, or an ADR was added, WITHOUT the
-  mapped docs being updated - blocks the turn with targeted instructions telling
-  Claude to reconcile the docs and regenerate the affected screenshots. When
-  Claude edits the mapped files, the next Stop pass finds them in the diff and
-  exits 0, so the block clears itself.
+* ``Stop`` (default): diffs the working tree against that baseline and blocks the
+  turn with targeted instructions when either half finds something. **Doc drift:**
+  doc-relevant or GUI-relevant code changed without the mapped docs being updated.
+  **Record-set drift:** the session touched the ADR set (a record, the index, or a
+  file citing one) and left it inconsistent - a gap in the 0001..N numbering, an
+  index that disagrees with the directory, or a citation naming no record. When
+  Claude fixes what was named, the next Stop pass finds it clean and exits 0, so
+  the block clears itself.
 
 The file->doc->screenshot mapping lives in ``.claude/doc-drift-map.json`` (shared
 with the ``/doc-sync`` command), so this script carries no policy of its own.
@@ -34,6 +36,7 @@ from __future__ import annotations
 import fnmatch
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -161,22 +164,146 @@ def _matches_any(path: str, globs: list[str]) -> bool:
     return any(fnmatch.fnmatch(path, g) for g in globs)
 
 
-def _adr_drift(changed: set[str], adr_rule: dict, index_text: str) -> list[str]:
-    """Return the basenames of changed ADR records not linked from the index."""
-    ignore = set(adr_rule.get("ignore", []))
-    unindexed: list[str] = []
-    for path in sorted(changed):
-        if path in ignore:
+_RECORD_RE = re.compile(r"^(\d{4})-[a-z0-9-]+\.md$")
+_INDEX_ROW_RE = re.compile(r"^\| \[(\d{4})\]\((\d{4}-[a-z0-9-]+\.md)\)", re.M)
+# "ADR-0009", and "ADR-0019/0020" for a run of records (the records cite each other so).
+_CITE_RE = re.compile(r"\bADR-(\d{4})((?:/\d{4})*)\b")
+# A link reaching a record through its directory, or relative from inside docs/adr/.
+_LINK_RE = re.compile(r"(?:(?:docs/|\.\./)?adr/|\()(\d{4})-[a-z0-9-]+\.md")
+
+_SCAN_SUFFIXES = {".md", ".py", ".rs", ".json", ".html", ".yml", ".yaml", ".toml"}
+_SCAN_SKIP_DIRS = {".git", "target", "node_modules", "__pycache__", ".pytest_cache", ".venv"}
+# Vendored third-party bundles are not ours to police; their README beside them is.
+_SCAN_SKIP_FILES = {"kenny-server/kenny_server/webui/assets/echarts.min.js"}
+
+
+def _record_files(adr_dir: Path) -> dict[str, Path]:
+    return {
+        m.group(1): p
+        for p in sorted(adr_dir.glob("*.md"))
+        if (m := _RECORD_RE.match(p.name)) and m.group(1) != "0000"
+    }
+
+
+def _scan_targets() -> list[Path]:
+    out: list[Path] = []
+    for path in REPO.rglob("*"):
+        if not path.is_file() or path.suffix not in _SCAN_SUFFIXES:
             continue
-        if not _matches_any(path, adr_rule.get("sources", [])):
+        rel = path.relative_to(REPO)
+        if any(part in _SCAN_SKIP_DIRS for part in rel.parts):
             continue
-        # A deleted record won't exist on disk; only flag records still present.
-        if not (REPO / path).exists():
+        if rel.as_posix() in _SCAN_SKIP_FILES:
             continue
-        name = Path(path).name
-        if name not in index_text:
-            unindexed.append(path)
-    return unindexed
+        out.append(path)
+    return out
+
+
+def _record_set_drift(adr_rule: dict) -> list[str]:
+    """Check the invariants the ADR set rests on, and report what broke.
+
+    The numbering is a gap-free 0001..N sequence, which makes a number an address:
+    cite it in a module docstring and a reader can find the decision. Nothing about
+    that is self-enforcing - a renumbering, a removed record or a typo'd citation
+    all fail silently, and the reader who finds out is following a dead reference.
+    """
+    index_path = adr_rule.get("index", "docs/adr/README.md")
+    adr_dir = (REPO / index_path).parent
+    records = _record_files(adr_dir)
+    if not records:
+        return []  # nothing to check (fail-open, same as a missing map)
+
+    findings: list[str] = []
+
+    # 1. Dense sequence: a gap means a record left without the index catching up.
+    expected = [f"{i:04d}" for i in range(1, len(records) + 1)]
+    if sorted(records) != expected:
+        missing = sorted(set(expected) - set(records))
+        extra = sorted(set(records) - set(expected))
+        detail = []
+        if missing:
+            detail.append(f"gap(s) at {', '.join(missing)}")
+        if extra:
+            detail.append(f"number(s) past the end: {', '.join(extra)}")
+        findings.append(
+            f"numbering is not a gap-free 0001..{len(records):04d} sequence "
+            f"({'; '.join(detail)}) - renumber the records and rewrite every citation"
+        )
+
+    # 2. The index IS the record set - in both directions, filenames included.
+    try:
+        index_text = (REPO / index_path).read_text(encoding="utf-8")
+    except Exception:
+        index_text = ""
+    listed = dict(_INDEX_ROW_RE.findall(index_text))
+    unindexed = sorted(set(records) - set(listed))
+    if unindexed:
+        findings.append(
+            f"{index_path} does not list: {', '.join(records[n].name for n in unindexed)}"
+            " - add each record's row"
+        )
+    phantom = sorted(set(listed) - set(records))
+    if phantom:
+        findings.append(
+            f"{index_path} lists record(s) that do not exist: {', '.join(phantom)}"
+            " - remove the row or restore the file"
+        )
+    wrong_file = sorted(
+        f"{n} -> {listed[n]} (actual: {records[n].name})"
+        for n in set(listed) & set(records)
+        if listed[n] != records[n].name
+    )
+    if wrong_file:
+        findings.append(f"{index_path} rows point at the wrong file: {'; '.join(wrong_file)}")
+
+    # 3. Every citation and link resolves. A dangling one is a reader sent nowhere.
+    dangling: list[str] = []
+    for path in _scan_targets():
+        rel = path.relative_to(REPO).as_posix()
+        own = m.group(1) if (m := _RECORD_RE.match(path.name)) else None
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            continue
+        for first, run in _CITE_RE.findall(text):
+            for number in [first, *(n for n in run.split("/") if n)]:
+                if number in (own, "0000") or number in records:
+                    continue
+                dangling.append(f"{rel}: ADR-{number}")
+        for number in _LINK_RE.findall(text):
+            if number != "0000" and number not in records:
+                dangling.append(f"{rel}: link to {number}-...")
+    if dangling:
+        shown = sorted(set(dangling))
+        findings.append(
+            "citation(s)/link(s) naming no record: "
+            + "; ".join(shown[:12])
+            + (f" (+{len(shown) - 12} more)" if len(shown) > 12 else "")
+        )
+
+    return findings
+
+
+def _touches_records(changed: set[str], adr_rule: dict) -> bool:
+    """Only police the record set when this session could have disturbed it.
+
+    A pre-existing inconsistency should not block a session that had nothing to do
+    with it; a session that edits a record, or writes a citation, gets checked.
+    """
+    if any(_matches_any(p, adr_rule.get("sources", [])) for p in changed):
+        return True
+    if adr_rule.get("index", "docs/adr/README.md") in changed:
+        return True
+    for rel in changed:
+        path = REPO / rel
+        if path.suffix not in _SCAN_SUFFIXES or not path.is_file():
+            continue
+        try:
+            if _CITE_RE.search(path.read_text(encoding="utf-8", errors="ignore")):
+                return True
+        except Exception:
+            continue
+    return False
 
 
 def main() -> None:
@@ -243,21 +370,19 @@ def main() -> None:
             if name not in screenshot_names:
                 screenshot_names.append(name)
 
-    # ADR index rule.
+    # ADR record-set invariants (only when this session could have disturbed them).
     adr_rule = doc_map.get("adr_rule")
-    adr_unindexed: list[str] = []
-    if adr_rule:
-        index_path = adr_rule.get("index", "")
+    record_findings: list[str] = []
+    if adr_rule and _touches_records(changed, adr_rule):
         try:
-            index_text = (REPO / index_path).read_text(encoding="utf-8")
+            record_findings = _record_set_drift(adr_rule)
         except Exception:
-            index_text = ""
-        adr_unindexed = _adr_drift(changed, adr_rule, index_text)
+            record_findings = []  # fail-open, like everything else here
 
-    if not drifts and not adr_unindexed:
+    if not drifts and not record_findings:
         _allow()
 
-    _block(_render_reason(drifts, adr_unindexed, adr_rule, shots_dir, capture_cmd, screenshot_names))
+    _block(_render_reason(drifts, record_findings, shots_dir, capture_cmd, screenshot_names))
 
 
 def _matches_any_in(changed: set[str], globs: list[str]) -> bool:
@@ -266,8 +391,7 @@ def _matches_any_in(changed: set[str], globs: list[str]) -> bool:
 
 def _render_reason(
     drifts: list[dict],
-    adr_unindexed: list[str],
-    adr_rule: dict | None,
+    record_findings: list[str],
     shots_dir: str,
     capture_cmd: str,
     screenshot_names: list[str],
@@ -289,13 +413,13 @@ def _render_reason(
         if d["adr"]:
             lines.append(f"    ADR: {d['adr']}")
 
-    if adr_unindexed:
-        index = adr_rule.get("index", "docs/adr/README.md") if adr_rule else "docs/adr/README.md"
+    for finding in record_findings:
+        lines.append(f"- [adr-records] {finding}")
+    if record_findings:
         lines.append(
-            f"- [adr-index] New ADR record(s) not linked from {index}: "
-            f"{', '.join(adr_unindexed)}"
+            "    why:     the numbering is a gap-free 0001..N sequence, so a number is "
+            "an address a reader follows from a code comment. Nothing else enforces it."
         )
-        lines.append(f"    update:  add each record's row to {index}")
 
     lines.append("")
     lines.append("Then:")

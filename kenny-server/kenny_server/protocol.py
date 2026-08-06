@@ -31,7 +31,7 @@ ErrorCode = Literal[
     "disabled",
     "blocked",
     # Agent voluntarily stepped back while a protected game is running on the
-    # endpoint (anti-cheat coexistence); today only `screen_capture`. See ADR-0039.
+    # endpoint (anti-cheat coexistence); today only `screen_capture`. See ADR-0035.
     "paused",
 ]
 
@@ -68,7 +68,7 @@ class RegisterMeta(BaseModel):
     # defaults to x86_64.
     arch: str | None = None
     # Release channel the binary was built as (``stable``/``dev``); optional so
-    # legacy/no-channel agents that predate ADR-0052 still register. Absent ->
+    # legacy/no-channel agents that predate ADR-0048 still register. Absent ->
     # callers treat it as ``stable`` (see `registry.Agent.channel`).
     channel: str | None = None
 

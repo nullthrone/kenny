@@ -1,6 +1,6 @@
 """Operator authentication for the MCP endpoint, dashboard API, and web UI.
 
-Multi-user (ADR-0037): every HTTP request is resolved to a :class:`Principal`
+Multi-user (ADR-0033): every HTTP request is resolved to a :class:`Principal`
 (a user id, role, and host scope) and stashed on ``scope["kenny_principal"]`` so
 the API routes and MCP tools can enforce role/scope. Credentials resolve in this
 order:
@@ -11,7 +11,7 @@ order:
 3. **Back-compat:** the legacy shared ``KENNY_OPERATOR_TOKEN`` /
    ``KENNY_OPERATOR_TOKENS`` — accepted as a synthetic *superuser* so an existing
    single-token install (and Claude's existing config) keeps working across the
-   upgrade with no manual steps. Deprecated; see ADR-0037.
+   upgrade with no manual steps. Deprecated; see ADR-0033.
 
 Agents authenticate separately with their own per-agent token on ``/agent/ws``;
 that WebSocket path is intentionally **not** gated here.
@@ -78,7 +78,7 @@ class Principal:
 
     @property
     def active_key(self) -> str | None:
-        """Per-caller key for the registry's active-agent slot (ADR-0037)."""
+        """Per-caller key for the registry's active-agent slot (ADR-0033)."""
 
         if self.session_id:
             return f"s:{self.session_id}"
@@ -200,12 +200,12 @@ def _is_public(path: str) -> bool:
     are non-sensitive brand assets (logo, favicon, avatars) needed by the login
     page. ``/api/agents/<id>/enroll`` is gated by the agent's own one-time
     enrollment token (verified in the handler), so it bypasses the operator gate
-    like ``/agent/ws`` does (ADR-0023).
+    like ``/agent/ws`` does (ADR-0022).
 
     The OAuth endpoints (``/.well-known/oauth-*``, ``/authorize``, ``/token``,
     ``/register``, ``/revoke``) are the handshake by which a client *obtains* a
     credential, so they must be reachable without one; ``/authorize`` resolves the
-    session cookie itself and redirects to ``/login`` when signed out (ADR-0041).
+    session cookie itself and redirects to ``/login`` when signed out (ADR-0037).
     """
 
     return (
@@ -344,7 +344,7 @@ class OperatorAuthMiddleware:
                 row = await self.user_store.resolve_session(cookie)
                 if row is not None:
                     return await self._principal_from_row(row, session_id=cookie)
-            # Legacy cookie that carried the shared token (pre-ADR-0037).
+            # Legacy cookie that carried the shared token (pre-ADR-0033).
             if _token_valid(cookie, self.token):
                 return _env_principal()
         return None
@@ -368,7 +368,7 @@ class OperatorAuthMiddleware:
         if _is_api_or_mcp(path):
             # RFC 9728: point MCP clients at the protected-resource metadata so
             # they can discover the authorization server and start the OAuth flow
-            # (ADR-0041). Plain API callers keep the bare Bearer challenge.
+            # (ADR-0037). Plain API callers keep the bare Bearer challenge.
             if path.startswith("/mcp"):
                 prm = f'{public_base_url()}/.well-known/oauth-protected-resource'
                 www_auth = f'Bearer resource_metadata="{prm}"'
@@ -616,7 +616,7 @@ def build_auth_routes(
             password = str(form.get("password", ""))
             totp = str(form.get("totp", "")).strip()
             # Carry a validated OAuth ``next`` target through the POST so a signed-out
-            # /authorize request resumes after login (ADR-0041).
+            # /authorize request resumes after login (ADR-0037).
             next_val = _safe_next(str(form.get("next", "")))
 
             # Throttle per (client IP, username): behind a shared NAT (a whole
