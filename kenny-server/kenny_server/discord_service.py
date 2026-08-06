@@ -343,7 +343,7 @@ class DiscordService:
 
         The authorization question. A scoped (``user``-role) account is limited
         to whatever an operator explicitly assigned it via ``user_hosts``
-        (ADR-0037). An operator or admin is *not* scoped by definition — it can
+        (ADR-0033). An operator or admin is *not* scoped by definition — it can
         already reach every host from the dashboard — so it may target the whole
         fleet. Matches the ``_known_agent_ids`` pattern in ``tools.py``.
 
@@ -489,7 +489,7 @@ class DiscordService:
         A click is not a message. It carries no prose for the model to be steered
         by, it cannot be typed by a bystander into the channel, and it resolves
         through a row kenny wrote — so the target is still decided outside the
-        model loop and frozen before the ticket exists (ADR-0048 control 1). The
+        model loop and frozen before the ticket exists (ADR-0044 control 1). The
         host is *still* never inferred from what anyone wrote; the only thing
         that changed is that saying which one no longer requires knowing a slash
         command's option syntax.

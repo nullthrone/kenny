@@ -1,4 +1,4 @@
-"""Co-hosted OAuth 2.1 Authorization Server for the MCP connector (ADR-0041).
+"""Co-hosted OAuth 2.1 Authorization Server for the MCP connector (ADR-0037).
 
 kenny is its own OAuth 2.1 Authorization Server *and* Resource Server so a client
 like Claude Desktop can connect to ``/mcp`` through the standard "add custom
@@ -20,7 +20,7 @@ The flow implemented here is OAuth 2.1 with the MCP profile
   access token + rotating refresh token, both audience-bound to the MCP resource
   URL (RFC 8707). ``/revoke`` is RFC 7009.
 
-Identity stays in-process (ADR-0037): every token binds to an existing kenny
+Identity stays in-process (ADR-0033): every token binds to an existing kenny
 account, and the account's role/host scope is what the resolved principal carries.
 """
 

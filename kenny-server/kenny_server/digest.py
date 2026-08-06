@@ -1,8 +1,8 @@
-"""Weekly fleet digest: a plain-text summary over existing data (ADR-0029).
+"""Weekly fleet digest: a plain-text summary over existing data (ADR-0027).
 
 ``build_digest`` renders the operator's week — fleet health, alert and change
 counts (read back from the events table the alert loop writes), disk/battery
-forecasts (ADR-0030), pending maintenance, and screen time (ADR-0032) — into a
+forecasts (trends.py), pending maintenance, and screen time (ADR-0029) — into a
 short plain-text body that fits an ntfy notification. Everything is derived
 from data already in the stores; the digest adds no collection and no storage
 beyond its last-sent timestamp (``alert_state`` scope ``digest``, owned by the

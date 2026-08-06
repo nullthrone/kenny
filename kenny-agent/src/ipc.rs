@@ -4,7 +4,7 @@
 //! the tray helper (`kenny-agent tray`) runs in the interactive user session. They talk
 //! over local **named pipes** — one for screen capture ([`crate::screencap_ipc`],
 //! ADR-0018) and one for launching remote-help apps ([`crate::session_launch_ipc`],
-//! ADR-0022). Both use the same wire framing defined here.
+//! ADR-0021). Both use the same wire framing defined here.
 //!
 //! Framing is a single length-prefixed blob: a `u32` little-endian length, then that many
 //! payload bytes. The helpers are platform-neutral so they can be unit-tested on Linux;

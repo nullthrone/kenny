@@ -1,4 +1,4 @@
-"""Server-side alert evaluation loop (ADR-0029).
+"""Server-side alert evaluation loop (ADR-0027).
 
 Periodically re-evaluates every known agent's latest snapshot with the
 authoritative health rules and notifies the operator on *transitions* only:
@@ -24,8 +24,8 @@ An optional ``open_ticket`` callable may be injected to turn a notification
 into a ticket. It is opt-in (a server without the ticket surface simply passes
 nothing) and best-effort: delivery happens first and a failing ticket call is
 logged, never raised — alerting must not become less reliable by gaining a
-side effect (ADR-0029). *Which* notifications actually open a ticket is
-operator policy (ADR-0053), decided by an optional ``ticket_rules`` mirror
+side effect (ADR-0027). *Which* notifications actually open a ticket is
+operator policy, decided by an optional ``ticket_rules`` mirror
 (:class:`kenny_server.ticket_rules.TicketRuleList`) consulted through the same
 ``ticket_rules.decide`` function whether or not any rule is configured -- with
 no rules the outcome is byte-for-byte the old hardcoded rule (a genuine alert
@@ -116,7 +116,7 @@ class AlertEngine:
         self._digest_day_fb = digest_day
         self._digest_hour_fb = digest_hour
         # Each entry is (store, settings_key). ``settings_key`` is None for a
-        # store with no operator-facing retention setting yet (ADR-0056) --
+        # store with no operator-facing retention setting yet (ADR-0051) --
         # those keep pruning on their own hardcoded default. A key present
         # here must also carry a live-reread ``@property`` below or a spec
         # lookup in ``_maybe_prune``; see ``KENNY_TELEMETRY_RETENTION_DAYS``.
@@ -130,7 +130,7 @@ class AlertEngine:
         # ``_dispatch``. None means alerts never open tickets, which is the
         # behaviour of every server that does not wire one.
         self._open_ticket = open_ticket
-        # Operator-authored auto-ticket rules (ADR-0053), consulted in
+        # Operator-authored auto-ticket rules (ticket_rules.py), consulted in
         # ``_dispatch``. None mirrors an empty rule set -- ``ticket_rules.decide``
         # is called either way, so "no mirror wired" and "mirror with zero rules"
         # produce the identical decision.
@@ -253,7 +253,7 @@ class AlertEngine:
         recovery_lines: list[str] = []
         alert_worst = "ok"
         # Which sections actually escalated/recovered in this pass, for the
-        # ticket-rule matcher (ADR-0053) -- only sections whose lines made it
+        # ticket-rule matcher (ticket_rules.py) -- only sections whose lines made it
         # into the notification body are subjects, so a rule fires exactly on
         # what the operator would read.
         alert_sections: dict[str, str] = {}
@@ -333,7 +333,7 @@ class AlertEngine:
             )
         return out
 
-    # -- inventory changes & forecasts (ADR-0030) --------------------------------
+    # -- inventory changes & forecasts (diffs.py / trends.py) --------------------
 
     async def _change_notifications(
         self,
@@ -390,7 +390,7 @@ class AlertEngine:
         lines: list[str] = []
         priority = "default"
         # Sections that actually contributed a line, for the ticket-rule
-        # matcher (ADR-0053). ``change`` has no severity axis of its own, so
+        # matcher (ticket_rules.py). ``change`` has no severity axis of its own, so
         # each subject carries "" -- it lands on the severity-wildcard slot,
         # which is the correct behaviour for a producer with nothing to say
         # about severity (see ticket_rules.decide).
@@ -506,7 +506,7 @@ class AlertEngine:
         )
         for notifier in self._notifiers:
             await notifier.send(note)  # best-effort; send() never raises
-        # Which notifications become a ticket is operator policy (ADR-0053),
+        # Which notifications become a ticket is operator policy (ticket_rules.py),
         # decided by ``ticket_rules.decide`` -- called the same way whether or
         # not a mirror is wired, so "no rules configured" and "no mirror at
         # all" can never diverge. Runs after delivery and inside this swallow,
@@ -547,7 +547,7 @@ class AlertEngine:
             interval = self._cfg("KENNY_ALERT_INTERVAL_SECS", interval_s)
             await asyncio.sleep(interval if interval and interval > 0 else interval_s)
 
-    # -- weekly digest (ADR-0029) -------------------------------------------------
+    # -- weekly digest (ADR-0027) -------------------------------------------------
 
     async def maybe_send_digest(self, now: datetime | None = None) -> bool:
         """Send the weekly digest when the scheduled slot has passed; True if sent.
@@ -610,7 +610,7 @@ class AlertEngine:
     async def _maybe_prune(self, now: datetime | None = None) -> None:
         """Run each prunable store's retention sweep, at most every _PRUNE_EVERY --
         except a settings-backed retention key that just *decreased* forces an
-        immediate pass, so tightening it from the dashboard (ADR-0056) is
+        immediate pass, so tightening it from the dashboard (ADR-0051) is
         visible within one alert cycle (~60s) instead of up to a day later.
         Loosening a key never forces a pass -- there is nothing extra to delete.
         """

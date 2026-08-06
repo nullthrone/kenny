@@ -15,8 +15,8 @@ It populates, per host:
 plus a few fleet-wide Activity rows (an audit call, an alert, a log line) and a
 couple of persisted copilot conversations, and it pre-seeds the reliability
 categorization cache so the heatmaps and health scoring show friendly
-categories/severities (ADR-0028) without an API key, plus one reliability
-alarm suppression rule (ADR-0045 / issue #166) so the Reliability card's
+categories/severities (ADR-0026) without an API key, plus one reliability
+alarm suppression rule (ADR-0041 / issue #166) so the Reliability card's
 suppressed badge and rule panel are populated in the captured screenshots.
 
 It also seeds a handful of demo **tickets** (``TicketService``, no Discord
@@ -113,7 +113,7 @@ async def _seed_users(user_store: Any) -> dict[str, int]:
 
 def _seed_reliability_categories() -> None:
     """Pre-fill the categorization cache so heatmaps + health scoring show
-    friendly categories/severities (ADR-0028) without an API key.
+    friendly categories/severities (ADR-0026) without an API key.
 
     With no ANTHROPIC_API_KEY the categorizer coerces every group to the safe
     default (``category="Other"``, ``severity="unknown"``); priming the module
@@ -127,7 +127,7 @@ def _seed_reliability_categories() -> None:
 
 
 async def _seed_suppressions(suppression: Any) -> None:
-    """Apply the demo fleet's reliability alarm suppression rules (ADR-0045 /
+    """Apply the demo fleet's reliability alarm suppression rules (ADR-0041 /
     issue #166) via the real ``SuppressionService``, so the seeded state is
     identical to what an operator clicking "suppress" would produce."""
 
@@ -301,7 +301,7 @@ async def _seed_tickets(tickets: Any, base: datetime, user_ids: dict[str, int]) 
             tool_class="read_only", ok=True, summary="diag_processes succeeded",
             fields={"agent_id": "grandpa-pc"},
         )
-        # A dashboard-chat exchange (ADR-0054): unlike a Discord-origin message, a
+        # A dashboard-chat exchange (ADR-0049): unlike a Discord-origin message, a
         # dashboard message and every kenny reply carry their verbatim wording in
         # the trail, which is what the ticket-detail screenshot needs to show off.
         _at(hours=2, minutes=5)

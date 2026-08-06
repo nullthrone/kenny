@@ -81,13 +81,13 @@ TOOL_CLASSES: dict[str, str] = {
     "remotehelp_status": READ_ONLY,
     # Opening/closing Quick Assist on the user's desktop is visible and
     # trivially undone, but it is mutating on the agent (control.rs::is_mutating)
-    # and must never be auto-invoked (ADR-0022).
+    # and must never be auto-invoked (ADR-0021).
     "remotehelp_start": STANDARD_CHANGE,
     "remotehelp_stop": STANDARD_CHANGE,
     # -- telemetry / agent lifecycle ---------------------------------------
     "telemetry_collect": READ_ONLY,
     "agent_update": NORMAL_CHANGE,
-    # -- parental controls (ADR-0026) --------------------------------------
+    # -- parental controls (ADR-0024) --------------------------------------
     "webfilter_status": READ_ONLY,
     "webfilter_apply": NORMAL_CHANGE,
     "webfilter_clear": NORMAL_CHANGE,
@@ -97,15 +97,15 @@ TOOL_CLASSES: dict[str, str] = {
     "webfilter_set": NORMAL_CHANGE,
     "webfilter_push": STANDARD_CHANGE,
     "web_activity_query": READ_ONLY,
-    # -- reliability alarm suppression (ADR-0045) --------------------------
+    # -- reliability alarm suppression (ADR-0041) --------------------------
     "reliability_suppression_list": READ_ONLY,
     "reliability_suppression_add": NORMAL_CHANGE,
     "reliability_suppression_remove": NORMAL_CHANGE,
-    # -- auto-ticket rules (ADR-0053) ---------------------------------------
+    # -- auto-ticket rules (ticket_rules.py) --------------------------------
     "ticket_rule_list": READ_ONLY,
     "ticket_rule_set": NORMAL_CHANGE,
     "ticket_rule_remove": NORMAL_CHANGE,
-    # -- account governance (ADR-0046) -------------------------------------
+    # -- account governance (ADR-0042) -------------------------------------
     # Deciding who may sign in to a family PC — and being able to lock the
     # household out by getting it wrong — is never routine.
     "account_set_enabled": NORMAL_CHANGE,

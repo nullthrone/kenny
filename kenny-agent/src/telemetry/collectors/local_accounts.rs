@@ -6,14 +6,14 @@
 //! well-known RID suffixes (`-500` Administrator, `-501` Guest).
 //!
 //! Since v0.15 this section is also the **inventory for the `account_*` governance
-//! tools** (ADR-0046): each account carries its `kind` (a Microsoft account on a
+//! tools** (ADR-0042): each account carries its `kind` (a Microsoft account on a
 //! workgroup PC is a SAM entry like any other), a `display` label, the LSA logon
 //! rights currently denied, and the governance verbs it does *not* support.
 //!
 //! **Privacy/minimality:** full SIDs never go on the wire — all SID matching
-//! happens inside the probe, and only booleans leave it (ADR-0026 stance,
+//! happens inside the probe, and only booleans leave it (ADR-0024 stance,
 //! docs/protocol.md v0.10). Since v0.15, **Microsoft-account email addresses never
-//! go on the wire either** (ADR-0046): `display` falls back to the SAM name rather
+//! go on the wire either** (ADR-0042): `display` falls back to the SAM name rather
 //! than the `MicrosoftAccount\…` qualified form. Both rules are asserted by tests.
 
 use serde_json::json;
@@ -49,7 +49,7 @@ pub fn collect() -> Section {
 pub mod core {
     use serde_json::{json, Value};
 
-    /// Account kind, from PowerShell's `PrincipalSource` (ADR-0046).
+    /// Account kind, from PowerShell's `PrincipalSource` (ADR-0042).
     ///
     /// This is the *only* axis on which governance verbs differ. It is deliberately
     /// not a routing switch: every `account_*` tool takes the same SAM name for
@@ -89,7 +89,7 @@ pub mod core {
         ///
         /// Negation, not enumeration: an absent verb is supported. That keeps the
         /// payload small and makes the wire format state the design — seamless is
-        /// the default, asymmetry is the named exception (ADR-0046).
+        /// the default, asymmetry is the named exception (ADR-0042).
         pub fn unsupported(self) -> Vec<(&'static str, &'static str)> {
             match self {
                 // A password living in Microsoft's / Entra's cloud identity cannot
@@ -107,16 +107,16 @@ pub mod core {
     /// Logon rights kenny can deny, in stable wire order.
     ///
     /// LSA account rights on Windows; on Linux `remote_interactive` is an sshd
-    /// `DenyUsers` entry and `network` has no counterpart (ADR-0047).
+    /// `DenyUsers` entry and `network` has no counterpart (ADR-0043).
     ///
     /// `SeDenyInteractiveLogonRight` is deliberately absent: it can lock out the
-    /// sole console user and kenny has no remote console to recover with (ADR-0046).
+    /// sole console user and kenny has no remote console to recover with (ADR-0042).
     pub const DENY_RIGHTS: [&str; 2] = ["network", "remote_interactive"];
 
     /// Governance verbs *this host* cannot perform, as `verb → reason token`.
     ///
     /// The third layer of the negation map, beside the account's own restrictions and
-    /// its `Kind`'s (ADR-0047). Windows passes [`HostCaps::none`] and its payload is
+    /// its `Kind`'s (ADR-0043). Windows passes [`HostCaps::none`] and its payload is
     /// unchanged; Linux probes for `sshd`, `systemd-logind`, a graphical session, an
     /// admin group and a readable `/etc/shadow`, and reports what is missing.
     ///
@@ -161,7 +161,7 @@ pub mod core {
         /// RFC3339 UTC of the last password change; `None` means a password was
         /// never set (genuinely password-less). PowerShell `PasswordRequired`
         /// reflects UF_PASSWD_NOTREQD ("blank password permitted"), NOT "has no
-        /// password" — this field disambiguates. See ADR-0031.
+        /// password" — this field disambiguates. See ADR-0028.
         pub password_last_set: Option<String>,
         /// RFC3339 UTC, if the account ever logged on.
         pub last_logon: Option<String>,
@@ -169,7 +169,7 @@ pub mod core {
         pub builtin_guest: bool,
         /// Governance verbs *this particular account* cannot perform, beyond whatever
         /// its [`Kind`] and its host already rule out — e.g. root, or an account whose
-        /// admin rights come from `/etc/sudoers.d` rather than a group (ADR-0047).
+        /// admin rights come from `/etc/sudoers.d` rather than a group (ADR-0043).
         /// Most specific layer of the three, so it wins on conflict.
         pub extra_unsupported: Vec<(&'static str, &'static str)>,
     }
@@ -220,7 +220,7 @@ pub mod core {
     ///
     /// A candidate containing `@` or `\` is rejected outright: those are the shapes
     /// of a Microsoft-account address and of the `MicrosoftAccount\<address>`
-    /// qualified name, and neither may reach the wire (ADR-0046). The probe already
+    /// qualified name, and neither may reach the wire (ADR-0042). The probe already
     /// avoids emitting them; this is the belt-and-braces check that a test can
     /// assert against, since the cost of being wrong is leaking an address.
     pub fn display_label(candidate: Option<&str>, name: &str) -> String {
@@ -242,7 +242,7 @@ pub mod core {
     ///
     /// `applies_to` is part of the payload rather than documentation because a
     /// policy that silently misses every Microsoft account is worse than none: a
-    /// consumer that renders this must be able to say so without knowing ADR-0046.
+    /// consumer that renders this must be able to say so without knowing ADR-0042.
     /// Any field is `null` when the probe could not read it.
     pub fn password_policy(
         min_length: Option<u32>,
@@ -330,7 +330,7 @@ pub mod core {
         /// RFC3339 UTC of the last password change; `None` when never set.
         pub password_last_set: Option<String>,
         /// The account-expiry date has passed. This — not the password lock — is what
-        /// blocks every sign-in path including SSH public keys (ADR-0047).
+        /// blocks every sign-in path including SSH public keys (ADR-0043).
         pub expired: bool,
     }
 
@@ -417,7 +417,7 @@ pub mod core {
     /// answer one question honestly — *might this account be an administrator by a
     /// route kenny cannot revoke?* — and a false positive there costs a greyed-out
     /// button, while a false negative costs a governance call that reports success
-    /// and changes nothing (ADR-0047). kenny never writes these files.
+    /// and changes nothing (ADR-0043). kenny never writes these files.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn parse_sudoers(text: &str) -> (Vec<String>, Vec<String>) {
         let (mut users, mut groups) = (Vec::new(), Vec::new());
@@ -448,7 +448,7 @@ pub mod core {
     /// Each account's `unsupported` map is merged from three layers, least specific
     /// first, so the most specific reason wins: **host** ([`HostCaps`]) → **kind**
     /// ([`Kind::unsupported`]) → **account** (`Account::extra_unsupported`). See
-    /// ADR-0047. `serde_json::Map` is a `BTreeMap`, so the merged key order is
+    /// ADR-0043. `serde_json::Map` is a `BTreeMap`, so the merged key order is
     /// deterministic regardless of insertion order — fixtures stay stable.
     pub fn shape(mut accounts: Vec<Account>, host: &HostCaps) -> (Vec<Value>, Vec<String>, usize) {
         accounts.sort_by(|a, b| a.name.cmp(&b.name));
@@ -604,7 +604,7 @@ pub mod core {
         #[test]
         fn display_never_carries_a_microsoft_address() {
             // The two shapes an MSA identity takes, both rejected in favour of the
-            // SAM name (ADR-0046).
+            // SAM name (ADR-0042).
             assert_eq!(display_label(Some("kid@outlook.com"), "kid"), "kid");
             assert_eq!(
                 display_label(Some("MicrosoftAccount\\kid@outlook.com"), "kid"),
@@ -755,7 +755,7 @@ short:x:1
 
             // Locked (`!` prefix) is NOT the same as expired, and NOT the same as
             // password-less: an SSH key still works, which is exactly why
-            // `account_set_enabled` sets an expiry as well (ADR-0047).
+            // `account_set_enabled` sets an expiry as well (ADR-0043).
             assert!(s["papa"].password_required);
             assert!(!s["papa"].expired, "expire=0 means no expiry, not 1970");
 
@@ -848,7 +848,7 @@ mod windows_impl {
     ///
     /// `PrincipalSource` is what makes a Microsoft account visible *as* a Microsoft
     /// account; the rest of the row is identical for every kind, which is the whole
-    /// point (ADR-0046). `FullName` supplies `display`; the probe never emits the
+    /// point (ADR-0042). `FullName` supplies `display`; the probe never emits the
     /// `MicrosoftAccount\<address>` qualified name, so no email address can leak
     /// through this path.
     pub fn collect() -> Section {
@@ -927,7 +927,7 @@ ConvertTo-Json -Compress -Depth 4 ([pscustomobject]@{ accounts = @($out); system
         let accounts: Vec<core::Account> =
             rows.iter().filter_map(core::Account::from_row).collect();
         // Windows can do every governance verb the catalog names, so there are no
-        // host-level gaps and the payload is unchanged from v0.15 (ADR-0047).
+        // host-level gaps and the payload is unchanged from v0.15 (ADR-0043).
         let (accounts, admins, count) = core::shape(accounts, &core::HostCaps::none());
 
         let n_admins = admins.len();
@@ -965,7 +965,7 @@ pub mod linux_impl {
     /// Debian/Ubuntu ship `sudo`, RHEL/Fedora/Arch/SUSE ship `wheel`. Choosing the
     /// first that actually exists in `/etc/group` is the deterministic, distro-proof
     /// analogue of resolving the Windows Administrators group by its well-known SID
-    /// (ADR-0047). Demotion strips membership in *all* of them, because promoting
+    /// (ADR-0043). Demotion strips membership in *all* of them, because promoting
     /// into the "wrong" one is harmless while demoting from only one is not.
     pub const ADMIN_GROUPS: &[&str] = &["sudo", "wheel", "admin"];
 
@@ -1049,7 +1049,7 @@ pub mod linux_impl {
     ///
     /// Older distros have no `Include` line, and kenny deliberately **does not add
     /// one**: editing the main config to make its own feature work is exactly the
-    /// kind of change that leaves an unreachable box behind (ADR-0047).
+    /// kind of change that leaves an unreachable box behind (ADR-0043).
     fn sshd_includes_dropin_dir(config: &str) -> bool {
         config.lines().any(|line| {
             let line = line.split('#').next().unwrap_or("").trim();
@@ -1062,7 +1062,7 @@ pub mod linux_impl {
     ///
     /// Probed rather than declared: `account_session_action`'s `lock` needs a desktop
     /// to lock, and the same binary serves a headless NAS and a Linux desktop
-    /// (ADR-0035's "clients and servers, equally"). An X socket or a Wayland socket
+    /// (ADR-0031's "clients and servers, equally"). An X socket or a Wayland socket
     /// in a per-user runtime directory is the cheapest honest evidence; neither
     /// spawns a process on every snapshot.
     fn graphical_session_present() -> bool {
@@ -1131,7 +1131,7 @@ pub mod linux_impl {
     /// `enabled` is **login shell AND not expired**. A locked password deliberately
     /// does not flip it: `usermod -L` leaves SSH public-key authentication working,
     /// so reporting such an account as suspended would be the most dangerous kind of
-    /// wrong. Account expiry is what actually closes every door (ADR-0047).
+    /// wrong. Account expiry is what actually closes every door (ADR-0043).
     pub fn parse_accounts(src: &Sources<'_>) -> Vec<core::Account> {
         let admins = admin_members(src.group);
         let shadow = src
@@ -1309,7 +1309,7 @@ pub mod linux_impl {
     /// PAM ignores the latter, so reporting it would describe a rule nothing
     /// enforces. Each file that is absent becomes a `null` value plus an entry in
     /// the policy's own `unsupported` map, so "not configured" and "this host has no
-    /// such knob" stay distinguishable (ADR-0047).
+    /// such knob" stay distinguishable (ADR-0043).
     fn password_policy() -> serde_json::Value {
         let pwquality = std::fs::read_to_string("/etc/security/pwquality.conf").ok();
         let login_defs = std::fs::read_to_string("/etc/login.defs").unwrap_or_default();

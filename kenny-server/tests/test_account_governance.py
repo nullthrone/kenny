@@ -1,15 +1,15 @@
-"""Account governance across local, Microsoft and Linux accounts (ADR-0046/0047).
+"""Account governance across local, Microsoft and Linux accounts (ADR-0042/0043).
 
 Four things are worth pinning down here, and they are the four that would
 silently rot:
 
 1. **Gate parity.** Every ``account_*`` tool has to appear in the forwarding
    catalog, the OS scope, the operator-role map, and the chat confirm-gate. The
-   agent enforces its own copy in ``control::is_mutating``; ADR-0024 requires the
+   agent enforces its own copy in ``control::is_mutating``; ADR-0023 requires the
    server to agree, and nothing but a test makes the two lists stay in step.
 2. **Type-agnosticism is structural.** There must be no per-kind tool and no
    ``kind`` argument anywhere in the catalog — the whole design rests on the
-   caller never having to know whether an account is local or Microsoft. ADR-0047
+   caller never having to know whether an account is local or Microsoft. ADR-0043
    extends the same rule to the OS axis: no ``linux_account_*`` family either.
 3. **The health rules** read the new sections the way the contract describes, on
    both operating systems — including *not* firing Windows-shaped findings on a
@@ -59,7 +59,7 @@ ACCOUNT_TOOLS = (
 @pytest.mark.parametrize("tool", ACCOUNT_TOOLS)
 def test_account_tool_is_registered_scoped_and_gated(tool: str) -> None:
     assert tool in CAPABILITY_TOOLS, f"{tool} missing from the forwarding catalog"
-    # Served on Windows and Linux alike (ADR-0047). What a *particular account on
+    # Served on Windows and Linux alike (ADR-0043). What a *particular account on
     # a particular host* can do is published per account in the `local_accounts`
     # inventory, not encoded as a whole-tool OS scope. macOS has no
     # implementation, so it is still refused before a frame is ever sent.
@@ -67,7 +67,7 @@ def test_account_tool_is_registered_scoped_and_gated(tool: str) -> None:
     # Deciding who may sign in is operator authority, unlike the rest of the
     # forwarded catalog where seeing the host is enough.
     assert _TOOL_MIN_ROLE.get(tool) == "operator"
-    # Mutating on the agent, therefore confirm-gated in chat (ADR-0024 parity).
+    # Mutating on the agent, therefore confirm-gated in chat (ADR-0023 parity).
     assert is_state_changing(tool), f"{tool} must require operator confirmation"
     assert tool in STATE_CHANGING_TOOLS
 
@@ -110,7 +110,7 @@ def test_there_is_no_per_kind_tool_or_kind_argument() -> None:
 
     A ``local_account_*``/``msaccount_*`` split, or a ``kind`` argument the
     caller has to supply, would push the distinction back onto every caller —
-    which is exactly what ADR-0046 rejected. The agent resolves the account
+    which is exactly what ADR-0042 rejected. The agent resolves the account
     itself; the caller passes a SAM name and nothing else.
     """
 
@@ -309,7 +309,7 @@ def test_diff_reports_a_local_account_being_linked_to_microsoft() -> None:
     assert "kind: local -> microsoft" in changes[0]["detail"]
 
 
-# --- the Linux payload (ADR-0047) --------------------------------------------
+# --- the Linux payload (ADR-0043) --------------------------------------------
 
 
 def _linux_snapshot() -> dict:
@@ -351,7 +351,7 @@ def test_logon_failures_is_scored_on_linux() -> None:
 
 
 def test_linux_asymmetries_travel_in_the_negation_map_not_in_a_second_tool() -> None:
-    """The load-bearing property of ADR-0047.
+    """The load-bearing property of ADR-0043.
 
     Everything Linux cannot do is a per-account `unsupported` entry with a
     reason token — never a missing field, never a differently-named tool.
@@ -442,7 +442,7 @@ async def test_account_tool_forwards_to_a_windows_agent(tmp_path, monkeypatch) -
 
 @pytest.mark.asyncio
 async def test_account_tool_forwards_to_a_linux_agent(tmp_path, monkeypatch) -> None:
-    """The load-bearing assertion of ADR-0047: the same tool, the same argument
+    """The load-bearing assertion of ADR-0043: the same tool, the same argument
     shape, the same result shape — on a Linux host.
 
     Until 0.16 this call was refused server-side with "requires windows"."""

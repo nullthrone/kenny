@@ -11,7 +11,7 @@
 //!
 //! The agent runs as a session-0 service with no desktop, so `start` launches the app via
 //! the user-session tray helper over an allow-listed named pipe — same delivery mechanism
-//! as `screen_capture` (ADR-0018). See ADR-0022. Off Windows, `start`/`stop` return
+//! as `screen_capture` (ADR-0018). See ADR-0021. Off Windows, `start`/`stop` return
 //! `unsupported` and `status` reports everything not-available.
 
 use serde_json::{json, Value};

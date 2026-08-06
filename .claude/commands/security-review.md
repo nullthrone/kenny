@@ -51,7 +51,7 @@ surfaces is in scope even if it is absent below.
   rate-limiting on `/login` (operator-token brute force).
 - **Agent auth** (`registry.py`, `tokenstore.py`, `keystore.py`): token-at-rest (hashed vs
   plaintext), rotation, dev fallback tokens, comparison timing, replay across reconnects; Ed25519
-  mutual-auth key storage, key rotation / grace period (ADR-0023).
+  mutual-auth key storage, key rotation / grace period (ADR-0022).
 - **Self-update** (`kenny-agent/src/handlers/agent_update.rs`, server `distribution.py`): the agent
   fetches and executes a binary from a server-supplied `url` — who can trigger `agent_update`, is
   the `sha256` an *authenticated* integrity check (or MITM-forgeable, i.e. no code signature?), is
@@ -63,7 +63,7 @@ surfaces is in scope even if it is absent below.
   design — check argument injection and **path traversal / arbitrary read** in `fs.*`, and timeouts.
 - **Diagnostics & remote-presence handlers** (`diagnostics.rs`, `screenshot.rs`, `remotehelp.rs`):
   information disclosure and privileged actions; Session 0 → user-session delegation over tray IPC
-  (named pipes) for `screen_capture` / `remotehelp_*` (ADR-0018/0022) — who can trigger them and
+  (named pipes) for `screen_capture` / `remotehelp_*` (ADR-0018/0021) — who can trigger them and
   what the IPC trusts.
 - **Server-side chat & recommendations** (`kenny-server/kenny_server/chat.py`, `recommend.py`): can
   the confirm-gate for state-changing tools be bypassed; **prompt injection** from agent-controlled
@@ -71,7 +71,7 @@ surfaces is in scope even if it is absent below.
   read-only-but-sensitive calls (e.g. `screen_capture`, reading secrets); session isolation; API-key
   handling (CWE-77/CWE-94 adjacent).
 - **Tool guard & policy** (`kenny-agent/src/...` tool guard, server `policy.py`): deterministic
-  deny-rule enforcement and the server-side mirror (ADR-0020/0021) — can a denied tool slip through
+  deny-rule enforcement and the server-side mirror (ADR-0019/0020) — can a denied tool slip through
   either side, regex/catalog gaps.
 - **Web UI XSS** (`kenny-server/kenny_server/webui/index.html`): agent-controlled telemetry fields
   (e.g. section `summary`, hostnames) rendered into `innerHTML` without escaping → stored XSS in the

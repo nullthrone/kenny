@@ -41,14 +41,14 @@ approval and state change underneath it. Three things can open one:
   [Settings](dashboard.md#auto-ticket-rules) lets you narrow it (e.g. stop offline PCs from
   opening tickets) or widen it (e.g. promote an inventory change, like a new local admin
   account, into one). See
-  [Alerting → which events open a ticket](alerting.md#which-events-open-a-ticket-is-configurable-adr-0053).
+  [Alerting → which events open a ticket](alerting.md#which-events-open-a-ticket-is-configurable).
 
 The dashboard is no longer just where you read, note, reassign and close a ticket — the
 ticket detail view has its own **chat with kenny**, gated the same way Discord always was,
 so a ticket opened without a Discord thread at all (or worked by an operator who isn't the
 requester) is just as fully workable as one that came in over `@kenny`. See
 [Ticket detail](dashboard.md#ticket-detail) and
-[ADR-0055](adr/0055-the-ticket-is-its-own-chat-surface.md).
+[ADR-0050](adr/0050-the-ticket-is-its-own-chat-surface.md).
 
 <figure markdown>
   ![The Tickets list, filterable by state.](assets/screenshots/tickets.png)
@@ -59,7 +59,7 @@ Every ticket is pinned to **exactly one PC**, decided the moment it is created a
 moved by anything the requester or the assistant says afterward — only an operator can
 **reassign** it, from the dashboard. That is deliberate: a ticket that could be quietly
 retargeted mid-conversation would undercut every other guarantee on this page. See
-[ADR-0050](adr/0050-ticket-as-entity-chat-thread-as-binding.md) for why the ticket, not the
+[ADR-0046](adr/0046-ticket-as-entity-chat-thread-as-binding.md) for why the ticket, not the
 chat thread, is the thing that actually exists.
 
 ## The lifecycle, in plain language
@@ -132,9 +132,9 @@ This is a **property of the ticket's chat**, not of the tools themselves — and
 distinct from the dashboard's separate **Ask kenny** chat (the operator-only assistant rail, not
 tied to any one ticket), which still confirms *both* change tiers exactly as it always has.
 See [Tool reference § the confirm-gate](tools.md#three-tiers-and-who-enforces-what) for the
-surface-by-surface table, [ADR-0049](adr/0049-tiered-tool-classification.md) for why the
+surface-by-surface table, [ADR-0045](adr/0045-tiered-tool-classification.md) for why the
 tier and the gate are kept apart on purpose, and
-[ADR-0055](adr/0055-the-ticket-is-its-own-chat-surface.md) for why the ticket detail view
+[ADR-0050](adr/0050-the-ticket-is-its-own-chat-surface.md) for why the ticket detail view
 qualifies for the same autonomy Discord always had.
 
 When a step needs you, kenny posts an **approval card** — in the operator channel if you
@@ -163,7 +163,7 @@ interchangeable:
 If a single tool call needs both (opening remote help is a `standard_change` *and*
 privacy-sensitive), consent is asked first; once it is answered, the call re-enters the
 gate and — if it also needs an operator — asks for that next. A ticket only ever has **one**
-open ask at a time. See [ADR-0051](adr/0051-capability-profiles.md) for consent as an axis
+open ask at a time. See [ADR-0047](adr/0047-capability-profiles.md) for consent as an axis
 separate from authorization.
 
 ## Enrollment: linking a Discord account
@@ -198,7 +198,7 @@ no ticket, no reply, no model call, exactly as if they had never linked.
 ## Which PC a request is about
 
 A ticket is about exactly one machine, and that machine is fixed before the ticket exists
-— nothing said afterwards can move it ([ADR-0048](adr/0048-delegated-identity-from-a-chat-platform.md),
+— nothing said afterwards can move it ([ADR-0044](adr/0044-delegated-identity-from-a-chat-platform.md),
 control 1). So "my PC is slow" has to be resolved to one host up front, and kenny never
 infers it from the wording.
 
@@ -241,7 +241,7 @@ what an account's role would otherwise allow, never widens it. Set it per user i
 A profile applies everywhere that account acts — Discord and MCP alike — and it is
 checked **twice**: the disallowed tool is not even offered to the model, and dispatch
 refuses it again if it somehow got called anyway. See
-[ADR-0051](adr/0051-capability-profiles.md) for why this is a profile column rather than a
+[ADR-0047](adr/0047-capability-profiles.md) for why this is a profile column rather than a
 fourth role.
 
 ## What is recorded, and what is not
@@ -262,8 +262,8 @@ record, the same way an unbounded Ask kenny chat history already is, while a fam
 side of a Discord conversation is not something kenny needs to keep verbatim to operate the
 system — kenny's own words are never a private conversation regardless of which door they
 went out, so they are always kept in full. See
-[ADR-0055](adr/0055-the-ticket-is-its-own-chat-surface.md) for the full reasoning, which
-amends [ADR-0050](adr/0050-ticket-as-entity-chat-thread-as-binding.md) on this point. One
+[ADR-0050](adr/0050-the-ticket-is-its-own-chat-surface.md) for the full reasoning, which
+amends [ADR-0046](adr/0046-ticket-as-entity-chat-thread-as-binding.md) on this point. One
 practical consequence: the trail was already never pruned, and it now grows with how much a
 ticket's chat is actually used — there is still no knob to bound that.
 
@@ -379,7 +379,7 @@ and **Copy ID** to get the snowflakes for:
 Restrict the operator channel to yourself as good hygiene — but understand what that is and
 is not. Deciding an approval requires the kenny `operator` role either way; channel
 visibility governs who *sees* the card, not who may act on it. Discord roles are never read
-as authorization ([ADR-0048](adr/0048-delegated-identity-from-a-chat-platform.md)), so this
+as authorization ([ADR-0044](adr/0044-delegated-identity-from-a-chat-platform.md)), so this
 is defence in depth, not the control.
 
 ### 6. Switch it on
@@ -407,7 +407,7 @@ not a fault.
 A server with no Discord configuration at all still runs the full ticket surface — the
 store, the lifecycle, the dashboard's Tickets tab and API all work with nothing pointed at
 Discord; only the bot connection itself is opt-in. See [`setup.md`](setup.md) for the
-complete environment-variable reference and [ADR-0048](adr/0048-delegated-identity-from-a-chat-platform.md)
+complete environment-variable reference and [ADR-0044](adr/0044-delegated-identity-from-a-chat-platform.md)
 for why Discord roles are never read as authorization, however tempting that shortcut looks.
 
 ## See also
@@ -417,15 +417,15 @@ for why Discord roles are never read as authorization, however tempting that sho
 - [`tools.md`](tools.md) — the three tool tiers and the full confirm-gate table.
 - [`alerting.md`](alerting.md) — how an alert opens a ticket, how to configure which ones do,
   and the Discord webhook notification channel.
-- [ADR-0048](adr/0048-delegated-identity-from-a-chat-platform.md) — delegated identity,
+- [ADR-0044](adr/0044-delegated-identity-from-a-chat-platform.md) — delegated identity,
   no parallel authorization.
-- [ADR-0049](adr/0049-tiered-tool-classification.md) — the tier belongs to the tool, the
+- [ADR-0045](adr/0045-tiered-tool-classification.md) — the tier belongs to the tool, the
   gate to the surface.
-- [ADR-0050](adr/0050-ticket-as-entity-chat-thread-as-binding.md) — the ticket is the
+- [ADR-0046](adr/0046-ticket-as-entity-chat-thread-as-binding.md) — the ticket is the
   entity; the chat thread is a binding.
-- [ADR-0051](adr/0051-capability-profiles.md) — capability profiles as a third
+- [ADR-0047](adr/0047-capability-profiles.md) — capability profiles as a third
   authorization axis.
-- [ADR-0053](adr/0053-operator-configurable-auto-ticket-rules.md) — operator-configurable
+- [Alerting → which events open a ticket](alerting.md#which-events-open-a-ticket-is-configurable) — operator-configurable
   auto-ticket rules.
-- [ADR-0055](adr/0055-the-ticket-is-its-own-chat-surface.md) — the ticket detail view as a
+- [ADR-0050](adr/0050-the-ticket-is-its-own-chat-surface.md) — the ticket detail view as a
   second chat surface, verbatim trail wording, and the closed lifecycle-notification gap.

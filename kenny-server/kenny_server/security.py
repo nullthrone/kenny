@@ -11,7 +11,7 @@ Deliberately dependency-free beyond ``cryptography`` (already a project dep):
 * **Roles** are ranked ``superuser > operator > user`` for ``>=`` style checks.
 
 Keeping these here (separate from ``auth.py``) lets them be unit-tested in
-isolation and reused by the user store and the dashboard routes. See ADR-0037.
+isolation and reused by the user store and the dashboard routes. See ADR-0033.
 """
 
 from __future__ import annotations

@@ -1,7 +1,7 @@
 """Tests for the Discord channel in :mod:`kenny_server.notify`.
 
 Exercised against an ``httpx.MockTransport`` so no network is touched;
-delivery failures must be swallowed (best-effort per ADR-0029).
+delivery failures must be swallowed (best-effort per ADR-0027).
 """
 
 from __future__ import annotations

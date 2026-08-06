@@ -1,4 +1,4 @@
-"""Role/scope enforcement across the dashboard API and PAT bearer auth (ADR-0037).
+"""Role/scope enforcement across the dashboard API and PAT bearer auth (ADR-0033).
 
 Exercises the whole matrix through the real app: first-run setup, self-service
 (/api/me), superuser user management, per-user PATs used as bearer tokens, host

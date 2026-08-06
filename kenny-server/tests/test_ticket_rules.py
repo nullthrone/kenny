@@ -1,4 +1,4 @@
-"""Operator-configurable auto-ticket rules (ADR-0053).
+"""Operator-configurable auto-ticket rules (ticket_rules.py).
 
 Covers the pure matcher (:func:`kenny_server.ticket_rules.decide`), the
 ``TicketRuleList`` mirror, the ``TicketRuleStore`` CRUD round-trip, the

@@ -115,7 +115,7 @@ def test_sha256_helper(tmp_path):
     assert _sha256_file(str(p)) == hashlib.sha256(BINARY_BYTES).hexdigest()
 
 
-# -- enrollment endpoint (ADR-0023) -----------------------------------------
+# -- enrollment endpoint (ADR-0022) -----------------------------------------
 
 
 def _agent_pubkey() -> str:
@@ -215,7 +215,7 @@ def test_agent_binary_status_manual(tmp_path, binary):
         assert body["source"] == "manual"
 
 
-# -- Linux agent distribution (ADR-0035 Phase 4 / ADR-0038) -----------------
+# -- Linux agent distribution (ADR-0031 Phase 4 / ADR-0034) -----------------
 
 
 @pytest.fixture
@@ -278,7 +278,7 @@ def test_install_sh_omits_absent_pubkey_and_token():
 
 
 def test_install_sh_pinned_arch_skips_uname_detection():
-    """An operator-pinned arch (ADR-0040) is emitted literally; the script never
+    """An operator-pinned arch (ADR-0036) is emitted literally; the script never
     shells out to `uname -m` to decide it."""
 
     script = _install_sh(
@@ -364,7 +364,7 @@ def test_share_link_linux_oneliner_and_install_flow(tmp_path, linux_binary):
 
 
 def test_share_link_pinned_arch_survives_mint_to_fetch_gap(tmp_path, monkeypatch):
-    """An operator-pinned ``?arch=`` (ADR-0040) rides on both the install and the
+    """An operator-pinned ``?arch=`` (ADR-0036) rides on both the install and the
     binary nonce, so `public_install` recovers it at fetch time and the script it
     renders skips `uname -m` detection — proving the pin, not `uname`, decided it."""
 
@@ -530,7 +530,7 @@ def test_agent_binary_status_by_os(tmp_path, linux_binary, monkeypatch):
 
 
 def test_agent_binary_status_targets_reflect_per_arch_availability(tmp_path, monkeypatch):
-    """The dashboard's arch dropdown (ADR-0040) is driven by ``targets``: every
+    """The dashboard's arch dropdown (ADR-0036) is driven by ``targets``: every
     combination we could ever ship, each flagged by whether a binary is actually
     configured for it right now."""
 
@@ -551,7 +551,7 @@ def test_agent_binary_status_targets_reflect_per_arch_availability(tmp_path, mon
         }
 
 
-# -- dev channel (ADR-0052) ---------------------------------------------------
+# -- dev channel (ADR-0048) ---------------------------------------------------
 
 
 def test_agent_binary_path_dev_resolves_channel_cache(tmp_path, monkeypatch):

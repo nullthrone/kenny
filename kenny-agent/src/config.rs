@@ -28,7 +28,7 @@ pub struct RunArgs {
 
     /// Per-agent bearer token presented in the `register` frame. **Legacy** and
     /// optional from v0.8: only used during the migration window when the signature
-    /// path is not configured. See ADR-0023.
+    /// path is not configured. See ADR-0022.
     #[arg(long, env = "KENNY_TOKEN")]
     pub token: Option<String>,
 
@@ -39,7 +39,7 @@ pub struct RunArgs {
 
     /// One-time enrollment token (carried by the installer). On first run, when no agent
     /// key exists yet, the agent enrolls its freshly generated public key with the server
-    /// over HTTPS using this token. See ADR-0023.
+    /// over HTTPS using this token. See ADR-0022.
     #[arg(long = "enroll-token", env = "KENNY_ENROLL_TOKEN")]
     pub enroll_token: Option<String>,
 
@@ -140,7 +140,7 @@ pub enum Command {
 
     /// Self-elevating bootstrap installer: resolve the connection config (flags or the
     /// `kenny-agent.setup.json` sidecar), elevate via UAC if needed, copy the binary into
-    /// %ProgramFiles%\kenny, and run `install` from there (Windows only). See ADR-0033.
+    /// %ProgramFiles%\kenny, and run `install` from there (Windows only). See ADR-0030.
     Setup(SetupArgs),
 
     /// Remove the Windows service (Windows only).

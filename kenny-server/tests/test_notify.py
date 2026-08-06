@@ -1,7 +1,7 @@
 """Tests for :mod:`kenny_server.notify` (ntfy + webhook channels).
 
 Both channels are exercised against an ``httpx.MockTransport`` so no network
-is touched; delivery failures must be swallowed (best-effort per ADR-0029).
+is touched; delivery failures must be swallowed (best-effort per ADR-0027).
 """
 
 from __future__ import annotations
@@ -87,7 +87,7 @@ async def test_webhook_posts_json_payload() -> None:
 
 
 async def test_webhook_payload_carries_the_event_discriminator() -> None:
-    """ADR-0053: event_type/sections reach the webhook payload, so an external
+    """event_type/sections reach the webhook payload, so an external
     consumer can filter without parsing the free-text body."""
 
     captured: list[httpx.Request] = []

@@ -3,8 +3,8 @@
 //! Portable basics (name/version) via `sysinfo`; Windows enriches with build and
 //! support lifecycle. Also carries `arch` (protocol 0.13), mirroring
 //! `register.meta.arch` — a periodic, self-refreshing reconfirmation of the CPU
-//! architecture the update-serving path relies on (see ADR-0040). Since protocol
-//! 0.17 it likewise carries `channel`, mirroring `register.meta.channel` (ADR-0052).
+//! architecture the update-serving path relies on (see ADR-0036). Since protocol
+//! 0.17 it likewise carries `channel`, mirroring `register.meta.channel` (ADR-0048).
 
 use serde_json::json;
 use sysinfo::System;

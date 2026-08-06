@@ -1,4 +1,4 @@
-"""Tests for :mod:`kenny_server.trends` (OLS forecasts, ADR-0030)."""
+"""Tests for :mod:`kenny_server.trends` (OLS forecasts)."""
 
 from __future__ import annotations
 

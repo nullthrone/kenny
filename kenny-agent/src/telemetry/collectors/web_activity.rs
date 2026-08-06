@@ -1,6 +1,6 @@
 //! `web_activity` section — host names a PC has been reaching in the last 24 h.
 //!
-//! Observed from two sources that cover each other's blind spots (ADR-0026):
+//! Observed from two sources that cover each other's blind spots (ADR-0024):
 //! the OS DNS client cache (cheap, all apps, but blind to DoH and short-lived) and
 //! per-user browser history (Chromium `History`, Firefox `places.sqlite`; catches
 //! DoH-resolved visits and carries real timestamps). The agent extracts **host names

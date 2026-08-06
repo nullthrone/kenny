@@ -32,7 +32,7 @@ ASSET_RE = re.compile(r"^kenny-agent-.*-x86_64-pc-windows-msvc\.exe$")
 LINUX_ASSET_RE = re.compile(r"^kenny-agent-.*-(x86_64|aarch64)-unknown-linux-musl$")
 LINUX_ARCHES = ("x86_64", "aarch64")
 # The (os, arch) combinations we actually ship a binary for — the authoritative list
-# behind the dashboard's "Add a PC" arch dropdown (ADR-0040) and its availability
+# behind the dashboard's "Add a PC" arch dropdown (ADR-0036) and its availability
 # check. Windows has only ever shipped one target; `agent_binary_path` doesn't
 # consult `arch` for windows at all.
 SUPPORTED_TARGETS: tuple[tuple[str, str], ...] = (("windows", "x86_64"),) + tuple(
@@ -78,7 +78,7 @@ def cache_path(os_name: str = "windows", arch: str = "x86_64", channel: str = "s
       wins, preserving the pre-Linux, pre-channel behavior byte-identically).
     * windows/dev    -> ``kenny-agent-dev.exe``, next to the stable cache. No
       ``KENNY_AGENT_BINARY_CACHE``-style manual-placement override in this
-      iteration (ADR-0052) — dev has no operator-placed-binary path.
+      iteration (ADR-0048) — dev has no operator-placed-binary path.
     * linux          -> ``kenny-agent-linux-<arch>`` (``x86_64`` | ``aarch64``),
       with a ``-dev`` suffix for ``channel="dev"``.
     """
@@ -293,7 +293,7 @@ def _fetch_asset(
 
 
 def _select_release(client: httpx.Client, repo: str, channel: str) -> dict[str, Any] | None:
-    """Resolve the release JSON to fetch assets from, per channel (ADR-0052).
+    """Resolve the release JSON to fetch assets from, per channel (ADR-0048).
 
     ``stable`` -> ``GET /releases/latest`` (unchanged, excludes prereleases by
     GitHub's own construction). ``dev`` -> ``GET /releases`` (newest first),
@@ -412,7 +412,7 @@ def binary_status(
     ``manual_path`` is the resolved binary path (``distribution.agent_binary_path``)
     so precedence stays in one place. ``source`` distinguishes an operator-placed
     binary (via the per-(os, arch) env var) from the GitHub cache. Dev has no
-    manual-override env in this iteration (ADR-0052), so for ``channel="dev"``
+    manual-override env in this iteration (ADR-0048), so for ``channel="dev"``
     ``source`` is always ``"cache"`` when a file exists at ``manual_path``.
     """
 

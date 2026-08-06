@@ -1,6 +1,6 @@
 {
   "_comment": [
-    "Golden test vectors for the v0.8 mutual-auth handshake (ADR-0023).",
+    "Golden test vectors for the v0.8 mutual-auth handshake (ADR-0022).",
     "NOT a wire frame: lives in a subdirectory so the top-level fixture",
     "round-trip scanners skip it. Both kenny-server and kenny-agent load",
     "this file to assert byte-exact transcript construction and signature",

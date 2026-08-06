@@ -1,4 +1,4 @@
-"""Cross-snapshot trend analysis over the daily history (ADR-0030).
+"""Cross-snapshot trend analysis over the daily history.
 
 Pure, I/O-free functions fed with ``TelemetryStore.daily_latest()`` output
 (one representative snapshot per UTC day, oldest first). An ordinary
@@ -8,9 +8,12 @@ no forecast without at least ``MIN_POINTS`` days, a rising slope and a
 reasonable fit (r²), so a noisy series yields ``None`` instead of a scary
 made-up number.
 
-Per ADR-0030, cross-snapshot thresholds live *here* (not in
-``health_rules.py``, which stays authoritative for per-snapshot rules):
-``DISK_FULL_ALERT_DAYS`` is the alert loop's forecast threshold.
+Cross-snapshot thresholds live *here*, which is the one deliberate exception to
+"thresholds only in ``health_rules.py``": that module is evaluated against a
+single snapshot by design and has nowhere to put a judgement that spans days.
+``DISK_FULL_ALERT_DAYS`` is the alert loop's forecast threshold. Keep the
+exception small — a rule that *can* be expressed per-snapshot belongs in
+``health_rules.py``, not here.
 """
 
 from __future__ import annotations

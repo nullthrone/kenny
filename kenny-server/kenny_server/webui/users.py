@@ -1,4 +1,4 @@
-"""User-management and self-service account routes (ADR-0037).
+"""User-management and self-service account routes (ADR-0033).
 
 Two families, both gated by the auth middleware + :mod:`authz`:
 
@@ -62,7 +62,7 @@ def build_user_routes(
     """Routes for ``/api/me*`` (self) and ``/api/users*`` (superuser)."""
 
     async def _revoke_oauth(user_id: int) -> None:
-        """Revoke a user's OAuth tokens alongside their sessions (ADR-0041).
+        """Revoke a user's OAuth tokens alongside their sessions (ADR-0037).
 
         A credential change / disable / delete must not leave a live OAuth grant
         that keeps reaching ``/mcp`` as that account.

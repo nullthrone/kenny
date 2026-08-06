@@ -1,4 +1,4 @@
-"""Dashboard API for scheduled updates + campaign rollout (ADR-0044).
+"""Dashboard API for scheduled updates + campaign rollout (ADR-0040).
 
 Route-level smoke tests, following the ``build_app`` + ``TestClient`` +
 bearer-token pattern from ``test_backup_api.py``. GHCR is never touched over

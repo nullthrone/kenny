@@ -1,4 +1,4 @@
-"""Tests for :mod:`kenny_server.diffs` (pure snapshot diffing, ADR-0030)."""
+"""Tests for :mod:`kenny_server.diffs` (pure snapshot diffing)."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Read-only GHCR polling for the server image (ADR-0044).
+"""Read-only GHCR polling for the server image (ADR-0040).
 
 All tests use ``httpx.MockTransport`` — no real network, matching
 ``test_agent_release.py``.
@@ -103,7 +103,7 @@ async def test_fetch_latest_server_tag_no_such_package():
     assert "no such package" in res.message
 
 
-# -- dev channel (ADR-0052) ---------------------------------------------------
+# -- dev channel (ADR-0048) ---------------------------------------------------
 
 
 def test_parse_semver_prerelease():

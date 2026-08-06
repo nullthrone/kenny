@@ -163,7 +163,7 @@ def _number(value: Any) -> float | None:
 # -- reliability: volume-based fallback (no severity annotation present) ----
 #
 # Used only when events carry no `severity` field at all — i.e. the read-path
-# LLM categorization (ADR-0028) has never run over this payload (a raw agent
+# LLM categorization (ADR-0026) has never run over this payload (a raw agent
 # snapshot, or a test payload built by hand). Kept as today's thresholds, plus
 # one addition (a distinct-pattern escalation) so this path is never *less*
 # sensitive than the original volume-based rule — see _rule_reliability_by_volume.
@@ -186,7 +186,7 @@ _RELIABILITY_SIGNIFICANT_PATTERNS_CRIT = 5  # this many distinct non-benign patt
 # independent, agent-computed signal that content-based pattern scoring can't
 # see into, so it always applies on top. It is deliberately NOT suppressible —
 # an operator muting a noisy event pattern must never be able to hide a
-# genuinely low reliability index (issue #166 / ADR-0045).
+# genuinely low reliability index (issue #166 / ADR-0041).
 _RELIABILITY_SI_CRIT = 3
 _RELIABILITY_SI_WARN = 6
 
@@ -196,7 +196,7 @@ def _reliability_reason(events: list[Any], total: int) -> str:
 
     Used for the volume-based fallback path, where there is no severity/cause
     to name — see :func:`_reliability_pattern_reason` for the annotated path.
-    Suppressed groups (ADR-0045) are excluded from the tally — a muted pattern
+    Suppressed groups (ADR-0041) are excluded from the tally — a muted pattern
     must not out-rank the events that still matter — and counted in a trailing
     note instead, so an operator can tell "quiet" from "quieted".
     """
@@ -237,7 +237,7 @@ def _reliability_pattern_reason(patterns: list[dict[str, Any]], total: int, wind
     whose events are all known-benign says so explicitly instead of hiding the
     count behind a scary number.
 
-    Suppressed patterns (ADR-0045 / issue #166) are never named here — that is
+    Suppressed patterns (ADR-0041 / issue #166) are never named here — that is
     the whole point of muting them — but their existence is always noted in a
     trailing clause, so the reader can tell "quiet" from "quieted". A pattern
     the operator muted is never folded into "known-benign": that phrase is the
@@ -281,8 +281,8 @@ def _rule_reliability_by_volume(
     """Fallback scoring when events carry no severity annotation (see module
     comment above). Strictly at least as sensitive as the original volume-based rule.
 
-    Operator suppression (ADR-0045 / issue #166) still applies on this path.
-    Unlike the ADR-0028 LLM categorization, matching a suppression rule needs
+    Operator suppression (ADR-0041 / issue #166) still applies on this path.
+    Unlike the ADR-0026 LLM categorization, matching a suppression rule needs
     no LLM and no API key, so it is available here too — and this is the path
     that drives push alerting, the weekly digest, and the fleet list, which is
     exactly where a single dominant noisy pattern is loudest (see the module
@@ -318,7 +318,7 @@ def _rule_reliability_by_severity(
     events: list[dict[str, Any]], total_i: int, si: float | None, window_days: Any
 ) -> "tuple[Status, str]":
     """Weighted-pattern scoring once events carry a server-annotated severity
-    (ADR-0028 read-path categorization). Distinct *patterns* drive escalation,
+    (ADR-0026 read-path categorization). Distinct *patterns* drive escalation,
     not raw volume — see the module comment above.
     """
 
@@ -331,7 +331,7 @@ def _rule_reliability_by_severity(
         if e.get("level") == "critical" and not suppressed:
             # A Windows-critical entry always counts as serious, regardless of
             # what the LLM made of the message -- unless the operator has
-            # explicitly suppressed this exact pattern (ADR-0045 / issue #166),
+            # explicitly suppressed this exact pattern (ADR-0041 / issue #166),
             # in which case that explicit intent overrides the automatic
             # escalation. Without this, a suppressed Kernel-Power/41 could
             # never actually be muted.
@@ -375,7 +375,7 @@ def _rule_reliability_by_severity(
 def _rule_reliability(payload: dict[str, Any], now: datetime) -> "tuple[Status, str] | None":
     # `events` is the grouped Error/Critical breakdown; `stability_index` is the
     # Windows Reliability Index (0-10). Once the read path has annotated each
-    # group with a `severity` (ADR-0028 categorization),
+    # group with a `severity` (ADR-0026 categorization),
     # score on WHAT is recurring — see _rule_reliability_by_severity. Without
     # that annotation (e.g. a raw payload in a unit test) fall back to the
     # original volume-based thresholds — see _rule_reliability_by_volume.
@@ -399,7 +399,7 @@ _WEB_ACTIVITY_SERIOUS = {"custom", "seed", "external_adult"}
 
 
 def _rule_web_activity(payload: dict[str, Any], now: datetime) -> "tuple[Status, str] | None":
-    # `flagged` is a server-internal annotation added at insert time (ADR-0026).
+    # `flagged` is a server-internal annotation added at insert time (ADR-0024).
     # Absent => the host is not configured for parental controls; defer.
     flagged = payload.get("flagged")
     if flagged is None:
@@ -453,7 +453,7 @@ def _rule_local_accounts(
         # only crit when the account has ALSO genuinely never had a password set
         # (`password_last_set is None`). A real password means this is a benign
         # OEM flag. Auth-probing to be certain is deliberately out of scope
-        # (account-lockout risk). See ADR-0031.
+        # (account-lockout risk). See ADR-0028.
         if (
             account.get("is_admin")
             and account.get("password_required") is False
@@ -463,7 +463,7 @@ def _rule_local_accounts(
         # An *enabled* built-in administrator is a finding on Windows, where RID 500
         # ships disabled and something must have turned it on. On Linux the same
         # flag marks root, which is enabled by definition — scoring it would put
-        # every Linux host at a permanent warn for being a Linux host (ADR-0047).
+        # every Linux host at a permanent warn for being a Linux host (ADR-0043).
         if is_windows and account.get("builtin_admin"):
             warns.append("built-in Administrator enabled")
         if account.get("builtin_guest"):
@@ -472,7 +472,7 @@ def _rule_local_accounts(
         # while also being denied logon types. Both were set deliberately, so one of
         # them is stale — most often a demotion that was reverted, or deny rights
         # left on an account that has since been promoted back. Worth a look rather
-        # than an alarm, since neither state is dangerous on its own (ADR-0046).
+        # than an alarm, since neither state is dangerous on its own (ADR-0042).
         if account.get("is_admin") and account.get("deny_logon"):
             warns.append(
                 f"'{account.get('name', '?')}' is an admin with denied logon rights"
@@ -492,7 +492,7 @@ def _rule_logon_failures(payload: dict[str, Any], now: datetime) -> "tuple[Statu
     """Warn on a burst of failed sign-ins against a single account.
 
     Deliberately never ``crit``: a failed logon is not, by itself, a compromised
-    machine, and kenny reports rather than judges here (the ADR-0032 stance). The
+    machine, and kenny reports rather than judges here (the ADR-0029 stance). The
     per-account threshold matters more than the total — twenty failures spread over
     five accounts is a household forgetting passwords, twenty against one account is
     someone working at it.
@@ -583,9 +583,9 @@ RULES: dict[str, Rule | OsAwareRule] = {
 # Update / KB numbers, the registry reboot-pending flags, and System Restore /
 # File History / OneDrive backup evidence). A non-Windows agent emits an
 # "n/a on this platform" stub for these; scoring them would mislead. They are
-# skipped for agents whose OS is not Windows (see ADR-0035).
+# skipped for agents whose OS is not Windows (see ADR-0031).
 #
-# ``logon_failures`` was in this set until ADR-0047 gave it a real Linux arm
+# ``logon_failures`` was in this set until ADR-0043 gave it a real Linux arm
 # (sshd/PAM failures from the journal). Its thresholds are OS-neutral, so it is
 # now scored everywhere.
 WINDOWS_ONLY_SECTIONS: frozenset[str] = frozenset(
@@ -640,7 +640,7 @@ def evaluate_snapshot(
     it defaults to ``windows`` so legacy/unknown agents keep their current
     behavior. For non-Windows agents the Windows-only sections
     (:data:`WINDOWS_ONLY_SECTIONS`) are skipped rather than scored against their
-    ``n/a`` stubs (see ADR-0035). Portable sections (e.g. ``listening_ports``,
+    ``n/a`` stubs (see ADR-0031). Portable sections (e.g. ``listening_ports``,
     ``local_accounts``) apply for every OS.
 
     Returns ``{"overall": status, "sections": {name: {status, summary, reason?}}}``.

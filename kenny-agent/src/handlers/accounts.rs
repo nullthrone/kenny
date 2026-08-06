@@ -1,4 +1,4 @@
-//! `account_*` + `password_policy_set` — Windows account governance (ADR-0046).
+//! `account_*` + `password_policy_set` — Windows account governance (ADR-0042).
 //!
 //! One tool family for **local and Microsoft accounts alike**. That is not an
 //! abstraction the agent maintains: a Microsoft account on a workgroup PC *is* a SAM
@@ -97,7 +97,7 @@ impl Action {
 ///    this action's verb in its `unsupported` map, the call is refused with the
 ///    reason token. That is what keeps the capability set kenny *advertises* and the
 ///    one it *enforces* from drifting apart — they are the same list, read at call
-///    time (ADR-0047). It is also how root, a shell-less account, a host without
+///    time (ADR-0043). It is also how root, a shell-less account, a host without
 ///    `sshd` and a headless server are all protected without a single
 ///    platform-specific rule in this function.
 ///
@@ -535,7 +535,7 @@ pub async fn delete(args: Value) -> Result<Value, (ErrorCode, String)> {
 /// `account_session_action` — MUTATING. Lock or log off an account's live session(s).
 ///
 /// Operator-triggered only. Automatic, schedule-driven enforcement is deliberately
-/// out of scope here (ADR-0046): it needs a timer inside the agent, which breaks the
+/// out of scope here (ADR-0042): it needs a timer inside the agent, which breaks the
 /// stateless-collector invariant of ADR-0007 and deserves its own decision.
 pub async fn session_action(args: Value) -> Result<Value, (ErrorCode, String)> {
     let principal = principal_arg(&args)?;
@@ -609,7 +609,7 @@ pub async fn password_policy_set(args: Value) -> Result<Value, (ErrorCode, Strin
 }
 
 /// Linux governance, on the `/etc/passwd` + `/etc/shadow` + `/etc/group` layer plus
-/// `systemd-logind` and PAM (ADR-0047).
+/// `systemd-logind` and PAM (ADR-0043).
 ///
 /// Two rules run through everything here:
 ///
@@ -685,7 +685,7 @@ mod linux_impl {
     /// password lock alone is not enough: `usermod -L` only prefixes the hash with
     /// `!`, and SSH public-key authentication never consults it. Expiry is evaluated
     /// in PAM's account stage, which sshd runs for every authentication method, so it
-    /// is the only mechanism that closes all the doors (ADR-0047).
+    /// is the only mechanism that closes all the doors (ADR-0043).
     pub fn plan_set_enabled(principal: &str, enabled: bool) -> Vec<Vec<String>> {
         if enabled {
             vec![
@@ -769,7 +769,7 @@ mod linux_impl {
     /// "kenny manages this" marker stays visible on the machine.
     pub fn render_ssh_dropin(denied: &[String]) -> String {
         let mut out = String::from(
-            "# Managed by kenny (ADR-0047). Rewritten on every account_set_logon_rights\n\
+            "# Managed by kenny (ADR-0043). Rewritten on every account_set_logon_rights\n\
              # call; edits here are lost. Remove kenny to remove this file.\n",
         );
         if !denied.is_empty() {
@@ -1083,7 +1083,7 @@ mod linux_impl {
     /// `write` needs a tty with `mesg y`, and `notify-send` needs the user's own
     /// D-Bus session bus. Rather than send a warning that may silently vanish, the
     /// inventory publishes `session_warn` as unsupported and this acts immediately
-    /// (ADR-0047).
+    /// (ADR-0043).
     pub async fn session_action(
         principal: &str,
         action: &str,
@@ -1975,7 +1975,7 @@ mod tests {
     #[test]
     fn guard_refuses_exactly_what_the_inventory_says_is_unsupported() {
         // The rule that keeps the published capability set and the enforced one from
-        // drifting apart: they are the same list, read at call time (ADR-0047).
+        // drifting apart: they are the same list, read at call time (ADR-0043).
         let mut root = account("root", true, true);
         root["builtin_admin"] = json!(true);
         root["unsupported"] = json!({

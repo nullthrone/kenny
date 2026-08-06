@@ -170,7 +170,7 @@ async def test_insert_waits_out_a_held_write_lock(tmp_path) -> None:
         await writer.close()
 
 
-# -- write_lock() itself (ADR-0056) -------------------------------------------
+# -- write_lock() itself (ADR-0051) -------------------------------------------
 #
 # Serializes this process's SQLite writers so a stuck or slow writer delays
 # the next one instead of starving it out from under busy_timeout (see the

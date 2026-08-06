@@ -211,7 +211,7 @@ def test_cookie_not_secure_without_tls(tmp_path, monkeypatch) -> None:
 
 
 def test_env_token_still_authorizes_as_back_compat(tmp_path) -> None:
-    """The legacy shared token keeps working after accounts exist (ADR-0037)."""
+    """The legacy shared token keeps working after accounts exist (ADR-0033)."""
 
     app = _app(tmp_path)
     token = app.state.operator_token

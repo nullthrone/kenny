@@ -1,5 +1,5 @@
-"""Agent registry: the typed, OS-aware ``Agent.os`` view (ADR-0035) and the
-telemetry-reported arch mirror (ADR-0040)."""
+"""Agent registry: the typed, OS-aware ``Agent.os`` view (ADR-0031) and the
+telemetry-reported arch mirror (ADR-0036)."""
 
 from __future__ import annotations
 
@@ -51,7 +51,7 @@ def test_note_arch_is_a_noop_for_an_unknown_agent() -> None:
     assert reg.get("ghost-pc") is None
 
 
-# -- channel: the agent's actual/built release channel (ADR-0052) ------------
+# -- channel: the agent's actual/built release channel (ADR-0048) ------------
 
 
 def test_agent_channel_defaults_to_stable_for_legacy_meta() -> None:

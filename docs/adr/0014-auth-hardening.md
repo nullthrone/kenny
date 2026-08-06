@@ -1,7 +1,7 @@
 # 0014. Auth hardening: token store, rotation, multi-operator, TLS cookie
 
 - Status: accepted
-- Amended by: [ADR-0041](0041-oauth2-authorization-server-for-mcp.md)
+- Amended by: [ADR-0037](0037-oauth2-authorization-server-for-mcp.md)
 - Date: 2026-06-04
 
 ## Context and Problem Statement

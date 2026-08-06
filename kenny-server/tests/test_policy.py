@@ -1,4 +1,4 @@
-"""ADR-0021: shared-catalog mirror, operator PolicyStore, and the operator API.
+"""ADR-0020: shared-catalog mirror, operator PolicyStore, and the operator API.
 
 The PolicyEngine here mirrors the agent's deterministic guard (best-effort UX,
 fail-open). These tests do not depend on the Rust agent; they exercise the

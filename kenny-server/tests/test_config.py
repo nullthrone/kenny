@@ -207,7 +207,7 @@ def test_oauth_ttls_are_in_catalog_with_matching_defaults() -> None:
 
 def test_sqlite_busy_timeout_is_env_only_and_matches_coded_default() -> None:
     # store._BUSY_TIMEOUT_MS is read once from os.environ at import time
-    # (ADR-0056) -- it cannot be changed live, and the catalog's coded default
+    # (ADR-0051) -- it cannot be changed live, and the catalog's coded default
     # must match it or the read-only row on the settings page would lie.
     from kenny_server.store import _BUSY_TIMEOUT_MS
 

@@ -1,4 +1,4 @@
-"""``ChatHistoryStore`` round-trip tests (ADR-0027)."""
+"""``ChatHistoryStore`` round-trip tests (ADR-0025)."""
 
 from __future__ import annotations
 

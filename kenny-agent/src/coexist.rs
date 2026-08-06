@@ -1,4 +1,4 @@
-//! Anti-cheat coexistence (ADR-0039).
+//! Anti-cheat coexistence (ADR-0035).
 //!
 //! kenny does none of the "hard" cheat behaviours — it never reads another process's
 //! memory, injects, hooks, or simulates input. But a kernel anti-cheat (e.g. Easy

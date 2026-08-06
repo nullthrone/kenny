@@ -1,4 +1,4 @@
-"""Server-side snapshot diffing (ADR-0030).
+"""Server-side snapshot diffing.
 
 Compares two telemetry snapshots and reports what appeared, disappeared or
 changed in inventory-style sections (autostart entries, services, USB devices,
@@ -12,6 +12,11 @@ a diffable section is one entry naming the list field, the identity key and
 which fields count as a change. Sections absent from either snapshot are
 skipped entirely, so a collector rollout never floods the diff with "added"
 rows for a whole section.
+
+Diffs are computed on read, never stored: derived data recomputable from the
+snapshot history, so a table would cost a migration and a backfill for nothing.
+The price is granularity — consecutive snapshots are ~15 minutes apart, so a
+program installed and removed inside one interval never appears.
 """
 
 from __future__ import annotations
@@ -72,7 +77,7 @@ SPECS: dict[str, SectionSpec] = {
         changed_fields=("action",),
         detail_fields=("action", "run_as"),
     ),
-    # The drift signal for account governance (ADR-0046). Enforcement there is
+    # The drift signal for account governance (ADR-0042). Enforcement there is
     # best-effort by design — the kill switch and a local admin can both undo it —
     # so noticing that an account appeared, gained admin, was re-enabled, or had its
     # logon rights cleared is the part that actually holds. `kind` is diffed because

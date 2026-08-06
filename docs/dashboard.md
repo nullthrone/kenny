@@ -78,7 +78,7 @@ for the difference between an operator approval and a user consent.
 
 ## Accounts & roles (the user menu)
 
-kenny is multi-user (ADR-0037). On first run the console shows a one-time **setup** page;
+kenny is multi-user (ADR-0033). On first run the console shows a one-time **setup** page;
 the first account you create becomes the **superuser**. After that, three roles gate what
 each surface shows:
 
@@ -92,7 +92,7 @@ each surface shows:
 change your password, enable/disable **two-factor (TOTP)** (scan the shown `otpauth://`
 secret into an authenticator, then confirm a code), and mint/revoke **personal access
 tokens**. Claude Desktop normally connects with the built-in **OAuth flow**
-([ADR-0041](adr/0041-oauth2-authorization-server-for-mcp.md)) — no token needed; personal
+([ADR-0037](adr/0037-oauth2-authorization-server-for-mcp.md)) — no token needed; personal
 access tokens are the Bearer credential for scripts and other MCP clients that can't do OAuth,
 sent as `Authorization: Bearer <pat>` to `/mcp` and shown once at creation.
 
@@ -229,7 +229,7 @@ Below the list, the **Add a PC** panel onboards a *new* machine: type an agent i
 target **OS** (Windows or Linux), then **installer** / **share link**. For **Windows** these are a
 downloadable ZIP or a one-time, expiring link the target user can open without your login. For
 **Linux** the panel produces a **one-line install command** (`curl -fsSL … | sudo sh`) in a
-copyable modal — the Docker/K3s convenience-script model (ADR-0038). See
+copyable modal — the Docker/K3s convenience-script model (ADR-0034). See
 [Adding & updating PCs](#adding-updating-pcs).
 
 ### Agent detail (centre)
@@ -282,7 +282,7 @@ rule-reason chip.
   short **Diagnosis / Action / Urgency** advisory streams in at the top. If the advisor judges
   the issue fixable with kenny's tools it adds an **Auto-Remediate** button that hands a
   suggested prompt to Ask kenny (state-changing steps still hit the confirm-gate). See
-  [ADR-0019](adr/0019-ai-recommendations-and-auto-remediation.md).
+  the confirm-gate ([ADR-0009](adr/0009-server-hosted-claude-chat.md)).
 - **Reliability** has a custom renderer — a category × day heatmap plus expandable event
   groups, each row showing a **severity badge** (`benign`/`notable`/`serious`/`unknown`) and
   the categorizer's plain-language **suspected cause** alongside the raw sample message.
@@ -294,7 +294,7 @@ rule-reason chip.
   id), a fleet-wide/this-PC-only scope, and an optional note. Removing a fleet-wide rule
   asks for confirmation, since it re-arms the alarm on every PC. See
   [Alarm suppression](telemetry.md#alarm-suppression) and
-  [ADR-0045](adr/0045-reliability-alarm-suppression.md).
+  [ADR-0041](adr/0041-reliability-alarm-suppression.md).
 
   <figure markdown>
     ![The reliability section detail](assets/screenshots/reliability.png)
@@ -511,7 +511,7 @@ The **New ticket** modal also gained an optional host picker, so a ticket opened
 from the dashboard can start with a real target machine instead of always unassigned —
 without one, the new composer's "Ask kenny" side has nothing to run against and stays
 disabled. See [`itsm.md`](itsm.md#what-is-recorded-and-what-is-not) for what the composer's
-messages record, and [ADR-0055](adr/0055-the-ticket-is-its-own-chat-surface.md) for why this
+messages record, and [ADR-0050](adr/0050-the-ticket-is-its-own-chat-surface.md) for why this
 is a second, equally-gated chat surface rather than an extension of Ask kenny.
 
 ---
@@ -542,7 +542,7 @@ losing your spot. **Back to fleet** returns to the Fleet tab.
   a freshly minted token) and **share link** produces a one-time, expiring link the target user
   opens without your login. On **Linux**, both produce the **one-line install command**
   (`curl -fsSL … | sudo sh`) — a nonce-gated, single-use script carrying the same freshly minted
-  one-time enrollment token (ADR-0038).
+  one-time enrollment token (ADR-0034).
 - On an existing PC, **reinstall** / **re-share** re-provision *that* agent id (rotating its
   token, so the old install stops reporting) — a ZIP/link on Windows, the one-line command on
   Linux — and **update** pushes a server-triggered self-update. **Update works on both Windows
@@ -618,7 +618,7 @@ Syncthing) causes lock contention, because the sync tool watches and hashes a fi
 server is concurrently writing to. The Backup section is kenny's own answer: it produces
 finished, static snapshot files that are safe to hand to any external sync/backup tool,
 and gives an operator a way to trigger, inspect, and restore them without touching the
-host filesystem by hand. See [ADR-0043](adr/0043-server-database-backup-and-restore.md)
+host filesystem by hand. See [ADR-0039](adr/0039-server-database-backup-and-restore.md)
 for the full rationale.
 
 - **Status card** — the most recent backup's age, the total count and size on disk, and the
@@ -651,7 +651,7 @@ only, so an operator sees this section without it)*
 
 kenny checks for newer agent releases (GitHub Releases) and a newer server image (GHCR,
 read-only) on a schedule and shows both here — see
-[ADR-0044](adr/0044-scheduled-update-detection-and-operator-approved-rollout.md) for the
+[ADR-0040](adr/0040-scheduled-update-detection-and-operator-approved-rollout.md) for the
 rationale. Detection never applies anything by itself; every rollout is an explicit
 operator action.
 
@@ -678,7 +678,7 @@ A campaign always pins one exact version at approval time: a later check finding
 newer never changes what an already-approved campaign pushes — it just becomes a new,
 separately-approvable candidate.
 
-#### Dev channel (ADR-0052)
+#### Dev channel (ADR-0048)
 
 Alongside the stable server/agent cards, the section shows a **latest dev** row for each
 and a second, independent **rollout campaign (dev)** card — a stable and a dev campaign can
@@ -713,9 +713,9 @@ instead of erroring.
 the same for every operator+ role)*
 
 Which alerts open a ticket automatically is operator policy, not a fixed rule — see
-[ADR-0053](adr/0053-operator-configurable-auto-ticket-rules.md) and [Alerting → which
+[Alerting → which
 events open a ticket is
-configurable](alerting.md#which-events-open-a-ticket-is-configurable-adr-0053) for the full
+configurable](alerting.md#which-events-open-a-ticket-is-configurable) for the full
 model. This section lists the operator's exceptions to the default: by default every
 genuine alert opens a ticket and nothing else does, and each rule here either narrows that
 (`never` on a noisy offline PC) or widens it (`open_all` on an inventory change, e.g. a new

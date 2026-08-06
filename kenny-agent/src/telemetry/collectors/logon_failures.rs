@@ -7,7 +7,7 @@
 //! needs is *interactive vs remote*, not *which IP*.
 //!
 //! **Privacy:** this names accounts, which the rest of kenny's parental-controls
-//! telemetry deliberately does not. That is the line ADR-0046 draws — an
+//! telemetry deliberately does not. That is the line ADR-0042 draws — an
 //! authentication attempt belongs to the identity plane kenny governs, while
 //! behaviour (`screen_time`, `web_activity`) stays whole-machine and unattributed.
 //! Attempts against names that are not accounts on this machine collapse into
@@ -100,7 +100,7 @@ pub mod core {
     /// The Linux arm has no logon-type numbers to translate — it reads a service tag
     /// (`sshd`, `sudo`, `gdm-password`) and classifies directly. Routing it through
     /// synthetic Windows type codes would bake Windows numerology into a Linux
-    /// parser; both arms instead meet here, on one aggregation path (ADR-0047).
+    /// parser; both arms instead meet here, on one aggregation path (ADR-0043).
     pub fn shape_tokens(events: &[(String, &'static str)], known_accounts: &[String]) -> Value {
         let known: Vec<String> = known_accounts.iter().map(|n| n.to_lowercase()).collect();
         let mut per_account: BTreeMap<String, (u64, Vec<&'static str>)> = BTreeMap::new();
@@ -165,7 +165,7 @@ pub mod core {
     ///
     /// `network` is deliberately unreachable on Linux: there is no per-account
     /// network-logon plane, and an absent token means "no failures of that kind",
-    /// which is true, rather than a coverage claim (ADR-0047).
+    /// which is true, rather than a coverage claim (ADR-0043).
     ///
     /// Returns `None` for a tag kenny does not recognize, so unrelated auth-facility
     /// chatter (cron, dbus, systemd) is dropped rather than counted as a sign-in.
@@ -352,7 +352,7 @@ Jul 31 10:05:00 nas CRON[3000]: pam_unix(cron:session): session opened for user 
         #[test]
         fn linux_never_reports_the_network_type() {
             // `network` has no Linux meaning; an absent token says "no failures of
-            // that kind", which is true, rather than claiming coverage (ADR-0047).
+            // that kind", which is true, rather than claiming coverage (ADR-0043).
             assert_eq!(service_token("sshd"), Some("remote"));
             assert_eq!(service_token("sshd-session"), Some("remote"));
             assert_eq!(service_token("gdm-password"), Some("interactive"));

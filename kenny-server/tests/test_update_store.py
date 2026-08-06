@@ -1,4 +1,4 @@
-"""``UpdateStore`` round-trip tests: availability, campaigns, attempt budget (ADR-0044)."""
+"""``UpdateStore`` round-trip tests: availability, campaigns, attempt budget (ADR-0040)."""
 
 from __future__ import annotations
 
@@ -124,7 +124,7 @@ async def test_list_campaigns_newest_first(tmp_path) -> None:
     await store.close()
 
 
-# -- channel (ADR-0052): availability key composition, campaign channel scoping,
+# -- channel (ADR-0048): availability key composition, campaign channel scoping,
 # migration, and desired-channel round trip ----------------------------------
 
 

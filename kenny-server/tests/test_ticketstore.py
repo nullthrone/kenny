@@ -366,7 +366,7 @@ async def test_migration_folds_legacy_states_into_the_two_axis_model(tmp_path) -
             if blocked_on:
                 assert ticket.blocked_since == to_iso(NOW)
 
-        # The pre-migration trail is untouched -- ADR-0050 makes it the
+        # The pre-migration trail is untouched -- ADR-0046 makes it the
         # authority, and back-dating it would be exactly what that forbids.
         events = await store.list_events(legacy_ids["awaiting_approval"], kind="state")
         assert events[-1].to_state == "awaiting_approval"
@@ -732,7 +732,7 @@ async def test_prune_clears_dead_pending_requests_only(tmp_path) -> None:
         await store.close()
 
 
-# -- write_lock (ADR-0056): the _insert_event nesting must not deadlock -----
+# -- write_lock (ADR-0051): the _insert_event nesting must not deadlock -----
 #
 # set_state/set_agent_id/set_blocked/set_assignee/mark_nudged/append_event all
 # hold write_lock() around an UPDATE + _insert_event() + commit, and

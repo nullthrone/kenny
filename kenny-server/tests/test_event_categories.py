@@ -1,4 +1,4 @@
-"""LLM event categorization (ADR-0028) with an injected fake client."""
+"""LLM event categorization (ADR-0026) with an injected fake client."""
 
 from __future__ import annotations
 
@@ -175,7 +175,7 @@ def test_annotate_events_stamps_category_severity_and_cause():
 
 
 def test_annotate_events_leaves_suppression_markers_intact():
-    # ADR-0045 / issue #166: suppression markers are stamped by a different
+    # ADR-0041 / issue #166: suppression markers are stamped by a different
     # module (reliability_suppression.SuppressionList.mark) on the same event
     # dicts. annotate_events must only ever write its own three keys, so a
     # (re-)annotation pass never clobbers an existing suppression stamp.

@@ -1,4 +1,4 @@
-"""Read-only GHCR polling for the kenny-server container image (ADR-0044).
+"""Read-only GHCR polling for the kenny-server container image (ADR-0040).
 
 The server ships as ``ghcr.io/t11z/kenny-server``, semver-tagged on every git
 tag (ADR-0010). This module answers one question — "is there a newer tag than
@@ -31,7 +31,7 @@ FETCH_TIMEOUT_S = 10.0
 _SEMVER_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 
 # The exact-version tag the dev-channel workflow publishes for a `main`-push
-# build (ADR-0052): `X.Y.Z-dev.N`, mirroring the git tag `vX.Y.Z-dev.N` minus
+# build (ADR-0048): `X.Y.Z-dev.N`, mirroring the git tag `vX.Y.Z-dev.N` minus
 # the `v`. `N` is the CI run number, monotonically increasing per triple.
 _SEMVER_PRERELEASE_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)-dev\.(\d+)$")
 
@@ -130,7 +130,7 @@ async def fetch_latest_server_tag(
     ``channel="dev"`` instead considers only ``X.Y.Z-dev.N`` tags, picking the
     highest ``(major, minor, patch, dev_n)`` tuple — the exact versioned tag,
     never the floating ``:edge`` alias, so a later pin is always an immutable
-    tag+digest (ADR-0044's pinning discipline).
+    tag+digest (ADR-0040's pinning discipline).
     """
 
     parsed = _parse_image_ref(image_ref)

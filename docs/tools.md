@@ -21,7 +21,7 @@ kenny splits its tools into two families:
   `fleet_overview`, `agent_health`, `agent_snapshot` (plus the server-side web-filter
   tools).
 
-!!! note "`agent_id` targeting, and what `select_agent` actually does now ([ADR-0042](adr/0042-explicit-per-call-agent-targeting.md))"
+!!! note "`agent_id` targeting, and what `select_agent` actually does now ([ADR-0038](adr/0038-explicit-per-call-agent-targeting.md))"
     A remote MCP client (Claude Desktop, claude.ai) gives the server no reliable
     per-conversation identifier, so **every capability tool call over MCP must include its
     own `agent_id`** naming the target host — there is no server-side "current agent" a raw
@@ -70,7 +70,7 @@ The dashboard chat holds **both** change tiers, exactly as it always has — mov
 from `normal_change` to `standard_change` changes its blast-radius classification, never
 whether the dashboard confirms it. Only the Discord ticket surface treats
 `standard_change` as safe to run on its own, and it still records a trail row saying so.
-See [ADR-0049](adr/0049-tiered-tool-classification.md) for why the tier and the gate are
+See [ADR-0045](adr/0045-tiered-tool-classification.md) for why the tier and the gate are
 kept apart, and [ADR-0009](adr/0009-server-hosted-claude-chat.md) for the dashboard
 confirm-gate this refines.
 
@@ -98,9 +98,9 @@ The three-tier classification lives in one place, so it is worth being precise a
 
 | Control | Where it lives | What it does |
 |---------|----------------|--------------|
-| **Role & host scope** ([ADR-0037](adr/0037-multi-user-authentication.md)) | Auth middleware + tool layer (server) | The access token — an OAuth token ([ADR-0041](adr/0041-oauth2-authorization-server-for-mcp.md)) or a personal access token — identifies a user; a `user`-role caller only sees/targets its assigned hosts (`select_agent`, `agent_*`, forwarders, and `list_agents`/`fleet_overview` are scope-filtered), and parental-controls mutation tools require `operator`+. The legacy shared token acts as a superuser. |
-| **Capability profile** ([ADR-0051](adr/0051-capability-profiles.md)) | Tool schemas + dispatch (server) | An optional, named per-account tool allowlist that only ever *narrows* what the role already allows — checked twice: the tool is not offered to the model, and dispatch refuses it again. See [ITSM: capability profiles](itsm.md#capability-profiles). |
-| **Agent-side safety guard** ([ADR-0020](adr/0020-agent-side-deterministic-tool-guard.md)) | Compiled into the agent | Deterministically refuses individually catastrophic calls (disk wipes, shadow-copy deletion, event-log clearing, Defender disable, sensitive-path `fs_*`, unlisted `agent_update` hosts) regardless of operator approval — and it cannot be turned off from the server. |
+| **Role & host scope** ([ADR-0033](adr/0033-multi-user-authentication.md)) | Auth middleware + tool layer (server) | The access token — an OAuth token ([ADR-0037](adr/0037-oauth2-authorization-server-for-mcp.md)) or a personal access token — identifies a user; a `user`-role caller only sees/targets its assigned hosts (`select_agent`, `agent_*`, forwarders, and `list_agents`/`fleet_overview` are scope-filtered), and parental-controls mutation tools require `operator`+. The legacy shared token acts as a superuser. |
+| **Capability profile** ([ADR-0047](adr/0047-capability-profiles.md)) | Tool schemas + dispatch (server) | An optional, named per-account tool allowlist that only ever *narrows* what the role already allows — checked twice: the tool is not offered to the model, and dispatch refuses it again. See [ITSM: capability profiles](itsm.md#capability-profiles). |
+| **Agent-side safety guard** ([ADR-0019](adr/0019-agent-side-deterministic-tool-guard.md)) | Compiled into the agent | Deterministically refuses individually catastrophic calls (disk wipes, shadow-copy deletion, event-log clearing, Defender disable, sensitive-path `fs_*`, unlisted `agent_update` hosts) regardless of operator approval — and it cannot be turned off from the server. |
 | **OS guard** | Server (forwarder) | Refuses `powershell_exec`/`shell_exec` for the wrong agent OS — e.g. `shell_exec` on a Windows agent — before ever forwarding, naming the correct tool. |
 | **Local kill-switch** ([ADR-0011](adr/0011-local-remote-control-kill-switch.md)) | Agent + tray, at the PC | The person at the PC turns **all** state-changing tools off. Forwarded calls then return `error.code = "disabled"`; telemetry and read-only tools keep working. |
 
@@ -120,7 +120,7 @@ Names are exactly as they appear on the wire, over MCP, and in the chat. The **A
 column lists only each tool's own parameters — every capability tool additionally takes
 `agent_id` naming the target host (required over MCP; optional in the dashboard chat, where
 it overrides the session's selection for one call). `agent_id` is routing metadata the
-server consumes and never puts on the wire (ADR-0042).
+server consumes and never puts on the wire (ADR-0038).
 
 ### Shell
 
@@ -190,7 +190,7 @@ the session-0 service (which would grab a black frame) — see
 `remotehelp_start` launches Windows **Quick Assist** on the user's desktop; kenny acts as a
 concierge, not the transport. A helper shares the 6-digit code and the person at the PC
 must click **Allow** — the consent steps stay with the people
-([ADR-0022](adr/0022-remote-help-concierge-via-user-session-launch.md)). It is `standard_change`
+([ADR-0021](adr/0021-remote-help-concierge-via-user-session-launch.md)). It is `standard_change`
 *and* privacy-sensitive at once — the case where both of Discord's gates apply to the same
 call; see [ITSM: operator approval vs. user consent](itsm.md#operator-approval-vs-user-consent-two-different-questions).
 
@@ -273,7 +273,7 @@ half.
 | `webfilter_push` | `id` | `standard_change` |
 | `web_activity_query` | `id`, `hours?`, `flagged_only?` | `read_only` (privacy-sensitive, redacted output) |
 
-Reliability alarm suppression (ADR-0045, issue #166) is server-only too: rules exclude a
+Reliability alarm suppression (ADR-0041, issue #166) is server-only too: rules exclude a
 `(source, event_id)` reliability event pattern from severity scoring, fleet-wide by default
 or scoped to one host, without hiding its raw count. `reliability_suppression_add`/`_remove`
 are `normal_change` (they hit the ADR-0009 confirm-gate in the dashboard chat).
@@ -284,7 +284,7 @@ are `normal_change` (they hit the ADR-0009 confirm-gate in the dashboard chat).
 | `reliability_suppression_add` | `event_id`, `source?`, `agent_id?`, `note?` | `normal_change` |
 | `reliability_suppression_remove` | `rule_id` | `normal_change` |
 
-Auto-ticket rules (ADR-0053) are also server-only: they decide which alerts open a ticket
+Auto-ticket rules are also server-only: they decide which alerts open a ticket
 automatically, by default every genuine alert and nothing else. Operator+ on every one of
 these, including the read — an alert-origin ticket is itself operator-only, so a scoped
 `user` has no legitimate use for the rules that decide when one opens.

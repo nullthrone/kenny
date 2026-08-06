@@ -1,4 +1,4 @@
-//! Per-agent Ed25519 key material and the mutual-auth transcript (ADR-0023).
+//! Per-agent Ed25519 key material and the mutual-auth transcript (ADR-0022).
 //!
 //! Each agent owns an Ed25519 keypair whose **private seed never leaves the device**.
 //! The raw 32-byte seed is persisted as `kenny-agent.key` in an update-stable directory

@@ -1,4 +1,4 @@
-"""Capability profile column: schema migration + UserStore API (ADR-0037 extension).
+"""Capability profile column: schema migration + UserStore API (ADR-0033 extension).
 
 A capability profile is a third, optional authorization axis alongside role
 and host scope: a named tool-allowlist that narrows what an account may do.

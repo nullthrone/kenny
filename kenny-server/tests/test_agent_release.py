@@ -194,7 +194,7 @@ def test_binary_status_manual(tmp_path, monkeypatch):
     assert st.sha256 == hashlib.sha256(EXE_BYTES).hexdigest()
 
 
-# -- Linux per-(os, arch) support (ADR-0035 Phase 4 / ADR-0038) --------------
+# -- Linux per-(os, arch) support (ADR-0031 Phase 4 / ADR-0034) --------------
 
 LINUX_X64_NAME = "kenny-agent-v0.2.4-x86_64-unknown-linux-musl"
 LINUX_ARM_NAME = "kenny-agent-v0.2.4-aarch64-unknown-linux-musl"
@@ -286,7 +286,7 @@ def test_fetch_caches_windows_and_all_linux_arches(tmp_path, token, monkeypatch)
     assert "linux" in res.message
 
 
-# -- dev channel (ADR-0052) ---------------------------------------------------
+# -- dev channel (ADR-0048) ---------------------------------------------------
 
 DEV_ASSET_NAME = "kenny-agent-v2.0.5-dev.17-x86_64-pc-windows-msvc.exe"
 DEV_EXE_URL = "https://cdn.example.com/dev-exe"

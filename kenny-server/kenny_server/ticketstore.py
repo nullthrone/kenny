@@ -458,7 +458,7 @@ _CLOSING_STATES = frozenset({"closed", "cancelled"})
 
 # Columns added after the table's original release, migrated in for existing
 # DB files the same way ``UpdateStore._migrate`` adds its channel column
-# (ADR-0052) — ``PRAGMA table_info`` + ``ALTER TABLE ADD COLUMN`` for whatever
+# (ADR-0048) — ``PRAGMA table_info`` + ``ALTER TABLE ADD COLUMN`` for whatever
 # is missing.
 _TICKET_MIGRATED_COLUMNS: dict[str, str] = {
     "blocked_on": "TEXT NOT NULL DEFAULT ''",
@@ -517,7 +517,7 @@ class TicketStore:
         # blocked_since best-approximates "since when" as the row's last
         # updated_at (the moment the old awaiting_* state was entered) — the
         # exact original transition timestamp is not retrievable without
-        # rewriting ticket_events, which ADR-0050 makes the authority and this
+        # rewriting ticket_events, which ADR-0046 makes the authority and this
         # migration must not touch (see module docstring).
         await self._conn.execute(
             "UPDATE tickets SET state = 'in_progress', blocked_on = 'user', "
@@ -1464,7 +1464,7 @@ class TicketStore:
 
         ``retention_days`` overrides ``self.run_retention_days`` for this call
         — accepted for conformance with the ``AlertEngine`` prunable protocol
-        (ADR-0056); no operator-facing settings key is wired to this store yet.
+        (ADR-0051); no operator-facing settings key is wired to this store yet.
         """
 
         now = now or datetime.now(timezone.utc)

@@ -51,7 +51,7 @@ async def fetch_releases(repo: str, *, include_prerelease: bool = False) -> list
 
     ``include_prerelease=False`` (the default, matching the About modal's
     existing stable-only view) additionally excludes ``prerelease`` entries —
-    a dev-channel (ADR-0052) release published via `main`-push never shows up
+    a dev-channel (ADR-0048) release published via `main`-push never shows up
     in the default changelog. The cache key includes the flag so the two views
     never clobber each other. Best-effort: never raises. On failure, serves
     the last good cache entry (if any) rather than erroring the whole About

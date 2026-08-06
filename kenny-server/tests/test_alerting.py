@@ -286,7 +286,7 @@ async def test_disk_forecast_alert_with_daily_cooldown(stores) -> None:
 
 async def test_producers_carry_their_event_discriminator(stores) -> None:
     """Every notification kind alerting.py can emit carries an event_type
-    (ADR-0053) -- the label the ticket-rule matcher keys on."""
+    -- the label the ticket-rule matcher keys on."""
 
     store, _, _ = stores
     notifier = FakeNotifier()
@@ -307,7 +307,7 @@ async def test_producers_carry_their_event_discriminator(stores) -> None:
     assert health[0].sections == {"disk": "crit"}
 
 
-# -- auto-ticket rules (ADR-0053) --------------------------------------------
+# -- auto-ticket rules (ticket_rules.py) -------------------------------------
 
 
 class FakeTicketRules:
@@ -393,7 +393,7 @@ async def test_engine_open_all_rule_makes_a_change_notification_ticketable(store
 
 
 async def test_a_raising_ticket_rules_lookup_never_breaks_delivery(stores) -> None:
-    """ADR-0029: alerting stays best-effort even when the rule mirror itself
+    """ADR-0027: alerting stays best-effort even when the rule mirror itself
     misbehaves -- the notification is still delivered and recorded."""
 
     store, events, _ = stores
@@ -507,7 +507,7 @@ async def test_restart_does_not_refire_persisted_state(stores) -> None:
     assert notifier2.sent == []
 
 
-# -- _maybe_prune: live retention (ADR-0056) -----------------------------------
+# -- _maybe_prune: live retention (ADR-0051) -----------------------------------
 #
 # ``_prunables`` entries are (store, settings_key) pairs. A key resolves fresh
 # from ``settings`` on every call -- never frozen at store construction -- and

@@ -23,7 +23,7 @@ import aiosqlite
 
 DEFAULT_DB_PATH = "kenny.sqlite"
 RETENTION_DAYS = 30
-# TelemetryStore's own default (ADR-0056), deliberately its own constant and
+# TelemetryStore's own default (ADR-0051), deliberately its own constant and
 # not a reuse of RETENTION_DAYS above: KENNY_TELEMETRY_RETENTION_DAYS's catalog
 # default is asserted against this one specifically, so changing the shared
 # constant EventStore/WebFilterStore still fall back to cannot silently move
@@ -60,7 +60,7 @@ async def _configure_connection(db: aiosqlite.Connection) -> None:
     crashes or loses power outright (a killed/crashed *process* is fine — the
     WAL survives that). Worth it here: every write is competing for the same
     single-writer file, and FULL's fsync-per-commit was directly widening the
-    contention window this module exists to avoid. ADR-0043's backups cover
+    contention window this module exists to avoid. ADR-0039's backups cover
     the durability gap this leaves.
     """
 
@@ -73,7 +73,7 @@ async def _configure_connection(db: aiosqlite.Connection) -> None:
         pass
 
 
-# -- process-wide write serialization (ADR-0056) ------------------------------
+# -- process-wide write serialization (ADR-0051) ------------------------------
 #
 # SQLite already allows only one writer at a time; ``busy_timeout`` bounds how
 # long a second writer waits for that single slot before raising. That bound
@@ -160,7 +160,7 @@ async def _begin_immediate(db: aiosqlite.Connection) -> None:
     """Take the WAL writer lock as the transaction's first act.
 
     Insurance, not the fix for the failure this module's writer contention
-    caused (see ADR-0056): every read in this codebase runs to completion
+    caused (see ADR-0051): every read in this codebase runs to completion
     (``async with ... execute(...)``) before any write, under the legacy
     ``isolation_level=""`` that only opens an implicit transaction on the
     first DML statement — so there is no read-then-upgrade-to-write path here
@@ -202,7 +202,7 @@ class TelemetryStore:
         # Operator-declared, LLM-free server-side annotations (reliability alarm
         # suppression) must reach *every* health consumer -- alerting, the
         # digest, the fleet list, the dashboard, MCP -- not just the two read
-        # paths that already run the ADR-0028 LLM categorization. Hooking in
+        # paths that already run the ADR-0026 LLM categorization. Hooking in
         # here, at the store boundary, means every caller gets it for free
         # instead of each of the ~8 call sites opting in individually. Never
         # touches the persisted row. ``None`` (the default) is a no-op, so
@@ -312,7 +312,7 @@ class TelemetryStore:
         """Delete snapshots older than the retention window. Returns rows deleted.
 
         ``retention_days`` overrides ``self.retention_days`` for this call —
-        the operator-configurable live setting (ADR-0056) resolves it fresh on
+        the operator-configurable live setting (ADR-0051) resolves it fresh on
         every scheduled pass instead of freezing it at store construction.
 
         Snapshots are the largest table in this database by a wide margin
@@ -481,7 +481,7 @@ class EventStore:
     ) -> None:
         """Store an emitted operator alert (kind='alert', source='server').
 
-        Alert history reuses the events table (ADR-0029): the Activity view and
+        Alert history reuses the events table (ADR-0027): the Activity view and
         the weekly digest read these back via ``query(kind='alert')``.
         """
 
@@ -537,7 +537,7 @@ class EventStore:
         """Delete events older than the retention window. Returns rows deleted.
 
         ``retention_days`` overrides ``self.retention_days`` for this call —
-        see :meth:`TelemetryStore.prune` for why (ADR-0056's live-retention
+        see :meth:`TelemetryStore.prune` for why (ADR-0051's live-retention
         setting). No operator-facing key is wired to this store yet; the
         parameter exists so one can be added later without a second signature
         change.
@@ -596,7 +596,7 @@ class AlertStateStore:
     ``scope`` is ``'offline'``, ``'overall'``, ``'section:<name>'``,
     ``'change:<section>'`` or ``'digest'``. Persisting the state (rather than
     keeping it in memory) means a server restart does not re-fire alerts for
-    conditions that were already notified (ADR-0029). Rows are tiny and pruned
+    conditions that were already notified (ADR-0027). Rows are tiny and pruned
     implicitly by being overwritten, so there is no retention job.
     """
 
@@ -690,7 +690,7 @@ CREATE INDEX IF NOT EXISTS idx_operator_policy_created
 class PolicyStore:
     """Async SQLite-backed store for the operator's append-only deny rules.
 
-    Persists ONLY operator additions (ADR-0021); built-in rules live in the
+    Persists ONLY operator additions (ADR-0020); built-in rules live in the
     shared catalog and are never stored here. "Append-only" means operator rules
     can never weaken the built-ins — operators may still add/remove their own
     entries. Shares the same database file as the other stores (own connection).
@@ -777,7 +777,7 @@ CREATE INDEX IF NOT EXISTS idx_reliability_suppressions_created
 
 class ReliabilitySuppressionStore:
     """Async SQLite-backed store for operator-declared reliability alarm
-    suppression rules (issue #166 / see ADR-0045).
+    suppression rules (issue #166 / see ADR-0041).
 
     A rule mutes one ``(source, event_id)`` reliability event pattern out of
     health *scoring* — never out of the displayed raw counts. ``agent_id``
@@ -897,7 +897,7 @@ CREATE INDEX IF NOT EXISTS idx_ticket_rules_created ON ticket_rules (created_at)
 
 class TicketRuleStore:
     """Async SQLite-backed store for operator-declared auto-ticket rules
-    (ADR-0053).
+    (see ticket_rules.py).
 
     A rule decides whether a given ``(agent_id, event_type, section)`` alert
     subject opens a ticket: ``open_all`` always opens it, ``open_crit`` only
@@ -910,7 +910,7 @@ class TicketRuleStore:
     uniqueness of the triple and makes the row directly addressable for
     removal without a lookup. The table records only *deviations* from the
     coded default in ``ticket_rules.DEFAULT_DECISION`` -- an empty table
-    reproduces the pre-ADR-0053 behavior exactly.
+    reproduces the coded default exactly.
     """
 
     def __init__(self, db_path: str = DEFAULT_DB_PATH) -> None:
@@ -1174,7 +1174,7 @@ CREATE TABLE IF NOT EXISTS update_campaign_agents (
     last_error      TEXT,
     PRIMARY KEY (campaign_id, agent_id)
 );
--- Per-agent operator-desired release channel (ADR-0052): the soll side of the
+-- Per-agent operator-desired release channel (ADR-0048): the soll side of the
 -- soll/ist split, separate from what the connected binary actually reports
 -- (``registry.Agent.channel``). Default 'stable'; a row only exists once an
 -- operator has explicitly set one (see `UpdateStore.set_desired_channel`).
@@ -1187,7 +1187,7 @@ CREATE TABLE IF NOT EXISTS agent_channel_prefs (
 
 # Update-campaign columns added after the table's original release, migrated
 # in for existing DB files the same way `KeyStore._migrate` adds its grace
-# columns (ADR-0052).
+# columns (ADR-0048).
 _CAMPAIGN_MIGRATED_COLUMNS: dict[str, str] = {
     "channel": "TEXT NOT NULL DEFAULT 'stable'",
 }
@@ -1196,7 +1196,7 @@ _CAMPAIGN_MIGRATED_COLUMNS: dict[str, str] = {
 def _availability_key(component: str, channel: str = "stable") -> str:
     """Compose the ``update_availability.component`` key for ``(component, channel)``.
 
-    ``channel="stable"`` is byte-identical to the pre-ADR-0052 key (``"agent"``/
+    ``channel="stable"`` is byte-identical to the pre-ADR-0048 key (``"agent"``/
     ``"server"``) — existing rows are untouched. ``channel="dev"`` composes
     ``"agent:dev"``/``"server:dev"``, a second, additive row alongside the
     stable one. The ``update_availability`` table's schema/PK is unchanged;
@@ -1206,14 +1206,14 @@ def _availability_key(component: str, channel: str = "stable") -> str:
     return component if channel == "stable" else f"{component}:{channel}"
 
 # Bounded number of update attempts a single agent gets under one campaign
-# before it is marked "held" and stops being auto-retried (ADR-0044). Prevents
+# before it is marked "held" and stops being auto-retried (ADR-0040). Prevents
 # a kill-switch-off agent or a crash-looping bad release from retriggering
 # forever on every reconnect.
 ATTEMPT_BUDGET = 3
 
 
 class UpdateStore:
-    """Async SQLite-backed store for scheduled update detection + rollout (ADR-0044).
+    """Async SQLite-backed store for scheduled update detection + rollout (ADR-0040).
 
     Three concerns, one store (all tiny, all sharing the DB file):
 
@@ -1379,7 +1379,7 @@ class UpdateStore:
         the caller pick the id up front (``update_manager`` derives the
         per-campaign artifact directory from it before this is called);
         omitting it generates one. Only one campaign is active at a time per
-        ``(component, channel)`` (ADR-0052) — approving a dev campaign never
+        ``(component, channel)`` (ADR-0048) — approving a dev campaign never
         supersedes a concurrently-active stable one, and vice versa.
         """
 
@@ -1516,12 +1516,12 @@ class UpdateStore:
         await self._conn.commit()
         return await self.get_agent_state(campaign_id, agent_id)  # type: ignore[return-value]
 
-    # -- desired channel (per-agent, operator-editable, ADR-0052) -----------
+    # -- desired channel (per-agent, operator-editable, ADR-0048) -----------
 
     async def get_desired_channel(self, agent_id: str) -> str:
         """The operator-desired channel for ``agent_id``, defaulting to ``"stable"``.
 
-        This is the soll side of ADR-0052's soll/ist split — separate from
+        This is the soll side of ADR-0048's soll/ist split — separate from
         ``registry.Agent.channel``, which is what the connected binary reports
         about itself. Campaign eligibility is checked against this, not that.
         """
@@ -1663,7 +1663,7 @@ CREATE INDEX IF NOT EXISTS idx_web_activity_last_seen
     ON web_activity_events (agent_id, last_seen DESC);
 """
 
-# Config defaults for a host that has never been configured (ADR-0026).
+# Config defaults for a host that has never been configured (ADR-0024).
 _WEBFILTER_DEFAULTS: dict[str, Any] = {
     "enabled": False,
     "block_mode": False,
@@ -1680,7 +1680,7 @@ _WEBFILTER_TOGGLES = (
 
 
 class WebFilterStore:
-    """Async SQLite-backed store for parental-controls state (ADR-0026).
+    """Async SQLite-backed store for parental-controls state (ADR-0024).
 
     Holds, per host: the feature config, the editable custom domain list
     (``watch``/``block``/``allow``), and the accumulated ``web_activity`` events
@@ -1932,7 +1932,7 @@ class WebFilterStore:
         """Delete events whose ``last_seen`` is older than retention. Returns count.
 
         ``retention_days`` overrides ``self.retention_days`` for this call —
-        see :meth:`TelemetryStore.prune` for why (ADR-0056's live-retention
+        see :meth:`TelemetryStore.prune` for why (ADR-0051's live-retention
         setting). No operator-facing key is wired to this store yet.
         """
 
@@ -1979,7 +1979,7 @@ class ChatHistoryStore:
     Unlike ``TelemetryStore``/``EventStore``/``WebFilterStore`` there is no
     ``prune()`` here: retention is unlimited and operator-curated (manual
     delete only), matching ``PolicyStore``'s append-until-explicitly-removed
-    shape rather than the auto-pruned telemetry pattern (ADR-0027).
+    shape rather than the auto-pruned telemetry pattern (ADR-0025).
     """
 
     def __init__(self, db_path: str = DEFAULT_DB_PATH) -> None:
