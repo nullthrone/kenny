@@ -3,5 +3,5 @@
   "agent_id": "example-pc",
   "protocol": "0.8",
   "client_nonce": "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqo=",
-  "meta": { "hostname": "EXAMPLE-PC", "os": "windows", "version": "0.1.0", "arch": "x86_64" }
+  "meta": { "hostname": "EXAMPLE-PC", "os": "windows", "version": "0.1.0", "arch": "x86_64", "channel": "stable" }
 }

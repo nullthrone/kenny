@@ -30,7 +30,10 @@ actually changed.
    JetBrains Mono) rendered — if it aborts on the font check, fix font availability
    rather than shipping fallback-font PNGs. See `scripts/screenshots/README.md`.
 4. **New/changed ADR.** Add the record's row to the `docs/adr/README.md` index
-   table; confirm `mkdocs.yml`'s `not_in_nav: adr/0*.md` still covers it. Only
+   table (number, title, status), keep the numbering a gap-free `0001..N`, and
+   make sure every `ADR-NNNN` citation and `adr/NNNN-` link in the repo still
+   resolves — the Stop hook reports exactly which of these broke. Confirm
+   `mkdocs.yml`'s `not_in_nav: adr/0*.md` still covers the file. Only
    write an ADR for an **architectural** decision (CLAUDE.md — *When (not) to write
    an ADR*); a pure UI-layout tweak is recorded in the commit message instead.
 5. **Verify.** `pip install -e "kenny-server[docs]"` then `mkdocs build --strict`

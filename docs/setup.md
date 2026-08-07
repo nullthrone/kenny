@@ -42,10 +42,10 @@ docker compose up --build -d
 
 The server is now on `http://localhost:8000` (data persists on the `kenny-data` volume). Open `/`
 and complete **first-run setup**: the first account you create becomes the **superuser**
-(ADR-0037). From there a superuser manages accounts under the header user menu → *Users*
+(ADR-0033). From there a superuser manages accounts under the header user menu → *Users*
 (roles `superuser` / `operator` / `user`, per-user host scope, and personal access tokens).
 Claude Desktop connects to `/mcp` through kenny's built-in **OAuth 2.1** flow
-([ADR-0041](adr/0041-oauth2-authorization-server-for-mcp.md)): add a custom connector with the
+([ADR-0037](adr/0037-oauth2-authorization-server-for-mcp.md)): add a custom connector with the
 `https://<server>/mcp` URL, sign in with your kenny account, and approve once — no token to paste.
 Scripts and other MCP clients can still send a per-user access token (`Authorization: Bearer <pat>`)
 instead. The `KENNY_OPERATOR_TOKEN(S)` below stay accepted as a back-compat superuser so existing
@@ -63,7 +63,7 @@ clients share one bucket). The bundled TLS profile sets this for you.
 
 | Variable | Used by | Default | Purpose |
 |----------|---------|---------|---------|
-| `KENNY_OPERATOR_TOKEN` | server | *insecure dev fallback* | Legacy shared bearer token; still accepted as a **back-compat superuser** for MCP + `/api` after the upgrade to accounts (ADR-0037). Deprecated in favour of per-user access tokens. |
+| `KENNY_OPERATOR_TOKEN` | server | *insecure dev fallback* | Legacy shared bearer token; still accepted as a **back-compat superuser** for MCP + `/api` after the upgrade to accounts (ADR-0033). Deprecated in favour of per-user access tokens. |
 | `KENNY_OPERATOR_TOKENS` | server | — | Optional comma-separated set of additional accepted shared tokens (each a back-compat superuser). |
 | `KENNY_SESSION_TTL_SECS` | server | `604800` | Browser login session lifetime in seconds (default 7 days). |
 | `KENNY_OAUTH_ACCESS_TTL_SECS` | server | `3600` | Lifetime of an OAuth access token issued to a connected MCP client (default 1 hour). |
@@ -83,15 +83,17 @@ clients share one bucket). The bundled TLS profile sets this for you.
 | `KENNY_AGENT_VERSION` | server | `0.2.0` | **Fallback** version label only — the GitHub release tag of the fetched binary leads (ADR-0015). Used when no tag is known (e.g. a manually-placed binary without a `.version` sidecar). |
 | `KENNY_HOST` / `KENNY_PORT` | server | `127.0.0.1` / `8000` | Bind address (container sets `0.0.0.0`). |
 | `KENNY_DB_PATH` | server | `kenny.sqlite` | SQLite store (snapshots, events, tokens, keys, chat, web filter — one file). Container: `/data/kenny.sqlite`. |
+| `KENNY_TELEMETRY_RETENTION_DAYS` | server | `30` | How long raw telemetry snapshots are kept (dashboard-editable, ADR-0051). Snapshots dominate this database's size (~90 KB/row); lowering this is the main lever on disk usage. A decrease prunes on the next alert cycle (~60s); `DELETE` frees space for reuse but does not shrink the file — restore from a backup or `VACUUM` offline to reclaim disk. |
+| `KENNY_SQLITE_BUSY_TIMEOUT_MS` | server | `20000` | How long a write waits for a contended SQLite lock before raising "database is locked" (ADR-0051). Read once at process start; not editable at runtime. |
 | `KENNY_TELEMETRY_INTERVAL_SECS` | agent / server | `900` | Agent push interval; also pre-filled into generated installers. |
-| `KENNY_COEXIST_ENABLED` | agent | `1` | Anti-cheat coexistence (ADR-0039): while a protected game runs, the agent suspends `screen_capture` (returns `paused`) and relaxes process/port telemetry. Set `0` to disable. |
+| `KENNY_COEXIST_ENABLED` | agent | `1` | Anti-cheat coexistence (ADR-0035): while a protected game runs, the agent suspends `screen_capture` (returns `paused`) and relaxes process/port telemetry. Set `0` to disable. |
 | `KENNY_COEXIST_PROCESSES` | agent | anti-cheat set | Comma-separated extra process names to treat as "a protected game is running", extending the built-in anti-cheat list (`EasyAntiCheat.exe`, `BEService*.exe`, …). Add game exes here, e.g. `ARC-Raiders.exe`. Matched case- and `.exe`-insensitively. |
 | `KENNY_COEXIST_POLL_SECS` | agent | `5` | How often the agent checks whether a watched process is running. |
 | `KENNY_COEXIST_TELEMETRY_INTERVAL_SECS` | agent | `3600` | Telemetry push interval while a protected game is running (never shorter than `KENNY_TELEMETRY_INTERVAL_SECS`). |
 | `KENNY_SERVER_VERSION` | server | `0.0.0-dev` | Version string shown in the **About** box and `/api/about`. |
 | `KENNY_LOG_LEVEL` | server | `INFO` | Root log level. Server logs are also persisted to the event store (ADR-0017). |
 
-**Agent authentication & identity** (ADR-0023 mutual Ed25519 auth, token rotation):
+**Agent authentication & identity** (ADR-0022 mutual Ed25519 auth, token rotation):
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
@@ -115,8 +117,8 @@ clients share one bucket). The bundled TLS profile sets this for you.
 | `KENNY_NTFY_URL` / `KENNY_NTFY_TOKEN` | — | ntfy topic URL (+ optional bearer) for push alerts. |
 | `KENNY_WEBHOOK_URL` | — | Generic JSON webhook for alerts. |
 
-**Database backups** (see the **[Backup page](dashboard.md#the-backup-page)**,
-[ADR-0043](adr/0043-server-database-backup-and-restore.md)):
+**Database backups** (see the **[Backup section](dashboard.md#backup)**,
+[ADR-0039](adr/0039-server-database-backup-and-restore.md)):
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
@@ -133,6 +135,37 @@ clients share one bucket). The bundled TLS profile sets this for you.
 | `KENNY_WEBFILTER_ADULT_URL` | StevenBlack list | Source URL for the porn-only hosts list. |
 | `KENNY_WEBFILTER_BYPASS_URL` | hagezi list | Source URL for the DoH/VPN/proxy bypass list. |
 | `KENNY_WEBFILTER_MAX_BLOCK_DOMAINS` | `5000` | Cap on external-adult domains pushed to an agent (hard cap 10 000). |
+
+**Discord bot & tickets** (see **[Tickets & the Discord bot](itsm.md)** for the full
+operator setup walkthrough — creating the Discord application, the two privileged intents,
+and both enrollment paths). Tickets themselves need none of this: the ticket store,
+lifecycle service and sweeper always run, and the dashboard's Tickets tab and `/api/tickets`
+work with nothing configured here. These keys only decide whether a Discord bot is also
+connected, install the optional dependency first: `pip install -e ".[discord]"`.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `KENNY_DISCORD_BOT_TOKEN` | — | Bot token of the Discord application. Unset keeps the whole Discord surface off. |
+| `KENNY_DISCORD_ENABLED` | `0` | Connect the bot at startup. Needs the token above and at least one allowed guild. |
+| `KENNY_DISCORD_GUILD_IDS` | — | Comma-separated guild (server) snowflakes kenny reacts in. **Empty means deny everywhere** — there is no allow-all mode. |
+| `KENNY_DISCORD_SUPPORT_CHANNEL_ID` | — | Channel a mention has to be in to open a ticket; empty accepts a mention in any channel of an allowed guild. |
+| `KENNY_DISCORD_OPERATOR_CHANNEL_ID` | — | Where operator approval cards are posted; empty posts them into the ticket's own thread. |
+| `KENNY_DISCORD_PRIVATE_THREADS` | `1` | Open each ticket in a private thread with only the requester invited. |
+| `KENNY_DISCORD_MODEL` | — | Anthropic model id for the Discord surface; empty falls back to `KENNY_CHAT_MODEL`. |
+| `KENNY_DISCORD_MAX_TURNS_PER_TICKET` | `40` | Autonomous turn cap per ticket before it is handed to an operator. Ticket-wide (any turn on the ticket, from Discord or the dashboard's ticket chat), except an operator+-driven turn from either surface never counts against it. |
+| `KENNY_DISCORD_RATE_LIMIT_PER_USER_HOUR` | `20` | Per-account throttle on opening/driving tickets, ticket-wide across both surfaces; `0` = unlimited. An operator+-driven turn, from either surface, is exempt. |
+| `KENNY_DISCORD_WEBHOOK_URL` | — | Discord incoming-webhook URL for the alert push channel — independent of the bot; see [Alerting & digests](alerting.md#notification-channels). |
+| `KENNY_TICKET_APPROVAL_TTL_SECS` | `86400` | How long a held approval/consent waits for a decision before the sweeper expires it (an expiry counts as a denial); `0` never expires. |
+| `KENNY_TICKET_AUTOCLOSE_SECS` | `172800` | Reopen window: a `resolved` ticket untouched this long is auto-closed; `0` disables. |
+| `KENNY_TICKET_SWEEP_INTERVAL_SECS` | `300` | Ticket housekeeping loop interval (expires gates, auto-closes); `0` disables (restart to re-enable). Re-read live. |
+| `KENNY_TICKET_SWEEP_INITIAL_DELAY` | `30` | Delay before the first sweep after startup. |
+| `KENNY_TICKET_RETENTION_DAYS` | `30` | How long a **closed** ticket keeps its raw working transcript. The ticket, its summary and its audit trail are never pruned. |
+
+Everything above except the bot token and the webhook URL (secrets, env-only) is also
+editable from the dashboard's **Settings** tab, under the **Discord & Tickets** group — most
+apply immediately, and `KENNY_DISCORD_ENABLED`/`KENNY_DISCORD_GUILD_IDS`/
+`KENNY_TICKET_SWEEP_INITIAL_DELAY` need a restart, exactly like the other loop-startup
+settings on this page.
 
 > **Security:** if `KENNY_OPERATOR_TOKEN` is unset the server uses a loud, insecure dev token. Always
 > set real tokens and serve over `wss`/`https` for anything non-local. See
@@ -173,12 +206,12 @@ installer bundles `setup.bat` + a `kenny-agent.setup.json` sidecar carrying the 
 `--server`, `--agent-id`, a minted one-time `--enroll-token`, and the pinned `--server-pubkey`. The
 relative double-clicks `setup.bat`; the agent self-elevates and installs itself into
 `%ProgramFiles%\kenny` (see
-[`adr/0033-agent-self-elevating-bootstrap-installer.md`](adr/0033-agent-self-elevating-bootstrap-installer.md)).
+[`adr/0030-agent-self-elevating-bootstrap-installer.md`](adr/0030-agent-self-elevating-bootstrap-installer.md)).
 
 The **Add a PC** panel has an OS selector. For a **Linux** target, point the server at a Linux
 binary as well and the panel produces a one-line install command instead of a ZIP (see
 [Installing the agent on Linux](#installing-the-agent-on-linux) and
-[`adr/0038-linux-agent-distribution-convenience-script.md`](adr/0038-linux-agent-distribution-convenience-script.md)):
+[`adr/0034-linux-agent-distribution-convenience-script.md`](adr/0034-linux-agent-distribution-convenience-script.md)):
 
 ```yaml
 environment:
@@ -211,7 +244,7 @@ or no token is set, the dashboard shows a banner with manual instructions instea
 The normal path is the dashboard bundle: **double-click `setup.bat` and approve the Windows
 security prompt**. `setup` reads `kenny-agent.setup.json`, elevates via UAC, copies the binary into
 `%ProgramFiles%\kenny`, and registers the auto-start service — no unzip-and-right-click ritual (see
-[`adr/0033-agent-self-elevating-bootstrap-installer.md`](adr/0033-agent-self-elevating-bootstrap-installer.md)
+[`adr/0030-agent-self-elevating-bootstrap-installer.md`](adr/0030-agent-self-elevating-bootstrap-installer.md)
 and [`adr/0013-agent-windows-service-and-self-update.md`](adr/0013-agent-windows-service-and-self-update.md)).
 
 The single binary manages its own service. For manual/debugging use:
@@ -230,16 +263,16 @@ kenny-agent.exe run                # foreground (default when no subcommand) —
 ```
 
 `--server-pubkey` pins the server identity and `--enroll-token` is the one-time enrollment secret
-(ADR-0023); a bare legacy `--token` is only accepted during the migration window. `install` writes
+(ADR-0022); a bare legacy `--token` is only accepted during the migration window. `install` writes
 `kenny-agent.config.json` next to the exe and registers an auto-start service with
 restart-on-failure recovery. Updates are pushed from the server (no manual reinstall).
 
 ## Installing the agent on Linux
 
 kenny-agent runs on Linux hosts too — headless servers, a NAS, a Raspberry Pi, or a Linux desktop
-— reporting into the same fleet through the same server (ADR-0035). The agent is a **static musl
+— reporting into the same fleet through the same server (ADR-0031). The agent is a **static musl
 binary** with no runtime dependencies, installed as a **systemd service**. Distribution follows the
-Docker/K3s convenience-script model (ADR-0038).
+Docker/K3s convenience-script model (ADR-0034).
 
 The normal path is the dashboard's **one-line install command**. In **Add a PC**, pick *Linux*,
 enter an agent id, and copy the command it produces — then run it on the target host as root:
@@ -275,12 +308,12 @@ sudo kenny-agent uninstall             # disable + remove the systemd unit
 
 Paths on Linux: binary in `/opt/kenny`, config in `/etc/kenny`, state/key in `/var/lib/kenny`,
 logs in `/var/log/kenny`. There is no tray kill-switch or session-0/desktop launch on Linux (those
-are Windows-only, ADR-0035); a headless server needs neither.
+are Windows-only, ADR-0031); a headless server needs neither.
 
 **Upgrades are server-triggered, exactly like Windows** — click **update** on the agent in the
 dashboard (or `POST /api/agents/{id}/update`). The agent downloads the new binary, verifies its
 SHA-256, atomically swaps `/opt/kenny/kenny-agent`, and restarts its systemd unit; no manual step
-on the host (ADR-0038).
+on the host (ADR-0034).
 
 ## Releases (GHCR image + agent binaries)
 
@@ -313,46 +346,66 @@ flowchart LR
   downloads/updates against that version. When `KENNY_GITHUB_TOKEN` is set the server auto-fetches
   all of them.
 
+### Dev channel (ADR-0048)
+
+Every push to `main` additionally publishes a **prerelease** build (`.github/workflows/release-dev.yml`,
+tag `v<next-patch>-dev.<run_number>`) via the same shared job body
+(`.github/workflows/_release-artifacts.yml`) and the same publish gate (image smoke test, e2e
+against the exact release binary) as a stable tag — nothing about how an artifact is verified
+differs by channel. Because GitHub Releases marks it `prerelease: true`, the stable resolution
+path (`GET /repos/{repo}/releases/latest`) never sees it, so the dev channel cannot affect stable
+agents or the stable server image. The server image also gets a floating `:edge` GHCR tag as a
+convenience `docker pull` alias; nothing server-side resolves or pins against it — detection always
+uses the exact versioned tag + digest.
+
+To run one PC on dev while the rest of the fleet stays stable: set that agent's **desired channel**
+to `dev` in the dashboard (or `POST /api/agents/{id}`), then approve a dev-channel update campaign
+the same way as a stable one. Only agents whose desired channel matches the campaign's channel are
+eligible — a dev campaign never touches an agent an operator hasn't opted in. A locally built agent
+can also self-identify as dev from the start via `KENNY_AGENT_CHANNEL=dev cargo build --release`
+(stamped into `register.meta.channel` and the `os_support` telemetry section).
+
 ### Code signing (Authenticode)
 
 An unsigned agent binary is more likely to be flagged by AV and game anti-cheat heuristics, and
 carries no verifiable publisher identity. The Windows build already carries PE identity metadata
-(CompanyName/ProductName/version + icon, ADR-0039); **signing it is the complementary step** and
+(CompanyName/ProductName/version + icon, ADR-0035); **signing it is the complementary step** and
 is wired but off by default:
 
 - Set the `WINDOWS_CERT_BASE64` (base64 of the signing cert) and `WINDOWS_CERT_PASSWORD` repo
   secrets; `release.yml` then Authenticode-signs `kenny-agent.exe` with a timestamp. The server
-  ships the exe **unmodified** (ADR-0033/0012), so the signature survives distribution and
+  ships the exe **unmodified** (ADR-0030/0012), so the signature survives distribution and
   self-update.
 - Use a real **OV or EV** code-signing certificate whose subject matches the VERSIONINFO
   CompanyName. Since the 2023 CA/Browser-Forum change, code-signing keys must live on
   FIPS-140-2 hardware, so a plain PFX-in-secret may need swapping for a cloud-signing service
   (e.g. Azure Trusted Signing, DigiCert KeyLocker, SSL.com eSigner) invoked via `signtool`.
 - A formal anti-cheat *allowlist* is generally not available to a self-hosted family tool;
-  signing + the coexistence back-off (ADR-0039) are the practical levers. Never attempt to
+  signing + the coexistence back-off (ADR-0035) are the practical levers. Never attempt to
   evade an anti-cheat — that risks banning the player's game account.
 
 ## Persistence, backups, upgrades
 
 - **Data**: the SQLite telemetry store lives on the `kenny-data` volume (`/data`). Telemetry
   snapshots auto-prune after ~30 days.
-- **Backups**: kenny has a built-in backup manager ([ADR-0043](adr/0043-server-database-backup-and-restore.md),
-  dashboard **Backup** page, superuser only) — do **not** point an external sync/backup tool at
-  `kenny.sqlite` directly; syncing the *live* WAL file causes lock contention. Instead, on a
-  schedule (`KENNY_BACKUP_INTERVAL_SECS`, default 6 h) or on demand, it writes a consistent
-  `VACUUM INTO` snapshot to `<KENNY_DB_PATH dir>/backups/` — this directory holds only
-  finished, static files and is what you should point Syncthing/rsync/whatever at. Optionally
-  fan snapshots out to a remote **HTTP/SCP-SFTP/FTP(S)** target too, configured from the same
-  page. Restore stages a chosen backup and restarts the server to apply it (see the
-  [Backup page reference](dashboard.md#the-backup-page)).
+- **Backups**: kenny has a built-in backup manager ([ADR-0039](adr/0039-server-database-backup-and-restore.md),
+  dashboard **Settings → Backup** section, superuser only) — do **not** point an external
+  sync/backup tool at `kenny.sqlite` directly; syncing the *live* WAL file causes lock
+  contention. Instead, on a schedule (`KENNY_BACKUP_INTERVAL_SECS`, default 6 h) or on
+  demand, it writes a consistent `VACUUM INTO` snapshot to `<KENNY_DB_PATH dir>/backups/` —
+  this directory holds only finished, static files and is what you should point
+  Syncthing/rsync/whatever at. Optionally fan snapshots out to a remote **HTTP/SCP-SFTP/FTP(S)**
+  target too, configured from the same section. Restore stages a chosen backup and restarts
+  the server to apply it (see the [Backup section reference](dashboard.md#backup)).
 - **Server upgrade**: `docker compose pull && docker compose up -d` (or bump the image tag). The
-  **Updates** page (below) tells you when a newer tag exists and gives you the exact,
-  digest-pinned command — it never pulls or restarts the container for you.
+  **Settings → Updates** section (below) tells you when a newer tag exists and gives you the
+  exact, digest-pinned command — it never pulls or restarts the container for you.
 - **Agent upgrade**: click **update** on one agent in the dashboard (server-triggered
-  self-update, unchanged) — or approve a fleet-wide **update campaign** from the **Updates** page
-  to roll a pinned version out to every agent, on both Windows and Linux (ADR-0038, ADR-0044).
+  self-update, unchanged) — or approve a fleet-wide **update campaign** from the
+  **Settings → Updates** section to roll a pinned version out to every agent, on both
+  Windows and Linux (ADR-0034, ADR-0040).
 
-### Scheduled updates (ADR-0044)
+### Scheduled updates (ADR-0040)
 
 kenny checks for newer agent releases (GitHub Releases) and a newer server image (GHCR tags,
 read-only) on a schedule, and surfaces both from the dashboard's **Updates** page (operator role

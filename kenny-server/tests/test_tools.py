@@ -1,11 +1,11 @@
-"""MCP forwarder routing: explicit per-call ``agent_id`` (ADR-0042).
+"""MCP forwarder routing: explicit per-call ``agent_id`` (ADR-0038).
 
 Remote MCP clients (Claude Desktop, claude.ai) carry no reliable
 per-conversation identifier — the ``Mcp-Session-Id`` header the server hands
 back at init is not echoed on follow-up requests. Two concurrent Claude
 conversations authenticated with the *same* credential (PAT/OAuth token)
 therefore resolve to the identical ``Principal.active_key``, so any routing
-scheme keyed only by credential (the ADR-0037 ``registry._active_by_key`` slot)
+scheme keyed only by credential (the ADR-0033 ``registry._active_by_key`` slot)
 can be shared — and silently clobbered — by two unrelated conversations. This
 module proves that failure mode against the old sticky-only path, then proves
 the new resolver (:func:`kenny_server.tools._resolve_target`) makes it
@@ -35,7 +35,7 @@ def _registry_with(*agent_ids: str) -> AgentRegistry:
 
 
 def test_sticky_slot_collides_for_two_callers_sharing_one_credential() -> None:
-    """Demonstrates the reported bug in the pre-ADR-0042 sticky-only model.
+    """Demonstrates the reported bug in the pre-ADR-0038 sticky-only model.
 
     Two principals authenticated with the same PAT (e.g. two concurrent
     claude.ai conversations for the same user) resolve to the identical

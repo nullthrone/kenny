@@ -194,7 +194,7 @@ def test_binary_status_manual(tmp_path, monkeypatch):
     assert st.sha256 == hashlib.sha256(EXE_BYTES).hexdigest()
 
 
-# -- Linux per-(os, arch) support (ADR-0035 Phase 4 / ADR-0038) --------------
+# -- Linux per-(os, arch) support (ADR-0031 Phase 4 / ADR-0034) --------------
 
 LINUX_X64_NAME = "kenny-agent-v0.2.4-x86_64-unknown-linux-musl"
 LINUX_ARM_NAME = "kenny-agent-v0.2.4-aarch64-unknown-linux-musl"
@@ -284,6 +284,127 @@ def test_fetch_caches_windows_and_all_linux_arches(tmp_path, token, monkeypatch)
     assert (tmp_path / "kenny-agent-linux-aarch64.version").read_text() == "0.2.4"
     # the aggregate message mentions the linux assets that were also fetched
     assert "linux" in res.message
+
+
+# -- dev channel (ADR-0048) ---------------------------------------------------
+
+DEV_ASSET_NAME = "kenny-agent-v2.0.5-dev.17-x86_64-pc-windows-msvc.exe"
+DEV_EXE_URL = "https://cdn.example.com/dev-exe"
+DEV_EXE_BYTES = b"MZ fake kenny-agent.exe dev build \x00\x01\x02"
+
+
+def _releases_list_json():
+    """A ``/releases`` list: an older stable release, a newer dev prerelease."""
+
+    return [
+        {
+            "tag_name": "v2.0.5-dev.17",
+            "prerelease": True,
+            "draft": False,
+            "assets": [{"name": DEV_ASSET_NAME, "browser_download_url": DEV_EXE_URL}],
+        },
+        {
+            "tag_name": "v2.0.4",
+            "prerelease": False,
+            "draft": False,
+            "assets": [{"name": ASSET_NAME, "browser_download_url": EXE_URL}],
+        },
+    ]
+
+
+def _channel_handler():
+    def handle(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if url.endswith("/releases/latest"):
+            # The stable path never sees the prerelease — GitHub's own
+            # `/releases/latest` semantics exclude it by construction.
+            return httpx.Response(200, json=_release_json())
+        if url.endswith("/releases") or "/releases?" in url:
+            return httpx.Response(200, json=_releases_list_json())
+        if url == EXE_URL:
+            return httpx.Response(200, content=EXE_BYTES)
+        if url == DEV_EXE_URL:
+            return httpx.Response(200, content=DEV_EXE_BYTES)
+        return httpx.Response(404)
+
+    return handle
+
+
+def test_select_release_stable_ignores_prerelease(token):
+    with _factory(_channel_handler())() as client:
+        release = agent_release._select_release(client, "t11z/kenny", "stable")
+    assert release["tag_name"] == "v0.2.4"  # the /releases/latest response, never the dev one
+
+
+def test_select_release_dev_picks_newest_prerelease(token):
+    with _factory(_channel_handler())() as client:
+        release = agent_release._select_release(client, "t11z/kenny", "dev")
+    assert release["tag_name"] == "v2.0.5-dev.17"
+
+
+def test_fetch_dev_channel_downloads_prerelease_asset(tmp_path, token, monkeypatch):
+    monkeypatch.delenv("KENNY_AGENT_BINARY_CACHE", raising=False)
+    monkeypatch.setenv("KENNY_DB_PATH", str(tmp_path / "kenny.sqlite"))
+    res = agent_release.fetch_latest_agent_binary(
+        client_factory=_factory(_channel_handler()), channel="dev"
+    )
+    assert res.ok
+    assert res.asset_name == DEV_ASSET_NAME
+    assert res.version == "2.0.5-dev.17"
+    # cached to the dev cache path, not the stable one
+    assert (tmp_path / "kenny-agent-dev.exe").read_bytes() == DEV_EXE_BYTES
+    assert not (tmp_path / "kenny-agent.exe").exists()
+
+
+def test_fetch_dev_channel_no_prerelease_returns_none(tmp_path, token, monkeypatch):
+    monkeypatch.setenv("KENNY_DB_PATH", str(tmp_path / "kenny.sqlite"))
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if url.endswith("/releases") or "/releases?" in url:
+            return httpx.Response(200, json=[{"tag_name": "v1.0.0", "prerelease": False, "draft": False}])
+        return httpx.Response(404)
+
+    res = agent_release.fetch_latest_agent_binary(client_factory=_factory(handle), channel="dev")
+    assert not res.ok
+    assert "no dev releases found" in res.message
+
+
+def test_cache_path_dev_differs_from_stable(monkeypatch, tmp_path):
+    monkeypatch.delenv("KENNY_AGENT_BINARY_CACHE", raising=False)
+    monkeypatch.setenv("KENNY_DB_PATH", str(tmp_path / "kenny.sqlite"))
+    stable = agent_release.cache_path("windows", "x86_64", "stable")
+    dev = agent_release.cache_path("windows", "x86_64", "dev")
+    assert stable == str(tmp_path / "kenny-agent.exe")
+    assert dev == str(tmp_path / "kenny-agent-dev.exe")
+    assert stable != dev
+    # windows/stable is byte-identical to the pre-channel default call
+    assert agent_release.cache_path() == stable
+    # linux dev gets a -dev suffix, distinct from the stable linux cache
+    assert agent_release.cache_path("linux", "x86_64", "dev") == str(
+        tmp_path / "kenny-agent-linux-x86_64-dev"
+    )
+    assert agent_release.cache_path("linux", "x86_64", "dev") != agent_release.cache_path(
+        "linux", "x86_64", "stable"
+    )
+
+
+def test_dev_tagged_asset_still_matches_asset_re():
+    assert agent_release.ASSET_RE.match(DEV_ASSET_NAME)
+    assert agent_release._asset_re("windows", "x86_64").match(DEV_ASSET_NAME)
+
+
+def test_binary_status_dev_never_reports_manual_source(tmp_path, monkeypatch):
+    """Dev has no manual-override env in this iteration; status is always cache."""
+
+    p = tmp_path / "kenny-agent-dev.exe"
+    p.write_bytes(EXE_BYTES)
+    # Even if KENNY_AGENT_BINARY happens to be set (stable's override), the
+    # dev channel must not honor it.
+    monkeypatch.setenv("KENNY_AGENT_BINARY", str(p))
+    st = agent_release.binary_status(manual_path=str(p), channel="dev")
+    assert st.ok
+    assert st.source == "cache"
 
 
 def test_fetch_linux_only_release_returns_success(tmp_path, token, monkeypatch):

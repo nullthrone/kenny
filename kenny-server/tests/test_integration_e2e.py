@@ -14,7 +14,7 @@ on the Linux build — see `_assert_windows_tools`. Set `KENNY_E2E_FULL=1` (inte
 for a self-hosted runner with an interactive desktop) to also exercise
 `screen_capture`.
 
-On a Linux runner it instead drives the real Linux paths (ADR-0035): the portable
+On a Linux runner it instead drives the real Linux paths (ADR-0031): the portable
 `diag_processes`/`net_config` tools, the boundary where a Windows-only tool
 (`winget_list`) returns `unsupported`, and the `#[cfg(target_os = "linux")]`
 collectors read back through the snapshot — `installed_software` from dpkg,
@@ -44,6 +44,49 @@ from kenny_server.main import build_app
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 _DEFAULT_BIN = REPO_ROOT / "kenny-agent" / "target" / "debug" / "kenny-agent"
+
+# This test's own time budget, named explicitly instead of left as inline
+# polling literals, so it can be summed into a per-test `pytest.mark.timeout`
+# below instead of relying on the suite-wide `timeout = 90` in pyproject.toml.
+# That ini bound exists to catch a genuinely *hung* test (see its comment); this
+# test is not hung, it is just slow on Windows, and needs a bound sized from
+# what it actually does. `tests/test_e2e_timeout_budget.py` asserts the two
+# stay in agreement.
+_REGISTER_POLL_INTERVAL_S = 0.1
+_REGISTER_POLLS = 100  # ~10s for the real agent to dial in and register
+_REGISTER_BUDGET_S = _REGISTER_POLLS * _REGISTER_POLL_INTERVAL_S
+
+# Timeout for the very first tool call after registration (a bare "echo hi"
+# smoke test, before telemetry or the OS-specific assertions). On a Windows
+# release runner this is the *first* PowerShell process the freshly-built
+# release binary ever spawns, which observably hit real-time antivirus
+# scanning of the new .exe/child process and blew a 20s ceiling outright
+# (see the "Release (dev channel)" run that failed on this exact line).
+# Later PowerShell calls in `_assert_windows_tools` are not nearly this slow
+# once the runner is warm -- their aggregate budget below is ~7-9s/call.
+_SMOKE_CALL_TIMEOUT_S = 60 if sys.platform == "win32" else 20
+
+_TELEMETRY_POLL_INTERVAL_S = 0.2
+# Windows collectors spawn PowerShell/CIM and are far slower on a cold hosted
+# runner than the Linux sysinfo collectors, so they get a much longer window.
+_TELEMETRY_POLLS = 600 if sys.platform == "win32" else 50  # ~120s / ~10s
+_TELEMETRY_BUDGET_S = _TELEMETRY_POLLS * _TELEMETRY_POLL_INTERVAL_S
+
+# Allowance for the OS-specific tool-call assertions after telemetry arrives.
+# Windows needs the most: diag_processes, diag_services (CIM Win32_Service),
+# diag_eventlog (Get-WinEvent), net_config, net_dns_flush (real
+# `ipconfig /flushdns`), the shell_exec OS-guard boundary, winget_list, and
+# (under KENNY_E2E_FULL=1) screen_capture. Observed release-runner wall time
+# for this section alone was ~55-70s; this leaves real headroom above that.
+# The Linux side finishes in low single-digit seconds in practice, but is
+# still given enough headroom that its own summed budget clears the 90s
+# suite-wide ini timeout (see test_e2e_timeout_budget.py) -- a per-test mark
+# that doesn't actually exceed the ini bound would be dead weight.
+_TOOLCALL_BUDGET_S = 180 if sys.platform == "win32" else 90
+
+_TEST_TIMEOUT_S = (
+    _REGISTER_BUDGET_S + _SMOKE_CALL_TIMEOUT_S + _TELEMETRY_BUDGET_S + _TOOLCALL_BUDGET_S
+)
 
 
 def _agent_bin() -> Path | None:
@@ -83,6 +126,7 @@ class _Server:
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(_TEST_TIMEOUT_S)
 async def test_real_agent_end_to_end(tmp_path) -> None:
     binary = _agent_bin()
     if binary is None:
@@ -113,33 +157,35 @@ async def test_real_agent_end_to_end(tmp_path) -> None:
         try:
             # Wait for the real agent to dial in and register.
             registry = app.state.registry
-            for _ in range(100):  # ~10s
+            for _ in range(_REGISTER_POLLS):
                 agent = registry.get("dev")
                 if agent is not None and agent.online:
                     break
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(_REGISTER_POLL_INTERVAL_S)
             else:
-                raise AssertionError("real agent did not register within 10s")
+                raise AssertionError(f"real agent did not register within {_REGISTER_BUDGET_S:.0f}s")
 
             transport = StreamableHttpTransport(
                 f"http://127.0.0.1:{port}/mcp",
                 headers={"Authorization": f"Bearer {token}"},
             )
             async with Client(transport) as client:
-                # select_agent is advisory only (ADR-0042); forwarded capability
+                # select_agent is advisory only (ADR-0038); forwarded capability
                 # calls require their own agent_id naming the target host.
                 await client.call_tool("select_agent", {"id": "dev"})
                 if sys.platform == "win32":
                     res = await client.call_tool(
                         "powershell_exec",
-                        {"args": {"script": "echo hi", "timeout_s": 20, "agent_id": "dev"}},
+                        {"args": {"script": "echo hi", "timeout_s": _SMOKE_CALL_TIMEOUT_S,
+                                  "agent_id": "dev"}},
                     )
                 else:
                     # shell_exec is powershell_exec's OS-scoped mirror; the real
                     # agent runs it via `sh -c "echo hi"` on Linux.
                     res = await client.call_tool(
                         "shell_exec",
-                        {"args": {"command": "echo hi", "timeout_s": 20, "agent_id": "dev"}},
+                        {"args": {"command": "echo hi", "timeout_s": _SMOKE_CALL_TIMEOUT_S,
+                                  "agent_id": "dev"}},
                     )
                 assert res.data["exit_code"] == 0
                 assert "hi" in res.data["stdout"]
@@ -147,17 +193,18 @@ async def test_real_agent_end_to_end(tmp_path) -> None:
                 # The agent pushes telemetry on its first tick; wait for it. Windows
                 # collectors spawn PowerShell/CIM and are far slower on a cold runner
                 # than the Linux sysinfo collectors, so allow a much longer window.
-                telemetry_polls = 600 if sys.platform == "win32" else 50  # ~120s / ~10s
-                for _ in range(telemetry_polls):
+                for _ in range(_TELEMETRY_POLLS):
                     fleet = (await client.call_tool("fleet_overview", {})).data
                     dev = next(
                         (a for a in fleet["agents"] if a["agent_id"] == "dev"), None
                     )
                     if dev is not None and dev["collected_at"]:
                         break
-                    await asyncio.sleep(0.2)
+                    await asyncio.sleep(_TELEMETRY_POLL_INTERVAL_S)
                 else:
-                    raise AssertionError("no telemetry snapshot arrived from the agent")
+                    raise AssertionError(
+                        f"no telemetry snapshot arrived from the agent within {_TELEMETRY_BUDGET_S:.0f}s"
+                    )
 
                 assert dev["online"] is True
                 # Real collectors produce a valid overall health (any level).
@@ -182,7 +229,7 @@ async def test_real_agent_end_to_end(tmp_path) -> None:
 async def _call(client, tool: str, args: dict | None = None):
     """Forward a capability tool to the single "dev" agent and return its result.
 
-    Forwarded calls require an explicit agent_id (ADR-0042); every test in this
+    Forwarded calls require an explicit agent_id (ADR-0038); every test in this
     module targets the one real agent it spawned, so it's injected here once.
     """
     call_args = {"agent_id": "dev", **(args or {})}
@@ -249,7 +296,7 @@ async def _assert_windows_tools(client) -> None:
 
 
 async def _assert_linux(client) -> None:
-    """Drive the real Linux tool and collector paths (ADR-0035).
+    """Drive the real Linux tool and collector paths (ADR-0031).
 
     The portable tools (`diag_processes`, `net_config`) run their real
     non-Windows arms; the Windows-only `winget_list` returns ``unsupported`` on the

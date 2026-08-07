@@ -4,7 +4,7 @@ Two kinds of tools (names match ``docs/protocol.md`` § Tool catalog exactly):
 
 * **Forwarding capability tools** — require an explicit ``agent_id`` argument
   naming the target host, and forward a ``request`` frame to it through the
-  tunnel (see ADR-0042). ``agent_id`` is routing metadata: it is popped off the
+  tunnel (see ADR-0038). ``agent_id`` is routing metadata: it is popped off the
   call's ``args`` before the wire frame is built, so it never reaches the agent
   and the wire contract is untouched.
 * **Server-only tools** — ``list_agents``, ``select_agent``, ``fleet_overview``,
@@ -14,9 +14,9 @@ Two kinds of tools (names match ``docs/protocol.md`` § Tool catalog exactly):
 Every forwarded call is appended to an in-memory ``call_log`` for the dashboard
 tool-call log.
 
-``select_agent``/the registry's active-agent slot (ADR-0037) remain as an
+``select_agent``/the registry's active-agent slot (ADR-0033) remain as an
 advisory discovery/back-compat helper only — they no longer decide where a
-forwarded MCP call lands (ADR-0042). Remote MCP clients (Claude Desktop,
+forwarded MCP call lands (ADR-0038). Remote MCP clients (Claude Desktop,
 claude.ai) send no reliable per-conversation identifier, so two concurrent
 sessions authenticated with the same credential (PAT/OAuth token) would
 otherwise share one sticky slot and silently clobber each other's selection.
@@ -41,27 +41,76 @@ from .webfilter import WebFilterService, load_seed
 
 logger = logging.getLogger("kenny.tools")
 
-# OS-scoped capability tools: name -> required agent OS family ("windows" or
-# "posix", the latter covering both "linux" and "macos" agents). Each has an
-# exact mirror on the other family. Enforced in ``make_forwarder`` so a
-# wrong-OS call is refused with an actionable message before ever reaching the
-# tunnel (see docs/protocol.md § "OS-scoped tools").
-_OS_SCOPED_TOOLS: dict[str, str] = {
-    "powershell_exec": "windows",
-    "shell_exec": "posix",
+# OS-scoped capability tools: name -> the agent OS values that can serve it.
+# Enforced in ``make_forwarder`` so a wrong-OS call is refused with an actionable
+# message before ever reaching the tunnel (see docs/protocol.md § "OS-scoped
+# tools").
+#
+# Account governance was pinned to ``windows`` in v0.15 and is deliberately no
+# longer OS-scoped at all (ADR-0043): it is served on Windows and Linux alike, and
+# what a *particular account on a particular host* can do is published per account
+# in the ``local_accounts`` inventory's ``unsupported`` map. A whole-tool OS scope
+# would be both coarser and less true. macOS keeps no implementation, so the seven
+# tools are still listed here — with the two OSes that do serve them, which is what
+# gives a macOS agent the same fast, actionable refusal it had before.
+_OS_SCOPED_TOOLS: dict[str, frozenset[str]] = {
+    "powershell_exec": frozenset({"windows"}),
+    "shell_exec": frozenset({"linux", "macos"}),
+    "account_set_enabled": frozenset({"windows", "linux"}),
+    "account_set_admin": frozenset({"windows", "linux"}),
+    "account_set_logon_rights": frozenset({"windows", "linux"}),
+    "account_create": frozenset({"windows", "linux"}),
+    "account_delete": frozenset({"windows", "linux"}),
+    "account_session_action": frozenset({"windows", "linux"}),
+    "password_policy_set": frozenset({"windows", "linux"}),
 }
 
-# The OS-scoped mirror of each key in ``_OS_SCOPED_TOOLS``, for error messages.
+# The OS-scoped mirror of a key in ``_OS_SCOPED_TOOLS``, for error messages.
+# Absent when the tool has no counterpart on the other family.
 _OS_SCOPED_MIRROR: dict[str, str] = {
     "powershell_exec": "shell_exec",
     "shell_exec": "powershell_exec",
 }
 
 
-def _os_family(agent_os: str) -> str:
-    """Collapse an agent's reported OS into the two shell-tool families."""
+def supports_tool(tool_name: str, agent_os: str) -> bool:
+    """Can an agent on ``agent_os`` serve ``tool_name``?
 
-    return "windows" if agent_os == "windows" else "posix"
+    The single answer for both the MCP forwarder and the dashboard's write route,
+    so the two surfaces cannot refuse the same call differently (they did until
+    ADR-0043: MCP refused pre-flight, the dashboard forwarded and surfaced the
+    agent's refusal as a 502).
+    """
+
+    allowed = _OS_SCOPED_TOOLS.get(tool_name)
+    return allowed is None or agent_os in allowed
+
+
+# Minimum operator role for a forwarded capability tool. Absent means the
+# default: seeing the host is enough.
+#
+# Account governance is the first forwarded family to need this (ADR-0042).
+# Everything else in the catalog affects software, files or the network, all of
+# which a scoped ``user`` may already reach; deciding who can sign in to a
+# family PC — and being able to lock the household out by getting it wrong — is
+# a different kind of authority.
+_TOOL_MIN_ROLE: dict[str, str] = {
+    "account_set_enabled": "operator",
+    "account_set_admin": "operator",
+    "account_set_logon_rights": "operator",
+    "account_create": "operator",
+    "account_delete": "operator",
+    "account_session_action": "operator",
+    "password_policy_set": "operator",
+}
+
+# Per-tool floor on the forwarding timeout, for tools whose normal path is
+# slower than the 30 s default. ``account_session_action`` may show the
+# signed-in user a warning and wait it out before acting (the agent caps that
+# wait at 60 s), so the default would time out a perfectly healthy call.
+_TOOL_MIN_TIMEOUT_S: dict[str, float] = {
+    "account_session_action": 120.0,
+}
 
 
 # Forwarding capability tools: name -> ordered arg keys (optional keys end "?").
@@ -89,11 +138,22 @@ CAPABILITY_TOOLS: dict[str, list[str]] = {
     "remotehelp_stop": [],
     "telemetry_collect": ["sections?"],
     "agent_update": ["version", "url", "sha256"],
-    # Parental-controls enforcement (ADR-0026). apply/clear are mutating; status
+    # Parental-controls enforcement (ADR-0024). apply/clear are mutating; status
     # is read-only. The server pre-merges the effective block set for apply.
     "webfilter_status": [],
     "webfilter_apply": ["domains", "doh_policy", "list_hash"],
     "webfilter_clear": [],
+    # Account governance (ADR-0042). `principal` is the SAM account name, which
+    # local and Microsoft accounts share — there is deliberately no per-kind
+    # variant of any of these. The inventory lives in the `local_accounts`
+    # telemetry section, so there is no `account_list` tool.
+    "account_set_enabled": ["principal", "enabled"],
+    "account_set_admin": ["principal", "admin"],
+    "account_set_logon_rights": ["principal", "deny"],
+    "account_create": ["name", "password", "display_name?", "admin?"],
+    "account_delete": ["principal", "remove_profile"],
+    "account_session_action": ["principal", "action", "warn_seconds?"],
+    "password_policy_set": ["min_length?", "max_age_days?", "lockout_threshold?"],
 }
 
 
@@ -179,7 +239,7 @@ class ScreenshotStore:
         return self._latest.get(agent_id)
 
     def forget(self, agent_id: str) -> None:
-        """Drop the cached screenshot for a removed host (ADR-0037)."""
+        """Drop the cached screenshot for a removed host (ADR-0033)."""
 
         self._latest.pop(agent_id, None)
 
@@ -191,7 +251,7 @@ def build_health(
 
     ``agent_os`` is the agent's OS family; it is forwarded to
     :func:`health_rules.evaluate_snapshot` so a non-Windows agent's Windows-only
-    sections are not scored (ADR-0035). Defaults to ``windows`` for callers that
+    sections are not scored (ADR-0031). Defaults to ``windows`` for callers that
     have no agent context, preserving prior behavior.
     """
 
@@ -264,7 +324,7 @@ def _active_key(principal) -> str | None:
 
 
 def _resolve_target(principal, args: dict[str, Any]) -> str:
-    """Routing target for a forwarded MCP call (ADR-0042).
+    """Routing target for a forwarded MCP call (ADR-0038).
 
     Requires an explicit ``agent_id`` in ``args`` and pops it off — it is
     routing metadata consumed here, never forwarded to the agent, so the wire
@@ -299,6 +359,7 @@ def register_tools(
     call_log: CallLog,
     webfilter: WebFilterService | None = None,
     suppression: Any = None,
+    ticket_rules: Any = None,
 ) -> None:
     """Register all MCP tools on ``mcp``."""
 
@@ -308,12 +369,16 @@ def register_tools(
 
     def make_forwarder(tool_name: str):
         required_os = _OS_SCOPED_TOOLS.get(tool_name)
+        min_role = _TOOL_MIN_ROLE.get(tool_name)
+        min_timeout_s = _TOOL_MIN_TIMEOUT_S.get(tool_name, 0.0)
 
         async def forward(args: dict[str, Any] | None = None) -> dict[str, Any]:
             """Forward this capability call to the named agent and return its result."""
             args = args or {}
             principal = _mcp_principal()
             agent_id = _resolve_target(principal, args)
+            if min_role is not None:
+                _require_role(principal, min_role)
 
             # OS-scoped shell tools (powershell_exec/shell_exec): refuse the wrong
             # one for this agent's OS before ever forwarding, with a message naming
@@ -322,17 +387,19 @@ def register_tools(
             # stored telemetry) — the tunnel send fails as offline in that case.
             if required_os is not None:
                 agent = registry.get(agent_id)
-                if agent is not None and _os_family(agent.os) != required_os:
-                    mirror = _OS_SCOPED_MIRROR[tool_name]
+                if agent is not None and agent.os not in required_os:
+                    mirror = _OS_SCOPED_MIRROR.get(tool_name)
                     message = (
                         f"agent {agent_id!r} is {agent.os}; {tool_name} requires "
-                        f"{required_os}, use {mirror} instead"
+                        f"{' or '.join(sorted(required_os))}"
                     )
+                    if mirror is not None:
+                        message += f", use {mirror} instead"
                     forward_logger.info("refused %s -> %s: %s", tool_name, agent_id, message)
                     await call_log.record(agent_id, tool_name, args, ok=False, error=message)
                     raise ToolError("unsupported", message)
 
-            timeout_s = float(args.get("timeout_s", 30))
+            timeout_s = max(float(args.get("timeout_s", 30)), min_timeout_s)
             forward_logger.info("forward %s -> %s", tool_name, agent_id)
             try:
                 result = await tunnel.send_request(agent_id, tool_name, args, timeout_s)
@@ -408,7 +475,7 @@ def register_tools(
         snapshot = latest["snapshot"] if latest else None
         if snapshot is not None:
             # Annotate reliability events (category/severity/suspected_cause,
-            # ADR-0028) before scoring, so the reliability reason names
+            # ADR-0026) before scoring, so the reliability reason names
             # the dominant pattern here too — not just in the dashboard — and a
             # caller never needs a manual diag_eventlog to judge it. Deferred
             # import avoids a module-load cycle (tools -> chat -> ... -> tools);
@@ -444,12 +511,12 @@ def register_tools(
             "snapshot": snapshot,
         }
 
-    # -- reliability alarm suppression server-only tools (ADR-0045 / #166) --
+    # -- reliability alarm suppression server-only tools (ADR-0041 / #166) --
     #
     # Server-held operator state, not a per-agent capability -- like
     # webfilter_get/web_activity_query, these never forward a request frame to
     # an agent, so `agent_id` here is an optional scope filter, not a routing
-    # target (no `_resolve_target`/ADR-0042 concern). `agent_snapshot` above
+    # target (no `_resolve_target`/ADR-0038 concern). `agent_snapshot` above
     # already carries the `suppressed`/`suppressed_by` markers for free (the
     # TelemetryStore read-path hook), so a caller comparing a fresh breakdown
     # against these rules needs no extra round-trip.
@@ -515,6 +582,76 @@ def register_tools(
             principal = _mcp_principal()
             _require_role(principal, "operator")
             removed, rules = await suppression.remove(rule_id)
+            return {"ok": True, "removed": removed, "rules": rules}
+
+    # -- auto-ticket rules server-only tools (ticket_rules.py) --------------
+    #
+    # Server-held operator policy, not a per-agent capability -- like the
+    # suppression trio above, this never forwards a request frame to an agent.
+    # Operator-only on every tool, including the read: an alert-origin ticket
+    # is itself operator-only (its requester_user_id is always None), so a
+    # scoped `user` has no legitimate use for the rules that decide when one
+    # opens, and listing them would leak fleet host names for no benefit.
+
+    if ticket_rules is not None:
+
+        @mcp.tool(
+            name="ticket_rule_list",
+            description=(
+                "List auto-ticket rules: which alerts open a ticket automatically "
+                "(read-only, operator+). Without agent_id, all rules; with it, "
+                "fleet-wide + that host's rules."
+            ),
+        )
+        async def ticket_rule_list(agent_id: str | None = None) -> dict[str, Any]:
+            principal = _mcp_principal()
+            _require_role(principal, "operator")
+            if agent_id:
+                _require_scope(principal, agent_id)
+            return {"rules": ticket_rules.rules(agent_id or None)}
+
+        @mcp.tool(
+            name="ticket_rule_set",
+            description=(
+                "Add (or replace) a rule deciding whether an alert event opens a "
+                "ticket (state-changing, operator+). event_type is one of health/"
+                "offline/disk_forecast/change; decision is one of open_all/"
+                "open_crit/never. section empty/omitted means any section; "
+                "agent_id empty/omitted means fleet-wide."
+            ),
+        )
+        async def ticket_rule_set(
+            event_type: str,
+            decision: str,
+            section: str | None = None,
+            agent_id: str | None = None,
+            note: str | None = None,
+        ) -> dict[str, Any]:
+            principal = _mcp_principal()
+            _require_role(principal, "operator")
+            if agent_id:
+                _require_scope(principal, agent_id)
+            try:
+                rules, warnings = await ticket_rules.add(
+                    event_type=event_type,
+                    decision=decision,
+                    section=section or "",
+                    agent_id=agent_id or "",
+                    note=note or "",
+                    created_by=getattr(principal, "username", "") or "",
+                )
+            except ValueError as exc:
+                raise ToolError("bad_args", str(exc)) from exc
+            return {"rules": rules, "warnings": warnings}
+
+        @mcp.tool(
+            name="ticket_rule_remove",
+            description="Remove an auto-ticket rule by id (state-changing, operator+).",
+        )
+        async def ticket_rule_remove(rule_id: str) -> dict[str, Any]:
+            principal = _mcp_principal()
+            _require_role(principal, "operator")
+            removed, rules = await ticket_rules.remove(rule_id)
             return {"ok": True, "removed": removed, "rules": rules}
 
     # -- parental-controls (webfilter) server-only tools ------------------

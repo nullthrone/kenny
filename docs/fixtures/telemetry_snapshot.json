@@ -7,10 +7,18 @@
       "status": "warn",
       "summary": "C: 91% full",
       "volumes": [
-        { "mount": "C:", "total_bytes": 511000000000, "free_bytes": 46000000000, "percent_used": 91 }
+        {
+          "mount": "C:",
+          "total_bytes": 511000000000,
+          "free_bytes": 46000000000,
+          "percent_used": 91
+        }
       ],
       "top_dirs": [
-        { "path": "C:\\Users\\testuser\\Videos", "bytes": 120000000000 }
+        {
+          "path": "C:\\Users\\testuser\\Videos",
+          "bytes": 120000000000
+        }
       ]
     },
     "defender": {
@@ -29,22 +37,40 @@
       "summary": "1 update failed in last 30 days",
       "last_check": "2026-06-03T09:00:00Z",
       "recent": [
-        { "kb": "KB5037853", "title": "2026-05 Cumulative Update", "result": "succeeded", "installed_at": "2026-05-15T04:00:00Z" },
-        { "kb": "KB5039211", "title": "2026-06 Cumulative Update", "result": "failed", "installed_at": "2026-06-02T04:00:00Z" }
+        {
+          "kb": "KB5037853",
+          "title": "2026-05 Cumulative Update",
+          "result": "succeeded",
+          "installed_at": "2026-05-15T04:00:00Z"
+        },
+        {
+          "kb": "KB5039211",
+          "title": "2026-06 Cumulative Update",
+          "result": "failed",
+          "installed_at": "2026-06-02T04:00:00Z"
+        }
       ]
     },
     "reboot_pending": {
       "status": "warn",
       "summary": "Reboot required (Windows Update)",
       "pending": true,
-      "reasons": ["WindowsUpdate"]
+      "reasons": [
+        "WindowsUpdate"
+      ]
     },
     "thermals": {
       "status": "ok",
       "summary": "hottest 61C",
       "sensors": [
-        { "label": "CPU Thermal Zone", "temperature_c": 61.0 },
-        { "label": "ACPI Thermal Zone", "temperature_c": 48.5 }
+        {
+          "label": "CPU Thermal Zone",
+          "temperature_c": 61.0
+        },
+        {
+          "label": "ACPI Thermal Zone",
+          "temperature_c": 48.5
+        }
       ]
     },
     "reliability": {
@@ -61,7 +87,11 @@
           "count": 30,
           "sample": "Faulting application name: chrome.exe, version 126.0.0.0, faulting module ntdll.dll",
           "last_seen": "2026-06-04T17:22:10Z",
-          "by_day": { "2026-06-02": 8, "2026-06-03": 12, "2026-06-04": 10 }
+          "by_day": {
+            "2026-06-02": 8,
+            "2026-06-03": 12,
+            "2026-06-04": 10
+          }
         },
         {
           "source": "disk",
@@ -70,7 +100,11 @@
           "count": 18,
           "sample": "An error was detected on device \\Device\\Harddisk0\\DR0 during a paging operation.",
           "last_seen": "2026-06-04T09:05:44Z",
-          "by_day": { "2026-06-01": 6, "2026-06-03": 7, "2026-06-04": 5 }
+          "by_day": {
+            "2026-06-01": 6,
+            "2026-06-03": 7,
+            "2026-06-04": 5
+          }
         }
       ],
       "truncated": false
@@ -79,21 +113,29 @@
       "status": "ok",
       "summary": "42 domains observed (24h)",
       "window_hours": 24,
-      "sources": ["dns_cache", "browser_history"],
+      "sources": [
+        "dns_cache",
+        "browser_history"
+      ],
       "domains": [
         {
           "domain": "example.com",
           "first_seen": "2026-06-04T09:12:00Z",
           "last_seen": "2026-06-04T17:40:00Z",
           "hits": 7,
-          "sources": ["dns_cache", "browser_history"]
+          "sources": [
+            "dns_cache",
+            "browser_history"
+          ]
         },
         {
           "domain": "cdn.example.net",
           "first_seen": "2026-06-04T16:05:00Z",
           "last_seen": "2026-06-04T16:05:00Z",
           "hits": 1,
-          "sources": ["dns_cache"]
+          "sources": [
+            "dns_cache"
+          ]
         }
       ],
       "truncated": false,
@@ -104,8 +146,18 @@
       "status": "ok",
       "summary": "142 programs installed",
       "apps": [
-        { "name": "7-Zip 24.08 (x64)", "version": "24.08", "publisher": "Igor Pavlov", "install_date": "2026-03-11" },
-        { "name": "Mozilla Firefox (x64 en-US)", "version": "139.0.1", "publisher": "Mozilla", "install_date": null }
+        {
+          "name": "7-Zip 24.08 (x64)",
+          "version": "24.08",
+          "publisher": "Igor Pavlov",
+          "install_date": "2026-03-11"
+        },
+        {
+          "name": "Mozilla Firefox (x64 en-US)",
+          "version": "139.0.1",
+          "publisher": "Mozilla",
+          "install_date": null
+        }
       ],
       "count": 142,
       "truncated": false
@@ -114,8 +166,18 @@
       "status": "ok",
       "summary": "9 extensions across 2 browsers",
       "extensions": [
-        { "browser": "chrome", "id": "cjpalhdlnbpafiamejdnhcphjbkeiagm", "name": "uBlock Origin", "version": "1.58.0" },
-        { "browser": "firefox", "id": "uBlock0@raymondhill.net", "name": "uBlock Origin", "version": "1.58.0" }
+        {
+          "browser": "chrome",
+          "id": "cjpalhdlnbpafiamejdnhcphjbkeiagm",
+          "name": "uBlock Origin",
+          "version": "1.58.0"
+        },
+        {
+          "browser": "firefox",
+          "id": "uBlock0@raymondhill.net",
+          "name": "uBlock Origin",
+          "version": "1.58.0"
+        }
       ],
       "count": 9,
       "truncated": false,
@@ -126,8 +188,20 @@
       "status": "ok",
       "summary": "12 listening ports",
       "ports": [
-        { "proto": "tcp", "port": 445, "address": "0.0.0.0", "pid": 4, "process": "System" },
-        { "proto": "tcp", "port": 3389, "address": "0.0.0.0", "pid": 1204, "process": "svchost" }
+        {
+          "proto": "tcp",
+          "port": 445,
+          "address": "0.0.0.0",
+          "pid": 4,
+          "process": "System"
+        },
+        {
+          "proto": "tcp",
+          "port": 3389,
+          "address": "0.0.0.0",
+          "pid": 1204,
+          "process": "svchost"
+        }
       ],
       "count": 12,
       "truncated": false
@@ -136,7 +210,15 @@
       "status": "ok",
       "summary": "4 non-Microsoft tasks (312 total)",
       "tasks": [
-        { "path": "\\", "name": "OneDrive Update", "state": "Ready", "action": "%LocalAppData%\\OneDrive\\Update\\OneDriveSetup.exe", "run_as": "example-pc\\testuser", "last_result": 0, "next_run": "2026-06-05T03:00:00Z" }
+        {
+          "path": "\\",
+          "name": "OneDrive Update",
+          "state": "Ready",
+          "action": "%LocalAppData%\\OneDrive\\Update\\OneDriveSetup.exe",
+          "run_as": "example-pc\\testuser",
+          "last_result": 0,
+          "next_run": "2026-06-05T03:00:00Z"
+        }
       ],
       "count": 4,
       "total_count": 312,
@@ -146,25 +228,114 @@
       "status": "ok",
       "summary": "3 accounts, 1 admin",
       "accounts": [
-        { "name": "papa", "enabled": true, "is_admin": true, "password_required": true, "password_last_set": "2026-01-15T09:00:00Z", "last_logon": "2026-06-04T08:10:00Z", "builtin_admin": false, "builtin_guest": false },
-        { "name": "kid", "enabled": true, "is_admin": false, "password_required": true, "password_last_set": "2026-02-20T18:30:00Z", "last_logon": "2026-06-04T15:02:00Z", "builtin_admin": false, "builtin_guest": false },
-        { "name": "Guest", "enabled": false, "is_admin": false, "password_required": false, "password_last_set": null, "last_logon": null, "builtin_admin": false, "builtin_guest": true }
+        {
+          "name": "papa",
+          "enabled": true,
+          "is_admin": true,
+          "password_required": true,
+          "password_last_set": "2026-01-15T09:00:00Z",
+          "last_logon": "2026-06-04T08:10:00Z",
+          "builtin_admin": false,
+          "builtin_guest": false,
+          "display": "Papa",
+          "kind": "local",
+          "deny_logon": [],
+          "unsupported": {}
+        },
+        {
+          "name": "kid",
+          "enabled": true,
+          "is_admin": false,
+          "password_required": true,
+          "password_last_set": "2026-02-20T18:30:00Z",
+          "last_logon": "2026-06-04T15:02:00Z",
+          "builtin_admin": false,
+          "builtin_guest": false,
+          "display": "Kid",
+          "kind": "microsoft",
+          "deny_logon": [
+            "remote_interactive"
+          ],
+          "unsupported": {
+            "reset_password": "password_in_cloud"
+          }
+        },
+        {
+          "name": "Guest",
+          "enabled": false,
+          "is_admin": false,
+          "password_required": false,
+          "password_last_set": null,
+          "last_logon": null,
+          "builtin_admin": false,
+          "builtin_guest": true,
+          "display": "Guest",
+          "kind": "local",
+          "deny_logon": [
+            "network",
+            "remote_interactive"
+          ],
+          "unsupported": {}
+        }
       ],
-      "admins": ["papa"],
-      "count": 3
+      "admins": [
+        "papa"
+      ],
+      "count": 3,
+      "password_policy": {
+        "applies_to": "local_only",
+        "min_length": 8,
+        "max_age_days": 0,
+        "lockout_threshold": 10
+      }
+    },
+    "logon_failures": {
+      "status": "ok",
+      "summary": "3 failed logons in 24h",
+      "window_hours": 24,
+      "accounts": [
+        {
+          "name": "papa",
+          "count": 3,
+          "types": [
+            "interactive"
+          ]
+        }
+      ],
+      "unmatched_count": 0,
+      "count": 3,
+      "truncated": false
     },
     "backup_status": {
       "status": "ok",
       "summary": "restore point 2d ago; OneDrive running",
-      "restore_points": { "enabled": true, "count": 5, "latest": "2026-06-02T11:30:00Z" },
-      "file_history": { "service_state": "stopped", "configured": null },
-      "onedrive": { "installed": true, "running": true }
+      "restore_points": {
+        "enabled": true,
+        "count": 5,
+        "latest": "2026-06-02T11:30:00Z"
+      },
+      "file_history": {
+        "service_state": "stopped",
+        "configured": null
+      },
+      "onedrive": {
+        "installed": true,
+        "running": true
+      }
     },
     "net_quality": {
       "status": "ok",
       "summary": "gateway 2ms, internet 14ms",
-      "gateway": { "host": "192.168.1.1", "latency_ms": 2.0, "loss_percent": 0 },
-      "reference": { "host": "1.1.1.1", "latency_ms": 14.0, "loss_percent": 0 },
+      "gateway": {
+        "host": "192.168.1.1",
+        "latency_ms": 2.0,
+        "loss_percent": 0
+      },
+      "reference": {
+        "host": "1.1.1.1",
+        "latency_ms": 14.0,
+        "loss_percent": 0
+      },
       "samples": 5,
       "errors": []
     },
@@ -173,8 +344,14 @@
       "summary": "3.4h today, 24.1h over 7 days",
       "window_days": 7,
       "days": [
-        { "date": "2026-06-03", "active_minutes": 312 },
-        { "date": "2026-06-04", "active_minutes": 204 }
+        {
+          "date": "2026-06-03",
+          "active_minutes": 312
+        },
+        {
+          "date": "2026-06-04",
+          "active_minutes": 204
+        }
       ],
       "source": "eventlog",
       "errors": []

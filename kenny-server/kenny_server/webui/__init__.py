@@ -9,9 +9,11 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import os
 import re
 import signal
+import time
 from pathlib import Path
 from typing import Any
 
@@ -40,10 +42,12 @@ from ..recommend import ai_available, recommend_events, warning_facts
 from ..registry import AgentRegistry
 from ..store import ChatHistoryStore, EventStore, PolicyStore, TelemetryStore
 from ..tokenstore import AgentTokenStore
-from ..tools import CallLog, ScreenshotStore, build_health
+from ..tools import CallLog, ScreenshotStore, build_health, supports_tool
 from ..tunnel import AgentTunnel, ToolError
 from ..webfilter import WebFilterService, load_seed, normalize_domain
 from .authz import guard, principal_of, visible_ids
+
+logger = logging.getLogger("kenny.webui")
 
 _INDEX = Path(__file__).parent / "index.html"
 _ASSETS = Path(__file__).parent / "assets"
@@ -81,6 +85,7 @@ def build_api_routes(
     update_mgr: Any = None,
     client_factory: Any = None,
     suppression: Any = None,
+    ticket_rules: Any = None,
 ) -> list[Route]:
     """Build the dashboard's static + JSON routes.
 
@@ -111,10 +116,37 @@ def build_api_routes(
         """Stamp category/severity/suspected_cause onto every reliability event
         across the given snapshots (mutating the in-memory copies loaded from the
         store). Thin wrapper around :func:`event_categories.annotate_snapshots`
-        using this route module's injected ``client_factory`` (ADR-0028).
+        using this route module's injected ``client_factory`` (ADR-0026).
         """
 
         await annotate_snapshots(snapshots, client_factory=client_factory or _anthropic_client)
+
+    # /api/fleet/overview and /api/fleet/trend both walk the same 30-day daily
+    # window per agent (the browser fires them in parallel from the Overview
+    # tab, see index.html renderOverview), over one shared aiosqlite connection
+    # — so they serialize and each json.loads the same stored snapshots.
+    # Memoize briefly, scoped to this app instance (a module-level cache would
+    # leak results across the separate stores each test's build_app() creates).
+    # daily_latest buckets by CALENDAR DAY, so a few seconds of staleness cannot
+    # change a bucket except right at the moment a new day's first snapshot
+    # lands, and that self-heals within the TTL. Consumers (trends.disk_forecast,
+    # build_health) are read-only. Cached rows carry the suppression annotation
+    # (store.annotate) as of load time — bounded by the same TTL.
+    _DAILY_TTL_SECONDS = 15.0
+    _daily_cache: dict[tuple[str, str], tuple[float, list[dict[str, Any]]]] = {}
+
+    async def _daily_latest_cached(agent_id: str, since: str) -> list[dict[str, Any]]:
+        now = time.monotonic()
+        key = (agent_id, since)
+        hit = _daily_cache.get(key)
+        if hit is not None and now - hit[0] < _DAILY_TTL_SECONDS:
+            return hit[1]
+        rows = await store.daily_latest(agent_id, since)
+        _daily_cache[key] = (now, rows)
+        for stale_key, (ts, _) in list(_daily_cache.items()):  # bounded by fleet size
+            if now - ts >= _DAILY_TTL_SECONDS:
+                _daily_cache.pop(stale_key, None)
+        return rows
 
     async def api_fleet(request: Request) -> JSONResponse:
         ids = await _known_ids(registry, store)
@@ -169,7 +201,7 @@ def build_api_routes(
         ]
         disk_forecasts: dict[str, list[dict[str, Any]]] = {}
         for agent_id in ids:
-            daily = await store.daily_latest(agent_id, forecast_since)
+            daily = await _daily_latest_cached(agent_id, forecast_since)
             disk_forecasts[agent_id] = trends.disk_forecast(daily)
         return JSONResponse(
             fleet_stats.aggregate_overview(agents, disk_forecasts=disk_forecasts)
@@ -197,7 +229,7 @@ def build_api_routes(
         for agent_id in ids:
             agent = registry.get(agent_id)
             agent_os = agent.os if agent else "windows"
-            daily = await store.daily_latest(agent_id, since)
+            daily = await _daily_latest_cached(agent_id, since)
             points_by_agent[agent_id] = [
                 {
                     "collected_at": d["collected_at"],
@@ -233,6 +265,12 @@ def build_api_routes(
                 "collected_at": latest["collected_at"] if latest else None,
                 "snapshot": snapshot,
                 "health": build_health(snapshot, agent_os=agent_os),
+                # Can this host's OS serve the account-governance verbs at all?
+                # Derived from the same table the write route enforces, so the
+                # dashboard never hard-codes an OS list of its own (ADR-0043).
+                "governance": {
+                    "supported": supports_tool("account_set_admin", agent_os)
+                },
                 # Whether the AI Recommendation block is offered for flagged
                 # sections (true only when an Anthropic API key is configured).
                 "ai_enabled": ai_available(),
@@ -244,7 +282,7 @@ def build_api_routes(
         )
 
     async def api_agent_changes(request: Request) -> JSONResponse:
-        """Inventory changes between a ~N-day-old baseline snapshot and now (ADR-0030)."""
+        """Inventory changes between a ~N-day-old baseline snapshot and now (diffs.py)."""
 
         from datetime import datetime, timedelta, timezone
 
@@ -312,12 +350,34 @@ def build_api_routes(
             message = exc.message if isinstance(exc, ToolError) else str(exc)
             await call_log.record(agent_id, "telemetry_collect", {}, ok=False, error=message)
             return JSONResponse({"ok": False, "error": message}, status_code=502)
-        # Store the freshly collected snapshot so the drill-down updates.
+        # Store the freshly collected snapshot so the drill-down updates. The
+        # agent round-trip above already succeeded, so a storage hiccup here
+        # (e.g. transient SQLite write contention) must not turn a working
+        # refresh into a 500 — same reasoning as the tunnel push path
+        # (tunnel.py) and CallLog.record above, both of which already swallow
+        # this. Report it truthfully instead: 200 with stored=False, since a
+        # 502 here would be a second lie (the tunnel call did not fail).
+        stored = False
+        warning: str | None = None
         if result:
             from datetime import datetime, timezone
 
-            await store.insert(agent_id, datetime.now(timezone.utc).isoformat(), result)
-        return JSONResponse({"ok": True})
+            try:
+                await store.insert(agent_id, datetime.now(timezone.utc).isoformat(), result)
+                stored = True
+            except Exception:  # noqa: BLE001 - see comment above
+                logger.exception(
+                    "storing refreshed snapshot failed for %s; panel may show stale data",
+                    agent_id,
+                )
+                warning = (
+                    "collected, but storing the snapshot failed; the panel may "
+                    "show the previous reading"
+                )
+        payload: dict[str, Any] = {"ok": True, "stored": stored}
+        if warning:
+            payload["warning"] = warning
+        return JSONResponse(payload)
 
     async def api_screenshot(request: Request) -> Response:
         """Return the latest stored screenshot for an agent as a PNG (or 404)."""
@@ -365,11 +425,17 @@ def build_api_routes(
         """Recent tool-call audit log across the fleet (for the dashboard).
 
         Each entry is annotated ``state_changing`` (vs read-only) so the UI can
-        label confirm-gated calls without re-deriving the classification. A
-        ``user``-role caller only sees entries for their assigned hosts.
+        label confirm-gated calls without re-deriving the classification, and
+        ``tool_class`` with the three-tier classification (``read_only`` /
+        ``standard_change`` / ``normal_change``) the ticket trail also records.
+        The two are deliberately both present: ``state_changing`` is the
+        boolean the dashboard has always shown, ``tool_class`` is the finer
+        grade, and neither is derived from the other in the UI. A ``user``-role
+        caller only sees entries for their assigned hosts.
         """
 
         from ..chat import is_state_changing
+        from ..tool_classes import classify
 
         principal = principal_of(request)
         entries = [
@@ -380,6 +446,7 @@ def build_api_routes(
                 "ok": c["ok"],
                 "error": c.get("error"),
                 "state_changing": is_state_changing(c["tool"]),
+                "tool_class": classify(c["tool"]),
             }
             for c in await call_log.list()
             if principal is None or principal.may_see(c["agent_id"])
@@ -433,7 +500,7 @@ def build_api_routes(
         return JSONResponse({"agent_id": agent_id, "token": token})
 
     async def api_remove_host(request: Request) -> JSONResponse:
-        """Remove a host from inventory: purge all of its data (ADR-0037).
+        """Remove a host from inventory: purge all of its data (ADR-0033).
 
         Operator+ only (the route guard enforces this); a ``user`` role can never
         reach it. Refuses hosts pinned via ``KENNY_AGENT_TOKENS`` since they would
@@ -470,12 +537,13 @@ def build_api_routes(
             user_store=user_store,
             screenshots=screenshots,
             suppression=suppression,
+            ticket_rules=ticket_rules,
         )
         await call_log.record(agent_id, "remove_host", {}, ok=True)
         return JSONResponse({"ok": True, "agent_id": agent_id, "purged": result})
 
     async def api_policy_list(_request: Request) -> JSONResponse:
-        """Built-in (catalog) + operator deny rules for the policy view (ADR-0021)."""
+        """Built-in (catalog) + operator deny rules for the policy view (ADR-0020)."""
 
         builtin = policy_engine.builtin_rules() if policy_engine is not None else []
         operator = await policy_store.list() if policy_store is not None else []
@@ -531,7 +599,7 @@ def build_api_routes(
         await tunnel.broadcast_policy()
         return JSONResponse({"ok": True, "removed": removed, "operator": operator})
 
-    # -- reliability alarm suppression (ADR-0045 / issue #166) --------------
+    # -- reliability alarm suppression (ADR-0041 / issue #166) --------------
     #
     # Server-held operator state, not a per-agent capability, so this follows
     # the /api/policy/rules idiom (flat routes, no /api/agent/{id}/... prefix)
@@ -548,7 +616,7 @@ def build_api_routes(
         return rules
 
     async def api_suppression_list(request: Request) -> JSONResponse:
-        """Suppression rules visible to the caller (ADR-0045)."""
+        """Suppression rules visible to the caller (ADR-0041)."""
 
         if suppression is None:
             return JSONResponse({"error": "suppression store not configured"}, status_code=503)
@@ -847,14 +915,14 @@ def build_api_routes(
         result = await dest.test()
         return JSONResponse(result)
 
-    # -- scheduled updates + operator-approved rollout (ADR-0044) -----------
+    # -- scheduled updates + operator-approved rollout (ADR-0040) -----------
 
     def _server_apply_hint(available: dict[str, Any]) -> dict[str, Any] | None:
         """The digest-pinned ``docker compose`` command shown to the operator.
 
         Server apply is detect-and-show-command only in this iteration — a
         container cannot replace its own running image, and the docker-socket
-        sidecar that would automate it is a deferred follow-up (ADR-0044).
+        sidecar that would automate it is a deferred follow-up (ADR-0040).
         """
 
         server = available.get("server")
@@ -891,9 +959,13 @@ def build_api_routes(
         if update_mgr is None:
             return JSONResponse({"error": "updates not configured"}, status_code=503)
         body = await _optional_json_body(request)
+        channel = body.get("channel") or "stable"
+        if channel not in ("stable", "dev"):
+            return JSONResponse({"error": "channel must be 'stable' or 'dev'"}, status_code=400)
         try:
             campaign = await update_mgr.approve_campaign(
                 version=body.get("version"),
+                channel=channel,
                 on_connect=bool(body.get("on_connect", False)),
                 max_age_secs=body.get("max_age_secs"),
             )
@@ -927,6 +999,22 @@ def build_api_routes(
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
         return JSONResponse({"ok": True, **result})
+
+    async def api_agent_channel(request: Request) -> JSONResponse:
+        """Set an agent's operator-desired release channel (ADR-0048)."""
+
+        if update_mgr is None:
+            return JSONResponse({"error": "updates not configured"}, status_code=503)
+        agent_id = request.path_params["id"]
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - malformed JSON
+            return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        channel = body.get("channel")
+        if channel not in ("stable", "dev"):
+            return JSONResponse({"error": "channel must be 'stable' or 'dev'"}, status_code=400)
+        await update_mgr.set_desired_channel(agent_id, channel)
+        return JSONResponse({"ok": True, "agent_id": agent_id, "desired_channel": channel})
 
     # -- parental controls (webfilter) ------------------------------------
 
@@ -1028,7 +1116,7 @@ def build_api_routes(
         except ToolError as exc:
             await call_log.record(agent_id, tool, call_args, ok=False, error=exc.message)
             # The kill switch refuses mutating tools with `disabled`; surface it
-            # distinctly so the UI can show the local-override message (ADR-0026).
+            # distinctly so the UI can show the local-override message (ADR-0024).
             if exc.code == "disabled":
                 return JSONResponse({"ok": False, "error": "disabled"}, status_code=200)
             return JSONResponse({"ok": False, "error": exc.message}, status_code=502)
@@ -1047,6 +1135,69 @@ def build_api_routes(
         return JSONResponse(
             {"ok": True, "result": result, "applied": call_args, "block_mode": block_mode}
         )
+
+    # Account governance (ADR-0042). The inventory is already in the snapshot
+    # (`local_accounts`), so the UI only needs a write path — deliberately one
+    # route per tool name rather than a generic setter, because the audit log
+    # records the tool name but not the arguments, and "granted administrator"
+    # must not be indistinguishable from "renamed an account" in that log.
+    _ACCOUNT_TOOLS = frozenset(
+        {
+            "account_set_enabled",
+            "account_set_admin",
+            "account_set_logon_rights",
+            "account_create",
+            "account_delete",
+            "account_session_action",
+            "password_policy_set",
+        }
+    )
+
+    async def api_account_action(request: Request) -> JSONResponse:
+        agent_id = request.path_params["id"]
+        tool = request.path_params["tool"]
+        if tool not in _ACCOUNT_TOOLS:
+            return JSONResponse({"error": f"unknown account tool {tool!r}"}, status_code=404)
+        try:
+            args = await request.json()
+        except Exception:  # noqa: BLE001 - malformed JSON
+            return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        if not isinstance(args, dict):
+            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
+        # `agent_id` is routing metadata on the MCP surface; here it is the path
+        # segment, so refuse a body that tries to smuggle a different target.
+        args.pop("agent_id", None)
+        # Share the MCP surface's OS pre-check. Without it the two surfaces refuse
+        # the same call differently: MCP said "requires windows" before sending a
+        # frame, while this route forwarded and turned the agent's own `unsupported`
+        # into a 502 error banner (ADR-0043).
+        agent = registry.get(agent_id)
+        if agent is not None and not supports_tool(tool, agent.os):
+            message = f"agent {agent_id!r} is {agent.os}; {tool} is not available there"
+            await call_log.record(agent_id, tool, args, ok=False, error=message)
+            return JSONResponse(
+                {"ok": False, "error": "unsupported", "message": message}, status_code=200
+            )
+        # A session action may warn the signed-in user and wait before acting.
+        timeout_s = 120 if tool == "account_session_action" else 30
+        try:
+            result = await tunnel.send_request(agent_id, tool, args, timeout_s)
+            await call_log.record(agent_id, tool, args, ok=True)
+        except ToolError as exc:
+            await call_log.record(agent_id, tool, args, ok=False, error=exc.message)
+            # `disabled` (the endpoint's kill switch) and `blocked` (the agent's
+            # non-overridable self-protection, e.g. the last enabled admin) are
+            # both expected refusals, not server faults — the UI explains them
+            # rather than showing an error banner.
+            if exc.code in ("disabled", "blocked"):
+                return JSONResponse(
+                    {"ok": False, "error": exc.code, "message": exc.message}, status_code=200
+                )
+            return JSONResponse({"ok": False, "error": exc.message}, status_code=502)
+        except Exception as exc:  # noqa: BLE001 - surface to the UI
+            await call_log.record(agent_id, tool, args, ok=False, error=str(exc))
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=502)
+        return JSONResponse({"ok": True, "result": result})
 
     async def api_webfilter_activity(request: Request) -> JSONResponse:
         if webfilter is None:
@@ -1080,7 +1231,7 @@ def build_api_routes(
         releases = await changelog.fetch_releases(repo)
         return JSONResponse({"repo": repo, "releases": releases})
 
-    # Role/scope policy (ADR-0037), enforced by ``guard``:
+    # Role/scope policy (ADR-0033), enforced by ``guard``:
     #   - superuser only: core settings.
     #   - operator+: fleet-wide config/provisioning (policy, webfilter mutation,
     #     token rotation, host removal).
@@ -1157,6 +1308,11 @@ def build_api_routes(
             methods=["POST"],
         ),
         Route(
+            "/api/agent/{id}/channel",
+            guard(api_agent_channel, **op_scoped),
+            methods=["PUT"],
+        ),
+        Route(
             "/api/updates/campaigns/{id}/apply-now",
             guard(api_updates_campaign_apply_now, **op),
             methods=["POST"],
@@ -1203,6 +1359,11 @@ def build_api_routes(
             methods=["POST"],
         ),
         Route("/api/agent/{id}/webfilter/activity", guard(api_webfilter_activity, **scoped)),
+        Route(
+            "/api/agent/{id}/accounts/{tool}",
+            guard(api_account_action, **op_scoped),
+            methods=["POST"],
+        ),
         Route("/api/agents/{id}/token", guard(api_rotate_token, **op), methods=["POST"]),
     ]
 
@@ -1251,7 +1412,7 @@ def build_chat_routes(
       then resume the turn.
     * ``GET /api/chat/history`` — list persisted conversations (summary only).
     * ``GET /api/chat/history/{id}`` — one conversation's full replayable
-      transcript (ADR-0027).
+      transcript (ADR-0025).
     * ``DELETE /api/chat/history/{id}`` — delete a persisted conversation.
 
     All inherit operator auth from ``OperatorAuthMiddleware`` (``/api/*``).
@@ -1282,7 +1443,7 @@ def build_chat_routes(
                 status_code=409,
             )
         # Context-aware chat: remember the dashboard's selected agent on the
-        # session so forwarded capability tools target that machine (ADR-0042)
+        # session so forwarded capability tools target that machine (ADR-0038)
         # and the model is told about it too (see chat._context_note). This is
         # session-local state, not a shared registry slot — concurrent chat
         # sessions never clobber each other's selection. Always sync, including
@@ -1402,7 +1563,7 @@ def build_chat_routes(
         return JSONResponse({"conversations": rows})
 
     async def api_chat_history_get(request: Request) -> JSONResponse:
-        """One conversation's full replayable transcript (ADR-0027)."""
+        """One conversation's full replayable transcript (ADR-0025)."""
 
         row = await history_store.get(request.path_params["id"])
         if row is None:
@@ -1464,7 +1625,7 @@ def build_chat_routes(
         return StreamingResponse(gen(), media_type="text/event-stream", headers=_STREAM_HEADERS)
 
     async def api_forecast_stream(request: Request) -> Response:
-        """Stream one agent's near-term "AI Forecast" as SSE (ADR-0034).
+        """Stream one agent's near-term "AI Forecast" as SSE (forecast.py).
 
         Body: ``{agent_id}``. Synthesizes the disk/battery trends and the
         inventory diff into a short prose outlook. Unlike the recommendation

@@ -1,4 +1,4 @@
-"""Operator-managed reliability alarm suppression (issue #166, ADR-0045).
+"""Operator-managed reliability alarm suppression (issue #166, ADR-0041).
 
 A single, well-known-benign Windows event pattern (e.g. the CAPI2/4176
 "AuthSafes count" quirk emitted by CryptSvc) can repeat hundreds of times a
@@ -10,7 +10,7 @@ displayed raw counts — either fleet-wide or for one host.
 :class:`SuppressionList` is an in-memory mirror of the operator's rules,
 loaded from :class:`kenny_server.store.ReliabilitySuppressionStore` at
 startup and kept in sync on every write — the same single-process,
-single-event-loop argument ADR-0036 makes for ``Settings``: matching is a
+single-event-loop argument ADR-0032 makes for ``Settings``: matching is a
 synchronous, lock-free dict lookup, and the DB is touched only on write and
 once at startup.
 
@@ -18,7 +18,7 @@ once at startup.
 :attr:`kenny_server.store.TelemetryStore.annotate` so *every* health
 consumer sees the same annotation — alerting, the weekly digest, the fleet
 list, the dashboard, and MCP alike — not just the two read paths that already
-run the ADR-0028 LLM categorization. Matching needs no LLM and no API key, so
+run the ADR-0026 LLM categorization. Matching needs no LLM and no API key, so
 unlike that categorization it can safely run on every snapshot read.
 """
 
@@ -113,7 +113,7 @@ class SuppressionList:
         """Stamp ``suppressed``/``suppressed_by`` onto each reliability event
         group in ``snapshot``, in place. A no-op with no rules loaded or no
         reliability events. ``category``/``severity``/``suspected_cause`` (the
-        ADR-0028 LLM annotation) are left untouched — suppression is an
+        ADR-0026 LLM annotation) are left untouched — suppression is an
         orthogonal, operator-explained signal, deliberately distinguishable
         from the classifier's own ``benign`` verdict.
         """

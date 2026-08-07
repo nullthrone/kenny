@@ -1,4 +1,4 @@
-"""Read-only GHCR polling for the kenny-server container image (ADR-0044).
+"""Read-only GHCR polling for the kenny-server container image (ADR-0040).
 
 The server ships as ``ghcr.io/t11z/kenny-server``, semver-tagged on every git
 tag (ADR-0010). This module answers one question — "is there a newer tag than
@@ -30,12 +30,47 @@ FETCH_TIMEOUT_S = 10.0
 # ever considered.
 _SEMVER_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 
+# The exact-version tag the dev-channel workflow publishes for a `main`-push
+# build (ADR-0048): `X.Y.Z-dev.N`, mirroring the git tag `vX.Y.Z-dev.N` minus
+# the `v`. `N` is the CI run number, monotonically increasing per triple.
+_SEMVER_PRERELEASE_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)-dev\.(\d+)$")
+
 
 def _parse_semver(tag: str) -> tuple[int, int, int] | None:
     m = _SEMVER_RE.match(tag.strip())
     if m is None:
         return None
     return (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+
+
+def _parse_semver_prerelease(tag: str) -> tuple[int, int, int, int] | None:
+    """Parse a dev-channel tag/version, e.g. ``2.0.5-dev.17`` -> ``(2, 0, 5, 17)``."""
+
+    m = _SEMVER_PRERELEASE_RE.match(tag.strip())
+    if m is None:
+        return None
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4)))
+
+
+def _parse_dev_comparable(tag: str) -> tuple[int, int, int, int] | None:
+    """Parse ``tag`` for dev-channel ordering purposes.
+
+    A proper dev-prerelease (``X.Y.Z-dev.N``) parses to ``(X, Y, Z, N)``. A
+    plain release tag (``X.Y.Z``) also parses, as ``(X, Y, Z, -1)``, so a
+    same-triple plain release compares as strictly older than any dev
+    prerelease of that triple — this comparison direction only matters within
+    the dev channel's own history (e.g. comparing a stable-built server's
+    ``__version__`` baseline against a dev candidate), never against the
+    stable channel's own semver ordering.
+    """
+
+    prerelease = _parse_semver_prerelease(tag)
+    if prerelease is not None:
+        return prerelease
+    plain = _parse_semver(tag)
+    if plain is not None:
+        return (*plain, -1)
+    return None
 
 
 def _parse_image_ref(image_ref: str) -> tuple[str, str] | None:
@@ -82,12 +117,20 @@ async def fetch_latest_server_tag(
     *,
     github_token: str | None = None,
     client_factory: Callable[[], httpx.AsyncClient] = _default_client_factory,
+    channel: str = "stable",
 ) -> ServerReleaseInfo:
     """Newest well-formed semver tag for ``image_ref``, with its manifest digest.
 
     Two GHCR requests when a candidate exists: the tag list, then one manifest
     HEAD for the winning tag's digest. ``client_factory`` is injected so tests
     use ``httpx.MockTransport`` (no network), matching ``agent_release``.
+
+    ``channel="stable"`` is byte-identical to the original behavior: only bare
+    ``X.Y.Z`` tags are considered (excludes ``edge`` and any ``-dev.`` tag).
+    ``channel="dev"`` instead considers only ``X.Y.Z-dev.N`` tags, picking the
+    highest ``(major, minor, patch, dev_n)`` tuple — the exact versioned tag,
+    never the floating ``:edge`` alias, so a later pin is always an immutable
+    tag+digest (ADR-0040's pinning discipline).
     """
 
     parsed = _parse_image_ref(image_ref)
@@ -106,12 +149,14 @@ async def fetch_latest_server_tag(
             tags_resp.raise_for_status()
             tags = tags_resp.json().get("tags") or []
 
+            parse = _parse_semver_prerelease if channel == "dev" else _parse_semver
             candidates = sorted(
-                (t for t in ((tag, _parse_semver(tag)) for tag in tags) if t[1] is not None),
+                (t for t in ((tag, parse(tag)) for tag in tags) if t[1] is not None),
                 key=lambda t: t[1],
             )
             if not candidates:
-                return ServerReleaseInfo(ok=False, message="no semver-tagged release found")
+                kind = "dev-prerelease-tagged" if channel == "dev" else "semver-tagged"
+                return ServerReleaseInfo(ok=False, message=f"no {kind} release found")
             best_tag, _ = candidates[-1]
 
             manifest_headers = dict(headers)
@@ -131,14 +176,30 @@ async def fetch_latest_server_tag(
     return ServerReleaseInfo(ok=True, message=f"latest tag {best_tag}", tag=best_tag, digest=digest)
 
 
-def is_newer(candidate_tag: str, current_version: str) -> bool:
-    """Whether ``candidate_tag`` is a strictly newer semver than ``current_version``.
+def is_newer(candidate_tag: str, current_version: str, *, channel: str = "stable") -> bool:
+    """Whether ``candidate_tag`` is a strictly newer version than ``current_version``.
 
-    ``current_version`` failing to parse as a clean ``X.Y.Z`` (e.g. the dev
-    fallback ``"0.0.0-dev"``) means "unknown" — never claim an update is
-    available when the running version can't be confidently compared, so a
-    dev/unreleased build never shows update noise.
+    ``channel="stable"`` is byte-identical to the original behavior: both sides
+    must parse as a clean ``X.Y.Z``; a failure to parse (e.g. the dev fallback
+    ``"0.0.0-dev"``) means "unknown" — never claim an update is available when
+    the running version can't be confidently compared.
+
+    ``channel="dev"`` compares ``(major, minor, patch, dev_n)`` tuples instead,
+    parsing either an ``X.Y.Z-dev.N`` prerelease tag or (falling back, for the
+    comparison only) a plain ``X.Y.Z`` release as ``dev_n = -1`` — so a same-
+    triple plain release compares as older than any dev prerelease of that
+    triple. This fallback direction only matters within the dev channel's own
+    history, never against the stable channel's own semver ordering. If either
+    side fails to parse under the channel's own rule, this returns ``False``
+    (never claim newer on ambiguity), matching the stable path's behavior.
     """
+
+    if channel == "dev":
+        candidate = _parse_dev_comparable(candidate_tag)
+        current = _parse_dev_comparable(current_version)
+        if candidate is None or current is None:
+            return False
+        return candidate > current
 
     candidate = _parse_semver(candidate_tag)
     current = _parse_semver(current_version)

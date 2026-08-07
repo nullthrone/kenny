@@ -1,0 +1,10 @@
+{
+  "type": "request",
+  "id": "0216f927-83a4-4f10-a132-5d6e7f8091a2",
+  "tool": "account_session_action",
+  "args": {
+    "principal": "kid",
+    "action": "lock",
+    "warn_seconds": 60
+  }
+}

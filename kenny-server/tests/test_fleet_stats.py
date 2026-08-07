@@ -7,6 +7,7 @@ routes end-to-end via the dashboard test harness.
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 from functools import partial
 
@@ -273,7 +274,7 @@ def test_reliability_categories_flags_crit_on_serious_severity():
 
 
 def test_reliability_categories_suppressed_group_does_not_flag_crit():
-    # A pattern the operator has suppressed (ADR-0045 / issue #166) must not
+    # A pattern the operator has suppressed (ADR-0041 / issue #166) must not
     # flag its heatmap cell crit -- but its raw count still colours the cell,
     # and is surfaced separately so a hot-but-not-crit cell is explained.
     a1 = _agent("pc1", {"reliability": {
@@ -374,6 +375,101 @@ def test_reliability_categories_route_fallback(tmp_path, monkeypatch):
         cell = rc["cells"][0]
         assert cell["count"] == 40
         assert "disk ×40" in cell["detail"]
+
+
+def test_fleet_overview_does_not_block_on_slow_categorizer(tmp_path, monkeypatch):
+    # A slow (or broken) Anthropic client used to block the whole request on
+    # the classify call — an unbounded asyncio.to_thread await mid-response.
+    # event_categories.categorize_events now caps that wait, so the route must
+    # come back well within it regardless of how long the client actually
+    # takes to answer.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+
+    class _SlowMessages:
+        def create(self, **_kwargs):
+            time.sleep(2.0)  # comfortably above _CLASSIFY_WAIT_SECONDS (1.5s)
+            raise RuntimeError("slow/broken API — never awaited by the route")
+
+    class _SlowClient:
+        messages = _SlowMessages()
+
+    app = build_app(db_path=str(tmp_path / "slow_categorizer.sqlite"), client_factory=lambda: _SlowClient())
+    snap = {"reliability": {"status": "warn", "summary": "", "recent_crashes": 40, "events": [
+        {"source": "disk", "event_id": 51, "level": "error", "count": 40,
+         "sample": "paging error", "last_seen": "2026-06-07T00:00:00Z"}]}}
+    with TestClient(app) as c:
+        store = app.state.store
+        c.portal.call(partial(store.insert, "pc1", "2026-06-07T00:00:00Z", snap))
+        t0 = time.monotonic()
+        r = c.get("/api/fleet/overview", headers=_bearer(app))
+        elapsed = time.monotonic() - t0
+    assert r.status_code == 200
+    assert elapsed < 3.0
+    # Degrades exactly like the no-key path above: same fallback shape, counts
+    # intact — the read never blocked long enough to get a real answer.
+    rc = r.json()["reliability_categories"]
+    assert rc["categories"] == ["Other"]
+    assert rc["cells"][0]["count"] == 40
+
+
+def test_overview_and_trend_share_one_daily_window(tmp_path, monkeypatch):
+    # /api/fleet/overview and /api/fleet/trend?days=30 both walk the same
+    # 30-day daily window per agent (the Overview tab fires both in parallel —
+    # see index.html renderOverview). The route module's short-TTL memo around
+    # store.daily_latest must serve the second call from the first's cached
+    # rows instead of re-querying and re-decoding the same snapshots.
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    app = build_app(db_path=str(tmp_path / "shared_window.sqlite"))
+    today = datetime.now(timezone.utc).date().isoformat()
+    snap = {"disk": {"status": "ok", "summary": "C: 40% full", "volumes": [{"mount": "C:", "percent_used": 40}]}}
+    with TestClient(app) as c:
+        store = app.state.store
+        c.portal.call(partial(store.insert, "pc1", f"{today}T09:00:00Z", snap))
+
+        calls = [0]
+        real_daily_latest = store.daily_latest
+
+        async def counting(agent_id, since, **kwargs):
+            calls[0] += 1
+            return await real_daily_latest(agent_id, since, **kwargs)
+
+        store.daily_latest = counting
+
+        r1 = c.get("/api/fleet/overview", headers=_bearer(app))
+        r2 = c.get("/api/fleet/trend?days=30", headers=_bearer(app))
+        assert r1.status_code == 200
+        assert r2.status_code == 200
+        # One agent, one shared (agent_id, since) window: the second route's
+        # request must be served from the memo, not re-query the store.
+        assert calls[0] == 1
+
+
+def test_trend_window_not_served_from_a_different_window(tmp_path, monkeypatch):
+    # The memo's cache key must include the window (`since`), or a days=7
+    # request right after a days=30 one would wrongly reuse the wider window's
+    # rows instead of re-querying for its own.
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    app = build_app(db_path=str(tmp_path / "window_key.sqlite"))
+    today = datetime.now(timezone.utc).date().isoformat()
+    snap = {"disk": {"status": "ok", "summary": "C: 40% full", "volumes": [{"mount": "C:", "percent_used": 40}]}}
+    with TestClient(app) as c:
+        store = app.state.store
+        c.portal.call(partial(store.insert, "pc1", f"{today}T09:00:00Z", snap))
+
+        calls = [0]
+        real_daily_latest = store.daily_latest
+
+        async def counting(agent_id, since, **kwargs):
+            calls[0] += 1
+            return await real_daily_latest(agent_id, since, **kwargs)
+
+        store.daily_latest = counting
+
+        r1 = c.get("/api/fleet/trend?days=30", headers=_bearer(app))
+        r2 = c.get("/api/fleet/trend?days=7", headers=_bearer(app))
+        assert r1.status_code == 200
+        assert r2.status_code == 200
+        assert calls[0] == 2
 
 
 def test_echarts_asset_served_with_js_mime(tmp_path):

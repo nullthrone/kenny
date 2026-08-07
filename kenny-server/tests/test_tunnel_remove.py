@@ -1,4 +1,4 @@
-"""Removing a host mid-connection closes its live socket (#127, ADR-0037).
+"""Removing a host mid-connection closes its live socket (#127, ADR-0033).
 
 A still-connected agent whose host was purged must not keep re-populating its
 snapshots (which would make it reappear in the fleet list). The ``_serve`` loop

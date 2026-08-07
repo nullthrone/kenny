@@ -21,7 +21,7 @@ import pytest
 
 from kenny_server.chat import (
     ChatExecutor,
-    ChatSession,
+    FleetSession,
     ChatSessions,
     _resolve_chat_target,
     build_tool_schemas,
@@ -175,7 +175,7 @@ def test_classification() -> None:
     assert is_state_changing("shell_exec")
     assert is_state_changing("net_dns_flush")
     # remotehelp_start/_stop are mutating on the agent (control.rs); the chat
-    # confirm-gate must agree so they aren't auto-invoked (ADR-0022, issue #55).
+    # confirm-gate must agree so they aren't auto-invoked (ADR-0021, issue #55).
     assert is_state_changing("remotehelp_start")
     assert is_state_changing("remotehelp_stop")
 
@@ -207,8 +207,8 @@ def test_context_note_names_the_selected_agent() -> None:
 
     from kenny_server.chat import _context_note
 
-    assert _context_note(ChatSession(id="s1")) == []
-    note = _context_note(ChatSession(id="s2", agent_id="linus-pc"))
+    assert _context_note(FleetSession(id="s1")) == []
+    note = _context_note(FleetSession(id="s2", agent_id="linus-pc"))
     assert len(note) == 1
     assert "linus-pc" in note[0]["text"]
     # Must stay out of the cached system block so it never busts that prefix.
@@ -231,7 +231,7 @@ def test_tool_result_payload_capped() -> None:
 
 async def test_read_only_tool_auto_executes(store: TelemetryStore) -> None:
     executor, _registry, _tunnel = _executor(store)
-    session = ChatSession(id="s1")
+    session = FleetSession(id="s1")
 
     # Turn 1: model asks for fleet_overview. Turn 2: model replies with text.
     client = FakeAnthropic(
@@ -272,7 +272,7 @@ async def test_run_turn_heals_aborted_tool_use(store: TelemetryStore) -> None:
     heals the session by dropping it, so a follow-up message still succeeds."""
 
     executor, _registry, _tunnel = _executor(store)
-    session = ChatSession(id="aborted")
+    session = FleetSession(id="aborted")
     session.messages = [
         {"role": "user", "content": "check the fleet"},
         {"role": "assistant", "content": [tool_use_block("tu1", "fleet_overview", {}).__dict__]},
@@ -295,7 +295,7 @@ async def test_run_turn_heals_aborted_tool_use(store: TelemetryStore) -> None:
 
 async def test_state_changing_tool_requires_confirmation(store: TelemetryStore) -> None:
     executor, _registry, tunnel = _executor(store)
-    session = ChatSession(id="s2")
+    session = FleetSession(id="s2")
 
     # Stub the capability path so no real agent is needed.
     sent: list[dict[str, Any]] = []
@@ -343,7 +343,7 @@ async def test_state_changing_tool_requires_confirmation(store: TelemetryStore) 
 
 async def test_state_changing_tool_denied(store: TelemetryStore) -> None:
     executor, _registry, tunnel = _executor(store)
-    session = ChatSession(id="s3")
+    session = FleetSession(id="s3")
 
     sent: list[dict[str, Any]] = []
 
@@ -391,7 +391,7 @@ async def test_screen_capture_fed_back_as_image(store: TelemetryStore) -> None:
     base64 JSON string) and the tool_event carries the image for the UI."""
 
     executor, _registry, tunnel = _executor(store)
-    session = ChatSession(id="s4")
+    session = FleetSession(id="s4")
 
     tiny_b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="  # noqa: E501
 
@@ -452,7 +452,7 @@ async def _collect(events: Any) -> list[dict[str, Any]]:
 
 async def test_run_turn_events_streams_text(store: TelemetryStore) -> None:
     executor, _registry, _tunnel = _executor(store)
-    session = ChatSession(id="se1")
+    session = FleetSession(id="se1")
     client = FakeAnthropic([_Response([text_block("The fleet is healthy.")], "end_turn")])
 
     events = await _collect(
@@ -471,7 +471,7 @@ async def test_run_turn_events_streams_text(store: TelemetryStore) -> None:
 
 async def test_stream_emits_tool_result_before_text(store: TelemetryStore) -> None:
     executor, _registry, _tunnel = _executor(store)
-    session = ChatSession(id="se2")
+    session = FleetSession(id="se2")
     client = FakeAnthropic(
         [
             _Response([tool_use_block("tu1", "fleet_overview", {})], "tool_use"),
@@ -491,7 +491,7 @@ async def test_stream_emits_tool_result_before_text(store: TelemetryStore) -> No
 
 async def test_stream_confirm_gate(store: TelemetryStore) -> None:
     executor, _registry, tunnel = _executor(store)
-    session = ChatSession(id="se3")
+    session = FleetSession(id="se3")
 
     sent: list[str] = []
 
@@ -534,7 +534,7 @@ async def test_drive_batch_still_matches(store: TelemetryStore) -> None:
     """The drained (non-streaming) path produces the same public shape as before."""
 
     executor, _registry, _tunnel = _executor(store)
-    session = ChatSession(id="se4")
+    session = FleetSession(id="se4")
     client = FakeAnthropic(
         [
             _Response([tool_use_block("tu1", "fleet_overview", {})], "tool_use"),
@@ -558,7 +558,7 @@ async def test_sessions_registry_round_trips() -> None:
     assert b is a
 
 
-# -- persistence (ADR-0027) -------------------------------------------------
+# -- persistence (ADR-0025) -------------------------------------------------
 
 
 @pytest.fixture
@@ -616,14 +616,14 @@ async def test_sessions_get_heals_a_session_saved_mid_turn(history_store: ChatHi
 
 
 async def test_persist_session_derives_title_once(history_store: ChatHistoryStore) -> None:
-    session = ChatSession(id="s3", messages=[{"role": "user", "content": "  first question  "}])
+    session = FleetSession(id="s3", messages=[{"role": "user", "content": "  first question  "}])
     await persist_session(history_store, session)
     assert session.title == "first question"
 
     session.messages.append({"role": "assistant", "content": [{"type": "text", "text": "answer"}]})
     session.messages.append({"role": "user", "content": "a completely different second question"})
     await persist_session(history_store, session)
-    # Title stays as derived from the first save; ChatSession.title itself is
+    # Title stays as derived from the first save; FleetSession.title itself is
     # never re-derived, and ChatHistoryStore.save also refuses to overwrite it.
     assert session.title == "first question"
     row = await history_store.get("s3")
@@ -633,7 +633,7 @@ async def test_persist_session_derives_title_once(history_store: ChatHistoryStor
 
 
 async def test_persist_session_noop_without_a_store() -> None:
-    session = ChatSession(id="s4", messages=[{"role": "user", "content": "hi"}])
+    session = FleetSession(id="s4", messages=[{"role": "user", "content": "hi"}])
     await persist_session(None, session)
     assert session.title is None  # never touched
 
@@ -711,7 +711,7 @@ def test_public_transcript_flattens_text_and_tool_result_and_omits_pending() -> 
     assert events[-1]["text"] == "Understood, I won't install it."
 
 
-# -- session-scoped agent targeting (ADR-0042) -----------------------------
+# -- session-scoped agent targeting (ADR-0038) -----------------------------
 #
 # The chat path used to forward every capability call to the process-global
 # ``registry.active_agent`` slot (``require_active()`` with no key) — shared by
@@ -754,7 +754,7 @@ async def test_run_capability_fails_closed_without_a_target(
 
 
 def test_resolve_chat_target_prefers_explicit_override_over_session() -> None:
-    session = ChatSession(id="s", agent_id="alpha")
+    session = FleetSession(id="s", agent_id="alpha")
     args = {"agent_id": "beta", "path": "C:\\"}
 
     assert _resolve_chat_target(session, args) == "beta"
@@ -763,13 +763,13 @@ def test_resolve_chat_target_prefers_explicit_override_over_session() -> None:
 
 
 def test_resolve_chat_target_falls_back_to_session_selection() -> None:
-    session = ChatSession(id="s", agent_id="alpha")
+    session = FleetSession(id="s", agent_id="alpha")
 
     assert _resolve_chat_target(session, {}) == "alpha"
 
 
 def test_resolve_chat_target_fails_closed_without_either() -> None:
-    session = ChatSession(id="s")
+    session = FleetSession(id="s")
 
     with pytest.raises(ToolError) as excinfo:
         _resolve_chat_target(session, {})
@@ -795,8 +795,8 @@ async def test_two_sessions_route_independently_despite_shared_executor(
     # A stale/foreign selection sitting in the global slot must have no effect.
     registry._active_agent = "gamma"  # noqa: SLF001
 
-    session_a = ChatSession(id="a", agent_id="alpha")
-    session_b = ChatSession(id="b", agent_id="beta")
+    session_a = FleetSession(id="a", agent_id="alpha")
+    session_b = FleetSession(id="b", agent_id="beta")
 
     client_a = FakeAnthropic(
         [

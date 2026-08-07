@@ -70,7 +70,7 @@ pub async fn run_until(config: Config, mut shutdown: tokio::sync::watch::Receive
         return;
     }
 
-    // Anti-cheat coexistence poller (ADR-0039): watch for a protected game's anti-cheat
+    // Anti-cheat coexistence poller (ADR-0035): watch for a protected game's anti-cheat
     // process and flip the process-global "game active" flag. Spawned once here (not per
     // session) so its state survives tunnel reconnects; it exits when shutdown fires.
     spawn_coexist_poller(shutdown.clone());
@@ -120,7 +120,7 @@ pub async fn run_until(config: Config, mut shutdown: tokio::sync::watch::Receive
     }
 }
 
-/// Spawn the anti-cheat coexistence poller (ADR-0039).
+/// Spawn the anti-cheat coexistence poller (ADR-0035).
 ///
 /// On a timer it refreshes the process **name list** (the cheapest `sysinfo` refresh, so
 /// it opens no handle against the game) and updates the global "protected game running"
@@ -159,7 +159,7 @@ async fn serve_once(
     config: &Config,
     shutdown: &mut tokio::sync::watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
-    // The signature path (v0.8 mutual auth, ADR-0023) is selected whenever a pinned
+    // The signature path (v0.8 mutual auth, ADR-0022) is selected whenever a pinned
     // server public key is configured. Otherwise fall back to the legacy token path for
     // the migration window.
     let signature_path = config.server_pubkey.is_some();
@@ -203,6 +203,7 @@ async fn serve_once(
             os: crate::util::os_family().to_string(),
             version: crate::BUILD_VERSION.to_string(),
             arch: crate::util::arch().to_string(),
+            channel: crate::BUILD_CHANNEL.to_string(),
         },
     }))
     .await
@@ -230,7 +231,7 @@ async fn serve_once(
     // server's signature against the pinned key, then send `auth`. On ANY failure (wrong
     // frame, bad signature, decode/close) we abort the session WITHOUT sending `auth` and
     // WITHOUT dispatching any tool, so a spoofed/MITM server can never push a `request`.
-    // This is the anti-spoofing guarantee (ADR-0023).
+    // This is the anti-spoofing guarantee (ADR-0022).
     if signature_path {
         // SAFETY of unwraps: on the signature path these were set together above.
         let server_key = pinned_server_key
@@ -431,7 +432,7 @@ pub(crate) fn http_base_from_ws(ws_url: &str) -> anyhow::Result<String> {
     Ok(format!("{scheme}://{authority}"))
 }
 
-/// One-time enrollment (ADR-0023): if no agent key existed before this run and an enroll
+/// One-time enrollment (ADR-0022): if no agent key existed before this run and an enroll
 /// token is configured, POST the freshly generated public key to the server so it can pin
 /// the agent's identity. Thereafter only signatures authenticate.
 ///
@@ -561,7 +562,7 @@ async fn handle_text(text: &str, tx: &mpsc::Sender<Frame>) {
             });
         }
         Frame::Policy(p) => {
-            // Operator's append-only deny rules (ADR-0021): additive to the built-ins,
+            // Operator's append-only deny rules (ADR-0020): additive to the built-ins,
             // which they can never weaken or remove. The agent never sends a Policy frame.
             info!(count = p.rules.len(), "applied operator policy rules");
             crate::policy::set_operator_rules(p.rules);

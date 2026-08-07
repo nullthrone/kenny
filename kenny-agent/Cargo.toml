@@ -24,15 +24,15 @@ anyhow = "1"
 thiserror = "2"
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
-base64 = "0.22"
+base64 = "0.23"
 regex = "1"
 sysinfo = "0.39"
-# Per-agent mutual-auth (ADR-0023): Ed25519 keypair + signatures over the handshake
+# Per-agent mutual-auth (ADR-0022): Ed25519 keypair + signatures over the handshake
 # transcript. NOT windows-gated so keygen/signing/verification build and test on Linux CI.
 ed25519-dalek = { version = "3", features = ["rand_core"] }
 rand_core = "0.10"
 getrandom = { version = "0.4", features = ["sys_rng"] }
-# Synchronous HTTP client, reused for the one-time enrollment POST (ADR-0023) and the
+# Synchronous HTTP client, reused for the one-time enrollment POST (ADR-0022) and the
 # self-update download. Not windows-gated: enrollment runs on every platform's tunnel.
 ureq = { version = "2", default-features = false, features = ["tls", "json"] }
 # Portable PNG encoder for screen_capture. NOT windows-gated so encode_png can be
@@ -54,7 +54,7 @@ sha2 = "0.11"
 embed-manifest = "1"
 # Embed a Windows VERSIONINFO resource (CompanyName/ProductName/FileVersion/…) and the
 # exe icon so AV/anti-cheat heuristics and the user see identifiable publisher software
-# (ADR-0039). Unconditional build-dep like embed-manifest; only invoked inside the
+# (ADR-0035). Unconditional build-dep like embed-manifest; only invoked inside the
 # `CARGO_CFG_WINDOWS` guard in build.rs, so it never runs for Linux/musl targets.
 winresource = "0.1"
 
@@ -68,7 +68,7 @@ windows = { version = "0.62", features = [
     "Win32_System_Threading",
     "Win32_System_LibraryLoader",
     # Activate the packaged Quick Assist app by AUMID (IApplicationActivationManager),
-    # the same way the Start menu does — a bare spawn cannot launch a Store app (ADR-0022).
+    # the same way the Start menu does — a bare spawn cannot launch a Store app (ADR-0021).
     "Win32_System_Com",
     "Win32_System_Pipes",
     "Win32_Storage_FileSystem",

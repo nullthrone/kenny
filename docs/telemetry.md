@@ -64,14 +64,15 @@ rule column).
 | `win_update` | Recent Windows Update results | any `recent[].result == "failed"` → **warn** |
 | `app_updates` | Available third-party app updates | *no rule — agent-reported* |
 | `reboot_pending` | Pending-reboot flag and reasons | `pending` true → **warn** (reasons joined into the reason string) |
-| `os_support` | OS edition/end-of-life date, plus `arch` (`x86_64`/`aarch64`, mirrors `register.meta.arch`, protocol 0.13) | `eol` true **or** `eol_date` in the past → **crit**; `eol_date` within 90 days → **warn** |
+| `os_support` | OS edition/end-of-life date, plus `arch` (`x86_64`/`aarch64`, mirrors `register.meta.arch`, protocol 0.13) and `channel` (`stable`/`dev`, mirrors `register.meta.channel`, protocol 0.17, [ADR-0048](adr/0048-second-release-channel-dev-prereleases.md)) | `eol` true **or** `eol_date` in the past → **crit**; `eol_date` within 90 days → **warn** |
 | `memory` | RAM usage | `percent_used` > 95 → **crit**; > 85 → **warn** |
 | `thermals` | Temperature sensors | hottest sensor ≥ 95 °C → **crit**; ≥ 85 °C → **warn** |
 | `battery` | Battery health and charge (laptops) | `health_percent` < 50 → **crit**; < 70 → **warn**. Laptops only; `battery.present` drives the device (laptop/desktop) pie |
 | `reliability` | Grouped Error/Critical event-log breakdown, stability index | Scored on **pattern severity**, not raw count, once the read-path categorizer has annotated each group: a `serious` pattern recurring ≥ 10×, **or** ≥ 5 distinct non-`benign` patterns, **or** `stability_index` < 3 → **crit**; any non-`benign` (`notable`/`unknown`/`serious`) pattern **or** `stability_index` < 6 → **warn**; all-`benign` → **ok** regardless of count. Reason names the dominant pattern (source/event id, cadence, suspected cause), or says so explicitly when everything is benign. Without annotation (no API key yet, or a raw payload) falls back to `recent_crashes` ≥ 50 **or** `stability_index` < 3 → **crit**; ≥ 15 events, ≥ 8 distinct patterns, any critical-level group, **or** `stability_index` < 6 → **warn**. An operator-suppressed pattern (see *Alarm suppression* below) is excluded from every threshold above — in both the annotated and the fallback path — but never from the `stability_index` overlay |
 | `web_activity` | Observed domains (parental controls) | a serious flagged hit (`custom` / `seed` / `external_adult`) in 24 h → **crit**; a `bypass` hit in 24 h → **warn** (see [`parental-controls.md`](parental-controls.md)) |
 | `listening_ports` | Listening TCP/UDP ports | a non-loopback listener on **22 / 3389 / 5900 / 5985 / 5986** → **warn** |
-| `local_accounts` | Local users and administrators | an enabled admin with `password_required` false **and** no password ever set → **crit**; built-in Administrator or Guest enabled → **warn** |
+| `local_accounts` | Accounts on the machine (local **and** Microsoft on Windows, `/etc/passwd` on Linux) plus the machine password policy — also the inventory for the `account_*` governance tools, and where each account publishes the verbs it cannot perform | an enabled admin with `password_required` false **and** no password ever set → **crit**; built-in Administrator or Guest enabled → **warn** (Windows only — `root` being enabled on Linux is not a finding); an admin that also carries denied logon rights → **warn** (one of the two settings is stale) (see [`account-governance.md`](account-governance.md)) |
+| `logon_failures` | Failed sign-ins per account over 24 h, split by interactive / network / remote (Windows Security log; sshd + PAM failures from the journal on Linux, where `network` does not occur) | ≥ 15 failures against a single account **or** ≥ 15 against usernames that do not exist here → **warn**. Never **crit** — a failed sign-in is not by itself a compromised machine |
 | `backup_status` | Restore points, File History, OneDrive | no restore point in 30 days **and** File History not running **and** OneDrive not running → **warn** |
 | `net_quality` | Gateway + reference ping probe | reference loss ≥ 60 % → **crit**; gateway latency > 100 ms **or** loss > 20 % → **warn** |
 | `installed_software` | Installed programs inventory | *no rule — agent-reported* |
@@ -131,7 +132,7 @@ Windows `level` is plain `"error"`.
 <figcaption>The reliability section detail — a category × day heatmap plus expandable event groups down to sample messages, each with a severity badge and suspected cause.</figcaption>
 </figure>
 
-See [ADR-0028](adr/0028-llm-categorization-of-reliability-events.md) for the categorization
+See [ADR-0026](adr/0026-llm-categorization-of-reliability-events.md) for the categorization
 decision.
 
 ## Alarm suppression
@@ -165,7 +166,7 @@ it reaches every health consumer, not just the two read paths that run the categ
 push alerting, the weekly digest, the fleet list, and MCP's `agent_health`/`agent_snapshot`
 all see the same `suppressed` marker. Rules are managed via `/api/reliability/suppressions`
 (operator+ to write) or the `reliability_suppression_list`/`_add`/`_remove` MCP tools. See
-[ADR-0045](adr/0045-reliability-alarm-suppression.md).
+[ADR-0041](adr/0041-reliability-alarm-suppression.md).
 
 ## Screen time
 
@@ -179,7 +180,7 @@ of the payload *cannot* express them.
     No health rule judges screen time — a number of hours is neither `warn` nor `crit`. The
     section always carries `status: "ok"` and surfaces as 7-day bars in the drill-down.
 
-See [ADR-0032](adr/0032-screen-time-aggregated-session-minutes.md), and the
+See [ADR-0029](adr/0029-screen-time-aggregated-session-minutes.md), and the
 [`parental-controls.md`](parental-controls.md) guide.
 
 ## Retention & limits
@@ -203,6 +204,6 @@ See [`setup.md`](setup.md) for these and other environment variables, and
 - [`dashboard.md`](dashboard.md) — the dashboard panels in detail
 - [`protocol.md`](protocol.md) — the agent ⇄ server wire contract
 - [ADR-0007](adr/0007-telemetry-push-model-and-sqlite-storage.md) — push model & SQLite storage
-- [ADR-0028](adr/0028-llm-categorization-of-reliability-events.md) — LLM reliability categorization
-- [ADR-0031](adr/0031-security-and-resilience-telemetry-sections.md) — security & resilience sections
-- [ADR-0032](adr/0032-screen-time-aggregated-session-minutes.md) — screen-time aggregation
+- [ADR-0026](adr/0026-llm-categorization-of-reliability-events.md) — LLM reliability categorization
+- [ADR-0028](adr/0028-security-and-resilience-telemetry-sections.md) — security & resilience sections
+- [ADR-0029](adr/0029-screen-time-aggregated-session-minutes.md) — screen-time aggregation

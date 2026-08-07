@@ -48,6 +48,10 @@ def _age_days(value: Any, *, now: datetime) -> float | None:
 
 # A rule maps a section payload -> (status, reason) or None to defer.
 Rule = Callable[[dict[str, Any], datetime], "tuple[Status, str] | None"]
+# A rule that also needs the agent's OS. Listed in :data:`OS_AWARE_RULES` and
+# called with the extra argument by :func:`evaluate_section`; the OS parameter is
+# keyword-defaulted so such a rule still satisfies :data:`Rule`.
+OsAwareRule = Callable[[dict[str, Any], datetime, str], "tuple[Status, str] | None"]
 
 
 def _rule_disk(payload: dict[str, Any], now: datetime) -> "tuple[Status, str] | None":
@@ -159,7 +163,7 @@ def _number(value: Any) -> float | None:
 # -- reliability: volume-based fallback (no severity annotation present) ----
 #
 # Used only when events carry no `severity` field at all — i.e. the read-path
-# LLM categorization (ADR-0028) has never run over this payload (a raw agent
+# LLM categorization (ADR-0026) has never run over this payload (a raw agent
 # snapshot, or a test payload built by hand). Kept as today's thresholds, plus
 # one addition (a distinct-pattern escalation) so this path is never *less*
 # sensitive than the original volume-based rule — see _rule_reliability_by_volume.
@@ -182,7 +186,7 @@ _RELIABILITY_SIGNIFICANT_PATTERNS_CRIT = 5  # this many distinct non-benign patt
 # independent, agent-computed signal that content-based pattern scoring can't
 # see into, so it always applies on top. It is deliberately NOT suppressible —
 # an operator muting a noisy event pattern must never be able to hide a
-# genuinely low reliability index (issue #166 / ADR-0045).
+# genuinely low reliability index (issue #166 / ADR-0041).
 _RELIABILITY_SI_CRIT = 3
 _RELIABILITY_SI_WARN = 6
 
@@ -192,7 +196,7 @@ def _reliability_reason(events: list[Any], total: int) -> str:
 
     Used for the volume-based fallback path, where there is no severity/cause
     to name — see :func:`_reliability_pattern_reason` for the annotated path.
-    Suppressed groups (ADR-0045) are excluded from the tally — a muted pattern
+    Suppressed groups (ADR-0041) are excluded from the tally — a muted pattern
     must not out-rank the events that still matter — and counted in a trailing
     note instead, so an operator can tell "quiet" from "quieted".
     """
@@ -233,7 +237,7 @@ def _reliability_pattern_reason(patterns: list[dict[str, Any]], total: int, wind
     whose events are all known-benign says so explicitly instead of hiding the
     count behind a scary number.
 
-    Suppressed patterns (ADR-0045 / issue #166) are never named here — that is
+    Suppressed patterns (ADR-0041 / issue #166) are never named here — that is
     the whole point of muting them — but their existence is always noted in a
     trailing clause, so the reader can tell "quiet" from "quieted". A pattern
     the operator muted is never folded into "known-benign": that phrase is the
@@ -277,8 +281,8 @@ def _rule_reliability_by_volume(
     """Fallback scoring when events carry no severity annotation (see module
     comment above). Strictly at least as sensitive as the original volume-based rule.
 
-    Operator suppression (ADR-0045 / issue #166) still applies on this path.
-    Unlike the ADR-0028 LLM categorization, matching a suppression rule needs
+    Operator suppression (ADR-0041 / issue #166) still applies on this path.
+    Unlike the ADR-0026 LLM categorization, matching a suppression rule needs
     no LLM and no API key, so it is available here too — and this is the path
     that drives push alerting, the weekly digest, and the fleet list, which is
     exactly where a single dominant noisy pattern is loudest (see the module
@@ -314,7 +318,7 @@ def _rule_reliability_by_severity(
     events: list[dict[str, Any]], total_i: int, si: float | None, window_days: Any
 ) -> "tuple[Status, str]":
     """Weighted-pattern scoring once events carry a server-annotated severity
-    (ADR-0028 read-path categorization). Distinct *patterns* drive escalation,
+    (ADR-0026 read-path categorization). Distinct *patterns* drive escalation,
     not raw volume — see the module comment above.
     """
 
@@ -327,7 +331,7 @@ def _rule_reliability_by_severity(
         if e.get("level") == "critical" and not suppressed:
             # A Windows-critical entry always counts as serious, regardless of
             # what the LLM made of the message -- unless the operator has
-            # explicitly suppressed this exact pattern (ADR-0045 / issue #166),
+            # explicitly suppressed this exact pattern (ADR-0041 / issue #166),
             # in which case that explicit intent overrides the automatic
             # escalation. Without this, a suppressed Kernel-Power/41 could
             # never actually be muted.
@@ -371,7 +375,7 @@ def _rule_reliability_by_severity(
 def _rule_reliability(payload: dict[str, Any], now: datetime) -> "tuple[Status, str] | None":
     # `events` is the grouped Error/Critical breakdown; `stability_index` is the
     # Windows Reliability Index (0-10). Once the read path has annotated each
-    # group with a `severity` (ADR-0028 categorization),
+    # group with a `severity` (ADR-0026 categorization),
     # score on WHAT is recurring — see _rule_reliability_by_severity. Without
     # that annotation (e.g. a raw payload in a unit test) fall back to the
     # original volume-based thresholds — see _rule_reliability_by_volume.
@@ -395,7 +399,7 @@ _WEB_ACTIVITY_SERIOUS = {"custom", "seed", "external_adult"}
 
 
 def _rule_web_activity(payload: dict[str, Any], now: datetime) -> "tuple[Status, str] | None":
-    # `flagged` is a server-internal annotation added at insert time (ADR-0026).
+    # `flagged` is a server-internal annotation added at insert time (ADR-0024).
     # Absent => the host is not configured for parental controls; defer.
     flagged = payload.get("flagged")
     if flagged is None:
@@ -435,7 +439,10 @@ def _rule_listening_ports(payload: dict[str, Any], now: datetime) -> "tuple[Stat
     return None
 
 
-def _rule_local_accounts(payload: dict[str, Any], now: datetime) -> "tuple[Status, str] | None":
+def _rule_local_accounts(
+    payload: dict[str, Any], now: datetime, agent_os: str = "windows"
+) -> "tuple[Status, str] | None":
+    is_windows = _is_windows(agent_os)
     warns: list[str] = []
     for account in payload.get("accounts") or []:
         if not account.get("enabled"):
@@ -446,19 +453,66 @@ def _rule_local_accounts(payload: dict[str, Any], now: datetime) -> "tuple[Statu
         # only crit when the account has ALSO genuinely never had a password set
         # (`password_last_set is None`). A real password means this is a benign
         # OEM flag. Auth-probing to be certain is deliberately out of scope
-        # (account-lockout risk). See ADR-0031.
+        # (account-lockout risk). See ADR-0028.
         if (
             account.get("is_admin")
             and account.get("password_required") is False
             and account.get("password_last_set") is None
         ):
             return "crit", f"admin '{account.get('name', '?')}' requires no password"
-        if account.get("builtin_admin"):
+        # An *enabled* built-in administrator is a finding on Windows, where RID 500
+        # ships disabled and something must have turned it on. On Linux the same
+        # flag marks root, which is enabled by definition — scoring it would put
+        # every Linux host at a permanent warn for being a Linux host (ADR-0043).
+        if is_windows and account.get("builtin_admin"):
             warns.append("built-in Administrator enabled")
         if account.get("builtin_guest"):
             warns.append("Guest account enabled")
+        # A governance contradiction: an account holding local administrator rights
+        # while also being denied logon types. Both were set deliberately, so one of
+        # them is stale — most often a demotion that was reverted, or deny rights
+        # left on an account that has since been promoted back. Worth a look rather
+        # than an alarm, since neither state is dangerous on its own (ADR-0042).
+        if account.get("is_admin") and account.get("deny_logon"):
+            warns.append(
+                f"'{account.get('name', '?')}' is an admin with denied logon rights"
+            )
     if warns:
         return "warn", "; ".join(warns)
+    return None
+
+
+# Failed sign-ins per account within the section's window before this looks like
+# something other than a mistyped password. A family PC produces a handful a week;
+# a spray or a child working through guesses produces dozens.
+LOGON_FAILURES_WARN = 15
+
+
+def _rule_logon_failures(payload: dict[str, Any], now: datetime) -> "tuple[Status, str] | None":
+    """Warn on a burst of failed sign-ins against a single account.
+
+    Deliberately never ``crit``: a failed logon is not, by itself, a compromised
+    machine, and kenny reports rather than judges here (the ADR-0029 stance). The
+    per-account threshold matters more than the total — twenty failures spread over
+    five accounts is a household forgetting passwords, twenty against one account is
+    someone working at it.
+    """
+    hours = payload.get("window_hours") or 24
+    worst: dict[str, Any] | None = None
+    for account in payload.get("accounts") or []:
+        count = account.get("count") or 0
+        if count >= LOGON_FAILURES_WARN and (worst is None or count > worst["count"]):
+            worst = {"name": account.get("name", "?"), "count": count}
+    if worst:
+        return (
+            "warn",
+            f"{worst['count']} failed sign-ins for '{worst['name']}' in {hours}h",
+        )
+    # Attempts against names that are not accounts here: password spraying or a
+    # scanner, never a household member mistyping their own name.
+    unmatched = payload.get("unmatched_count") or 0
+    if unmatched >= LOGON_FAILURES_WARN:
+        return "warn", f"{unmatched} failed sign-ins for unknown usernames in {hours}h"
     return None
 
 
@@ -506,7 +560,7 @@ def _rule_net_quality(payload: dict[str, Any], now: datetime) -> "tuple[Status, 
 
 
 # Section name -> rule. Easy to extend: add an entry.
-RULES: dict[str, Rule] = {
+RULES: dict[str, Rule | OsAwareRule] = {
     "disk": _rule_disk,
     "defender": _rule_defender,
     "win_update": _rule_win_update,
@@ -519,6 +573,7 @@ RULES: dict[str, Rule] = {
     "reliability": _rule_reliability,
     "listening_ports": _rule_listening_ports,
     "local_accounts": _rule_local_accounts,
+    "logon_failures": _rule_logon_failures,
     "backup_status": _rule_backup_status,
     "net_quality": _rule_net_quality,
 }
@@ -528,10 +583,20 @@ RULES: dict[str, Rule] = {
 # Update / KB numbers, the registry reboot-pending flags, and System Restore /
 # File History / OneDrive backup evidence). A non-Windows agent emits an
 # "n/a on this platform" stub for these; scoring them would mislead. They are
-# skipped for agents whose OS is not Windows (see ADR-0035).
+# skipped for agents whose OS is not Windows (see ADR-0031).
+#
+# ``logon_failures`` was in this set until ADR-0043 gave it a real Linux arm
+# (sshd/PAM failures from the journal). Its thresholds are OS-neutral, so it is
+# now scored everywhere.
 WINDOWS_ONLY_SECTIONS: frozenset[str] = frozenset(
     {"defender", "win_update", "reboot_pending", "backup_status"}
 )
+
+# Sections whose *rule* needs to know the agent's OS, as opposed to sections that
+# are skipped wholesale. Kept as a separate registry rather than widening every
+# rule's signature: exactly one rule needs this today, and an explicit list is
+# greppable in a way an inspected signature is not.
+OS_AWARE_RULES: frozenset[str] = frozenset({"local_accounts"})
 
 
 def _is_windows(agent_os: str | None) -> bool:
@@ -539,7 +604,11 @@ def _is_windows(agent_os: str | None) -> bool:
 
 
 def evaluate_section(
-    name: str, payload: dict[str, Any], *, now: datetime | None = None
+    name: str,
+    payload: dict[str, Any],
+    *,
+    now: datetime | None = None,
+    agent_os: str = "windows",
 ) -> dict[str, Any]:
     """Return ``{status, summary, reason?}`` for one section after applying rules."""
 
@@ -549,7 +618,9 @@ def evaluate_section(
     rule = RULES.get(name)
     if rule is None:
         return {"status": reported, "summary": summary}
-    outcome = rule(payload, now)
+    outcome = (
+        rule(payload, now, agent_os) if name in OS_AWARE_RULES else rule(payload, now)
+    )
     if outcome is None:
         return {"status": reported, "summary": summary}
     rule_status, reason = outcome
@@ -569,7 +640,7 @@ def evaluate_snapshot(
     it defaults to ``windows`` so legacy/unknown agents keep their current
     behavior. For non-Windows agents the Windows-only sections
     (:data:`WINDOWS_ONLY_SECTIONS`) are skipped rather than scored against their
-    ``n/a`` stubs (see ADR-0035). Portable sections (e.g. ``listening_ports``,
+    ``n/a`` stubs (see ADR-0031). Portable sections (e.g. ``listening_ports``,
     ``local_accounts``) apply for every OS.
 
     Returns ``{"overall": status, "sections": {name: {status, summary, reason?}}}``.
@@ -581,6 +652,8 @@ def evaluate_snapshot(
     for name, payload in snapshot.items():
         if not is_windows and name in WINDOWS_ONLY_SECTIONS:
             continue
-        sections[name] = evaluate_section(name, dict(payload), now=now)
+        sections[name] = evaluate_section(
+            name, dict(payload), now=now, agent_os=agent_os
+        )
     overall = worst(*(s["status"] for s in sections.values())) if sections else "ok"
     return {"overall": overall, "sections": sections}

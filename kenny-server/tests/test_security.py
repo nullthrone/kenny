@@ -1,4 +1,4 @@
-"""Password hashing, TOTP, and role primitives (ADR-0037).
+"""Password hashing, TOTP, and role primitives (ADR-0033).
 
 The TOTP/HOTP paths are checked against the published RFC 4226 / RFC 6238 test
 vectors so a regression in the hand-rolled implementation is caught immediately.

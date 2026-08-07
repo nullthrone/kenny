@@ -11,7 +11,7 @@
 //! remote control is on, and a greyed/struck-through badge when it is off.
 //!
 //! The menu deliberately has **no "quit"**: the tray is load-bearing (it also hosts the
-//! screen-capture responder, ADR-0018, and the session-launch responder, ADR-0022), so
+//! screen-capture responder, ADR-0018, and the session-launch responder, ADR-0021), so
 //! letting the user close it would silently break remote control. If it is ever killed anyway (Task Manager, a crash), a service restart
 //! relaunches it into the active session — see [`crate::service`]. The menu instead
 //! offers a read-only **"Protokoll anzeigen"** entry that opens the newest agent log.
@@ -167,7 +167,7 @@ mod windows_impl {
             std::thread::spawn(crate::screencap_ipc::serve);
 
             // Host the session-launch responder so the session-0 service can open
-            // allow-listed remote-help apps (e.g. Quick Assist) on this desktop (ADR-0022).
+            // allow-listed remote-help apps (e.g. Quick Assist) on this desktop (ADR-0021).
             std::thread::spawn(crate::session_launch_ipc::serve);
 
             let hmodule = GetModuleHandleW(None).context("GetModuleHandleW")?;

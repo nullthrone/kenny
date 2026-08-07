@@ -1,6 +1,6 @@
 """SQLite-backed user store: accounts, PATs, sessions, and host scope.
 
-Backs the multi-user auth model (ADR-0037). Four tables in the shared
+Backs the multi-user auth model (ADR-0033). Four tables in the shared
 ``KENNY_DB_PATH`` database, following the same conventions as the other stores
 (own aiosqlite connection, ``CREATE TABLE IF NOT EXISTS`` at connect, timestamps
 as ISO-8601 UTC):
@@ -14,6 +14,12 @@ as ISO-8601 UTC):
   a stolen cookie is a session handle, not a reusable credential.
 * ``user_hosts`` — which agents a ``user``-role account may see and operate on.
 
+``users.capability_profile`` is a third, optional authorization axis alongside
+role and host scope: a named tool-allowlist (see ``tool_classes.PROFILES``)
+that narrows what the account may do. ``NULL`` means "no profile set" —
+unrestricted, subject to role and host scope, exactly as before this column
+existed.
+
 All lookups that resolve a credential to an account exclude disabled users and
 expired/revoked rows, so authorization upstream can trust a returned row.
 """
@@ -25,19 +31,21 @@ from datetime import datetime, timedelta, timezone
 import aiosqlite
 
 from . import security
+from .store import _configure_connection
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    username      TEXT NOT NULL UNIQUE,
-    password_hash TEXT NOT NULL,
-    totp_secret   TEXT,
-    email         TEXT,
-    role          TEXT NOT NULL,
-    avatar        TEXT,
-    disabled      INTEGER NOT NULL DEFAULT 0,
-    created_at    TEXT NOT NULL,
-    updated_at    TEXT NOT NULL
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    username           TEXT NOT NULL UNIQUE,
+    password_hash      TEXT NOT NULL,
+    totp_secret        TEXT,
+    email              TEXT,
+    role               TEXT NOT NULL,
+    avatar             TEXT,
+    disabled           INTEGER NOT NULL DEFAULT 0,
+    capability_profile TEXT,
+    created_at         TEXT NOT NULL,
+    updated_at         TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS user_tokens (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -65,6 +73,9 @@ CREATE TABLE IF NOT EXISTS user_hosts (
 
 _DEFAULT_SESSION_TTL_SECS = 7 * 24 * 3600  # 7 days
 
+# Columns added after the initial release; older DBs need an ALTER on connect.
+_MIGRATE_COLUMNS = ("capability_profile",)
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -81,6 +92,7 @@ def _public_user(row: aiosqlite.Row) -> dict:
         "avatar": row["avatar"],
         "disabled": bool(row["disabled"]),
         "totp_enabled": row["totp_secret"] is not None,
+        "capability_profile": row["capability_profile"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
@@ -101,9 +113,19 @@ class UserStore:
         if self._db is not None:
             return
         self._db = await aiosqlite.connect(self.db_path)
-        self._db.row_factory = aiosqlite.Row
+        await _configure_connection(self._db)
         await self._db.executescript(_SCHEMA)
+        await self._migrate()
         await self._db.commit()
+
+    async def _migrate(self) -> None:
+        """Add columns to DBs created before they existed."""
+
+        async with self._conn.execute("PRAGMA table_info(users)") as cur:
+            cols = {row["name"] for row in await cur.fetchall()}
+        for col in _MIGRATE_COLUMNS:
+            if col not in cols:
+                await self._conn.execute(f"ALTER TABLE users ADD COLUMN {col} TEXT")
 
     async def close(self) -> None:
         if self._db is not None:
@@ -203,6 +225,24 @@ class UserStore:
             rows = await cur.fetchall()
         return [_public_user(r) for r in rows]
 
+    async def list_directory(self) -> list[dict]:
+        """A minimal, auth-safe projection for resolving ids to usernames.
+
+        Unlike :meth:`list_users` (superuser-only, full account row), this is
+        exposed to any operator+ account so it can render another account's
+        id as a name: just ``{id, username, role}``, no email, avatar,
+        capability profile, or any other auth-sensitive field.
+        """
+
+        async with self._conn.execute(
+            "SELECT id, username, role FROM users ORDER BY username"
+        ) as cur:
+            rows = await cur.fetchall()
+        return [
+            {"id": r["id"], "username": r["username"], "role": r["role"]}
+            for r in rows
+        ]
+
     async def verify_login(self, username: str, password: str) -> aiosqlite.Row | None:
         """Return the account row iff username+password match and it's enabled.
 
@@ -281,6 +321,34 @@ class UserStore:
     async def get_totp_secret(self, user_id: int) -> str | None:
         row = await self._get_row(user_id)
         return row["totp_secret"] if row else None
+
+    async def set_capability_profile(self, user_id: int, profile: str | None) -> None:
+        """Set (or clear, with ``None``) the account's capability profile.
+
+        ``profile`` must be ``None`` or a name known to ``tool_classes.PROFILES``.
+        """
+
+        if profile is not None:
+            try:
+                # Import here, not at module load: tool_classes lands in a parallel
+                # workstream and may not exist yet. Remove this try/except once it
+                # has landed and hoist the import to the top of the module.
+                from .tool_classes import PROFILES
+            except ImportError:
+                PROFILES = {}  # noqa: N806 - mirrors the imported name
+            if PROFILES and profile not in PROFILES:
+                raise ValueError(f"unknown capability profile {profile!r}")
+            if not PROFILES and not profile:
+                raise ValueError("capability profile must not be empty")
+        await self._conn.execute(
+            "UPDATE users SET capability_profile = ?, updated_at = ? WHERE id = ?",
+            (profile, _now_iso(), user_id),
+        )
+        await self._conn.commit()
+
+    async def get_capability_profile(self, user_id: int) -> str | None:
+        row = await self._get_row(user_id)
+        return row["capability_profile"] if row else None
 
     async def count_superusers(self, *, exclude: int | None = None) -> int:
         """Enabled superusers, optionally excluding one id (last-admin guard)."""

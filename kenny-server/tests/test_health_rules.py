@@ -478,13 +478,13 @@ def test_net_quality_rules() -> None:
     assert ok["status"] == "ok"
 
 
-# -- reliability: alarm suppression (ADR-0045 / issue #166) -----------------
+# -- reliability: alarm suppression (ADR-0041 / issue #166) -----------------
 #
 # `suppressed` is stamped by the read-path SuppressionList.mark(), not by the
 # health rule itself (see reliability_suppression.py + the TelemetryStore.
 # annotate seam) -- these tests build already-stamped payloads directly, the
 # same way test_event_categories.py's fixtures already carry `category`/
-# `severity` as if ADR-0028 annotation had run.
+# `severity` as if ADR-0026 annotation had run.
 
 
 def test_reliability_suppressed_pattern_excluded_from_severity_scoring() -> None:
@@ -636,7 +636,7 @@ def test_reliability_volume_fallback_ignores_suppressed_critical_and_distinct() 
 
 
 def test_reliability_existing_tests_unaffected_by_suppression_support() -> None:
-    # No `suppressed` key anywhere -> byte-identical to pre-ADR-0045 behavior.
+    # No `suppressed` key anywhere -> byte-identical to pre-ADR-0041 behavior.
     events = [
         {"source": "Application Error", "event_id": 1000, "level": "error", "count": 84,
          "category": "App crash / hang", "severity": "notable"},

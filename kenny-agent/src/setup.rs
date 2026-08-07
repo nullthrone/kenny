@@ -3,7 +3,7 @@
 //! The connection config is resolved from the CLI flags and/or the
 //! `kenny-agent.setup.json` sidecar the server ships next to the exe (flags win). On
 //! Windows, `setup` elevates itself via UAC when needed, copies the running binary into
-//! `%ProgramFiles%\kenny`, and runs `install` from there. See ADR-0033.
+//! `%ProgramFiles%\kenny`, and runs `install` from there. See ADR-0030.
 //!
 //! The config resolution (and its tests) is portable and compiled on every platform so
 //! Linux CI exercises it; only the elevation/copy path is `#[cfg(windows)]`.
@@ -111,7 +111,7 @@ pub use linux_impl::setup;
 
 /// Linux bootstrap installer: copy the running binary into `/opt/kenny` and run
 /// `install` from there so the systemd unit's `ExecStart` points at the stable path.
-/// The parallel to the Windows UAC-elevated `%ProgramFiles%\kenny` copy (ADR-0035).
+/// The parallel to the Windows UAC-elevated `%ProgramFiles%\kenny` copy (ADR-0031).
 #[cfg(target_os = "linux")]
 mod linux_impl {
     use std::os::unix::fs::PermissionsExt as _;

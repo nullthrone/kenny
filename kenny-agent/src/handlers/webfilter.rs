@@ -1,4 +1,4 @@
-//! `webfilter_status|apply|clear` — parental-controls web filtering (ADR-0026).
+//! `webfilter_status|apply|clear` — parental-controls web filtering (ADR-0024).
 //!
 //! The agent is a **dumb, idempotent enforcer**: the server owns the per-host list and
 //! sends the full flat `domains` block set. The agent writes it as a marker-delimited

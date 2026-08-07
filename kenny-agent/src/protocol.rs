@@ -1,4 +1,4 @@
-//! Wire-protocol types mirroring `../docs/protocol.md` (v0.13).
+//! Wire-protocol types mirroring `../docs/protocol.md` (v0.17).
 //!
 //! These serde models are the Rust side of the contract between `kenny-server`
 //! (Python) and `kenny-agent`. They are round-tripped against `../docs/fixtures/`
@@ -12,7 +12,7 @@ use serde_json::{Map, Value};
 ///
 /// From v0.8 this is placed on the wire in `register.protocol` to select the
 /// mutual-auth handshake.
-pub const PROTOCOL_VERSION: &str = "0.14";
+pub const PROTOCOL_VERSION: &str = "0.17";
 
 /// One WebSocket text message. Tagged by the `type` field.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -20,7 +20,7 @@ pub const PROTOCOL_VERSION: &str = "0.14";
 pub enum Frame {
     /// agent → server: identifies the agent right after connect.
     Register(Register),
-    /// server → agent: the server's signed nonce (mutual-auth step 2). See ADR-0023.
+    /// server → agent: the server's signed nonce (mutual-auth step 2). See ADR-0022.
     Challenge(Challenge),
     /// agent → server: the agent's signature over the transcript (mutual-auth step 3).
     Auth(Auth),
@@ -32,7 +32,7 @@ pub enum Frame {
     Telemetry(Telemetry),
     /// agent → server: a forwarded `tracing` log record.
     Log(Log),
-    /// server → agent: operator's append-only extra deny rules (ADR-0021). Additive to
+    /// server → agent: operator's append-only extra deny rules (ADR-0020). Additive to
     /// the compiled-in built-ins; can never weaken or remove them.
     Policy(Policy),
     /// heartbeat (either direction).
@@ -52,7 +52,7 @@ pub struct Register {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_nonce: Option<String>,
     /// Per-agent bearer secret. Optional and legacy: honoured only during the migration
-    /// window when the signature path is not in use. See ADR-0023.
+    /// window when the signature path is not in use. See ADR-0022.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
     pub meta: RegisterMeta,
@@ -83,6 +83,8 @@ pub struct RegisterMeta {
     pub version: String,
     /// Normalized CPU architecture: `x86_64` or `aarch64`.
     pub arch: String,
+    /// Release channel this binary was built from: `stable` or `dev` (ADR-0048).
+    pub channel: String,
 }
 
 /// `request` frame body.
@@ -156,12 +158,12 @@ pub enum ErrorCode {
     Disabled,
     /// Refused by the agent's deterministic, always-on safety guard: a compiled-in
     /// policy that blocks individually dangerous calls regardless of operator approval
-    /// or kill-switch state. Cannot be turned off remotely. See ADR-0020.
+    /// or kill-switch state. Cannot be turned off remotely. See ADR-0019.
     Blocked,
     /// The agent is online but voluntarily stepped back because a protected game is
     /// running on the endpoint: it suspends its most anti-cheat-visible tools (today
     /// `screen_capture`) while the game runs, to avoid being mistaken for cheating
-    /// software. Automatic and game-scoped; clears when the game exits. See ADR-0039.
+    /// software. Automatic and game-scoped; clears when the game exits. See ADR-0035.
     Paused,
 }
 
@@ -191,7 +193,7 @@ pub struct Log {
     pub fields: Option<Value>,
 }
 
-/// `policy` frame body: the operator's current set of append-only deny rules (ADR-0021).
+/// `policy` frame body: the operator's current set of append-only deny rules (ADR-0020).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Policy {
     pub rules: Vec<PolicyRule>,
@@ -292,7 +294,7 @@ mod tests {
     /// Interop guard against the Python side: rebuild the transcript from the golden
     /// vectors, sign it with the agent seed, and assert it matches `agent_sig_b64`; then
     /// verify `server_sig_b64` against `server_public_key_b64`. If the transcript byte
-    /// layout drifts between Rust and Python, this fails. See ADR-0023.
+    /// layout drifts between Rust and Python, this fails. See ADR-0022.
     #[test]
     fn mutual_auth_vectors_interop() {
         use base64::engine::general_purpose::STANDARD;

@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -146,7 +147,20 @@ GROUP_ORDER: tuple[str, ...] = (
     "Agent distribution",
     "Backup",
     "Updates",
+    "Discord & Tickets",
 )
+
+
+def group_slug(name: str) -> str:
+    """URL-stable slug for a group name (the settings sidebar's ``#/settings/{slug}``).
+
+    Derived from the display name rather than hand-assigned so every group is
+    guaranteed one; a slug only changes if the group's *name* changes, at which
+    point ``test_config.py`` pins the mapping so the break is caught, not silent.
+    """
+
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+
 
 _SPECS: list[SettingSpec] = [
     # -- Alerting & Digest (live; consumed by AlertEngine each pass) -----------
@@ -171,6 +185,20 @@ _SPECS: list[SettingSpec] = [
           "Digest day", lifecycle="live", choices=_DAYS),
     _spec("KENNY_DIGEST_HOUR", "Alerting & Digest", "int", "8",
           "Digest hour (0-23)", lifecycle="live", min=0, max=23),
+    # -- Alert push channels (env_only; read directly by notify.load_notifiers()
+    # at startup, not through Settings — advertising them as writable would be a
+    # lie about what actually takes effect). ------------------------------------
+    _spec("KENNY_NTFY_URL", "Alerting & Digest", "str", "",
+          "ntfy topic URL", lifecycle="env_only", sensitive=True,
+          help="ntfy.sh (or self-hosted) topic URL alerts are pushed to. "
+               "Treated as sensitive: a topic URL is bearer-equivalent."),
+    _spec("KENNY_NTFY_TOKEN", "Alerting & Digest", "secret", "",
+          "ntfy access token", lifecycle="env_only", sensitive=True,
+          help="Optional bearer token for an access-controlled ntfy topic."),
+    _spec("KENNY_WEBHOOK_URL", "Alerting & Digest", "secret", "",
+          "Generic alert webhook URL", lifecycle="env_only", sensitive=True,
+          help="Incoming-webhook URL alerts are POSTed to, independent of the "
+               "Discord alert webhook below."),
     # -- Web filter (live; consumed by the refresh loop / ExternalListCache) ---
     _spec("KENNY_WEBFILTER_REFRESH_SECS", "Web filter", "int", "86400",
           "External list refresh (s)", lifecycle="live", min=0,
@@ -190,7 +218,7 @@ _SPECS: list[SettingSpec] = [
     # -- Chat & AI -------------------------------------------------------------
     _spec("KENNY_CHAT_MODEL", "Chat & AI", "str", "claude-sonnet-4-6",
           "Chat model", lifecycle="live",
-          help="Anthropic model id used by the server-hosted copilot chat."),
+          help="Anthropic model id used by Ask kenny."),
     _spec("ANTHROPIC_API_KEY", "Chat & AI", "secret", "",
           "Anthropic API key", lifecycle="env_only", sensitive=True,
           help="Gates the chat/recommendation features. Managed via environment."),
@@ -231,7 +259,15 @@ _SPECS: list[SettingSpec] = [
     _spec("KENNY_SESSION_TTL_SECS", "Operator & Agent Auth", "int", "604800",
           "Login session lifetime (s)", lifecycle="env_only", min=60,
           help="How long a browser login session stays valid before re-login "
-               "(default 7 days). Read at login time (ADR-0037)."),
+               "(default 7 days). Read at login time (ADR-0033)."),
+    _spec("KENNY_OAUTH_ACCESS_TTL_SECS", "Operator & Agent Auth", "int", "3600",
+          "OAuth access token lifetime (s)", lifecycle="env_only", min=1,
+          help="MCP/Claude OAuth bearer token lifetime (default 1 hour). Read "
+               "per-issuance by oauth.py, not through Settings."),
+    _spec("KENNY_OAUTH_REFRESH_TTL_SECS", "Operator & Agent Auth", "int", "2592000",
+          "OAuth refresh token lifetime (s)", lifecycle="env_only", min=1,
+          help="MCP/Claude OAuth refresh token lifetime (default 30 days). Read "
+               "per-issuance by oauth.py, not through Settings."),
     _spec("KENNY_FORWARDED_ALLOW_IPS", "Operator & Agent Auth", "str", "127.0.0.1",
           "Trusted proxy IPs (X-Forwarded-For)", lifecycle="env_only",
           help="Upstream addresses allowed to set X-Forwarded-For so the login "
@@ -258,6 +294,19 @@ _SPECS: list[SettingSpec] = [
           "Agent push interval (s)", lifecycle="env_only",
           help="Advertised to agents at install time. Agent-facing "
                "(deferred to a future ADR)."),
+    _spec("KENNY_TELEMETRY_RETENTION_DAYS", "Telemetry limits", "int", "30",
+          "Snapshot retention (days)", lifecycle="live", min=1,
+          help="How long raw telemetry snapshots are kept. Snapshots dominate "
+               "this database's size (~90 KB per row); lowering this is the "
+               "main lever on disk usage. Lowering it prunes on the next alert "
+               "cycle (~60s), not on a restart. Deleting rows frees space for "
+               "reuse but does not shrink the database file — restore from a "
+               "backup (ADR-0039) or VACUUM offline to reclaim disk."),
+    _spec("KENNY_SQLITE_BUSY_TIMEOUT_MS", "Telemetry limits", "int", "20000",
+          "SQLite busy timeout (ms)", lifecycle="env_only",
+          help="How long a write waits for a contended SQLite lock before "
+               "raising 'database is locked' (ADR-0051). Read once at import "
+               "time, so it cannot be changed live from the dashboard."),
     # -- Agent distribution (read-only this iteration) -------------------------
     _spec("KENNY_GITHUB_REPO", "Agent distribution", "str", "t11z/kenny",
           "Agent GitHub repo", lifecycle="env_only"),
@@ -288,7 +337,7 @@ _SPECS: list[SettingSpec] = [
           "Backup directory (env only)", lifecycle="env_only",
           help="Overrides the local backup directory. Empty derives it from "
                "KENNY_DB_PATH (a sibling 'backups' directory)."),
-    # -- Updates (live; scheduled detection + operator-approved rollout, ADR-0044) --
+    # -- Updates (live; scheduled detection + operator-approved rollout, ADR-0040) --
     _spec("KENNY_UPDATE_CHECK_INTERVAL_SECS", "Updates", "int", "86400",
           "Update check interval (s)", lifecycle="live", min=0,
           help="Cadence of the scheduled check for newer agent releases (GitHub) "
@@ -316,6 +365,86 @@ _SPECS: list[SettingSpec] = [
                "every agent reached the target version (default 14 days). It "
                "already auto-completes earlier once every known agent is on the "
                "target version."),
+    # -- Discord & Tickets -----------------------------------------------------
+    # Tickets are independent of Discord: the ticket store, lifecycle service and
+    # sweeper run on every server. The Discord keys only decide whether the bot
+    # surface is also connected.
+    _spec("KENNY_DISCORD_BOT_TOKEN", "Discord & Tickets", "secret", "",
+          "Discord bot token", lifecycle="env_only", sensitive=True,
+          help="Bot token of the Discord application. Managed via the "
+               "environment; without it the Discord surface stays off."),
+    _spec("KENNY_DISCORD_WEBHOOK_URL", "Discord & Tickets", "secret", "",
+          "Discord alert webhook URL", lifecycle="env_only", sensitive=True,
+          help="Incoming-webhook URL used as a push notification channel for "
+               "alerts. Independent of the bot surface."),
+    _spec("KENNY_DISCORD_ENABLED", "Discord & Tickets", "bool", "0",
+          "Discord bot enabled", lifecycle="restart",
+          help="Connect the Discord bot surface at startup. Requires a bot "
+               "token and at least one allowed guild."),
+    _spec("KENNY_DISCORD_GUILD_IDS", "Discord & Tickets", "str", "",
+          "Allowed guild IDs", lifecycle="restart",
+          help="Comma-separated Discord server (guild) snowflakes kenny reacts "
+               "in. EMPTY MEANS DENY EVERYWHERE — there is no allow-all mode."),
+    _spec("KENNY_DISCORD_SUPPORT_CHANNEL_ID", "Discord & Tickets", "str", "",
+          "Support channel ID", lifecycle="live",
+          help="Channel snowflake where a mention opens a ticket. Empty accepts "
+               "a mention in any channel of an allowed guild."),
+    _spec("KENNY_DISCORD_OPERATOR_CHANNEL_ID", "Discord & Tickets", "str", "",
+          "Operator channel ID", lifecycle="live",
+          help="Channel snowflake where operator approval cards are posted. "
+               "Empty posts them into the ticket thread instead."),
+    _spec("KENNY_DISCORD_PRIVATE_THREADS", "Discord & Tickets", "bool", "1",
+          "Use private threads", lifecycle="live",
+          help="Open each ticket in a private thread with only the requester "
+               "invited. Falls back to a public thread where the server plan "
+               "does not allow private ones."),
+    _spec("KENNY_DISCORD_MODEL", "Discord & Tickets", "str", "",
+          "Discord model", lifecycle="live",
+          help="Anthropic model id used on the Discord surface. Empty falls "
+               "back to KENNY_CHAT_MODEL."),
+    _spec("KENNY_DISCORD_MAX_TURNS_PER_TICKET", "Discord & Tickets", "int", "40",
+          "Max assistant turns per ticket", lifecycle="live", min=1,
+          help="Hard cap on autonomous turns; the ticket is handed to an "
+               "operator once it is reached."),
+    _spec("KENNY_DISCORD_RATE_LIMIT_PER_USER_HOUR", "Discord & Tickets", "int", "20",
+          "Requests per user per hour", lifecycle="live", min=0,
+          help="Per-account throttle on opening/driving tickets from Discord. "
+               "0 means unlimited."),
+    _spec("KENNY_TICKET_APPROVAL_TTL_SECS", "Discord & Tickets", "int", "86400",
+          "Approval/consent lifetime (s)", lifecycle="live", min=0,
+          help="How long a held tool call waits for a decision before the "
+               "sweeper expires it (an expiry counts as a denial). 0 means the "
+               "gate never expires."),
+    _spec("KENNY_TICKET_AUTOCLOSE_SECS", "Discord & Tickets", "int", "172800",
+          "Auto-close resolved after (s)", lifecycle="live", min=0,
+          help="Reopen window: a resolved ticket untouched for this long is "
+               "closed by the sweeper. 0 disables auto-closing."),
+    _spec("KENNY_TICKET_STALL_NUDGE_SECS", "Discord & Tickets", "int", "172800",
+          "Stall reminder after (s)", lifecycle="live", min=0,
+          help="A ticket blocked on a reply (from the requester or an operator) "
+               "for this long gets one reminder from the sweeper. 0 disables "
+               "reminders."),
+    _spec("KENNY_TICKET_STALL_GIVEUP_SECS", "Discord & Tickets", "int", "604800",
+          "Stall escalate-to-operator after (s)", lifecycle="live", min=0,
+          help="A ticket still waiting on the requester after this long is "
+               "re-blocked on an operator instead — the requester was not "
+               "going to answer, so a human needs to pick it up. Never applies "
+               "to a ticket already waiting on an operator. 0 disables "
+               "escalation."),
+    _spec("KENNY_TICKET_SWEEP_INTERVAL_SECS", "Discord & Tickets", "int", "300",
+          "Ticket sweep interval (s)", lifecycle="live", min=0,
+          help="Cadence of the housekeeping pass that expires overdue gates and "
+               "auto-closes resolved tickets. Changing it retimes the running "
+               "loop. Setting it to 0 disables the loop only after a restart."),
+    _spec("KENNY_TICKET_SWEEP_INITIAL_DELAY", "Discord & Tickets", "float", "30",
+          "Initial sweep delay (s)", lifecycle="restart", min=0,
+          help="Delay before the first ticket sweep after startup."),
+    _spec("KENNY_TICKET_RETENTION_DAYS", "Discord & Tickets", "int", "30",
+          "Ticket transcript retention (days)", lifecycle="live", min=1,
+          help="How long a closed ticket keeps its raw working transcript — the "
+               "verbatim conversation and tool output needed only to resume it. "
+               "The ticket, its summary and its audit trail are never pruned, so "
+               "the record outlives the transcript by design."),
 ]
 
 CATALOG: dict[str, SettingSpec] = {spec.key: spec for spec in _SPECS}
@@ -449,7 +578,7 @@ class Settings:
                 row["default"] = spec.parse(spec.default_raw)
             by_group.setdefault(spec.group, []).append(row)
         return [
-            {"name": group, "settings": by_group[group]}
+            {"name": group, "slug": group_slug(group), "settings": by_group[group]}
             for group in GROUP_ORDER
             if by_group.get(group)
         ]

@@ -1,7 +1,7 @@
 """Tests for :mod:`kenny_server.notify` (ntfy + webhook channels).
 
 Both channels are exercised against an ``httpx.MockTransport`` so no network
-is touched; delivery failures must be swallowed (best-effort per ADR-0029).
+is touched; delivery failures must be swallowed (best-effort per ADR-0027).
 """
 
 from __future__ import annotations
@@ -69,6 +69,7 @@ async def test_webhook_posts_json_payload() -> None:
             tags=["electric_plug"],
             agent_id="pc1",
             kind="alert",
+            event_type="offline",
         )
     )
     import json
@@ -80,7 +81,32 @@ async def test_webhook_posts_json_payload() -> None:
     assert payload["priority"] == "high"
     assert payload["tags"] == ["electric_plug"]
     assert payload["agent_id"] == "pc1"
+    assert payload["event_type"] == "offline"
+    assert payload["sections"] == {}
     assert payload["at"]
+
+
+async def test_webhook_payload_carries_the_event_discriminator() -> None:
+    """event_type/sections reach the webhook payload, so an external
+    consumer can filter without parsing the free-text body."""
+
+    captured: list[httpx.Request] = []
+    notifier = WebhookNotifier("https://hook.example/x", client_factory=_capture_factory(captured))
+    await notifier.send(
+        Notification(
+            title="pc1 health: crit",
+            body="disk: warn -> crit",
+            agent_id="pc1",
+            kind="alert",
+            event_type="health",
+            sections={"disk": "crit"},
+        )
+    )
+    import json
+
+    payload = json.loads(captured[0].content)
+    assert payload["event_type"] == "health"
+    assert payload["sections"] == {"disk": "crit"}
 
 
 async def test_send_is_best_effort_on_http_error() -> None:

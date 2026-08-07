@@ -48,16 +48,26 @@ INSTALLER_TTL_S = 3600  # one hour for an operator-shared installer link
 BINARY_TTL_S = 600  # ten minutes for a self-update binary fetch
 
 
-def agent_binary_path(os_name: str = "windows", arch: str = "x86_64") -> str | None:
-    """Path to the prebuilt agent binary for ``(os_name, arch)``, or None.
+def agent_binary_path(
+    os_name: str = "windows", arch: str = "x86_64", channel: str = "stable"
+) -> str | None:
+    """Path to the prebuilt agent binary for ``(os_name, arch, channel)``, or None.
 
-    Operator-placed env override wins, otherwise the GitHub-fetched cache
-    (``agent_release.cache_path``) is used if present (ADR-0015). Overrides:
+    Operator-placed env override wins for ``channel="stable"``, otherwise the
+    GitHub-fetched cache (``agent_release.cache_path``) is used if present
+    (ADR-0015). Overrides (stable only):
 
     * windows/x86_64 -> ``KENNY_AGENT_BINARY`` (the default, pre-Linux behavior).
     * linux/x86_64   -> ``KENNY_AGENT_BINARY_LINUX``.
     * linux/aarch64  -> ``KENNY_AGENT_BINARY_LINUX_AARCH64``.
+
+    ``channel="dev"`` has no manual-placement env in this iteration (ADR-0048)
+    — it goes straight to the channel-aware cache path.
     """
+
+    if channel != "stable":
+        cache = agent_release.cache_path(os_name, arch, channel)
+        return cache if os.path.exists(cache) else None
 
     if os_name == "linux":
         env = (
@@ -110,7 +120,7 @@ async def perform_agent_update(
     The one place that actually calls the wire tool, shared by the manual
     per-agent "update now" route (below, resolves the live agent-binary cache)
     and the update-campaign machinery (``update_manager.py``, resolves a
-    durable, pinned per-campaign artifact — ADR-0044) so both paths mint
+    durable, pinned per-campaign artifact — ADR-0040) so both paths mint
     nonces and call ``agent_update`` identically. Raises :class:`ToolError` on
     an agent-side error or timeout, same as ``tunnel.send_request``.
     """
@@ -142,7 +152,7 @@ class _Nonce:
     binary_nonce: str | None = None
     # An explicit file path this nonce must serve, overriding the live
     # agent_binary_path(os, arch) lookup. Used by a pinned update campaign
-    # (ADR-0044) so a "binary" nonce always serves the exact artifact snapshot
+    # (ADR-0040) so a "binary" nonce always serves the exact artifact snapshot
     # the operator approved, even if the shared agent-release cache has since
     # been overwritten by a later detection pass. None (the default) preserves
     # the original "serve whatever is currently cached" behavior.
@@ -271,7 +281,7 @@ def _install_sh(
 
     The enrollment token lives only here (in argv) — never on disk.
 
-    ``arch``, when given, is an operator-pinned target (ADR-0040): the script
+    ``arch``, when given, is an operator-pinned target (ADR-0036): the script
     skips ``uname -m`` detection and uses the pinned value literally — the
     operator is preparing a package for a specific, already-known host. When
     None (the default), the script auto-detects at curl-time exactly as before.
@@ -370,7 +380,7 @@ def build_download_routes(
 
         Unlike ``_norm_arch``, an absent/unrecognized value returns None rather
         than guessing — None means "not pinned", letting the Linux install script
-        fall back to its own ``uname -m`` auto-detection (ADR-0040).
+        fall back to its own ``uname -m`` auto-detection (ADR-0036).
         """
 
         raw = (request.query_params.get("arch") or "").strip().lower()
@@ -385,7 +395,7 @@ def build_download_routes(
 
         The binary nonce lives as long as the install link (INSTALLER_TTL_S) so it
         survives the fetch->run gap. The token rides only in the script argv. ``arch``
-        (ADR-0040) pins the target CPU arch when the operator already knows it;
+        (ADR-0036) pins the target CPU arch when the operator already knows it;
         None preserves the existing ``uname -m`` auto-detection.
         """
 
@@ -424,7 +434,7 @@ def build_download_routes(
         if _req_os(request) == "linux":
             # A one-time install link + its paired (non-consumed) binary nonce. We
             # store the binary nonce on the install nonce so /d/install can reach it.
-            # `arch` (ADR-0040), when pinned, rides on BOTH nonces: the install
+            # `arch` (ADR-0036), when pinned, rides on BOTH nonces: the install
             # nonce so `public_install` can recover it at fetch time (across the
             # mint->fetch gap), the binary nonce as `public_binary`'s own fallback.
             arch = _req_arch(request)
@@ -492,7 +502,7 @@ def build_download_routes(
         )
 
     async def enroll(request: Request) -> Response:
-        """Bind an agent's Ed25519 public key on first contact (ADR-0023).
+        """Bind an agent's Ed25519 public key on first contact (ADR-0022).
 
         Auth: the per-agent enrollment token (the minted installer token) acts as
         the one-time enrollment secret. It is read from the ``Authorization:
@@ -536,7 +546,12 @@ def build_download_routes(
         agent = registry.get(agent_id)
         os_name = agent.os if agent is not None else "windows"
         arch = agent.arch if agent is not None else "x86_64"
-        binary = agent_binary_path(os_name=os_name, arch=arch)
+        # Manual "update this one agent now" pulls the agent's *desired*
+        # channel (ADR-0048, soll not ist) via the update store already on
+        # app.state, so a dev-pinned agent gets the dev binary, not stable.
+        update_store = getattr(request.app.state, "update_store", None)
+        channel = await update_store.get_desired_channel(agent_id) if update_store is not None else "stable"
+        binary = agent_binary_path(os_name=os_name, arch=arch, channel=channel)
         if binary is None:
             return JSONResponse({"error": "agent binary not configured"}, status_code=503)
         version = agent_release.resolve_agent_version(binary)
@@ -567,7 +582,7 @@ def build_download_routes(
         os_name = entry.os
         # The install script appends the box's real arch as a query param.
         arch = _norm_arch(request.query_params.get("arch") or entry.arch)
-        # A pinned update campaign (ADR-0044) carries its own artifact path;
+        # A pinned update campaign (ADR-0040) carries its own artifact path;
         # otherwise resolve the live agent-binary cache as before.
         binary = entry.path or agent_binary_path(os_name=os_name, arch=arch)
         if binary is None or not os.path.exists(binary):
@@ -591,7 +606,7 @@ def build_download_routes(
                 or agent_binary_path("linux", "aarch64") is not None
             ),
         }
-        # Per-(os,arch) availability (ADR-0040): the dashboard's "Add a PC" arch
+        # Per-(os,arch) availability (ADR-0036): the dashboard's "Add a PC" arch
         # dropdown offers only combinations we actually have a binary for.
         body["targets"] = [
             {"os": os_name, "arch": arch, "available": agent_binary_path(os_name, arch) is not None}
@@ -601,6 +616,27 @@ def build_download_routes(
         body["repo"] = agent_release.github_repo()
         last = getattr(request.app.state, "last_fetch", None)
         body["last_fetch"] = last.to_public() if last is not None else None
+        # Dev-channel cache status, additive (ADR-0048): lets the dashboard show
+        # "dev binary available: yes/no" without a second round trip.
+        win_dev = agent_binary_path(channel="dev")
+        body["dev"] = {
+            "available": win_dev is not None,
+            "by_os": {
+                "windows": win_dev is not None,
+                "linux": (
+                    agent_binary_path("linux", "x86_64", "dev") is not None
+                    or agent_binary_path("linux", "aarch64", "dev") is not None
+                ),
+            },
+            "targets": [
+                {
+                    "os": os_name,
+                    "arch": arch,
+                    "available": agent_binary_path(os_name, arch, "dev") is not None,
+                }
+                for os_name, arch in agent_release.SUPPORTED_TARGETS
+            ],
+        }
         return JSONResponse(body)
 
     async def agent_binary_fetch(request: Request) -> Response:

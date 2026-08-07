@@ -1,22 +1,24 @@
-"""Server-side "AI Forecast" for one agent's near-term outlook (ADR-0034).
+"""Server-side "AI Forecast" for one agent's near-term outlook.
 
 The agent drill-down opens with a short, plain-English forecast of what is
 likely to need attention on that PC soon — disks trending toward full, battery
 degradation, and notable inventory changes since yesterday — synthesized from
-the cross-snapshot signals ADR-0030's engine already computes (``trends.py``
+the cross-snapshot signals the engine already computes (``trends.py``
 disk/battery forecasts and ``diffs.py`` inventory diff) plus the current health
-roll-up.
+roll-up. ``build_facts`` caps what it assembles, so neither the prompt nor the
+summary grows with the size of the diff — a drill-down opens with a takeaway, not
+with a table of every delta.
 
-Mirrors ``recommend.py`` (ADR-0019): server-side, on the telemetry read path,
+Mirrors ``recommend.py``: server-side, on the telemetry read path,
 streamed as SSE, with a frozen cacheable system prompt (Anthropic prompt
 caching) and an in-memory result cache. The Anthropic client is injected
 (``forecast_events(client, facts)``) so tests pass a fake client and no real API
 key is required.
 
-Graceful degradation (ADR-0028 posture): with no ``ANTHROPIC_API_KEY`` the
+Graceful degradation (ADR-0026 posture): with no ``ANTHROPIC_API_KEY`` the
 endpoint falls back to :func:`deterministic_summary`, a bounded *prose* summary
-built from the same facts — the panel is always useful, never empty, and never
-grows without bound (the failing of the old "changes & forecast" table).
+built from the same facts — the panel is always useful, never empty, and bounded
+the same way.
 """
 
 from __future__ import annotations
@@ -71,7 +73,7 @@ def build_facts(
     summary can grow without bound.
 
     ``agent_os`` is forwarded to :func:`tools.build_health` so a non-Windows
-    agent's Windows-only sections are not scored as flagged (ADR-0035).
+    agent's Windows-only sections are not scored as flagged (ADR-0031).
     """
 
     health = build_health(snapshot, agent_os=agent_os)

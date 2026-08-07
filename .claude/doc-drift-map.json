@@ -54,7 +54,15 @@
       "sources": ["kenny-server/kenny_server/webfilter*"],
       "docs": ["docs/parental-controls.md"],
       "screenshots": ["parental-controls"],
-      "adr": "A change to the filter's trust/precedence model is architectural (see ADR-0026); the list editor UI is not."
+      "adr": "A change to the filter's trust/precedence model is architectural (see ADR-0024); the list editor UI is not."
+    },
+    {
+      "id": "account-governance",
+      "why": "Who may sign in to a PC: the account_* tools, the accounts panel, and the local_accounts/logon_failures sections behind them. Local and Microsoft accounts share one surface, so a change to what is possible for one changes the reference for both.",
+      "sources": ["kenny-server/kenny_server/webui/index.html", "kenny-server/kenny_server/tools.py"],
+      "docs": ["docs/account-governance.md"],
+      "screenshots": ["drilldown", "agent-detail"],
+      "adr": "Changing what kenny may do to an account, or the privacy line around naming accounts, is architectural (see ADR-0042); a panel-layout tweak is not."
     },
     {
       "id": "alerting",
@@ -66,7 +74,7 @@
       ],
       "docs": ["docs/alerting.md"],
       "screenshots": ["activity-events"],
-      "adr": "A change to the alert model (transitions/scopes) may warrant an ADR (see ADR-0029)."
+      "adr": "A change to the alert model (transitions/scopes) may warrant an ADR (see ADR-0027)."
     },
     {
       "id": "tool-catalog",
@@ -78,7 +86,7 @@
     },
     {
       "id": "runtime-settings",
-      "why": "The runtime settings catalog exposed by the dashboard settings editor (ADR-0036) and documented in setup.",
+      "why": "The runtime settings catalog exposed by the dashboard settings editor (ADR-0032) and documented in setup.",
       "sources": ["kenny-server/kenny_server/config.py"],
       "docs": ["docs/dashboard.md", "docs/setup.md"],
       "screenshots": [],
@@ -86,10 +94,10 @@
     }
   ],
   "adr_rule": {
-    "why": "Every accepted ADR record must be linked from the index table so it is reachable (mkdocs keeps individual records not_in_nav).",
+    "why": "A record number is an address a reader follows from a code comment, so the set has to stay internally consistent: gap-free 0001..N numbering, an index that matches the directory, and citations that resolve.",
     "sources": ["docs/adr/0*.md"],
     "index": "docs/adr/README.md",
     "ignore": ["docs/adr/0000-template.md"],
-    "note": "A newly added docs/adr/NNNN-*.md whose filename is not referenced in docs/adr/README.md is drift - add its index row."
+    "note": "Checked by .claude/hooks/doc-drift.py whenever a session touches a record, the index, or a file citing one: the numbering must be a gap-free 0001..N, every record must have an index row pointing at its real filename (and vice versa), and every ADR-NNNN citation or adr/NNNN- link anywhere in the repo must resolve. Implementation rationale belongs in the code it explains, never in a second kind of document."
   }
 }

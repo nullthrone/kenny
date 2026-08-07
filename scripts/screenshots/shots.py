@@ -1,4 +1,5 @@
-"""The screenshot manifest: one :class:`Shot` per figure in ``docs/dashboard.md``.
+"""The screenshot manifest: one :class:`Shot` per figure in ``docs/dashboard.md``
+(and, for the ticket views, ``docs/itsm.md``).
 
 Each shot names a target view (a URL hash), a capture ``mode`` (``full_page`` or
 an element ``selector`` crop), a ``theme``, and an ordered list of ``actions`` the
@@ -138,7 +139,7 @@ MANIFEST: list[Shot] = [
             *_select("grandpa-pc"),
             {"eval": "openSectionDetail('reliability')"},
             {"wait_for": "#modal-overlay #k-reliab-heat"},
-            # The alarm suppression panel (ADR-0045 / issue #166) mounts async
+            # The alarm suppression panel (ADR-0041 / issue #166) mounts async
             # after the heatmap; wait for it too so the seeded suppressed
             # pattern and its rule row are visible in the capture.
             {"wait_for": "#modal-overlay #k-relsup-panel .kwf-list, #modal-overlay #k-relsup-panel .kwf-row"},
@@ -265,6 +266,53 @@ MANIFEST: list[Shot] = [
             {"wait_for": "#modal-overlay #km-share-url"},
             {"sleep": 300},
         ],
+    ),
+    Shot(
+        name="tickets",
+        hash="#/tickets",
+        mode="full_page",
+        # Check the first row so the bulk-action bar (state picker + Apply,
+        # operator+ only) renders in the figure alongside the list itself.
+        actions=[
+            {"wait_for": "table.kacc-tbl tbody tr"},
+            {"eval": "document.querySelector('table.kacc-tbl tbody tr td input[type=checkbox]').click()"},
+            {"wait_for": "#tk-bulk-bar"},
+            {"sleep": 300},
+        ],
+    ),
+    Shot(
+        name="ticket-detail",
+        hash="#/tickets/demo-tkt-flush",
+        mode="full_page",
+        actions=[{"wait_for": ".kc-timeline"}, {"sleep": 300}],
+    ),
+    Shot(
+        name="settings",
+        hash="#/settings",
+        mode="full_page",
+        actions=[
+            {"wait_for": ".kc-navitem"},
+            {"wait_for": "#set-KENNY_ALERT_COOLDOWN_SECS"},
+            {"sleep": 300},
+        ],
+    ),
+    Shot(
+        name="settings-backup",
+        hash="#/settings/backup",
+        mode="full_page",
+        actions=[
+            # The catalog row is always present regardless of whether any demo
+            # backup has been seeded (the backup list itself may be empty).
+            {"wait_for": "#set-KENNY_BACKUP_INTERVAL_SECS"},
+            {"sleep": 300},
+        ],
+    ),
+    Shot(
+        name="discord-settings",
+        hash="#/settings/discord-tickets",
+        mode="element",
+        selector="#discord-panel",
+        actions=[{"wait_for": "#discord-panel .kacc-tbl"}, {"sleep": 300}],
     ),
     Shot(
         name="about",

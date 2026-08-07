@@ -26,9 +26,17 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# The Discord bot surface. Optional on purpose: a self-hoster who does not use
+# Discord must not pull it in, and the server starts and runs normally without
+# it (discord.py is imported lazily, in discord_adapter.DiscordPyGateway.start()
+# alone). Install with `pip install -e ".[discord]"`.
+discord = [
+    "discord.py>=2.3",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
+    "pytest-timeout>=2.3",
     "ruff>=0.5",
 ]
 docs = [
@@ -66,6 +74,22 @@ include = ["kenny_server*"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# A hung test previously sat in CI as "in_progress" for the runner's full
+# multi-hour job limit with no output -- indistinguishable from a healthy
+# slow job until someone cancelled it by hand. This bound catches that fast
+# and "thread" dumps every thread's stack into the log instead of leaving CI
+# silent. It fits the *fast* suite, where the slowest workloads finish in low
+# single-digit seconds -- it does NOT fit tests/test_integration_e2e.py, which
+# legitimately runs minutes against a cold Windows runner's real PowerShell/CIM
+# collectors. That test overrides this value with its own
+# `@pytest.mark.timeout(...)`, sized from named budget constants at the top of
+# the file; tests/test_e2e_timeout_budget.py asserts the two stay in
+# agreement. (A prior version of this comment claimed no test needed anywhere
+# near 90s -- that was false for the Windows e2e test and briefly broke the
+# dev-channel release by cutting its e2e gate off ~10s before it would have
+# finished.)
+timeout = 90
+timeout_method = "thread"
 
 [tool.ruff]
 line-length = 100

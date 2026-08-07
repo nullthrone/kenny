@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sqlite3
+
 from starlette.testclient import TestClient
 
 from kenny_server.main import build_app
@@ -76,7 +78,14 @@ def test_audit_endpoint_shape_and_classification(tmp_path):
         by_tool = {e["tool"]: e for e in entries}
         assert by_tool["telemetry_collect"]["state_changing"] is False
         assert by_tool["winget_update"]["state_changing"] is True
-        assert set(entries[0]) == {"at", "agent_id", "tool", "ok", "error", "state_changing"}
+        # The three-tier class is carried alongside the boolean, not instead of
+        # it: the dashboard keeps reading `state_changing`, the ticket trail and
+        # the Discord surface grade the same call more finely.
+        assert by_tool["telemetry_collect"]["tool_class"] == "read_only"
+        assert by_tool["winget_update"]["tool_class"] == "standard_change"
+        assert set(entries[0]) == {
+            "at", "agent_id", "tool", "ok", "error", "state_changing", "tool_class",
+        }
 
 
 def test_audit_requires_auth(tmp_path):
@@ -97,6 +106,9 @@ def test_settings_list_shape_and_secret_masking(tmp_path, monkeypatch):
         assert r.status_code == 200
         groups = r.json()["groups"]
         assert [g["name"] for g in groups][0] == "Alerting & Digest"
+        # the settings sidebar routes on this slug (#/settings/{slug})
+        assert {g["name"]: g["slug"] for g in groups}["Alerting & Digest"] == "alerting-digest"
+        assert all(g["slug"] for g in groups)
         flat = {s["key"]: s for g in groups for s in g["settings"]}
         # env source is reported
         assert flat["KENNY_DIGEST_HOUR"]["value"] == 9
@@ -367,3 +379,49 @@ def test_agent_trends_endpoint(tmp_path):
         (forecast,) = body["disk"]
         assert forecast["mount"] == "C:"
         assert forecast["days_until_full"] == 10.0
+
+
+# -- POST /api/agent/{id}/refresh: a storage hiccup must not 500 -------------
+#
+# The tunnel round-trip already succeeded by the time store.insert runs; a
+# transient write failure there (e.g. SQLite lock contention) must not turn a
+# working refresh into a 500. Both cases stub tunnel.send_request instead of
+# driving a real mock agent (see test_server_e2e.py) — the behaviour under
+# test lives entirely after the tunnel call returns.
+
+
+async def _fake_send_request(agent_id, tool, args, timeout_s=60):
+    return {"disk": {"status": "ok", "summary": ""}}
+
+
+def test_refresh_reports_stored_false_on_write_failure(tmp_path, monkeypatch):
+    app = build_app(db_path=str(tmp_path / "refresh.sqlite"))
+    monkeypatch.setattr(app.state.tunnel, "send_request", _fake_send_request)
+
+    async def _raise_locked(*a, **kw):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(app.state.store, "insert", _raise_locked)
+
+    with TestClient(app) as c:
+        r = c.post("/api/agent/example-pc/refresh", headers=_bearer(app))
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["stored"] is False
+    assert "warning" in body and body["warning"]
+
+
+def test_refresh_reports_stored_true_on_success(tmp_path):
+    app = build_app(db_path=str(tmp_path / "refresh-ok.sqlite"))
+    app.state.tunnel.send_request = _fake_send_request  # type: ignore[method-assign]
+
+    with TestClient(app) as c:
+        r = c.post("/api/agent/example-pc/refresh", headers=_bearer(app))
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["stored"] is True
+    assert "warning" not in body

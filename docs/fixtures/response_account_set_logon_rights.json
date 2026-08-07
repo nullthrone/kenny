@@ -1,0 +1,11 @@
+{
+  "type": "response",
+  "id": "d9e3c6f4-5071-4c8d-9e0f-2a3b4c5d6e7f",
+  "ok": true,
+  "result": {
+    "ok": true,
+    "principal": "kid",
+    "kind": "microsoft",
+    "deny": ["network", "remote_interactive"]
+  }
+}

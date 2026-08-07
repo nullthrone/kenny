@@ -173,6 +173,12 @@ class MockAgent:
             # A real full-screen PNG, base64-encoded, routinely runs a few MB —
             # far past the telemetry cap but within the absolute frame ceiling.
             result = {"image_b64": "A" * (4 * 1024 * 1024), "format": "png"}
+        elif (FIXTURES_DIR / f"response_{tool}.json").exists():
+            # Any tool with a golden response fixture replays it, so adding a
+            # tool to the contract makes it drivable here without touching this
+            # method. The cases above stay explicit because they are synthesized
+            # rather than read from a fixture.
+            result = _fixture(f"response_{tool}.json")["result"]
         else:
             await self.ws.send(
                 json.dumps(
@@ -196,7 +202,7 @@ class MockAgent:
         await self.ws.send(json.dumps(frame))
 
     async def push_telemetry_with_arch(self, arch: str) -> None:
-        """Push telemetry carrying an ``os_support.arch`` field (ADR-0040).
+        """Push telemetry carrying an ``os_support.arch`` field (ADR-0036).
 
         The golden fixture has no ``os_support`` section, so inject a minimal one
         — only ``status``/``summary``/``arch`` matter for this path.
@@ -275,7 +281,7 @@ async def test_e2e_forward_and_telemetry(tmp_path, monkeypatch) -> None:
             assert "fleet_overview" in tools
 
             # Select the agent (advisory) and forward a powershell_exec call.
-            # Forwarded capability tools require an explicit agent_id (ADR-0042) —
+            # Forwarded capability tools require an explicit agent_id (ADR-0038) —
             # select_agent no longer pins routing, so it's passed on every call.
             await client.call_tool("select_agent", {"id": "dev"})
             res = await client.call_tool(
@@ -379,7 +385,7 @@ async def test_e2e_os_guard_refuses_wrong_shell_tool(tmp_path, monkeypatch) -> N
 
 @pytest.mark.asyncio
 async def test_e2e_telemetry_arch_mirrors_into_registry(tmp_path, monkeypatch) -> None:
-    """A telemetry push carrying ``os_support.arch`` (ADR-0040, protocol 0.13)
+    """A telemetry push carrying ``os_support.arch`` (ADR-0036, protocol 0.13)
     updates the registry's stored arch for that agent — the periodic second
     channel alongside the one-time ``register.meta.arch``."""
 
@@ -637,7 +643,7 @@ async def _register_once(ws_url: str, agent_id: str, token: str) -> bool:
         )
         await ws.send(json.dumps({"type": "ping"}))
         # On a successful handshake the server now also pushes a `policy` frame
-        # (ADR-0021) before any pong; a real agent drains inbound non-request
+        # (ADR-0020) before any pong; a real agent drains inbound non-request
         # frames, so skip anything that isn't the pong we're probing for.
         try:
             while True:

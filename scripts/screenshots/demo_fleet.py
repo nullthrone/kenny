@@ -83,7 +83,7 @@ RELIABILITY_CLASSIFICATIONS: dict[tuple[str, int], dict[str, str]] = {
     },
 }
 
-# Seeded reliability alarm suppression rules (ADR-0045 / issue #166) — applied
+# Seeded reliability alarm suppression rules (ADR-0041 / issue #166) — applied
 # by scripts/screenshots/seed.py via the app's SuppressionService, so the demo
 # fleet's Reliability card shows the suppressed badge and the panel populated
 # without any manual dashboard interaction.
@@ -524,7 +524,7 @@ def _clean_web_activity(base: datetime) -> dict[str, Any]:
 def _flagged_web_activity(base: datetime) -> dict[str, Any]:
     """web_activity payload with a ``flagged`` array so the health rule crits.
 
-    ``flagged`` is the server-internal annotation (ADR-0026) the live tunnel
+    ``flagged`` is the server-internal annotation (ADR-0024) the live tunnel
     would add via ``WebFilterService.record_activity``; we bypass the tunnel and
     write it directly. A serious category (``seed``/``custom``) within 24h -> crit.
     """

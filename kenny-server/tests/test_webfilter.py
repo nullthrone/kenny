@@ -1,4 +1,4 @@
-"""Tests for the parental-controls web-filter feature (ADR-0026).
+"""Tests for the parental-controls web-filter feature (ADR-0024).
 
 Covers the pure matching core, the ``WebFilterStore`` CRUD/merge/prune, the
 ``ExternalListCache`` (via ``httpx.MockTransport``), the ``web_activity`` health

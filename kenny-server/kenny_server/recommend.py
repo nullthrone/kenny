@@ -17,6 +17,18 @@ Two layers keep this cheap and consistent:
 
 The client is injected (``recommend_events(client, facts)``) so tests pass a
 fake Anthropic client and no real API key is required.
+
+**The remediation directive never widens what the copilot may do.** ``REMEDIATE:
+yes`` is emitted only when the fix maps onto a catalogued capability tool, and
+pressing the button injects a prompt and starts a turn — every state-changing tool
+in that turn still stops at the operator confirm-gate (ADR-0009).
+
+The directive rides in a trailing ``--- REMEDIATE/PROMPT`` block rather than a
+structured-output call because the prose above it streams token by token and JSON
+mode does not. The server strips that block from the visible stream, so
+:data:`_SENTINEL` and the system prompt's closing lines must stay in lockstep:
+change one and the directive either leaks into the operator's view or stops being
+parsed.
 """
 
 from __future__ import annotations

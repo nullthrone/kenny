@@ -1,0 +1,11 @@
+{
+  "type": "response",
+  "id": "c8d2b5e3-4f60-4b7c-8d9e-1f2a3b4c5d6e",
+  "ok": true,
+  "result": {
+    "ok": true,
+    "principal": "kid",
+    "kind": "microsoft",
+    "admin": false
+  }
+}

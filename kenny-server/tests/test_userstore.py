@@ -1,4 +1,4 @@
-"""UserStore: accounts, PATs, sessions, and host scope (ADR-0037)."""
+"""UserStore: accounts, PATs, sessions, and host scope (ADR-0033)."""
 
 from __future__ import annotations
 
@@ -78,6 +78,21 @@ async def test_totp_and_superuser_count(store) -> None:
     assert (await store.get_user(su["id"]))["totp_enabled"] is True
     assert await store.count_superusers() == 1
     assert await store.count_superusers(exclude=su["id"]) == 0
+
+
+@pytest.mark.asyncio
+async def test_list_directory_minimal_projection(store) -> None:
+    su = await store.create_user("admin", "pw-123456", "superuser", email="a@x.de")
+    op = await store.create_user("op", "pw-123456", "operator", avatar="dog-pug")
+    directory = await store.list_directory()
+    # Ordered by username, like list_users(): "admin" sorts before "op".
+    assert directory == [
+        {"id": su["id"], "username": "admin", "role": "superuser"},
+        {"id": op["id"], "username": "op", "role": "operator"},
+    ]
+    # No auth-sensitive fields leak through this projection.
+    for entry in directory:
+        assert set(entry) == {"id", "username", "role"}
 
 
 @pytest.mark.asyncio

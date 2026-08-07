@@ -1,4 +1,4 @@
-"""Seamless upgrade from a pre-ADR-0037 single-token install.
+"""Seamless upgrade from a pre-ADR-0033 single-token install.
 
 Simulates an existing database (a host with telemetry, no user accounts) and
 asserts that booting the new server: creates the new tables idempotently, keeps
@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+from datetime import datetime, timedelta, timezone
 
 from starlette.testclient import TestClient
 
@@ -19,10 +20,22 @@ from kenny_server.store import TelemetryStore
 
 
 def _seed_existing_db(db_path: str) -> None:
+    """Seed a pre-upgrade database with one host that has telemetry.
+
+    The timestamp is relative to now, not absolute: ``build_app``'s lifespan
+    prunes snapshots older than ``RETENTION_DAYS`` (30), so a hardcoded date
+    silently turns this test into a time bomb that starts failing 30 days after
+    it was written — which is exactly what happened to the original
+    ``2026-07-01`` value. "Recent enough to survive retention" is the property
+    the test actually needs.
+    """
+
+    collected_at = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+
     async def seed() -> None:
         ts = TelemetryStore(db_path)
         await ts.connect()
-        await ts.insert("OLD-PC", "2026-07-01T00:00:00+00:00", {"system": {"host": "OLD-PC"}})
+        await ts.insert("OLD-PC", collected_at, {"system": {"host": "OLD-PC"}})
         await ts.close()
 
     asyncio.run(seed())
@@ -52,7 +65,7 @@ def test_upgrade_preserves_hosts_and_shared_token(tmp_path, monkeypatch) -> None
     tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     conn.close()
     assert {"users", "user_tokens", "sessions", "user_hosts"} <= tables
-    # The reliability alarm suppression table (ADR-0045 / issue #166) too.
+    # The reliability alarm suppression table (ADR-0041 / issue #166) too.
     assert "reliability_suppressions" in tables
 
 

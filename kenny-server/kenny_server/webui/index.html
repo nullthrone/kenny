@@ -182,6 +182,7 @@
     .k-btn { display: inline-flex; align-items: center; gap: 7px; cursor: pointer;
       font-family: var(--font-sans); font-size: var(--text-sm); font-weight: var(--weight-bold);
       padding: 8px 14px; border-radius: var(--radius-sm); border: var(--border-width) solid transparent;
+      white-space: nowrap; flex-shrink: 0;
       transition: background var(--dur) var(--ease), transform var(--dur-fast) var(--ease),
         border-color var(--dur) var(--ease), color var(--dur) var(--ease); }
     .k-btn svg { width: 15px; height: 15px; }
@@ -323,7 +324,7 @@
       justify-content: center; padding: 7vh 18px 18px; background: rgba(0,0,0,.5);
       -webkit-backdrop-filter: blur(2px); backdrop-filter: blur(2px); overflow-y: auto; }
     .k-modal { background: var(--surface); border: var(--border-width) solid var(--border-strong);
-      border-radius: var(--radius-lg); width: 100%; max-width: 680px; max-height: 84vh;
+      border-radius: var(--radius-lg); width: 100%; max-width: 860px; max-height: 84vh;
       display: flex; flex-direction: column; box-shadow: 0 24px 60px -20px rgba(0,0,0,.6);
       animation: kModalIn var(--dur) var(--ease); }
     @keyframes kModalIn { from { opacity: 0; transform: translateY(-8px) scale(.99); } to { opacity: 1; transform: none; } }
@@ -360,7 +361,7 @@
     .k-relcat table { margin: 0; }
     .k-relcat th { white-space: nowrap; }
     /* A suppressed pattern reads as de-emphasised without being hidden — its
-       count and severity stay fully legible (ADR-0045 / issue #166). */
+       count and severity stay fully legible (ADR-0041 / issue #166). */
     .k-relrow--sup > td { opacity: .65; }
     .k-deflist { display: grid; grid-template-columns: minmax(120px, max-content) 1fr; gap: 6px 16px; align-items: baseline; }
     .k-deflist__k { color: var(--fg-muted); font-size: var(--text-sm); }
@@ -413,7 +414,7 @@
     .k-airec__foot { margin-top: 9px; }
     .k-airec__foot:empty { display: none; }
     /* Forecast card: same spark/prose treatment as the AI Recommendation, but
-       pinned at the top of the drill-down (ADR-0034). A shorter reserved body —
+       pinned at the top of the drill-down. A shorter reserved body —
        the forecast is a few sentences, not a Diagnosis/Action/Urgency reply. */
     .kc-forecast { margin-bottom: 16px; }
     .kc-forecast .k-airec__body { min-height: 3.4em; }
@@ -446,21 +447,37 @@
     .kc-header__right { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
     .kc-operator { display: inline-flex; align-items: center; gap: 6px; font-size: var(--text-sm); color: var(--fg-muted); }
     .kc-operator svg { width: 15px; height: 15px; }
-    .kc-icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px;
-      border-radius: var(--radius-sm); border: 1px solid var(--border); background: transparent; color: var(--fg-muted);
+    .kc-icon-btn { position: relative; display: inline-flex; align-items: center; justify-content: center;
+      width: 32px; height: 32px; border-radius: var(--radius-sm); border: 1px solid var(--border);
+      background: transparent; color: var(--fg-muted);
       cursor: pointer; transition: background var(--dur) var(--ease), color var(--dur) var(--ease); }
     .kc-icon-btn:hover { background: var(--surface-raised); color: var(--fg); }
     .kc-icon-btn.is-active { background: var(--surface-raised); color: var(--accent); border-color: var(--border-strong); }
     .kc-icon-btn svg { width: 16px; height: 16px; }
+    /* small numeric badge (e.g. pending-approvals count) anchored to an icon button */
+    .k-badge { position: absolute; top: -5px; right: -5px; min-width: 16px; height: 16px; padding: 0 4px;
+      border-radius: 999px; background: var(--crit-solid); color: var(--crit-on); font-size: 10px; font-weight: 700;
+      line-height: 16px; text-align: center; }
+
+    /* ticket detail: chronological trail of state changes, tool calls, approvals, notes */
+    .kc-timeline__row { display: flex; align-items: baseline; gap: 10px; padding: 7px 4px;
+      border-bottom: 1px solid var(--border); font-size: var(--text-sm); flex-wrap: wrap; }
+    .kc-timeline__row:last-child { border-bottom: none; }
+    .kc-timeline__actor { min-width: 90px; color: var(--fg-muted); flex: none; }
 
     /* top-level tab navigation (Fleet / Activity) */
     .kc-tabs { display: flex; align-items: center; gap: 6px; }
-    .kc-tab { display: inline-flex; align-items: center; gap: 7px; padding: 7px 14px; border-radius: var(--radius-sm);
+    .kc-tab { position: relative; display: inline-flex; align-items: center; gap: 7px; padding: 7px 20px 7px 14px;
+      border-radius: var(--radius-sm);
       font-size: var(--text-sm); font-weight: 500; color: var(--fg-muted); text-decoration: none;
       border: 1px solid transparent; transition: background var(--dur) var(--ease), color var(--dur) var(--ease); }
     .kc-tab:hover { background: var(--surface-raised); color: var(--fg); }
     .kc-tab.is-active { background: var(--surface-raised); color: var(--fg); border-color: var(--border-strong); }
     .kc-tab svg { width: 16px; height: 16px; }
+    /* the ticket chat composer's mode toggle (Send to kenny / Add a note)
+       reuses .kc-tab's look, but as <button>s rather than nav <a>s — reset the
+       browser's own button chrome so it doesn't peek through */
+    .tk-mode-btn { font: inherit; background: none; cursor: pointer; }
 
     .kc-main { display: flex; flex-direction: column; gap: 14px; padding-top: 16px; }
 
@@ -572,6 +589,12 @@
     .kc-history-row__meta { font-size: 11px; color: var(--fg-muted); margin-top: 2px; }
     .kc-transcript { display: flex; flex-direction: column; gap: 9px; max-height: 46vh; overflow-y: auto;
       padding: 4px; min-height: 96px; }
+    /* ticket detail's own chat/trail scroll container — same bounded-scroll
+       shape as .kc-transcript above, sized for the timeline panel rather than
+       the docked rail. Without this the timeline had no max-height/overflow at
+       all, so it grew the whole page instead of scrolling in place. */
+    .kc-timeline { display: flex; flex-direction: column; max-height: 52vh; overflow-y: auto;
+      min-height: 96px; }
     .kc-composer { display: flex; gap: 8px; }
     .kc-composer .k-input { flex: 1; }
     .kc-suggest { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -580,16 +603,18 @@
       transition: border-color var(--dur) var(--ease), color var(--dur) var(--ease); }
     .kc-chip:hover { border-color: var(--accent); color: var(--fg); }
 
-    /* docked copilot rail: full-height sticky column whose transcript fills and
-       scrolls inside the rail, so the agent cards never move as the chat grows.
-       Below 1180px (see the tablet media query) it becomes an overlay drawer. */
+    /* docked "Ask kenny" rail: full-height sticky column whose transcript fills
+       and scrolls inside the rail, so the agent cards never move as the chat
+       grows. Below 1180px (see the tablet media query) it becomes an overlay
+       drawer. The .kc-copilot* class names stay as-is on purpose: they name a
+       layout rail, not the persona, so renaming them is not part of this. */
     .kc-copilot { position: sticky; top: 16px; align-self: start; height: calc(100vh - 32px); }
     .kc-copilot .kc-transcript { flex: 1 1 auto; max-height: none; min-height: 0; }
     /* Tablet/narrow: the rail is a right-anchored overlay drawer that slides in
        over a dimming backdrop, instead of stacking far below the agent cards
        (where toggling it had no visible effect). It is fixed (out of flow), so it
        no longer reserves a bottom row. Hidden off-screen until .copilot-drawer-open
-       is set on the console (see toggleCopilot / openCopilotDrawer). */
+       is set on the console (see toggleAskRail / openAskDrawer). */
     @media (max-width: 1180px) {
       .kc-copilot { position: fixed; top: 0; right: 0; z-index: 70; height: 100vh;
         width: min(380px, 92vw); margin: 0; border-radius: 0; overflow-y: auto;
@@ -597,12 +622,14 @@
         box-shadow: -18px 0 40px -22px rgba(0,0,0,.7); }
       .kc-copilot .kc-transcript { flex: none; max-height: 46vh; }
       .kc-console.copilot-drawer-open .kc-copilot { transform: none; }
+      /* keep the ticket timeline readable rather than letterboxed on a phone */
+      .kc-timeline { max-height: 60vh; }
     }
     /* dimming backdrop behind the tablet drawer; click to dismiss */
     .kc-backdrop { position: fixed; inset: 0; z-index: 65; background: rgba(0,0,0,.45);
       opacity: 0; pointer-events: none; transition: opacity var(--dur) var(--ease); }
     .kc-backdrop.is-visible { opacity: 1; pointer-events: auto; }
-    /* one-shot slide+fade when the docked rail is toggled (see toggleCopilot):
+    /* one-shot slide+fade when the docked rail is toggled (see toggleAskRail):
        it slides in from the right on open, and back out to the right on close. */
     @keyframes kCopilotIn { from { opacity: 0; transform: translateX(14px); } to { opacity: 1; transform: none; } }
     @keyframes kCopilotOut { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateX(14px); } }
@@ -686,6 +713,10 @@
 
     /* Settings tab: a single column of grouped panels. */
     .kset { max-width: 920px; margin: 0 auto; display: flex; flex-direction: column; gap: var(--space-4); }
+    /* Tickets stack like the settings pages but must not be capped: this is a
+       working list with a title, requester, agent and age column, so it gets the
+       full console width the fleet view uses rather than a centred form column. */
+    .ktk { display: flex; flex-direction: column; gap: var(--space-4); }
     .kset__intro { font-size: var(--text-sm); padding: 2px 2px 0; }
     .kset__grp { padding: var(--space-4) var(--space-5); }
     .kset__row { display: flex; align-items: flex-start; gap: var(--space-4);
@@ -704,6 +735,13 @@
       .kset__row { flex-direction: column; }
       .kset__ctl { max-width: 100%; justify-content: flex-start; }
     }
+    /* Settings sidebar + pane (superuser catalog groups, plus the Backup and
+       Updates sections, all living under #/settings/{slug}). Same
+       flex-column-of-panels shape as .kset, but it is the right-hand column
+       of the .kc-console sidebar grid rather than a page centred on its own
+       — the sidebar (nav + search) is the left column, built from the same
+       .kc-fleet/.kc-navitem primitives the Activity tab uses. */
+    .ksetpane { display: flex; flex-direction: column; gap: var(--space-4); min-width: 0; max-width: 820px; }
 
     /* ====================================================================
        IDENTITY — header control, dropdown menu, avatars, account modals
@@ -738,7 +776,7 @@
     .kc-usermenu__item svg { width: 16px; height: 16px; color: var(--fg-muted); flex: none; }
     .kc-usermenu__sep { height: 1px; background: var(--border); margin: 4px 2px; }
 
-    .k-modal--wide { max-width: 760px; }
+    .k-modal--wide { max-width: 960px; }
     .kacc-sec { border-top: 1px solid var(--border); padding-top: 16px; margin-top: 16px; }
     .kacc-sec:first-child { border-top: none; padding-top: 0; margin-top: 0; }
     .kacc-sec__lbl { font-size: var(--text-xs); color: var(--fg-muted); letter-spacing: var(--tracking-label);
@@ -858,6 +896,8 @@
       'copy': '<path d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 0 1-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 0 1 1.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.876a9.06 9.06 0 0 0-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.375H9.375a1.125 1.125 0 0 1-1.125-1.125v-9.25m12 6.625v-1.875a3.375 3.375 0 0 0-3.375-3.375h-1.5a1.125 1.125 0 0 1-1.125-1.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H9.75"/>',
       'chevron-down': '<path d="m19.5 8.25-7.5 7.5-7.5-7.5"/>',
       'book-open': '<path d="M12 6.042A8.967 8.967 0 0 0 6 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 0 1 6 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 0 1 6-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0 0 18 18a8.967 8.967 0 0 0-6 2.292m0-14.25v14.25"/>',
+      'bell': '<path d="M14.857 17.082a23.848 23.848 0 0 0 5.454-1.31A8.967 8.967 0 0 1 18 9.75V9A6 6 0 0 0 6 9v.75a8.967 8.967 0 0 1-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 0 1-5.714 0m5.714 0a3 3 0 1 1-5.714 0"/>',
+      'bell-slash': '<path d="M9.143 17.082a24.248 24.248 0 0 0 3.844.148m-3.844-.148a23.856 23.856 0 0 1-5.455-1.31 8.964 8.964 0 0 0 2.3-5.542m3.155 6.852a3 3 0 0 0 5.667 1.97m1.965-2.277L21 21m-4.225-4.225a23.81 23.81 0 0 0 3.536-1.003A8.967 8.967 0 0 1 18 9.75V9A6 6 0 0 0 6.53 6.53m10.245 10.245L6.53 6.53M3 3l3.53 3.53"/>',
     };
     function icon(name, size) {
       const p = ICONS[name] || ICONS.box;
@@ -899,7 +939,7 @@
     const sev = s => ["ok", "warn", "crit"].includes(s) ? s : "unknown";
 
     // A tiny per-OS glyph so Linux hosts read at a glance next to Windows ones
-    // (ADR-0035). Inference is text-based so it also works on the OS pie labels
+    // (ADR-0031). Inference is text-based so it also works on the OS pie labels
     // (e.g. "Ubuntu 24.04", "Windows 11 23H2"). Returns "" with a trailing space
     // when set, so callers can concatenate it unconditionally.
     function osIcon(s) {
@@ -965,6 +1005,48 @@
     async function loadMe() {
       try { state.me = await api("/api/me"); }
       catch (e) { state.me = null; }
+      // The id->username/role directory backs userLabel()/actorLabel() (see
+      // below). It's operator-floor server-side, so a scoped `user` account
+      // has no route to it — don't even try, and never let a fetch failure
+      // here break the rest of bootstrap.
+      if (canOperate()) {
+        try { state.users = (await api("/api/users/directory")).users || []; }
+        catch (e) { state.users = []; }
+      } else {
+        state.users = [];
+      }
+    }
+
+    // Resolve a kenny account id to its username — the only mandatory,
+    // unique name an account has (no separate display-name column). Falls
+    // back to "#" + id for an id not in the directory (a deleted account, or
+    // a scoped `user` account that couldn't load the directory at all) and
+    // "—" for a null/undefined id (no requester/assignee).
+    function userLabel(uid) {
+      if (uid === null || uid === undefined) return "—";
+      const u = (state.users || []).find(u => u.id === uid);
+      return u ? u.username : "#" + uid;
+    }
+
+    // Render a ticket-event actor. The server writes "operator:<id>" /
+    // "user:<id>" for a human actor (see webui/tickets.py's `_actor`,
+    // mirrored by tickets.py's parse_actor server-side) — resolve the id via
+    // userLabel() and carry the role as a tooltip. "assistant"/"system" (and
+    // a bare "operator"/"user" with no id, the legacy shared-token case)
+    // produce exactly what the existing naming-consistency mapping already
+    // does — "kenny" for "assistant", the raw string otherwise — this
+    // composes with that mapping rather than duplicating or replacing it.
+    // Returns {label, title}; callers esc() both before use, same as every
+    // other dynamic value in this file.
+    function actorLabel(actor) {
+      if (actor == null) return { label: "", title: null };
+      if (actor === "assistant") return { label: "kenny", title: null };
+      const m = /^(operator|user):(\d+)$/.exec(String(actor));
+      if (m) {
+        const [, role, idStr] = m;
+        return { label: userLabel(Number(idStr)), title: role };
+      }
+      return { label: actor, title: null };
     }
 
     // POST a JSON body and yield parsed Server-Sent Events ({type, ...}) as they
@@ -1010,8 +1092,14 @@
       if (cb) cb();
     }
     function onModalKey(e) { if (e.key === "Escape") closeModal(); }
-    function openModal(titleHtml, bodyHtml, modalClass, onClose) {
+    // `dismissible: false` removes every way out except the dialog's own
+    // buttons — no close cross, no click-outside, no Escape. Reserved for a
+    // decision where "I clicked away" must not be confusable with an answer:
+    // the confirm-gate stays pending either way, but an operator who thinks
+    // they denied something and did not is worse than one extra click.
+    function openModal(titleHtml, bodyHtml, modalClass, onClose, opts) {
       closeModal();
+      const dismissible = !opts || opts.dismissible !== false;
       modalOnClose = onClose || null;
       const ov = document.createElement("div");
       ov.id = "modal-overlay";
@@ -1019,14 +1107,18 @@
       ov.innerHTML = `<div class="k-modal${modalClass ? " " + modalClass : ""}" role="dialog" aria-modal="true">
         <div class="k-modal__head">
           <span class="k-modal__title">${titleHtml}</span>
-          <button class="k-modal__close" onclick="closeModal()" aria-label="close">${icon('x', 18)}</button>
+          ${dismissible
+            ? `<button class="k-modal__close" onclick="closeModal()" aria-label="close">${icon('x', 18)}</button>`
+            : ""}
         </div>
         <div class="k-modal__body">${bodyHtml}</div>
       </div>`;
-      ov.addEventListener("mousedown", e => { if (e.target === ov) closeModal(); });
+      if (dismissible) {
+        ov.addEventListener("mousedown", e => { if (e.target === ov) closeModal(); });
+      }
       document.body.appendChild(ov);
       document.body.style.overflow = "hidden";
-      document.addEventListener("keydown", onModalKey);
+      if (dismissible) document.addEventListener("keydown", onModalKey);
     }
 
     // -- in-app notifications + dialogs (replace native alert/confirm/prompt) --
@@ -1240,14 +1332,33 @@
       if (state.tab === "overview" && state.overview) paintOverview();
     }
 
+    // -- "Enter to send" preference (ticket composer + Add-a-note) ---------
+    // Same localStorage/try-catch shape as the theme and copilot-rail
+    // preferences above: a per-browser setting, not a cookie. Default is off
+    // (Enter inserts a newline) so the multi-line composer doesn't send on a
+    // stray Enter until an operator opts in.
+    function enterToSend() {
+      try { return localStorage.getItem("kenny-enter-send") === "on"; } catch (e) { return false; }
+    }
+    function setEnterToSend(on) {
+      try { localStorage.setItem("kenny-enter-send", on ? "on" : "off"); } catch (e) {}
+    }
+
     // -- console state -----------------------------------------------------
-    let state = { tab: "overview", activityView: "audit",
+    let state = { tab: "overview", activityView: "audit", settingsSection: null,
       fleet: null, bin: null, selected: null, detail: null,
-      overview: null, trend: null, topMetric: "disk", sankeyByOs: false, trendDays: 30,
+      overview: null, trend: null, overviewAt: 0, topMetric: "disk", sankeyByOs: false, trendDays: 30,
       audit: [], auditQuery: "", auditPage: 1,
-      events: [], eventsQuery: "", eventsPage: 1 };
+      events: [], eventsQuery: "", eventsPage: 1,
+      tickets: [], ticketsStateFilter: "", ticketDetail: null, approvalsCount: 0,
+      ticketsNeedsYouCount: 0 };
     const AUDIT_PAGE_SIZE = 25;
     const EVENTS_PAGE_SIZE = 25;
+    // Bumped by router() on every navigation. An async render captures it on
+    // entry and drops its DOM writes if it no longer matches — a response from
+    // a tab the operator has already left must never clobber the tab they are
+    // looking at now.
+    let navToken = 0;
 
     // -- top-level tab routing (Fleet / Activity) via location.hash -------
     // Hash scheme: #/fleet, #/activity/audit, #/activity/events,
@@ -1265,66 +1376,94 @@
         return { tab: "flagged", flaggedSev: parts[1] === "crit" ? "crit" : "warn",
                  activityView: state.activityView };
       }
+      // Settings, Backup and Updates all live under one sidebar (#/settings);
+      // #/backup and #/updates are kept as aliases for old bookmarks and the
+      // Discord "see the dashboard" links, resolving straight to that section.
       if (parts[0] === "settings") {
-        return { tab: "settings", activityView: state.activityView };
+        return { tab: "settings", settingsSection: parts[1] || null,
+                 activityView: state.activityView };
       }
       if (parts[0] === "backup") {
-        return { tab: "backup", activityView: state.activityView };
+        return { tab: "settings", settingsSection: "backup", activityView: state.activityView };
       }
       if (parts[0] === "updates") {
-        return { tab: "updates", activityView: state.activityView };
+        return { tab: "settings", settingsSection: "updates", activityView: state.activityView };
+      }
+      // #/tickets is the list; #/tickets/{id} is one ticket's detail — the
+      // landing page for every "see the dashboard" link posted into Discord.
+      if (parts[0] === "tickets") {
+        return { tab: "tickets", ticketId: parts[1] || null, activityView: state.activityView };
       }
       // Overview is the default landing view (bare or unknown hash).
       return { tab: "overview", activityView: state.activityView };
     }
 
     function renderTabs() {
-      const tab = (name, href, ico, label) =>
-        `<a class="kc-tab${state.tab === name ? " is-active" : ""}" href="${href}">${icon(ico, 16)}${label}</a>`;
+      const tab = (name, href, ico, label, extra) =>
+        `<a class="kc-tab${state.tab === name ? " is-active" : ""}" href="${href}">${icon(ico, 16)}${label}${extra || ""}</a>`;
       // Settings has moved into the user menu (superuser only); it is no longer
       // a top-level tab. The #/settings route still renders it (see router).
+      // Tickets is visible to every role — it is the first genuinely
+      // user-facing view (a scoped `user` only ever sees their own tickets).
+      // The tickets tab carries a count badge (moved off the header in favor
+      // of the nav item it actually refers to) when something needs an
+      // operator's attention; the href stays a plain #/tickets on purpose —
+      // filtering to "needs you" is a separate, deliberate action via the
+      // group chips on the tickets list page, not an automatic side effect
+      // of clicking the tab.
+      const n = state.ticketsNeedsYouCount || 0;
+      const ticketsBadge = (n > 0 && canOperate())
+        ? `<span class="k-badge">${n > 99 ? "99+" : n}</span>` : "";
       tabsEl.innerHTML =
         tab("overview", "#/overview", "activity", "Overview") +
         tab("fleet", "#/fleet", "network", "Fleet") +
-        tab("activity", "#/activity/" + state.activityView, "activity", "Activity");
+        tab("activity", "#/activity/" + state.activityView, "activity", "Activity") +
+        tab("tickets", "#/tickets", "message-square", "Tickets", ticketsBadge);
     }
 
     async function router() {
+      navToken++;
       disposeOvCharts();  // tear down Overview charts when leaving/re-entering
-      const { tab, activityView, flaggedSev } = parseHash();
+      const prevTab = state.tab;
+      const { tab, activityView, flaggedSev, ticketId, settingsSection } = parseHash();
       state.tab = tab;
       state.activityView = activityView;
       state.flaggedSev = flaggedSev || "warn";
       renderTabs();
+      // Tab switches must be visible on click, not when the data lands. Clearing
+      // app here also drops the Overview's large SVG DOM immediately, so leaving
+      // Overview is as snappy as entering it. Same-tab re-entry (gotoAgent ->
+      // router, a trend-window change, etc.) keeps its DOM until its own
+      // renderer decides to replace it.
+      if (prevTab !== tab) app.innerHTML = `<div class="k-muted">loading…</div>`;
       if (tab === "overview") await renderOverview();
       else if (tab === "activity") await renderActivity();
       else if (tab === "flagged") await renderFlagged();
+      else if (tab === "tickets") {
+        if (ticketId) await renderTicketDetail(ticketId);
+        else await renderTickets();
+      }
       else if (tab === "settings") {
-        // Guard direct navigation (typed/bookmarked #/settings) for non-superusers.
-        if (!isSuperuser()) { history.replaceState(null, "", "#/overview"); state.tab = "overview"; renderTabs(); await renderOverview(); }
-        else await renderSettings();
-      }
-      else if (tab === "backup") {
-        // Same guard as #/settings: direct navigation for non-superusers bounces home.
-        if (!isSuperuser()) { history.replaceState(null, "", "#/overview"); state.tab = "overview"; renderTabs(); await renderOverview(); }
-        else await renderBackup();
-      }
-      else if (tab === "updates") {
-        // Update campaigns are an operator+ action (same tier as policy/webfilter
-        // mutation) — guard direct navigation for the scoped `user` role.
+        // Least permissive first: a scoped `user` has no section here at all
+        // (not even Updates). renderSettings() itself resolves settingsSection
+        // against what the signed-in role is actually allowed to see — an
+        // operator hitting a superuser-only slug falls back inside there, not
+        // here, so it stays the single place that decides.
         if (!canOperate()) { history.replaceState(null, "", "#/overview"); state.tab = "overview"; renderTabs(); await renderOverview(); }
-        else await renderUpdates();
+        else { state.settingsSection = settingsSection; await renderSettings(); }
       }
       else await renderFleet();
     }
 
     async function renderFleet() {
+      const nav = navToken;
       const [fleet, bin] = await Promise.all([
         getJSON("/api/fleet"),
         getJSON("/api/agent-binary").catch(() => null),
       ]);
       state.fleet = fleet;
       state.bin = bin;
+      if (nav !== navToken) return;  // navigated away while this was loading
       const agents = fleet.agents || [];
       if (!state.selected || !agents.find(a => a.agent_id === state.selected)) {
         state.selected = worstOf(agents);
@@ -1353,8 +1492,13 @@
     // ====================================================================
     let ovChartInstances = [];
     let ovResizeBound = false;
+    // Handle of the requestAnimationFrame that builds the 8 non-KPI charts
+    // (see paintOverview) — cancelled on re-paint/dispose so a navigation
+    // mid-frame never runs the builders against a replaced #app.
+    let ovBuildRaf = 0;
 
     function disposeOvCharts() {
+      if (ovBuildRaf) { cancelAnimationFrame(ovBuildRaf); ovBuildRaf = 0; }
       ovChartInstances.forEach(i => { try { i.dispose(); } catch (e) {} });
       ovChartInstances = [];
     }
@@ -1375,7 +1519,19 @@
         ovChartInstances.forEach(i => { try { i.resize(); } catch (e) {} }));
     }
 
-    function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+    // getComputedStyle is re-read ~150x per Overview paint (chartBase() alone
+    // runs 10x), interleaved with the el.style.height writes in
+    // buildSections/buildTop/buildSankey — i.e. repeated forced style
+    // recalc. Memoize per theme; the theme attribute is the only thing that
+    // can change these values, and toggleTheme() sets it before repainting.
+    let _cssMemo = {}, _cssMemoTheme = null;
+    function cssVar(name) {
+      const t = document.documentElement.getAttribute("data-theme") || "dark";
+      if (t !== _cssMemoTheme) { _cssMemo = {}; _cssMemoTheme = t; }
+      if (!(name in _cssMemo))
+        _cssMemo[name] = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+      return _cssMemo[name];
+    }
     function statusColor(key) {
       return ({
         ok: cssVar("--ok-solid") || cssVar("--ok-dot"),
@@ -1427,14 +1583,38 @@
     }
 
     async function renderOverview() {
-      const [overview, trend, fleet] = await Promise.all([
-        getJSON("/api/fleet/overview"),
-        getJSON("/api/fleet/trend?days=" + state.trendDays).catch(() => ({ days: [] })),
-        state.fleet ? Promise.resolve(state.fleet) : getJSON("/api/fleet").catch(() => ({ agents: [] })),
-      ]);
+      const nav = navToken;
+      // Cache-first: state.overview/trend/fleet are already a complete paint
+      // source (paintOverview() repaints purely from them — see toggleTheme),
+      // so show the last known dashboard on the same tick as the click, then
+      // refresh behind it instead of blanking the tab for a whole round-trip.
+      const warm = !!(state.overview && state.fleet);
+      if (warm) { renderHeaderRight(state.fleet, state.fleet.agents || []); paintOverview(); }
+      // Rapid tab ping-pong shouldn't re-hit two endpoints that are seconds
+      // old; telemetry pushes are minutes apart, so a short freshness window
+      // costs nothing in staleness and saves a full reload.
+      if (warm && Date.now() - state.overviewAt < 15000) return;
+      let overview, trend, fleet;
+      try {
+        [overview, trend, fleet] = await Promise.all([
+          getJSON("/api/fleet/overview"),
+          getJSON("/api/fleet/trend?days=" + state.trendDays).catch(() => ({ days: [] })),
+          state.fleet ? Promise.resolve(state.fleet) : getJSON("/api/fleet").catch(() => ({ agents: [] })),
+        ]);
+      } catch (e) {
+        // /api/fleet/overview has no .catch() above (unlike trend/fleet) since
+        // there's no sane default to paint from — surface the error instead of
+        // silently rendering an empty dashboard, but only if we have nothing
+        // cached to fall back to; a warm tab just keeps showing stale data.
+        if (nav !== navToken || warm) return;
+        app.innerHTML = `<div class="k-airec__err">could not load overview: ${esc(e.message)}</div>`;
+        return;
+      }
       state.overview = overview;
       state.trend = trend;
       state.fleet = fleet;
+      state.overviewAt = Date.now();
+      if (nav !== navToken) return;  // navigated away while this was loading
       renderHeaderRight(fleet, fleet.agents || []);
       paintOverview();
     }
@@ -1487,17 +1667,9 @@
             `<div class="kc-chart" id="ov-trend" style="height:300px"></div>`)}
       </section>`;
 
+      // The KPI numbers are what's read first and cost nothing — paint them
+      // synchronously so they're on screen the same frame as the tab switch.
       buildKpis();
-      buildHealth();
-      buildPie("ov-os", o.os.segments.map(s => ({ ...s, label: osIcon(s.label) + s.label })), "OS", "box");
-      buildPie("ov-device", o.device.segments, "Device", "monitor");
-      buildPosture();
-      buildSections();
-      buildTop();
-      buildSankey();
-      buildReliabilityCategories();
-      buildTrend();
-      bindOvResize();
 
       const tsel = document.getElementById("ov-trend-sel");
       if (tsel) tsel.onchange = async () => {
@@ -1505,6 +1677,27 @@
         state.trend = await getJSON("/api/fleet/trend?days=" + state.trendDays).catch(() => ({ days: [] }));
         buildTrend();
       };
+
+      // The remaining 8 ECharts builds (incl. the sankey + heatmap) are the
+      // priciest part of a paint; deferring them one frame lets the browser
+      // paint the shell + KPI row first, which is what makes a tab switch
+      // feel instant rather than freezing for the whole synchronous block.
+      // Cancelled by disposeOvCharts() (top of this function, and on
+      // navigation away) so a stale frame never builds against a replaced
+      // #app.
+      ovBuildRaf = requestAnimationFrame(() => {
+        ovBuildRaf = 0;
+        buildHealth();
+        buildPie("ov-os", o.os.segments.map(s => ({ ...s, label: osIcon(s.label) + s.label })), "OS", "box");
+        buildPie("ov-device", o.device.segments, "Device", "monitor");
+        buildPosture();
+        buildSections();
+        buildTop();
+        buildSankey();
+        buildReliabilityCategories();
+        buildTrend();
+        bindOvResize();
+      });
     }
 
     function buildKpis() {
@@ -1791,10 +1984,12 @@
     }
 
     async function renderActivity() {
+      const nav = navToken;
       // The header metrics need fleet data in every tab; fetch it if missing.
       if (!state.fleet) {
         state.fleet = await getJSON("/api/fleet").catch(() => ({ agents: [] }));
       }
+      if (nav !== navToken) return;  // navigated away while this was loading
       renderHeaderRight(state.fleet, state.fleet.agents || []);
       // Lazy-load the fleet-wide logs on entry (same fallbacks as before).
       const [audit, events] = await Promise.all([
@@ -1803,6 +1998,7 @@
       ]);
       state.audit = audit.entries || [];
       state.events = events.entries || [];
+      if (nav !== navToken) return;  // navigated away while this was loading
       const view = state.activityView;
       // no-copilot: there is no copilot rail here, so reuse the 2-column layout
       // and let the tables use the full width the rail would otherwise occupy.
@@ -1816,31 +2012,1465 @@
     }
 
     // ====================================================================
-    // SETTINGS TAB — structured view of the runtime configuration catalog.
-    // Values resolve DB override > environment > coded default. Editable
-    // (live/restart) settings are written back via /api/settings; env_only
-    // ones (secrets, wire-contract, process-bind) are shown read-only.
+    // TICKETS TAB — the simplified-ITSM ticket list/detail. Visible to every
+    // role: an operator+ sees the whole queue, a scoped `user` only ever sees
+    // their own tickets (enforced server-side, not just hidden in the UI).
+    // #/tickets/{id} is the landing page for every "see the dashboard" link
+    // posted into Discord, so it has to work from a cold load, not just from
+    // clicking through the list.
     // ====================================================================
+    // Vocabulary (states/blocked-reasons/priorities/categories) comes from the
+    // server, fetched once and cached — this is the fix for the thing this
+    // whole rework exists to close off: a hardcoded second copy of the
+    // lifecycle here that could silently drift from what the service enforces.
+    // ``ticketActionsHtml`` below renders exactly a ticket's own
+    // ``allowed_transitions``/``allowed_blocks``/``can_unblock`` — no
+    // client-side legality logic survives.
+    async function ticketVocab() {
+      if (!state.ticketVocab) {
+        state.ticketVocab = await getJSON("/api/tickets/vocabulary")
+          .catch(() => ({ states: [], blocked_reasons: [], priorities: [], categories: [] }));
+      }
+      return state.ticketVocab;
+    }
+
+    function ticketStateClass(t) {
+      if (t.state === "resolved" || t.state === "closed") return "k-pill--ok";
+      if (t.state === "cancelled") return "k-pill--muted";
+      if (t.blocked_on) return "k-pill--warn";
+      if (t.state === "in_progress") return "k-pill--role";
+      return "k-pill--muted"; // new
+    }
+    function ticketStateLabel(s) { return String(s || "").replace(/_/g, " "); }
+    // Phrased relative to the viewer: the ticket's own requester reads
+    // "waiting on you" for their own block, an operator reads "needs you" for
+    // one only an operator can clear — the same blocked_on value means a
+    // different person depending on who is looking at it.
+    function ticketBlockedLabel(t) {
+      if (!t.blocked_on) return "";
+      const isRequester = state.me && state.me.id != null && t.requester_user_id === state.me.id;
+      const who = t.blocked_on === "user"
+        ? (isRequester ? "waiting on you" : "waiting on requester")
+        : t.blocked_on === "approval"
+        ? (canOperate() ? "needs your approval" : "waiting on approval")
+        : (canOperate() ? "needs you" : "waiting on an operator");
+      return t.blocked_since ? `${who} · ${relTime(t.blocked_since)}` : who;
+    }
+    function ticketPillHtml(t) {
+      const blocked = ticketBlockedLabel(t);
+      const label = blocked ? `${ticketStateLabel(t.state)} · ${blocked}` : ticketStateLabel(t.state);
+      return `<span class="k-pill ${ticketStateClass(t)}">${esc(label)}</span>`;
+    }
+
+    async function renderTickets() {
+      const nav = navToken;
+      const [fleet, , summary] = await Promise.all([
+        state.fleet ? Promise.resolve(state.fleet) : getJSON("/api/fleet").catch(() => ({ agents: [] })),
+        ticketVocab(),
+        getJSON("/api/tickets/summary").catch(() => null),
+      ]);
+      if (nav !== navToken) return;  // navigated away while this was loading
+      state.fleet = fleet;
+      state.ticketsSummary = summary;
+      renderHeaderRight(state.fleet, state.fleet.agents || []);
+      app.innerHTML = `<div class="ktk"><div class="k-muted">loading…</div></div>`;
+      let data;
+      try { data = await getJSON("/api/tickets?limit=200"); }
+      catch (e) {
+        if (nav !== navToken) return;
+        app.innerHTML = `<div class="ktk"><div class="k-airec__err">could not load tickets: ${esc(e.message)}</div></div>`;
+        return;
+      }
+      state.tickets = data.tickets || [];
+      state.ticketsSelected = new Set();
+      if (nav !== navToken) return;  // navigated away while this was loading
+      app.innerHTML = ticketsPageHtml();
+    }
+    // Bucket a ticket the same way TicketStore.counts() does server-side, so
+    // the group filter and the header counts always agree with each other.
+    function ticketBucket(t) {
+      if (t.state === "resolved" || t.state === "closed" || t.state === "cancelled") return "done";
+      if (t.state === "new") return t.requester_user_id == null ? "needs_you" : "new";
+      if (t.blocked_on === "operator" || t.blocked_on === "approval") return "needs_you";
+      if (t.blocked_on === "user") return "waiting";
+      return "working";
+    }
+    const TICKET_GROUPS = [
+      ["", "all"], ["needs_you", "needs you"], ["waiting", "waiting"],
+      ["working", "working"], ["new", "new"], ["done", "done"],
+    ];
+    function ticketsVisible() {
+      const group = state.ticketsGroup || "";
+      return group ? state.tickets.filter(t => ticketBucket(t) === group) : state.tickets;
+    }
+    function ticketsPageHtml() {
+      const group = state.ticketsGroup || "";
+      const isOp = canOperate();
+      const sel = state.ticketsSelected || (state.ticketsSelected = new Set());
+      const visible = ticketsVisible();
+      const rows = visible.map(t => ticketRowHtml(t, isOp, sel.has(t.id))).join("");
+      const allChecked = isOp && visible.length > 0 && visible.every(t => sel.has(t.id));
+      const counts = state.ticketsSummary || {};
+      const tabs = TICKET_GROUPS.map(([key, label]) => {
+        const n = key ? (counts[key] || 0) : state.tickets.length;
+        return `<button class="k-btn k-btn--sm ${key === group ? "k-btn--primary" : "k-btn--ghost"}"
+          onclick="onTicketsGroupChange(${jsArg(key)})">${esc(label)}${key ? ` (${n})` : ""}</button>`;
+      }).join("");
+      const bulkOptions = (state.ticketVocab.states || []).filter(s => s !== "new").map(s =>
+        `<option value="${s}">${esc(ticketStateLabel(s))}</option>`).join("");
+      const bulkBar = isOp && sel.size > 0 ? `<div class="k-row" id="tk-bulk-bar"
+          style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px;padding:8px 10px;background:var(--surface-raised);border-radius:var(--radius-sm)">
+          <span class="k-muted">${sel.size} ticket${sel.size === 1 ? "" : "s"} selected</span>
+          <div class="k-row" style="gap:8px">
+            <select class="k-input" id="tk-bulk-state">${bulkOptions}</select>
+            <button class="k-btn k-btn--primary k-btn--sm" onclick="applyBulkTicketState()">${icon('check', 13)}Apply</button>
+            <button class="k-btn k-btn--ghost k-btn--sm" onclick="clearTicketSelection()">Clear</button>
+          </div>
+        </div>` : "";
+      return `<div class="ktk">
+        <div class="k-panel">
+          <div class="k-row" style="justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:10px">
+            <div class="kc-section-lbl">tickets</div>
+            <div class="k-row" style="gap:8px;flex-wrap:wrap">
+              <div class="k-row" style="gap:6px;flex-wrap:wrap">${tabs}</div>
+              <button class="k-btn k-btn--primary k-btn--sm" onclick="openCreateTicketModal()">${icon('plus', 13)}New ticket</button>
+            </div>
+          </div>
+          ${bulkBar}
+          <table class="kacc-tbl"><thead><tr>
+            ${isOp ? `<th style="width:26px"><input type="checkbox" id="tk-select-all"
+              ${allChecked ? "checked" : ""} onchange="toggleAllTickets(this.checked)"></th>` : ""}
+            <th>#</th><th>Title</th><th>State</th><th>Requester</th><th>Agent</th><th>Age</th></tr></thead>
+            <tbody>${rows || `<tr><td colspan="${isOp ? 7 : 6}" class="kacc-empty">no tickets</td></tr>`}</tbody></table>
+        </div>
+      </div>`;
+    }
+    function openTicket(id) { location.hash = "#/tickets/" + id; }
+    function ticketRowHtml(t, isOp, checked) {
+      return `<tr style="cursor:pointer" onclick="openTicket(${jsArg(t.id)})">
+        ${isOp ? `<td onclick="event.stopPropagation()"><input type="checkbox" ${checked ? "checked" : ""}
+          onchange="onTicketCheckChange(${jsArg(t.id)}, this.checked)"></td>` : ""}
+        <td class="k-mono">#${t.number}</td>
+        <td>${esc(t.title)}</td>
+        <td>${ticketPillHtml(t)}</td>
+        <td>${t.requester_user_id != null ? esc(userLabel(t.requester_user_id)) : '<span class="k-muted">alert</span>'}</td>
+        <td class="k-mono">${t.agent_id ? esc(t.agent_id) : '<span class="k-muted">—</span>'}</td>
+        <td class="k-muted">${esc(relTime(t.created_at))}</td>
+      </tr>`;
+    }
+    function onTicketsGroupChange(v) {
+      state.ticketsGroup = v;
+      app.innerHTML = ticketsPageHtml();
+    }
+    function toggleAllTickets(checked) {
+      const sel = state.ticketsSelected || (state.ticketsSelected = new Set());
+      ticketsVisible().forEach(t => checked ? sel.add(t.id) : sel.delete(t.id));
+      app.innerHTML = ticketsPageHtml();
+    }
+    function onTicketCheckChange(id, checked) {
+      const sel = state.ticketsSelected || (state.ticketsSelected = new Set());
+      if (checked) sel.add(id); else sel.delete(id);
+      app.innerHTML = ticketsPageHtml();
+    }
+    function clearTicketSelection() {
+      state.ticketsSelected = new Set();
+      app.innerHTML = ticketsPageHtml();
+    }
+    async function applyBulkTicketState() {
+      const sel = state.ticketsSelected || new Set();
+      if (!sel.size) return;
+      const to = document.getElementById("tk-bulk-state").value;
+      const ok = await confirmModal({
+        title: "Bulk update tickets", ico: "check",
+        body: `Set state to "${ticketStateLabel(to)}" for ${sel.size} ticket${sel.size === 1 ? "" : "s"}? ` +
+          `Tickets for which this is not a valid transition are skipped.`,
+        confirmLabel: "Apply", confirmClass: "k-btn--primary",
+      });
+      if (!ok) return;
+      const ids = [...sel];
+      let okCount = 0, failCount = 0;
+      for (const id of ids) {
+        try {
+          await api("/api/tickets/" + encodeURIComponent(id) + "/transition", "POST",
+            { to, reason: "bulk action from dashboard" });
+          okCount++;
+        } catch (e) { failCount++; }
+      }
+      state.ticketsSelected = new Set();
+      notify(failCount ? `${okCount} updated, ${failCount} failed` : `${okCount} ticket${okCount === 1 ? "" : "s"} updated`,
+        failCount ? "err" : "ok");
+      await renderTickets();
+    }
+
+    async function openCreateTicketModal() {
+      // A host picker, sourced the same way openReassignModal's is: without a
+      // target here a dashboard-created ticket starts with agent_id = null and
+      // its chat composer is permanently disabled (no target machine).
+      if (!state.fleet) state.fleet = await getJSON("/api/fleet").catch(() => ({ agents: [] }));
+      const agentOpts = (state.fleet.agents || []).map(a =>
+        `<option value="${esc(a.agent_id)}">${esc(a.agent_id)}</option>`).join("");
+      const body = `
+        <div class="kfield"><span class="kfield__lbl">Title</span>
+          <input class="k-input" id="nt-title" autocomplete="off"></div>
+        <div class="kfield"><span class="kfield__lbl">Host (optional — leave unassigned for triage)</span>
+          <select class="k-input" id="nt-agent"><option value="">(unassigned)</option>${agentOpts}</select></div>
+        <div class="kfield"><span class="kfield__lbl">Details (optional)</span>
+          <textarea class="k-input" id="nt-summary" rows="4"></textarea></div>
+        <div class="k-modal__actions">
+          <button class="k-btn k-btn--ghost" onclick="closeModal()">Cancel</button>
+          <button class="k-btn k-btn--primary" onclick="createTicket()">${icon('check', 14)}Create</button>
+        </div>`;
+      openModal(`${icon('message-square', 20)}<span>New ticket</span>`, body);
+    }
+    async function createTicket() {
+      const title = document.getElementById("nt-title").value.trim();
+      const summary = document.getElementById("nt-summary").value.trim();
+      const agentEl = document.getElementById("nt-agent");
+      const agent_id = agentEl && agentEl.value ? agentEl.value : null;
+      if (!title) { notify("title is required", "err"); return; }
+      try {
+        const t = await api("/api/tickets", "POST", { title, summary, agent_id });
+        closeModal();
+        location.hash = "#/tickets/" + t.id;
+      } catch (e) { notify(e.message, "err"); }
+    }
+
+    async function renderTicketDetail(id) {
+      const nav = navToken;
+      const [fleet] = await Promise.all([
+        state.fleet ? Promise.resolve(state.fleet) : getJSON("/api/fleet").catch(() => ({ agents: [] })),
+        ticketVocab(),
+      ]);
+      if (nav !== navToken) return;  // navigated away while this was loading
+      state.fleet = fleet;
+      renderHeaderRight(state.fleet, state.fleet.agents || []);
+      app.innerHTML = `<div class="ktk"><div class="k-muted">loading…</div></div>`;
+      let ticket, events;
+      try {
+        ticket = await getJSON("/api/tickets/" + encodeURIComponent(id));
+        events = await getJSON("/api/tickets/" + encodeURIComponent(id) + "/events").catch(() => ({ events: [] }));
+      } catch (e) {
+        if (nav !== navToken) return;
+        app.innerHTML = `<div class="ktk"><div class="k-airec__err">could not load ticket: ${esc(e.message)}</div></div>`;
+        return;
+      }
+      state.ticketDetail = { ticket, events: events.events || [] };
+      if (nav !== navToken) return;  // navigated away while this was loading
+      app.innerHTML = ticketDetailPageHtml(state.ticketDetail);
+      tkScrollTimeline();
+      mountTicketComposer();
+      // Navigating straight to a ticket that is already waiting on a decision
+      // surfaces the popup too, not just a live turn's own 'pending' event —
+      // guarded by tkGateShownFor so this doesn't reopen one just dismissed.
+      maybeOpenTicketGateModal(ticket.id, ticketOpenGate(state.ticketDetail));
+    }
+    function ticketDetailPageHtml(d) {
+      const t = d.ticket;
+      const head = `<div class="k-row" style="justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px">
+        <div class="k-row" style="gap:10px;flex-wrap:wrap">
+          <a class="k-btn k-btn--ghost k-btn--sm" href="#/tickets">${icon('chevron-left', 13)}All tickets</a>
+          <span style="font-size:var(--text-md);font-weight:600">${esc(t.title)}</span>
+          ${ticketPillHtml(t)}
+        </div>
+        ${ticketActionsHtml(t)}
+      </div>`;
+      const vocab = state.ticketVocab || {};
+      const canEdit = canOperate() || (state.me && state.me.id === t.requester_user_id);
+      const priorityField = canEdit ? `<select class="k-input k-input--sm" style="width:auto;display:inline-block"
+          onchange="updateTicketField(${jsArg(t.id)}, 'priority', this.value)">
+          ${(vocab.priorities || []).map(p =>
+            `<option value="${p}" ${p === t.priority ? "selected" : ""}>${esc(p)}</option>`).join("")}
+        </select>` : esc(t.priority);
+      const categoryField = canEdit ? `<select class="k-input k-input--sm" style="width:auto;display:inline-block"
+          onchange="updateTicketField(${jsArg(t.id)}, 'category', this.value)">
+          <option value="">—</option>
+          ${(vocab.categories || []).map(c =>
+            `<option value="${c}" ${c === t.category ? "selected" : ""}>${esc(c)}</option>`).join("")}
+        </select>` : (t.category ? esc(t.category) : "—");
+      const meta = `<div class="k-panel kset__grp">
+        <div class="k-deflist">
+          <div class="k-deflist__k">number</div><div class="k-deflist__v k-mono">#${t.number}</div>
+          <div class="k-deflist__k">origin</div><div class="k-deflist__v">${esc(t.origin)}</div>
+          <div class="k-deflist__k">priority</div><div class="k-deflist__v">${priorityField}</div>
+          <div class="k-deflist__k">category</div><div class="k-deflist__v">${categoryField}</div>
+          <div class="k-deflist__k">requester</div>
+          <div class="k-deflist__v">${t.requester_user_id != null ? esc(userLabel(t.requester_user_id)) : "alert (no requester)"}</div>
+          <div class="k-deflist__k">assignee</div>
+          <div class="k-deflist__v">${t.assignee_user_id != null ? esc(userLabel(t.assignee_user_id)) : '<span class="k-muted">unclaimed</span>'}</div>
+          <div class="k-deflist__k">agent</div><div class="k-deflist__v k-mono">${t.agent_id ? esc(t.agent_id) : "—"}</div>
+          <div class="k-deflist__k">created</div><div class="k-deflist__v">${esc(fmtValue("at", t.created_at))}</div>
+          <div class="k-deflist__k">updated</div><div class="k-deflist__v">${esc(fmtValue("at", t.updated_at))}</div>
+        </div>
+        ${t.summary ? `<div class="kacc-sec"><div class="kacc-sec__lbl">Summary</div><div>${esc(t.summary)}</div></div>` : ""}
+        ${t.resolution ? `<div class="kacc-sec"><div class="kacc-sec__lbl">Resolution</div><div>${esc(t.resolution)}</div></div>` : ""}
+      </div>`;
+      // Timeline = Chat: the composer below replaces what used to be a plain
+      // "add a note" box, and inline gate controls live on the approval row
+      // itself instead of only being reachable through the header badge.
+      // Default the mode to whichever is actually usable: an operator on a
+      // ticket with no assistant configured lands on "note", not on a chat
+      // tab they'd have to switch away from before they could do anything.
+      tkComposerMode = (canOperate() && !t.assistant_available) ? "note" : "chat";
+      const gate = ticketOpenGate(d);
+      const composer = ticketComposerHtml(t);
+      const timeline = `<div class="k-panel kset__grp">
+        <div class="k-detail-grp__lbl">timeline</div>
+        <div class="kc-timeline" id="tk-timeline">${(d.events || []).map(e => ticketEventHtml(e, gate, t.id)).join("")
+          || '<div class="k-muted">no activity yet</div>'}</div>
+      </div>`;
+      return `<div class="ktk">${head}${meta}${timeline}${composer}</div>`;
+    }
+    // Renders exactly what the ticket's own ``allowed_transitions``/
+    // ``allowed_blocks``/``can_unblock`` say a legal move is for *this*
+    // principal — computed server-side by TicketService.can_transition/
+    // can_block/can_unblock, so this can never offer a move the API would
+    // then refuse. No client-side legality logic survives here.
+    function ticketActionsHtml(t) {
+      const allowed = t.allowed_transitions || [];
+      const btns = [];
+      if (canOperate()) {
+        btns.push(`<button class="k-btn k-btn--ghost k-btn--sm"
+          onclick="openReassignModal(${jsArg(t.id)}, ${jsArg(t.agent_id || "")})">${icon('network', 13)}Reassign host</button>`);
+        const mine = state.me && state.me.id != null && t.assignee_user_id === state.me.id;
+        const claimTarget = mine ? "null" : jsArg(state.me && state.me.id);
+        btns.push(`<button class="k-btn k-btn--ghost k-btn--sm"
+          onclick="submitAssign(${jsArg(t.id)}, ${claimTarget})">${icon('user-round', 13)}${mine ? "Unclaim" : "Claim"}</button>`);
+      }
+      if (allowed.includes("resolved")) {
+        btns.push(`<button class="k-btn k-btn--primary k-btn--sm"
+          onclick="openResolveModal(${jsArg(t.id)}, ${jsArg(t.blocked_on || "")})">${icon('check', 13)}Resolve</button>`);
+      }
+      if (t.state === "resolved" && allowed.includes("in_progress")) {
+        btns.push(`<button class="k-btn k-btn--ghost k-btn--sm"
+          onclick="reopenTicket(${jsArg(t.id)})">${icon('rotate-ccw', 13)}Reopen</button>`);
+      }
+      if (allowed.includes("closed")) {
+        btns.push(`<button class="k-btn k-btn--primary k-btn--sm" onclick="closeTicket(${jsArg(t.id)})">${icon('check', 13)}Close ticket</button>`);
+      }
+      if (allowed.includes("cancelled")) {
+        btns.push(`<button class="k-btn k-btn--ghost k-btn--sm"
+          onclick="cancelTicket(${jsArg(t.id)})">${icon('x', 13)}Cancel</button>`);
+      }
+      if (t.can_unblock) {
+        btns.push(`<button class="k-btn k-btn--ghost k-btn--sm"
+          onclick="unblockTicket(${jsArg(t.id)})">${icon('refresh-cw', 13)}Unblock</button>`);
+      }
+      return btns.length ? `<div class="k-row" style="gap:8px;flex-wrap:wrap">${btns.join("")}</div>` : "";
+    }
+    const TICKET_EVENT_ICON = { state: "activity", handoff: "network", block: "shield-alert",
+      assign: "user-round", tool_call: "cpu",
+      approval: "shield-check", consent: "shield-check", note: "message-square",
+      message: "message-square", error: "triangle-alert" };
+    // The one open gate on a ticket (at most one, per the partial unique index
+    // idx_ticket_approvals_open), derived from the trail rather than a second
+    // fetch: open_approval() always writes a kind="approval" row with
+    // fields.approval_id BEFORE the ticket blocks on "approval"/"user", and
+    // decide_approval()'s row for the decision carries an "ok"
+    // (approved/denied) that the request row never does. So the open gate —
+    // if the ticket is currently blocked on one of those two reasons — is the
+    // last "approval" row with an approval_id and no "ok" yet.
+    // Doing it this way (instead of GET /api/approvals?ticket_id=…, which is
+    // operator-only) also works for a scoped `user` looking at their own
+    // ticket, who needs to see "waiting" even though they can't decide it.
+    function ticketOpenGate(d) {
+      const t = d.ticket;
+      if (!t || (t.blocked_on !== "approval" && t.blocked_on !== "user")) return null;
+      const events = d.events || [];
+      for (let i = events.length - 1; i >= 0; i--) {
+        const e = events[i];
+        if (e.kind === "approval" && e.fields && e.fields.approval_id != null && e.ok == null) {
+          // tool/tool_class/args ride along so a caller can open the gate
+          // popup (see openTicketGateModal) straight from this row, without a
+          // second fetch for the same call open_approval() already wrote here.
+          return {
+            approvalId: e.fields.approval_id, eventId: e.id,
+            tool: e.tool, tool_class: e.tool_class, args: (e.fields || {}).args,
+            agent_id: t.agent_id,
+          };
+        }
+      }
+      return null;
+    }
+    function ticketEventHtml(e, gate, ticketId) {
+      const time = e.at ? esc(new Date(e.at).toLocaleString()) : "";
+      let body;
+      if (e.kind === "state") {
+        body = `state: <b>${esc(e.from_state || "—")}</b> → <b>${esc(e.to_state || "—")}</b>` +
+          (e.summary ? " — " + esc(e.summary) : "");
+      } else if (e.kind === "handoff") {
+        const f = e.fields || {};
+        body = `reassigned <b>${esc(f.from_agent_id || "—")}</b> → <b>${esc(f.to_agent_id || "—")}</b>`;
+      } else if (e.kind === "block") {
+        const f = e.fields || {};
+        const from = f.from_blocked_on || "unblocked", to = f.to_blocked_on || "unblocked";
+        body = `blocked: <b>${esc(from)}</b> → <b>${esc(to)}</b>` + (e.summary ? " — " + esc(e.summary) : "");
+      } else if (e.kind === "assign") {
+        const f = e.fields || {};
+        body = `assignee: <b>${f.from_assignee_user_id != null ? esc(userLabel(f.from_assignee_user_id)) : "—"}</b>` +
+          ` → <b>${f.to_assignee_user_id != null ? esc(userLabel(f.to_assignee_user_id)) : "—"}</b>`;
+      } else if (e.kind === "tool_call") {
+        const args = e.fields && e.fields.args !== undefined ? esc(JSON.stringify(e.fields.args)) : "";
+        const err = e.fields && e.fields.error;
+        body = `<span class="k-mono">${esc(e.tool || "")}</span>` +
+          (args ? ` <span class="k-muted">${args}</span>` : "") +
+          (e.ok === false
+            ? ` <span class="k-pill k-pill--crit" title="${err ? esc(err.message || "") : ""}">${err ? esc(err.code || "failed") : "failed"}</span>`
+            : "");
+      } else if (e.kind === "approval") {
+        const f = e.fields || {};
+        const args = f.args !== undefined
+          ? `<pre class="k-mono" style="margin:4px 0 0;max-height:160px;overflow:auto;white-space:pre-wrap;word-break:break-word">${esc(JSON.stringify(f.args, null, 2))}</pre>`
+          : "";
+        const isOpen = !!(gate && e.id === gate.eventId);
+        let gateHtml = "";
+        if (isOpen && canOperate()) {
+          gateHtml = `<div class="k-row" style="gap:8px;margin-top:8px">
+            <button class="k-btn k-btn--primary k-btn--sm"
+              onclick="decideTicketApproval(${jsArg(ticketId)}, ${jsArg(gate.approvalId)}, true)">${icon('check', 13)}Approve</button>
+            <button class="k-btn k-btn--danger k-btn--sm"
+              onclick="decideTicketApproval(${jsArg(ticketId)}, ${jsArg(gate.approvalId)}, false)">${icon('x', 13)}Deny</button>
+          </div>`;
+        } else if (isOpen) {
+          // A non-operator (or, for a user_consent gate, anyone but the
+          // requester it belongs to) can see that something is pending but
+          // never decides someone else's gate — same rule as everywhere else.
+          gateHtml = `<div style="margin-top:8px"><span class="k-pill k-pill--warn">awaiting decision</span></div>`;
+        }
+        body = esc(e.summary || "approval") + (f.decided_via ? " via " + esc(f.decided_via) : "") + args + gateHtml;
+      } else if (e.kind === "message") {
+        const f = e.fields || {};
+        if (f.text !== undefined && f.text !== null) {
+          // kenny's replies can contain markdown (same renderer the copilot
+          // uses, escape-first by construction); a human's message is plain
+          // text, never interpreted as markup.
+          body = e.actor === "assistant"
+            ? `<div class="k-bubble k-bubble--assistant">${renderMarkdown(f.text)}</div>`
+            : `<span>${esc(f.text)}</span>`;
+        } else {
+          // Discord-origin human message: no verbatim text is stored (privacy),
+          // so this stays the existing summary-only line, unchanged.
+          body = esc(e.summary || "");
+        }
+      } else if (e.kind === "error") {
+        const err = e.fields && e.fields.error;
+        body = esc(e.summary || "error") +
+          (err ? ` <span class="k-pill k-pill--crit" title="${esc(err.message || "")}">${esc(err.code || "failed")}</span>` : "");
+      } else {
+        body = esc(e.summary || "");
+      }
+      // Every dynamic piece above already went through esc()/JSON.stringify —
+      // tool args and ticket text originate from chat messages and monitored
+      // machines, so this innerHTML must never carry an unescaped value.
+      // renderMarkdown() is the one exception: it is escape-first by
+      // construction (see its own comment), so its output is exempt too.
+      const al = actorLabel(e.actor);
+      return `<div class="kc-timeline__row">
+        <span class="k-audit__time">${time}</span>
+        ${icon(TICKET_EVENT_ICON[e.kind] || "circle-help", 14)}
+        <!-- "assistant" is the stored actor value (ticketstore.ASSISTANT_ACTOR);
+             the person-facing name is always "kenny", never the raw identifier.
+             "operator:<id>"/"user:<id>" render as the account's username via
+             actorLabel(), with the role as a tooltip. -->
+        <span class="kc-timeline__actor"${al.title ? ` title="${esc(al.title)}"` : ""}>${esc(al.label)}</span>
+        <span>${body}</span>
+      </div>`;
+    }
+    async function openReassignModal(id, current) {
+      if (!state.fleet) state.fleet = await getJSON("/api/fleet").catch(() => ({ agents: [] }));
+      const opts = (state.fleet.agents || []).map(a =>
+        `<option value="${esc(a.agent_id)}" ${a.agent_id === current ? "selected" : ""}>${esc(a.agent_id)}</option>`).join("");
+      // No "(unassigned)" option here, deliberately: unlike ticket creation,
+      // POST /api/tickets/{tid}/reassign rejects an empty/absent agent_id with
+      // 400 ("agent_id is required") — reassign literally cannot unassign.
+      const body = `<div class="kfield"><span class="kfield__lbl">Host</span>
+          <select class="k-input" id="tk-reassign-agent">${opts}</select></div>
+        <div class="k-modal__actions">
+          <button class="k-btn k-btn--ghost" onclick="closeModal()">Cancel</button>
+          <button class="k-btn k-btn--primary" onclick="submitReassign(${jsArg(id)})">${icon('check', 14)}Reassign</button>
+        </div>`;
+      openModal(`${icon('network', 20)}<span>Reassign ticket</span>`, body);
+    }
+    async function submitReassign(id) {
+      const el = document.getElementById("tk-reassign-agent");
+      const agent_id = el && el.value ? el.value : null;
+      try {
+        await api("/api/tickets/" + encodeURIComponent(id) + "/reassign", "POST", { agent_id });
+        closeModal();
+        notify("ticket reassigned");
+        await renderTicketDetail(id);
+      } catch (e) { notify(e.message, "err"); }
+    }
+    function openResolveModal(id, currentBlockedOn) {
+      const gateWarning = currentBlockedOn === "approval"
+        ? `<div class="k-muted" style="margin-bottom:8px">This ticket has a pending approval
+            request. Resolving it now denies that request instead of waiting for a decision.</div>`
+        : "";
+      const body = `${gateWarning}<div class="kfield"><span class="kfield__lbl">Reason (optional)</span>
+          <input class="k-input" id="tk-resolve-reason" placeholder="what fixed it"></div>
+        <label class="k-row" style="gap:6px"><input type="checkbox" id="tk-resolve-close"> also close now</label>
+        <div class="k-modal__actions">
+          <button class="k-btn k-btn--ghost" onclick="closeModal()">Cancel</button>
+          <button class="k-btn k-btn--primary" onclick="submitResolve(${jsArg(id)})">${icon('check', 14)}Resolve</button>
+        </div>`;
+      openModal(`${icon('check', 20)}<span>Resolve ticket</span>`, body);
+    }
+    async function submitResolve(id) {
+      const reason = (document.getElementById("tk-resolve-reason") || {}).value || "";
+      const and_close = !!(document.getElementById("tk-resolve-close") || {}).checked;
+      try {
+        await api("/api/tickets/" + encodeURIComponent(id) + "/transition", "POST",
+          { to: "resolved", reason, and_close });
+        closeModal();
+        notify("resolved");
+      } catch (e) { notify(e.message, "err"); }
+      await renderTicketDetail(id);
+    }
+    async function reopenTicket(id) {
+      const ok = await confirmModal({
+        title: "Reopen ticket", ico: "rotate-ccw",
+        body: "Move this ticket back to in-progress?",
+        confirmLabel: "Reopen", confirmClass: "k-btn--primary",
+      });
+      if (ok) {
+        try {
+          await api("/api/tickets/" + encodeURIComponent(id) + "/transition", "POST",
+            { to: "in_progress", reason: "reopened from dashboard" });
+          notify("reopened");
+        } catch (e) { notify(e.message, "err"); }
+      }
+      await renderTicketDetail(id);
+    }
+    async function closeTicket(id) {
+      const ok = await confirmModal({ title: "Close ticket", ico: "check",
+        body: "Close this ticket? It can still be reopened while it stays resolved.",
+        confirmLabel: "Close" });
+      if (ok) {
+        try { await api("/api/tickets/" + encodeURIComponent(id) + "/close", "POST", {}); notify("ticket closed"); }
+        catch (e) { notify(e.message, "err"); }
+      }
+      await renderTicketDetail(id);
+    }
+    async function cancelTicket(id) {
+      const ok = await confirmModal({ title: "Cancel ticket", ico: "x",
+        body: "Withdraw this ticket? This cannot be undone.",
+        confirmLabel: "Cancel ticket", confirmClass: "k-btn--danger" });
+      if (ok) {
+        try {
+          await api("/api/tickets/" + encodeURIComponent(id) + "/transition", "POST",
+            { to: "cancelled", reason: "cancelled from dashboard" });
+          notify("ticket cancelled");
+        } catch (e) { notify(e.message, "err"); }
+      }
+      await renderTicketDetail(id);
+    }
+    async function unblockTicket(id) {
+      try {
+        await api("/api/tickets/" + encodeURIComponent(id) + "/unblock", "POST", {});
+        notify("unblocked");
+      } catch (e) { notify(e.message, "err"); }
+      await renderTicketDetail(id);
+    }
+    async function submitAssign(id, assignee_user_id) {
+      try {
+        await api("/api/tickets/" + encodeURIComponent(id) + "/assign", "POST", { assignee_user_id });
+        notify(assignee_user_id != null ? "claimed" : "unclaimed");
+      } catch (e) { notify(e.message, "err"); }
+      await renderTicketDetail(id);
+    }
+    async function updateTicketField(id, field, value) {
+      try {
+        await api("/api/tickets/" + encodeURIComponent(id), "PATCH", { [field]: value || null });
+        notify(`${field} updated`);
+      } catch (e) { notify(e.message, "err"); }
+      await renderTicketDetail(id);
+    }
+    async function addTicketNote(id) {
+      // Shares the composer's textarea with "send to kenny" (#tk-chat-input) —
+      // the mode toggle decides which action the Add button drives, not a
+      // second input element.
+      const el = document.getElementById("tk-chat-input");
+      // Same guard sendTicketChat applies to itself: never post while a chat
+      // turn is streaming, or while the textarea is disabled for any other
+      // reason (a gate is open, the assistant isn't configured, ...) — the
+      // keyboard shortcut (tkComposerKeydown) can reach this path too, not
+      // just the Add button, which today's disabled attribute alone doesn't
+      // cover in "note" mode.
+      if (tkChatAbort || (el && el.disabled)) return;
+      const summary = el ? el.value.trim() : "";
+      if (!summary) return;
+      try {
+        await api("/api/tickets/" + encodeURIComponent(id) + "/note", "POST", { summary });
+        notify("note added");
+      } catch (e) { notify(e.message, "err"); }
+      await renderTicketDetail(id);
+    }
+
+    // -- inline gate decision (approval row in the timeline) ---------------
+    // Same underlying call the approvals-badge modal's decideApproval() makes
+    // (POST /api/approvals/{id}), but that function's post-decision step is
+    // "reopen the approvals modal" — wrong here, where the point is to stay
+    // on the ticket and see the trail update in place. So this is its own
+    // small function rather than a shared one with two different endings.
+    async function decideTicketApproval(ticketId, approvalId, approve) {
+      const ok = await confirmModal({
+        title: approve ? "Approve tool call" : "Deny tool call",
+        ico: approve ? "shield-check" : "shield-alert",
+        body: approve
+          ? "Allow this held tool call to run on the target host?"
+          : "Deny this held tool call? It will not run.",
+        confirmLabel: approve ? "Approve" : "Deny",
+        confirmClass: approve ? "k-btn--primary" : "k-btn--danger",
+      });
+      if (ok) {
+        try {
+          const res = await api("/api/approvals/" + encodeURIComponent(approvalId), "POST", { approve });
+          if (res && res.resumed === false) {
+            notify("recorded — kenny could not continue this ticket automatically", "err");
+          } else {
+            notify(approve ? "approved" : "denied");
+          }
+        } catch (e) { notify(e.message, "err"); }
+      }
+      await renderTicketDetail(ticketId);
+      refreshHeader();
+    }
+
+    // -- gate popup (shared with the Fleet rail's openGateModal) -----------
+    // Ticket view's own gate popup: reuses the fleet rail's wide modal
+    // (openGateModal/gateModalHtml, defined with the rest of the confirm-gate
+    // code) via its onDecide/dismissible opts, but decides through the
+    // ticket's own existing path — decideTicketApproval already does the
+    // confirm dialog + API call + renderTicketDetail + refreshHeader — so
+    // this stays a thin wrapper, not a second copy of that logic.
+    function openTicketGateModal(ticketId, gate) {
+      openGateModal(
+        { tool: gate.tool, args: gate.args, agent_id: gate.agent_id, tool_class: gate.tool_class },
+        {
+          // Dismissible, unlike the fleet rail (see openGateModal's own
+          // comment for why): a ticket's gate can legitimately wait hours and
+          // be decided by a different operator than whoever has this ticket
+          // open right now, so "Decide later" must stay a true no-op, not a
+          // denial — the inline Approve/Deny row in the timeline (and the
+          // header approvals badge) remain the durable way back to it.
+          dismissible: true,
+          onDecide: approve => decideTicketApproval(ticketId, gate.approvalId, approve),
+        }
+      );
+    }
+    // Guards openTicketGateModal so a re-render mid-turn (renderTicketDetail
+    // runs again on every streamed turn's 'done') never reopens a dialog the
+    // operator already dismissed with "Decide later" — one popup per gate,
+    // not per render.
+    let tkGateShownFor = null;
+    function maybeOpenTicketGateModal(ticketId, gate) {
+      if (!gate || !canOperate() || tkGateShownFor === gate.approvalId) return;
+      tkGateShownFor = gate.approvalId;
+      openTicketGateModal(ticketId, gate);
+    }
+    // The 'pending' SSE event (handleTicketChatEvent, below) carries only
+    // toolloop's raw {tool, args, agent_id} — no approval id, since it is the
+    // same event shape the fleet chat uses and tickets are not its concern.
+    // TicketAssistant.on_hold has already durably written the approval row
+    // and blocked the ticket *before* that event is yielded (see the comment
+    // on ticketOpenGate), so a small refetch reliably finds it — this is what
+    // lets the popup appear right when the hold happens instead of only after
+    // the turn's later 'done' reload.
+    async function ticketPendingGate(ticketId) {
+      if (!canOperate()) return;
+      try {
+        const [ticket, events] = await Promise.all([
+          getJSON("/api/tickets/" + encodeURIComponent(ticketId)),
+          getJSON("/api/tickets/" + encodeURIComponent(ticketId) + "/events"),
+        ]);
+        maybeOpenTicketGateModal(ticketId, ticketOpenGate({ ticket, events: events.events || [] }));
+      } catch (e) { /* the 'done' event's own renderTicketDetail() is the fallback */ }
+    }
+
+    // ====================================================================
+    // TICKET CHAT COMPOSER — replaces the old plain "add a note" box.
+    // "Send to kenny" drives one turn of the ticket assistant over SSE
+    // (POST /api/tickets/{tid}/chat/stream, same event vocabulary
+    // handleChatEvent already renders for the copilot); "Add a note" keeps
+    // today's plain note behavior. Own element ids (tk-chat-*) — chatHtml()
+    // hardcodes #transcript/#chat-input/#chat-send and a ticket page mounted
+    // alongside the copilot rail must not collide with that DOM.
+    // ====================================================================
+    let tkComposerMode = "chat";
+    let tkChatAbort = null;
+
+    // Why the composer (or the "send to kenny" half of it) is locked, in the
+    // priority the checks are meant to be read: an unconfigured assistant
+    // first, then the structural reasons (no target, terminal state), then
+    // the transient one (a gate is already open). Mirrors the same order the
+    // server checks in api_ticket_chat_stream.
+    function ticketChatDisabledReason(t) {
+      if (!t.assistant_available) return "Ask kenny is not configured.";
+      if (!t.agent_id) return "This ticket has no target machine.";
+      if (t.state === "closed" || t.state === "cancelled") return "This ticket is closed.";
+      if (t.blocked_on === "approval" || t.blocked_on === "user") return "Waiting on a decision above.";
+      return null;
+    }
+    function ticketComposerHtml(t) {
+      const canNote = canOperate();
+      // A scoped `user` never had note-adding and still doesn't; "send to
+      // kenny" is the only mode they get, so there is nothing to toggle.
+      const mode = canNote ? tkComposerMode : "chat";
+      const isNote = mode === "note";
+      const chatReason = ticketChatDisabledReason(t);
+      const disabled = isNote ? false : !!chatReason;
+      const modeToggle = canNote ? `<div class="k-row" style="gap:4px;margin-bottom:8px">
+          <button type="button" class="kc-tab tk-mode-btn${!isNote ? " is-active" : ""}"
+            onclick="setTicketComposerMode('chat')">${icon('message-square', 13)}Ask kenny</button>
+          <button type="button" class="kc-tab tk-mode-btn${isNote ? " is-active" : ""}"
+            onclick="setTicketComposerMode('note')">${icon('plus', 13)}Add a note</button>
+        </div>` : "";
+      const mirror = (!isNote && t.discord_thread) ? `<label class="k-row" style="gap:6px;margin-top:8px">
+          <input type="checkbox" id="tk-chat-mirror" ${disabled ? "disabled" : ""}> also post in the Discord thread</label>` : "";
+      const reasonText = isNote ? "" : (chatReason || "");
+      const placeholder = isNote ? "operator note" : "Ask kenny about this ticket…";
+      const btnLabel = isNote ? `${icon('plus', 13)}Add` : `${icon('send-horizontal', 13)}Send`;
+      const btnOnclick = isNote ? `addTicketNote(${jsArg(t.id)})` : `sendTicketChat(${jsArg(t.id)})`;
+      // Rendered in both modes — it's the same textarea/keydown handler
+      // underneath either one (see mountTicketComposer/tkComposerKeydown).
+      const enterSend = `<label class="k-row" style="gap:6px">
+          <input type="checkbox" id="tk-enter-send" onchange="setEnterToSend(this.checked)"
+            ${enterToSend() ? "checked" : ""}> Enter to send</label>`;
+      return `<div class="k-panel kset__grp" id="tk-composer">
+        <div class="k-detail-grp__lbl">${isNote ? "add a note" : "ask kenny"}</div>
+        ${modeToggle}
+        <textarea class="k-input" id="tk-chat-input" rows="3" placeholder="${esc(placeholder)}"
+          ${disabled ? "disabled" : ""}></textarea>
+        ${mirror}
+        <div class="k-row" style="justify-content:space-between;align-items:center;margin-top:8px;gap:10px">
+          <span class="k-muted" id="tk-chat-reason">${esc(reasonText)}</span>
+          <div class="k-row" style="gap:14px;align-items:center">
+            ${enterSend}
+            <button class="k-btn k-btn--primary k-btn--sm" id="tk-chat-send"
+              ${disabled ? "disabled" : ""} onclick="${btnOnclick}">${btnLabel}</button>
+          </div>
+        </div>
+      </div>`;
+    }
+    // Bind the composer textarea's keydown handler after every place its HTML
+    // is (re)inserted — outerHTML replacement (setTicketComposerMode) and a
+    // full renderTicketDetail both create a fresh element with no listeners
+    // of its own. Mirrors how mountChat() binds the copilot rail's own
+    // #chat-input after each of its renders.
+    function mountTicketComposer() {
+      const ta = document.getElementById("tk-chat-input");
+      if (ta) ta.addEventListener("keydown", tkComposerKeydown);
+    }
+    // Enter without Shift/Alt sends when either the "Enter to send" preference
+    // is on, or Cmd/Ctrl is held (the escape hatch when it's off); Shift+Enter
+    // always inserts a newline, regardless of the preference. Never dispatches
+    // while a turn is already streaming or the textarea is disabled (a gate is
+    // open, the assistant isn't configured, ...) — the same guard
+    // sendTicketChat/addTicketNote apply to their own button.
+    function tkComposerKeydown(e) {
+      if (e.key !== "Enter" || e.shiftKey || e.altKey) return;
+      const forceSend = e.metaKey || e.ctrlKey;
+      if (!forceSend && !enterToSend()) return; // let the browser insert a newline
+      e.preventDefault();
+      if (tkChatAbort || e.target.disabled) return;
+      const id = state.ticketDetail && state.ticketDetail.ticket && state.ticketDetail.ticket.id;
+      if (id == null) return;
+      if (tkComposerMode === "note") addTicketNote(id); else sendTicketChat(id);
+    }
+    // Swaps between modes without losing whatever the operator already typed
+    // — re-renders the composer from the already-loaded ticket (no refetch)
+    // rather than reloading the whole page.
+    function setTicketComposerMode(mode) {
+      const ta = document.getElementById("tk-chat-input");
+      const val = ta ? ta.value : "";
+      tkComposerMode = mode;
+      const host = document.getElementById("tk-composer");
+      if (host && state.ticketDetail) {
+        host.outerHTML = ticketComposerHtml(state.ticketDetail.ticket);
+        const ta2 = document.getElementById("tk-chat-input");
+        if (ta2) ta2.value = val;
+        mountTicketComposer();
+      }
+    }
+    // Swap Send -> Stop while a turn streams, mirroring setComposerStreaming's
+    // pattern in the copilot. Locking the textarea/checkbox is separate (see
+    // setTicketComposerLocked) so a mid-turn 'pending' can lock immediately
+    // without waiting on this.
+    function setTicketComposerStreaming(on, ticketId) {
+      const send = document.getElementById("tk-chat-send");
+      if (send) {
+        if (on) {
+          send.innerHTML = `${icon('square', 13)}Stop`;
+          send.onclick = stopTicketChat;
+          send.disabled = false;
+        } else {
+          send.innerHTML = `${icon('send-horizontal', 13)}Send`;
+          send.onclick = () => sendTicketChat(ticketId);
+        }
+      }
+      setTicketComposerLocked(on);
+    }
+    function setTicketComposerLocked(on, reasonText) {
+      const ta = document.getElementById("tk-chat-input");
+      const mirror = document.getElementById("tk-chat-mirror");
+      const reasonEl = document.getElementById("tk-chat-reason");
+      if (ta) ta.disabled = on;
+      if (mirror) mirror.disabled = on;
+      if (reasonEl && reasonText !== undefined) reasonEl.textContent = reasonText;
+    }
+    function stopTicketChat() {
+      if (tkChatAbort) tkChatAbort.abort();
+    }
+    async function sendTicketChat(id) {
+      if (tkChatAbort) return; // a turn is already streaming
+      const ta = document.getElementById("tk-chat-input");
+      const message = ta ? ta.value.trim() : "";
+      if (!message) return;
+      const mirrorEl = document.getElementById("tk-chat-mirror");
+      const mirror = !!(mirrorEl && mirrorEl.checked);
+      ta.value = "";
+      await startTicketChatTurn(id, message, mirror);
+    }
+
+    // Scroll #tk-timeline to its newest row. Shared by the live-append helpers
+    // below and by renderTicketDetail, so a freshly loaded ticket also lands on
+    // the newest message rather than only auto-scrolling on later live events.
+    function tkScrollTimeline() {
+      const t = document.getElementById("tk-timeline");
+      if (t) t.scrollTop = t.scrollHeight;
+    }
+    // -- appending provisional (in-progress) rows to the live timeline ------
+    // These are a preview only: "done" (or the abort/error fallback in
+    // startTicketChatTurn) always follows with a full renderTicketDetail(),
+    // which replaces every row here with the durable trail. Kept visually
+    // consistent with ticketEventHtml's own rows (same time/icon/actor
+    // chrome) so a live turn doesn't look like a different widget.
+    function tkTimelineRow(actorLabel, iconName) {
+      const t = document.getElementById("tk-timeline");
+      if (!t) return null;
+      const row = document.createElement("div");
+      row.className = "kc-timeline__row";
+      const time = document.createElement("span");
+      time.className = "k-audit__time";
+      time.textContent = new Date().toLocaleString();
+      row.appendChild(time);
+      row.insertAdjacentHTML("beforeend", icon(iconName, 14));
+      const actor = document.createElement("span");
+      actor.className = "kc-timeline__actor";
+      actor.textContent = actorLabel;
+      row.appendChild(actor);
+      const body = document.createElement("span");
+      row.appendChild(body);
+      t.appendChild(row);
+      tkScrollTimeline();
+      return body;
+    }
+    function tkTimelineBubble(actorLabel, text) {
+      const body = tkTimelineRow(actorLabel, "message-square");
+      if (!body) return document.createElement("div");
+      const div = document.createElement("div");
+      // Same class as the durable trail's kenny-authored rows (see
+      // ticketEventHtml) and the copilot's own assistant bubble — kenny's
+      // text is markdown, a human's is plain, never interpreted as markup.
+      if (actorLabel === "kenny") {
+        div.className = "k-bubble k-bubble--assistant";
+        div.innerHTML = renderMarkdown(text);
+      } else {
+        div.textContent = text;
+      }
+      body.appendChild(div);
+      return div;
+    }
+    function tkTimelineToolRun(label, ok) {
+      const body = tkTimelineRow("kenny", ok ? "check" : "octagon-alert");
+      if (!body) return;
+      const span = document.createElement("span");
+      span.className = "k-toolrun" + (ok ? " k-toolrun--auto" : " k-toolrun--err");
+      span.textContent = label;
+      body.appendChild(span);
+    }
+    // ctx.bubble() lazily creates the one in-progress kenny bubble the first
+    // time a text token arrives, same lazy-creation reason newChatCtx() has
+    // in the copilot (a tool-only/gate-only turn shouldn't leave a blank row).
+    function newTicketChatCtx() {
+      return { _div: null, _raw: "", bubble() { return (this._div ||= tkTimelineBubble("kenny", "")); } };
+    }
+    function handleTicketChatEvent(ev, ctx, ticketId) {
+      if (ev.type === "text_delta") {
+        const div = ctx.bubble();
+        ctx._raw += ev.text;
+        // Re-render the whole buffered reply per token, not an incremental
+        // append — a delta can land mid-token, same reasoning as the
+        // copilot's handleChatEvent.
+        div.innerHTML = renderMarkdown(ctx._raw);
+        tkScrollTimeline();
+      } else if (ev.type === "tool_result") {
+        tkTimelineToolRun(ev.tool, ev.ok !== false);
+      } else if (ev.type === "denied") {
+        tkTimelineToolRun("denied " + ev.tool + (ev.message ? " — " + ev.message : ""), false);
+      } else if (ev.type === "pending") {
+        // The trail row + ticket state transition are already durable by the
+        // time this event arrives (TicketAssistant.on_hold runs before the
+        // loop yields it) — this is just a snappier local lock; the 'done'
+        // event that immediately follows does the authoritative reload that
+        // shows the new approval row with its inline Approve/Deny controls.
+        setTicketComposerLocked(true, "Waiting on a decision above.");
+        // Also surface the gate popup right here, not just once the 'done'
+        // reload lands (see ticketPendingGate) — same guard (tkGateShownFor)
+        // as the renderTicketDetail path, so the two never double-open it.
+        ticketPendingGate(ticketId);
+      } else if (ev.type === "error") {
+        notify(ev.error || "chat failed", "err");
+      }
+      // 'done' is handled by the caller (startTicketChatTurn), which is the
+      // one place that knows whether a reload already happened.
+    }
+    // Drive one turn of the ticket assistant. The trail is the truth, these
+    // provisional rows are only a preview: on a normal end ('done') or on any
+    // abnormal end (Stop, a network error, an in-band 'error' with no 'done'
+    // behind it) this always finishes with one clean renderTicketDetail(),
+    // which replaces every provisional row with the durable ones and
+    // re-derives the composer's disabled state from the fresh ticket.
+    async function startTicketChatTurn(ticketId, message, mirrorToDiscord) {
+      if (tkChatAbort) return;
+      tkTimelineBubble("you", message);
+      const ctx = newTicketChatCtx();
+      let sawDone = false;
+      tkChatAbort = new AbortController();
+      setTicketComposerStreaming(true, ticketId);
+      try {
+        for await (const ev of streamSSE(
+          "/api/tickets/" + encodeURIComponent(ticketId) + "/chat/stream",
+          { message, mirror_to_discord: mirrorToDiscord },
+          { signal: tkChatAbort.signal }
+        )) {
+          if (ev.type === "done") {
+            sawDone = true;
+            await renderTicketDetail(ticketId);
+          } else {
+            handleTicketChatEvent(ev, ctx, ticketId);
+          }
+        }
+      } catch (e) {
+        if (e.name !== "AbortError") notify(e.message, "err");
+      } finally {
+        tkChatAbort = null;
+        // A normal end already reloaded inside the loop (the 'done' branch
+        // above); any abnormal end (Stop, a network error, a pre-stream
+        // failure streamSSE threw on) has not, so catch it up here. Either
+        // way the render that follows is a fresh, authoritative composer —
+        // no separate "un-stream" step, that would just re-enable inputs a
+        // fresh disabled-reason render may have deliberately locked.
+        if (!sawDone) await renderTicketDetail(ticketId);
+      }
+    }
+
+    // -- approvals badge modal: the frozen tool call, args and target, one
+    // decision away from running (or being denied) ------------------------
+    async function openApprovalsModal() {
+      openModal(`${icon('shield-alert', 20)}<span>Pending approvals</span>`, `<div class="k-muted">loading…</div>`, "k-modal--wide");
+      await refreshApprovalsModal();
+    }
+    async function refreshApprovalsModal() {
+      let approvals = [];
+      try { approvals = ((await api("/api/approvals")) || {}).approvals || []; }
+      catch (e) {
+        const b = modalBody(); if (b) b.innerHTML = `<div class="k-airec__err">${esc(e.message)}</div>`;
+        return;
+      }
+      const b = modalBody(); if (b) b.innerHTML = approvalsBodyHtml(approvals);
+    }
+    function approvalsBodyHtml(approvals) {
+      if (!approvals.length) return `<div class="k-muted">no pending approvals</div>`;
+      const rows = approvals.map(a => `<tr>
+          <td class="k-mono">${esc(a.tool)}</td>
+          <td><span class="k-pill">${esc(a.tool_class)}</span></td>
+          <td class="k-mono" style="max-width:420px">
+            <pre style="margin:0;max-height:180px;overflow:auto;white-space:pre-wrap;word-break:break-word">${esc(JSON.stringify(a.args, null, 2))}</pre>
+          </td>
+          <td><a href="#/tickets/${encodeURIComponent(a.ticket_id)}" onclick="closeModal()">${icon('link', 13)}ticket</a></td>
+          <td class="kacc-tbl__actions">
+            <button class="k-btn k-btn--primary k-btn--sm" onclick="decideApproval(${jsArg(a.id)}, true)">${icon('check', 13)}Approve</button>
+            <button class="k-btn k-btn--danger k-btn--sm" onclick="decideApproval(${jsArg(a.id)}, false)">${icon('x', 13)}Deny</button>
+          </td></tr>`).join("");
+      return `<table class="kacc-tbl"><thead><tr><th>Tool</th><th>Class</th><th>Args</th><th>Ticket</th><th></th></tr></thead>
+        <tbody>${rows}</tbody></table>`;
+    }
+    async function decideApproval(id, approve) {
+      const ok = await confirmModal({
+        title: approve ? "Approve tool call" : "Deny tool call",
+        ico: approve ? "shield-check" : "shield-alert",
+        body: approve
+          ? "Allow this held tool call to run on the target host?"
+          : "Deny this held tool call? It will not run.",
+        confirmLabel: approve ? "Approve" : "Deny",
+        confirmClass: approve ? "k-btn--primary" : "k-btn--danger",
+      });
+      if (ok) {
+        try {
+          const res = await api("/api/approvals/" + encodeURIComponent(id), "POST", { approve });
+          if (res && res.resumed === false) {
+            notify("recorded — kenny could not continue this ticket automatically", "err");
+          } else {
+            notify(approve ? "approved" : "denied");
+          }
+        } catch (e) { notify(e.message, "err"); }
+      }
+      // confirmModal() replaces/closes the single shared modal, so reopen the
+      // approvals list (same pattern as resetUserTotp()) rather than trying to
+      // patch the now-gone DOM in place.
+      await openApprovalsModal();
+      refreshHeader();
+    }
+
+    // ====================================================================
+    // SETTINGS — one admin surface behind a left sidebar: the runtime
+    // configuration catalog (grouped exactly as config.py's GROUP_ORDER,
+    // values resolving DB override > environment > coded default) plus the
+    // Backup and Updates sections, which are catalog groups too and share
+    // this same shell. #/settings/{slug} picks one section; bare #/settings,
+    // #/backup and #/updates all resolve into it (old bookmarks and the
+    // Discord "see the dashboard" links keep working). Editable (live/
+    // restart) settings write back via /api/settings; env_only ones
+    // (secrets, wire-contract, process-bind) are shown read-only, grouped
+    // under a separate "environment" nav block.
+    //
+    // /api/settings is superuser-only; Updates is operator+ (ADR-0040), so an
+    // operator gets a single synthetic "Updates" section with no catalog
+    // panel and never calls /api/settings at all (it would just 403).
+    // ====================================================================
+    let settingsGroups = [];   // last /api/settings payload — the nav's shape
+    let settingsQuery = "";    // cross-section search text; not reflected in the hash
+
+    const _SETTINGS_ICONS = {
+      "alerting-digest": "bell", "web-filter": "globe", "chat-ai": "message-square",
+      "logging": "monitor", "backup": "hard-drive", "updates": "download",
+      "discord-tickets": "life-buoy", "network-process": "network",
+      "operator-agent-auth": "key", "telemetry-limits": "activity",
+      "agent-distribution": "box", "ticket-rules": "link",
+    };
+    function settingsGroupIcon(slug) { return _SETTINGS_ICONS[slug] || "sliders"; }
+
+    function settingsOperatorSections() {
+      // No .settings array: an operator can't reach /api/settings at all, so
+      // there is no row count to show — an empty array would misleadingly
+      // read as "Updates has 0 settings" instead of "not shown to you".
+      return withTicketRulesSection([{ name: "Updates", slug: "updates" }]);
+    }
+
+    // Auto-ticket rules is a second section with no settings-catalog
+    // group behind it, same shape as Updates: operator+ visible, appended after
+    // whatever /api/settings returned (superuser) or after the synthetic
+    // Updates-only list (operator) so both roles see it last, right after
+    // "Discord & Tickets" (config.py's GROUP_ORDER ends there).
+    function withTicketRulesSection(groups) {
+      return [...groups, { name: "Auto-ticket rules", slug: "ticket-rules" }];
+    }
+
+    function settingsGroupIsReadonly(g) {
+      const settings = g.settings || [];
+      return settings.length > 0 && settings.every(s => s.lifecycle === "env_only");
+    }
+
+    function settingsGroupMatches(g, q) {
+      return (g.settings || []).filter(s =>
+        s.label.toLowerCase().includes(q) || s.key.toLowerCase().includes(q) ||
+        (s.help || "").toLowerCase().includes(q));
+    }
+
+    function setSettingsPane(html) {
+      const pane = document.getElementById("kset-pane");
+      if (pane) pane.innerHTML = html;
+    }
+
     async function renderSettings() {
+      const nav = navToken;
       // The header metrics need fleet data in every tab; fetch it if missing.
       if (!state.fleet) {
         state.fleet = await getJSON("/api/fleet").catch(() => ({ agents: [] }));
       }
+      if (nav !== navToken) return;  // navigated away while this was loading
       renderHeaderRight(state.fleet, state.fleet.agents || []);
-      app.innerHTML = `<div class="kset"><div class="k-muted">loading…</div></div>`;
-      let data;
+
+      if (isSuperuser()) {
+        try {
+          settingsGroups = withTicketRulesSection((await getJSON("/api/settings")).groups || []);
+        } catch (e) {
+          app.innerHTML = `<div class="k-airec__err">could not load settings: ${esc(e.message)}</div>`;
+          return;
+        }
+        if (nav !== navToken) return;
+      } else {
+        settingsGroups = settingsOperatorSections();
+      }
+      // A real navigation into Settings always shows fresh Backup/Updates
+      // data; a search-text toggle mid-section (below) reuses whatever is
+      // already cached instead of refetching on every keystroke.
+      backupState.data = null;
+      updatesState.data = null;
+
+      const active = settingsGroups.find(g => g.slug === state.settingsSection) || settingsGroups[0];
+      state.settingsSection = active.slug;
+      const wantHash = "#/settings/" + active.slug;
+      if (location.hash !== wantHash) history.replaceState(null, "", wantHash);
+
+      app.innerHTML = `<div class="kc-console no-copilot">
+        <div class="k-panel kc-fleet">
+          ${isSuperuser() ? `<div class="k-muted" style="font-size:var(--text-xs);margin-bottom:10px">
+            settings resolve <b>custom override → environment → default</b>; read-only ones are
+            managed via the environment</div>
+          <div class="k-audit__bar" style="margin-bottom:14px">
+            <span class="k-audit__search">${icon('search', 15)}
+              <input class="k-input" id="kset-search" placeholder="search settings…"
+                autocomplete="off" oninput="settingsSearchInput(this.value)" value="${esc(settingsQuery)}" />
+            </span>
+          </div>` : ""}
+          <div id="kset-navlist"></div>
+        </div>
+        <div class="ksetpane" id="kset-pane"></div>
+      </div>`;
+      renderSettingsNavList();
+      await renderSettingsSection(active.slug);
+    }
+
+    function renderSettingsNavList() {
+      const host = document.getElementById("kset-navlist");
+      if (!host) return;
+      const q = settingsQuery.trim().toLowerCase();
+      const item = (g) => {
+        const count = q ? settingsGroupMatches(g, q).length : (g.settings || []).length;
+        const sub = !g.settings ? ""
+          : q ? `${count} match${count === 1 ? "" : "es"}` : `${count} setting${count === 1 ? "" : "s"}`;
+        return `<a class="kc-navitem${state.settingsSection === g.slug ? " is-active" : ""}" href="#/settings/${g.slug}">
+           ${icon(settingsGroupIcon(g.slug), 16)}
+           <span class="kc-agent__body">
+             <span class="kc-navitem__name">${esc(g.name)}</span>
+             <span class="kc-navitem__sub">${sub}</span>
+           </span></a>`;
+      };
+      const visible = q ? settingsGroups.filter(g => settingsGroupMatches(g, q).length) : settingsGroups;
+      const configurable = visible.filter(g => !settingsGroupIsReadonly(g));
+      const readonly = visible.filter(g => settingsGroupIsReadonly(g));
+      host.innerHTML =
+        `<div class="kc-section-lbl">configuration</div>
+         <div class="kc-fleet__list">${configurable.map(item).join("")
+            || `<div class="k-muted" style="font-size:var(--text-sm);padding:4px">no matches</div>`}</div>` +
+        (readonly.length
+          ? `<div class="kc-section-lbl" style="margin-top:14px">environment (read-only)</div>
+             <div class="kc-fleet__list">${readonly.map(item).join("")}</div>`
+          : "");
+    }
+
+    function settingsSearchInput(v) {
+      settingsQuery = v;
+      renderSettingsNavList();
+      if (settingsQuery.trim()) renderSettingsPaneFiltered();
+      else renderSettingsSection(state.settingsSection);
+    }
+
+    function renderSettingsPaneFiltered() {
+      const q = settingsQuery.trim().toLowerCase();
+      const matches = settingsGroups
+        .map(g => ({ name: g.name, slug: g.slug, settings: settingsGroupMatches(g, q) }))
+        .filter(g => g.settings.length);
+      setSettingsPane(matches.length
+        ? matches.map(settingsGroupHtml).join("")
+        : `<div class="k-panel"><div class="k-muted">no settings match “${esc(settingsQuery)}”.</div></div>`);
+    }
+
+    // Fills #kset-pane for one section. Backup/Updates/Discord & Tickets
+    // compose their existing page content with the matching catalog group
+    // (see backupSectionHtml/updatesSectionHtml/renderDiscordSection below);
+    // every other section is just its catalog group's panel.
+    async function renderSettingsSection(slug) {
+      if (slug === "backup" && isSuperuser()) { await renderBackup(); return; }
+      if (slug === "updates") { await renderUpdates(); return; }
+      if (slug === "discord-tickets" && isSuperuser()) { await renderDiscordSection(); return; }
+      if (slug === "ticket-rules") { await renderTicketRulesSection(); return; }
+      const group = settingsGroups.find(g => g.slug === slug);
+      setSettingsPane(group ? settingsGroupHtml(group) : `<div class="k-muted">nothing here yet.</div>`);
+    }
+
+    // The single "something changed, redraw the current section with fresh
+    // everything" entry point: settingsSet()/settingsReset() call this after
+    // every write so a badge flip, a Backup/Updates catalog row, or the nav's
+    // match counts never show stale data — without it silently reusing the
+    // catalog snapshot from whenever the section was first opened.
+    async function refreshSettingsSection() {
+      if (isSuperuser()) {
+        try { settingsGroups = withTicketRulesSection((await getJSON("/api/settings")).groups || []); }
+        catch (e) { /* keep the previous snapshot rather than blanking the page */ }
+      }
+      backupState.data = null;
+      updatesState.data = null;
+      renderSettingsNavList();
+      await renderSettingsSection(state.settingsSection);
+    }
+
+    // The "Auto-ticket rules" section: which alerts open a ticket
+    // on their own. No settings-catalog group behind it — same shape as
+    // Updates — so this fetches straight from /api/ticket-rules* and fills
+    // #kset-pane directly. Fetch → render, re-run after every mutation.
+    async function renderTicketRulesSection() {
+      setSettingsPane(`<div class="k-muted">loading…</div>`);
+      let vocab, data;
       try {
-        data = await getJSON("/api/settings");
+        [vocab, data] = await Promise.all([
+          getJSON("/api/ticket-rules/vocabulary"),
+          getJSON("/api/ticket-rules"),
+        ]);
       } catch (e) {
-        app.innerHTML = `<div class="kset"><div class="k-airec__err">could not load settings: ${esc(e.message)}</div></div>`;
+        setSettingsPane(`<div class="k-airec__err">auto-ticket rules unavailable: ${esc(e.message)}</div>`);
         return;
       }
-      const groups = data.groups || [];
-      app.innerHTML = `<div class="kset">
-        <div class="kset__intro k-muted">Settings resolve <b>custom override → environment → default</b>.
-          Editable settings apply immediately; read-only ones are managed via the environment.</div>
-        ${groups.map(settingsGroupHtml).join("")}
+      state.ticketRuleVocab = vocab;
+      setSettingsPane(ticketRulesSectionHtml(vocab, data));
+      // The section select's options depend on the event-type select's current
+      // value, which only exists in the DOM once the HTML above has landed.
+      onTkRuleEventTypeChange();
+    }
+    const TK_RULE_DECISION_LABEL = { open_all: "open", open_crit: "open if crit", never: "never" };
+    function ticketRulesSectionHtml(vocab, d) {
+      const rules = d.rules || [];
+      const rows = rules.length ? rules.map(r => {
+        const known = !r.section || (vocab.sections[r.event_type] || []).includes(r.section);
+        return `<div class="kwf-row">
+          <span class="k-mono">${esc(r.event_type)} / ${esc(r.section || "any section")}</span>
+          ${!known ? `<span class="k-pill k-pill--warn" title="not a known section for this event type">unknown section</span>` : ""}
+          <span class="k-pill ${r.decision === "never" ? "k-pill--muted" : "k-pill--ok"}">${esc(TK_RULE_DECISION_LABEL[r.decision] || r.decision)}</span>
+          <span class="k-pill k-pill--muted">${esc(r.agent_id || "fleet-wide")}</span>
+          ${r.note ? `<span class="k-muted">${esc(r.note)}</span>` : ""}
+          <button class="k-btn k-btn--danger k-btn--sm" style="margin-left:auto"
+            title="remove" onclick="removeTicketRule(${jsArg(r.id)}, ${jsArg(r.agent_id ? "host" : "fleet")})">${icon('x', 12)}</button>
+        </div>`;
+      }).join("") : `<div class="k-muted">no rules — every genuine alert opens a ticket; recoveries, inventory changes and the weekly digest never do</div>`;
+      const eventTypeOpts = vocab.event_types.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join("");
+      const decisionOpts = vocab.decisions.map(a =>
+        `<option value="${esc(a)}">${esc(TK_RULE_DECISION_LABEL[a] || a)}</option>`).join("");
+      const agentOpts = (state.fleet.agents || []).map(a =>
+        `<option value="${esc(a.agent_id)}">${esc(a.agent_id)}</option>`).join("");
+      return `<div class="k-panel kset__grp">
+        <div class="k-detail-grp__lbl">auto-ticket rules — which events open a ticket by themselves</div>
+        <div class="k-muted" style="margin-bottom:8px">With no rules: every alert — a health escalation, an agent going offline, a
+          disk-fill forecast — opens a ticket; recoveries, inventory changes and the weekly digest never do.
+          Each rule below is an exception to that.</div>
+        <div class="kwf-add">
+          <select class="k-input" id="tkr-event-type" onchange="onTkRuleEventTypeChange()">${eventTypeOpts}</select>
+          <select class="k-input" id="tkr-section"><option value="">any section</option></select>
+          <select class="k-input" id="tkr-scope"><option value="">all PCs</option>${agentOpts}</select>
+          <select class="k-input" id="tkr-decision">${decisionOpts}</select>
+          <input class="k-input" id="tkr-note" autocomplete="off" placeholder="note (optional)"
+            onkeydown="if(event.key==='Enter')addTicketRuleFromForm()"/>
+          <button class="k-btn k-btn--primary k-btn--sm" onclick="addTicketRuleFromForm()">${icon('plus', 13)}add</button>
+        </div>
+        <div class="kwf-list">${rows}</div>
+        <div id="k-tkrules-msg"></div>
       </div>`;
+    }
+    // The section select is populated per event type, and disabled for the
+    // two event types that carry no section axis at all (offline,
+    // disk_forecast) -- client-side mirror of ticket_rules.KNOWN_SECTIONS so
+    // a 400 stays the exception, not the workflow. Also the trigger for the
+    // event-type <select>'s own onchange; renderTicketRulesSection calls it
+    // once right after the section HTML lands in the DOM.
+    function onTkRuleEventTypeChange() {
+      const vocab = state.ticketRuleVocab || { sections: {} };
+      const et = (document.getElementById("tkr-event-type") || {}).value;
+      const sel = document.getElementById("tkr-section");
+      if (!sel) return;
+      const sections = vocab.sections[et] || [];
+      sel.innerHTML = `<option value="">any section</option>` +
+        sections.map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join("");
+      sel.disabled = sections.length === 0;
+    }
+    function addTicketRuleFromForm() {
+      const eventType = (document.getElementById("tkr-event-type") || {}).value || "";
+      const section = (document.getElementById("tkr-section") || {}).value || "";
+      const agentId = (document.getElementById("tkr-scope") || {}).value || "";
+      const decision = (document.getElementById("tkr-decision") || {}).value || "";
+      const note = ((document.getElementById("tkr-note") || {}).value || "").trim();
+      addTicketRulePost({ event_type: eventType, section, agent_id: agentId, decision, note });
+    }
+    async function addTicketRulePost(body) {
+      try {
+        const res = await getJSON("/api/ticket-rules",
+          { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+        if ((res.warnings || []).length) tkRuleMsg(res.warnings.join("; "), false);
+        else tkRuleMsg("", false);
+        await renderTicketRulesSection();
+      } catch (e) { tkRuleMsg("could not add rule: " + e.message, true); }
+    }
+    async function removeTicketRule(id, scope) {
+      // Removing a fleet-wide rule changes behaviour on every PC, so confirm it.
+      if (scope !== "host" && !confirm(
+        "This rule is fleet-wide — removing it changes which alerts open a ticket on every PC. Continue?")) return;
+      try {
+        await getJSON("/api/ticket-rules/" + encodeURIComponent(id), { method: "DELETE" });
+        await renderTicketRulesSection();
+      } catch (e) { tkRuleMsg("could not remove rule: " + e.message, true); }
+    }
+    function tkRuleMsg(text, isErr) {
+      const m = document.getElementById("k-tkrules-msg");
+      if (m) m.innerHTML = text ? `<div class="${isErr ? "k-airec__err" : "k-muted"}" style="margin-top:6px">${esc(text)}</div>` : "";
+    }
+
+    // The "Discord & Tickets" section: its catalog group's panel, then the
+    // Discord identity panel below it (kept at id="discord-panel" — the
+    // discord-settings screenshot target selects on that id).
+    async function renderDiscordSection() {
+      const group = settingsGroups.find(g => g.slug === "discord-tickets");
+      setSettingsPane((group ? settingsGroupHtml(group) : "") +
+        `<div class="k-panel kset__grp" id="discord-panel"><div class="k-detail-grp__lbl">Discord</div>
+           <div class="k-muted">loading…</div></div>`);
+      await renderDiscordPanel();
+    }
+
+    // ====================================================================
+    // DISCORD PANEL (Settings, superuser) — gateway connection status, linked
+    // identity table, and both enrollment paths: confirming a pending claim
+    // code and picking a guild member directly. Superuser-only surface
+    // (/api/discord/* on the server); degrades to a "not configured" notice
+    // until the Discord identity service is wired in (identities is None).
+    // ====================================================================
+    // Both enrollment paths bind a Discord snowflake to a *kenny account*, so
+    // each needs the operator to say which account — the server rejects either
+    // without a user_id, and there is no sane default to guess.
+    let discordUsers = [];
+    function discordUserOptions(selectId) {
+      return `<select id="${selectId}" class="k-input k-input--sm">
+        <option value="">choose kenny user…</option>
+        ${discordUsers.map(u => `<option value="${esc(u.id)}">${esc(u.username)} (${esc(u.role)})</option>`).join("")}
+      </select>`;
+    }
+    function pickedUserId(selectId) {
+      const el = document.getElementById(selectId);
+      const v = el && el.value ? el.value : "";
+      if (!v) { notify("choose a kenny user first", "err"); return null; }
+      return Number(v);
+    }
+    async function renderDiscordPanel() {
+      const host = document.getElementById("discord-panel");
+      if (!host) return;
+      let status = { connected: false, configured: false };
+      try { status = await getJSON("/api/discord/status"); } catch (e) {}
+      let identities = null, claims = [];
+      try { identities = ((await api("/api/discord/identities")) || {}).identities || []; }
+      catch (e) { identities = null; }
+      if (identities !== null) {
+        try { claims = ((await api("/api/discord/claims")) || {}).claims || []; } catch (e) {}
+        try { discordUsers = ((await api("/api/users")) || {}).users || []; } catch (e) {}
+      }
+      host.innerHTML = discordPanelHtml(status, identities, claims);
+    }
+    function discordPanelHtml(status, identities, claims) {
+      const statusPill = status.connected
+        ? `<span class="k-pill k-pill--ok">${icon('check', 13)}connected</span>`
+        : status.startup_error
+          ? `<span class="k-pill k-pill--crit">${icon('alert-triangle', 13)}failed to start</span>`
+          : `<span class="k-pill k-pill--muted">not connected</span>`;
+      // "not connected" alone leaves an operator who configured everything with
+      // nowhere to look; the reason belongs next to the switch they threw.
+      const why = status.startup_error
+        ? `<div class="k-airec__err" style="margin-bottom:14px">${esc(status.startup_error)}</div>`
+        : status.missing_message_content
+          ? `<div class="k-airec__err" style="margin-bottom:14px">Mentions are arriving
+              empty — enable the privileged <b>Message Content</b> intent for this
+              application in the Discord developer portal.</div>`
+          : "";
+      const head = `<div class="k-detail-grp__lbl">Discord</div>
+        <div class="k-row" style="gap:10px;margin-bottom:14px">${statusPill}</div>${why}`;
+      if (identities === null) {
+        return head + `<div class="k-muted">Discord identity linking is not configured on
+          this server yet.</div>`;
+      }
+      // i.user_id is a *kenny* account id (the account a Discord identity is
+      // linked to, not a Discord snowflake — that's i.discord_user_id, its
+      // own column below) — the same id space userLabel() resolves, so this
+      // delegates to it rather than keeping its own lookup over discordUsers
+      // (which stays around for discordUserOptions' role-qualified picker).
+      const userName = uid => userLabel(uid);
+      const linkedRows = identities.map(i => `<tr${i.disabled ? ' class="k-muted"' : ""}>
+          <td>${esc(userName(i.user_id))}</td>
+          <td class="k-mono">${esc(i.discord_user_id || "")}</td>
+          <td>${esc(i.linked_via || "")}${i.disabled ? " · disabled" : ""}</td>
+          <td class="kacc-tbl__actions">
+            <button class="k-btn k-btn--danger k-btn--sm" onclick="deleteDiscordIdentity(${jsArg(i.discord_user_id)})">${icon('trash-2', 13)}</button>
+          </td></tr>`).join("");
+      const pendingRows = (claims || []).map((c, n) => `<tr>
+          <td class="k-mono">${esc(c.code || "")}</td>
+          <td>${esc(c.display_hint || "")}<div class="k-mono k-muted">${esc(c.discord_user_id || "")}</div></td>
+          <td>${discordUserOptions("dc-claim-" + n)}</td>
+          <td>
+            <button class="k-btn k-btn--primary k-btn--sm"
+              onclick="confirmDiscordClaim(${jsArg(c.code)}, ${jsArg('dc-claim-' + n)})">${icon('check', 13)}Confirm</button>
+          </td></tr>`).join("");
+      return head + `
+        <div class="kacc-sec">
+          <div class="kacc-sec__lbl">Linked accounts</div>
+          <table class="kacc-tbl"><thead><tr><th>kenny user</th><th>Discord user</th><th>Linked via</th><th></th></tr></thead>
+            <tbody>${linkedRows || `<tr><td colspan="4" class="kacc-empty">no linked accounts</td></tr>`}</tbody></table>
+        </div>
+        <div class="kacc-sec">
+          <div class="kacc-sec__lbl">Pending claims</div>
+          <div class="k-muted" style="margin-bottom:8px">Someone ran <code>/link</code> in
+            Discord. Pick the kenny account it belongs to — that mapping is what decides which
+            machines they may ask about.</div>
+          <table class="kacc-tbl"><thead><tr><th>Code</th><th>Discord user</th><th>kenny user</th><th></th></tr></thead>
+            <tbody>${pendingRows || `<tr><td colspan="4" class="kacc-empty">no pending claims</td></tr>`}</tbody></table>
+        </div>
+        <div class="kacc-sec">
+          <div class="kacc-sec__lbl">Link by member picker</div>
+          <button class="k-btn k-btn--ghost k-btn--sm" onclick="openDiscordMemberPicker()">${icon('users', 13)}Pick a guild member</button>
+        </div>`;
+    }
+    async function deleteDiscordIdentity(did) {
+      const ok = await confirmModal({ title: "Unlink Discord account", ico: "trash-2",
+        body: "Remove this Discord link? The person will need to re-enroll to use Discord again.",
+        confirmLabel: "Unlink", confirmClass: "k-btn--danger" });
+      if (ok) {
+        try { await api("/api/discord/identities/" + encodeURIComponent(did), "DELETE"); notify("unlinked"); }
+        catch (e) { notify(e.message, "err"); }
+      }
+      await renderDiscordPanel();
+    }
+    async function confirmDiscordClaim(code, selectId) {
+      const userId = pickedUserId(selectId);
+      if (userId === null) return;
+      try {
+        await api("/api/discord/claims/" + encodeURIComponent(code), "POST", { user_id: userId });
+        notify("claim confirmed");
+      } catch (e) { notify(e.message, "err"); }
+      await renderDiscordPanel();
+    }
+    async function openDiscordMemberPicker() {
+      openModal(`${icon('users', 20)}<span>Link a Discord member</span>`, `<div class="k-muted">loading…</div>`);
+      let members;
+      try { members = ((await api("/api/discord/members")) || {}).members || []; }
+      catch (e) {
+        const b = modalBody(); if (b) b.innerHTML = `<div class="k-airec__err">${esc(e.message)}</div>`;
+        return;
+      }
+      const b = modalBody();
+      if (!b) return;
+      b.innerHTML = members.length
+        ? `<table class="kacc-tbl"><thead><tr><th>Member</th><th>Discord ID</th><th>kenny user</th><th></th></tr></thead><tbody>` +
+          members.map((m, n) => `<tr>
+              <td>${esc(m.display_hint || "")}</td>
+              <td class="k-mono">${esc(m.user_id || "")}</td>
+              <td>${discordUserOptions("dc-member-" + n)}</td>
+              <td><button class="k-btn k-btn--primary k-btn--sm" onclick="linkDiscordMember(${jsArg(m.user_id)}, ${jsArg('dc-member-' + n)})">${icon('link', 13)}Link</button></td>
+            </tr>`).join("") + `</tbody></table>`
+        : `<div class="k-muted">no guild members found</div>`;
+    }
+    async function linkDiscordMember(discordUserId, selectId) {
+      const userId = pickedUserId(selectId);
+      if (userId === null) return;
+      closeModal();
+      try {
+        await api("/api/discord/identities", "POST",
+                  { discord_user_id: discordUserId, user_id: userId });
+        notify("linked");
+      } catch (e) { notify(e.message, "err"); }
+      await renderDiscordPanel();
     }
 
     function settingsGroupHtml(g) {
@@ -1907,7 +3537,7 @@
           body: JSON.stringify({ value }),
         });
         notify("saved " + key, "ok");
-        await renderSettings();
+        await refreshSettingsSection();
       } catch (e) { notify("could not save: " + e.message, "err"); }
     }
     function settingsSetFromInput(key) {
@@ -1918,16 +3548,18 @@
       try {
         await getJSON("/api/settings/" + encodeURIComponent(key), { method: "DELETE" });
         notify("reset " + key, "ok");
-        await renderSettings();
+        await refreshSettingsSection();
       } catch (e) { notify("could not reset: " + e.message, "err"); }
     }
 
     // ====================================================================
-    // BACKUP TAB — DB snapshot list/create/verify/restore/delete + the
-    // operator-configured remote fan-out targets (http/scp/ftp). Superuser
-    // only (the API 403s lower roles anyway). The local `backups/` directory
-    // reported here is what an external sync tool (e.g. Syncthing) should
-    // watch instead of the live database file.
+    // BACKUP SECTION — DB snapshot list/create/verify/restore/delete + the
+    // operator-configured remote fan-out targets (http/scp/ftp), followed by
+    // the "Backup" catalog group (interval/retention live here now instead
+    // of in a duplicate pair of inline inputs — see backupSectionHtml).
+    // Superuser only (the API 403s lower roles anyway). The local `backups/`
+    // directory reported here is what an external sync tool (e.g. Syncthing)
+    // should watch instead of the live database file.
     // ====================================================================
     let backupState = { data: null, restoring: false, targetForm: null };
     let updatesState = { data: null };
@@ -1951,20 +3583,21 @@
     }
 
     async function renderBackup() {
-      if (!state.fleet) {
-        state.fleet = await getJSON("/api/fleet").catch(() => ({ agents: [] }));
-      }
-      renderHeaderRight(state.fleet, state.fleet.agents || []);
-      app.innerHTML = `<div class="kset"><div class="k-muted">loading…</div></div>`;
+      setSettingsPane(`<div class="k-muted">loading…</div>`);
       let data;
       try {
         data = await getJSON("/api/backups");
       } catch (e) {
-        app.innerHTML = `<div class="kset"><div class="k-airec__err">could not load backups: ${esc(e.message)}</div></div>`;
+        setSettingsPane(`<div class="k-airec__err">could not load backups: ${esc(e.message)}</div>`);
         return;
       }
       backupState.data = data;
-      app.innerHTML = backupPageHtml(data);
+      setSettingsPane(backupSectionHtml());
+    }
+
+    function backupSectionHtml() {
+      const group = settingsGroups.find(g => g.slug === "backup");
+      return backupPageHtml(backupState.data) + (group ? settingsGroupHtml(group) : "");
     }
 
     function backupPageHtml(data) {
@@ -1978,8 +3611,7 @@
              the database was replaced from a backup; the server process is
              restarting to apply it and should be back within a few seconds.
            </div>` : "";
-      return `<div class="kset">
-        ${restoringBanner}
+      return `${restoringBanner}
         <div class="k-panel kset__grp">
           <div class="k-detail-grp__lbl">status</div>
           <div class="k-deflist">
@@ -1996,25 +3628,10 @@
             Point your sync tool (e.g. Syncthing) at this directory instead of the
             live database file — it only ever holds finished, static snapshots, so
             syncing it never causes lock contention on the running server.
+            Backup interval and retention are set below, in the "Backup" group.
           </div>
-          <div class="k-row" style="gap:16px;margin-top:14px;flex-wrap:wrap">
-            <div class="kfield" style="margin-bottom:0">
-              <span class="kfield__lbl">backup interval (s)</span>
-              <div class="k-row" style="gap:6px">
-                <input class="k-input" id="bk-interval" style="width:110px" value="${esc(cfg.interval_secs ?? "")}"
-                  onkeydown="if(event.key==='Enter')backupSaveSetting('KENNY_BACKUP_INTERVAL_SECS','bk-interval')"/>
-                <button class="k-btn k-btn--sm" onclick="backupSaveSetting('KENNY_BACKUP_INTERVAL_SECS','bk-interval')">save</button>
-              </div>
-            </div>
-            <div class="kfield" style="margin-bottom:0">
-              <span class="kfield__lbl">retention (count)</span>
-              <div class="k-row" style="gap:6px">
-                <input class="k-input" id="bk-retention" style="width:90px" value="${esc(cfg.retention ?? "")}"
-                  onkeydown="if(event.key==='Enter')backupSaveSetting('KENNY_BACKUP_RETENTION','bk-retention')"/>
-                <button class="k-btn k-btn--sm" onclick="backupSaveSetting('KENNY_BACKUP_RETENTION','bk-retention')">save</button>
-              </div>
-            </div>
-            <button class="k-btn k-btn--primary" style="align-self:flex-end" onclick="backupNow()" ${backupState.restoring ? "disabled" : ""}>${icon('hard-drive', 14)}Backup now</button>
+          <div class="k-row" style="margin-top:14px">
+            <button class="k-btn k-btn--primary" onclick="backupNow()" ${backupState.restoring ? "disabled" : ""}>${icon('hard-drive', 14)}Backup now</button>
           </div>
         </div>
 
@@ -2026,28 +3643,7 @@
         <div class="k-panel kset__grp">
           <div class="k-detail-grp__lbl">backups</div>
           ${backupTableHtml(backups)}
-        </div>
-      </div>`;
-    }
-
-    async function backupSaveSetting(key, inputId) {
-      const el = document.getElementById(inputId);
-      if (!el) return;
-      await settingsApiSet(key, el.value);
-    }
-    // A thin local twin of settingsSet() that posts the same /api/settings/{key}
-    // write but re-renders the Backup page afterward instead of the Settings
-    // page — settingsSet() itself always re-renders renderSettings(), which
-    // would otherwise swap the visible tab out from under the operator.
-    async function settingsApiSet(key, value) {
-      try {
-        await getJSON("/api/settings/" + encodeURIComponent(key), {
-          method: "PUT", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ value }),
-        });
-        notify("saved " + key, "ok");
-        await renderBackup();
-      } catch (e) { notify("could not save: " + e.message, "err"); }
+        </div>`;
     }
 
     async function backupNow() {
@@ -2088,21 +3684,21 @@
 
     function backupTargetAddForm() {
       backupState.targetForm = { mode: "add", kind: "http", id: null, label: "", config: {} };
-      app.innerHTML = backupPageHtml(backupState.data);
+      setSettingsPane(backupSectionHtml());
     }
     function backupTargetEditForm(id) {
       const t = (backupState.data.targets || []).find(x => x.id === id);
       if (!t) return;
       backupState.targetForm = { mode: "edit", kind: t.kind, id: t.id, label: t.label, config: t.config || {} };
-      app.innerHTML = backupPageHtml(backupState.data);
+      setSettingsPane(backupSectionHtml());
     }
     function backupTargetFormCancel() {
       backupState.targetForm = null;
-      app.innerHTML = backupPageHtml(backupState.data);
+      setSettingsPane(backupSectionHtml());
     }
     function backupTargetFormKindChanged(kind) {
       backupState.targetForm.kind = kind;
-      app.innerHTML = backupPageHtml(backupState.data);
+      setSettingsPane(backupSectionHtml());
     }
 
     function backupTargetFieldsHtml(kind, c) {
@@ -2288,37 +3884,42 @@
         await api("/api/backups/" + encodeURIComponent(name) + "/restore", "POST", { source: "local" });
         backupState.restoring = true;
         notify("restore staged — server is restarting…", "ok");
-        app.innerHTML = backupPageHtml(backupState.data);
+        setSettingsPane(backupSectionHtml());
       } catch (e) { notify("restore failed: " + e.message, "err"); }
     }
 
-    // -- Updates: scheduled detection + operator-approved rollout (ADR-0044) --
+    // -- Updates: scheduled detection + operator-approved rollout (ADR-0040) --
     // Server apply is detect-and-show-command only: a container cannot replace
     // its own running image, so the page shows a digest-pinned `docker` command
     // instead of an "apply" button. Agent rollout is a pinned campaign: approving
     // one snapshots an exact version, so a later detection pass finding something
     // newer never changes what an already-approved campaign pushes.
     async function renderUpdates() {
-      if (!state.fleet) {
-        state.fleet = await getJSON("/api/fleet").catch(() => ({ agents: [] }));
-      }
-      renderHeaderRight(state.fleet, state.fleet.agents || []);
-      app.innerHTML = `<div class="kset"><div class="k-muted">loading…</div></div>`;
+      setSettingsPane(`<div class="k-muted">loading…</div>`);
       let data;
       try {
         data = await getJSON("/api/updates");
       } catch (e) {
-        app.innerHTML = `<div class="kset"><div class="k-airec__err">could not load updates: ${esc(e.message)}</div></div>`;
+        setSettingsPane(`<div class="k-airec__err">could not load updates: ${esc(e.message)}</div>`);
         return;
       }
       updatesState.data = data;
-      app.innerHTML = updatesPageHtml(data);
+      setSettingsPane(updatesSectionHtml());
+    }
+
+    function updatesSectionHtml() {
+      // Updates is operator+ (ADR-0040) but the catalog is superuser-only, so
+      // an operator sees this page with no catalog panel appended.
+      const group = isSuperuser() ? settingsGroups.find(g => g.slug === "updates") : null;
+      return updatesPageHtml(updatesState.data) + (group ? settingsGroupHtml(group) : "");
     }
 
     function updatesPageHtml(data) {
       const avail = data.available || {};
       const agentAvail = avail.agent || {};
       const serverAvail = avail.server || {};
+      const agentAvailDev = avail["agent:dev"] || {};
+      const serverAvailDev = avail["server:dev"] || {};
       const campaign = data.active_campaign;
       const cfg = data.config || {};
       const serverApply = data.server_apply;
@@ -2331,6 +3932,9 @@
           <div class="k-deflist__k">latest known</div>
           <div class="k-deflist__v">${serverAvail.version ? esc(serverAvail.version) : "—"}
             ${serverAvail.checked_at ? `<span class="k-muted"> · checked ${esc(relTime(serverAvail.checked_at))}</span>` : ""}</div>
+          <div class="k-deflist__k">latest dev</div>
+          <div class="k-deflist__v">${serverAvailDev.version ? esc(serverAvailDev.version) : "—"}
+            ${serverAvailDev.checked_at ? `<span class="k-muted"> · checked ${esc(relTime(serverAvailDev.checked_at))}</span>` : ""}</div>
         </div>
         ${serverApply ? `<div class="k-panel" style="margin-top:10px;border-color:var(--warn-dot)">
             ${icon('triangle-alert', 15)}<b>version ${esc(serverApply.tag)} available.</b>
@@ -2348,41 +3952,44 @@
           <div class="k-deflist__k">latest known</div>
           <div class="k-deflist__v">${agentAvail.version ? esc(agentAvail.version) : "—"}
             ${agentAvail.checked_at ? `<span class="k-muted"> · checked ${esc(relTime(agentAvail.checked_at))}</span>` : ""}</div>
+          <div class="k-deflist__k">latest dev</div>
+          <div class="k-deflist__v">${agentAvailDev.version ? esc(agentAvailDev.version) : "—"}
+            ${agentAvailDev.checked_at ? `<span class="k-muted"> · checked ${esc(relTime(agentAvailDev.checked_at))}</span>` : ""}</div>
+          <div class="k-deflist__k">auto-apply on connect</div>
+          <div class="k-deflist__v">${cfg.rollout_on_connect ? "on" : "off"}</div>
         </div>
-        <div class="k-row" style="gap:16px;margin-top:14px;flex-wrap:wrap;align-items:flex-end">
-          <div class="kfield" style="margin-bottom:0">
-            <span class="kfield__lbl">check interval (s)</span>
-            <div class="k-row" style="gap:6px">
-              <input class="k-input" id="upd-interval" style="width:110px" value="${esc(cfg.check_interval_secs ?? "")}"
-                onkeydown="if(event.key==='Enter')updatesSaveSetting('KENNY_UPDATE_CHECK_INTERVAL_SECS','upd-interval')"/>
-              <button class="k-btn k-btn--sm" onclick="updatesSaveSetting('KENNY_UPDATE_CHECK_INTERVAL_SECS','upd-interval')">save</button>
-            </div>
-          </div>
-          <label class="kwf-tog">
-            <input type="checkbox" id="upd-on-connect" ${cfg.rollout_on_connect ? "checked" : ""}
-              onchange="updatesSaveSetting('KENNY_AGENT_ROLLOUT_ON_CONNECT','upd-on-connect',true)"/>
-            <span>auto-apply the approved campaign as agents connect</span>
-          </label>
+        ${isSuperuser() ? `<div class="k-muted" style="margin-top:8px">
+          Check interval and auto-apply-on-connect are set below, in the "Updates" group.
+        </div>` : ""}
+        <div class="k-row" style="margin-top:14px">
           <button class="k-btn k-btn--ghost k-btn--sm" onclick="updatesCheckNow()">${icon('refresh-cw', 13)}check now</button>
         </div>
       </div>`;
 
       const campaignCard = `<div class="k-panel kset__grp">
         <div class="k-detail-grp__lbl">agent rollout campaign</div>
-        ${campaignHtml(campaign, agentAvail, data.agents || [])}
+        ${campaignHtml(campaign, agentAvail, data.agents || [], "stable")}
       </div>`;
 
-      return `<div class="kset">${serverCard}${agentCard}${campaignCard}</div>`;
+      // Dev-channel campaign card (ADR-0048): same control, pinned to channel
+      // "dev" — a mixed fleet can have a stable and a dev campaign active at
+      // once, so this is additive, not a toggle over the stable card above.
+      const campaignCardDev = `<div class="k-panel kset__grp">
+        <div class="k-detail-grp__lbl">agent rollout campaign (dev)</div>
+        ${campaignHtml(data.active_campaign_dev, agentAvailDev, data.agents_dev || [], "dev")}
+      </div>`;
+
+      return `${serverCard}${agentCard}${campaignCard}${campaignCardDev}`;
     }
 
-    function campaignHtml(campaign, agentAvail, agents) {
+    function campaignHtml(campaign, agentAvail, agents, channel) {
       if (!campaign) {
         const canApprove = !!agentAvail.version;
-        return `<div class="k-muted">no active campaign.</div>
+        return `<div class="k-muted">no active ${esc(channel)} campaign.</div>
           <div class="k-row" style="margin-top:10px">
             <button class="k-btn k-btn--primary k-btn--sm" ${canApprove ? "" : "disabled"}
-              onclick="updatesApproveCampaign(${jsArg(agentAvail.version || "")})">
-              ${icon('download', 13)}approve rollout to ${esc(agentAvail.version || "—")}
+              onclick="updatesApproveCampaign(${jsArg(agentAvail.version || "")}, ${jsArg(channel)})">
+              ${icon('download', 13)}approve ${esc(channel)} rollout to ${esc(agentAvail.version || "—")}
             </button>
           </div>`;
       }
@@ -2390,18 +3997,19 @@
         const status = a.updated ? `<span class="k-pill k-pill--ok">updated</span>`
           : a.held ? `<span class="k-pill k-pill--crit">held (${a.attempts})</span>`
           : a.eligible ? `<span class="k-pill">pending</span>`
-          : `<span class="k-pill k-pill--muted">n/a for this arch</span>`;
+          : `<span class="k-pill k-pill--muted">n/a for this arch/channel</span>`;
         return `<tr>
           <td>${esc(a.agent_id)}</td>
           <td>${esc(a.os)}/${esc(a.arch)}</td>
           <td class="k-mono">${esc(a.current_version || "?")}</td>
+          <td>${agentChannelCellHtml(a)}</td>
           <td>${a.online ? `<span class="k-pill k-pill--ok">online</span>` : `<span class="k-pill k-pill--muted">offline</span>`}</td>
           <td>${status}</td>
         </tr>`;
       }).join("");
       const table = `<table class="kacc-tbl"><thead><tr>
-          <th>Agent</th><th>OS/Arch</th><th>Current</th><th>Connection</th><th>Status</th></tr></thead>
-          <tbody>${rows || `<tr><td colspan="5" class="kacc-empty">no known agents</td></tr>`}</tbody></table>`;
+          <th>Agent</th><th>OS/Arch</th><th>Current</th><th>Channel (built / desired)</th><th>Connection</th><th>Status</th></tr></thead>
+          <tbody>${rows || `<tr><td colspan="6" class="kacc-empty">no known agents</td></tr>`}</tbody></table>`;
       return `<div class="k-deflist">
           <div class="k-deflist__k">pinned version</div>
           <div class="k-deflist__v k-mono">${esc(campaign.version)}</div>
@@ -2421,21 +4029,30 @@
           revoking stops future pushes only — an update already in flight to an
           agent cannot be recalled. an agent held after repeated refusal (e.g.
           remote control switched off locally) needs the operator to look at it.
+          eligibility (and the campaign that will apply on connect) is decided
+          by an agent's <b>desired</b> channel below, not its currently-built one.
         </div>`;
     }
 
-    async function updatesSaveSetting(key, inputId, isCheckbox) {
-      const el = document.getElementById(inputId);
-      if (!el) return;
-      const value = isCheckbox ? (el.checked ? "1" : "0") : el.value;
+    // Soll/ist channel badges (ADR-0048): "channel" is what the connected
+    // binary actually reports about itself (read-only here); "desired_channel"
+    // is the operator-set target a campaign's eligibility is checked against.
+    // The select lets an operator flip the latter without leaving this table.
+    function agentChannelCellHtml(a) {
+      const built = `<span class="k-pill k-pill--muted">${esc(a.channel || "stable")}</span>`;
+      return `${built} <select class="k-input k-input--sm" style="width:auto;display:inline-block"
+          onchange="updatesSetDesiredChannel(${jsArg(a.agent_id)}, this.value)">
+          <option value="stable" ${a.desired_channel === "dev" ? "" : "selected"}>desired: stable</option>
+          <option value="dev" ${a.desired_channel === "dev" ? "selected" : ""}>desired: dev</option>
+        </select>`;
+    }
+
+    async function updatesSetDesiredChannel(agentId, channel) {
       try {
-        await getJSON("/api/settings/" + encodeURIComponent(key), {
-          method: "PUT", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ value }),
-        });
-        notify("saved " + key, "ok");
+        await api("/api/agent/" + encodeURIComponent(agentId) + "/channel", "PUT", { channel });
+        notify(`${agentId}: desired channel set to ${channel}`, "ok");
         await renderUpdates();
-      } catch (e) { notify("could not save: " + e.message, "err"); }
+      } catch (e) { notify("could not set channel: " + e.message, "err"); }
     }
 
     async function updatesCheckNow() {
@@ -2446,16 +4063,17 @@
       } catch (e) { notify("check failed: " + e.message, "err"); }
     }
 
-    async function updatesApproveCampaign(version) {
+    async function updatesApproveCampaign(version, channel) {
+      channel = channel || "stable";
       const ok = await confirmModal({
         title: "Approve agent update campaign",
         ico: "download",
-        body: `Approve rolling out agent version ${version} to the fleet? This pins that exact version — a later release found by a future check will not be included unless separately approved.`,
+        body: `Approve rolling out agent version ${version} (${channel} channel) to the fleet? This pins that exact version — a later release found by a future check will not be included unless separately approved.`,
         confirmLabel: "Approve", confirmClass: "k-btn--primary",
       });
       if (!ok) return;
       try {
-        await api("/api/updates/campaigns", "POST", { version });
+        await api("/api/updates/campaigns", "POST", { version, channel });
         notify("campaign approved", "ok");
         await renderUpdates();
       } catch (e) { notify("could not approve campaign: " + e.message, "err"); }
@@ -2498,15 +4116,39 @@
     // Theme, About and Settings live in the user menu (see toggleUserMenu);
     // the header keeps only the fleet metrics, the copilot toggle and the
     // identity control.
-    function renderHeaderRight(fleet, agents) {
+    async function renderHeaderRight(fleet, agents) {
       // The copilot toggle only applies to the Fleet tab (the rail lives there).
       const copilotBtn = state.tab === "fleet"
-        ? `<button class="kc-icon-btn" id="copilot-btn" onclick="toggleCopilot()" title="toggle copilot panel" aria-label="toggle copilot panel">${icon('sparkles', 16)}</button>`
+        ? `<button class="kc-icon-btn" id="copilot-btn" onclick="toggleAskRail()" title="toggle Ask kenny panel" aria-label="toggle Ask kenny panel">${icon('sparkles', 16)}</button>`
         : "";
       headerRight.innerHTML =
         fleetMetricsHtml(agents) +
         copilotBtn +
+        approvalsBadgeHtml() +
         identityHtml();
+      if (canOperate()) {
+        try {
+          const data = await getJSON("/api/approvals");
+          state.approvalsCount = (data.approvals || []).length;
+        } catch (e) { state.approvalsCount = 0; }
+        try {
+          const summary = await getJSON("/api/tickets/summary");
+          state.ticketsNeedsYouCount = summary.needs_you || 0;
+        } catch (e) { state.ticketsNeedsYouCount = 0; }
+        const btn = document.getElementById("approvals-badge");
+        if (btn) btn.outerHTML = approvalsBadgeHtml();
+        renderTabs();
+      }
+    }
+
+    // A pending-approvals count badge (operator+) opening the approvals modal —
+    // the operator-facing gate on every held tool call across the fleet.
+    function approvalsBadgeHtml() {
+      if (!canOperate()) return "";
+      const n = state.approvalsCount || 0;
+      return `<button class="kc-icon-btn${n ? " is-active" : ""}" id="approvals-badge"
+          onclick="openApprovalsModal()" title="pending approvals" aria-label="pending approvals">
+          ${icon('shield-alert', 16)}${n ? `<span class="k-badge">${n > 99 ? "99+" : n}</span>` : ""}</button>`;
     }
 
     // -- identity control: avatar + username + dropdown -------------------
@@ -2546,18 +4188,16 @@
       if (open) { open.remove(); return; }
       const admin = isSuperuser()
         ? `<button class="kc-usermenu__item" onclick="closeUserMenu();openUsersModal()">${icon('users', 16)}Users</button>` : "";
-      // Settings mutate server-wide runtime config — superuser only (the API
-      // 403s lower roles anyway). The link drives the same #/settings route.
+      // Settings mutates server-wide runtime config — superuser only (the API
+      // 403s lower roles anyway). It now covers Backup and Updates too (one
+      // sidebar, #/settings/{slug}), so this is the only entry point here.
       const settings = isSuperuser()
         ? `<a class="kc-usermenu__item" href="#/settings" onclick="closeUserMenu()">${icon('sliders', 16)}Settings</a>` : "";
-      // Backup/restore mutates the live DB and carries secrets (remote target
-      // credentials) — superuser only, same gating as Settings.
-      const backupLink = isSuperuser()
-        ? `<a class="kc-usermenu__item" href="#/backup" onclick="closeUserMenu()">${icon('hard-drive', 16)}Backup</a>` : "";
-      // Updates approves/rolls out fleet software — operator+ (ADR-0044), same
-      // tier as policy/webfilter mutation, one step below Settings/Backup.
-      const updatesLink = canOperate()
-        ? `<a class="kc-usermenu__item" href="#/updates" onclick="closeUserMenu()">${icon('download', 16)}Updates</a>` : "";
+      // A superuser reaches Updates via Settings above; an operator (who
+      // cannot open Settings at all) still needs a way in — Updates
+      // approves/rolls out fleet software, operator+ (ADR-0040).
+      const updatesLink = (canOperate() && !isSuperuser())
+        ? `<a class="kc-usermenu__item" href="#/settings/updates" onclick="closeUserMenu()">${icon('download', 16)}Updates</a>` : "";
       const menu = document.createElement("div");
       menu.className = "kc-usermenu";
       menu.setAttribute("role", "menu");
@@ -2569,7 +4209,6 @@
         // theme it switches to.
         `<button class="kc-usermenu__item" id="theme-menu-item" onclick="toggleTheme()">${themeMenuItemInner(currentTheme())}</button>` +
         settings +
-        backupLink +
         updatesLink +
         `<button class="kc-usermenu__item" onclick="closeUserMenu();openAboutModal()">${icon('info', 16)}About</button>` +
         `<a class="kc-usermenu__item" href="${esc(docsUrl())}" target="_blank" rel="noopener">${icon('book-open', 16)}Documentation</a>` +
@@ -2876,19 +4515,20 @@
     }
     async function openUserDetail(uid) {
       openModal(`${icon('user-round', 20)}<span>User</span>`, `<div class="k-muted">loading…</div>`, "k-modal--wide");
-      let user, avatars = [], hosts = [];
+      let user, avatars = [], hosts = [], profiles = {};
       try {
         user = await api("/api/users/" + encodeURIComponent(uid));
         avatars = ((await api("/api/avatars").catch(() => ({ avatars: [] }))) || {}).avatars || [];
         const fleet = (await api("/api/fleet").catch(() => ({ agents: [] }))) || { agents: [] };
         hosts = (fleet.agents || []).map(a => a.agent_id);
+        profiles = ((await api("/api/tool-classes").catch(() => ({ profiles: {} }))) || {}).profiles || {};
       } catch (e) {
         const b = modalBody(); if (b) b.innerHTML = `<div class="k-airec__err">${esc(e.message)}</div>`;
         return;
       }
-      const b = modalBody(); if (b) b.innerHTML = userDetailHtml(user, avatars, hosts);
+      const b = modalBody(); if (b) b.innerHTML = userDetailHtml(user, avatars, hosts, profiles);
     }
-    function userDetailHtml(u, avatars, hosts) {
+    function userDetailHtml(u, avatars, hosts, profiles) {
       const uid = u.id;
       const head = `<div class="k-row" style="justify-content:space-between;margin-bottom:14px">
         <span class="kacc-cell">${avatarHtml(u, "kc-avatar--lg")}<b style="font-size:var(--text-md)">${esc(u.username)}</b>${rolePill(u.role)}</span>
@@ -2904,6 +4544,21 @@
         <div class="kfield"><span class="kfield__lbl">Avatar</span>${avatarPickerHtml("edituser-av", avatars, u.avatar || null)}</div>
         <label class="kwf-tog" style="margin:4px 0 12px"><input type="checkbox" id="eu-disabled" ${u.disabled ? "checked" : ""}><span>account disabled</span></label>
         <button class="k-btn k-btn--primary" onclick="saveUser(${jsArg(uid)})">${icon('check', 14)}Save changes</button>
+      </div>`;
+      const profileNames = Object.keys(profiles || {});
+      const profileSec = `<div class="kacc-sec">
+        <div class="kacc-sec__lbl">Capability profile</div>
+        <div class="k-muted" style="margin-bottom:8px">Narrows which tools this account may
+          invoke, on top of what its role already allows.</div>
+        <div class="kfield__row">
+          <select class="k-input" id="eu-profile">
+            <option value="">(none — role default)</option>
+            ${profileNames.map(p =>
+              `<option value="${esc(p)}" ${p === u.capability_profile ? "selected" : ""}>${esc(p)}</option>`
+            ).join("")}
+          </select>
+          <button class="k-btn k-btn--ghost" onclick="saveUserProfile(${jsArg(uid)})">${icon('check', 14)}Save</button>
+        </div>
       </div>`;
       const pwSec = `<div class="kacc-sec">
         <div class="kacc-sec__lbl">Reset password</div>
@@ -2921,7 +4576,7 @@
       </div>`;
       const hostsSec = `<div class="kacc-sec">
         <div class="kacc-sec__lbl">Host scope</div>
-        <div class="k-muted" style="margin-bottom:8px">Applies to scoped <b>user</b> accounts — the hosts they can see.</div>
+        <div class="k-muted" style="margin-bottom:8px">For a <b>user</b> account this is a limit — the only hosts it can see. For an <b>operator</b> or <b>superuser</b> it limits nothing, and instead says which PCs are their own: what an unqualified Discord request like &ldquo;my PC is slow&rdquo; is taken to be about. Leave it empty and every such request has to be answered with a question first.</div>
         ${hostGridHtml("edituser-hosts", hosts, u.hosts || [])}
         <button class="k-btn k-btn--ghost" style="margin-top:10px" onclick="saveUserHosts(${jsArg(uid)})">${icon('check', 14)}Save host scope</button>
       </div>`;
@@ -2935,7 +4590,16 @@
       </div>`;
       // Bind the row-scoped revoke handler for this user's PAT table.
       window["revokeUserPat_" + cssId(uid)] = pid => revokeUserPat(uid, pid);
-      return head + accountSec + pwSec + totpSec + hostsSec + patSec;
+      return head + accountSec + profileSec + pwSec + totpSec + hostsSec + patSec;
+    }
+    async function saveUserProfile(uid) {
+      const el = document.getElementById("eu-profile");
+      const capability_profile = el && el.value ? el.value : null;
+      try {
+        await api("/api/users/" + encodeURIComponent(uid) + "/profile", "PUT", { capability_profile });
+        notify("capability profile saved");
+        await openUserDetail(uid);
+      } catch (e) { notify(e.message, "err"); }
     }
     // A stable identifier fragment for building a per-user handler name.
     function cssId(uid) { return String(uid).replace(/[^A-Za-z0-9]/g, "_"); }
@@ -3040,12 +4704,14 @@
     const copilotNarrowMq = window.matchMedia("(max-width: 1180px)");
     let copilotDrawerOpen = false; // transient tablet-drawer state (not persisted)
 
-    function copilotOn() {
+    function askRailOn() {
+      // "kenny-copilot" stays the storage key on purpose: renaming it would
+      // silently discard every operator's saved rail-open/closed preference.
       try { return localStorage.getItem("kenny-copilot") !== "off"; } catch (e) { return true; }
     }
     function applyCopilot() {
       const c = document.querySelector(".kc-console");
-      if (c) c.classList.toggle("no-copilot", !copilotOn());
+      if (c) c.classList.toggle("no-copilot", !askRailOn());
       // On tablet the drawer is closed unless explicitly opened; reconcile both
       // the drawer class and backdrop so a stale state can't linger after render.
       if (!copilotNarrowMq.matches) copilotDrawerOpen = false;
@@ -3054,18 +4720,18 @@
       if (bd) bd.classList.toggle("is-visible", copilotNarrowMq.matches && copilotDrawerOpen);
       const btn = document.getElementById("copilot-btn");
       // The button's active state reflects whichever mode is in effect.
-      if (btn) btn.classList.toggle("is-active", copilotNarrowMq.matches ? copilotDrawerOpen : copilotOn());
+      if (btn) btn.classList.toggle("is-active", copilotNarrowMq.matches ? copilotDrawerOpen : askRailOn());
     }
-    function openCopilotDrawer() { copilotDrawerOpen = true; applyCopilot(); }
+    function openAskDrawer() { copilotDrawerOpen = true; applyCopilot(); }
     function closeCopilotDrawer() { copilotDrawerOpen = false; applyCopilot(); }
-    function toggleCopilot() {
+    function toggleAskRail() {
       // Tablet: just flip the overlay drawer; CSS transitions the slide.
       if (copilotNarrowMq.matches) {
-        copilotDrawerOpen ? closeCopilotDrawer() : openCopilotDrawer();
+        copilotDrawerOpen ? closeCopilotDrawer() : openAskDrawer();
         return;
       }
       // Desktop: toggle the persisted docked column with the slide+fade animation.
-      const on = !copilotOn();
+      const on = !askRailOn();
       try { localStorage.setItem("kenny-copilot", on ? "on" : "off"); } catch (e) {}
       const rail = document.querySelector(".kc-copilot");
       const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -3125,13 +4791,13 @@
     }
 
     // Human label for an (os,arch) target. Only Linux distinguishes arch today
-    // (Windows has ever only shipped one target) — see ADR-0040.
+    // (Windows has ever only shipped one target) — see ADR-0036.
     function targetLabel(os, arch) {
       if (os === "windows") return "Windows";
       return arch === "aarch64" ? "Linux (ARM64)" : "Linux (x86_64)";
     }
     // Options for the "Add a PC" target picker, built from the server's actual
-    // binary availability (`bin.targets`, ADR-0040) so the dropdown can never
+    // binary availability (`bin.targets`, ADR-0036) so the dropdown can never
     // offer a combination we don't ship. Falls back to a static Windows/Linux
     // pair if `bin.targets` isn't present yet (e.g. a stale cached page hitting
     // an older API during rollout).
@@ -3240,7 +4906,7 @@
       const osGlyph = osIcon(osFamily);
 
       // Sections a collector can't report on this OS come back as an
-      // "n/a on this platform" stub (see ADR-0035). They carry no signal, so
+      // "n/a on this platform" stub (see ADR-0031). They carry no signal, so
       // hide their tiles rather than filling the grid with dead cards.
       const secs = Object.entries(h.sections || {})
         .filter(([, s]) => (s.summary || "").trim().toLowerCase() !== "n/a on this platform")
@@ -3302,7 +4968,7 @@
       mountForecast(data.agent_id);
     }
 
-    // Stream the near-term forecast into the top card (ADR-0034). The server
+    // Stream the near-term forecast into the top card. The server
     // synthesizes the disk/battery trends and inventory diff into a short prose
     // outlook; with no API key it streams a deterministic prose summary of the
     // same signals, so the card is never empty. Re-queries the target each event
@@ -3377,9 +5043,10 @@
       web_activity: renderWebActivityDetail,
       reliability: renderReliabilityDetail,
       screen_time: renderScreenTimeDetail,
+      local_accounts: renderAccountsDetail,
     };
 
-    // Parental awareness (ADR-0032): whole-machine interactive minutes per day
+    // Parental awareness (ADR-0029): whole-machine interactive minutes per day
     // as simple horizontal bars — deliberately nothing finer than day buckets.
     function renderScreenTimeDetail(raw, s) {
       let body = "";
@@ -3451,7 +5118,7 @@
         }).join("");
         body += `<div class="k-detail-grp"><div class="k-detail-grp__lbl">details — click a category to expand</div>${groups}</div>`;
       }
-      // Alarm suppression (ADR-0045 / issue #166): exclude a (source, event_id)
+      // Alarm suppression (ADR-0041 / issue #166): exclude a (source, event_id)
       // pattern from severity scoring while leaving its count and heatmap
       // contribution untouched. Mounted async after the modal DOM exists — see
       // mountReliabilitySuppressionPanel, called from openSectionDetail.
@@ -3463,7 +5130,7 @@
       const cls = level === "critical" ? "crit" : "warn";
       return `<span class="k-pill k-pill--${cls}">${esc(level || "error")}</span>`;
     }
-    // Severity badge from the read-path LLM annotation (ADR-0028) — how
+    // Severity badge from the read-path LLM annotation (ADR-0026) — how
     // much this *pattern* matters, independent of how often it repeats. Absent on
     // events from before annotation ran (e.g. no API key yet), in which case we
     // show nothing rather than guess.
@@ -3472,7 +5139,7 @@
       const cls = { serious: "crit", notable: "warn", unknown: "warn", benign: "ok" }[severity] || "warn";
       return `<span class="k-pill k-pill--${cls}">${esc(severity)}</span>`;
     }
-    // An operator suppression rule matched this pattern (ADR-0045 / issue
+    // An operator suppression rule matched this pattern (ADR-0041 / issue
     // #166): it stays fully visible with its raw count and its LLM severity,
     // but is excluded from severity/health scoring. Deliberately the neutral
     // `muted` pill, never the green `ok` pill used for an LLM `benign`
@@ -3495,13 +5162,13 @@
       if (!canOperate()) return "";
       if (e.suppressed) {
         const info = e.suppressed_by || {};
-        return `<button class="k-btn k-btn--ghost k-btn--sm" title="stop suppressing this pattern"
-          onclick="relUnsuppress(${jsArg(info.id)}, ${jsArg(info.scope)})">${icon('x', 12)}unsuppress</button>`;
+        return `<button class="k-btn k-btn--ghost k-btn--sm" title="unsuppress — stop suppressing this pattern"
+          onclick="relUnsuppress(${jsArg(info.id)}, ${jsArg(info.scope)})">${icon('bell', 13)}</button>`;
       }
       if (e.event_id == null) return "";
       return `<button class="k-btn k-btn--ghost k-btn--sm"
-        title="exclude this pattern from severity scoring, fleet-wide — counts stay visible"
-        onclick="relSuppress(${jsArg(e.source)}, ${jsArg(e.event_id)})">${icon('square', 12)}suppress</button>`;
+        title="suppress — exclude this pattern from severity scoring, fleet-wide — counts stay visible"
+        onclick="relSuppress(${jsArg(e.source)}, ${jsArg(e.event_id)})">${icon('bell-slash', 13)}</button>`;
     }
     // One event row for the reliability tables. With `dayKey` the count column shows
     // that day's contribution (used by the clicked-cell panel); without it, the
@@ -3593,7 +5260,7 @@
         renderReliabCell(p.data._cat, p.data._day, events);
       });
     }
-    // Alarm suppression panel (ADR-0045 / issue #166): the reliability card's
+    // Alarm suppression panel (ADR-0041 / issue #166): the reliability card's
     // editable list of operator rules that exclude a (source, event_id)
     // pattern from severity scoring while leaving its counts and heatmap
     // contribution untouched. Fetch → render, re-run after every mutation; a
@@ -3727,6 +5394,305 @@
       body += `<div class="k-detail-grp" id="kwf-panel"><div class="k-muted">loading parental-controls list…</div></div>`;
       return body;
     }
+    // -- account governance (ADR-0042, ADR-0043) --------------------------
+    // One control set for local, Microsoft and Linux accounts alike. Below the
+    // account-database layer neither Windows nor Linux draws the distinctions
+    // above it, so neither does this panel: same rows, same badges, same
+    // checkboxes, same buttons on every host.
+    //
+    // Every difference is data. Where a verb is not available for an account —
+    // whatever the reason, its kind or its host — the section's `unsupported` map
+    // names the verb and a reason token, and the control is rendered *disabled
+    // with the reason on hover* rather than hidden. Hiding it would leave the
+    // operator wondering; branching on `os` here would rebuild the two worlds
+    // this design exists to avoid.
+    const ACCT_KIND_LABEL = {
+      local: "local", microsoft: "Microsoft", entra: "work/school", unknown: "unknown",
+    };
+    // Why a verb is unavailable. The wire carries stable tokens; the wording lives
+    // here, which is the whole extension point — a new asymmetry on any OS costs
+    // one entry in this map and nothing else in the client.
+    const ACCT_UNSUPPORTED_REASON = {
+      password_in_cloud: "the password lives in the Microsoft account, not on this PC",
+      kind_unknown: "kenny could not determine what kind of account this is",
+      root_account: "this is root — group membership neither grants nor revokes it",
+      admin_via_sudoers: "its administrator rights come from a sudoers rule, which kenny never edits",
+      nologin_shell: "the account has no login shell, and kenny does not rewrite shells",
+      no_network_logon_concept: "this machine has no per-account network sign-in to deny — SSH is covered by the other switch",
+      no_sshd: "no SSH server is installed, so there is no remote sign-in to deny",
+      sshd_no_include: "the SSH configuration has no drop-in directory, and kenny will not edit the main file",
+      no_logind: "this machine has no session manager to act through",
+      no_graphical_session: "there is no desktop session here to lock",
+      no_admin_group: "this machine has no sudo, wheel or admin group",
+      shadow_unreadable: "kenny cannot read the password database on this machine",
+      no_user_notification_channel: "there is no way to warn the signed-in person first",
+      pam_faillock_not_enabled: "account lockout is not part of this machine's login configuration",
+      no_pwquality: "this machine has no password-quality module to configure",
+    };
+    // Verb -> what to call it in the "not available" footnote.
+    const ACCT_VERB_LABEL = {
+      set_enabled: "suspend / restore", set_admin: "administrator rights",
+      deny_network: "deny network sign-in", deny_remote_interactive: "deny remote sign-in",
+      delete: "delete", session_lock: "lock", session_logoff: "sign out",
+      session_warn: "warn before acting", reset_password: "reset password",
+    };
+    // The one place OS-specific *nouns* earn their keep: "Remote Desktop" and
+    // "SSH" are the words the operator knows for their own machine, and a neutral
+    // "remote sign-in" is vaguer for both. Purely editorial — which control is
+    // enabled, and why, still comes only from `unsupported`.
+    const ACCT_RIGHT_LABEL = {
+      windows: { network: "no network sign-in", remote_interactive: "no remote desktop" },
+      linux: { network: "no network sign-in", remote_interactive: "no SSH sign-in" },
+    };
+    const ACCT_PROFILE_NOUN = { windows: "profile", linux: "home directory" };
+    function acctOs() { return ((state.detail || {}).os) || "windows"; }
+    function acctLabels(table) { return table[acctOs()] || table.windows; }
+    function acctKindBadge(kind) {
+      const k = kind || "unknown";
+      return `<span class="k-pill k-pill--${k === "unknown" ? "warn" : "ok"}">${esc(ACCT_KIND_LABEL[k] || k)}</span>`;
+    }
+    // The reason a verb is off for this account, or "" when it is available.
+    function acctWhyNot(account, verb) {
+      const token = (account.unsupported || {})[verb];
+      return token ? (ACCT_UNSUPPORTED_REASON[token] || token) : "";
+    }
+
+    function renderAccountsDetail(raw, s) {
+      let body = "";
+      if (s && s.summary) body += `<div class="k-modal__sum">${esc(s.summary)}</div>`;
+      if (s) body += reasonHtml(s.reason, s.status);
+
+      const agentId = (state.detail || {}).agent_id;
+      const aid = jsArg(agentId);
+      // Governance calls are operator-only server-side; a scoped `user` sees the
+      // inventory read-only rather than buttons that would 403. `governance` comes
+      // from the server's own OS-scope table, so an OS with no implementation at
+      // all (macOS today) shows the inventory without dead controls, and the
+      // client never carries an OS list of its own.
+      const rw = canOperate() && (((state.detail || {}).governance || {}).supported !== false);
+      const rightLabel = acctLabels(ACCT_RIGHT_LABEL);
+      const accounts = Array.isArray(raw.accounts) ? raw.accounts : [];
+      const enabledAdmins = accounts.filter(a => a.enabled && a.is_admin).length;
+
+      const rows = accounts.map(a => {
+        const name = a.name || "?";
+        const nm = jsArg(name);
+        const unsup = a.unsupported || {};
+        const deny = Array.isArray(a.deny_logon) ? a.deny_logon : [];
+        // The self-protection rule the agent enforces, mirrored here so the button
+        // is visibly unavailable instead of failing on click. The agent stays
+        // authoritative — this is UX, not the boundary.
+        const lastAdmin = a.enabled && a.is_admin && enabledAdmins <= 1;
+        const builtin = a.builtin_admin || a.builtin_guest;
+        const guardTitle = lastAdmin
+          ? "blocked: this is the last enabled administrator — changing it would lock everyone out of this machine"
+          : "";
+        const btn = (label, ico, handler, disabled, title, danger) => `
+          <button class="k-btn ${danger ? "k-btn--danger" : "k-btn--ghost"} k-btn--sm"
+            ${disabled ? "disabled" : ""} title="${esc(title || "")}"
+            ${disabled ? "" : `onclick="${handler}"`}>${icon(ico, 12)}${esc(label)}</button>`;
+        // The capability map decides; the lockout guard is the second reason.
+        const why = verb => acctWhyNot(a, verb);
+        const off = (verb, guardApplies) => why(verb) || (guardApplies ? guardTitle : "");
+
+        const offEnable = off("set_enabled", a.enabled && lastAdmin);
+        const offAdmin = off("set_admin", a.is_admin && lastAdmin);
+        const offLock = off("session_lock", false);
+        const offLogoff = off("session_logoff", false);
+        const offDelete = why("delete")
+          || (builtin ? "blocked: built-in accounts cannot be deleted" : "")
+          || (lastAdmin ? guardTitle : "");
+
+        const actions = rw ? `
+          ${btn(a.enabled ? "suspend" : "restore", a.enabled ? "x" : "check",
+                `acctSetEnabled(${aid}, ${nm}, ${a.enabled ? "false" : "true"})`,
+                !!offEnable, offEnable)}
+          ${btn(a.is_admin ? "make standard" : "make admin", "shield-check",
+                `acctSetAdmin(${aid}, ${nm}, ${a.is_admin ? "false" : "true"})`,
+                !!offAdmin, offAdmin)}
+          ${btn("lock", "lock", `acctSession(${aid}, ${nm}, 'lock')`, !!offLock,
+                offLock || "lock this account's screen; open apps keep running")}
+          ${btn("sign out", "log-out", `acctSession(${aid}, ${nm}, 'logoff')`, !!offLogoff,
+                offLogoff || "end this account's session")}
+          ${btn("delete", "trash-2", `acctDelete(${aid}, ${nm})`, !!offDelete, offDelete, true)}
+        ` : "";
+
+        const flags = [
+          a.enabled ? "" : `<span class="k-pill k-pill--warn">suspended</span>`,
+          a.is_admin ? `<span class="k-pill k-pill--crit">administrator</span>` : "",
+          a.builtin_admin ? `<span class="k-pill k-pill--warn">built-in</span>` : "",
+          a.builtin_guest ? `<span class="k-pill k-pill--warn">guest</span>` : "",
+        ].filter(Boolean).join(" ");
+
+        // Both switches render on every host. Where one is not possible, it is
+        // greyed with its reason rather than removed — the shape of the panel
+        // stays the same, only the data differs.
+        const denyTog = (right, verb) => {
+          const blocked = why(verb);
+          return `
+          <label class="kwf-tog" title="${esc(blocked || ("deny " + rightLabel[right]))}">
+            <input type="checkbox" ${deny.includes(right) ? "checked" : ""}
+              ${(rw && !blocked) ? "" : "disabled"}
+              onchange="acctSetDeny(${aid}, ${nm}, '${right}', this.checked)"/><span>${esc(rightLabel[right])}</span></label>`;
+        };
+        const denyLine = denyTog("network", "deny_network")
+          + denyTog("remote_interactive", "deny_remote_interactive");
+
+        // Only the asymmetries, and always with their reason.
+        const unsupLine = Object.keys(unsup).length ? `
+          <div class="k-muted" style="margin-top:4px">not available for this account:
+            ${Object.entries(unsup).map(([verb, reason]) =>
+              `<span title="${esc(ACCT_UNSUPPORTED_REASON[reason] || reason)}">${esc(ACCT_VERB_LABEL[verb] || prettyKey(verb))}</span>`
+            ).join(", ")}</div>` : "";
+
+        const family = a.kind === "microsoft" ? `
+          <div class="k-muted" style="margin-top:4px">If this account is in a Microsoft
+            family group, Windows enforces that group's screen time itself — kenny can
+            neither read nor change it.</div>` : "";
+
+        return `<div class="kwf-row" style="flex-wrap:wrap;gap:6px">
+          <span class="k-mono">${esc(name)}</span>
+          ${a.display && a.display !== name ? `<span class="k-muted">${esc(a.display)}</span>` : ""}
+          ${acctKindBadge(a.kind)} ${flags}
+          <span style="flex-basis:100%"></span>
+          <div class="kwf-togs">${denyLine}</div>
+          <span style="flex-basis:100%"></span>
+          ${actions}
+          ${unsupLine}${family}
+        </div>`;
+      }).join("");
+
+      body += `<div class="k-detail-grp">
+        <div class="k-detail-grp__lbl">accounts on this machine</div>
+        ${rows || `<div class="k-muted">no accounts reported</div>`}
+      </div>`;
+
+      const pol = raw.password_policy || {};
+      const polGaps = pol.unsupported || {};
+      // A `null` value and an `unsupported` entry are different claims: "kenny
+      // could not read this" versus "this machine has no such setting". Showing
+      // "—" for both would collapse a distinction the contract works to keep.
+      const polRow = (label, key, value) => {
+        const gap = polGaps[key];
+        const shown = gap
+          ? `<span class="k-muted">not available here</span>`
+          : esc((value === null || value === undefined) ? "—" : String(value));
+        const why = gap ? ` title="${esc(ACCT_UNSUPPORTED_REASON[gap] || gap)}"` : "";
+        return `<div class="k-deflist__k"${why}>${esc(label)}</div><div class="k-deflist__v"${why}>${shown}</div>`;
+      };
+      body += `<div class="k-detail-grp">
+        <div class="k-detail-grp__lbl">password policy</div>
+        <div class="k-deflist">
+          ${polRow("Minimum length", "min_length", pol.min_length)}
+          ${polRow("Maximum age (days)", "max_age_days", pol.max_age_days)}
+          ${polRow("Lockout threshold", "lockout_threshold", pol.lockout_threshold)}
+        </div>
+        <div class="k-muted" style="margin-top:6px">Applies to accounts stored on this
+          machine only. An account backed by an online or directory service — a Microsoft
+          account, a work or school account, an LDAP identity — follows that service's own
+          password policy and ignores this entirely.</div>
+      </div>`;
+
+      body += `<div class="k-muted" style="margin-top:8px">Changes are refused while the
+        person at the machine has remote control switched off, and an administrator on the
+        machine can undo them. Already-applied changes persist; new ones do not go through.</div>`;
+      body += `<div id="kacct-msg"></div>`;
+      return body;
+    }
+
+    function acctMsg(text, isErr) {
+      const el = document.getElementById("kacct-msg");
+      if (el) el.innerHTML = `<div class="${isErr ? "k-airec__err" : "k-muted"}" style="margin-top:8px">${esc(text)}</div>`;
+    }
+
+    // Run one governance tool, then re-collect telemetry so the panel reflects the
+    // machine rather than what we hoped would happen.
+    async function acctCall(agentId, tool, args, okText) {
+      try {
+        const r = await getJSON("/api/agent/" + encodeURIComponent(agentId) + "/accounts/" + tool,
+          { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(args) });
+        if (r && r.ok === false) {
+          acctMsg(r.error === "disabled"
+            ? "refused: remote control is switched off at that machine"
+            : (r.message || r.error || "refused"), true);
+          return false;
+        }
+        notify(okText);
+        await refreshNow(agentId);
+        return true;
+      } catch (e) { acctMsg("failed: " + e.message, true); return false; }
+    }
+    function acctSetEnabled(agentId, name, enabled) {
+      return acctCall(agentId, "account_set_enabled", { principal: name, enabled },
+        enabled ? "account restored" : "account suspended");
+    }
+    async function acctSetAdmin(agentId, name, admin) {
+      if (!admin) {
+        const ok = await confirmModal({
+          title: "Remove administrator rights",
+          ico: "shield-check",
+          body: "Make '" + name + "' a standard user? This is what makes kenny's other "
+            + "controls hold — an account with administrator rights can undo them.",
+          confirmLabel: "Make standard",
+        });
+        if (!ok) return;
+      }
+      return acctCall(agentId, "account_set_admin", { principal: name, admin },
+        admin ? "administrator rights granted" : "administrator rights removed");
+    }
+    function acctSetDeny(agentId, name, right, on) {
+      // The tool takes the full desired set, so rebuild it from what is rendered.
+      const acct = (((state.detail || {}).snapshot || {}).local_accounts || {}).accounts || [];
+      const cur = (acct.find(a => a.name === name) || {}).deny_logon || [];
+      const next = on ? Array.from(new Set(cur.concat([right]))) : cur.filter(r => r !== right);
+      return acctCall(agentId, "account_set_logon_rights", { principal: name, deny: next },
+        "sign-in restrictions updated");
+    }
+    async function acctSession(agentId, name, action) {
+      // Whether the person can be warned first is a property of the host, not a
+      // promise the dashboard gets to make: Linux has no reliable channel to a
+      // signed-in user's screen, and saying "they will be warned" there would be
+      // a lie the operator acts on.
+      const acct = (((state.detail || {}).snapshot || {}).local_accounts || {}).accounts || [];
+      const canWarn = !acctWhyNot(acct.find(a => a.name === name) || {}, "session_warn");
+      const warnSeconds = canWarn ? 30 : 0;
+      const ok = await confirmModal({
+        title: action === "lock" ? "Lock the session" : "Sign the account out",
+        ico: action === "lock" ? "lock" : "log-out",
+        body: (action === "lock"
+          ? "Lock '" + name + "'s screen? Open apps keep running."
+          : "Sign '" + name + "' out? Unsaved work in open apps may be lost.")
+          + (canWarn ? " They will be warned 30 seconds beforehand."
+                     : " This machine has no way to warn them first, so it happens immediately."),
+        confirmLabel: action === "lock" ? "Lock" : "Sign out",
+      });
+      if (!ok) return;
+      if (canWarn) notify("warning the person at the machine, then acting in 30 seconds…");
+      return acctCall(agentId, "account_session_action",
+        { principal: name, action, warn_seconds: warnSeconds },
+        action === "lock" ? "session locked" : "signed out");
+    }
+    async function acctDelete(agentId, name) {
+      const acct = (((state.detail || {}).snapshot || {}).local_accounts || {}).accounts || [];
+      const kind = (acct.find(a => a.name === name) || {}).kind;
+      const noun = acctLabels(ACCT_PROFILE_NOUN);
+      const ok = await confirmModal({
+        title: "Delete account",
+        ico: "trash-2",
+        body: "Delete '" + name + "' and its " + noun + " from this machine? "
+          + (kind === "microsoft"
+              ? "For a Microsoft account this only unlinks it from this machine — the "
+                + "Microsoft account itself is untouched. "
+              : "")
+          + "Local files in it are deleted and cannot be recovered.",
+        confirmLabel: "Delete",
+        confirmClass: "k-btn--danger",
+      });
+      if (!ok) return;
+      return acctCall(agentId, "account_delete", { principal: name, remove_profile: true },
+        "account deleted");
+    }
+
     function wfCatBadge(cat) {
       const label = { custom: "custom", seed: "seed", external_adult: "adult list", bypass: "bypass" }[cat] || cat || "—";
       return `<span class="k-pill k-pill--${cat === "bypass" ? "warn" : "crit"}">${esc(label)}</span>`;
@@ -3905,7 +5871,8 @@
     // chat to this PC, close the popup, and start the turn. State-changing steps
     // still hit the confirm-gate — Auto-Remediate does not bypass confirmation.
     function autoRemediate(agentId, prompt) {
-      if (!copilotOn()) {
+      if (!askRailOn()) {
+        // "kenny-copilot" stays the storage key on purpose (see askRailOn).
         try { localStorage.setItem("kenny-copilot", "on"); } catch (e) {}
         applyCopilot();
       }
@@ -3988,10 +5955,12 @@
 
     // -- flagged view: warnings/critical grouped by agent (from the pills) --
     async function renderFlagged() {
+      const nav = navToken;
       // Reachable from any tab via the header pills; ensure fleet data is loaded.
       if (!state.fleet) {
         state.fleet = await getJSON("/api/fleet").catch(() => ({ agents: [] }));
       }
+      if (nav !== navToken) return;  // navigated away while this was loading
       const agents = state.fleet.agents || [];
       renderHeaderRight(state.fleet, agents);
       const sevName = state.flaggedSev === "crit" ? "crit" : "warn";
@@ -4050,7 +6019,10 @@
     }
 
     async function refreshNow(id) {
-      try { await getJSON("/api/agent/" + encodeURIComponent(id) + "/refresh", { method: "POST" }); }
+      try {
+        const r = await getJSON("/api/agent/" + encodeURIComponent(id) + "/refresh", { method: "POST" });
+        if (r && r.stored === false) notify(r.warning || "refresh collected, but was not stored", "err");
+      }
       catch (e) { notify("refresh failed: " + e.message, "err"); }
       selectAgent(id);
     }
@@ -4094,7 +6066,7 @@
     }
 
     // -- agent distribution (installer / share / update) ------------------
-    // `arch` (ADR-0040) is only ever passed from the "Add a PC" flow, where the
+    // `arch` (ADR-0036) is only ever passed from the "Add a PC" flow, where the
     // operator picked a specific target from the dropdown; the per-agent detail
     // "reinstall"/"re-share" buttons call these with just `id` (arch is already
     // known for an enrolled host) and get today's unpinned behavior unchanged.
@@ -4198,7 +6170,7 @@
     function chatHtml() {
       return `<div class="k-panel kc-chat kc-copilot">
         <div class="kc-chat__head">
-          <span class="k-row kc-chat__title" style="gap:8px">${icon('message-square', 16)}chat · server-hosted</span>
+          <span class="k-row kc-chat__title" style="gap:8px">${icon('message-square', 16)}Ask kenny · server-hosted</span>
           <span class="k-row" style="gap:6px">
             <button class="k-btn k-btn--ghost k-btn--sm" onclick="newChat()" title="start a new chat">${icon('plus', 13)}new</button>
             <button class="k-btn k-btn--ghost k-btn--sm" onclick="openHistoryPanel()" title="browse past conversations">${icon('clock', 13)}history</button>
@@ -4219,7 +6191,14 @@
     }
     function mountChat() {
       const input = document.getElementById("chat-input");
-      if (input) input.addEventListener("keydown", e => { if (e.key === "Enter") sendChat(); });
+      // Plain Enter always sends here, regardless of the "Enter to send"
+      // preference — that preference is about the ticket view's multi-line
+      // textarea, and this is a single-line <input> with no newline concept
+      // of its own. Shift+Enter is still not swallowed, though, matching the
+      // ticket composer's own convention (tkComposerKeydown) rather than
+      // silently eating a modifier combo the operator may be using for
+      // something else (an IME, a browser/extension shortcut, ...).
+      if (input) input.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) sendChat(); });
       setChatContext(state.selected);
     }
     function suggest(btn) {
@@ -4263,7 +6242,7 @@
     // easy to audit: every code path HTML-escapes raw text (via esc()) before
     // any tag is layered on, and link hrefs are allow-listed to http(s)/mailto.
     // That matters here specifically because assistant text isn't fully
-    // trusted either (ADR-0024) — a compromised agent's tool output can end
+    // trusted either (ADR-0023) — a compromised agent's tool output can end
     // up quoted back by the model, so nothing in this text should be treated
     // as real HTML. User messages are never run through this; they keep using
     // textContent, unchanged.
@@ -4452,6 +6431,64 @@
       t.appendChild(div);
       t.scrollTop = t.scrollHeight;
       setComposerEnabled(false); // lock the composer until the gate is resolved
+      openGateModal(p);
+    }
+
+    // The card above stays as the anchor — it marks where in the conversation
+    // the gate happened and survives the decision as history — but the rail is
+    // ~380px and a PowerShell script is unreadable in it. The decision itself
+    // moves to a dialog wide enough to actually read the call, which is what
+    // the assistant's own instructions already promise the operator.
+    //
+    // Shared with the ticket view's own gate (see openTicketGateModal in the
+    // ticket-detail section): just the tool+args body, reusing gateCall()
+    // verbatim. `tool_class` is accepted for shape-parity with the pending
+    // event/approval row callers pass around, even though this body doesn't
+    // render it (same as before this was split out).
+    function gateModalHtml({ tool, args, agent_id, tool_class }) {
+      return `<div class="k-gate__desc" style="margin-bottom:12px">This will <b>change state</b> on
+           <b>${esc(agent_id || "the active PC")}</b>. Review the exact call below.</div>
+         <div class="k-gate__call">${gateCall(tool, args)}</div>`;
+    }
+    // The gate modal's decision callback for whichever dialog is currently
+    // open. A module-level slot rather than a closure baked into the button's
+    // onclick markup, because an inline HTML attribute can only call a named
+    // function — mirrors how modalOnClose already works for openModal/closeModal.
+    let gateModalOnDecide = null;
+    function gateModalDecide(approve, btn) {
+      if (btn) btn.disabled = true;
+      const cb = gateModalOnDecide;
+      gateModalOnDecide = null;
+      closeModal();
+      if (cb) cb(approve);
+    }
+    // opts.onDecide(approve) lets a second surface (the ticket view) reuse this
+    // exact dialog with its own decision path; opts.dismissible lets it opt
+    // into being closable without deciding (see the "Decide later" button
+    // below). With no opts this is the fleet rail's original behavior:
+    // non-dismissible, decides via confirmChat.
+    function openGateModal(p, opts) {
+      const o = opts || {};
+      gateModalOnDecide = o.onDecide || (approve => confirmChat(approve, null));
+      // The fleet rail's gate is non-dismissible on purpose: that session's
+      // composer is locked and nothing else can proceed until this dialog is
+      // answered, so there is no "close without deciding" to offer. A ticket's
+      // gate legitimately waits hours and may be decided by a different
+      // operator than the one looking at it now, so its caller opts into
+      // `dismissible: true` and gets a "Decide later" button that only closes
+      // the dialog instead of a cancel that would deny the call.
+      const dismissible = o.dismissible === true;
+      const secondaryBtn = dismissible
+        ? `<button class="k-btn k-btn--ghost" onclick="closeModal()">Decide later</button>`
+        : `<button class="k-btn k-btn--ghost" onclick="gateModalDecide(false, this)">cancel</button>`;
+      openModal(
+        `${icon('shield-alert', 20)}<span>Confirm before this runs</span>`,
+        `${gateModalHtml(p)}
+         <div class="k-row" style="gap:8px;justify-content:flex-end;margin-top:16px">
+           ${secondaryBtn}
+           <button class="k-btn k-btn--primary" onclick="gateModalDecide(true, this)">${icon('check', 15)}confirm &amp; run</button>
+         </div>`,
+        "k-modal--wide", null, { dismissible });
     }
     async function sendChat() {
       if (chatAbort) return; // a turn is already streaming (Enter while busy)
@@ -4486,7 +6523,13 @@
       }
     }
     async function confirmChat(approve, btn) {
-      btn.closest(".k-gate").remove();
+      // Either entry point may call this: the inline card's own buttons, or the
+      // dialog's, which has no card ancestor. At most one gate is ever open —
+      // the composer stays locked until it resolves — so falling back to the
+      // one in the transcript is unambiguous.
+      const card = (btn && btn.closest) ? btn.closest(".k-gate") : null;
+      const open = card || document.querySelector("#transcript .k-gate");
+      if (open) open.remove();
       setComposerEnabled(true);
       const ctx = newChatCtx();
       chatAbort = new AbortController();

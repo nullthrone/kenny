@@ -6,11 +6,13 @@
 # needs from outside the crate must be passed through or mounted explicitly:
 #
 # - KENNY_AGENT_VERSION -> KENNY_BUILD_VERSION (ADR-0015): the release version build.rs reads.
+# - KENNY_AGENT_CHANNEL -> KENNY_BUILD_CHANNEL (ADR-0048): the release channel build.rs reads
+#   (`stable`/`dev`), set by release-dev.yml for dev builds only.
 # - KENNY_DENY_RULES_DIR: the repo's `docs/policy/` directory, which holds the shared
-#   deny-rule catalog build.rs embeds (ADR-0021). It lives outside the crate, so the release
+#   deny-rule catalog build.rs embeds (ADR-0020). It lives outside the crate, so the release
 #   workflow points this at `<repo>/docs/policy` and we mount it into the container (`volumes`)
 #   at the same path AND expose the variable to the build (`passthrough`). Without this the
 #   cross build fails: `couldn't read .../docs/policy/deny_rules.json`.
 [build.env]
-passthrough = ["KENNY_AGENT_VERSION", "KENNY_DENY_RULES_DIR"]
+passthrough = ["KENNY_AGENT_VERSION", "KENNY_AGENT_CHANNEL", "KENNY_DENY_RULES_DIR"]
 volumes = ["KENNY_DENY_RULES_DIR"]

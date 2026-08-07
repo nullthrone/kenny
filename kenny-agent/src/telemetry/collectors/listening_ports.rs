@@ -13,7 +13,7 @@ use crate::telemetry::Section;
 
 /// Collect the `listening_ports` section.
 ///
-/// While a protected game is running (anti-cheat coexistence, ADR-0039) this reports a
+/// While a protected game is running (anti-cheat coexistence, ADR-0035) this reports a
 /// "paused" section with no port/PID→image data instead of enumerating listeners — the
 /// port→process join is one of the behaviours a kernel anti-cheat flags.
 pub fn collect() -> Section {

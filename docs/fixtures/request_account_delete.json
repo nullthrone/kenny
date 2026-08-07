@@ -1,0 +1,9 @@
+{
+  "type": "request",
+  "id": "f105e816-7293-4e0f-9021-4c5d6e7f8091",
+  "tool": "account_delete",
+  "args": {
+    "principal": "guest-visit",
+    "remove_profile": true
+  }
+}

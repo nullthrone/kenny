@@ -1,0 +1,95 @@
+name: Release (dev channel)
+
+# Publishes a prerelease build on every push to main: agent + server built together,
+# tagged v<next-patch>-dev.<run_number> (ADR-0048). Because GitHub Releases marks it
+# `prerelease: true`, `GET /repos/{repo}/releases/latest` (used by the stable resolution
+# path everywhere on the server) never sees it — the stable channel is unaffected by
+# construction. A dev-channel detection pass instead reads `GET /releases` and picks the
+# newest prerelease.
+#
+# workflow_dispatch is included so this can be dry-run before merging a change to this
+# file or to _release-artifacts.yml, without waiting for the next main push.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "kenny-agent/**"
+      - "kenny-server/**"
+      - "docs/protocol.md"
+      - "docs/fixtures/**"
+      - "docs/policy/**"
+      - ".github/workflows/_release-artifacts.yml"
+      - ".github/workflows/release-dev.yml"
+  workflow_dispatch: {}
+
+concurrency:
+  group: release-dev
+  cancel-in-progress: true
+
+permissions:
+  contents: write   # create the prerelease + upload assets, prune old ones
+  packages: write   # push the :edge GHCR tag
+
+jobs:
+  compute-version:
+    name: Compute dev version tag
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # need full tag history to find the latest stable tag
+      - name: Compute next dev tag
+        id: ver
+        run: |
+          set -euo pipefail
+          # Latest STABLE tag only (excludes any prior -dev. tag), so the dev version
+          # always advances from the last real release, not from another dev build.
+          latest_stable="$(git tag --list 'v*' | grep -Ev -- '-dev\.' | sort -V | tail -n1 || true)"
+          if [ -z "$latest_stable" ]; then
+            latest_stable="v0.0.0"
+          fi
+          v="${latest_stable#v}"
+          IFS=. read -r major minor patch <<< "$v"
+          next_patch=$((patch + 1))
+          version="v${major}.${minor}.${next_patch}-dev.${{ github.run_number }}"
+          echo "Latest stable tag: $latest_stable -> dev version: $version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  release:
+    name: Publish dev prerelease
+    needs: compute-version
+    uses: ./.github/workflows/_release-artifacts.yml
+    with:
+      version: ${{ needs.compute-version.outputs.version }}
+      prerelease: true
+      channel: dev
+    secrets: inherit
+
+  cleanup:
+    name: Prune old dev prereleases
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # Keep only the newest 10 dev prereleases (by publish time) so the release list
+      # doesn't grow without bound (ADR-0048) — this step is required, not optional.
+      # `gh release delete --cleanup-tag` removes both the Release and its git tag.
+      - name: Delete old dev releases and tags
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          stale="$(gh release list --limit 200 --json tagName,isPrerelease,createdAt \
+            | jq -r '[.[] | select(.isPrerelease) | select(.tagName | test("-dev\\."))]
+                     | sort_by(.createdAt) | reverse | .[10:] | .[].tagName')"
+          if [ -z "$stale" ]; then
+            echo "Nothing to prune."
+            exit 0
+          fi
+          echo "$stale" | while read -r tag; do
+            [ -z "$tag" ] && continue
+            echo "Deleting stale dev release/tag: $tag"
+            gh release delete "$tag" --yes --cleanup-tag
+          done

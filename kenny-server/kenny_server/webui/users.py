@@ -1,4 +1,4 @@
-"""User-management and self-service account routes (ADR-0037).
+"""User-management and self-service account routes (ADR-0033).
 
 Two families, both gated by the auth middleware + :mod:`authz`:
 
@@ -62,7 +62,7 @@ def build_user_routes(
     """Routes for ``/api/me*`` (self) and ``/api/users*`` (superuser)."""
 
     async def _revoke_oauth(user_id: int) -> None:
-        """Revoke a user's OAuth tokens alongside their sessions (ADR-0041).
+        """Revoke a user's OAuth tokens alongside their sessions (ADR-0037).
 
         A credential change / disable / delete must not leave a live OAuth grant
         that keeps reaching ``/mcp`` as that account.
@@ -229,6 +229,16 @@ def build_user_routes(
     async def api_users_list(_request: Request) -> JSONResponse:
         return JSONResponse({"users": await user_store.list_users()})
 
+    async def api_users_directory(_request: Request) -> JSONResponse:
+        """Minimal id→username/role projection, open to any operator+ account.
+
+        Lets an operator (who cannot reach the superuser-only ``/api/users``)
+        resolve another account's id to a display name — e.g. a ticket's
+        requester/assignee or a trail row's actor.
+        """
+
+        return JSONResponse({"users": await user_store.list_directory()})
+
     async def api_user_create(request: Request) -> JSONResponse:
         body = await _body(request)
         username = str(body.get("username", "")).strip()
@@ -377,6 +387,7 @@ def build_user_routes(
         Route("/api/me/pats", guard(api_me_pat_create), methods=["POST"]),
         Route("/api/me/pats/{pid}", guard(api_me_pat_revoke), methods=["DELETE"]),
         Route("/api/users", guard(api_users_list, **su)),
+        Route("/api/users/directory", guard(api_users_directory, min_role="operator")),
         Route("/api/users", guard(api_user_create, **su), methods=["POST"]),
         Route("/api/users/{uid}", guard(api_user_get, **su)),
         Route("/api/users/{uid}", guard(api_user_update, **su), methods=["PATCH"]),

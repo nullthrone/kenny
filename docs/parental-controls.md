@@ -12,7 +12,7 @@ and — on demand — block a set of known-harmful domains. There are two featur
     consent of the people who use them. kenny takes **host names only** — never full URLs,
     page titles, form data, or which user visited. Data lives behind the operator token,
     is treated as untrusted in chat context, and is retained like the rest of telemetry
-    (~30 days). See [ADR-0026](adr/0026-parental-controls-web-activity-and-webfilter.md).
+    (~30 days). See [ADR-0024](adr/0024-parental-controls-web-activity-and-webfilter.md).
 
 ## The server matches, the agent enforces
 
@@ -27,7 +27,7 @@ self-protected names. No matching logic ever rides the wire.
     Observability does not depend on blocking. A parent gets an **alarm** the next snapshot
     after a listed site is reached, whether or not blocking was on or was bypassed
     (admin rights, a VPN, or a portable browser defeat host-level blocking). See
-    [ADR-0026](adr/0026-parental-controls-web-activity-and-webfilter.md).
+    [ADR-0024](adr/0024-parental-controls-web-activity-and-webfilter.md).
 
 ## Categories and precedence
 
@@ -125,9 +125,9 @@ payload shape structurally cannot express who was logged in or what ran.
 
 It appears as horizontal per-day bars in the `screen_time` section detail and is summarized
 in the **weekly digest**. No health rule judges it — the section is always `ok`; kenny
-reports, parents judge. See [ADR-0032](adr/0032-screen-time-aggregated-session-minutes.md).
+reports, parents judge. See [ADR-0029](adr/0029-screen-time-aggregated-session-minutes.md).
 
-## Driving it from the copilot
+## Driving it from Ask kenny
 
 The dashboard chat and any MCP client can drive parental controls too. The server-only tools:
 
@@ -147,5 +147,5 @@ the agent (refused with `disabled` under the kill switch). See [`tools.md`](tool
 - [`dashboard.md`](dashboard.md) — the fleet view, drill-down, and Activity tab.
 - [`telemetry.md`](telemetry.md) — how sections, collectors, and health rules fit together.
 - [`alerting.md`](alerting.md) — how `warn` / `crit` surface and the weekly digest.
-- [ADR-0026](adr/0026-parental-controls-web-activity-and-webfilter.md) — web activity + web filter.
-- [ADR-0032](adr/0032-screen-time-aggregated-session-minutes.md) — screen time.
+- [ADR-0024](adr/0024-parental-controls-web-activity-and-webfilter.md) — web activity + web filter.
+- [ADR-0029](adr/0029-screen-time-aggregated-session-minutes.md) — screen time.

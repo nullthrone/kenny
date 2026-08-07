@@ -11,7 +11,7 @@ commands on them through kenny. For installing and hosting the server, see
 - A **fleet view** with a traffic light per machine, and a **drill-down** per PC: every
   telemetry section, a health trend, inventory changes + forecasts, and the last screenshot.
 - Two ways to act on a PC: talk to **Claude** (which calls kenny's tools), either from a local
-  Claude client over MCP or from the **copilot chat built into the dashboard** — no local
+  Claude client over MCP or from **Ask kenny, built into the dashboard** — no local
   client needed, with a confirm-gate on anything that changes state.
 - **Parental controls** (web activity + web filter, screen time) and **push alerts** with a
   weekly digest.
@@ -89,7 +89,7 @@ The header shows the **worst-of** health across the whole fleet. Click a tile to
   rule reason. Click a section tile to open a popup with its details rendered as readable tables and
   fields (no raw JSON). For a *flagged* section, when an Anthropic API key is configured, an **AI
   Recommendation** (Diagnosis / Action / Urgency) streams in at the top, sometimes with an
-  **Auto-Remediate** button that hands a fix prompt to the copilot. On **Reliability**, a noisy but
+  **Auto-Remediate** button that hands a fix prompt to Ask kenny. On **Reliability**, a noisy but
   known-harmless Windows event pattern (e.g. a `CryptSvc` quirk repeating hundreds of times a day)
   can be **suppressed** — a click next to the offending row, or the panel's manual form (event id
   required, source optional) — so it stops dominating the health status while its raw count stays
@@ -154,12 +154,12 @@ each other — kenny refuses the wrong one for a given PC's OS before it ever ru
 The chat mirrors your fleet selection: the **context** chip shows whether it's scoped to the
 selected PC or the whole fleet. Conversations are **saved** — **new** starts a fresh one and
 **history** browses, resumes, or deletes past ones. See the
-[tool reference](tools.md) for the full catalog and the [dashboard reference](dashboard.md#the-copilot-chat-rail)
-for the copilot in detail.
+[tool reference](tools.md) for the full catalog and the [dashboard reference](dashboard.md#ask-kenny-chat-rail)
+for Ask kenny in detail.
 
 ### Option B — a local Claude client over MCP
 
-kenny is a remote MCP server with a built-in **OAuth 2.1** authorization flow ([ADR-0041](adr/0041-oauth2-authorization-server-for-mcp.md)),
+kenny is a remote MCP server with a built-in **OAuth 2.1** authorization flow ([ADR-0037](adr/0037-oauth2-authorization-server-for-mcp.md)),
 so connecting Claude Desktop takes no token copy-paste:
 
 1. In Claude Desktop, open **Settings → Connectors → Add custom connector**.

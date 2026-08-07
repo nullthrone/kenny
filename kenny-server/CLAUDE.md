@@ -17,7 +17,7 @@ read it there, do not restate schemas here.
   (`OperatorAuthMiddleware`) — a per-user PAT (Bearer), a session cookie, or the legacy
   shared token (back-compat superuser); `/agent/ws` is exempt (agents use their own
   token). Roles/host-scope are enforced by `webui/authz.py` guards and `tools.py`. See
-  ADR-0037 (supersedes ADR-0008). Don't open these surfaces without going through that
+  ADR-0033 (supersedes ADR-0008). Don't open these surfaces without going through that
   middleware.
 - Type-hint everything; keep I/O async. Format/lint with `ruff`.
 

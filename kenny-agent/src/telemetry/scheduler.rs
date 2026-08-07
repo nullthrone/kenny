@@ -6,7 +6,7 @@
 //! right after register. See ADR-0007.
 //!
 //! The wait between pushes is the configured `interval` normally, but stretches while a
-//! protected game is running (anti-cheat coexistence, ADR-0039) so the process/port
+//! protected game is running (anti-cheat coexistence, ADR-0035) so the process/port
 //! enumeration in the snapshot backs off — see [`crate::coexist::telemetry_delay`].
 
 use std::time::Duration;

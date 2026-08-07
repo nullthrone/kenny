@@ -10,10 +10,11 @@ just want the common workflows, start with the **[User guide](user-guide.md)**; 
 here when you want to know what a particular control does.
 
 !!! info "How to read this page"
-    kenny has **three top-level tabs** — **Overview**, **Fleet**, and **Activity** — plus a
-    **Flagged** view you reach from the header. Each tab is a URL you can bookmark
-    (`#/overview`, `#/fleet`, `#/activity/audit`, `#/activity/events`, `#/flagged/warn`,
-    `#/flagged/crit`). The examples below use a demo fleet of six family PCs.
+    kenny has **four top-level tabs** — **Overview**, **Fleet**, **Activity**, and
+    **Tickets** — plus a **Flagged** view you reach from the header. Each tab is a URL you
+    can bookmark (`#/overview`, `#/fleet`, `#/activity/audit`, `#/activity/events`,
+    `#/flagged/warn`, `#/flagged/crit`, `#/tickets`, `#/tickets/{id}`). The examples below
+    use a demo fleet of six family PCs.
 
 ---
 
@@ -27,14 +28,21 @@ here when you want to know what a particular control does.
 Every view shares one header:
 
 - **Brand** — the kenny mark and the "fleet console" subtitle (top-left).
-- **Tab navigation** — **Overview · Fleet · Activity**. The active tab is highlighted.
+- **Tab navigation** — **Overview · Fleet · Activity · Tickets**. The active tab is
+  highlighted; **Tickets** carries a live count badge (operator+ only) when something needs
+  your attention — blocked on your approval, blocked on an operator, or a fresh alert-origin
+  ticket. Clicking the tab always opens [the Tickets tab](#the-tickets-tab) itself; the badge
+  is informational, not a filter — use the list's own **needs you** group chip for that.
 - **Fleet-metrics pill** — a compact, always-visible summary of the whole fleet:
   **online `x/y`** · **warnings** · **critical** · **last push**. The *warnings* and
   *critical* counts are **section totals** across the fleet (one PC can contribute several),
   and when either is above zero it becomes a **link into the [Flagged view](#the-flagged-view)**.
   On narrow screens the word labels collapse to icon + number.
-- **✨ Copilot toggle** *(Fleet tab only)* — show/hide the chat rail (see
-  [The copilot](#the-copilot-chat-rail)).
+- **✨ Ask kenny toggle** *(Fleet tab only)* — show/hide the chat rail (see
+  [Ask kenny](#ask-kenny-chat-rail)).
+- **Approvals badge** *(operator+ only)* — a shield icon with a live count of everything
+  currently held for you across every ticket; see [The approvals badge](#the-approvals-badge)
+  below.
 - **User menu** — your avatar (a selectable dog-breed image, or your initials when none is
   set) and username, top-right. Clicking it opens a dropdown that collects the global
   controls:
@@ -43,19 +51,34 @@ Every view shares one header:
       stays open, and the item names the theme it switches *to*). The choice is saved in
       `localStorage` and applied before first paint (no flash); charts repaint from the cached
       data on toggle.
-    - **Settings** *(superuser only)* — opens the [`#/settings`](#accounts-roles-the-user-menu)
-      config panel.
-    - **Backup** *(superuser only)* — opens the [`#/backup`](#the-backup-page) database
-      backup/restore page.
+    - **Settings** *(superuser only)* — opens the [`#/settings`](#the-settings-page) sidebar,
+      which also carries Backup and Updates (see below).
+    - **Updates** *(operator+, shown instead of Settings for an operator — a superuser reaches
+      it through Settings)* — opens [`#/settings/updates`](#updates) directly.
     - **About** — opens the [About box](#the-about-box).
     - **Documentation** — opens the project's docs site (this GitHub Pages site) in a new tab.
     - **Log out** (`/logout`).
+
+### The approvals badge
+
+A shield icon lives in the header for **operator+** accounts, next to the Ask kenny toggle,
+with a live count of every tool call currently held for a decision — across every ticket,
+not just the one you happen to have open. Clicking it opens the same queue as a modal:
+each row shows the **tool**, its **tier**, the frozen **arguments**, a link straight to the
+ticket it belongs to, and **Approve**/**Deny** buttons. Deciding one re-opens the queue
+rather than trying to patch a now-stale row in place — the same decision then lands as an
+`approval` row on that [ticket's timeline](#ticket-detail).
+
+This is the dashboard's side of the same confirm-gate the [Discord surface](itsm.md) holds
+a `normal_change` for — see [Tool reference](tools.md#three-tiers-and-who-enforces-what)
+for how the gate differs by surface, and [ITSM & the Discord bot](itsm.md#operator-approval-vs-user-consent-two-different-questions)
+for the difference between an operator approval and a user consent.
 
 ---
 
 ## Accounts & roles (the user menu)
 
-kenny is multi-user (ADR-0037). On first run the console shows a one-time **setup** page;
+kenny is multi-user (ADR-0033). On first run the console shows a one-time **setup** page;
 the first account you create becomes the **superuser**. After that, three roles gate what
 each surface shows:
 
@@ -69,13 +92,21 @@ each surface shows:
 change your password, enable/disable **two-factor (TOTP)** (scan the shown `otpauth://`
 secret into an authenticator, then confirm a code), and mint/revoke **personal access
 tokens**. Claude Desktop normally connects with the built-in **OAuth flow**
-([ADR-0041](adr/0041-oauth2-authorization-server-for-mcp.md)) — no token needed; personal
+([ADR-0037](adr/0037-oauth2-authorization-server-for-mcp.md)) — no token needed; personal
 access tokens are the Bearer credential for scripts and other MCP clients that can't do OAuth,
 sent as `Authorization: Bearer <pat>` to `/mcp` and shown once at creation.
 
 **Users** (superuser only) lists every account and lets you create, edit (role, email,
-avatar, enable/disable), delete, reset a password, reset 2FA, assign the host scope for a
-`user`-role account, and manage that user's access tokens.
+avatar, enable/disable), delete, reset a password, reset 2FA, assign the **host scope**,
+set its **capability profile**, and manage that user's access tokens. Host scope reads two
+ways depending on the role: for a `user` account it is a limit — the only hosts it can see
+— while for an operator or superuser it limits nothing and instead names which PCs are
+that person's own, which is what an unqualified Discord request is taken to be about (see
+[Which PC a request is about](itsm.md#which-pc-a-request-is-about)).
+A capability profile is a named tool allowlist that only ever *narrows* what the account's
+role already allows — `self-service-basic`, `power-user`, `operator`, or `(none — role
+default)` are the shipped choices — and applies wherever that account acts, Discord
+included. See [Capability profiles](itsm.md#capability-profiles).
 
 Existing single-token installs keep working across the upgrade: the legacy
 `KENNY_OPERATOR_TOKEN` is still accepted as a back-compat superuser while you create real
@@ -181,11 +212,11 @@ with the value and a one-line detail. Click a host id to jump to its
 ## The Fleet tab
 
 The working view: a three-column console — the **fleet list**, the selected PC's **agent
-detail**, and the docked **copilot** chat rail.
+detail**, and the docked **Ask kenny** chat rail.
 
 <figure markdown>
   ![The Fleet console](assets/screenshots/fleet-console.png)
-  <figcaption>The Fleet tab: the fleet list (left), the selected agent's drill-down (centre), and the copilot rail (right).</figcaption>
+  <figcaption>The Fleet tab: the fleet list (left), the selected agent's drill-down (centre), and the Ask kenny rail (right).</figcaption>
 </figure>
 
 ### Fleet list (left)
@@ -198,7 +229,7 @@ Below the list, the **Add a PC** panel onboards a *new* machine: type an agent i
 target **OS** (Windows or Linux), then **installer** / **share link**. For **Windows** these are a
 downloadable ZIP or a one-time, expiring link the target user can open without your login. For
 **Linux** the panel produces a **one-line install command** (`curl -fsSL … | sudo sh`) in a
-copyable modal — the Docker/K3s convenience-script model (ADR-0038). See
+copyable modal — the Docker/K3s convenience-script model (ADR-0034). See
 [Adding & updating PCs](#adding-updating-pcs).
 
 ### Agent detail (centre)
@@ -250,19 +281,20 @@ rule-reason chip.
 - **AI Recommendation** — for a flagged section, when an Anthropic API key is configured, a
   short **Diagnosis / Action / Urgency** advisory streams in at the top. If the advisor judges
   the issue fixable with kenny's tools it adds an **Auto-Remediate** button that hands a
-  suggested prompt to the copilot (state-changing steps still hit the confirm-gate). See
-  [ADR-0019](adr/0019-ai-recommendations-and-auto-remediation.md).
+  suggested prompt to Ask kenny (state-changing steps still hit the confirm-gate). See
+  the confirm-gate ([ADR-0009](adr/0009-server-hosted-claude-chat.md)).
 - **Reliability** has a custom renderer — a category × day heatmap plus expandable event
   groups, each row showing a **severity badge** (`benign`/`notable`/`serious`/`unknown`) and
   the categorizer's plain-language **suspected cause** alongside the raw sample message.
-  Each row also has a **suppress**/**unsuppress** button, and a suppressed pattern carries a
+  Each row also has an icon-only **suppress**/**unsuppress** button (a bell-slash/bell icon;
+  hover for the tooltip), and a suppressed pattern carries a
   distinct **suppressed** badge and a dimmed row — visible but out of the health scoring. A
   panel below the breakdown lists and manages suppression rules: a manual form takes an
   **event id (required)**, an optional **source** (empty matches any source with that event
   id), a fleet-wide/this-PC-only scope, and an optional note. Removing a fleet-wide rule
   asks for confirmation, since it re-arms the alarm on every PC. See
   [Alarm suppression](telemetry.md#alarm-suppression) and
-  [ADR-0045](adr/0045-reliability-alarm-suppression.md).
+  [ADR-0041](adr/0041-reliability-alarm-suppression.md).
 
   <figure markdown>
     ![The reliability section detail](assets/screenshots/reliability.png)
@@ -279,11 +311,28 @@ rule-reason chip.
 
 - **Screen time** renders whole-machine interactive minutes per day as simple bars.
 
-### The copilot (chat rail)
+- **Local accounts** is the **account governance panel**: every account on the machine
+  with its kind (local / Microsoft / work-school), whether it is enabled or an
+  administrator, its sign-in restrictions, and — for operators — buttons to suspend,
+  promote or demote, lock, sign out, and delete. Below it sits the machine password
+  policy, labelled with the fact that it reaches only accounts stored on the machine.
+
+  The panel is the same on a Windows PC and on a Linux host: same rows, same badges, same
+  two switches, same five buttons. The same controls appear for a Microsoft account as for
+  a local one. Where a verb genuinely is not available — because of the account, its kind,
+  or the machine it is on — it is shown **greyed out with the reason** rather than hidden,
+  and the reason comes from the telemetry rather than from anything the dashboard assumes
+  about the operating system. Actions that would touch the last enabled administrator, or delete a built-in
+  account, are disabled with an explanation — the agent refuses them regardless, so the
+  greying is a courtesy, not the boundary. Every change triggers a fresh telemetry
+  collect, so the panel shows the machine rather than what was requested. See
+  [Account governance](account-governance.md).
+
+### Ask kenny (chat rail)
 
 <figure markdown>
-  ![The copilot with a confirm-gate](assets/screenshots/copilot-confirm.png)
-  <figcaption>The copilot: an assistant reply, an auto-run read-only tool, and the amber confirm-gate pausing a state-changing winget_update until the operator approves.</figcaption>
+  ![Ask kenny with a confirm-gate](assets/screenshots/copilot-confirm.png)
+  <figcaption>Ask kenny: an assistant reply, an auto-run read-only tool, and the amber confirm-gate pausing a state-changing winget_update until the operator approves.</figcaption>
 </figure>
 
 The **server-hosted Claude** chat, docked on the right. No local client needed — ask in plain
@@ -298,7 +347,7 @@ language and Claude picks and runs kenny's tools.
 - **Confirm-gate** — read-only tools run automatically; any **state-changing** tool pauses in
   an amber card showing the exact tool + arguments, with **confirm & run** / **cancel**. The
   composer is locked until you resolve it. See
-  [Tool reference](tools.md#the-confirm-gate-who-enforces-what).
+  [Tool reference](tools.md#three-tiers-and-who-enforces-what).
 - **Composer** — type and **send**; while a turn streams the button becomes **stop**.
   Suggestion chips ("Why is this PC flagged?", "Free up disk space", "Update all packages")
   pre-fill the box.
@@ -345,6 +394,128 @@ source, PC, or message, and paged. This is where [alerts](alerting.md) land as a
 
 ---
 
+## The Tickets tab
+
+The simplified-ITSM record behind every Discord conversation, every alert-opened case, and
+anything opened straight from the dashboard — see [Tickets & the Discord bot](itsm.md) for
+what a ticket is, its lifecycle, and the authorization model behind it. **Visible to every
+role**: an operator+ sees the whole queue, a scoped `user` only ever their own (enforced
+server-side, not just hidden in the UI) — this is the dashboard's first genuinely
+user-facing view.
+
+### Ticket list
+
+<figure markdown>
+  ![The Tickets list, grouped by who the ball is with and with a row selected for a bulk state change.](assets/screenshots/tickets.png)
+  <figcaption>The Tickets list: number, title, state, requester, target PC and age, grouped by who the ball is with; operator+ also gets a selection checkbox per row for bulk state changes.</figcaption>
+</figure>
+
+One row per ticket — number, title, a **pill** showing its state and, while it is blocked,
+who it is blocked on (e.g. "in progress · needs your approval"), the requester by name (or
+"alert" for a ticket with no owner), the target PC, and its age — sorted newest-first. The
+list is grouped into **needs you** / **waiting** / **working** / **new** / **done**, each
+with a live count from `GET /api/tickets/summary` — "needs you" is a ticket blocked on your
+approval or an operator, or a fresh alert-origin ticket nobody has looked at yet. The same
+count is what the **Tickets** tab's own badge shows (see [the header](#the-shell-header-global-controls)).
+**New ticket** opens one directly from the dashboard (title + optional details), which lands
+exactly like a Discord-opened one except it has no thread attached.
+
+A requester, assignee, or trail-row actor is always shown by **username** — an operator+
+account can resolve any other account's id to a name via `GET /api/users/directory` (a
+narrower projection than the superuser-only `GET /api/users`: just id, username, and role,
+nothing else). An id with no matching account (a deleted one) falls back to `#id`.
+
+For an operator+, each row carries a **selection checkbox** (plus a "select all" in the
+header, scoped to whatever the selected group currently shows). Selecting one or more
+tickets opens a **bulk-action bar** above the table: pick a target state and **Apply** to
+drive every selected ticket through the same [`/transition`](itsm.md) call the single-ticket
+actions use. A ticket for which that transition isn't legal from its current state (see the
+lifecycle in [Tickets & the Discord bot](itsm.md)) is skipped rather than failing the whole
+batch, and the result ("N updated, M failed") shows as a toast. `new` never appears as a
+bulk target — no transition ever lands on it.
+
+### Ticket detail
+
+<figure markdown>
+  ![A ticket's detail view: the paraphrase and the full event timeline.](assets/screenshots/ticket-detail.png)
+  <figcaption>Ticket detail: number, origin, priority, category, requester, assignee and target; the paraphrase and resolution; and the full event timeline — messages, an autonomous standard-change call, a held approval and its decision, and the closing state change.</figcaption>
+</figure>
+
+Reached by clicking a row, or `#/tickets/{id}` directly — this is the landing page every
+"see the dashboard" link kenny posts into Discord goes to, so it works from a cold load,
+not just from clicking through the list. It shows:
+
+- The **metadata** block — number, origin (`discord` / `dashboard` / `alert`), priority and
+  category (editable dropdowns, sourced from `GET /api/tickets/vocabulary`), requester,
+  assignee (both shown by username, not a bare id), target PC, and the created/updated
+  timestamps.
+- Kenny's running **summary**, and the **resolution** once one is set.
+- The **timeline**, above the composer — every `ticket_events` row in order, oldest first,
+  scrolling inside its own bounded panel rather than growing the whole page: state changes,
+  block/unblock changes (who the ticket started or stopped waiting on), messages (tagged by
+  who sent them, by username), tool calls (with their arguments, tagged by
+  [tier](tools.md)), approval/consent requests and their decisions, assignment changes, and
+  reassignment handoffs (including a *discarded* retarget attempt, which is recorded even
+  though nothing about the ticket changed). A **message** row renders its actual content
+  where the trail has it: kenny's replies through the same markdown renderer Ask kenny uses,
+  a human's dashboard message as plain escaped text. A Discord-origin family message still
+  shows only its existing one-line summary — no verbatim text is stored for it, unchanged
+  from before. A **held gate** (an open approval or consent request) gets inline
+  **Approve**/**Deny** buttons directly on its timeline row for an operator+, *and* — the
+  instant it's held, or on opening a ticket that's already waiting — the same wide
+  confirm-gate dialog [Ask kenny](#ask-kenny-chat-rail) uses, showing the exact tool and
+  frozen arguments. Unlike Ask kenny's version, a ticket's dialog is dismissible: it gets a
+  **"Decide later"** button rather than a deny, since a ticket's gate can legitimately wait
+  hours for a different operator than whoever has it open right now. All three paths —
+  inline row, popup, and the header's approvals badge — decide the same gate.
+- A **composer** below the timeline, with a mode toggle between **Ask kenny** and **add a
+  note** (operator+ only sees the toggle at all — a scoped `user` only ever gets "Ask
+  kenny"). "Add a note" keeps its existing operator+ gating; "Ask kenny" does not — any
+  `user` may chat on their own ticket the same way they always could over Discord. Sending
+  streams `POST /api/tickets/{tid}/chat/stream` through the same SSE event vocabulary Ask
+  kenny already renders, so a reply appears token-by-token in the timeline. An **"Enter to
+  send"** checkbox (off by default, remembered per browser) controls whether Enter sends the
+  message or inserts a newline — Cmd/Ctrl+Enter always sends regardless, and Shift+Enter
+  always inserts a newline regardless; it applies to "add a note" too, since both share the
+  same box. A checkbox — **"also post in the Discord thread"** — appears only when the
+  ticket has a bound thread, defaults off, and applies the same redaction a Discord-bound
+  reply has always gone through. The composer (its "Ask kenny" side) is disabled with a
+  visible reason when it can't be used right now: *"Ask kenny is not configured."*, *"This
+  ticket has no target machine."*, *"This ticket is closed."*, or, while a gate is open,
+  *"Waiting on a decision above."*
+- Every action button below is rendered from the ticket's own `allowed_transitions`/
+  `allowed_blocks`/`can_unblock` — an option only ever appears if the API would actually
+  accept it for the account that is looking at it.
+- **Reassign host** (operator+) — point the ticket at a different PC; the only path that
+  ever changes a ticket's target.
+- **Claim** / **Unclaim** (operator+) — set or clear yourself as the operator working the
+  ticket, independent of its state.
+- **Resolve** — mark the ticket done, from `new` or `in_progress` (including one blocked on
+  approval). Resolving one still sitting on a pending approval request denies that request
+  instead of leaving it open. An optional reason and an "also close now" checkbox that
+  chains straight into `closed` in the same action.
+- **Reopen** (operator+) — while still `resolved`, move it back to `in_progress`.
+- **Close ticket** — once `resolved`, close it outright rather than waiting for the
+  auto-close window.
+- **Cancel** — withdraw the ticket. Available to the ticket's own requester as well as an
+  operator+, from `new` or `in_progress`.
+- **Unblock** — clear whatever the ticket is currently blocked on. The requester sees this
+  for their own `user` block (answering kenny's question from the dashboard instead of
+  Discord); an operator sees it for any block.
+
+Resolving, cancelling or closing a ticket here — and the auto-close sweeper doing the same —
+also now posts a short message into the ticket's Discord thread (if it has one) and archives
+it at a terminal state; this used to be silent in Discord.
+
+The **New ticket** modal also gained an optional host picker, so a ticket opened straight
+from the dashboard can start with a real target machine instead of always unassigned —
+without one, the new composer's "Ask kenny" side has nothing to run against and stays
+disabled. See [`itsm.md`](itsm.md#what-is-recorded-and-what-is-not) for what the composer's
+messages record, and [ADR-0050](adr/0050-the-ticket-is-its-own-chat-surface.md) for why this
+is a second, equally-gated chat surface rather than an extension of Ask kenny.
+
+---
+
 ## The Flagged view
 
 <figure markdown>
@@ -371,7 +542,7 @@ losing your spot. **Back to fleet** returns to the Fleet tab.
   a freshly minted token) and **share link** produces a one-time, expiring link the target user
   opens without your login. On **Linux**, both produce the **one-line install command**
   (`curl -fsSL … | sudo sh`) — a nonce-gated, single-use script carrying the same freshly minted
-  one-time enrollment token (ADR-0038).
+  one-time enrollment token (ADR-0034).
 - On an existing PC, **reinstall** / **re-share** re-provision *that* agent id (rotating its
   token, so the old install stops reporting) — a ZIP/link on Windows, the one-line command on
   Linux — and **update** pushes a server-triggered self-update. **Update works on both Windows
@@ -402,24 +573,58 @@ by version, or view the full list on GitHub).
 
 ---
 
-## The Backup page
+## The Settings page
 
-*(superuser only, [`#/backup`](#the-shell-header-global-controls))*
+*([`#/settings/{section}`](#the-shell-header-global-controls) — superuser sees every
+section, an operator only [Updates](#updates) and [Auto-ticket rules](#auto-ticket-rules))*
+
+<figure markdown>
+  ![The Settings page, showing the sidebar and the Alerting & Digest section.](assets/screenshots/settings.png)
+  <figcaption>The Settings sidebar: catalog sections split into configurable and read-only (environment), plus Backup, Updates, Discord & Tickets, and Auto-ticket rules.</figcaption>
+</figure>
+
+A left sidebar picks one section at a time instead of one long scroll. The sidebar has two
+blocks — **configuration** (every group with at least one editable setting: Alerting &
+Digest, Web filter, Chat & AI, Logging, Backup, Updates, Discord & Tickets, plus
+[Auto-ticket rules](#auto-ticket-rules) — which has no settings-catalog group at all, but
+lives in this same block) and **environment, read-only** (Network & Process, Operator &
+Agent Auth, Telemetry limits, Agent distribution — process-bind values, wire-contract
+knobs, and secrets, none of them writable from here) — grouped exactly as `config.py`'s
+catalog. A **search** box above the sidebar filters by label, key, or help text across
+every section at once, so `#/settings` still doubles as the one place to Ctrl-F the whole
+runtime configuration even though only one section renders at a time.
+
+Within a section, every setting resolves **custom override → environment → coded
+default**. Each row shows its label, a badge for where its current value came from
+(`custom` / `env` / `default`), and — for a setting whose new value only takes effect on
+restart — a **restart** pill. Editable settings apply immediately (or on next restart, per
+that pill) and can be **reset** back to environment/default; a setting managed only via the
+environment (secrets, wire-contract knobs, process-bind options) is shown read-only, with a
+sensitive one displayed as *set* / *not set* rather than echoed back.
+
+`#/settings` (bare), `#/backup`, and `#/updates` all resolve into this page — old bookmarks
+and the Discord "see the dashboard" links keep working, landing on the matching section.
+
+### Backup
+
+<figure markdown>
+  ![The Backup section of Settings.](assets/screenshots/settings-backup.png)
+  <figcaption>Status, remote targets, and the backup list, followed by the Backup catalog group (interval, retention).</figcaption>
+</figure>
 
 kenny persists everything — telemetry, chat history, accounts, tokens, settings — in one
 SQLite file on the `/data` volume. Syncing that *live* file with an external tool (e.g.
 Syncthing) causes lock contention, because the sync tool watches and hashes a file the
-server is concurrently writing to. The Backup page is kenny's own answer: it produces
+server is concurrently writing to. The Backup section is kenny's own answer: it produces
 finished, static snapshot files that are safe to hand to any external sync/backup tool,
 and gives an operator a way to trigger, inspect, and restore them without touching the
-host filesystem by hand. See [ADR-0043](adr/0043-server-database-backup-and-restore.md)
+host filesystem by hand. See [ADR-0039](adr/0039-server-database-backup-and-restore.md)
 for the full rationale.
 
-- **Status card** — the most recent backup's age, the total count and size on disk, the
-  configured **interval** and **retention** (editable inline — the same live-apply
-  settings as the [Settings panel](#accounts-roles-the-user-menu)), and the local
-  `backups/` directory path. *Point your sync tool at this directory, never at
-  `kenny.sqlite` itself.*
+- **Status card** — the most recent backup's age, the total count and size on disk, and the
+  local `backups/` directory path. *Point your sync tool at this directory, never at
+  `kenny.sqlite` itself.* Interval and retention are set in the **Backup** catalog group
+  below the status card, not as separate inline fields.
 - **Backup now** — triggers an out-of-schedule snapshot immediately (`VACUUM INTO`, so it
   never blocks concurrent reads/writes).
 - **Remote targets** — optional, operator-configured push destinations in addition to the
@@ -438,15 +643,15 @@ for the full rationale.
       restored data automatically (container restart policy).
     - **Delete** removes a snapshot from one or all targets.
 
----
+### Updates
 
-## The Updates page
-
-*(operator+, [`#/updates`](#the-shell-header-global-controls))*
+*(operator+ — one of the two sections an operator's sidebar shows (the other is
+[Auto-ticket rules](#auto-ticket-rules)); the catalog group at the bottom is superuser
+only, so an operator sees this section without it)*
 
 kenny checks for newer agent releases (GitHub Releases) and a newer server image (GHCR,
 read-only) on a schedule and shows both here — see
-[ADR-0044](adr/0044-scheduled-update-detection-and-operator-approved-rollout.md) for the
+[ADR-0040](adr/0040-scheduled-update-detection-and-operator-approved-rollout.md) for the
 rationale. Detection never applies anything by itself; every rollout is an explicit
 operator action.
 
@@ -454,9 +659,9 @@ operator action.
   exists: a **digest-pinned** `docker pull …@sha256:… && docker compose up -d` for you to
   run. kenny cannot replace its own running container, so this stays a shown command rather
   than an automated pull.
-- **Agent fleet card** — the latest known agent version, the **check interval** (editable
-  inline, the same live-apply settings as the [Settings panel](#accounts-roles-the-user-menu)),
-  a **check now** button, and the **auto-apply on connect** toggle.
+- **Agent fleet card** — the latest known agent version, whether auto-apply-on-connect is
+  on, and a **check now** button. Check interval and auto-apply-on-connect are set in the
+  **Updates** catalog group below (superuser only).
 - **Rollout campaign card** — with no active campaign, **approve rollout** pins the latest
   known agent version into a new campaign. Once approved, the campaign shows its pinned
   version, whether on-connect auto-apply is on, and when it expires, plus:
@@ -464,13 +669,60 @@ operator action.
       eligible agent immediately.
     - **Revoke** — stops future pushes under this campaign (an update already in flight to
       an agent cannot be recalled).
-    - A per-agent table: current version, online/offline, and status (**updated**,
-      **pending**, **held** after repeated refusal — e.g. the agent's local remote-control
-      switch is off — or **n/a** for an (os, arch) the release doesn't cover).
+    - A per-agent table: current version, **channel** (built / desired), online/offline, and
+      status (**updated**, **pending**, **held** after repeated refusal — e.g. the agent's
+      local remote-control switch is off — or **n/a** for an (os, arch, channel) the release
+      doesn't cover).
 
 A campaign always pins one exact version at approval time: a later check finding something
 newer never changes what an already-approved campaign pushes — it just becomes a new,
 separately-approvable candidate.
+
+#### Dev channel (ADR-0048)
+
+Alongside the stable server/agent cards, the section shows a **latest dev** row for each
+and a second, independent **rollout campaign (dev)** card — a stable and a dev campaign can
+be active at the same time, since they target different agents. The per-agent channel
+column shows the agent's **built** channel (read-only — what the connected binary actually
+is, `stable` unless it was built with `KENNY_AGENT_CHANNEL=dev`) next to a **desired**
+channel selector an operator sets per agent. A dev campaign's eligibility — and what an
+on-connect auto-apply pushes — is decided by an agent's *desired* channel, not its
+currently-built one, so flipping an agent to `dev` and approving a dev campaign is what
+moves it, one PC at a time, onto the dev stream while the rest of the fleet stays on
+stable.
+
+### Discord & Tickets
+
+<figure markdown>
+  ![The Discord panel in Settings.](assets/screenshots/discord-settings.png)
+  <figcaption>The Discord panel: connection status, linked accounts, pending link claims, and the guild-member picker.</figcaption>
+</figure>
+
+Below the Discord & Tickets catalog group, superusers get a **Discord** panel: a
+connection-status pill, the table of linked accounts (with an unlink button), the
+**pending claims** table for enrollment path A (`/link` in Discord — pick the kenny account
+it belongs to and confirm), and **Pick a guild member** for enrollment path B (a direct
+picker from the server's member list). See [Enrollment: linking a Discord
+account](itsm.md#enrollment-linking-a-discord-account) for what each path means and why the
+mapping matters. On a server with no Discord identity store configured, the panel says so
+instead of erroring.
+
+### Auto-ticket rules
+
+*(operator+ — like Updates, this section has no settings-catalog group behind it, so it's
+the same for every operator+ role)*
+
+Which alerts open a ticket automatically is operator policy, not a fixed rule — see
+[Alerting → which
+events open a ticket is
+configurable](alerting.md#which-events-open-a-ticket-is-configurable) for the full
+model. This section lists the operator's exceptions to the default: by default every
+genuine alert opens a ticket and nothing else does, and each rule here either narrows that
+(`never` on a noisy offline PC) or widens it (`open_all` on an inventory change, e.g. a new
+local admin account). A rule names an event type, an optional section and host, and a
+decision (`open` / `open if crit` / `never`); rules are most-specific-wins, so a
+host-scoped rule beats a fleet-wide one. Removing a fleet-wide rule asks for confirmation,
+since it changes behaviour on every PC.
 
 ---
 
@@ -490,8 +742,10 @@ separately-approvable candidate.
   console is legible without colour.
 - **Deep links** — every view is a URL hash you can bookmark or share (`#/overview`,
   `#/fleet`, `#/activity/audit`, `#/activity/events`, `#/flagged/warn`, `#/flagged/crit`,
-  `#/settings`, `#/backup`, `#/updates`).
-- **Keyboard & motion** — Escape closes modals and the copilot drawer; animations respect
+  `#/tickets`, `#/tickets/{id}`, `#/settings/{section}`). `#/backup` and `#/updates` still
+  resolve too, straight into the matching Settings section, for old bookmarks and the
+  Discord "see the dashboard" links.
+- **Keyboard & motion** — Escape closes modals and the Ask kenny drawer; animations respect
   `prefers-reduced-motion`.
 
 ---
@@ -501,4 +755,6 @@ separately-approvable candidate.
 - **[User guide](user-guide.md)** — the common operator workflows.
 - **[Telemetry reference](telemetry.md)** — every section and its health rule.
 - **[Tool reference](tools.md)** — the capability and orchestration tools.
+- **[Tickets & the Discord bot](itsm.md)** — what a ticket is, its lifecycle, and the
+  authorization model behind it.
 - **[Parental controls](parental-controls.md)** · **[Alerting & digests](alerting.md)**.

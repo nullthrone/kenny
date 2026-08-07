@@ -6,8 +6,8 @@ dashboard routinely. This page covers the **push channel** that reaches the oper
 phone when something changes for the worse (or recovers), the **change and forecast**
 findings that ride the same channel, and the **weekly digest**. It is entirely
 server-side: no protocol bump, no agent involvement, thresholds stay in `health_rules.py`
-(see [ADR-0029](adr/0029-push-alerting-ntfy-webhook-and-weekly-digest.md) and
-[ADR-0030](adr/0030-server-side-diff-and-trend-engine.md)).
+(see [ADR-0027](adr/0027-push-alerting-ntfy-webhook-and-weekly-digest.md) and
+`diffs.py` / `trends.py`).
 
 ## Push alerting
 
@@ -26,7 +26,7 @@ The persisted flap-suppression state means a server restart never re-fires alert
 conditions that were already notified.
 
 !!! note "Reliability alarm suppression also dampens this loop"
-    An operator-suppressed reliability event pattern (ADR-0045, issue #166) is excluded from
+    An operator-suppressed reliability event pattern (ADR-0041, issue #166) is excluded from
     the `reliability` section's severity scoring wherever that scoring runs — including this
     push-alert loop and the weekly digest below, not just the dashboard. Muting a known-noisy
     Windows quirk (e.g. a `CryptSvc` pattern rotating hundreds of times a day) stops it from
@@ -48,6 +48,45 @@ events & logs** view with no extra UI plumbing.
 ![Emitted alerts and server/agent events in the Activity events and logs view.](assets/screenshots/activity-events.png)
 <figcaption>Emitted alerts and server/agent events in the Activity → events & logs view.</figcaption>
 </figure>
+
+## An alert can open a ticket
+
+A genuine alert (not a recovery, not the digest) can also open a [ticket](itsm.md) — the
+same ITSM record a Discord conversation or a dashboard action produces, so a
+Defender-disabled or a disk-forecast notification arrives with somewhere to work it rather
+than just a push you have to remember. This runs **after** delivery and is strictly
+best-effort: a failure to open the ticket is logged and swallowed, never lets a failing
+side effect make an alert late or lost — alerting must not become less reliable by gaining
+one.
+
+An alert-origin ticket has **no requester** — it belongs to the fleet, not a person — so it
+is operator-only in the [Tickets tab](dashboard.md#the-tickets-tab): a scoped `user` never
+sees it. It starts life pinned to the alerting agent, at `high` priority for a `high`/`urgent`
+notification and `normal` otherwise, with the alert's own message as its opening summary.
+
+### Which events open a ticket is configurable
+
+By default, every genuine alert — a health escalation, an agent going offline, a disk-fill
+forecast — opens a ticket, and a recovery, an inventory change, and the weekly digest never
+do. An operator can narrow or widen that per fleet or per host from the **Auto-ticket
+rules** section of [Settings](dashboard.md#auto-ticket-rules), or via the `ticket_rule_*`
+MCP tools. Each rule names an event type (`health` / `offline` / `disk_forecast` /
+`change`), an optional section and host, and a decision: `open_all` (always), `open_crit`
+(only when the subject is `crit`) or `never`.
+
+Two practical cases this solves:
+
+- **A family PC that is simply switched off overnight** re-opens an offline ticket every
+  cooldown window. A `never` rule on `offline` (fleet-wide or for just that host) stops the
+  tickets without silencing the offline *alert* itself — delivery and the events-table audit
+  trail are unaffected.
+- **Inventory changes never open a ticket by default**, even though a new local administrator
+  account is exactly the kind of thing worth a ticket. An `open_all` rule on `change` with
+  section `local_accounts` promotes it.
+
+Recoveries and the weekly digest can never open a ticket, no matter what rule is written — the
+rule engine only ever narrows or widens *genuine alerts*, and running the empty rule table
+through the same decision path reproduces this section's coded default exactly.
 
 ## Change notifications
 
@@ -105,13 +144,14 @@ time.
 
 ## Notification channels
 
-Delivery goes through two best-effort channels, **both off unless configured** (a single
+Delivery goes through three best-effort channels, **all off unless configured** (a single
 HTTP POST each):
 
 | Channel | Configure with | Payload |
 |---------|----------------|---------|
 | **ntfy** | `KENNY_NTFY_URL` (+ optional `KENNY_NTFY_TOKEN` bearer) | POST body to an ntfy topic; title/priority/tags as headers — works out of the box with the ntfy phone apps |
-| **Generic webhook** | `KENNY_WEBHOOK_URL` | JSON POST (`kind`, `title`, `body`, `priority`, `tags`, `agent_id`, `at`) |
+| **Generic webhook** | `KENNY_WEBHOOK_URL` | JSON POST (`kind`, `title`, `body`, `priority`, `tags`, `agent_id`, `event_type`, `sections`, `at`) |
+| **Discord** | `KENNY_DISCORD_WEBHOOK_URL` | JSON POST of a Discord embed — title, body as the description, priority as the embed colour, and `kind` / `agent_id` as fields |
 
 Delivery is strictly best-effort: send errors are logged and swallowed, a dead target
 never stalls or kills the loop. **With no channel configured, evaluation still runs and
@@ -132,11 +172,14 @@ Alerting environment variables (see [`setup.md`](setup.md) for the full list):
 | `KENNY_NTFY_URL` | *(empty)* | ntfy topic URL; empty = channel off |
 | `KENNY_NTFY_TOKEN` | *(empty)* | Optional ntfy bearer token |
 | `KENNY_WEBHOOK_URL` | *(empty)* | Generic JSON webhook URL; empty = channel off |
+| `KENNY_DISCORD_WEBHOOK_URL` | *(empty)* | Discord webhook URL; empty = channel off |
 
 ## See also
 
 - [`setup.md`](setup.md) — hosting, TLS, and the full environment-variable list
 - [`dashboard.md`](dashboard.md) — the Overview KPIs and the per-agent AI Forecast card
 - [`telemetry.md`](telemetry.md) — the sections and health rules these alerts evaluate
-- [ADR-0029](adr/0029-push-alerting-ntfy-webhook-and-weekly-digest.md) — push alerting & weekly digest
-- [ADR-0030](adr/0030-server-side-diff-and-trend-engine.md) — server-side diff & trend engine
+- [`itsm.md`](itsm.md) — tickets, the Discord bot, and what an alert-opened ticket looks like
+- [ADR-0027](adr/0027-push-alerting-ntfy-webhook-and-weekly-digest.md) — push alerting & weekly digest
+- `kenny-server/kenny_server/ticket_rules.py` — the auto-ticket rule model, and why an
+  empty rule table reproduces the coded default

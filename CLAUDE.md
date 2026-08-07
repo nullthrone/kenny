@@ -16,19 +16,14 @@ not duplicated here. Start with `docs/adr/0001-use-madr-and-record-decisions.md`
 
 ## When (not) to write an ADR
 
-Write an ADR when a decision is **architectural** — hard to reverse, cross-cutting, or
-moving a structural boundary: language/runtime choices, the wire contract or
-`PROTOCOL_VERSION`, the network/trust topology, the auth model, the storage/observability
-model, the deployment/distribution shape, or the agent/session model.
+An ADR is the only kind of record kenny keeps. Write one when the change moves a structural
+boundary — language/runtime, the wire contract's shape, the network/trust topology, the auth
+model, the storage/observability model, the deployment/distribution shape, the agent/session
+model — and name it in the record's `Boundary moved:` line.
 
-Do **not** write an ADR for an **implementation detail** — a localized coding choice, a
-bug fix, a refactor, dashboard/UI layout, a test/CI tweak, naming, or anything contained
-to one file/component that leaves the contract and the boundaries unchanged. Record those
-in the commit message and, where it helps a reader, a code comment.
-
-Rule of thumb: if it touches `docs/protocol.md`/fixtures, moves both server and agent at
-once, or a maintainer would be surprised to find it silently reverted — it's an ADR. If
-reverting it is a routine pull request, it isn't.
+If you cannot name one it is not an ADR: a localized choice, a bug fix, a refactor, UI
+layout, a test/CI tweak, naming, a dependency and an additive contract field all belong in
+the code and the commit message. Records are ~1 page, numbered gap-free `0001..N`.
 
 ## Repo map
 
@@ -46,16 +41,26 @@ reverting it is a routine pull request, it isn't.
   language. Change `docs/protocol.md` + `docs/fixtures/` first, then both sides.
 - **Python and Rust must not drift.** Both round-trip the golden fixtures; run
   `/contract-check` after touching the protocol.
+- **Every seam two places must agree on gets a test that fails when they diverge.**
+  The contract is the best-known seam, not the only one: the server's tool tiers against
+  the agent's `is_mutating`, the runtime extras in `pyproject.toml` against what the
+  `Dockerfile` installs, a module against the interface its caller assumed. Test the seam
+  **joined** — a test that passes because the other half is not wired up yet is not
+  evidence that the two halves fit.
 - **Record architectural decisions as an ADR** (`/new-adr`) — see *When (not) to write an
   ADR* above. Architecture explanations belong in ADRs, not in any CLAUDE.md.
 - **`#[cfg(windows)]` discipline** in the agent: Windows-only code is gated and has a
   portable fallback so CI/dev on Linux stays green.
-- **This file carries no volatile or redundant content.** If a line can go stale when
-  code or architecture changes, it belongs at its source (ADR or contract), not here.
+- **Every document states what holds now.** Write each line so it reads correctly to
+  someone who does not know what it replaced: the rule, the constraint, the trade-off
+  that still binds. What changed and why it moved is the commit message's job, and for a
+  boundary the ADR's. A line that can go stale when code or architecture changes belongs
+  at its source (ADR or contract), not in a CLAUDE.md.
 
 ## Build & test
 
-- Server: `cd kenny-server && pytest`
+- Server: `cd kenny-server && pytest` — exactly that; `python -m pytest` adds the working
+  directory to `sys.path` and hides import errors CI will hit.
 - Agent: `cd kenny-agent && cargo test && cargo build`
 - End-to-end smoke test: `/e2e`
 

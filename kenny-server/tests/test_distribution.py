@@ -115,7 +115,7 @@ def test_sha256_helper(tmp_path):
     assert _sha256_file(str(p)) == hashlib.sha256(BINARY_BYTES).hexdigest()
 
 
-# -- enrollment endpoint (ADR-0023) -----------------------------------------
+# -- enrollment endpoint (ADR-0022) -----------------------------------------
 
 
 def _agent_pubkey() -> str:
@@ -215,7 +215,7 @@ def test_agent_binary_status_manual(tmp_path, binary):
         assert body["source"] == "manual"
 
 
-# -- Linux agent distribution (ADR-0035 Phase 4 / ADR-0038) -----------------
+# -- Linux agent distribution (ADR-0031 Phase 4 / ADR-0034) -----------------
 
 
 @pytest.fixture
@@ -278,7 +278,7 @@ def test_install_sh_omits_absent_pubkey_and_token():
 
 
 def test_install_sh_pinned_arch_skips_uname_detection():
-    """An operator-pinned arch (ADR-0040) is emitted literally; the script never
+    """An operator-pinned arch (ADR-0036) is emitted literally; the script never
     shells out to `uname -m` to decide it."""
 
     script = _install_sh(
@@ -364,7 +364,7 @@ def test_share_link_linux_oneliner_and_install_flow(tmp_path, linux_binary):
 
 
 def test_share_link_pinned_arch_survives_mint_to_fetch_gap(tmp_path, monkeypatch):
-    """An operator-pinned ``?arch=`` (ADR-0040) rides on both the install and the
+    """An operator-pinned ``?arch=`` (ADR-0036) rides on both the install and the
     binary nonce, so `public_install` recovers it at fetch time and the script it
     renders skips `uname -m` detection — proving the pin, not `uname`, decided it."""
 
@@ -530,7 +530,7 @@ def test_agent_binary_status_by_os(tmp_path, linux_binary, monkeypatch):
 
 
 def test_agent_binary_status_targets_reflect_per_arch_availability(tmp_path, monkeypatch):
-    """The dashboard's arch dropdown (ADR-0040) is driven by ``targets``: every
+    """The dashboard's arch dropdown (ADR-0036) is driven by ``targets``: every
     combination we could ever ship, each flagged by whether a binary is actually
     configured for it right now."""
 
@@ -549,6 +549,110 @@ def test_agent_binary_status_targets_reflect_per_arch_availability(tmp_path, mon
             ("linux", "x86_64"): True,
             ("linux", "aarch64"): False,
         }
+
+
+# -- dev channel (ADR-0048) ---------------------------------------------------
+
+
+def test_agent_binary_path_dev_resolves_channel_cache(tmp_path, monkeypatch):
+    monkeypatch.delenv("KENNY_AGENT_BINARY", raising=False)
+    monkeypatch.delenv("KENNY_AGENT_BINARY_CACHE", raising=False)
+    monkeypatch.setenv("KENNY_DB_PATH", str(tmp_path / "kenny.sqlite"))
+    # nothing cached yet
+    assert agent_binary_path(channel="dev") is None
+
+    dev_cache = tmp_path / "kenny-agent-dev.exe"
+    dev_cache.write_bytes(LINUX_BYTES)
+    assert agent_binary_path(channel="dev") == str(dev_cache)
+    # stable path is unaffected by the dev cache existing
+    assert agent_binary_path() is None
+
+
+def test_agent_binary_path_dev_ignores_stable_manual_override(tmp_path, monkeypatch):
+    """Dev has no manual-placement env in this iteration; KENNY_AGENT_BINARY
+    (stable's override) must never leak into the dev resolution."""
+
+    monkeypatch.setenv("KENNY_DB_PATH", str(tmp_path / "kenny.sqlite"))
+    manual = tmp_path / "manual.exe"
+    manual.write_bytes(BINARY_BYTES)
+    monkeypatch.setenv("KENNY_AGENT_BINARY", str(manual))
+    # stable resolves the manual override...
+    assert agent_binary_path() == str(manual)
+    # ...but dev does not, even though nothing is cached at the dev path
+    assert agent_binary_path(channel="dev") is None
+
+    dev_cache = tmp_path / "kenny-agent-dev.exe"
+    dev_cache.write_bytes(LINUX_BYTES)
+    assert agent_binary_path(channel="dev") == str(dev_cache)
+
+
+def test_agent_binary_path_dev_linux_per_arch(tmp_path, monkeypatch):
+    monkeypatch.delenv("KENNY_AGENT_BINARY_LINUX", raising=False)
+    monkeypatch.delenv("KENNY_AGENT_BINARY_LINUX_AARCH64", raising=False)
+    monkeypatch.setenv("KENNY_DB_PATH", str(tmp_path / "kenny.sqlite"))
+    assert agent_binary_path("linux", "x86_64", "dev") is None
+    dev_lx = tmp_path / "kenny-agent-linux-x86_64-dev"
+    dev_lx.write_bytes(LINUX_BYTES)
+    assert agent_binary_path("linux", "x86_64", "dev") == str(dev_lx)
+    # the stable linux cache is a distinct path, unaffected
+    assert agent_binary_path("linux", "x86_64") is None
+
+
+def test_agent_binary_status_dev_sibling_in_status_route(tmp_path, monkeypatch):
+    monkeypatch.delenv("KENNY_AGENT_BINARY", raising=False)
+    monkeypatch.setenv("KENNY_AGENT_BINARY_CACHE", str(tmp_path / "nope.exe"))
+    monkeypatch.setenv("KENNY_DB_PATH", str(tmp_path / "dist.sqlite"))
+    dev_cache = tmp_path / "kenny-agent-dev.exe"
+    dev_cache.write_bytes(BINARY_BYTES)
+    app = _app(tmp_path)
+    with TestClient(app) as c:
+        body = c.get("/api/agent-binary", headers=_bearer(app)).json()
+        # the existing stable response shape is untouched...
+        assert body["available"] is False
+        # ...and the dev sibling is additive
+        assert body["dev"]["available"] is True
+        assert body["dev"]["by_os"]["windows"] is True
+
+
+def test_agent_binary_status_dev_absent_when_no_dev_cache(tmp_path, monkeypatch):
+    monkeypatch.delenv("KENNY_AGENT_BINARY", raising=False)
+    monkeypatch.setenv("KENNY_AGENT_BINARY_CACHE", str(tmp_path / "nope.exe"))
+    monkeypatch.setenv("KENNY_DB_PATH", str(tmp_path / "dist2.sqlite"))
+    app = _app(tmp_path)
+    with TestClient(app) as c:
+        body = c.get("/api/agent-binary", headers=_bearer(app)).json()
+        assert body["dev"]["available"] is False
+
+
+def test_trigger_update_uses_agent_desired_channel(tmp_path, monkeypatch):
+    """A manual 'update now' for a dev-desired agent pulls the dev binary."""
+
+    monkeypatch.setenv("KENNY_PUBLIC_URL", "https://kenny.example.com")
+    monkeypatch.setenv("KENNY_AGENT_BINARY_CACHE", str(tmp_path / "nope.exe"))
+    monkeypatch.delenv("KENNY_AGENT_BINARY", raising=False)
+    monkeypatch.setenv("KENNY_DB_PATH", str(tmp_path / "dist3.sqlite"))
+    # Only a dev binary is configured (no stable one at all).
+    dev_cache = tmp_path / "kenny-agent-dev.exe"
+    dev_cache.write_bytes(BINARY_BYTES)
+    app = _app(tmp_path)
+    reg = app.state.registry
+
+    async def _noop(_frame):
+        return None
+
+    reg.register_signed_async("dev-pc", {"os": "windows"}, _noop)
+    reg.mark_offline("dev-pc")
+    with TestClient(app) as c:
+        h = _bearer(app)
+        # flip this agent's desired channel to dev via the dashboard route
+        r = c.put("/api/agent/dev-pc/channel", headers=h, json={"channel": "dev"})
+        assert r.status_code == 200, r.text
+        assert r.json()["desired_channel"] == "dev"
+
+        # 502 (agent offline) not 503 (binary missing) => the dev binary was
+        # selected, proving the desired channel drove resolution.
+        r2 = c.post("/api/agents/dev-pc/update", headers=h)
+        assert r2.status_code == 502
 
 
 def test_agent_binary_status_requires_auth(tmp_path, binary):

@@ -98,6 +98,22 @@ _The Overview dashboard — see the **[dashboard reference](docs/dashboard.md)**
   `agent_health` · `agent_snapshot`
 - Windows-only tools have **portable Linux fallbacks**, so the agent builds and runs in CI/dev.
 
+### Family self-service via Discord (simplified ITSM)
+- An optional **Discord bot** (its own application — no shared/hosted bot exists): a family
+  member `@mentions` it and kenny opens a private thread that behaves as a **ticket**,
+  diagnosing on that person's own PC and keeping a paraphrased record you read in the new
+  **Tickets tab**.
+- **Three tool tiers**, not two: read-only runs, curated `standard_change` steps (flush DNS,
+  open remote help) run **autonomously** with a trail row, everything else holds for your
+  **operator approval** — while the dashboard chat still confirms both change tiers exactly
+  as before. Privacy-sensitive tools (screen, files, browsing history) additionally need the
+  **affected person's own consent**, a separate axis from authorization.
+- A Discord account only ever reaches the PCs you assign it, via an explicit enrollment
+  mapping (self-service `/link` + your confirmation, or you pick them from the guild
+  member list directly) and an optional per-account **capability profile** that narrows
+  which tools it may use. An alert can open a ticket too. See
+  **[Tickets & the Discord bot](docs/itsm.md)**.
+
 ### Two ways to drive it with Claude
 - **Local MCP client** → `/mcp` (FastMCP Streamable HTTP), connected via the built-in **OAuth 2.1**
   flow (add-custom-connector → sign in → consent); a per-user access token works for clients that

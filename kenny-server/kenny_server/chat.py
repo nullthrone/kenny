@@ -1,8 +1,8 @@
-"""Server-hosted Claude chat: drive a tool-use loop over kenny capabilities.
+"""Server-hosted Claude chat: the dashboard's surface over the tool-use loop.
 
 The operator chats with Claude in the web UI; Claude runs kenny tools on the
-fleet. There is no local Claude Desktop — this module owns the Anthropic
-tool-use loop server-side.
+fleet. There is no local Claude Desktop — this module owns the *dashboard's*
+half of the Anthropic tool-use loop; the loop itself lives in ``toolloop.py``.
 
 Two tool families are exposed to Claude (see ``tools.py``):
 
@@ -11,10 +11,13 @@ Two tool families are exposed to Claude (see ``tools.py``):
 * **Capability tools** — every key in :data:`~kenny_server.tools.CAPABILITY_TOOLS`
   — forwarded to the active agent via ``tunnel.send_request``.
 
-**Confirm-gate.** Tools are classified READ_ONLY vs STATE_CHANGING. Read-only
-tools execute automatically. A state-changing ``tool_use`` does *not* execute:
-the loop pauses, surfaces a pending-confirmation item to the UI, and only runs
-after an explicit operator confirm (default is deny/confirm, never auto-allow).
+**Confirm-gate.** Tools are classified in ``tool_classes.py`` as read-only or
+one of two change tiers. Read-only tools execute automatically. On *this*
+surface both change tiers are held: a state-changing ``tool_use`` does not
+execute — the loop pauses, surfaces a pending-confirmation item to the UI, and
+only runs after an explicit operator confirm (default is deny/confirm, never
+auto-allow). The tier is a property of the tool; holding it is a property of
+this surface, and :class:`FleetPolicy` is where that is said.
 
 The Anthropic client is injected (``run_turn(..., client=...)``) so tests pass a
 fake client and no real API key is required. Prompt caching is applied to the
@@ -30,97 +33,42 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
 
-from .registry import AgentRegistry
-from .store import ChatHistoryStore, TelemetryStore
-from .tools import (
-    CAPABILITY_TOOLS,
-    CallLog,
-    ScreenshotStore,
-    build_health,
+from . import tool_classes
+from .store import ChatHistoryStore
+from .tool_classes import (
+    READ_ONLY,
+    classify,
+    is_state_changing,  # noqa: F401 (re-export)
 )
-from .tunnel import AgentTunnel, ToolError
+from .toolloop import (
+    _MAX_TOOL_RESULT_CHARS,  # noqa: F401 (re-export)
+    _latest_text,  # noqa: F401 (re-export)
+    _resolve_chat_target,
+    _text_of,
+    _tool_result_block,  # noqa: F401 (re-export)
+    _tool_result_image,
+    SERVER_TOOLS,
+    Allow,
+    GateDecision,
+    Hold,
+    PendingCall,
+    ToolExecutor as ChatExecutor,
+    apply_confirmation,
+    build_tool_schemas,
+    drive_events,
+)
+from .tools import CAPABILITY_TOOLS  # noqa: F401 (re-export)
+
+# Back-compat re-exports. ``ChatExecutor``, ``PendingCall``, the tool-schema
+# builder, the result cap and the block helpers moved to ``toolloop.py`` when the
+# loop was made surface-independent; importers (``webui``, ``recommend``, tests)
+# keep addressing them here. ``STATE_CHANGING_TOOLS`` is now *derived* from the
+# tier map rather than hand-maintained, so the two can no longer disagree.
+STATE_CHANGING_TOOLS: frozenset[str] = frozenset(
+    t for t, c in tool_classes.TOOL_CLASSES.items() if c != tool_classes.READ_ONLY
+)
 
 DEFAULT_MODEL = "claude-sonnet-4-6"
-_MAX_ITERATIONS = 16
-# Cap the serialized size of a single tool result fed back to the model. Agent
-# telemetry, fs_read file contents, and command output are attacker-influenceable
-# (a compromised agent controls them), so bound the volume to limit both context
-# blow-up and the surface for second-order prompt injection (CWE-400 / CWE-94 adj.).
-_MAX_TOOL_RESULT_CHARS = 100_000
-
-# Server-only tools and their JSON-schema arg keys. These read the registry /
-# store and are always READ_ONLY.
-SERVER_TOOLS: dict[str, dict[str, Any]] = {
-    "list_agents": {
-        "description": "List known agents with online state and rolled-up health.",
-        "properties": {},
-        "required": [],
-    },
-    "select_agent": {
-        "description": (
-            "Set the active agent that capability tools forward to. "
-            "Call this before any capability tool."
-        ),
-        "properties": {"id": {"type": "string", "description": "Agent id to make active."}},
-        "required": ["id"],
-    },
-    "fleet_overview": {
-        "description": "Per-agent rolled-up health for the whole fleet.",
-        "properties": {},
-        "required": [],
-    },
-    "agent_health": {
-        "description": "Per-section health status/summary for one agent.",
-        "properties": {"id": {"type": "string", "description": "Agent id."}},
-        "required": ["id"],
-    },
-    "agent_snapshot": {
-        "description": "Latest stored telemetry snapshot for an agent (optionally one section).",
-        "properties": {
-            "id": {"type": "string", "description": "Agent id."},
-            "section": {"type": "string", "description": "Optional single section name."},
-        },
-        "required": ["id"],
-    },
-}
-
-# Capability tools that change state and therefore require operator confirmation.
-# Everything else (including all server-only tools) is read-only.
-STATE_CHANGING_TOOLS: frozenset[str] = frozenset(
-    {
-        "powershell_exec",
-        "shell_exec",
-        "winget_install",
-        "winget_uninstall",
-        "winget_update",
-        "net_dns_flush",
-        "net_adapter_reset",
-        # remotehelp_start/_stop open/close Quick Assist on the user's desktop and
-        # are classified mutating on the agent (control.rs::is_mutating); gate them
-        # here too so the chat confirm-gate is the single source of truth (ADR-0022).
-        "remotehelp_start",
-        "remotehelp_stop",
-        "agent_update",  # reserved for a future capability
-        # Parental-controls blocking (ADR-0026): apply/clear are mutating on the
-        # agent (refused with `disabled` under the kill switch); webfilter_set /
-        # webfilter_push change server-held state or push a new block list.
-        "webfilter_apply",
-        "webfilter_clear",
-        "webfilter_set",
-        "webfilter_push",
-        # Reliability alarm suppression (ADR-0045 / issue #166): both mutate
-        # server-held state (a rule that changes health scoring fleet-wide or
-        # per-host); listing is read-only and stays out of this set.
-        "reliability_suppression_add",
-        "reliability_suppression_remove",
-    }
-)
-
-
-def is_state_changing(tool: str) -> bool:
-    """True if ``tool`` must be confirmed by the operator before executing."""
-
-    return tool in STATE_CHANGING_TOOLS
 
 
 _SYSTEM_PROMPT = (
@@ -155,78 +103,6 @@ _SYSTEM_PROMPT = (
 )
 
 
-def _capability_schema(tool: str, arg_keys: list[str]) -> dict[str, Any]:
-    """Build a JSON-schema ``input_schema`` from a CAPABILITY_TOOLS arg list.
-
-    Arg keys ending in ``?`` are optional; ``timeout_s`` is always optional.
-    All args are strings except the numeric ``timeout_s`` and ``count``.
-    """
-
-    properties: dict[str, Any] = {}
-    required: list[str] = []
-    for raw in arg_keys:
-        optional = raw.endswith("?")
-        key = raw[:-1] if optional else raw
-        if key in ("timeout_s", "count"):
-            properties[key] = {"type": "integer"}
-        elif key == "sections":
-            properties[key] = {"type": "array", "items": {"type": "string"}}
-        else:
-            properties[key] = {"type": "string"}
-        if not optional:
-            required.append(key)
-    # Every forwarded call accepts an optional per-call timeout, and an optional
-    # agent_id override (ADR-0042): the chat session already tracks a selected
-    # agent (the dashboard's "context" pill), so this is only needed to target a
-    # different host for one call; omitted, it falls back to the session's
-    # selection and fails closed if neither is set.
-    properties.setdefault("timeout_s", {"type": "integer"})
-    properties.setdefault("agent_id", {"type": "string"})
-    return {"type": "object", "properties": properties, "required": required}
-
-
-def build_tool_schemas() -> list[dict[str, Any]]:
-    """Anthropic tool schemas for every server-only + capability tool.
-
-    Deterministic order (server tools first, then capability tools in catalog
-    order) so the cached prompt prefix is stable across requests.
-    """
-
-    schemas: list[dict[str, Any]] = []
-    for name, spec in SERVER_TOOLS.items():
-        gated = (
-            " (state-changing — requires operator confirmation)" if is_state_changing(name) else ""
-        )
-        schemas.append(
-            {
-                "name": name,
-                "description": spec["description"] + gated,
-                "input_schema": {
-                    "type": "object",
-                    "properties": spec["properties"],
-                    "required": spec["required"],
-                },
-            }
-        )
-    for name, arg_keys in CAPABILITY_TOOLS.items():
-        gated = (
-            " (state-changing — requires operator confirmation)" if is_state_changing(name) else ""
-        )
-        arg_note = f" (args: {', '.join(arg_keys)})" if arg_keys else ""
-        desc = (
-            f"Run `{name}` on the currently selected agent{arg_note}. "
-            f"Pass agent_id to target a different host for this one call.{gated}"
-        )
-        schemas.append(
-            {
-                "name": name,
-                "description": desc,
-                "input_schema": _capability_schema(name, arg_keys),
-            }
-        )
-    return schemas
-
-
 # Build once; the schema set is stable for the process lifetime.
 _TOOL_SCHEMAS = build_tool_schemas()
 
@@ -252,7 +128,7 @@ def _cached_tools() -> list[dict[str, Any]]:
     return tools
 
 
-def _context_note(session: "ChatSession") -> list[dict[str, Any]]:
+def _context_note(session: "FleetSession") -> list[dict[str, Any]]:
     """An extra, uncached system block naming the dashboard's selected agent.
 
     The dashboard shows the operator a "context: <agent>" pill and scopes
@@ -281,26 +157,7 @@ def _context_note(session: "ChatSession") -> list[dict[str, Any]]:
 
 
 @dataclass
-class PendingCall:
-    """A state-changing tool call awaiting operator confirmation."""
-
-    id: str
-    tool_use_id: str
-    tool: str
-    args: dict[str, Any]
-    agent_id: str | None
-
-    def to_public(self) -> dict[str, Any]:
-        return {
-            "id": self.id,
-            "tool": self.tool,
-            "args": self.args,
-            "agent_id": self.agent_id,
-        }
-
-
-@dataclass
-class ChatSession:
+class FleetSession:
     """Server-side conversation state for one chat session."""
 
     id: str
@@ -324,23 +181,23 @@ class ChatSessions:
 
     The in-memory dict is a fast path for the lifetime of one process; when a
     store is given, ``get()`` falls back to it on a cache miss so a session
-    survives a restart (ADR-0027). SQLite is the source of truth; the dict is
+    survives a restart (ADR-0025). SQLite is the source of truth; the dict is
     just an accelerator a restart trivially discards.
     """
 
     def __init__(self, store: ChatHistoryStore | None = None) -> None:
-        self._sessions: dict[str, ChatSession] = {}
+        self._sessions: dict[str, FleetSession] = {}
         self._store = store
 
-    def get_or_create(self, session_id: str | None) -> ChatSession:
+    def get_or_create(self, session_id: str | None) -> FleetSession:
         if session_id and session_id in self._sessions:
             return self._sessions[session_id]
         sid = session_id or uuid.uuid4().hex
-        session = ChatSession(id=sid)
+        session = FleetSession(id=sid)
         self._sessions[sid] = session
         return session
 
-    async def get(self, session_id: str) -> ChatSession | None:
+    async def get(self, session_id: str) -> FleetSession | None:
         """In-memory hit first; else rehydrate from the store, if any.
 
         A row loaded from the store is healed the same way an aborted stream
@@ -356,7 +213,7 @@ class ChatSessions:
         row = await self._store.get(session_id)
         if row is None:
             return None
-        session = ChatSession(
+        session = FleetSession(
             id=row["id"],
             messages=row["messages"],
             title=row["title"],
@@ -392,42 +249,40 @@ class TurnResult:
         }
 
 
-def _block_to_dict(block: Any) -> dict[str, Any]:
-    """Normalize an Anthropic content block (SDK object or dict) to a dict."""
+class FleetPolicy:
+    """The operator dashboard's answers to the loop's questions.
 
-    if isinstance(block, dict):
-        return block
-    btype = getattr(block, "type", None)
-    if btype == "text":
-        return {"type": "text", "text": getattr(block, "text", "")}
-    if btype == "tool_use":
-        return {
-            "type": "tool_use",
-            "id": getattr(block, "id", ""),
-            "name": getattr(block, "name", ""),
-            "input": getattr(block, "input", {}) or {},
-        }
-    # Fall back to a best-effort serialization.
-    if hasattr(block, "model_dump"):
-        return block.model_dump()
-    return {"type": btype or "unknown"}
+    Nothing here is new behaviour: it is the confirm-gate the chat loop has
+    always had, stated as a policy object so a second surface can state a
+    different one without forking the loop.
+    """
 
+    def system_blocks(self, session: "FleetSession") -> list[dict[str, Any]]:
+        return _cached_system() + _context_note(session)
 
-def _assistant_content(response: Any) -> list[dict[str, Any]]:
-    return [_block_to_dict(b) for b in getattr(response, "content", [])]
+    def tool_schemas(self) -> list[dict[str, Any]]:
+        return _cached_tools()
 
+    def resolve_target(
+        self, session: "FleetSession", tool: str, args: dict[str, Any]
+    ) -> str | None:
+        # Server-only tools name their own host via `id`, if any.
+        return None if tool in SERVER_TOOLS else _resolve_chat_target(session, args)
 
-def _tool_result_image(content: Any) -> tuple[str, str] | None:
-    """Extract ``(image_b64, format)`` from a tool_result content list, if any."""
+    async def gate(
+        self, session: "FleetSession", tool: str, args: dict[str, Any], agent_id: str | None
+    ) -> GateDecision:
+        # Both change tiers hold on this surface — identical to the previous
+        # binary gate. A tier is not permission to skip the operator's dialog.
+        return Allow() if classify(tool) == READ_ONLY else Hold("operator_approval")
 
-    if not isinstance(content, list):
+    async def on_hold(self, session: "FleetSession", pending: PendingCall) -> None:
+        # Nothing to record: the dashboard's confirmation is transient by design
+        # and is never persisted (ADR-0025).
         return None
-    for part in content:
-        if isinstance(part, dict) and part.get("type") == "image":
-            source = part.get("source") or {}
-            media_type = source.get("media_type", "image/png")
-            return source.get("data", ""), media_type.rsplit("/", 1)[-1]
-    return None
+
+
+_FLEET_POLICY = FleetPolicy()
 
 
 def _tool_result_is_denied(content: Any) -> bool:
@@ -515,390 +370,20 @@ def public_transcript(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return events
 
 
-class ChatExecutor:
-    """Executes tool calls against the registry/store/tunnel and records them."""
-
-    def __init__(
-        self,
-        *,
-        registry: AgentRegistry,
-        store: TelemetryStore,
-        tunnel: AgentTunnel,
-        call_log: CallLog,
-        screenshots: ScreenshotStore,
-    ) -> None:
-        self.registry = registry
-        self.store = store
-        self.tunnel = tunnel
-        self.call_log = call_log
-        self.screenshots = screenshots
-
-    async def run_server_tool(
-        self, tool: str, args: dict[str, Any], *, session: "ChatSession | None" = None
-    ) -> dict[str, Any]:
-        if tool == "list_agents":
-            return await self._list_agents(session)
-        if tool == "select_agent":
-            result = await self._select_agent(str(args["id"]))
-            if session is not None:
-                # The session's own selection is the only state this changes
-                # (ADR-0042) — no shared registry slot is written, so concurrent
-                # sessions can never clobber each other's target.
-                session.agent_id = result.get("active_agent") or session.agent_id
-            return result
-        if tool == "fleet_overview":
-            return await self._fleet_overview()
-        if tool == "agent_health":
-            return await self._agent_health(str(args["id"]))
-        if tool == "agent_snapshot":
-            return await self._agent_snapshot(str(args["id"]), args.get("section"))
-        raise ToolError("unknown_tool", f"unknown server tool {tool!r}")
-
-    async def run_capability(
-        self, tool: str, args: dict[str, Any], *, agent_id: str
-    ) -> dict[str, Any]:
-        """Forward a capability tool to ``agent_id`` (read-only or confirmed).
-
-        ``agent_id`` is resolved by the caller (:func:`_resolve_chat_target`) —
-        the session's selected agent or an explicit per-call override — never
-        the process-global registry slot, which is shared by every concurrent
-        chat session and would let one session's selection bleed into another's
-        forwarded call (ADR-0042).
-        """
-
-        if not agent_id:
-            raise ToolError("no_agent", "no target agent for this call")
-        timeout_s = float(args.get("timeout_s", 30))
-        try:
-            result = await self.tunnel.send_request(agent_id, tool, args, timeout_s)
-            await self.call_log.record(agent_id, tool, args, ok=True)
-            if tool == "screen_capture" and isinstance(result, dict) and "image_b64" in result:
-                self.screenshots.put(agent_id, result["image_b64"], result.get("format", "png"))
-            return result
-        except ToolError as exc:
-            await self.call_log.record(agent_id, tool, args, ok=False, error=exc.message)
-            raise
-
-    # -- server-only tool implementations ---------------------------------
-
-    async def _known_ids(self) -> list[str]:
-        ids = {a.agent_id for a in self.registry.list()}
-        ids.update(await self.store.known_agents())
-        return sorted(ids)
-
-    async def _overview(self, agent_id: str) -> dict[str, Any]:
-        agent = self.registry.get(agent_id)
-        latest = await self.store.latest(agent_id)
-        snapshot = latest["snapshot"] if latest else None
-        agent_os = agent.os if agent else "windows"
-        health = build_health(snapshot, agent_os=agent_os)
-        flagged = [n for n, s in health["sections"].items() if s["status"] in ("warn", "crit")]
-        return {
-            "agent_id": agent_id,
-            "online": bool(agent and agent.online),
-            "os": agent_os,
-            "meta": agent.meta if agent else {},
-            "overall": health["overall"],
-            "flagged_sections": flagged,
-            "collected_at": latest["collected_at"] if latest else None,
-        }
-
-    async def _list_agents(self, session: "ChatSession | None" = None) -> dict[str, Any]:
-        ids = await self._known_ids()
-        agents = [await self._overview(i) for i in ids]
-        active = session.agent_id if session is not None else None
-        return {"active_agent": active, "agents": agents}
-
-    async def _select_agent(self, agent_id: str) -> dict[str, Any]:
-        """Validate ``agent_id`` and report it.
-
-        Deliberately does **not** write any registry slot (ADR-0042): the
-        session's own ``agent_id`` (set by the caller in :meth:`run_server_tool`)
-        is the only state that carries this selection forward, so it can never
-        be shared with — or clobbered by — another concurrent session.
-        """
-
-        agent = self.registry.get(agent_id)
-        if agent is not None:
-            return {"active_agent": agent.agent_id, "online": agent.online}
-        if agent_id in await self.store.known_agents():
-            # Known only from stored telemetry (currently offline/unregistered).
-            return {"active_agent": agent_id, "online": False}
-        raise ToolError("unknown_agent", f"unknown agent {agent_id!r}")
-
-    async def _fleet_overview(self) -> dict[str, Any]:
-        from . import health_rules
-
-        ids = await self._known_ids()
-        agents = [await self._overview(i) for i in ids]
-        overall = health_rules.worst(*(a["overall"] for a in agents if a["overall"] != "unknown"))
-        return {"overall": overall or "unknown", "agents": agents}
-
-    async def _agent_health(self, agent_id: str) -> dict[str, Any]:
-        latest = await self.store.latest(agent_id)
-        snapshot = latest["snapshot"] if latest else None
-        agent = self.registry.get(agent_id)
-        health = build_health(snapshot, agent_os=agent.os if agent else "windows")
-        return {
-            "agent_id": agent_id,
-            "collected_at": latest["collected_at"] if latest else None,
-            **health,
-        }
-
-    async def _agent_snapshot(self, agent_id: str, section: str | None) -> dict[str, Any]:
-        latest = await self.store.latest(agent_id)
-        if latest is None:
-            return {"agent_id": agent_id, "snapshot": None}
-        snapshot = latest["snapshot"]
-        if section is not None:
-            return {
-                "agent_id": agent_id,
-                "collected_at": latest["collected_at"],
-                "section": section,
-                "payload": snapshot.get(section),
-            }
-        return {
-            "agent_id": agent_id,
-            "collected_at": latest["collected_at"],
-            "snapshot": snapshot,
-        }
-
-
-def _image_of(payload: Any) -> tuple[str, str] | None:
-    """Return ``(image_b64, format)`` if ``payload`` is a screenshot result, else None."""
-
-    if isinstance(payload, dict) and "image_b64" in payload:
-        return payload["image_b64"], payload.get("format", "png")
-    return None
-
-
-def _tool_result_block(tool_use_id: str, payload: Any, *, is_error: bool = False) -> dict[str, Any]:
-    block: dict[str, Any] = {
-        "type": "tool_result",
-        "tool_use_id": tool_use_id,
-    }
-    image = None if is_error else _image_of(payload)
-    if image is not None:
-        image_b64, fmt = image
-        # Feed the screenshot to Claude as an image content block so the model
-        # actually sees the pixels (not a base64 text blob it can't decode).
-        block["content"] = [
-            {
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": f"image/{fmt}",
-                    "data": image_b64,
-                },
-            },
-            {"type": "text", "text": "screen_capture (png)"},
-        ]
-    else:
-        text = json.dumps(payload, default=str)
-        if len(text) > _MAX_TOOL_RESULT_CHARS:
-            dropped = len(text) - _MAX_TOOL_RESULT_CHARS
-            text = text[:_MAX_TOOL_RESULT_CHARS] + f"…[truncated {dropped} chars]"
-        block["content"] = text
-    if is_error:
-        block["is_error"] = True
-    return block
-
-
-def _resolve_chat_target(session: ChatSession, args: dict[str, Any]) -> str:
-    """Routing target for a chat-forwarded capability call (ADR-0042).
-
-    An explicit ``agent_id`` in ``args`` overrides for this one call; otherwise
-    falls back to the session's own selection (safe — each :class:`ChatSession`
-    is a distinct conversation, unlike the process-global registry slot). Pops
-    ``agent_id`` off ``args`` so it is routing metadata only and never reaches
-    the forwarded tool call. Fails closed when neither is set.
-    """
-
-    explicit = args.pop("agent_id", None)
-    target = (str(explicit).strip() if explicit else "") or (session.agent_id or "")
-    if not target:
-        raise ToolError(
-            "no_agent",
-            "no agent selected for this chat; select an agent in the dashboard "
-            "or pass agent_id",
-        )
-    return target
-
-
-async def _execute_one(
-    executor: ChatExecutor,
-    tool: str,
-    args: dict[str, Any],
-    *,
-    session: ChatSession,
-    agent_id: str | None = None,
-) -> tuple[dict[str, Any], bool]:
-    """Run one tool, returning (result_payload, is_error).
-
-    ``agent_id``, when given, is an already-resolved target — used when
-    resuming a confirmed state-changing call so the target frozen at gate time
-    (:class:`PendingCall.agent_id`) is reused rather than re-resolved (the
-    original ``args`` no longer carry any explicit override by then, since
-    :func:`_resolve_chat_target` already popped it).
-    """
-
-    try:
-        if tool in SERVER_TOOLS:
-            return await executor.run_server_tool(tool, args, session=session), False
-        target = agent_id or _resolve_chat_target(session, args)
-        return await executor.run_capability(tool, args, agent_id=target), False
-    except ToolError as exc:
-        return {"error": {"code": exc.code, "message": exc.message}}, True
-
-
-async def _drive_events(
-    session: ChatSession,
-    executor: ChatExecutor,
-    *,
-    client: Any,
-    model: str,
-) -> AsyncIterator[dict[str, Any]]:
-    """Run the tool-use loop, yielding structured events as they happen.
-
-    This is the single source of truth for the loop. It yields, in order:
-
-    * ``{"type": "text_delta", "text": ...}`` — one per token as the assistant
-      block streams;
-    * ``{"type": "tool_result", "tool": ..., "args": ..., "ok": bool[, "image_b64",
-      "format"]}`` — emitted the moment each tool executes (live);
-    * ``{"type": "pending", "tool": ..., "args": ..., "agent_id": ...}`` — a
-      state-changing call awaiting operator confirmation;
-    * ``{"type": "done", "session_id": ..., "assistant_text": ..., "pending":
-      dict|None, "done": bool}`` — terminal, carrying the scalars a
-      :class:`TurnResult` needs.
-
-    ``_drive`` drains this into a :class:`TurnResult` for the non-streaming JSON
-    endpoints; the SSE endpoints forward the events verbatim. Resumes from
-    ``session._queue`` / ``session._staged_results`` so a confirmed tool can
-    continue mid-turn without re-asking the model.
-
-    Note: ``stream.text_stream`` performs blocking network reads on the event
-    loop — the same tradeoff as the previous blocking ``messages.create()``,
-    acceptable for this single-user, self-hosted dashboard.
-    """
-
-    for _ in range(_MAX_ITERATIONS):
-        # Drain any queued tool_use blocks from the prior assistant turn.
-        while session._queue:
-            block = session._queue.pop(0)
-            tool = block["name"]
-            args = dict(block.get("input") or {})
-
-            # Resolve + freeze the routing target now, before any confirm-gate
-            # pause, so a dashboard agent switch that happens while a
-            # state-changing call awaits confirmation can't retarget it
-            # (ADR-0042). Server-only tools name their own host via `id`, if any.
-            target: str | None = None
-            if tool not in SERVER_TOOLS:
-                try:
-                    target = _resolve_chat_target(session, args)
-                except ToolError as exc:
-                    payload = {"error": {"code": exc.code, "message": exc.message}}
-                    yield {"type": "tool_result", "tool": tool, "args": args, "ok": False}
-                    session._staged_results.append(
-                        _tool_result_block(block["id"], payload, is_error=True)
-                    )
-                    continue
-
-            if is_state_changing(tool):
-                session.pending = PendingCall(
-                    id=uuid.uuid4().hex,
-                    tool_use_id=block["id"],
-                    tool=tool,
-                    args=args,
-                    agent_id=target,
-                )
-                yield {"type": "pending", "tool": tool, "args": args, "agent_id": target}
-                # Pause: hold the remaining queue + staged results for resume.
-                yield {
-                    "type": "done",
-                    "session_id": session.id,
-                    "assistant_text": _latest_text(session),
-                    "pending": session.pending.to_public(),
-                    "done": False,
-                }
-                return
-
-            payload, is_error = await _execute_one(
-                executor, tool, args, session=session, agent_id=target
-            )
-            event: dict[str, Any] = {
-                "type": "tool_result",
-                "tool": tool,
-                "args": args,
-                "ok": not is_error,
-            }
-            image = None if is_error else _image_of(payload)
-            if image is not None:
-                event["image_b64"], event["format"] = image
-            yield event
-            session._staged_results.append(
-                _tool_result_block(block["id"], payload, is_error=is_error)
-            )
-
-        # All queued tools ran; if we have staged results, feed them back.
-        if session._staged_results:
-            session.messages.append({"role": "user", "content": session._staged_results})
-            session._staged_results = []
-
-        # Ask the model for the next step, streaming the assistant text token by token.
-        with client.messages.stream(
-            model=model,
-            max_tokens=4096,
-            system=_cached_system() + _context_note(session),
-            tools=_cached_tools(),
-            messages=session.messages,
-        ) as stream:
-            for text in stream.text_stream:
-                yield {"type": "text_delta", "text": text}
-            response = stream.get_final_message()
-        content = _assistant_content(response)
-        session.messages.append({"role": "assistant", "content": content})
-
-        stop_reason = getattr(response, "stop_reason", None)
-        tool_uses = [b for b in content if b.get("type") == "tool_use"]
-
-        if stop_reason == "tool_use" or tool_uses:
-            session._queue = tool_uses
-            continue
-
-        # end_turn (or no tools requested): turn complete.
-        yield {
-            "type": "done",
-            "session_id": session.id,
-            "assistant_text": _text_of(content),
-            "pending": None,
-            "done": True,
-        }
-        return
-
-    # Iteration cap hit; return what we have.
-    yield {
-        "type": "done",
-        "session_id": session.id,
-        "assistant_text": _latest_text(session),
-        "pending": None,
-        "done": True,
-    }
-
-
 async def _drive(
-    session: ChatSession,
+    session: FleetSession,
     executor: ChatExecutor,
     *,
     client: Any,
     model: str,
 ) -> TurnResult:
-    """Drain :func:`_drive_events` into a :class:`TurnResult` (non-streaming path)."""
+    """Drain :func:`~kenny_server.toolloop.drive_events` into a :class:`TurnResult`."""
 
     tool_events: list[dict[str, Any]] = []
     final: dict[str, Any] | None = None
-    async for ev in _drive_events(session, executor, client=client, model=model):
+    async for ev in drive_events(
+        session, executor, client=client, model=model, policy=_FLEET_POLICY
+    ):
         if ev["type"] in ("tool_result", "pending", "denied"):
             tool_events.append(ev)
         elif ev["type"] == "done":
@@ -911,19 +396,6 @@ async def _drive(
         pending=final["pending"],
         done=final["done"],
     )
-
-
-def _text_of(content: list[dict[str, Any]]) -> str:
-    return "".join(b.get("text", "") for b in content if b.get("type") == "text")
-
-
-def _latest_text(session: ChatSession) -> str:
-    for msg in reversed(session.messages):
-        if msg["role"] == "assistant":
-            content = msg["content"]
-            if isinstance(content, list):
-                return _text_of(content)
-    return ""
 
 
 def _first_user_text(messages: list[dict[str, Any]]) -> str:
@@ -959,7 +431,7 @@ def _derive_title(text: str) -> str:
     return collapsed[:79].rstrip() + "…"
 
 
-def heal_session(session: ChatSession) -> None:
+def heal_session(session: FleetSession) -> None:
     """Repair a session left mid-turn by an aborted stream (the operator's Stop).
 
     The assistant turn is only committed to ``session.messages`` after its stream
@@ -995,7 +467,7 @@ def heal_session(session: ChatSession) -> None:
         msgs.pop()
 
 
-async def persist_session(store: ChatHistoryStore | None, session: ChatSession) -> None:
+async def persist_session(store: ChatHistoryStore | None, session: FleetSession) -> None:
     """Save a session's committed messages once a turn settles.
 
     No-op when ``store`` is None (persistence not configured). Derives and
@@ -1019,7 +491,7 @@ async def persist_session(store: ChatHistoryStore | None, session: ChatSession) 
 
 
 async def run_turn(
-    session: ChatSession,
+    session: FleetSession,
     user_text: str,
     *,
     executor: ChatExecutor,
@@ -1043,7 +515,7 @@ async def run_turn(
 
 
 async def run_turn_events(
-    session: ChatSession,
+    session: FleetSession,
     user_text: str,
     *,
     executor: ChatExecutor,
@@ -1053,8 +525,9 @@ async def run_turn_events(
     """Streaming variant of :func:`run_turn`: yield loop events as they happen.
 
     Same setup as :func:`run_turn` (reject a pending session, append the user
-    message), then forward :func:`_drive_events` so the SSE endpoint can stream
-    assistant tokens, live tool results, and the terminal ``done`` event.
+    message), then forward :func:`~kenny_server.toolloop.drive_events` so the SSE
+    endpoint can stream assistant tokens, live tool results, and the terminal
+    ``done`` event.
     """
 
     if session.pending is not None:
@@ -1063,12 +536,14 @@ async def run_turn_events(
     model = model or os.environ.get("KENNY_CHAT_MODEL", DEFAULT_MODEL)
     heal_session(session)
     session.messages.append({"role": "user", "content": user_text})
-    async for ev in _drive_events(session, executor, client=client, model=model):
+    async for ev in drive_events(
+        session, executor, client=client, model=model, policy=_FLEET_POLICY
+    ):
         yield ev
 
 
 async def confirm_pending(
-    session: ChatSession,
+    session: FleetSession,
     *,
     approve: bool,
     executor: ChatExecutor,
@@ -1086,59 +561,15 @@ async def confirm_pending(
         raise RuntimeError("no pending confirmation for this session")
 
     model = model or os.environ.get("KENNY_CHAT_MODEL", DEFAULT_MODEL)
-    resume_event = await _apply_confirmation(session, approve=approve, executor=executor)
+    resume_event = await apply_confirmation(session, approve=approve, executor=executor)
 
     result = await _drive(session, executor, client=client, model=model)
     result.tool_events.insert(0, resume_event)
     return result
 
 
-async def _apply_confirmation(
-    session: ChatSession, *, approve: bool, executor: ChatExecutor
-) -> dict[str, Any]:
-    """Resolve the pending call (run on approve, feed a denial otherwise).
-
-    Clears ``session.pending``, stages the tool_result block for the resumed
-    loop, and returns the ``resume_event`` to surface first to the UI. Shared by
-    :func:`confirm_pending` and :func:`confirm_pending_events`.
-    """
-
-    pending = session.pending
-    assert pending is not None  # callers check before delegating
-    session.pending = None
-
-    if approve:
-        payload, is_error = await _execute_one(
-            executor, pending.tool, pending.args, session=session, agent_id=pending.agent_id
-        )
-        session._staged_results.append(
-            _tool_result_block(pending.tool_use_id, payload, is_error=is_error)
-        )
-        resume_event: dict[str, Any] = {
-            "type": "tool_result",
-            "tool": pending.tool,
-            "args": pending.args,
-            "ok": not is_error,
-        }
-        image = None if is_error else _image_of(payload)
-        if image is not None:
-            resume_event["image_b64"], resume_event["format"] = image
-    else:
-        payload = {"error": {"code": "denied", "message": "operator denied this action"}}
-        session._staged_results.append(
-            _tool_result_block(pending.tool_use_id, payload, is_error=True)
-        )
-        resume_event = {
-            "type": "denied",
-            "tool": pending.tool,
-            "args": pending.args,
-            "agent_id": pending.agent_id,
-        }
-    return resume_event
-
-
 async def confirm_pending_events(
-    session: ChatSession,
+    session: FleetSession,
     *,
     approve: bool,
     executor: ChatExecutor,
@@ -1149,14 +580,16 @@ async def confirm_pending_events(
 
     Yields the ``resume_event`` first (reproducing the non-streaming
     ``tool_events.insert(0, resume_event)`` ordering), then forwards the resumed
-    :func:`_drive_events` loop.
+    loop.
     """
 
     if session.pending is None:
         raise RuntimeError("no pending confirmation for this session")
 
     model = model or os.environ.get("KENNY_CHAT_MODEL", DEFAULT_MODEL)
-    resume_event = await _apply_confirmation(session, approve=approve, executor=executor)
+    resume_event = await apply_confirmation(session, approve=approve, executor=executor)
     yield resume_event
-    async for ev in _drive_events(session, executor, client=client, model=model):
+    async for ev in drive_events(
+        session, executor, client=client, model=model, policy=_FLEET_POLICY
+    ):
         yield ev

@@ -32,7 +32,7 @@ ASSET_RE = re.compile(r"^kenny-agent-.*-x86_64-pc-windows-msvc\.exe$")
 LINUX_ASSET_RE = re.compile(r"^kenny-agent-.*-(x86_64|aarch64)-unknown-linux-musl$")
 LINUX_ARCHES = ("x86_64", "aarch64")
 # The (os, arch) combinations we actually ship a binary for — the authoritative list
-# behind the dashboard's "Add a PC" arch dropdown (ADR-0040) and its availability
+# behind the dashboard's "Add a PC" arch dropdown (ADR-0036) and its availability
 # check. Windows has only ever shipped one target; `agent_binary_path` doesn't
 # consult `arch` for windows at all.
 SUPPORTED_TARGETS: tuple[tuple[str, str], ...] = (("windows", "x86_64"),) + tuple(
@@ -68,21 +68,28 @@ def github_configured() -> bool:
     return github_token() is not None
 
 
-def cache_path(os_name: str = "windows", arch: str = "x86_64") -> str:
-    """Where an auto-fetched binary is cached, per (os, arch).
+def cache_path(os_name: str = "windows", arch: str = "x86_64", channel: str = "stable") -> str:
+    """Where an auto-fetched binary is cached, per (os, arch, channel).
 
     Binaries sit next to the SQLite store (``<dir of KENNY_DB_PATH>/...``), the
     persisted ``/data`` volume in the container:
 
-    * windows -> ``kenny-agent.exe`` (explicit ``KENNY_AGENT_BINARY_CACHE`` wins,
-      preserving the pre-Linux behavior).
-    * linux   -> ``kenny-agent-linux-<arch>`` (``x86_64`` | ``aarch64``).
+    * windows/stable -> ``kenny-agent.exe`` (explicit ``KENNY_AGENT_BINARY_CACHE``
+      wins, preserving the pre-Linux, pre-channel behavior byte-identically).
+    * windows/dev    -> ``kenny-agent-dev.exe``, next to the stable cache. No
+      ``KENNY_AGENT_BINARY_CACHE``-style manual-placement override in this
+      iteration (ADR-0048) — dev has no operator-placed-binary path.
+    * linux          -> ``kenny-agent-linux-<arch>`` (``x86_64`` | ``aarch64``),
+      with a ``-dev`` suffix for ``channel="dev"``.
     """
 
     db = os.environ.get("KENNY_DB_PATH", "kenny.sqlite")
     base_dir = os.path.dirname(os.path.abspath(db)) or "."
+    dev_suffix = "-dev" if channel == "dev" else ""
     if os_name == "linux":
-        return os.path.join(base_dir, f"kenny-agent-linux-{arch}")
+        return os.path.join(base_dir, f"kenny-agent-linux-{arch}{dev_suffix}")
+    if channel == "dev":
+        return os.path.join(base_dir, "kenny-agent-dev.exe")
     override = os.environ.get("KENNY_AGENT_BINARY_CACHE", "").strip()
     if override:
         return override
@@ -285,10 +292,39 @@ def _fetch_asset(
         return FetchResult(ok=False, source="none", message=f"fetch failed: {exc}")
 
 
+def _select_release(client: httpx.Client, repo: str, channel: str) -> dict[str, Any] | None:
+    """Resolve the release JSON to fetch assets from, per channel (ADR-0048).
+
+    ``stable`` -> ``GET /releases/latest`` (unchanged, excludes prereleases by
+    GitHub's own construction). ``dev`` -> ``GET /releases`` (newest first),
+    the first non-draft entry with ``prerelease: true``. Returns ``None`` when
+    there is no matching release (a 404 on the stable path, or no matching
+    entry / a 404 on the dev path) — the caller turns that into a
+    ``FetchResult(ok=False)``.
+    """
+
+    if channel == "dev":
+        resp = client.get(f"{GITHUB_API}/repos/{repo}/releases", params={"per_page": 30})
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        for release in resp.json():
+            if release.get("prerelease") is True and release.get("draft") is False:
+                return release
+        return None
+
+    resp = client.get(f"{GITHUB_API}/repos/{repo}/releases/latest")
+    if resp.status_code == 404:
+        return None
+    resp.raise_for_status()
+    return resp.json()
+
+
 def fetch_latest_agent_binary(
     *,
     client_factory: Callable[[], httpx.Client] = _default_client,
     dest: str | None = None,
+    channel: str = "stable",
 ) -> FetchResult:
     """Resolve the latest release, then download+verify+cache **every** known
     asset it can match: the Windows exe plus each Linux musl arch present.
@@ -311,29 +347,35 @@ def fetch_latest_agent_binary(
     repo = github_repo()
     try:
         with client_factory() as client:
-            rel = client.get(f"{GITHUB_API}/repos/{repo}/releases/latest")
-            if rel.status_code == 404:
-                return FetchResult(ok=False, source="none", message=f"no releases found for {repo}")
-            if rel.status_code == 403:
+            release = _select_release(client, repo, channel)
+            if release is None:
                 return FetchResult(
-                    ok=False,
-                    source="none",
-                    message="GitHub API 403 (rate limited or token lacks access)",
+                    ok=False, source="none", message=f"no {channel} releases found for {repo}"
                 )
-            rel.raise_for_status()
-            release = rel.json()
             tag = release.get("tag_name")
 
-            win_dest = dest or cache_path("windows", "x86_64")
+            win_dest = dest or cache_path("windows", "x86_64", channel)
             win_res = _fetch_asset(client, release, ASSET_RE, win_dest, tag)
 
             linux_ok: list[FetchResult] = []
             for arch in LINUX_ARCHES:
                 lres = _fetch_asset(
-                    client, release, _asset_re("linux", arch), cache_path("linux", arch), tag
+                    client,
+                    release,
+                    _asset_re("linux", arch),
+                    cache_path("linux", arch, channel),
+                    tag,
                 )
                 if lres is not None and lres.ok:
                     linux_ok.append(lres)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 403:
+            return FetchResult(
+                ok=False,
+                source="none",
+                message="GitHub API 403 (rate limited or token lacks access)",
+            )
+        return FetchResult(ok=False, source="none", message=f"fetch failed: {exc}")
     except Exception as exc:  # noqa: BLE001 - best-effort, surface as a result
         return FetchResult(ok=False, source="none", message=f"fetch failed: {exc}")
 
@@ -359,18 +401,27 @@ _EXPLICIT_ENV = {
 
 
 def binary_status(
-    *, manual_path: str | None, os_name: str = "windows", arch: str = "x86_64"
+    *,
+    manual_path: str | None,
+    os_name: str = "windows",
+    arch: str = "x86_64",
+    channel: str = "stable",
 ) -> FetchResult:
     """Describe current availability **without** contacting GitHub.
 
     ``manual_path`` is the resolved binary path (``distribution.agent_binary_path``)
     so precedence stays in one place. ``source`` distinguishes an operator-placed
-    binary (via the per-(os, arch) env var) from the GitHub cache.
+    binary (via the per-(os, arch) env var) from the GitHub cache. Dev has no
+    manual-override env in this iteration (ADR-0048), so for ``channel="dev"``
+    ``source`` is always ``"cache"`` when a file exists at ``manual_path``.
     """
 
     version = resolve_agent_version(manual_path)
-    env_name = _EXPLICIT_ENV.get((os_name, arch), "KENNY_AGENT_BINARY")
-    explicit = os.environ.get(env_name, "").strip()
+    if channel == "stable":
+        env_name = _EXPLICIT_ENV.get((os_name, arch), "KENNY_AGENT_BINARY")
+        explicit = os.environ.get(env_name, "").strip()
+    else:
+        explicit = ""
     if manual_path:
         source = "manual" if explicit and os.path.exists(explicit) else "cache"
         return FetchResult(

@@ -35,15 +35,15 @@ async fn run(tool: &str, args: Value) -> Result<Value, (ErrorCode, String)> {
 
     // Deterministic, always-on safety guard: refuse individually dangerous calls
     // regardless of approval or kill-switch state. Cannot be disabled remotely. See
-    // ADR-0020. Runs for every tool before reaching a handler. On a block, emit a
+    // ADR-0019. Runs for every tool before reaching a handler. On a block, emit a
     // structured warn (forwarded to the server's event store via the `log` frame,
-    // ADR-0017/0021) naming the matched rule, then refuse the call.
+    // ADR-0017/0020) naming the matched rule, then refuse the call.
     if let Err((code, message)) = policy::check(tool, &args) {
         warn!(tool = %tool, reason = %message, "tool call refused by safety guard");
         return Err((code, message));
     }
 
-    // Anti-cheat coexistence (ADR-0039): while a protected game is running, voluntarily
+    // Anti-cheat coexistence (ADR-0035): while a protected game is running, voluntarily
     // step back from the most anti-cheat-visible tools (today `screen_capture`) and
     // report `paused`. Transparent, not evasive — see `coexist`.
     if let Err((code, message)) = coexist::gate(tool) {
@@ -83,6 +83,14 @@ async fn run(tool: &str, args: Value) -> Result<Value, (ErrorCode, String)> {
         "webfilter_status" => handlers::webfilter::status(args).await,
         "webfilter_apply" => handlers::webfilter::apply(args).await,
         "webfilter_clear" => handlers::webfilter::clear(args).await,
+
+        "account_set_enabled" => handlers::accounts::set_enabled(args).await,
+        "account_set_admin" => handlers::accounts::set_admin(args).await,
+        "account_set_logon_rights" => handlers::accounts::set_logon_rights(args).await,
+        "account_create" => handlers::accounts::create(args).await,
+        "account_delete" => handlers::accounts::delete(args).await,
+        "account_session_action" => handlers::accounts::session_action(args).await,
+        "password_policy_set" => handlers::accounts::password_policy_set(args).await,
 
         "telemetry_collect" => telemetry_collect(args),
 

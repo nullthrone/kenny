@@ -140,7 +140,7 @@ class AgentTunnel:
         self.policy_store = policy_store
         self.webfilter = webfilter
         # Optional hook fired (fire-and-forget) after an agent successfully
-        # registers, so the update-campaign on-connect rollout (ADR-0044) can
+        # registers, so the update-campaign on-connect rollout (ADR-0040) can
         # decide whether to auto-apply a pinned campaign — without coupling the
         # tunnel to update_manager. Never awaited inline: a slow or failing hook
         # must not delay serving the connection or break the handshake.
@@ -163,7 +163,7 @@ class AgentTunnel:
         error response or timeout.
         """
 
-        # Best-effort server mirror (ADR-0021): refuse obviously dangerous calls
+        # Best-effort server mirror (ADR-0020): refuse obviously dangerous calls
         # before forwarding. The agent stays authoritative; this only adds
         # earlier feedback and runs before the pending future / send.
         if self.policy_engine is not None:
@@ -181,7 +181,10 @@ class AgentTunnel:
                 )
                 raise ToolError("blocked", reason)
 
-        send_fn = self.registry.send_fn_for(agent_id)
+        try:
+            send_fn = self.registry.send_fn_for(agent_id)
+        except AuthError as exc:
+            raise ToolError("offline", f"{agent_id} is not connected") from exc
         request_id = str(uuid.uuid4())
         loop = asyncio.get_running_loop()
         future: asyncio.Future[Response] = loop.create_future()
@@ -207,7 +210,7 @@ class AgentTunnel:
     async def broadcast_policy(self) -> None:
         """Push the current operator deny rules to every online agent.
 
-        Called after an operator changes the rule set (ADR-0021). Per-agent send
+        Called after an operator changes the rule set (ADR-0020). Per-agent send
         errors are swallowed (logged at debug) so one stale socket can't break a
         fleet-wide broadcast.
         """
@@ -250,7 +253,7 @@ class AgentTunnel:
         """Run the on-connect hook detached from the handshake/serve path.
 
         A second safety net beyond ``on_agent_connect``'s own try/except
-        (ADR-0044): whatever the hook does, it must never surface into the
+        (ADR-0040): whatever the hook does, it must never surface into the
         tunnel or delay serving the connection.
         """
 
@@ -284,7 +287,7 @@ class AgentTunnel:
 
         logger.info("agent %s connected", frame.agent_id)
         # Push the current operator deny rules to the just-connected agent
-        # (always, even when empty, so behaviour is deterministic). ADR-0021.
+        # (always, even when empty, so behaviour is deterministic). ADR-0020.
         if self.policy_store is not None:
             try:
                 rules = [PolicyRule(**r) for r in await self.policy_store.list()]
@@ -415,7 +418,7 @@ class AgentTunnel:
             # (DELETE /api/agent/{id} → inventory.purge_agent → registry.remove).
             # Its token/key are already gone so it can't reconnect; close this live
             # socket too, otherwise it would keep re-populating snapshots and
-            # reappear in the fleet list (ADR-0037, fail-closed removal).
+            # reappear in the fleet list (ADR-0033, fail-closed removal).
             if self.registry.get(agent_id) is None:
                 logger.info(
                     "closing connection for %s: removed from inventory", agent_id
@@ -464,7 +467,7 @@ class AgentTunnel:
                     )
                     continue
                 snapshot = {k: v.model_dump() for k, v in frame.snapshot.items()}
-                # Periodic arch reconfirmation (ADR-0040, protocol 0.13): mirror a
+                # Periodic arch reconfirmation (ADR-0036, protocol 0.13): mirror a
                 # strictly-recognized os_support.arch into the registry so a
                 # long-lived connection stays correct even if register.meta.arch
                 # were ever missing or stale. Deliberately not `_norm_arch`-normalized
@@ -472,7 +475,12 @@ class AgentTunnel:
                 reported_arch = snapshot.get("os_support", {}).get("arch")
                 if reported_arch in ("x86_64", "aarch64"):
                     self.registry.note_arch(frame.agent_id, reported_arch)
-                # Parental controls (ADR-0026): enrich the web_activity section
+                # Periodic channel reconfirmation (ADR-0048, protocol 0.17): the
+                # same pattern as the arch mirror above, one release cycle later.
+                reported_channel = snapshot.get("os_support", {}).get("channel")
+                if reported_channel in ("stable", "dev"):
+                    self.registry.note_channel(frame.agent_id, reported_channel)
+                # Parental controls (ADR-0024): enrich the web_activity section
                 # with server-computed `flagged` before persisting. A webfilter
                 # bug must never drop the whole snapshot.
                 if self.webfilter is not None and "web_activity" in snapshot:

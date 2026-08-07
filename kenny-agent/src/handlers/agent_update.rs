@@ -10,7 +10,7 @@
 //! 5. Return `{ok, staged_version}` **before** triggering the restart, so the
 //!    connection drops and the agent reconnects on the new version.
 //!
-//! Flow (Linux, ADR-0035 Phase 4 / ADR-0038):
+//! Flow (Linux, ADR-0031 Phase 4 / ADR-0034):
 //! 1. Download + verify exactly as above, staged as `kenny-agent.new` next to the
 //!    running exe (`/opt/kenny/kenny-agent`).
 //! 2. `chmod 0o755`, then `rename` it over the running binary. This is atomic
