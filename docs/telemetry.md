@@ -44,12 +44,12 @@ worst-of. Across the fleet, the header shows the worst status of any agent. `cri
 
 The table below lists every section, what it reports, and its server-side health rule (if
 any). Sections **without** a dedicated rule defer to the agent-reported status or are
-purely informational; several of them still feed the Overview dashboard (noted in the
-rule column).
+purely informational; several of them still feed the [Today](dashboard.md#today) KPIs and
+donut (noted in the rule column).
 
 <figure markdown>
-![The per-agent drill-down, with every telemetry section rendered as a status tile.](assets/screenshots/agent-detail.png)
-<figcaption>The per-agent drill-down: every telemetry section as a tile with its status, summary, and health-rule reason.</figcaption>
+![A host page, with its flagged sections as problem cards and the rest as a healthy checklist.](assets/screenshots/host.png)
+<figcaption>The host page: every telemetry section, surfaced as a problem card when flagged or a checklist entry when healthy, each with its status, summary, and health-rule reason.</figcaption>
 </figure>
 
 | Section | Reports | Server-side health rule |
@@ -90,14 +90,11 @@ rule column).
 | `processes` | Running-process summary | *no rule — agent-reported* |
 | `screen_time` | Whole-machine interactive minutes per day | *no rule — informational (see below)* |
 
-!!! note "What feeds the Overview dashboard"
-    A few informational sections drive the fleet-wide Overview panels rather than a
-    per-section status:
-
-    - `firewall` + `encryption` + `defender` → the **security-posture** chart
-    - `battery.present` → the **laptop / desktop** device pie
-    - `os_support` → the **OS** pie
-    - `reliability` events → the **reliability heatmap**
+!!! note "What feeds Today"
+    A few informational sections drive [Today](dashboard.md#today)'s KPIs and health donut
+    rather than a per-section status: `reboot_pending`, `app_updates`, `win_update`,
+    `defender_quarantine`, `os_support`, and the disk-fill forecast all roll up into the
+    six KPI numbers, and every section's worst-of status rolls up into the donut.
 
 ## Reliability categorization
 
@@ -120,17 +117,12 @@ agent never sends them. Without an `ANTHROPIC_API_KEY` (or on an API error) ever
 **degrades gracefully to `category="Other"`, `severity="unknown"`** — never to `benign` —
 and the heatmaps, health scoring, and expandable raw groups still work.
 
-This drives both the reliability heatmaps — hosts × category across the fleet, and
-category × day for one PC — and the health rule itself: a pattern's
-`severity` is what tells "300 repeats of one known-benign timeout" apart from "300 distinct
-novel errors" (see the `reliability` row in the section table above). A group with
-`severity="serious"` also flags its heatmap cell **crit**, even when the agent-reported
-Windows `level` is plain `"error"`.
-
-<figure markdown>
-![The reliability section detail: a category-by-day heatmap above expandable event groups.](assets/screenshots/reliability.png)
-<figcaption>The reliability section detail — a category × day heatmap plus expandable event groups down to sample messages, each with a severity badge and suspected cause.</figcaption>
-</figure>
+This drives both the per-host **category × day** heatmap on
+[the host page's Reliability section](dashboard.md#reliability) and the health rule
+itself: a pattern's `severity` is what tells "300 repeats of one known-benign timeout"
+apart from "300 distinct novel errors" (see the `reliability` row in the section table
+above). A group with `severity="serious"` also flags its heatmap cell **crit**, even when
+the agent-reported Windows `level` is plain `"error"`.
 
 See [ADR-0026](adr/0026-llm-categorization-of-reliability-events.md) for the categorization
 decision.
@@ -148,8 +140,8 @@ also offers scoping it to one host.
 
 A suppressed pattern:
 
-- **stays fully visible** with its full raw count, in the raw event table, the category × day
-  heatmap, and the fleet Overview heatmap — suppression never hides volume;
+- **stays fully visible** with its full raw count, in the raw event table and the category
+  × day heatmap — suppression never hides volume;
 - **carries a distinct `suppressed` badge**, never the `benign` severity pill — "the model
   classified this as harmless" and "the operator decided to ignore this" are different
   claims, from different sources, and the UI keeps them visually separate;

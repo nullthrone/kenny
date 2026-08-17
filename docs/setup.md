@@ -139,7 +139,7 @@ clients share one bucket). The bundled TLS profile sets this for you.
 **Discord bot & tickets** (see **[Tickets & the Discord bot](itsm.md)** for the full
 operator setup walkthrough — creating the Discord application, the two privileged intents,
 and both enrollment paths). Tickets themselves need none of this: the ticket store,
-lifecycle service and sweeper always run, and the dashboard's Tickets tab and `/api/tickets`
+lifecycle service and sweeper always run, and the dashboard's Inbox and `/api/tickets`
 work with nothing configured here. These keys only decide whether a Discord bot is also
 connected, install the optional dependency first: `pip install -e ".[discord]"`.
 
@@ -162,8 +162,8 @@ connected, install the optional dependency first: `pip install -e ".[discord]"`.
 | `KENNY_TICKET_RETENTION_DAYS` | `30` | How long a **closed** ticket keeps its raw working transcript. The ticket, its summary and its audit trail are never pruned. |
 
 Everything above except the bot token and the webhook URL (secrets, env-only) is also
-editable from the dashboard's **Settings** tab, under the **Discord & Tickets** group — most
-apply immediately, and `KENNY_DISCORD_ENABLED`/`KENNY_DISCORD_GUILD_IDS`/
+editable from the dashboard's **[Admin](dashboard.md#admin) → Discord & Tickets** section —
+most apply immediately, and `KENNY_DISCORD_ENABLED`/`KENNY_DISCORD_GUILD_IDS`/
 `KENNY_TICKET_SWEEP_INITIAL_DELAY` need a restart, exactly like the other loop-startup
 settings on this page.
 
@@ -208,8 +208,9 @@ relative double-clicks `setup.bat`; the agent self-elevates and installs itself 
 `%ProgramFiles%\kenny` (see
 [`adr/0030-agent-self-elevating-bootstrap-installer.md`](adr/0030-agent-self-elevating-bootstrap-installer.md)).
 
-The **Add a PC** panel has an OS selector. For a **Linux** target, point the server at a Linux
-binary as well and the panel produces a one-line install command instead of a ZIP (see
+The **Add a PC** wizard's second step asks for the target OS. For a **Linux** target, point
+the server at a Linux binary as well and the wizard's hand-over step produces a one-line
+install command instead of a ZIP (see
 [Installing the agent on Linux](#installing-the-agent-on-linux) and
 [`adr/0034-linux-agent-distribution-convenience-script.md`](adr/0034-linux-agent-distribution-convenience-script.md)):
 
@@ -237,7 +238,7 @@ release's agent binaries — `kenny-agent-<tag>-x86_64-pc-windows-msvc.exe` and 
 them on the `/data` volume. The fetch is **best-effort** and per-asset — if the repo is unreachable
 or no token is set, the dashboard shows a banner with manual instructions instead. Operator-placed
 `KENNY_AGENT_BINARY` / `KENNY_AGENT_BINARY_LINUX` always win over the fetched cache. The dashboard's
-**Add a PC** control lets you onboard the very first machine without a pre-existing agent.
+**Add a PC** wizard lets you onboard the very first machine without a pre-existing agent.
 
 ## Installing the agent on Windows
 
@@ -274,8 +275,9 @@ kenny-agent runs on Linux hosts too — headless servers, a NAS, a Raspberry Pi,
 binary** with no runtime dependencies, installed as a **systemd service**. Distribution follows the
 Docker/K3s convenience-script model (ADR-0034).
 
-The normal path is the dashboard's **one-line install command**. In **Add a PC**, pick *Linux*,
-enter an agent id, and copy the command it produces — then run it on the target host as root:
+The normal path is the dashboard's **one-line install command**. In the **Add a PC** wizard,
+name the machine, pick *Linux*, and copy the command its hand-over step produces — then run
+it on the target host as root:
 
 ```bash
 curl -fsSL https://kenny.example.com/d/install/<nonce> | sudo sh
@@ -389,7 +391,7 @@ is wired but off by default:
 - **Data**: the SQLite telemetry store lives on the `kenny-data` volume (`/data`). Telemetry
   snapshots auto-prune after ~30 days.
 - **Backups**: kenny has a built-in backup manager ([ADR-0039](adr/0039-server-database-backup-and-restore.md),
-  dashboard **Settings → Backup** section, superuser only) — do **not** point an external
+  dashboard **Admin → Backup** section, superuser only) — do **not** point an external
   sync/backup tool at `kenny.sqlite` directly; syncing the *live* WAL file causes lock
   contention. Instead, on a schedule (`KENNY_BACKUP_INTERVAL_SECS`, default 6 h) or on
   demand, it writes a consistent `VACUUM INTO` snapshot to `<KENNY_DB_PATH dir>/backups/` —
@@ -398,18 +400,18 @@ is wired but off by default:
   target too, configured from the same section. Restore stages a chosen backup and restarts
   the server to apply it (see the [Backup section reference](dashboard.md#backup)).
 - **Server upgrade**: `docker compose pull && docker compose up -d` (or bump the image tag). The
-  **Settings → Updates** section (below) tells you when a newer tag exists and gives you the
+  **Admin → Updates** section (below) tells you when a newer tag exists and gives you the
   exact, digest-pinned command — it never pulls or restarts the container for you.
 - **Agent upgrade**: click **update** on one agent in the dashboard (server-triggered
   self-update, unchanged) — or approve a fleet-wide **update campaign** from the
-  **Settings → Updates** section to roll a pinned version out to every agent, on both
+  **Admin → Updates** section to roll a pinned version out to every agent, on both
   Windows and Linux (ADR-0034, ADR-0040).
 
 ### Scheduled updates (ADR-0040)
 
 kenny checks for newer agent releases (GitHub Releases) and a newer server image (GHCR tags,
-read-only) on a schedule, and surfaces both from the dashboard's **Updates** page (operator role
-or higher). Detection never applies anything by itself:
+read-only) on a schedule, and surfaces both from the dashboard's **Admin → Updates** section
+(operator role or higher). Detection never applies anything by itself:
 
 - **Server**: GHCR is polled for a newer semver tag than the one running; the page shows it with
   the exact, digest-pinned `docker pull …@sha256:… && docker compose up -d` for you to run. A

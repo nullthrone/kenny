@@ -235,20 +235,31 @@ async def test_an_open_approval_survives_a_restart_with_its_frozen_call(
         await boot2.close()
 
 
-async def test_a_user_cannot_see_or_decide_an_approval_over_the_api(
+async def test_a_user_cannot_decide_an_operator_approval_but_sees_it_on_their_own_ticket(
     benches,
 ) -> None:
+    """A requester may always *see* the gate on their own ticket (whatever its
+    ``kind``) but may only ever *decide* the ``user_consent`` half of it --
+    this one is ``operator_approval`` (a ``normal_change`` tool with no
+    consent involved), so deciding stays refused even though listing now
+    succeeds.
+    """
+
     bench = await benches("rbac")
     ticket_id, _thread = await drive_to_an_open_approval(
         bench, use("t1", "winget_install", {"id": "Git.Git"})
     )
     approval = await bench.ticket_store.get_open_approval(ticket_id)
     assert approval is not None
+    assert approval.kind == "operator_approval"
     requester_pat = await bench.users.create_pat(bench.mia["id"], "own")
 
     dash = Dashboard(bench, bench.service())
     try:
-        assert (await dash.get("/api/approvals", requester_pat)).status_code == 403
+        listed = await dash.get("/api/approvals", requester_pat)
+        assert listed.status_code == 200
+        assert [r["id"] for r in listed.json()["approvals"]] == [approval.id]
+
         decided = await dash.post(
             f"/api/approvals/{approval.id}", requester_pat, {"approve": True}
         )
@@ -256,6 +267,46 @@ async def test_a_user_cannot_see_or_decide_an_approval_over_the_api(
         still = await bench.ticket_store.get_open_approval(ticket_id)
         assert still is not None and still.status == "pending"
         assert bench.forwarded == []
+    finally:
+        await dash.aclose()
+
+
+async def test_a_sibling_cannot_see_or_decide_anothers_approval_but_operator_sees_both(
+    benches,
+) -> None:
+    """The listing-scope half of the fix, proven with two real requesters and
+    two real hosts so the negative case (noah seeing nothing of mia's) is not
+    just an empty fixture: mia's gate is visible only to mia and to an
+    operator; noah -- scoped to a different host, with no ticket of his own
+    here -- sees none of it.
+    """
+
+    bench = await benches("rbac-siblings")
+    ticket_id, _thread = await drive_to_an_open_approval(
+        bench, use("t1", "winget_install", {"id": "Git.Git"})
+    )
+    approval = await bench.ticket_store.get_open_approval(ticket_id)
+    assert approval is not None
+    mia_pat = await bench.users.create_pat(bench.mia["id"], "own")
+    noah_pat = await bench.users.create_pat(bench.noah["id"], "sib")
+    operator_pat = await bench.users.create_pat(bench.root["id"], "dash")
+
+    dash = Dashboard(bench, bench.service())
+    try:
+        mia_rows = (await dash.get("/api/approvals", mia_pat)).json()["approvals"]
+        assert [r["id"] for r in mia_rows] == [approval.id]
+
+        noah_rows = (await dash.get("/api/approvals", noah_pat)).json()["approvals"]
+        assert noah_rows == []
+
+        op_rows = (await dash.get("/api/approvals", operator_pat)).json()["approvals"]
+        assert [r["id"] for r in op_rows] == [approval.id]
+
+        # Naming mia's ticket by id is refused for noah the same way every
+        # other per-ticket route refuses it.
+        assert (
+            await dash.get(f"/api/approvals?ticket_id={ticket_id}", noah_pat)
+        ).status_code == 403
     finally:
         await dash.aclose()
 

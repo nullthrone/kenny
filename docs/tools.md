@@ -1,7 +1,7 @@
 # Tool reference
 
 This page catalogs every tool kenny exposes to Claude — over MCP (a local client) and in
-the dashboard chat — and explains which ones can change a PC, who has to approve them, and
+the Ask kenny overlay — and explains which ones can change a PC, who has to approve them, and
 where each call is recorded. For the operator workflow around these tools, see
 [`user-guide.md`](user-guide.md).
 
@@ -29,7 +29,7 @@ kenny splits its tools into two families:
     but it no longer routes anything; passing it once and then omitting `agent_id` on a later
     call fails with an explicit `no_agent` error rather than guessing a host.
 
-    The **dashboard chat** is the one place a sticky selection is still safe, because each
+    The **Ask kenny overlay** is the one place a sticky selection is still safe, because each
     conversation is a genuinely separate, non-shared session: it forwards to whichever agent
     is selected in the dashboard's context pill, and the model can pass `agent_id` to target
     a different host for one call without changing that selection.
@@ -56,7 +56,7 @@ single source of truth):
 **The tier is a property of the tool. The gate is a property of the calling surface.** A
 tier is never permission to skip a confirmation — it only says how consequential a change
 is. Whether that consequence gets confirmed, runs autonomously, or is refused outright is
-decided independently by whichever surface is calling: today the dashboard chat and MCP,
+decided independently by whichever surface is calling: today the Ask kenny overlay and MCP,
 and — for the Discord ticket surface described in [ITSM & the Discord bot](itsm.md) — a
 per-tier autonomy split.
 
@@ -66,7 +66,7 @@ per-tier autonomy split.
 | `standard_change` | **holds** (confirm-gate) | runs | runs autonomously, with a trail row |
 | `normal_change` | **holds** (confirm-gate) | runs | **holds** for an operator's approval |
 
-The dashboard chat holds **both** change tiers, exactly as it always has — moving a tool
+The Ask kenny overlay holds **both** change tiers, exactly as it always has — moving a tool
 from `normal_change` to `standard_change` changes its blast-radius classification, never
 whether the dashboard confirms it. Only the Discord ticket surface treats
 `standard_change` as safe to run on its own, and it still records a trail row saying so.
@@ -74,9 +74,9 @@ See [ADR-0045](adr/0045-tiered-tool-classification.md) for why the tier and the 
 kept apart, and [ADR-0009](adr/0009-server-hosted-claude-chat.md) for the dashboard
 confirm-gate this refines.
 
-![The confirm-gate pausing a state-changing winget_update until the operator approves.](assets/screenshots/copilot-confirm.png)
+![The Ask kenny overlay's confirm-gate pausing a state-changing winget_update until the operator approves.](assets/screenshots/ask-kenny.png)
 *The confirm-gate pausing a `winget_update` until the operator approves. It is a
-`standard_change` — which the Discord surface runs on its own, and the dashboard still
+`standard_change` — which the Discord surface runs on its own, and Ask kenny still
 confirms. That difference is the point of the table above: the tier describes the tool, the
 surface decides the gate.*
 
@@ -105,7 +105,7 @@ The three-tier classification lives in one place, so it is worth being precise a
 | **Local kill-switch** ([ADR-0011](adr/0011-local-remote-control-kill-switch.md)) | Agent + tray, at the PC | The person at the PC turns **all** state-changing tools off. Forwarded calls then return `error.code = "disabled"`; telemetry and read-only tools keep working. |
 
 !!! warning "A raw MCP client is not confirm-gated"
-    The confirm-gate is a property of the dashboard chat loop, not of the server's tool
+    The confirm-gate is a property of the Ask kenny overlay loop, not of the server's tool
     surface. A raw external MCP client (e.g. Claude Desktop) pointed at `/mcp` is **not**
     confirm-gated by the server — every tier runs. The agent-side guard and the local
     kill-switch still apply — they are enforced at the agent, the boundary that actually
@@ -118,7 +118,7 @@ The three-tier classification lives in one place, so it is worth being precise a
 
 Names are exactly as they appear on the wire, over MCP, and in the chat. The **Arguments**
 column lists only each tool's own parameters — every capability tool additionally takes
-`agent_id` naming the target host (required over MCP; optional in the dashboard chat, where
+`agent_id` naming the target host (required over MCP; optional in the Ask kenny overlay, where
 it overrides the session's selection for one call). `agent_id` is routing metadata the
 server consumes and never puts on the wire (ADR-0038).
 
@@ -249,7 +249,7 @@ These read server state and are never forwarded. All are read-only.
 | Tool | Arguments | Purpose |
 |------|-----------|---------|
 | `list_agents` | — | Known agents with online state and rolled-up health. |
-| `select_agent` | `id` | Validate an agent id and set the dashboard chat's default (advisory only over MCP — it does not route forwarded calls there; see the note above). |
+| `select_agent` | `id` | Validate an agent id and set the Ask kenny overlay's default (advisory only over MCP — it does not route forwarded calls there; see the note above). |
 | `fleet_overview` | — | Per-agent rolled-up health for the whole fleet. |
 | `agent_health` | `id` | Per-section health status/summary for one agent. |
 | `agent_snapshot` | `id`, `section?` | Latest stored telemetry snapshot (optionally one section). |
@@ -276,7 +276,7 @@ half.
 Reliability alarm suppression (ADR-0041, issue #166) is server-only too: rules exclude a
 `(source, event_id)` reliability event pattern from severity scoring, fleet-wide by default
 or scoped to one host, without hiding its raw count. `reliability_suppression_add`/`_remove`
-are `normal_change` (they hit the ADR-0009 confirm-gate in the dashboard chat).
+are `normal_change` (they hit the ADR-0009 confirm-gate in the Ask kenny overlay).
 
 | Tool | Arguments | Tier |
 |------|-----------|------|
@@ -299,22 +299,22 @@ these, including the read — an alert-origin ticket is itself operator-only, so
 
 Every forwarded capability call is appended to the **tool-call audit log**, annotated
 read-only vs state-changing (plus, additively, its tier), with its agent, timestamp, and
-ok/error outcome. Read it in the dashboard under **Activity → tool-call audit**. See
-[`dashboard.md`](dashboard.md).
+ok/error outcome. Read it in the dashboard's **[Log](dashboard.md#log)** page, filtered to
+the TOOLS chip. See [`dashboard.md`](dashboard.md).
 
-![The tool-call audit log, each call tagged read-only or state-changing.](assets/screenshots/activity-audit.png)
-*The tool-call audit log, each call tagged read-only or state-changing.*
+![The Log page, filtered to tool calls, each tagged read-only or state-changing.](assets/screenshots/log.png)
+*The Log page, filtered to tool calls, each tagged read-only or state-changing.*
 
 ## Tool naming
 
 Tools use **Anthropic-native `snake_case` names**, identical to the wire-contract tool
 catalog ([ADR-0016](adr/0016-anthropic-native-tool-naming.md)). There is one canonical
-identifier per tool across the contract, fixtures, MCP, the dashboard chat, and the agent's
+identifier per tool across the contract, fixtures, MCP, the Ask kenny overlay, and the agent's
 dispatch table — no boundary translation. The same names you see here appear over MCP and
 in the chat.
 
 ## See also
 
 - [`user-guide.md`](user-guide.md) — the operator workflow around these tools.
-- [`dashboard.md`](dashboard.md) — the fleet view, drill-down, and Activity tab.
+- [`dashboard.md`](dashboard.md) — Fleet, the host page, and the Log page.
 - [`protocol.md`](protocol.md) — the authoritative agent⇄server wire contract.

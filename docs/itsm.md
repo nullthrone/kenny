@@ -31,14 +31,14 @@ approval and state change underneath it. Three things can open one:
   mention, or privately to the caller alone for `/help-me` — see
   [Which PC a request is about](#which-pc-a-request-is-about).
 - **The dashboard.** Any signed-in account — including a scoped `user` — can open a ticket
-  with **New ticket** on the [Tickets tab](dashboard.md). This is the same record type, it
+  with **New ticket** in the [Inbox](dashboard.md#inbox). This is the same record type, it
   just starts without a Discord thread attached.
 - **An alert.** A genuine alert (not a recovery, not the digest) can open its own ticket
   automatically, so a Defender-disabled or a failing-disk notification arrives with
   somewhere to work it, not just a push you have to remember. An alert-origin ticket has no
   requester — it belongs to the fleet, not a person — so only an operator can see or drive it.
   **Which events do this is configurable** — the **Auto-ticket rules** section of
-  [Settings](dashboard.md#auto-ticket-rules) lets you narrow it (e.g. stop offline PCs from
+  [Admin](dashboard.md#auto-ticket-rules) lets you narrow it (e.g. stop offline PCs from
   opening tickets) or widen it (e.g. promote an inventory change, like a new local admin
   account, into one). See
   [Alerting → which events open a ticket](alerting.md#which-events-open-a-ticket-is-configurable).
@@ -51,8 +51,8 @@ requester) is just as fully workable as one that came in over `@kenny`. See
 [ADR-0050](adr/0050-the-ticket-is-its-own-chat-surface.md).
 
 <figure markdown>
-  ![The Tickets list, filterable by state.](assets/screenshots/tickets.png)
-  <figcaption>The Tickets tab: every ticket you can see, filterable by state — an operator+ sees the whole queue, a scoped user only ever their own.</figcaption>
+  ![The Inbox page, grouped by who a ticket is waiting on.](assets/screenshots/inbox.png)
+  <figcaption>The Inbox: every ticket you can see, grouped by who it's waiting on — an operator+ sees the whole queue, a scoped user only ever their own.</figcaption>
 </figure>
 
 Every ticket is pinned to **exactly one PC**, decided the moment it is created and never
@@ -129,8 +129,9 @@ which host it targets — the target PC stays exactly as frozen as it always was
   wait for an operator**, no matter who is asking or what PC it is on.
 
 This is a **property of the ticket's chat**, not of the tools themselves — and it is
-distinct from the dashboard's separate **Ask kenny** chat (the operator-only assistant rail, not
-tied to any one ticket), which still confirms *both* change tiers exactly as it always has.
+distinct from the dashboard's separate **Ask kenny** overlay (the operator-only global
+assistant, not tied to any one ticket), which still confirms *both* change tiers exactly
+as it always has.
 See [Tool reference § the confirm-gate](tools.md#three-tiers-and-who-enforces-what) for the
 surface-by-surface table, [ADR-0045](adr/0045-tiered-tool-classification.md) for why the
 tier and the gate are kept apart on purpose, and
@@ -138,12 +139,14 @@ tier and the gate are kept apart on purpose, and
 qualifies for the same autonomy Discord always had.
 
 When a step needs you, kenny posts an **approval card** — in the operator channel if you
-configured one, otherwise in the ticket's own thread — with the exact tool and arguments,
-and the header's **approvals badge** (a shield icon next to the Ask kenny toggle, with a
-count) opens the same queue from anywhere in the dashboard. Approvals are **persistent**:
-they survive a server restart, and they expire after `KENNY_TICKET_APPROVAL_TTL_SECS`
-(default 24 h) — an expiry counts as a denial, and kenny tells the requester so. See
-[`dashboard.md`](dashboard.md#the-approvals-badge) for the badge and its confirm dialog.
+configured one, otherwise in the ticket's own thread — with the exact tool and arguments.
+The same held call renders inline in the [Inbox](dashboard.md#inbox)'s NEEDS YOU group,
+and the header's **Inbox badge** counts it from anywhere in the dashboard. Approvals are
+**persistent**: they survive a server restart, and they expire after
+`KENNY_TICKET_APPROVAL_TTL_SECS` (default 24 h) — an expiry counts as a denial, and kenny
+tells the requester so. See [`dashboard.md`](dashboard.md#approval-gates) for the Inbox's
+inline decision and [Ticket detail](dashboard.md#ticket-detail) for the same gate on a
+ticket's own timeline.
 
 ## Operator approval vs. user consent — two different questions
 
@@ -174,26 +177,26 @@ machines a person may ask about**, so it is worth getting right. There are two w
 create it, both landing in the same table and both logged:
 
 **A — the person links themselves.** They run `/link` in Discord. Kenny opens a
-short-lived claim and hands back a code; you confirm it in **Settings → Discord →
+short-lived claim and hands back a code; you confirm it in **Admin → Discord & Tickets →
 Pending claims**, picking which kenny account it belongs to. The claim expires on its own
 if nobody confirms it.
 
-**B — you link them directly.** In **Settings → Discord**, **Pick a guild member** lists
-everyone in the server (this needs the **Guild Members** intent — see below) and lets you
-bind one straight to a kenny account, no code required.
+**B — you link them directly.** In **Admin → Discord & Tickets**, **Pick a guild member**
+lists everyone in the server (this needs the **Guild Members** intent — see below) and
+lets you bind one straight to a kenny account, no code required.
 
 <figure markdown>
-  ![The Discord panel in Settings.](assets/screenshots/discord-settings.png)
-  <figcaption>Settings → Discord: connection status, linked accounts, pending claims, and the guild-member picker.</figcaption>
+  ![The Discord panel in Admin.](assets/screenshots/admin.png)
+  <figcaption>Admin → Discord & Tickets: connection status, linked accounts, pending claims, and the guild-member picker.</figcaption>
 </figure>
 
 Either way, the person can check what kenny thinks of them with `/whoami` — their
 kenny account, role, capability profile, and which PCs it can see. That command exists
 specifically so a mis-mapping is visible to the person it affects, not silent.
 
-An account can be **unlinked** at any time (Settings → Discord → the trash icon on a
-linked row); a disabled/removed mapping makes that Discord user completely inert again —
-no ticket, no reply, no model call, exactly as if they had never linked.
+An account can be **unlinked** at any time (Admin → Discord & Tickets → the trash icon on
+a linked row); a disabled/removed mapping makes that Discord user completely inert
+again — no ticket, no reply, no model call, exactly as if they had never linked.
 
 ## Which PC a request is about
 
@@ -312,7 +315,7 @@ once — there is no "reveal" later, so if you lose it you reset it again, and r
 immediately invalidates the previous one.
 
 Put it in `KENNY_DISCORD_BOT_TOKEN`. This one is **environment-only**: it is never written
-to kenny's database and never editable in the Settings UI, so rotating it means changing
+to kenny's database and never editable in the Admin UI, so rotating it means changing
 the environment and restarting. A leaked bot token lets anyone act as your bot in your
 server — treat it like the operator token.
 
@@ -389,7 +392,7 @@ before that, and nothing happens at all without a token.
 
 ### Checking it actually worked
 
-**Settings → Discord** shows the gateway status. Three things it will tell you:
+**Admin → Discord & Tickets** shows the gateway status. Three things it will tell you:
 
 - **connected** — the gateway is up.
 - **failed to start** with a reason — most often the optional `discord.py` dependency is
@@ -405,15 +408,15 @@ even a model call — so "the bot ignores me" is the expected behaviour before e
 not a fault.
 
 A server with no Discord configuration at all still runs the full ticket surface — the
-store, the lifecycle, the dashboard's Tickets tab and API all work with nothing pointed at
+store, the lifecycle, the dashboard's Inbox and API all work with nothing pointed at
 Discord; only the bot connection itself is opt-in. See [`setup.md`](setup.md) for the
 complete environment-variable reference and [ADR-0044](adr/0044-delegated-identity-from-a-chat-platform.md)
 for why Discord roles are never read as authorization, however tempting that shortcut looks.
 
 ## See also
 
-- [`dashboard.md`](dashboard.md) — the Tickets tab, the approvals badge, and the Discord
-  Settings panel, widget by widget.
+- [`dashboard.md`](dashboard.md) — the Inbox, its inline approval gates, and the Admin →
+  Discord & Tickets panel, widget by widget.
 - [`tools.md`](tools.md) — the three tool tiers and the full confirm-gate table.
 - [`alerting.md`](alerting.md) — how an alert opens a ticket, how to configure which ones do,
   and the Discord webhook notification channel.

@@ -8,8 +8,8 @@ Defender, fix things over the phone without "can you read me what it says" — o
 Claude instead of a clunky console. It works for any small fleet you administer with consent.
 
 <figure markdown>
-  ![The kenny fleet console](assets/screenshots/overview.png)
-  <figcaption>The fleet console — a high-level overview with drill-down into every host. See the <a href="dashboard.md">dashboard reference</a> for the full tour.</figcaption>
+  ![The Today page](assets/screenshots/today.png)
+  <figcaption>The Today page — the fleet in one sentence, with the items that need attention ranked by consequence. See the <a href="dashboard.md">dashboard reference</a> for the full tour.</figcaption>
 </figure>
 
 ```mermaid

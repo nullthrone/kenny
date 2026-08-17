@@ -41,12 +41,12 @@ conditions that were already notified.
     `KENNY_ALERT_INTERVAL_SECS=0` if that is noise for your fleet.
 
 Every emitted alert is also written to the **events table** (`kind='alert'`) as an audit
-trail and as the weekly digest's input, so it shows up in the dashboard's **Activity →
-events & logs** view with no extra UI plumbing.
+trail and as the weekly digest's input, so it shows up in the dashboard's **[Log](dashboard.md#log)**
+page with no extra UI plumbing.
 
 <figure markdown>
-![Emitted alerts and server/agent events in the Activity events and logs view.](assets/screenshots/activity-events.png)
-<figcaption>Emitted alerts and server/agent events in the Activity → events & logs view.</figcaption>
+![Emitted alerts and server/agent events in the Log page.](assets/screenshots/log.png)
+<figcaption>Emitted alerts and server/agent events in the Log page, filterable by the ALERTS and EVENTS chips.</figcaption>
 </figure>
 
 ## An alert can open a ticket
@@ -60,8 +60,8 @@ side effect make an alert late or lost — alerting must not become less reliabl
 one.
 
 An alert-origin ticket has **no requester** — it belongs to the fleet, not a person — so it
-is operator-only in the [Tickets tab](dashboard.md#the-tickets-tab): a scoped `user` never
-sees it. It starts life pinned to the alerting agent, at `high` priority for a `high`/`urgent`
+is operator-only in the [Inbox](dashboard.md#inbox): a scoped `user` never sees it. It
+starts life pinned to the alerting agent, at `high` priority for a `high`/`urgent`
 notification and `normal` otherwise, with the alert's own message as its opening summary.
 
 ### Which events open a ticket is configurable
@@ -69,7 +69,7 @@ notification and `normal` otherwise, with the alert's own message as its opening
 By default, every genuine alert — a health escalation, an agent going offline, a disk-fill
 forecast — opens a ticket, and a recovery, an inventory change, and the weekly digest never
 do. An operator can narrow or widen that per fleet or per host from the **Auto-ticket
-rules** section of [Settings](dashboard.md#auto-ticket-rules), or via the `ticket_rule_*`
+rules** section of [Admin](dashboard.md#auto-ticket-rules), or via the `ticket_rule_*`
 MCP tools. Each rule names an event type (`health` / `offline` / `disk_forecast` /
 `change`), an optional section and host, and a decision: `open_all` (always), `open_crit`
 (only when the subject is `crit`) or `never`.
@@ -119,14 +119,14 @@ points, a genuinely rising slope and a decent fit (r² ≥ 0.5), else they retur
 rather than a scary made-up number:
 
 - **Disk-fill forecast** — *days until full* per volume. Under **~14 days** raises an
-  alert (re-firing at most every 24 h); under **~30 days** shows as an Overview KPI and in
+  alert (re-firing at most every 24 h); under **~30 days** shows as a Today KPI and in
   the weekly digest.
 - **Battery drift** — health change as **percent per 30 days**; a meaningful decline
   appears in the digest.
 
-These same computations feed the per-agent **AI Forecast** card at the top of the agent
-drill-down, which synthesizes them (with the inventory diff) into a short prose outlook —
-see [`dashboard.md`](dashboard.md).
+These same computations feed the per-host **Forecast** panel at the top of
+[the host page](dashboard.md#the-host-page), which synthesizes them (with the inventory
+diff) into a short prose outlook.
 
 ## Weekly digest
 
@@ -177,7 +177,7 @@ Alerting environment variables (see [`setup.md`](setup.md) for the full list):
 ## See also
 
 - [`setup.md`](setup.md) — hosting, TLS, and the full environment-variable list
-- [`dashboard.md`](dashboard.md) — the Overview KPIs and the per-agent AI Forecast card
+- [`dashboard.md`](dashboard.md) — the Today KPIs and the per-host Forecast panel
 - [`telemetry.md`](telemetry.md) — the sections and health rules these alerts evaluate
 - [`itsm.md`](itsm.md) — tickets, the Discord bot, and what an alert-opened ticket looks like
 - [ADR-0027](adr/0027-push-alerting-ntfy-webhook-and-weekly-digest.md) — push alerting & weekly digest

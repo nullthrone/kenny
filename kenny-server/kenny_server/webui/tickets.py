@@ -51,7 +51,7 @@ from .. import tool_classes
 from ..auth import Principal
 from ..discord_identity import DiscordIdentityStore, IdentityConflict
 from ..ticket_rules import DECISIONS, EVENT_TYPES, KNOWN_SECTIONS, TicketRuleList
-from ..ticketstore import Ticket, TicketStore
+from ..ticketstore import Ticket, TicketApproval, TicketStore
 from ..tickets import (
     BLOCKED_REASONS,
     KNOWN_CATEGORIES,
@@ -62,7 +62,7 @@ from ..tickets import (
     TransitionError,
 )
 from ..userstore import UserStore
-from .authz import Forbidden, guard, require_user
+from .authz import Forbidden, guard, require_host, require_user
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle-free typing only
     from ..discord_service import DiscordService
@@ -346,6 +346,16 @@ def build_ticket_routes(
         else:
             # A scoped `user` may only ever open a ticket on their own behalf.
             requester_user_id = principal.user_id
+        agent_id = body.get("agent_id")
+        if agent_id:
+            # A ticket's `agent_id` is frozen at creation as the routing target
+            # every later tool call is checked against (see `TicketService.create`),
+            # so a scoped `user` naming a host outside their scope here would let
+            # them aim work at a machine they cannot otherwise even see. Same
+            # check `guard(..., host_param=...)` runs for a path parameter; here
+            # the host is in the body, so it is checked by hand. A no-op for
+            # operator+, which is never host-scoped.
+            require_host(principal, str(agent_id))
         ticket = await tickets.create(
             title=title,
             origin=str(body.get("origin", "dashboard")),
@@ -649,8 +659,30 @@ def build_ticket_routes(
     # -- approvals -------------------------------------------------------------
 
     async def api_approvals_list(request: Request) -> JSONResponse:
-        q = request.query_params
-        approvals = await store.list_open_approvals(ticket_id=q.get("ticket_id"))
+        """Pending approval gates.
+
+        Operator+ sees every open gate, unmodified. A scoped ``user`` sees only
+        the gates on tickets *they themselves* opened: ``decide_approval``
+        already lets a requester decide a ``user_consent`` gate on their own
+        ticket ("Approving is enforced here", ``tickets.py``), but until now
+        this listing floored at ``operator`` so that requester had no way to
+        even find the gate they are the only person allowed to act on. See
+        ``api_approval_decide`` for the matching (and separately gated) widening
+        of who may *decide* one.
+        """
+
+        principal = require_user(request)
+        ticket_id = request.query_params.get("ticket_id")
+        if ticket_id is not None and not principal.at_least("operator"):
+            _owned_or_operator(principal, await tickets.get(ticket_id))
+        approvals = await store.list_open_approvals(ticket_id=ticket_id)
+        if not principal.at_least("operator"):
+            owned: list[TicketApproval] = []
+            for approval in approvals:
+                ticket = await tickets.get(approval.ticket_id)
+                if ticket.requester_user_id == principal.user_id:
+                    owned.append(approval)
+            approvals = owned
         return JSONResponse({"approvals": [a.as_dict() for a in approvals]})
 
     async def api_approval_decide(request: Request) -> JSONResponse:
@@ -684,6 +716,30 @@ def build_ticket_routes(
         approve = body.get("approve")
         if not isinstance(approve, bool):
             return _err("approve must be a boolean")
+        if not principal.at_least("operator"):
+            # ``TicketService.decide_approval`` enforces who may *approve* a
+            # gate (only an operator for ``operator_approval``, only the
+            # ticket's own requester for ``user_consent``), but it explicitly
+            # leaves *denial* open to any actor ("Denying stays open to every
+            # actor" — the sweeper's expiry and a requester's own withdrawal
+            # both rely on that). Left alone, that would let a scoped `user`
+            # deny anyone's pending gate over this route, not just their own —
+            # a real widening, not the neutral floor-lower it looks like. So
+            # this route adds the same pre-check ``handle_component`` already
+            # runs before ever reaching the service for the Discord button
+            # (``discord_service.py``): a `user` may reach only a
+            # ``user_consent`` gate on a ticket they themselves requested;
+            # everything else (another user's consent gate, any
+            # ``operator_approval``) is refused here, before either
+            # `approve=True` or `approve=False` gets near the service.
+            approval = await store.get_approval(request.path_params["aid"])
+            if approval is not None:
+                if approval.kind != "user_consent":
+                    raise Forbidden(403, "only an operator can decide this step")
+                ticket = await tickets.get(approval.ticket_id)
+                _owned_or_operator(principal, ticket)
+            # else: no pre-check to run — decide_approval itself raises
+            # ApprovalNotFoundError, translated to the usual 404 below.
         decided = await tickets.decide_approval(
             request.path_params["aid"],
             approve=approve,
@@ -1031,10 +1087,10 @@ def build_ticket_routes(
             g(api_ticket_unblock, min_role="user"),
             methods=["POST"],
         ),
-        Route("/api/approvals", g(api_approvals_list, min_role="operator")),
+        Route("/api/approvals", g(api_approvals_list, min_role="user")),
         Route(
             "/api/approvals/{aid}",
-            g(api_approval_decide, min_role="operator"),
+            g(api_approval_decide, min_role="user"),
             methods=["POST"],
         ),
         Route("/api/discord/status", g(api_discord_status, min_role="operator")),

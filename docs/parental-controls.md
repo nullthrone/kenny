@@ -66,11 +66,12 @@ hits appear in the section detail with **domain, category, matched entry, and la
 
 ## The list editor
 
-Open a PC, then click the **`web_activity`** section tile to open its detail popup.
+Open a PC's [host page](dashboard.md#the-host-page), then click its **Web filter** card or
+checklist entry to open the section modal.
 
-![The web_activity section detail — flagged domains, observed domains, and the per-host parental-controls list editor.](assets/screenshots/parental-controls.png)
+![The Web filter section modal on a host page — flagged domains, observed domains, and the per-host parental-controls list editor.](assets/screenshots/host.png)
 
-The popup shows three things:
+The modal shows three things:
 
 1. **Flagged** — domains that matched this PC's list (domain, category, matched entry, last seen).
 2. **Observed domains (24h)** — everything the agent saw, with hit counts and sources.
@@ -129,7 +130,8 @@ reports, parents judge. See [ADR-0029](adr/0029-screen-time-aggregated-session-m
 
 ## Driving it from Ask kenny
 
-The dashboard chat and any MCP client can drive parental controls too. The server-only tools:
+The [Ask kenny overlay](dashboard.md#ask-kenny) — scoped to the host when opened from its
+page — and any MCP client can drive parental controls too. The server-only tools:
 
 | Tool | Args | Changes state? |
 |------|------|----------------|
@@ -143,8 +145,8 @@ the agent (refused with `disabled` under the kill switch). See [`tools.md`](tool
 
 ## See also
 
-- [`user-guide.md`](user-guide.md) — the operator's tour of the fleet view and drill-down.
-- [`dashboard.md`](dashboard.md) — the fleet view, drill-down, and Activity tab.
+- [`user-guide.md`](user-guide.md) — the operator's tour of Fleet and the host page.
+- [`dashboard.md`](dashboard.md) — Fleet, the host page, and the Log page.
 - [`telemetry.md`](telemetry.md) — how sections, collectors, and health rules fit together.
 - [`alerting.md`](alerting.md) — how `warn` / `crit` surface and the weekly digest.
 - [ADR-0024](adr/0024-parental-controls-web-activity-and-webfilter.md) — web activity + web filter.
