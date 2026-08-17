@@ -1,0 +1,28 @@
+.nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-right: 1px solid var(--border-line);
+  padding-right: 16px;
+}
+
+.item {
+  padding: 10px 12px;
+  font-family: var(--font-display);
+  font-size: 11px;
+  letter-spacing: var(--track-caps);
+  color: var(--text-muted);
+  border-left: 2px solid transparent;
+  background: transparent;
+  text-decoration: none;
+  min-height: 20px;
+  white-space: nowrap;
+}
+.item:hover {
+  background: var(--surface-inset);
+}
+.item.active {
+  color: var(--text-body);
+  border-left-color: var(--brass-500);
+  background: var(--surface-inset);
+}

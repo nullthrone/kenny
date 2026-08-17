@@ -369,6 +369,297 @@ def test_user_cannot_reassign_note_or_approve(tmp_path) -> None:
         assert r.json()["status"] == "approved"
 
 
+def test_requester_sees_only_approvals_on_their_own_tickets(tmp_path) -> None:
+    """Bug: a `user_consent` gate can only be decided by the ticket's own
+    requester (`TicketService.decide_approval`: "Approving is enforced here"),
+    but `/api/approvals` used to floor at `operator`, so that requester had no
+    route to even see the one gate they are the only person allowed to act on.
+
+    Fails against the pre-fix code because ``kid``'s and ``sib``'s GET both
+    return 403 (route floored at `operator`) instead of each seeing only their
+    own ticket's approval. Widening what a `user` may *see* here must not
+    widen what they may *decide* -- the second half of this test pins that
+    down: `sib`/`op` still cannot grant `kid`'s consent gate.
+    """
+
+    async def seed(users: UserStore, _store: TicketStore, svc: TicketService) -> dict:
+        kid = await users.create_user("kid", "pw-123456", "user")
+        sib = await users.create_user("sib", "pw-123456", "user")
+        op = await users.create_user("op", "pw-123456", "operator")
+        await users.set_user_hosts(kid["id"], ["pc-kid"])
+        await users.set_user_hosts(sib["id"], ["pc-sib"])
+        kid_pat = await users.create_pat(kid["id"], "t")
+        sib_pat = await users.create_pat(sib["id"], "t")
+        op_pat = await users.create_pat(op["id"], "t")
+
+        kid_ticket = await svc.create(
+            title="kid's request", origin="dashboard", requester_user_id=kid["id"],
+            agent_id="pc-kid",
+        )
+        kid_approval = await svc.open_approval(
+            kid_ticket.id, tool_use_id="tu-1", tool="screen_view",
+            tool_class="normal_change", kind="user_consent", args={},
+            agent_id="pc-kid",
+        )
+        sib_ticket = await svc.create(
+            title="sib's request", origin="dashboard", requester_user_id=sib["id"],
+            agent_id="pc-sib",
+        )
+        sib_approval = await svc.open_approval(
+            sib_ticket.id, tool_use_id="tu-2", tool="screen_view",
+            tool_class="normal_change", kind="user_consent", args={},
+            agent_id="pc-sib",
+        )
+        return {
+            "kid_pat": kid_pat,
+            "sib_pat": sib_pat,
+            "op_pat": op_pat,
+            "kid_approval_id": kid_approval.id,
+            "sib_approval_id": sib_approval.id,
+            "sib_ticket_id": sib_ticket.id,
+        }
+
+    app = _build_app(tmp_path, seed)
+    with TestClient(app) as c:
+        s = app.state.seed
+
+        # Each requester sees exactly their own ticket's gate, nobody else's.
+        kid_rows = c.get("/api/approvals", headers=_hdr(s["kid_pat"])).json()["approvals"]
+        assert [r["id"] for r in kid_rows] == [s["kid_approval_id"]]
+
+        sib_rows = c.get("/api/approvals", headers=_hdr(s["sib_pat"])).json()["approvals"]
+        assert [r["id"] for r in sib_rows] == [s["sib_approval_id"]]
+
+        # The operator-wide listing is unchanged: both gates, untouched.
+        op_rows = c.get("/api/approvals", headers=_hdr(s["op_pat"])).json()["approvals"]
+        assert {r["id"] for r in op_rows} == {s["kid_approval_id"], s["sib_approval_id"]}
+
+        # Naming someone else's ticket by id is refused the same way every
+        # other per-ticket route refuses it.
+        assert (
+            c.get(
+                f"/api/approvals?ticket_id={s['sib_ticket_id']}",
+                headers=_hdr(s["kid_pat"]),
+            ).status_code
+            == 403
+        )
+
+        # Seeing kid's gate does not let sib decide it -- sib is not its
+        # requester, so the route's own ownership pre-check refuses them
+        # before the service is even consulted.
+        assert (
+            c.post(
+                f"/api/approvals/{s['kid_approval_id']}", json={"approve": True},
+                headers=_hdr(s["sib_pat"]),
+            ).status_code
+            == 403
+        )
+        # ... nor does it let an operator grant it: `decide_approval` itself
+        # refuses anyone but the requester for a `user_consent` approval.
+        assert (
+            c.post(
+                f"/api/approvals/{s['kid_approval_id']}", json={"approve": True},
+                headers=_hdr(s["op_pat"]),
+            ).status_code
+            == 403
+        )
+        # ... only kid, the person the consent concerns, may grant their own.
+        # (See ``test_requester_can_decide_their_own_consent_gate_over_the_dashboard``
+        # and its siblings below for the dedicated, from-scratch coverage of
+        # this route.)
+        r = c.post(
+            f"/api/approvals/{s['kid_approval_id']}", json={"approve": True},
+            headers=_hdr(s["kid_pat"]),
+        )
+        assert r.status_code == 200
+        assert r.json()["status"] == "approved"
+
+
+# -- POST /api/approvals/{aid}: a requester may decide their own consent gate -
+
+
+def _seed_two_consent_tickets(
+    users: UserStore, svc: TicketService
+) -> Callable[[], Awaitable[dict[str, Any]]]:
+    """Two users, two hosts, one `user_consent` gate each -- the fixture every
+    test below shares, so the negative cases are real (a second real user and
+    a second real gate to wrongly reach), not an empty-store accident.
+    """
+
+    async def seed() -> dict[str, Any]:
+        kid = await users.create_user("kid", "pw-123456", "user")
+        sib = await users.create_user("sib", "pw-123456", "user")
+        op = await users.create_user("op", "pw-123456", "operator")
+        await users.set_user_hosts(kid["id"], ["pc-kid"])
+        await users.set_user_hosts(sib["id"], ["pc-sib"])
+        kid_pat = await users.create_pat(kid["id"], "t")
+        sib_pat = await users.create_pat(sib["id"], "t")
+        op_pat = await users.create_pat(op["id"], "t")
+
+        kid_ticket = await svc.create(
+            title="kid's consent", origin="dashboard", requester_user_id=kid["id"],
+            agent_id="pc-kid",
+        )
+        kid_consent = await svc.open_approval(
+            kid_ticket.id, tool_use_id="tu-1", tool="screen_view",
+            tool_class="normal_change", kind="user_consent", args={}, agent_id="pc-kid",
+        )
+        sib_ticket = await svc.create(
+            title="sib's consent", origin="dashboard", requester_user_id=sib["id"],
+            agent_id="pc-sib",
+        )
+        sib_consent = await svc.open_approval(
+            sib_ticket.id, tool_use_id="tu-2", tool="screen_view",
+            tool_class="normal_change", kind="user_consent", args={}, agent_id="pc-sib",
+        )
+        kid_change_ticket = await svc.create(
+            title="kid's normal change", origin="dashboard", requester_user_id=kid["id"],
+            agent_id="pc-kid",
+        )
+        kid_change = await svc.open_approval(
+            kid_change_ticket.id, tool_use_id="tu-3", tool="winget_install",
+            tool_class="normal_change", kind="operator_approval", args={}, agent_id="pc-kid",
+        )
+        return {
+            "kid_pat": kid_pat,
+            "sib_pat": sib_pat,
+            "op_pat": op_pat,
+            "kid_consent_id": kid_consent.id,
+            "sib_consent_id": sib_consent.id,
+            "kid_change_id": kid_change.id,
+        }
+
+    return seed
+
+
+def test_requester_can_decide_their_own_consent_gate_over_the_dashboard(tmp_path) -> None:
+    """The gap the coordinator flagged: `decide_approval` already lets a
+    `user_consent` gate's own requester decide it, but the route floored at
+    `operator`, so a requester could now *see* their gate (once listing was
+    fixed) and still never act on it -- visible but unusable. Lowering the
+    floor makes both directions (approve and deny) reachable for the gate's
+    own requester.
+
+    Fails against the pre-fix floor because both calls below 403 before ever
+    reaching the service.
+    """
+
+    async def seed(users: UserStore, _store: TicketStore, svc: TicketService) -> dict:
+        return await _seed_two_consent_tickets(users, svc)()
+
+    app = _build_app(tmp_path, seed)
+    with TestClient(app) as c:
+        s = app.state.seed
+        kid_h = _hdr(s["kid_pat"])
+
+        r = c.post(
+            f"/api/approvals/{s['kid_consent_id']}", json={"approve": True}, headers=kid_h
+        )
+        assert r.status_code == 200
+        assert r.json()["status"] == "approved"
+
+    app2 = _build_app(tmp_path / "deny", seed)
+    with TestClient(app2) as c:
+        s = app2.state.seed
+        r = c.post(
+            f"/api/approvals/{s['kid_consent_id']}", json={"approve": False},
+            headers=_hdr(s["kid_pat"]),
+        )
+        assert r.status_code == 200
+        assert r.json()["status"] == "denied"
+
+
+def test_requester_cannot_decide_an_operator_approval_on_their_own_ticket(tmp_path) -> None:
+    """Lowering the floor must not reach ``operator_approval`` gates at all,
+    even on a ticket the caller themselves requested -- that kind is an
+    operator-only decision by design (``TicketService.decide_approval``), and
+    the route's own kind check refuses it before the service is consulted.
+    """
+
+    async def seed(users: UserStore, _store: TicketStore, svc: TicketService) -> dict:
+        return await _seed_two_consent_tickets(users, svc)()
+
+    app = _build_app(tmp_path, seed)
+    with TestClient(app) as c:
+        s = app.state.seed
+        r = c.post(
+            f"/api/approvals/{s['kid_change_id']}", json={"approve": True},
+            headers=_hdr(s["kid_pat"]),
+        )
+        assert r.status_code == 403
+
+        r = c.post(
+            f"/api/approvals/{s['kid_change_id']}", json={"approve": False},
+            headers=_hdr(s["kid_pat"]),
+        )
+        assert r.status_code == 403
+
+
+def test_a_user_cannot_decide_anothers_consent_gate_either_direction(tmp_path) -> None:
+    """The exact widening a naive floor-lower would have opened: denial is
+    left open to *any* actor at the service layer (`decide_approval`'s own
+    docstring: "Denying stays open to every actor" -- the sweeper's expiry
+    relies on it). Without the route's own ownership pre-check, sib could
+    have denied kid's consent gate outright. Checked in both directions since
+    only ``approve=True`` is gated by the service itself.
+    """
+
+    async def seed(users: UserStore, _store: TicketStore, svc: TicketService) -> dict:
+        return await _seed_two_consent_tickets(users, svc)()
+
+    app = _build_app(tmp_path, seed)
+    with TestClient(app) as c:
+        s = app.state.seed
+        sib_h = _hdr(s["sib_pat"])
+
+        assert (
+            c.post(
+                f"/api/approvals/{s['kid_consent_id']}", json={"approve": True}, headers=sib_h
+            ).status_code
+            == 403
+        )
+        assert (
+            c.post(
+                f"/api/approvals/{s['kid_consent_id']}", json={"approve": False}, headers=sib_h
+            ).status_code
+            == 403
+        )
+        # kid's gate is still exactly as sib left it: pending.
+        assert (
+            c.get("/api/approvals", headers=_hdr(s["op_pat"])).json()["approvals"][0]["status"]
+            == "pending"
+        )
+
+
+def test_operator_can_still_decide_both_kinds(tmp_path) -> None:
+    """The floor change is additive for a scoped `user` only -- an operator's
+    existing reach is untouched: they can still grant/deny an
+    ``operator_approval`` (unchanged), and still deny (never grant -- that was
+    always refused, by ``decide_approval`` itself, not the route) a
+    ``user_consent`` gate that is not theirs.
+    """
+
+    async def seed(users: UserStore, _store: TicketStore, svc: TicketService) -> dict:
+        return await _seed_two_consent_tickets(users, svc)()
+
+    app = _build_app(tmp_path, seed)
+    with TestClient(app) as c:
+        s = app.state.seed
+        op_h = _hdr(s["op_pat"])
+
+        r = c.post(
+            f"/api/approvals/{s['kid_change_id']}", json={"approve": True}, headers=op_h
+        )
+        assert r.status_code == 200
+        assert r.json()["status"] == "approved"
+
+        r = c.post(
+            f"/api/approvals/{s['sib_consent_id']}", json={"approve": False}, headers=op_h
+        )
+        assert r.status_code == 200
+        assert r.json()["status"] == "denied"
+
+
 def test_approving_twice_is_conflict(tmp_path) -> None:
     async def seed(users: UserStore, _store: TicketStore, svc: TicketService) -> dict:
         op = await users.create_user("op", "pw-123456", "operator")
@@ -757,6 +1048,81 @@ def test_create_rejects_unknown_priority(tmp_path) -> None:
         assert r.status_code == 201
 
 
+def test_create_rejects_a_host_outside_the_requesters_scope(tmp_path) -> None:
+    """Bug: a ticket's `agent_id` is the frozen routing target every later
+    tool call is checked against, but `api_tickets_create` never ran a scoped
+    `user`'s chosen `agent_id` through `principal.may_see` -- so a host-scoped
+    user could open a ticket aimed at a machine they cannot otherwise even
+    see. Fails against the pre-fix code because the out-of-scope create
+    below returns 201 instead of 403; the in-scope create must keep working.
+    """
+
+    async def seed(users: UserStore, _store: TicketStore, _svc: TicketService) -> dict:
+        kid = await users.create_user("kid", "pw-123456", "user")
+        await users.set_user_hosts(kid["id"], ["pc-kid"])
+        # A second, real host exists (and is owned by nobody in particular)
+        # so the negative case is refusing an actual machine, not merely an
+        # empty fixture accepting anything.
+        return {"kid_pat": await users.create_pat(kid["id"], "t")}
+
+    app = _build_app(tmp_path, seed)
+    with TestClient(app) as c:
+        h = _hdr(app.state.seed["kid_pat"])
+
+        # Out of scope: refused, in the same shape as every other host-scope
+        # denial (`webui/authz.Forbidden` -> {"error": "forbidden", ...}).
+        r = c.post(
+            "/api/tickets",
+            json={"title": "reach the sibling's PC", "agent_id": "pc-sib"},
+            headers=h,
+        )
+        assert r.status_code == 403
+        assert r.json()["error"] == "forbidden"
+        assert c.get("/api/tickets", headers=h).json()["tickets"] == []
+
+        # In scope: still succeeds.
+        r = c.post(
+            "/api/tickets",
+            json={"title": "fix my own PC", "agent_id": "pc-kid"},
+            headers=h,
+        )
+        assert r.status_code == 201
+        assert r.json()["agent_id"] == "pc-kid"
+
+        # No agent_id at all is not a host-scope question -- still allowed.
+        r = c.post("/api/tickets", json={"title": "no target yet"}, headers=h)
+        assert r.status_code == 201
+        assert r.json()["agent_id"] is None
+
+
+def test_reassign_is_operator_only_so_host_scope_never_applies(tmp_path) -> None:
+    """The same class of bug as ``api_tickets_create``'s missing host check,
+    checked and found *not* present: ``/api/tickets/{tid}/reassign`` floors at
+    ``operator`` (see ``build_ticket_routes``), and only the ``user`` role is
+    host-scoped (``Principal.scoped``) -- an operator's ``hosts`` is always
+    empty and ``may_see`` always ``True`` for it. So nobody who can reach this
+    handler is ever host-scoped in the first place, and there is nothing here
+    to widen.
+    """
+
+    async def seed(users: UserStore, _store: TicketStore, svc: TicketService) -> dict:
+        op = await users.create_user("op", "pw-123456", "operator")
+        op_pat = await users.create_pat(op["id"], "t")
+        ticket = await svc.create(title="retarget me", origin="dashboard", agent_id="pc-a")
+        return {"op_pat": op_pat, "ticket_id": ticket.id}
+
+    app = _build_app(tmp_path, seed)
+    with TestClient(app) as c:
+        s = app.state.seed
+        r = c.post(
+            f"/api/tickets/{s['ticket_id']}/reassign",
+            json={"agent_id": "pc-anywhere"},
+            headers=_hdr(s["op_pat"]),
+        )
+        assert r.status_code == 200
+        assert r.json()["agent_id"] == "pc-anywhere"
+
+
 def test_ticket_payload_carries_only_legal_affordances(tmp_path) -> None:
     async def seed(users: UserStore, _store: TicketStore, svc: TicketService) -> dict:
         kid = await users.create_user("kid", "pw-123456", "user")
@@ -933,6 +1299,211 @@ def test_member_picker_links_and_unlinks_an_identity(tmp_path) -> None:
 
         assert c.delete("/api/discord/identities/900", headers=h).status_code == 200
         assert c.delete("/api/discord/identities/900", headers=h).status_code == 404
+
+
+# -- self-service: see and remove your own Discord binding (ADR-0044) ----------
+
+
+def test_me_discord_shows_only_the_callers_own_binding(tmp_path) -> None:
+    """Two real users, two real bindings — GET /api/me/discord is per-caller."""
+
+    async def seed(users: UserStore, _store: TicketStore, _svc: TicketService) -> dict:
+        kid = await users.create_user("kid", "pw-123456", "user")
+        sib = await users.create_user("sib", "pw-123456", "user")
+        loner = await users.create_user("loner", "pw-123456", "user")
+        su = await users.create_user("su", "pw-123456", "superuser")
+        return {
+            "kid_pat": await users.create_pat(kid["id"], "t"),
+            "sib_pat": await users.create_pat(sib["id"], "t"),
+            "loner_pat": await users.create_pat(loner["id"], "t"),
+            "su_pat": await users.create_pat(su["id"], "t"),
+            "kid_id": kid["id"],
+            "sib_id": sib["id"],
+        }
+
+    app = _build_app(tmp_path, seed, with_discord=True)
+    with TestClient(app) as c:
+        s = app.state.seed
+        su_h = _hdr(s["su_pat"])
+        kid_h, sib_h, loner_h = _hdr(s["kid_pat"]), _hdr(s["sib_pat"]), _hdr(s["loner_pat"])
+
+        # Two real bindings, seeded through the real operator route — not an
+        # empty fixture that happens to make the negative case pass.
+        assert (
+            c.post(
+                "/api/discord/identities",
+                json={"discord_user_id": "900", "user_id": s["kid_id"]},
+                headers=su_h,
+            ).status_code
+            == 201
+        )
+        assert (
+            c.post(
+                "/api/discord/identities",
+                json={"discord_user_id": "901", "user_id": s["sib_id"]},
+                headers=su_h,
+            ).status_code
+            == 201
+        )
+
+        kid_body = c.get("/api/me/discord", headers=kid_h).json()
+        assert kid_body["linked"] is True
+        assert len(kid_body["bindings"]) == 1
+        binding = kid_body["bindings"][0]
+        assert binding["discord_user_id"] == "900"
+        assert binding["guild_id"] == GUILD
+        assert binding["linked_via"] == "member_list"
+        assert isinstance(binding["linked_at"], str) and binding["linked_at"]
+        # Only what the store actually holds — no invented display name, and
+        # no internal `linked_by` either.
+        assert set(binding) == {"discord_user_id", "guild_id", "linked_at", "linked_via"}
+
+        sib_body = c.get("/api/me/discord", headers=sib_h).json()
+        assert [b["discord_user_id"] for b in sib_body["bindings"]] == ["901"]
+
+        # A user with no binding at all gets a clean "not linked" answer, not
+        # a 404 or an error.
+        r = c.get("/api/me/discord", headers=loner_h)
+        assert r.status_code == 200
+        assert r.json()["linked"] is False
+        assert r.json()["bindings"] == []
+
+        # Unauthenticated is still 401, same as every other `user`-floor route.
+        assert c.get("/api/me/discord").status_code == 401
+
+
+def test_me_discord_not_linked_is_clean_without_discord_configured(tmp_path) -> None:
+    """No Discord collaborator at all still answers cleanly, not 503/error."""
+
+    async def seed(users: UserStore, _store: TicketStore, _svc: TicketService) -> dict:
+        kid = await users.create_user("kid", "pw-123456", "user")
+        return {"kid_pat": await users.create_pat(kid["id"], "t")}
+
+    app = _build_app(tmp_path, seed, with_discord=False)
+    with TestClient(app) as c:
+        h = _hdr(app.state.seed["kid_pat"])
+        r = c.get("/api/me/discord", headers=h)
+        assert r.status_code == 200
+        assert r.json()["linked"] is False
+        assert r.json()["bindings"] == []
+
+        r = c.delete("/api/me/discord", headers=h)
+        assert r.status_code == 200
+        assert r.json() == {"ok": True, "removed": 0}
+
+
+def test_user_cannot_remove_another_users_binding_by_any_route(tmp_path) -> None:
+    """The test that matters: kid can never take sib's binding down.
+
+    kid tries the obvious ways to aim ``DELETE /api/me/discord`` at sib's
+    binding — sib's snowflake, sib's guild, even sib's own user id — as query
+    params and as a JSON body, on top of the operator-only path-parameter
+    route. None of it works: the route resolves its target from
+    ``principal.user_id`` alone, so kid only ever removes kid's own binding.
+    """
+
+    async def seed(users: UserStore, _store: TicketStore, _svc: TicketService) -> dict:
+        kid = await users.create_user("kid", "pw-123456", "user")
+        sib = await users.create_user("sib", "pw-123456", "user")
+        su = await users.create_user("su", "pw-123456", "superuser")
+        return {
+            "kid_pat": await users.create_pat(kid["id"], "t"),
+            "sib_pat": await users.create_pat(sib["id"], "t"),
+            "su_pat": await users.create_pat(su["id"], "t"),
+            "kid_id": kid["id"],
+            "sib_id": sib["id"],
+        }
+
+    app = _build_app(tmp_path, seed, with_discord=True)
+    with TestClient(app) as c:
+        s = app.state.seed
+        su_h = _hdr(s["su_pat"])
+        kid_h, sib_h = _hdr(s["kid_pat"]), _hdr(s["sib_pat"])
+
+        assert (
+            c.post(
+                "/api/discord/identities",
+                json={"discord_user_id": "900", "user_id": s["kid_id"]},
+                headers=su_h,
+            ).status_code
+            == 201
+        )
+        assert (
+            c.post(
+                "/api/discord/identities",
+                json={"discord_user_id": "901", "user_id": s["sib_id"]},
+                headers=su_h,
+            ).status_code
+            == 201
+        )
+
+        # kid supplies sib's snowflake, sib's guild and sib's own user id —
+        # as both query params and a JSON body — trying to reach sib's row
+        # through the self-service route.
+        r = c.request(
+            "DELETE",
+            "/api/me/discord",
+            params={"discord_user_id": "901", "guild_id": GUILD, "user_id": str(s["sib_id"])},
+            json={"discord_user_id": "901", "guild_id": GUILD, "user_id": s["sib_id"]},
+            headers=kid_h,
+        )
+        assert r.status_code == 200
+        # Exactly one row removed — kid's own, never sib's.
+        assert r.json() == {"ok": True, "removed": 1}
+
+        # kid is unlinked now...
+        kid_after = c.get("/api/me/discord", headers=kid_h).json()
+        assert kid_after == {
+            "linked": False,
+            "bindings": [],
+            "note": kid_after["note"],
+        }
+        # ...but sib's binding is completely untouched, confirmed both from
+        # sib's own view and from the operator's admin listing.
+        sib_after = c.get("/api/me/discord", headers=sib_h).json()
+        assert sib_after["linked"] is True
+        assert [b["discord_user_id"] for b in sib_after["bindings"]] == ["901"]
+        listed = c.get("/api/discord/identities", headers=su_h).json()["identities"]
+        assert [i["discord_user_id"] for i in listed] == ["901"]
+
+        # A second self-service delete is a clean, idempotent no-op.
+        r = c.delete("/api/me/discord", headers=kid_h)
+        assert r.status_code == 200
+        assert r.json() == {"ok": True, "removed": 0}
+
+
+def test_operator_identity_delete_route_is_unchanged(tmp_path) -> None:
+    """Adding self-service unbind must not touch the operator confirmation path."""
+
+    async def seed(users: UserStore, _store: TicketStore, _svc: TicketService) -> dict:
+        kid = await users.create_user("kid", "pw-123456", "user")
+        su = await users.create_user("su", "pw-123456", "superuser")
+        return {
+            "su_pat": await users.create_pat(su["id"], "t"),
+            "kid_pat": await users.create_pat(kid["id"], "t"),
+            "kid_id": kid["id"],
+        }
+
+    app = _build_app(tmp_path, seed, with_discord=True)
+    with TestClient(app) as c:
+        s = app.state.seed
+        su_h, kid_h = _hdr(s["su_pat"]), _hdr(s["kid_pat"])
+
+        assert (
+            c.post(
+                "/api/discord/identities",
+                json={"discord_user_id": "900", "user_id": s["kid_id"]},
+                headers=su_h,
+            ).status_code
+            == 201
+        )
+        # A plain `user` still can't reach the operator route at all.
+        assert c.delete("/api/discord/identities/900", headers=kid_h).status_code == 403
+
+        assert c.delete("/api/discord/identities/900", headers=su_h).status_code == 200
+        assert c.delete("/api/discord/identities/900", headers=su_h).status_code == 404
+        # And the self-service view now agrees it's gone.
+        assert c.get("/api/me/discord", headers=kid_h).json()["linked"] is False
 
 
 def test_pending_claim_is_listed_and_confirmed_once(tmp_path) -> None:

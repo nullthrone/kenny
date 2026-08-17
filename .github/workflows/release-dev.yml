@@ -15,6 +15,10 @@ on:
     paths:
       - "kenny-agent/**"
       - "kenny-server/**"
+      # The dashboard SPA (ADR-0052): built into every release image/wheel by
+      # the Dockerfile's Node stage and by CI before packaging, so a
+      # frontend-only change must still cut a fresh dev prerelease.
+      - "kenny-web/**"
       - "docs/protocol.md"
       - "docs/fixtures/**"
       - "docs/policy/**"

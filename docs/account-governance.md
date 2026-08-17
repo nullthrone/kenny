@@ -121,8 +121,8 @@ family member working a ticket is not offered them at all and is refused at disp
 the assistant asks for one anyway. Deciding who may sign in to a PC is not something a
 support conversation can reach.
 
-**Every call is written to the audit log** — visible under *Activity → Tool-call audit
-log* in the dashboard.
+**Every call is written to the audit log** — visible in the dashboard's
+[Log](dashboard.md#log) page, filtered to the TOOLS chip.
 
 !!! note "Monitoring is the guarantee, enforcement is best-effort"
     All of these actions are refused while the person at the machine has **remote control

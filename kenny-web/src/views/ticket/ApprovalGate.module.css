@@ -1,0 +1,13 @@
+.reopen {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 12px 14px;
+  background: var(--warn-bg);
+  border: 1px solid var(--amber-600);
+  color: var(--amber-600);
+  font-family: var(--font-display);
+  font-size: 10px;
+  letter-spacing: var(--track-caps);
+  min-height: 40px;
+}

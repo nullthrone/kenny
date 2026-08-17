@@ -1,0 +1,26 @@
+.root {
+  flex: 1;
+  padding: 40px;
+  max-width: 1080px;
+}
+
+.wrap {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: 32px;
+  align-items: start;
+}
+
+.sectionTitle {
+  font-family: var(--font-display);
+  font-size: 10px;
+  letter-spacing: var(--track-caps-wide);
+  color: var(--text-accent);
+  margin-bottom: 16px;
+}
+
+.loading {
+  padding: 24px 0;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}

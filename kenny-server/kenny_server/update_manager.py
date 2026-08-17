@@ -274,6 +274,38 @@ class UpdateManager:
             self._cleanup_campaign_dir(campaign_id)
         return ok
 
+    async def suspend_campaign(self, campaign_id: str) -> bool:
+        """Pause ``campaign_id`` without discarding it: stop both triggers, keep everything.
+
+        Unlike :meth:`revoke_campaign`, this is deliberately *not* terminal and
+        does **not** clean up the pinned artifact directory — there would be
+        nothing left to resume from otherwise (ADR-0040's *More Information*).
+        It also leaves ``update_campaign_agents`` untouched, which is the
+        entire reason this state exists rather than "revoke, then re-approve
+        later": a fresh campaign gets a fresh ``campaign_id``, and per-agent
+        attempt/held bookkeeping is keyed ``(campaign_id, agent_id)`` — so
+        recreating would silently hand a held, likely crash-looping agent a
+        brand-new attempt budget. Suspending and later resuming the *same*
+        campaign keeps that agent held.
+
+        Only an ``active`` campaign can be suspended — a revoked, expired, or
+        already-completed campaign is refused (``False``), not silently
+        no-opped into a new state.
+        """
+
+        return await self.store.set_campaign_status(campaign_id, "suspended")
+
+    async def resume_campaign(self, campaign_id: str) -> bool:
+        """Reactivate a suspended campaign: :meth:`apply_now` and the on-connect
+        hook see it again, exactly as before it was suspended.
+
+        Only a ``suspended`` campaign can be resumed.
+        """
+
+        return await self.store.set_campaign_status(
+            campaign_id, "active", from_status="suspended"
+        )
+
     async def apply_now(self, campaign_id: str | None = None) -> dict[str, Any]:
         """Apply a pinned campaign to every currently-online, eligible agent."""
 

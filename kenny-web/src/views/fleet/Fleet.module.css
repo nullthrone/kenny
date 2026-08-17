@@ -1,0 +1,97 @@
+.root {
+  flex: 1;
+  padding: 40px;
+}
+
+.head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 24px;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.addButton {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 18px;
+  background: var(--accent);
+  color: var(--paper-white);
+  border: none;
+  font-family: var(--font-display);
+  font-size: 11px;
+  letter-spacing: var(--track-caps);
+  min-height: 44px;
+}
+.addButton:hover {
+  background: var(--accent-hover);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.card {
+  display: block;
+  background: var(--surface-card);
+  box-shadow: var(--shadow-1);
+  padding: 20px;
+  text-decoration: none;
+  color: var(--text-body);
+  border: 1px solid var(--border-line);
+}
+.card:hover {
+  background: var(--surface-inset);
+}
+
+.cardTop {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.dot {
+  width: 9px;
+  height: 9px;
+  display: inline-block;
+  flex: none;
+}
+
+.hostname {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 600;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sevLabel {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.summary {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  line-height: var(--leading-body);
+  min-height: 38px;
+}
+
+.cardFoot {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-faint);
+  border-top: 1px solid var(--border-line);
+  padding-top: 10px;
+  margin-top: 12px;
+}

@@ -6,7 +6,8 @@ Single entrypoint that, in one event loop:
 2. serves it with an in-process ``uvicorn.Server`` (so the same ``app.state`` we
    seed is the one the browser hits — in-memory state like the screenshot store
    and registry online flags survive),
-3. seeds ``app.state`` with the demo fleet (``seed.seed_app``),
+3. seeds ``app.state`` with the demo fleet (``seed.seed_app``), including the
+   "thomas" superuser session the browser signs in as,
 4. drives headless Chromium (Playwright) over the shot manifest, asserting the
    real fonts loaded, and
 5. writes ``<name>.png`` per shot into ``--out``.
@@ -40,19 +41,15 @@ else:
     from . import demo_fleet, seed, shots  # noqa: F401  (demo_fleet re-exported)
 
 DEFAULT_OUT = "docs/assets/screenshots"
+# The legacy back-compat token — still set as KENNY_OPERATOR_TOKEN so the demo
+# Admin → Operator & Agent Auth section shows it as a real configured secret,
+# but the browser itself signs in with a real "thomas" session (see
+# seed.SeedResult.session_id), not this cookie: the shared-token identity has
+# no user row and would make profile.png show its empty "no editable account"
+# state instead of the real one.
 OPERATOR_TOKEN = "demo-operator-token"
 VIEWPORT = {"width": 1500, "height": 950}
 DEVICE_SCALE = 2
-
-# Injected so the About modal's changelog is populated without a live GitHub call
-# (the route otherwise reaches out to the GitHub Releases API).
-_CHANGELOG_JSON = (
-    '{"repo":"t11z/kenny","releases":['
-    '{"version":"1.4.0","name":"1.4.0","date":"2026-06-20T00:00:00Z",'
-    '"body":"Overview dashboard drill-downs; parental-controls drift banner."},'
-    '{"version":"1.3.2","name":"1.3.2","date":"2026-05-31T00:00:00Z",'
-    '"body":"AI forecast card; reliability heatmap categories."}]}'
-)
 
 
 def _free_port() -> int:
@@ -100,31 +97,25 @@ def _chromium_executable() -> str | None:
 
 
 async def _assert_fonts(page: Any) -> None:
-    """Fail loudly unless the real Hanken Grotesk + JetBrains Mono webfonts loaded."""
+    """Fail loudly unless the real Jost + Public Sans + JetBrains Mono webfonts loaded.
+
+    Nullthrone's font stack: Jost for display/caps labels, Public Sans for body
+    text, JetBrains Mono for code/mono values (see tokens/fonts.css).
+    """
 
     await page.evaluate("document.fonts.ready")
     ok = await page.evaluate(
-        "({hanken: document.fonts.check(\"16px 'Hanken Grotesk'\"),"
+        "({jost: document.fonts.check(\"16px 'Jost'\"),"
+        " publicSans: document.fonts.check(\"16px 'Public Sans'\"),"
         " mono: document.fonts.check(\"16px 'JetBrains Mono'\")})"
     )
-    if not (ok.get("hanken") and ok.get("mono")):
+    if not (ok.get("jost") and ok.get("publicSans") and ok.get("mono")):
         raise SystemExit(
             "FONT CHECK FAILED — refusing to ship fallback-font PNGs. "
-            f"Hanken Grotesk loaded={ok.get('hanken')}, JetBrains Mono loaded={ok.get('mono')}. "
+            f"Jost loaded={ok.get('jost')}, Public Sans loaded={ok.get('publicSans')}, "
+            f"JetBrains Mono loaded={ok.get('mono')}. "
             "Chromium could not fetch Google Fonts (check HTTPS_PROXY / cert handling)."
         )
-
-
-async def _wait_charts(page: Any) -> None:
-    """Wait until every Overview ECharts container has a laid-out, sized SVG."""
-
-    await page.wait_for_function(
-        "() => { const els = [...document.querySelectorAll('.kc-chart')];"
-        " if (!els.length) return false;"
-        " return els.every(e => { const svg = e.querySelector('svg');"
-        "   return svg && svg.getBoundingClientRect().width > 0; }); }",
-        timeout=15000,
-    )
 
 
 async def _run_actions(page: Any, actions: list[dict[str, Any]]) -> None:
@@ -133,8 +124,6 @@ async def _run_actions(page: Any, actions: list[dict[str, Any]]) -> None:
             await page.evaluate(f"(async () => {{ {action['eval']}; }})()")
         elif "wait_for" in action:
             await page.wait_for_selector(action["wait_for"], state="visible", timeout=15000)
-        elif "wait_charts" in action:
-            await _wait_charts(page)
         elif "sleep" in action:
             await page.wait_for_timeout(action["sleep"])
 
@@ -149,12 +138,16 @@ async def _capture_shot(context: Any, base_url: str, shot: shots.Shot, out_dir: 
     )
     try:
         await page.goto(base_url + "/" + shot.hash, wait_until="networkidle", timeout=30000)
-        await page.wait_for_selector("#app", state="attached", timeout=15000)
+        # kenny-web mounts React at #root (index.html), not the old hand-written
+        # app's #app.
+        await page.wait_for_selector("#root", state="attached", timeout=15000)
         await _assert_fonts(page)
         await _run_actions(page, shot.actions)
         out_path = out_dir / f"{shot.name}.png"
         if shot.mode == "full_page":
             await page.screenshot(path=str(out_path), full_page=True)
+        elif shot.mode == "viewport":
+            await page.screenshot(path=str(out_path), full_page=False)
         else:
             locator = page.locator(shot.selector).first
             await locator.wait_for(state="visible", timeout=15000)
@@ -183,7 +176,7 @@ async def run(only: list[str] | None, out: str) -> int:
 
     server, serve_task = await _serve(app, port)
     seeded = await seed.seed_app(app)
-    print(f"seeded {len(seeded)} hosts: {', '.join(seeded)}")
+    print(f"seeded {len(seeded.agent_ids)} hosts: {', '.join(seeded.agent_ids)}")
 
     results: list[tuple[str, str]] = []
     proxy_server = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
@@ -201,32 +194,17 @@ async def run(only: list[str] | None, out: str) -> int:
             device_scale_factor=DEVICE_SCALE,
             ignore_https_errors=True,
         )
+        # A real "thomas" superuser session (seed.SeedResult.session_id), not the
+        # legacy shared-token cookie — see OPERATOR_TOKEN's comment above.
         await context.add_cookies(
-            [{"name": "kenny_op", "value": OPERATOR_TOKEN, "url": base_url}]
-        )
-        # Serve the About changelog locally so the modal never waits on GitHub.
-        await context.route(
-            "**/api/changelog",
-            lambda route: route.fulfill(
-                status=200, content_type="application/json", body=_CHANGELOG_JSON
-            ),
-        )
-        # Report a staged agent binary so the Fleet tab omits the "no installer"
-        # banner and enables the Add-a-PC controls (a clean demo, not an error).
-        await context.route(
-            "**/api/agent-binary",
-            lambda route: route.fulfill(
-                status=200,
-                content_type="application/json",
-                body='{"available": true, "version": "1.4.0", "github_configured": true}',
-            ),
+            [{"name": "kenny_op", "value": seeded.session_id, "url": base_url}]
         )
 
         # Font preflight on the first real page — fail loudly before doing work.
         preflight = await context.new_page()
-        await preflight.goto(base_url + "/#/overview", wait_until="networkidle", timeout=30000)
+        await preflight.goto(base_url + "/#/today", wait_until="networkidle", timeout=30000)
         await _assert_fonts(preflight)
-        print("font check: Hanken Grotesk + JetBrains Mono loaded OK")
+        print("font check: Jost + Public Sans + JetBrains Mono loaded OK")
         await preflight.close()
 
         for shot in manifest:

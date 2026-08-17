@@ -286,7 +286,14 @@ async def test_hold_freezes_the_target_before_the_gate(store: TelemetryStore) ->
     resume = await apply_confirmation(session, approve=True, executor=executor)
 
     assert sent == ["alpha"]  # not "beta"
-    assert resume == {"type": "tool_result", "tool": "net_dns_flush", "args": {}, "ok": True}
+    # ``auto_run`` is false: this call was held and explicitly confirmed.
+    assert resume == {
+        "type": "tool_result",
+        "tool": "net_dns_flush",
+        "args": {},
+        "ok": True,
+        "auto_run": False,
+    }
     assert session.pending is None
     assert session._staged_results and session._staged_results[0]["tool_use_id"] == "tu3"
 

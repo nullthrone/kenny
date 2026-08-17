@@ -61,6 +61,27 @@ async def test_sessions_expire(store) -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_sessions(store) -> None:
+    u = await store.create_user("op", "pw-123456", "operator")
+    other = await store.create_user("kid", "pw-123456", "user")
+    s1 = await store.create_session(u["id"], ip="10.0.0.1", user_agent="Firefox")
+    s2 = await store.create_session(u["id"], ip="10.0.0.2", user_agent="Chrome")
+    # A session belonging to a different account never shows up here.
+    await store.create_session(other["id"])
+
+    sessions = await store.list_sessions(u["id"])
+    assert {s["id"] for s in sessions} == {s1, s2}
+    ips = {s["id"]: s["ip"] for s in sessions}
+    assert ips == {s1: "10.0.0.1", s2: "10.0.0.2"}
+    for s in sessions:
+        assert set(s) == {"id", "created_at", "expires_at", "ip", "user_agent"}
+
+    # An account with no sessions gets an empty list, not an error.
+    fresh = await store.create_user("nobody", "pw-123456", "user")
+    assert await store.list_sessions(fresh["id"]) == []
+
+
+@pytest.mark.asyncio
 async def test_host_scope(store) -> None:
     u = await store.create_user("kid", "pw-123456", "user")
     await store.set_user_hosts(u["id"], ["PC-A", "PC-B", "PC-A"])

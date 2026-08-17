@@ -1,0 +1,10 @@
+:root{
+/* Corners are square. --radius-1 exists only for tiny inner elements. */
+--radius-0:0px;--radius-1:2px;
+--line:1px solid var(--border-line);--line-strong:1px solid var(--border-strong);
+--shadow-1:0 1px 2px rgba(20,19,23,.07);--shadow-2:0 2px 8px rgba(20,19,23,.10);--shadow-3:0 12px 32px rgba(20,19,23,.16);
+--ease:cubic-bezier(.2,0,0,1);/* @kind other */
+--dur-fast:120ms;/* @kind other */
+--dur-med:200ms;/* @kind other */
+--dur-slow:320ms;/* @kind other */
+}

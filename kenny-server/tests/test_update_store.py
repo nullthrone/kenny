@@ -75,6 +75,70 @@ async def test_set_campaign_status_only_transitions_active(tmp_path) -> None:
     await store.close()
 
 
+async def test_suspend_and_resume_round_trip(tmp_path) -> None:
+    store = await _store(tmp_path)
+    cid = await store.create_campaign(version="1.0.0", on_connect=False, expires_at=None, targets=[])
+    assert await store.set_campaign_status(cid, "suspended") is True
+    assert (await store.get_campaign(cid))["status"] == "suspended"
+    # a suspended campaign is no longer the active one...
+    assert await store.get_active_campaign() is None
+    # ...but is still fetchable by id, so it can be resumed.
+    assert await store.get_campaign(cid) is not None
+
+    assert await store.set_campaign_status(cid, "active", from_status="suspended") is True
+    resumed = await store.get_campaign(cid)
+    assert resumed["status"] == "active"
+    assert (await store.get_active_campaign())["id"] == cid
+    await store.close()
+
+
+async def test_suspend_refused_on_a_terminal_campaign(tmp_path) -> None:
+    store = await _store(tmp_path)
+    cid = await store.create_campaign(version="1.0.0", on_connect=False, expires_at=None, targets=[])
+    assert await store.set_campaign_status(cid, "revoked") is True
+    # a revoked campaign cannot be suspended -- refused, not silently ignored
+    assert await store.set_campaign_status(cid, "suspended") is False
+    assert (await store.get_campaign(cid))["status"] == "revoked"
+    await store.close()
+
+
+async def test_resume_refused_unless_currently_suspended(tmp_path) -> None:
+    store = await _store(tmp_path)
+    cid = await store.create_campaign(version="1.0.0", on_connect=False, expires_at=None, targets=[])
+    # still active -- "resume" (from_status="suspended") does not match
+    assert await store.set_campaign_status(cid, "active", from_status="suspended") is False
+    assert (await store.get_campaign(cid))["status"] == "active"
+    await store.close()
+
+
+async def test_suspended_status_survives_a_restart(tmp_path) -> None:
+    """A "restart" here is literal (mirrors ``tests/test_approval_persistence.py``):
+    every store is closed and a fresh one is opened over the same SQLite file,
+    so the suspended status can only be surviving in the file itself."""
+
+    db_path = str(tmp_path / "updates.sqlite")
+    boot1 = UpdateStore(db_path)
+    await boot1.connect()
+    cid = await boot1.create_campaign(version="1.0.0", on_connect=False, expires_at=None, targets=[])
+    assert await boot1.set_campaign_status(cid, "suspended") is True
+    await boot1.close()
+
+    boot2 = UpdateStore(db_path)
+    await boot2.connect()
+    try:
+        row = await boot2.get_campaign(cid)
+        assert row is not None
+        assert row["status"] == "suspended"
+        assert await boot2.get_active_campaign() is None
+
+        # and it resumes correctly on the fresh connection too
+        assert await boot2.set_campaign_status(cid, "active", from_status="suspended") is True
+        resumed = await boot2.get_campaign(cid)
+        assert resumed["status"] == "active"
+    finally:
+        await boot2.close()
+
+
 async def test_record_attempt_success_marks_updated_version(tmp_path) -> None:
     store = await _store(tmp_path)
     cid = await store.create_campaign(version="1.0.0", on_connect=False, expires_at=None, targets=[])

@@ -1,0 +1,36 @@
+.box {
+  border: 1px solid var(--brass-400);
+  background: var(--brass-100);
+  padding: 16px 18px;
+  margin-bottom: 22px;
+}
+
+.eyebrow {
+  font-family: var(--font-display);
+  font-size: 9px;
+  letter-spacing: var(--track-caps);
+  color: var(--brass-700);
+  margin-bottom: 8px;
+}
+
+.prose {
+  font-size: var(--text-sm);
+  line-height: var(--leading-body);
+  color: var(--ink-950);
+}
+
+.line {
+  display: block;
+}
+
+.fixButton {
+  margin-top: 12px;
+  padding: 9px 16px;
+  background: #141317;
+  color: #f4f2ec;
+  border: none;
+  font-family: var(--font-display);
+  font-size: 10px;
+  letter-spacing: var(--track-caps);
+  min-height: 40px;
+}

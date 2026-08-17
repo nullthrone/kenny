@@ -155,8 +155,22 @@ PRIORITIES: tuple[str, ...] = ("low", "normal", "high", "urgent")
 # soft warning on the API for anything unlisted). A closed list would block a
 # legitimate ad-hoc category, and unlike priority nothing downstream branches
 # on this value.
+# ``web_filter`` is the parental-controls bypass request: a child asks for a
+# site the filter blocks. It is a ticket like any other — the existing approval
+# gate is the decision, and acting on an approved one is the operator's ordinary
+# ``webfilter_set(add_domain, action="allow")`` + ``webfilter_push``. There is
+# deliberately no second pending-request table with its own lifecycle.
 KNOWN_CATEGORIES: frozenset[str] = frozenset(
-    {"alert", "account", "network", "software", "hardware", "performance", "other"}
+    {
+        "alert",
+        "account",
+        "network",
+        "software",
+        "hardware",
+        "performance",
+        "web_filter",
+        "other",
+    }
 )
 
 # Trail kinds callers may append. ``state``, ``handoff``, ``block`` and

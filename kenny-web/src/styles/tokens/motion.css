@@ -1,0 +1,5 @@
+/* Motion primitives — fades and small translates only; no bounces. */
+@keyframes nt-fade-up{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+@keyframes nt-fade-in{from{opacity:0}to{opacity:1}}
+@keyframes nt-bar-pulse{0%,100%{transform:scaleY(.35);opacity:.5}50%{transform:scaleY(1);opacity:1}}
+@keyframes nt-indeterminate{0%{left:-35%}100%{left:100%}}

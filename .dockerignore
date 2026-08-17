@@ -15,3 +15,10 @@ docs/*
 !docs/policy
 kenny-agent
 **/.DS_Store
+
+# kenny-web (ADR-0052): source reaches the build context (the Dockerfile's
+# Node stage builds it), but never node_modules -- the image installs its own
+# inside the build stage -- and never a stray locally-built dist/, which the
+# Node stage always regenerates fresh.
+kenny-web/node_modules
+kenny-server/kenny_server/webui/dist

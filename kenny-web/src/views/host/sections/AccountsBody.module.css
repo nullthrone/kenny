@@ -1,0 +1,113 @@
+.eyebrow {
+  font-family: var(--font-display);
+  font-size: 9px;
+  letter-spacing: var(--track-caps-wide);
+  color: var(--text-muted);
+  margin: 0 0 10px;
+}
+
+.policy {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  margin: 0 0 20px;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.card {
+  border: 1px solid var(--border-line);
+  padding: 14px 16px;
+}
+
+.head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.name {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.display {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.kindChip {
+  font-family: var(--font-display);
+  font-size: 9px;
+  letter-spacing: var(--track-caps);
+  border: 1px solid var(--border-mid);
+  color: var(--text-muted);
+  padding: 1px 6px;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.meta {
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+}
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: center;
+}
+
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-xs);
+}
+.toggle input {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--brass-500);
+}
+
+.actionButton {
+  font-family: var(--font-display);
+  font-size: 9px;
+  letter-spacing: var(--track-caps);
+  padding: 6px 10px;
+  border: 1px solid var(--border-mid);
+  background: transparent;
+  color: var(--text-body);
+}
+.actionButton:disabled {
+  color: var(--text-faint);
+  cursor: default;
+}
+
+.removeButton {
+  composes: actionButton;
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.unsupportedNote {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-faint);
+}
+
+.error {
+  color: var(--danger);
+  font-size: var(--text-xs);
+  margin-top: 8px;
+}

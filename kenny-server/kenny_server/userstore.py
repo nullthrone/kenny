@@ -14,6 +14,11 @@ as ISO-8601 UTC):
   a stolen cookie is a session handle, not a reusable credential.
 * ``user_hosts`` — which agents a ``user``-role account may see and operate on.
 
+``users.theme`` is the one *preference* the store carries: ``light``/``dark``, or
+``NULL`` for an account that never chose. It is not an authorization axis and
+nothing branches on it — it exists so a choice made in one browser is still there
+in the next one.
+
 ``users.capability_profile`` is a third, optional authorization axis alongside
 role and host scope: a named tool-allowlist (see ``tool_classes.PROFILES``)
 that narrows what the account may do. ``NULL`` means "no profile set" —
@@ -44,6 +49,7 @@ CREATE TABLE IF NOT EXISTS users (
     avatar             TEXT,
     disabled           INTEGER NOT NULL DEFAULT 0,
     capability_profile TEXT,
+    theme              TEXT,
     created_at         TEXT NOT NULL,
     updated_at         TEXT NOT NULL
 );
@@ -74,7 +80,14 @@ CREATE TABLE IF NOT EXISTS user_hosts (
 _DEFAULT_SESSION_TTL_SECS = 7 * 24 * 3600  # 7 days
 
 # Columns added after the initial release; older DBs need an ALTER on connect.
-_MIGRATE_COLUMNS = ("capability_profile",)
+# All are nullable TEXT (see ``_migrate``): NULL is the "never set" value and
+# every reader has to treat it as such, which is what makes the ALTER safe to
+# run against a populated table.
+_MIGRATE_COLUMNS = ("capability_profile", "theme")
+
+#: The console's two themes. NULL means "the account never chose one", which is
+#: not the same as either — the client then keeps whatever it decided locally.
+THEMES: frozenset[str] = frozenset({"light", "dark"})
 
 
 def _now_iso() -> str:
@@ -93,6 +106,7 @@ def _public_user(row: aiosqlite.Row) -> dict:
         "disabled": bool(row["disabled"]),
         "totp_enabled": row["totp_secret"] is not None,
         "capability_profile": row["capability_profile"],
+        "theme": row["theme"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
@@ -346,6 +360,31 @@ class UserStore:
         )
         await self._conn.commit()
 
+    async def set_theme(self, user_id: int, theme: str | None) -> None:
+        """Persist (or clear, with ``None``) the account's console theme.
+
+        Validated here rather than only at the API boundary, following
+        :meth:`set_capability_profile`: a closed vocabulary that a second caller
+        could otherwise write past. ``theme`` must be ``None`` or a member of
+        :data:`THEMES`.
+
+        One statement plus its commit, like every other setter in this store —
+        no ``write_lock`` is involved, which ADR-0051 reserves for a write whose
+        several statements must land together.
+        """
+
+        if theme is not None and theme not in THEMES:
+            raise ValueError(f"unknown theme {theme!r}")
+        await self._conn.execute(
+            "UPDATE users SET theme = ?, updated_at = ? WHERE id = ?",
+            (theme, _now_iso(), user_id),
+        )
+        await self._conn.commit()
+
+    async def get_theme(self, user_id: int) -> str | None:
+        row = await self._get_row(user_id)
+        return row["theme"] if row else None
+
     async def get_capability_profile(self, user_id: int) -> str | None:
         row = await self._get_row(user_id)
         return row["capability_profile"] if row else None
@@ -484,6 +523,34 @@ class UserStore:
         )
         await self._conn.commit()
         return sid
+
+    async def list_sessions(self, user_id: int) -> list[dict]:
+        """All sessions for ``user_id``, newest first.
+
+        Each dict's ``id`` is the raw session token — the same string the
+        cookie carries, so it doubles as a bearer credential. Callers must
+        never serialize it back to a client; it exists here only so a caller
+        can compare it against the current request's session id (to flag
+        "current") or use it to evict a per-session registry slot when the
+        session is revoked.
+        """
+
+        async with self._conn.execute(
+            "SELECT id, created_at, expires_at, ip, user_agent FROM sessions "
+            "WHERE user_id = ? ORDER BY created_at DESC",
+            (user_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [
+            {
+                "id": r["id"],
+                "created_at": r["created_at"],
+                "expires_at": r["expires_at"],
+                "ip": r["ip"],
+                "user_agent": r["user_agent"],
+            }
+            for r in rows
+        ]
 
     async def resolve_session(self, session_id: str) -> aiosqlite.Row | None:
         """Resolve a session id to its (enabled) account row, or ``None``.

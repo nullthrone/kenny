@@ -531,6 +531,62 @@ class EventStore:
             rows = await cur.fetchall()
         return [self._row_to_event(r) for r in rows]
 
+    async def query_log(
+        self,
+        *,
+        kind: str | None = None,
+        q: str | None = None,
+        agent_ids: list[str] | None = None,
+        before: tuple[str, int] | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Search/paginate events for ``/api/log`` (tools/alerts/events, merged).
+
+        ``agent_ids`` is the caller's visible-host allowlist (``None`` means
+        unrestricted; an *empty* list means "nothing visible" and short-circuits
+        without a query) — the scoping happens in SQL, not by filtering the page
+        after the fact, so a scoped caller's page is never short (see
+        ``api_events``'s post-filter, which this deliberately does not repeat).
+        ``before`` is an exclusive keyset cursor over ``(at, id)`` (both already
+        indexed by ``idx_events_time``'s ``at DESC`` and the primary key) — the
+        caller reads the last returned row's ``(at, id)`` back in for the next
+        page. ``q`` is a plain ``LIKE`` scan over message/tool/target; there is
+        no FTS table, consistent with this codebase's scale (see module ADR-0017).
+        """
+
+        if agent_ids is not None and not agent_ids:
+            return []
+        clauses: list[str] = []
+        params: list[Any] = []
+        if kind is not None:
+            clauses.append("kind = ?")
+            params.append(kind)
+        if agent_ids is not None:
+            clauses.append(f"agent_id IN ({', '.join('?' for _ in agent_ids)})")
+            params.extend(agent_ids)
+        if q:
+            like = f"%{q}%"
+            clauses.append("(message LIKE ? OR tool LIKE ? OR target LIKE ?)")
+            params.extend([like, like, like])
+        if before is not None:
+            clauses.append("(at, id) < (?, ?)")
+            params.extend([before[0], before[1]])
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(limit)
+        async with self._conn.execute(
+            "SELECT id, at, agent_id, source, level, kind, tool, ok, error, target, message, fields "
+            f"FROM events {where} ORDER BY at DESC, id DESC LIMIT ?",
+            params,
+        ) as cur:
+            rows = await cur.fetchall()
+        return [
+            {
+                "id": int(row["id"]),
+                **self._row_to_event(row),
+            }
+            for row in rows
+        ]
+
     async def prune(
         self, *, now: datetime | None = None, retention_days: int | None = None
     ) -> int:
@@ -1415,9 +1471,29 @@ class UpdateStore:
         return [dict(r) for r in rows]
 
     async def set_campaign_status(
-        self, campaign_id: str, status: str, *, at_field: str | None = None
+        self,
+        campaign_id: str,
+        status: str,
+        *,
+        from_status: str = "active",
+        at_field: str | None = None,
     ) -> bool:
-        """Transition a campaign to a terminal status (``revoked``/``expired``/``completed``)."""
+        """Transition a campaign out of ``from_status`` and into ``status``.
+
+        Guarded the same way regardless of which transition this is: the
+        ``UPDATE`` only touches a row currently in ``from_status``, so a stale
+        or duplicate call against a campaign that already moved on (including
+        one that raced it) is a silent no-op (returns ``False``) rather than
+        clobbering whatever status a concurrent transition already set.
+
+        ``from_status`` defaults to ``"active"`` — every terminal transition
+        (``revoked``/``expired``/``completed``) and ``suspended`` itself leave
+        ``active``. Resume is the one caller that passes
+        ``from_status="suspended"`` to go back the other way. Terminal statuses
+        also stamp a timestamp column (``at_field``, defaulting to the
+        ``revoked_at``/``completed_at`` mapping below); ``suspended`` and
+        ``active`` (resume) have no such column and leave it alone.
+        """
 
         now = datetime.now(timezone.utc).isoformat()
         field = at_field or {
@@ -1427,14 +1503,14 @@ class UpdateStore:
         }.get(status)
         if field is None:
             cur = await self._conn.execute(
-                "UPDATE update_campaigns SET status = ? WHERE id = ? AND status = 'active'",
-                (status, campaign_id),
+                "UPDATE update_campaigns SET status = ? WHERE id = ? AND status = ?",
+                (status, campaign_id, from_status),
             )
         else:
             cur = await self._conn.execute(
                 f"UPDATE update_campaigns SET status = ?, {field} = ? "
-                "WHERE id = ? AND status = 'active'",
-                (status, now, campaign_id),
+                "WHERE id = ? AND status = ?",
+                (status, now, campaign_id, from_status),
             )
         await self._conn.commit()
         return (cur.rowcount or 0) > 0
@@ -1648,6 +1724,20 @@ CREATE TABLE IF NOT EXISTS webfilter_domains (
     added_at  TEXT NOT NULL,
     PRIMARY KEY (agent_id, domain)
 );
+CREATE TABLE IF NOT EXISTS webfilter_windows (
+    id         TEXT PRIMARY KEY,
+    agent_id   TEXT NOT NULL,
+    label      TEXT NOT NULL DEFAULT '',
+    days       TEXT NOT NULL,
+    start_min  INTEGER NOT NULL,
+    end_min    INTEGER NOT NULL,
+    categories TEXT NOT NULL,
+    tz         TEXT NOT NULL,
+    enabled    INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_webfilter_windows_agent
+    ON webfilter_windows (agent_id);
 CREATE TABLE IF NOT EXISTS web_activity_events (
     agent_id   TEXT NOT NULL,
     domain     TEXT NOT NULL,
@@ -1678,14 +1768,26 @@ _WEBFILTER_TOGGLES = (
     "use_bypass_protection",
 )
 
+# Columns added after the tables first shipped, backfilled into existing DB
+# files the same way ``UpdateStore._migrate`` does. Both default to the
+# pre-category behaviour: no extra categories on a config, and an untagged
+# (always-in-force) custom entry.
+_WEBFILTER_MIGRATED_COLUMNS: dict[str, dict[str, str]] = {
+    "webfilter_config": {"categories": "TEXT"},
+    "webfilter_domains": {"category": "TEXT"},
+}
+
 
 class WebFilterStore:
     """Async SQLite-backed store for parental-controls state (ADR-0024).
 
-    Holds, per host: the feature config, the editable custom domain list
-    (``watch``/``block``/``allow``), and the accumulated ``web_activity`` events
-    (server-side 24 h+ window). Shares the DB file with the other stores but owns
-    its own connection. Retention mirrors telemetry (~30 days).
+    Holds, per host: the feature config (including the enabled category set),
+    the editable custom domain list (``watch``/``block``/``allow``, optionally
+    tagged with a category), the schedule windows that add categories for a
+    weekday/time range, and the accumulated ``web_activity`` events (server-side
+    24 h+ window). Shares the DB file with the other stores but owns its own
+    connection. Retention mirrors telemetry (~30 days) and applies to events
+    only — config, list and schedule are operator-curated and never auto-pruned.
     """
 
     def __init__(self, db_path: str = DEFAULT_DB_PATH, retention_days: int = RETENTION_DAYS) -> None:
@@ -1699,7 +1801,18 @@ class WebFilterStore:
         self._db = await aiosqlite.connect(self.db_path)
         await _configure_connection(self._db)
         await self._db.executescript(_WEBFILTER_SCHEMA)
+        await self._migrate()
         await self._db.commit()
+
+    async def _migrate(self) -> None:
+        """Add the category columns to DB files created before they existed."""
+
+        for table, columns in _WEBFILTER_MIGRATED_COLUMNS.items():
+            async with self._conn.execute(f"PRAGMA table_info({table})") as cur:
+                existing = {row["name"] for row in await cur.fetchall()}
+            for col, ddl in columns.items():
+                if col not in existing:
+                    await self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
 
     async def close(self) -> None:
         if self._db is not None:
@@ -1714,20 +1827,55 @@ class WebFilterStore:
 
     # -- config ------------------------------------------------------------
 
+    @staticmethod
+    def _merge_categories(
+        raw: Any, use_adult: bool, use_bypass: bool
+    ) -> list[str]:
+        """Canonical enabled-category list from the extras column + the booleans.
+
+        ``adult`` and ``bypass`` predate the category system and keep their own
+        boolean columns, which stay the source of truth for them so the existing
+        API, dashboard and stored rows keep working unchanged. The ``categories``
+        column holds only the categories added later. Readers see one merged
+        list and never have to know about the split.
+        """
+
+        keys: set[str] = set()
+        if isinstance(raw, str) and raw:
+            try:
+                loaded = json.loads(raw)
+            except ValueError:
+                loaded = []
+            if isinstance(loaded, list):
+                keys.update(str(k) for k in loaded)
+        keys.discard("adult")
+        keys.discard("bypass")
+        if use_adult:
+            keys.add("adult")
+        if use_bypass:
+            keys.add("bypass")
+        return sorted(keys)
+
     async def get_config(self, agent_id: str) -> dict[str, Any]:
         """Return the host's config (defaults when never configured)."""
 
         async with self._conn.execute(
             "SELECT enabled, block_mode, use_external_adult, use_bypass_protection, "
-            "doh_policy, updated_at, applied_hash, applied_at, applied_ok "
+            "doh_policy, updated_at, applied_hash, applied_at, applied_ok, categories "
             "FROM webfilter_config WHERE agent_id = ?",
             (agent_id,),
         ) as cur:
             row = await cur.fetchone()
         if row is None:
+            defaults = dict(_WEBFILTER_DEFAULTS)
             return {
                 "agent_id": agent_id,
-                **_WEBFILTER_DEFAULTS,
+                **defaults,
+                "categories": self._merge_categories(
+                    None,
+                    bool(defaults["use_external_adult"]),
+                    bool(defaults["use_bypass_protection"]),
+                ),
                 "updated_at": None,
                 "applied_hash": None,
                 "applied_at": None,
@@ -1739,6 +1887,11 @@ class WebFilterStore:
             "block_mode": bool(row["block_mode"]),
             "use_external_adult": bool(row["use_external_adult"]),
             "use_bypass_protection": bool(row["use_bypass_protection"]),
+            "categories": self._merge_categories(
+                row["categories"],
+                bool(row["use_external_adult"]),
+                bool(row["use_bypass_protection"]),
+            ),
             "doh_policy": row["doh_policy"],
             "updated_at": row["updated_at"],
             "applied_hash": row["applied_hash"],
@@ -1747,25 +1900,41 @@ class WebFilterStore:
         }
 
     async def set_config(self, agent_id: str, **fields: Any) -> dict[str, Any]:
-        """Upsert a partial config change (unknown keys ignored). Returns config."""
+        """Upsert a partial config change (unknown keys ignored). Returns config.
+
+        ``categories`` is the whole enabled set, not a delta: passing it also
+        settles ``use_external_adult``/``use_bypass_protection``, so the two
+        representations can never disagree. Passing one of those booleans
+        *instead* still works and only moves its own category.
+        """
 
         current = await self.get_config(agent_id)
+        categories = fields.get("categories")
+        if categories is not None:
+            wanted = {str(c) for c in categories}
+            current["use_external_adult"] = "adult" in wanted
+            current["use_bypass_protection"] = "bypass" in wanted
+            current["categories"] = sorted(wanted)
         for key in _WEBFILTER_TOGGLES:
             if fields.get(key) is not None:
                 current[key] = bool(fields[key])
         if fields.get("doh_policy") is not None:
             current["doh_policy"] = str(fields["doh_policy"])
+        extras = sorted(
+            set(current["categories"]) - {"adult", "bypass"}
+        )
         now = datetime.now(timezone.utc).isoformat()
         await self._conn.execute(
             "INSERT INTO webfilter_config "
             "(agent_id, enabled, block_mode, use_external_adult, use_bypass_protection, "
-            "doh_policy, updated_at, applied_hash, applied_at, applied_ok) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "doh_policy, updated_at, applied_hash, applied_at, applied_ok, categories) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(agent_id) DO UPDATE SET "
             "enabled=excluded.enabled, block_mode=excluded.block_mode, "
             "use_external_adult=excluded.use_external_adult, "
             "use_bypass_protection=excluded.use_bypass_protection, "
-            "doh_policy=excluded.doh_policy, updated_at=excluded.updated_at",
+            "doh_policy=excluded.doh_policy, updated_at=excluded.updated_at, "
+            "categories=excluded.categories",
             (
                 agent_id,
                 int(current["enabled"]),
@@ -1777,6 +1946,7 @@ class WebFilterStore:
                 current["applied_hash"],
                 current["applied_at"],
                 None if current["applied_ok"] is None else int(current["applied_ok"]),
+                json.dumps(extras),
             ),
         )
         await self._conn.commit()
@@ -1800,10 +1970,15 @@ class WebFilterStore:
     # -- custom domain list ------------------------------------------------
 
     async def list_domains(self, agent_id: str) -> list[dict[str, Any]]:
-        """Return the host's custom entries, oldest-first."""
+        """Return the host's custom entries, oldest-first.
+
+        ``category`` is ``None`` for an entry that is always in force (the
+        pre-category shape); otherwise the entry only applies while that
+        category is on for the host or added by a schedule window.
+        """
 
         async with self._conn.execute(
-            "SELECT domain, action, note, added_at FROM webfilter_domains "
+            "SELECT domain, action, note, added_at, category FROM webfilter_domains "
             "WHERE agent_id = ? ORDER BY added_at, domain",
             (agent_id,),
         ) as cur:
@@ -1814,22 +1989,29 @@ class WebFilterStore:
                 "action": r["action"],
                 "note": r["note"],
                 "added_at": r["added_at"],
+                "category": r["category"],
             }
             for r in rows
         ]
 
     async def add_domain(
-        self, agent_id: str, domain: str, action: str, note: str | None = None
+        self,
+        agent_id: str,
+        domain: str,
+        action: str,
+        note: str | None = None,
+        category: str | None = None,
     ) -> None:
         """Insert (or replace) one custom entry, stamping ``added_at``."""
 
         added_at = datetime.now(timezone.utc).isoformat()
         await self._conn.execute(
-            "INSERT INTO webfilter_domains (agent_id, domain, action, note, added_at) "
-            "VALUES (?, ?, ?, ?, ?) "
+            "INSERT INTO webfilter_domains "
+            "(agent_id, domain, action, note, added_at, category) "
+            "VALUES (?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(agent_id, domain) DO UPDATE SET "
-            "action=excluded.action, note=excluded.note",
-            (agent_id, domain, action, note, added_at),
+            "action=excluded.action, note=excluded.note, category=excluded.category",
+            (agent_id, domain, action, note, added_at, category),
         )
         await self._conn.commit()
 
@@ -1842,6 +2024,97 @@ class WebFilterStore:
         )
         await self._conn.commit()
         return (cur.rowcount or 0) > 0
+
+    # -- schedule windows --------------------------------------------------
+
+    @staticmethod
+    def _window_row(row: Any) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "agent_id": row["agent_id"],
+            "label": row["label"],
+            "days": json.loads(row["days"]),
+            "start_min": row["start_min"],
+            "end_min": row["end_min"],
+            "categories": json.loads(row["categories"]),
+            "tz": row["tz"],
+            "enabled": bool(row["enabled"]),
+            "created_at": row["created_at"],
+        }
+
+    async def list_windows(self, agent_id: str) -> list[dict[str, Any]]:
+        """Return the host's schedule windows, oldest-first."""
+
+        async with self._conn.execute(
+            "SELECT * FROM webfilter_windows WHERE agent_id = ? "
+            "ORDER BY created_at, id",
+            (agent_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [self._window_row(r) for r in rows]
+
+    async def add_window(self, window: dict[str, Any]) -> None:
+        """Insert (or replace by id) one schedule window."""
+
+        await self._conn.execute(
+            "INSERT INTO webfilter_windows "
+            "(id, agent_id, label, days, start_min, end_min, categories, tz, "
+            "enabled, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(id) DO UPDATE SET "
+            "label=excluded.label, days=excluded.days, start_min=excluded.start_min, "
+            "end_min=excluded.end_min, categories=excluded.categories, "
+            "tz=excluded.tz, enabled=excluded.enabled",
+            (
+                window["id"],
+                window["agent_id"],
+                window["label"],
+                json.dumps(list(window["days"])),
+                int(window["start_min"]),
+                int(window["end_min"]),
+                json.dumps(list(window["categories"])),
+                window["tz"],
+                1 if window["enabled"] else 0,
+                window["created_at"],
+            ),
+        )
+        await self._conn.commit()
+
+    async def set_window_enabled(
+        self, agent_id: str, window_id: str, enabled: bool
+    ) -> bool:
+        """Enable/disable one window. Returns True if a row changed."""
+
+        cur = await self._conn.execute(
+            "UPDATE webfilter_windows SET enabled = ? WHERE id = ? AND agent_id = ?",
+            (1 if enabled else 0, window_id, agent_id),
+        )
+        await self._conn.commit()
+        return (cur.rowcount or 0) > 0
+
+    async def remove_window(self, agent_id: str, window_id: str) -> bool:
+        """Delete one window. Returns True if a row was removed."""
+
+        cur = await self._conn.execute(
+            "DELETE FROM webfilter_windows WHERE id = ? AND agent_id = ?",
+            (window_id, agent_id),
+        )
+        await self._conn.commit()
+        return (cur.rowcount or 0) > 0
+
+    async def agents_with_windows(self) -> list[str]:
+        """Hosts that have at least one *enabled* window (the schedule loop's fleet).
+
+        A host with no enabled window is never touched by the schedule loop, so
+        this is also the opt-in: authoring a window is what consents to the
+        server pushing to that host unattended (ADR-0055).
+        """
+
+        async with self._conn.execute(
+            "SELECT DISTINCT agent_id FROM webfilter_windows WHERE enabled = 1 "
+            "ORDER BY agent_id"
+        ) as cur:
+            rows = await cur.fetchall()
+        return [r["agent_id"] for r in rows]
 
     # -- observed events ---------------------------------------------------
 
@@ -1951,7 +2224,12 @@ class WebFilterStore:
 
         async with write_lock():
             await _begin_immediate(self._conn)
-            for table in ("webfilter_config", "webfilter_domains", "web_activity_events"):
+            for table in (
+                "webfilter_config",
+                "webfilter_domains",
+                "webfilter_windows",
+                "web_activity_events",
+            ):
                 await self._conn.execute(
                     f"DELETE FROM {table} WHERE agent_id = ?", (agent_id,)
                 )

@@ -320,6 +320,31 @@ class DiscordIdentityStore:
         await self._conn.commit()
         return (cur.rowcount or 0) > 0
 
+    async def unlink_user(self, user_id: int) -> int:
+        """Delete every *active* binding a kenny account holds. Returns the count removed.
+
+        The self-service counterpart to :meth:`unlink`, which deletes by
+        snowflake (an operator's tool) — this deletes by ``user_id`` (the
+        account's own tool), so it is what backs ``DELETE /api/me/discord``.
+        Deliberately scoped to ``disabled = 0``: a disabled row was already
+        revoked by an operator, carries no privilege (see :meth:`resolve`),
+        and stays an operator-owned record rather than something self-service
+        can make disappear.
+
+        A user may hold a binding per guild (the ``(user_id, guild_id)``
+        unique index allows one row per guild), and this removes all of them
+        in one call rather than taking a guild — there is no guild the caller
+        can legitimately ask to keep, since a binding grants the same kind of
+        privilege in every guild it exists in.
+        """
+
+        cur = await self._conn.execute(
+            "DELETE FROM discord_identities WHERE user_id = ? AND disabled = 0",
+            (user_id,),
+        )
+        await self._conn.commit()
+        return cur.rowcount or 0
+
     async def set_disabled(self, discord_user_id: str, *, disabled: bool) -> bool:
         """Flip a binding's ``disabled`` flag. Returns True if the row existed.
 

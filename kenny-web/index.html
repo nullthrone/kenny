@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Kenny — Fleet Console</title>
+    <script>
+      // Read the persisted theme choice before the app script loads, so the
+      // very first paint is already correct and there is no flash of the
+      // wrong theme. The prototype is light-by-default; an explicit stored
+      // "dark" is honoured, absence means light (see src/theme).
+      try {
+        var t = localStorage.getItem('kenny-theme')
+        if (t === 'dark' || t === 'light') {
+          document.documentElement.setAttribute('data-theme', t)
+        }
+      } catch (e) {}
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

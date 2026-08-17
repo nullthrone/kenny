@@ -1,0 +1,44 @@
+.row {
+  display: flex;
+  gap: var(--space-4);
+  align-items: flex-start;
+  padding: 18px 4px;
+  border-bottom: 1px solid var(--border-line);
+}
+
+.badge {
+  margin-top: 2px;
+}
+
+.body {
+  flex: 1;
+  min-width: 0;
+}
+
+.title {
+  font-size: var(--text-md);
+  font-weight: 600;
+  color: var(--text-body);
+  display: block;
+}
+
+.title:hover {
+  color: var(--text-accent);
+}
+
+.meta {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.gate {
+  margin-top: 12px;
+}
+
+.age {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-faint);
+  flex: none;
+}

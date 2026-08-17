@@ -1,0 +1,56 @@
+.list {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border-strong);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 4px;
+  border-bottom: 1px solid var(--border-line);
+  font-size: var(--text-sm);
+}
+
+.row input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--brass-500);
+  flex: none;
+}
+
+.label {
+  min-width: 0;
+}
+
+.tag {
+  font-family: var(--font-display);
+  font-size: 9px;
+  letter-spacing: var(--track-caps);
+  border: 1px solid var(--border-mid);
+  color: var(--text-muted);
+  padding: 1px 6px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.candidateTag {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.meta {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.error {
+  color: var(--danger);
+  font-size: var(--text-xs);
+  padding: 8px 0 0;
+}

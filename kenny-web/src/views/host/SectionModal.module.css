@@ -1,0 +1,54 @@
+.header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--border-line);
+}
+
+.title {
+  font-family: var(--font-display);
+  font-size: 12px;
+  letter-spacing: var(--track-caps);
+  flex: 1;
+  min-width: 0;
+}
+
+.rule {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  /* The reliability rule's `reason` can be a full sentence (health_rules.py's
+     `_reliability_reason`/`_reliability_pattern_reason`), unlike every other
+     section's short "89% full ⇒ warn" style reason. Without a cap here, a
+     long reason squeezed `.title` (flex:1, min-width:0) down to ~0px and its
+     text wrapped one character per line under the modal's inherited
+     overflow-wrap:break-word (see kc-modal in styles/global.css). */
+  max-width: 45%;
+  flex-shrink: 0;
+}
+
+.close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  min-width: 44px;
+  min-height: 44px;
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+.close:hover {
+  color: var(--text-body);
+}
+
+.body {
+  padding: 24px;
+}
+
+.fallback {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}

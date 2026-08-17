@@ -7,9 +7,11 @@ per-install config — it does not build per download. Endpoints:
 * ``GET  /api/agents/{id}/installer``    (operator) -> Windows: a ZIP (exe + setup.bat +
   kenny-agent.setup.json + README); Linux (``?os=linux``): the install ``sh`` script
   directly. Mints a fresh per-agent token via the token store.
-* ``POST /api/agents/{id}/share-link``   (operator) -> Windows: an expiring one-time
-  ``/d/installer/{nonce}`` link; Linux (``?os=linux``): a ``curl … | sudo sh`` one-liner
-  pointing at ``/d/install/{nonce}``.
+* ``POST /api/agents/share-link``        (operator) -> body ``{name, os[, arch]}``; a 24h,
+  single-use link for a host that need not exist yet. Returns ``{url, expires_at, os,
+  name}``.
+* ``POST /api/agents/{id}/share-link``   (operator) -> the same thing keyed by path param,
+  at the shorter :data:`INSTALLER_TTL_S`; kept for the bundled dashboard.
 * ``GET  /d/installer/{nonce}``          (public, nonce-gated) -> the Windows installer ZIP, once.
 * ``GET  /d/install/{nonce}``            (public, nonce-gated) -> the Linux install script, once
   (mints the token + a paired non-consumed ``/d/binary`` nonce baked into the script).
@@ -18,7 +20,26 @@ per-install config — it does not build per download. Endpoints:
 * ``GET  /d/binary/{nonce}``             (public, nonce-gated) -> the raw binary (self-update /
   Linux install download), served per the nonce's os/arch.
 
-``/d/*`` is exempt from operator auth (the nonce is the credential); see ``auth.py``.
+**Two credential models meet here, and which route uses which is the whole
+security story of this module (ADR-0053).**
+
+*Operator-authenticated, and therefore wrapped in* ``webui.authz.guard()``: every
+``/api/agents/*`` route that *mints* something — an installer, a share link, an
+update push. Minting is provisioning: it creates the path by which a machine
+enrolls into the fleet. These carry ``min_role="operator"``, and the path-param
+ones additionally carry ``host_param="id"`` so a scoped ``user`` cannot mint for
+a host outside their scope.
+
+*Deliberately unauthenticated, and therefore NOT guarded*: the ``/d/*``
+redemptions and ``/api/agents/{id}/enroll``. Both are fetched by someone who
+holds no operator credential and could not obtain one — the relative clicking a
+share link in a message, and the agent binary enrolling on first boot. Their
+credential is the one they carry: an unguessable single-use nonce with a TTL
+(ADR-0012/ADR-0030), and the one-time enrollment token (ADR-0022), each verified
+in the handler. ``auth.py::_is_public`` exempts exactly these paths from the
+operator middleware, so wrapping them in ``guard()`` would 401 every legitimate
+caller and break onboarding outright. That they are open is the design; that the
+minting side is not is what makes it safe.
 """
 
 from __future__ import annotations
@@ -31,6 +52,7 @@ import secrets
 import time
 import zipfile
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 
 from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, Response
@@ -43,9 +65,18 @@ from .registry import AgentRegistry
 from .tokenstore import AgentTokenStore
 from .tunnel import AgentTunnel, ToolError
 from .urls import public_base_url
+from .webui.authz import guard
 
 INSTALLER_TTL_S = 3600  # one hour for an operator-shared installer link
 BINARY_TTL_S = 600  # ten minutes for a self-update binary fetch
+# ``POST /api/agents/share-link`` hands its URL to a person who is not at the
+# operator's keyboard — it travels by message and gets opened whenever they next
+# sit down at the machine. An hour does not survive that; a day does. The window
+# is affordable because the nonce is still single-use and still mints nothing
+# until it is redeemed: an unopened link expires having created no credential.
+SHARE_LINK_TTL_S = 24 * 3600
+
+SUPPORTED_OS: frozenset[str] = frozenset({"windows", "linux"})
 
 
 def agent_binary_path(
@@ -84,6 +115,17 @@ def agent_binary_path(
         return path
     cache = agent_release.cache_path()
     return cache if os.path.exists(cache) else None
+
+
+def _expires_at(ttl_s: int) -> str:
+    """Wall-clock expiry of a nonce minted now, as ISO-8601 UTC.
+
+    The nonce itself keeps a monotonic-ish ``time.time()`` deadline; this is the
+    same instant rendered for a human and for the console's countdown, so the
+    two cannot describe different moments.
+    """
+
+    return (datetime.now(timezone.utc) + timedelta(seconds=ttl_s)).isoformat()
 
 
 def _public_url() -> str:
@@ -161,7 +203,25 @@ class _Nonce:
 
 @dataclass
 class ShareLinks:
-    """In-memory nonce store for shareable download links (dev-grade, like CallLog)."""
+    """In-memory nonce store for shareable download links (dev-grade, like CallLog).
+
+    **This does not survive a restart.** The dict is process-local, so a deploy,
+    a crash or a container restart invalidates every outstanding link. Within the
+    old one-hour window that was nearly invisible; against
+    :data:`SHARE_LINK_TTL_S`'s 24 hours it is a real failure mode — a link mailed
+    in the evening can be dead by morning, and the person opening it sees only
+    "link invalid or expired".
+
+    It fails in the safe direction, which is why it is tolerated for now: a lost
+    nonce is a link that cannot be redeemed, and since the agent token is minted
+    only on redemption, nothing was created that now dangles. The operator's
+    recovery is to mint another link. Making it durable means a SQLite table and
+    an async ``create``/``resolve``, which ripples through ``perform_agent_update``
+    and ``update_manager`` — worth doing, tracked in ADR-0053, deliberately not
+    bundled into the change that guarded these routes.
+
+    Entries are reaped lazily, when an expired nonce is next looked up.
+    """
 
     _nonces: dict[str, _Nonce] = field(default_factory=dict)
 
@@ -252,6 +312,22 @@ def _norm_arch(arch: str | None) -> str:
 
     a = (arch or "").strip().lower()
     return "aarch64" if a in ("aarch64", "arm64") else "x86_64"
+
+
+def _norm_arch_or_none(raw: object) -> str | None:
+    """An operator-pinned arch, or None for "not pinned".
+
+    Unlike :func:`_norm_arch`, an absent or unrecognized value returns None
+    rather than guessing — None lets the Linux install script fall back to its
+    own ``uname -m`` auto-detection at install time (ADR-0036).
+    """
+
+    value = str(raw or "").strip().lower()
+    if value in ("aarch64", "arm64"):
+        return "aarch64"
+    if value in ("x86_64", "amd64"):
+        return "x86_64"
+    return None
 
 
 def _sh_squote(value: str) -> str:
@@ -376,19 +452,9 @@ def build_download_routes(
         return (request.query_params.get("os") or "windows").strip().lower() or "windows"
 
     def _req_arch(request: Request) -> str | None:
-        """An operator-pinned ``?arch=`` for a not-yet-existing host, or None.
+        """An operator-pinned ``?arch=`` for a not-yet-existing host, or None."""
 
-        Unlike ``_norm_arch``, an absent/unrecognized value returns None rather
-        than guessing — None means "not pinned", letting the Linux install script
-        fall back to its own ``uname -m`` auto-detection (ADR-0036).
-        """
-
-        raw = (request.query_params.get("arch") or "").strip().lower()
-        if raw in ("aarch64", "arm64"):
-            return "aarch64"
-        if raw in ("x86_64", "amd64"):
-            return "x86_64"
-        return None
+        return _norm_arch_or_none(request.query_params.get("arch"))
 
     async def _linux_install_script(agent_id: str, arch: str | None = None) -> str:
         """Mint a fresh token + a non-consumed Linux binary nonce, render the script.
@@ -429,37 +495,96 @@ def build_download_routes(
             headers={"Content-Disposition": f'attachment; filename="kenny-agent-{agent_id}.zip"'},
         )
 
-    async def share_link(request: Request) -> Response:
-        agent_id = request.path_params["id"]
-        if _req_os(request) == "linux":
-            # A one-time install link + its paired (non-consumed) binary nonce. We
-            # store the binary nonce on the install nonce so /d/install can reach it.
-            # `arch` (ADR-0036), when pinned, rides on BOTH nonces: the install
-            # nonce so `public_install` can recover it at fetch time (across the
-            # mint->fetch gap), the binary nonce as `public_binary`'s own fallback.
-            arch = _req_arch(request)
+    def _mint_share_link(agent_id: str, os_name: str, arch: str | None, ttl_s: int) -> dict:
+        """Mint the nonce(s) for one share link and render its public payload.
+
+        No token is minted here, and that is the point: the credential is
+        created only when the link is *redeemed* (``public_install`` /
+        ``public_installer`` call ``token_store.create_or_rotate``). A link that
+        is never opened therefore expires having created nothing to revoke.
+
+        Windows needs one ``installer`` nonce. Linux needs two: a one-time
+        ``install`` nonce plus the paired, non-consumed ``binary`` nonce it hands
+        the target box (the script is fetched once, the binary download it starts
+        may retry). ``arch`` (ADR-0036), when pinned, rides on BOTH — the install
+        nonce so ``public_install`` can recover it across the mint->fetch gap,
+        the binary nonce as ``public_binary``'s own fallback.
+        """
+
+        if os_name == "linux":
             binary_nonce = share_links.create(
-                agent_id, "binary", INSTALLER_TTL_S, os_name="linux", arch=arch
+                agent_id, "binary", ttl_s, os_name="linux", arch=arch
             )
             install_nonce = share_links.create(
                 agent_id,
                 "install",
-                INSTALLER_TTL_S,
+                ttl_s,
                 os_name="linux",
                 arch=arch,
                 binary_nonce=binary_nonce,
             )
             url = f"{_public_url()}/d/install/{install_nonce}"
-            return JSONResponse(
-                {
-                    "url": url,
-                    "oneliner": f"curl -fsSL {url} | sudo sh",
-                    "expires_in": INSTALLER_TTL_S,
-                }
+            return {
+                "url": url,
+                "oneliner": f"curl -fsSL {url} | sudo sh",
+                "expires_in": ttl_s,
+                "expires_at": _expires_at(ttl_s),
+                "os": "linux",
+                "name": agent_id,
+            }
+        nonce = share_links.create(agent_id, "installer", ttl_s)
+        return {
+            "url": f"{_public_url()}/d/installer/{nonce}",
+            "expires_in": ttl_s,
+            "expires_at": _expires_at(ttl_s),
+            "os": "windows",
+            "name": agent_id,
+        }
+
+    async def share_link(request: Request) -> Response:
+        """Path-param form, at :data:`INSTALLER_TTL_S`. The bundled dashboard's."""
+
+        return JSONResponse(
+            _mint_share_link(
+                request.path_params["id"],
+                _req_os(request),
+                _req_arch(request),
+                INSTALLER_TTL_S,
             )
-        nonce = share_links.create(agent_id, "installer", INSTALLER_TTL_S)
-        url = f"{_public_url()}/d/installer/{nonce}"
-        return JSONResponse({"url": url, "expires_in": INSTALLER_TTL_S})
+        )
+
+    async def share_link_by_name(request: Request) -> Response:
+        """Body form ``{name, os[, arch]}`` at :data:`SHARE_LINK_TTL_S` (24h).
+
+        ``name`` is the agent id the host will enroll under. It intentionally
+        need not exist yet: there is no separate "create the agent" step in
+        kenny, and share-linking an id that has never enrolled *is* the
+        first-time onboarding flow. Nothing is written for it here either — only
+        a nonce, which expires on its own if the link is never opened.
+
+        Guarded at ``min_role="operator"`` like every other minting route in this
+        module. There is no ``host_param`` to hand :func:`guard` because the id
+        arrives in the body, but none is needed: host scope only ever narrows a
+        ``user``, and a ``user`` cannot reach an operator route at all.
+        """
+
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - malformed/empty body
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        name = str(body.get("name", "")).strip()
+        if not name:
+            return JSONResponse({"error": "name is required"}, status_code=400)
+        os_name = str(body.get("os", "windows")).strip().lower() or "windows"
+        if os_name not in SUPPORTED_OS:
+            return JSONResponse(
+                {"error": f"os must be one of {', '.join(sorted(SUPPORTED_OS))}"},
+                status_code=400,
+            )
+        arch = _norm_arch_or_none(body.get("arch"))
+        return JSONResponse(_mint_share_link(name, os_name, arch, SHARE_LINK_TTL_S))
 
     async def public_install(request: Request) -> Response:
         """Serve the Linux install script once, minting the token at fetch time."""
@@ -651,13 +776,32 @@ def build_download_routes(
         request.app.state.last_fetch = result
         return JSONResponse(result.to_public(), status_code=200 if result.ok else 502)
 
+    # See the module docstring for the rule these two blocks encode. Provisioning
+    # goes through ``guard()``; the two surfaces whose caller holds a different
+    # credential entirely (a nonce, an enrollment token) must not, or the
+    # operator middleware would 401 the very people they exist for.
+    op = {"min_role": "operator"}
+    op_scoped = {"min_role": "operator", "host_param": "id"}
     return [
-        Route("/api/agents/{id}/installer", installer),
+        # -- operator-authenticated: these mint --------------------------------
+        Route("/api/agents/share-link", guard(share_link_by_name, **op), methods=["POST"]),
+        Route("/api/agents/{id}/installer", guard(installer, **op_scoped)),
+        Route("/api/agents/{id}/share-link", guard(share_link, **op_scoped), methods=["POST"]),
+        Route("/api/agents/{id}/update", guard(trigger_update, **op_scoped), methods=["POST"]),
+        # Read-only availability report. Kept at the authenticated floor rather
+        # than raised to operator: the fleet view fetches it on every render for
+        # every role, and it discloses only whether a binary is on disk.
+        Route("/api/agent-binary", guard(agent_binary_status)),
+        # Reaches out to GitHub and writes the cache — provisioning, so operator.
+        Route("/api/agent-binary/fetch", guard(agent_binary_fetch, **op), methods=["POST"]),
+        # -- deliberately unauthenticated: these redeem ------------------------
+        # The agent's one-time enrollment token is verified inside ``enroll``
+        # (ADR-0022); the caller is a freshly installed binary with no operator
+        # credential and no way to get one.
         Route("/api/agents/{id}/enroll", enroll, methods=["POST"]),
-        Route("/api/agents/{id}/share-link", share_link, methods=["POST"]),
-        Route("/api/agents/{id}/update", trigger_update, methods=["POST"]),
-        Route("/api/agent-binary", agent_binary_status),
-        Route("/api/agent-binary/fetch", agent_binary_fetch, methods=["POST"]),
+        # The nonce is the credential (ADR-0012/ADR-0030): single-use, TTL-bound,
+        # unguessable, and verified in each handler. The person opening these is
+        # not signed in, which is the entire purpose of a share link.
         Route("/d/installer/{nonce}", public_installer),
         Route("/d/install/{nonce}", public_install),
         Route("/d/binary/{nonce}", public_binary),

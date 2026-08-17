@@ -207,7 +207,12 @@ def test_context_note_names_the_selected_agent() -> None:
 
     from kenny_server.chat import _context_note
 
-    assert _context_note(FleetSession(id="s1")) == []
+    # No selection is its own statement ("fleet-wide"), not silence.
+    fleet = _context_note(FleetSession(id="s1"))
+    assert len(fleet) == 1
+    assert "fleet-wide" in fleet[0]["text"]
+    assert "cache_control" not in fleet[0]
+
     note = _context_note(FleetSession(id="s2", agent_id="linus-pc"))
     assert len(note) == 1
     assert "linus-pc" in note[0]["text"]

@@ -1,0 +1,126 @@
+.editRow {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+  padding: 16px 4px;
+  border-bottom: 1px solid var(--border-line);
+  flex-wrap: wrap;
+}
+
+.meta {
+  flex: 1;
+  min-width: 200px;
+}
+
+.label {
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.help {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 220px;
+}
+
+.controlRow {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.input {
+  padding: 8px 10px;
+  border: 1px solid var(--border-mid);
+  background: var(--surface-card);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--text-body);
+  min-width: 160px;
+}
+.input:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.toggleBtn {
+  padding: 8px 14px;
+  border: 1px solid var(--border-mid);
+  background: transparent;
+  color: var(--text-body);
+  font-family: var(--font-display);
+  font-size: 10px;
+  letter-spacing: var(--track-caps);
+  min-height: 36px;
+}
+.toggleBtn.active {
+  background: var(--kc-btn-bg);
+  color: var(--kc-btn-fg);
+  border-color: var(--kc-btn-bg);
+}
+
+.saveBtn {
+  padding: 8px 14px;
+  background: var(--accent);
+  color: var(--paper-white);
+  border: none;
+  font-family: var(--font-display);
+  font-size: 10px;
+  letter-spacing: var(--track-caps);
+  min-height: 40px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.saveBtn:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+.saveBtn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.cancelBtn {
+  padding: 8px 14px;
+  background: transparent;
+  border: 1px solid var(--border-mid);
+  color: var(--text-body);
+  font-family: var(--font-display);
+  font-size: 10px;
+  letter-spacing: var(--track-caps);
+  min-height: 40px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.cancelBtn:hover {
+  background: var(--surface-inset);
+}
+
+.resetBtn {
+  padding: 8px 14px;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-family: var(--font-display);
+  font-size: 10px;
+  letter-spacing: var(--track-caps);
+  min-height: 40px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  text-decoration: underline;
+}
+.resetBtn:hover {
+  color: var(--text-body);
+}
+
+.error {
+  font-size: var(--text-xs);
+  color: var(--danger);
+}

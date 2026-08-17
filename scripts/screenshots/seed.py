@@ -19,6 +19,15 @@ categories/severities (ADR-0026) without an API key, plus one reliability
 alarm suppression rule (ADR-0041 / issue #166) so the Reliability card's
 suppressed badge and rule panel are populated in the captured screenshots.
 
+It also seeds the **browser identity** the screenshot session signs in as: a real
+superuser account ("thomas", matching the design's own persona) with 2FA and a
+personal access token already configured, rather than the legacy shared
+``KENNY_OPERATOR_TOKEN`` cookie — that back-compat identity is a synthetic
+principal with no user row (``is_shared_token: true``), which would make
+``profile.png`` show the empty "no editable account" state instead of the real
+password/2FA/PAT rows the Profile page actually has. ``capture.py`` uses the
+returned session id as the ``kenny_op`` cookie for the whole run.
+
 It also seeds a handful of demo **tickets** (``TicketService``, no Discord
 gateway involved) so the Tickets tab has a real list and one ticket shows a
 full lifecycle — a message, an autonomous ``standard_change`` call, a held
@@ -39,10 +48,11 @@ would not demonstrate the dashboard's own username-resolution at all.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from kenny_server import event_categories
+from kenny_server import event_categories, security
 
 from . import demo_fleet
 from .desktop_image import demo_desktop_png_b64
@@ -52,14 +62,24 @@ async def _noop_send(_frame: dict[str, Any]) -> None:
     """A send function for registry online state (frames are never delivered)."""
 
 
-async def seed_app(app: Any, base: datetime | None = None) -> list[str]:
-    """Seed ``app.state`` with the demo fleet. Returns the seeded agent ids."""
+@dataclass
+class SeedResult:
+    """What :func:`seed_app` produced — the agent ids seeded and the browser
+    session id ``capture.py`` should sign in with."""
+
+    agent_ids: list[str]
+    session_id: str
+
+
+async def seed_app(app: Any, base: datetime | None = None) -> SeedResult:
+    """Seed ``app.state`` with the demo fleet. Returns the seeded agent ids
+    and the "thomas" superuser session id the screenshot browser signs in as."""
 
     base = base or datetime.now(timezone.utc)
     state = app.state
     hosts = demo_fleet.build_fleet(base)
 
-    user_ids = await _seed_users(state.user_store)
+    user_ids, session_id = await _seed_users(state.user_store)
 
     _seed_reliability_categories()
     if getattr(state, "suppression", None) is not None:
@@ -90,12 +110,13 @@ async def seed_app(app: Any, base: datetime | None = None) -> list[str]:
     if getattr(state, "discord_identities", None) is not None:
         await _seed_discord_identities(state.discord_identities, base, user_ids)
 
-    return [h.agent_id for h in hosts]
+    return SeedResult(agent_ids=[h.agent_id for h in hosts], session_id=session_id)
 
 
-async def _seed_users(user_store: Any) -> dict[str, int]:
+async def _seed_users(user_store: Any) -> tuple[dict[str, int], str]:
     """A few real accounts backing the ids ``_seed_tickets``/``_seed_discord_identities``
-    reference, keyed by role in this demo story rather than by number.
+    reference, keyed by role in this demo story rather than by number, plus the
+    "thomas" superuser the screenshot browser itself signs in as.
 
     Real rows (not just numbers) matter here: ``GET /api/users/directory`` — the
     dashboard's id -> username resolver — has nothing to resolve against
@@ -103,12 +124,35 @@ async def _seed_users(user_store: Any) -> dict[str, int]:
     would show its bare ``#id`` fallback instead of demonstrating the feature.
     IDs are whatever ``UserStore`` assigns (autoincrement from an empty demo
     DB); callers thread the returned dict through rather than assuming 1/2/3.
+
+    "thomas" gets a TOTP secret and one personal access token so ``profile.png``
+    shows those rows as genuinely configured, not their empty defaults — and a
+    session created directly via ``UserStore.create_session`` (bypassing the
+    ``/login`` form entirely, TOTP included) since nothing here needs to prove
+    the login flow itself, only sign in as a real account before driving the app.
     """
 
     operator = await user_store.create_user("mama", "demo-password-1", "operator")
     grandpa = await user_store.create_user("grandpa", "demo-password-2", "user")
     papa = await user_store.create_user("papa", "demo-password-3", "user")
-    return {"operator": operator["id"], "grandpa": grandpa["id"], "papa": papa["id"]}
+    thomas = await user_store.create_user(
+        "thomas",
+        "demo-password-0",
+        "superuser",
+        email="thomas@kenny.example",
+        totp_secret=security.generate_totp_secret(),
+    )
+    await user_store.create_pat(thomas["id"], label="claude-desktop")
+    session_id = await user_store.create_session(
+        thomas["id"], ip="127.0.0.1", user_agent="kenny-screenshots"
+    )
+    user_ids = {
+        "operator": operator["id"],
+        "grandpa": grandpa["id"],
+        "papa": papa["id"],
+        "thomas": thomas["id"],
+    }
+    return user_ids, session_id
 
 
 def _seed_reliability_categories() -> None:
@@ -486,9 +530,10 @@ async def _selftest() -> None:  # pragma: no cover - manual smoke test
         db_path = str(Path(tmp) / "demo.sqlite")
         app = build_app(db_path=db_path)
         async with app.router.lifespan_context(app):
-            ids = await seed_app(app)
+            result = await seed_app(app)
             fleet = await app.state.store.known_agents()
-            print("seeded:", ids)
+            print("seeded:", result.agent_ids)
+            print("session:", result.session_id)
             print("known_agents:", fleet)
 
 

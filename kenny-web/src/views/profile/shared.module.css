@@ -1,0 +1,183 @@
+/* Shared chrome for every Profile modal (password / 2FA / MCP tokens / edit profile). */
+
+.header {
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: var(--text-lg);
+  padding: 20px 22px 16px;
+  border-bottom: 1px solid var(--border-line);
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.closeBtn {
+  background: transparent;
+  border: none;
+  padding: 4px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+.closeBtn:hover {
+  color: var(--text-body);
+}
+
+.body {
+  padding: 20px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.footer {
+  padding: 16px 22px 20px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  border-top: 1px solid var(--border-line);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.fieldLabel {
+  font-family: var(--font-display);
+  font-size: 10px;
+  letter-spacing: var(--track-caps);
+  color: var(--text-muted);
+}
+
+.help {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  margin: -4px 0 0;
+}
+
+.input {
+  padding: 10px 12px;
+  border: 1px solid var(--border-line);
+  background: var(--surface-card);
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
+  color: var(--text-body);
+  width: 100%;
+}
+.input:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.mono {
+  font-family: var(--font-mono);
+}
+
+.btn {
+  padding: 10px 18px;
+  background: transparent;
+  border: 1px solid var(--border-mid);
+  color: var(--text-body);
+  font-family: var(--font-display);
+  font-size: 10px;
+  letter-spacing: var(--track-caps);
+  min-height: 44px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.btn:hover:not(:disabled) {
+  background: var(--surface-inset);
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.btnPrimary {
+  composes: btn;
+  background: var(--kc-btn-bg);
+  color: var(--kc-btn-fg);
+  border: none;
+}
+.btnPrimary:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+.btnDanger {
+  composes: btn;
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.errorBox {
+  padding: 10px 12px;
+  border: 1px solid var(--danger);
+  background: var(--danger-bg);
+  color: var(--danger);
+  font-size: var(--text-xs);
+}
+
+.okBox {
+  padding: 10px 12px;
+  border: 1px solid var(--ok);
+  background: var(--ok-bg);
+  color: var(--ok);
+  font-size: var(--text-xs);
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.listRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border-line);
+  flex-wrap: wrap;
+}
+
+.listRow:last-child {
+  border-bottom: none;
+}
+
+.listMeta {
+  flex: 1;
+  min-width: 160px;
+}
+
+.listLabel {
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.listSub {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.revokedTag {
+  font-family: var(--font-display);
+  font-size: 9px;
+  letter-spacing: var(--track-caps);
+  color: var(--text-faint);
+  border: 1px solid var(--text-faint);
+  padding: 2px 8px;
+}
+
+.copyRow {
+  display: flex;
+  gap: 8px;
+}
+
+.copyRow .input {
+  font-family: var(--font-mono);
+}

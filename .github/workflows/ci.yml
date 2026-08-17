@@ -25,6 +25,7 @@ jobs:
     outputs:
       server: ${{ steps.filter.outputs.server }}
       server_code: ${{ steps.filter.outputs.server_code }}
+      web: ${{ steps.filter.outputs.web }}
       agent: ${{ steps.filter.outputs.agent }}
       contract: ${{ steps.filter.outputs.contract }}
       ci: ${{ steps.filter.outputs.ci }}
@@ -38,9 +39,18 @@ jobs:
               - 'kenny-server/**'
             # Server code excluding the web dashboard. Pure UI changes don't
             # affect the agent<->server wire behaviour, so they skip the e2e jobs.
+            # The dashboard's source now lives in kenny-web/ (ADR-0052) -- it was
+            # never under kenny-server/**, so this filter needs no change to keep
+            # excluding it; the exclusion below (the legacy webui/ package data,
+            # kept during the transition) is the only piece still inside the tree.
             server_code:
               - 'kenny-server/**'
               - '!kenny-server/kenny_server/webui/**'
+            # The compiled dashboard (ADR-0052): typechecked and unit-tested on
+            # its own, not by the server job, and irrelevant to the e2e jobs for
+            # the same reason kenny_server/webui/** is above.
+            web:
+              - 'kenny-web/**'
             agent:
               - 'kenny-agent/**'
             contract:
@@ -68,6 +78,30 @@ jobs:
         run: ruff check .
       - name: Test
         run: pytest -q
+
+  web:
+    name: kenny-web (frontend)
+    needs: changes
+    if: ${{ needs.changes.outputs.web == 'true' || needs.changes.outputs.ci == 'true' }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: kenny-web
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: kenny-web/package-lock.json
+      - name: Install
+        run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Test
+        run: npm run test
+      - name: Build
+        run: npm run build
 
   agent:
     name: kenny-agent (Rust)

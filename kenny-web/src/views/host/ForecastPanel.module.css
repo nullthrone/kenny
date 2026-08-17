@@ -1,0 +1,33 @@
+.panel {
+  background: var(--kc-inv-bg);
+  color: var(--kc-inv-fg);
+  padding: 22px 24px;
+  margin-bottom: 28px;
+}
+
+.head {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  gap: 12px;
+}
+
+.eyebrow {
+  font-family: var(--font-display);
+  font-size: 10px;
+  letter-spacing: var(--track-caps-wide);
+  color: var(--brass-400);
+}
+
+.meta {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--ink-400);
+}
+
+.text {
+  margin: 0;
+  font-size: var(--text-md);
+  line-height: var(--leading-body);
+  white-space: pre-wrap;
+}

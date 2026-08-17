@@ -207,6 +207,20 @@ class AgentTokenStore:
             for r in rows
         ]
 
+    async def has_token(self, agent_id: str) -> bool:
+        """True iff a credential exists for ``agent_id`` (no token material read).
+
+        The question "did anything actually get minted?" — which is what makes a
+        share link's lazy mint checkable: a link that was never redeemed must
+        leave this False (ADR-0053). Distinct from :meth:`verify`, which asks
+        whether a *given* token is the right one.
+        """
+
+        async with self._conn.execute(
+            "SELECT 1 FROM agent_tokens WHERE agent_id = ? LIMIT 1", (agent_id,)
+        ) as cur:
+            return await cur.fetchone() is not None
+
     async def delete(self, agent_id: str) -> None:
         """Forget an agent's token (host removed from inventory, ADR-0033)."""
 

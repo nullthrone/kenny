@@ -1,0 +1,23 @@
+.chip {
+  padding: 9px 14px;
+  font-family: var(--font-display);
+  font-size: 10px;
+  letter-spacing: var(--track-caps);
+  border: 1px solid var(--border-line);
+  background: transparent;
+  color: var(--text-body);
+  min-height: 40px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.active {
+  border-color: var(--border-strong);
+  background: var(--surface-inverse);
+  color: var(--paper);
+}
+
+.count {
+  font-family: var(--font-mono);
+  margin-left: 4px;
+}

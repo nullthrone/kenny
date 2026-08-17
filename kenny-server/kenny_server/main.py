@@ -18,6 +18,7 @@ import asyncio
 import contextlib
 import logging
 import os
+from datetime import datetime, timezone
 from typing import Any, AsyncIterator
 
 from fastmcp import FastMCP
@@ -42,7 +43,7 @@ from .discord_service import SLASH_COMMANDS, DiscordService
 from .distribution import ShareLinks, build_download_routes
 from .keystore import KeyStore
 from .logging_config import StoreLogHandler, configure_logging, drain_log_queue
-from .notify import Notification, load_notifiers
+from .notify import Notification, NotifierProvider
 from .oauth import build_oauth_routes
 from .oauthstore import OAuthStore
 from .policy import PolicyEngine
@@ -74,6 +75,7 @@ from .userstore import UserStore
 from .webfilter import ExternalListCache, WebFilterService
 from .webui import _anthropic_client, build_api_routes, build_chat_routes
 from .webui.authz import guard
+from .webui.inbox import build_inbox_routes
 from .webui.tickets import build_ticket_routes
 from .webui.users import build_user_routes
 
@@ -92,6 +94,105 @@ async def _webfilter_refresh_loop(
         # Re-read the cadence each pass so a dashboard change retimes the loop.
         interval = settings.get("KENNY_WEBFILTER_REFRESH_SECS")
         await asyncio.sleep(interval if interval and interval > 0 else interval_s)
+
+
+# Cadence of the schedule loop below. Read from the environment rather than the
+# settings catalog because the catalog is not this feature's to extend; `0`
+# disables the loop entirely, matching the other loops' restart-lifecycle gate.
+_SCHEDULE_INTERVAL_ENV = "KENNY_WEBFILTER_SCHEDULE_SECS"
+_SCHEDULE_DELAY_ENV = "KENNY_WEBFILTER_SCHEDULE_INITIAL_DELAY"
+_SCHEDULE_INTERVAL_DEFAULT = 60
+_SCHEDULE_DELAY_DEFAULT = 15.0
+
+
+def _env_int(key: str, default: int) -> int:
+    try:
+        return int(os.environ.get(key, "") or default)
+    except ValueError:
+        logging.getLogger("kenny.webfilter").warning(
+            "%s is not an integer; using %d", key, default
+        )
+        return default
+
+
+def _env_float(key: str, default: float) -> float:
+    try:
+        return float(os.environ.get(key, "") or default)
+    except ValueError:
+        logging.getLogger("kenny.webfilter").warning(
+            "%s is not a number; using %s", key, default
+        )
+        return default
+
+
+async def webfilter_schedule_pass(
+    webfilter: WebFilterService, tunnel: AgentTunnel, call_log: CallLog
+) -> dict[str, int]:
+    """One pass of the web-filter schedule: push where now differs from applied.
+
+    For every host with an enabled schedule window whose feature and block mode
+    are both on, compare the list the schedule says applies *now* against the
+    ``applied_hash`` already on the host and forward ``webfilter_apply`` only
+    when they differ — so a pass over an unchanged fleet costs nothing on the
+    wire and re-running it is idempotent.
+
+    Every failure is contained to its host: an offline or kill-switched agent,
+    or a list that has grown past the agent's cap, is logged and skipped, never
+    retried in a tight loop and never allowed to end the pass. Returns
+    ``{pushed, failed, skipped}`` for the caller to log.
+    """
+
+    log = logging.getLogger("kenny.webfilter")
+    counts = {"pushed": 0, "failed": 0, "skipped": 0}
+    for item in await webfilter.schedule_due():
+        agent_id = item["agent_id"]
+        if item["error"] is not None:
+            counts["skipped"] += 1
+            log.error("scheduled webfilter push for %s skipped: %s", agent_id, item["error"])
+            continue
+        args = item["args"]
+        try:
+            result = await tunnel.send_request(agent_id, "webfilter_apply", args, 30)
+            await call_log.record(agent_id, "webfilter_apply", args, ok=True)
+        except Exception as exc:  # noqa: BLE001 - one host must not end the pass
+            counts["failed"] += 1
+            await call_log.record(
+                agent_id, "webfilter_apply", args, ok=False, error=str(exc)
+            )
+            log.info("scheduled webfilter push for %s failed: %s", agent_id, exc)
+            continue
+        applied_at = str(
+            result.get("applied_at") or datetime.now(timezone.utc).isoformat()
+        )
+        await webfilter.set_applied_state(
+            agent_id, args["list_hash"], applied_at, bool(result.get("ok", True))
+        )
+        counts["pushed"] += 1
+        log.info(
+            "scheduled webfilter push applied to %s (%d domains, hash %s)",
+            agent_id,
+            len(args["domains"]),
+            args["list_hash"],
+        )
+    return counts
+
+
+async def _webfilter_schedule_loop(
+    webfilter: WebFilterService,
+    tunnel: AgentTunnel,
+    call_log: CallLog,
+    interval_s: int,
+    initial_delay_s: float,
+) -> None:
+    """Periodically enact per-host web-filter schedule windows (ADR-0055)."""
+
+    await asyncio.sleep(initial_delay_s)
+    while True:
+        try:
+            await webfilter_schedule_pass(webfilter, tunnel, call_log)
+        except Exception:  # noqa: BLE001 - never let the loop die
+            logging.getLogger("kenny.webfilter").exception("schedule pass failed")
+        await asyncio.sleep(interval_s)
 
 
 async def _backup_loop(
@@ -287,9 +388,14 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         )
 
     # Push alerting (ADR-0027): transition detection over the health rules,
-    # delivered best-effort via the env-configured channels (possibly none).
+    # delivered best-effort on the configured channels (possibly none).
     alert_state = AlertStateStore(db_path)
-    notifiers = load_notifiers()
+    # The channels are *not* resolved here. The provider is asked again at every
+    # dispatch and reads them through ``settings`` (DB > env > default), so a
+    # channel added or cleared in the dashboard applies to the next alert
+    # without a restart (ADR-0054). Building it before ``settings.load()`` is
+    # deliberate and safe: nothing is read until the first notification.
+    notifier_provider = NotifierProvider(settings=settings)
     # Cadence/cooldown/digest are read live from ``settings`` (DB > env >
     # default) on every pass; no env snapshot is baked in here.
     alert_engine = AlertEngine(
@@ -297,7 +403,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         alert_state=alert_state,
         event_store=event_store,
         registry=registry,
-        notifiers=notifiers,
+        notifier_provider=notifier_provider,
         settings=settings,
         # (store, settings_key) pairs -- only ``store`` (snapshots) has an
         # operator-facing retention setting so far (ADR-0051): it dominates
@@ -469,6 +575,20 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
             webfilter_task = asyncio.create_task(
                 _webfilter_refresh_loop(webfilter_cache, settings, refresh_secs, initial_delay)
             )
+        # Web-filter schedule loop (ADR-0055). Only hosts that have an enabled
+        # window are ever touched, so on a fleet with no schedule this is a
+        # no-op query per pass. KENNY_WEBFILTER_SCHEDULE_SECS=0 disables it
+        # entirely (a "restart" decision, like the loops around it); the initial
+        # delay keeps short-lived test app instances from pushing anything.
+        schedule_secs = _env_int(_SCHEDULE_INTERVAL_ENV, _SCHEDULE_INTERVAL_DEFAULT)
+        schedule_task: asyncio.Task | None = None
+        if schedule_secs > 0:
+            schedule_delay = _env_float(_SCHEDULE_DELAY_ENV, _SCHEDULE_DELAY_DEFAULT)
+            schedule_task = asyncio.create_task(
+                _webfilter_schedule_loop(
+                    webfilter, tunnel, call_log, schedule_secs, schedule_delay
+                )
+            )
         # Alert evaluation loop (ADR-0027). The initial delay keeps short-lived
         # test app instances silent; KENNY_ALERT_INTERVAL_SECS=0 disables.
         alert_secs = int(settings.get("KENNY_ALERT_INTERVAL_SECS"))
@@ -555,6 +675,10 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
                 webfilter_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await webfilter_task
+            if schedule_task is not None:
+                schedule_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await schedule_task
             if alert_task is not None:
                 alert_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
@@ -617,6 +741,8 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         update_mgr=update_mgr,
         suppression=suppression,
         ticket_rules=ticket_rules,
+        tickets=ticket_service,
+        ticket_store=ticket_store,
     )
     user_routes = build_user_routes(
         user_store=user_store, registry=registry, store=store, oauth_store=oauth_store
@@ -662,6 +788,15 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         share_links=share_links,
         key_store=key_store,
     )
+    # The merged ticket/approval/flagged-section inbox (webui/inbox.py) --
+    # deliberately its own module and route builder, not folded into
+    # build_ticket_routes, so it stays out of webui/tickets.py entirely.
+    inbox_routes = build_inbox_routes(
+        tickets=ticket_service,
+        ticket_store=ticket_store,
+        registry=registry,
+        telemetry_store=store,
+    )
 
     # `operator_token` is the canonical single token (cookie value, tests);
     # `operator_tokens` is the full accepted set (supports KENNY_OPERATOR_TOKENS).
@@ -670,12 +805,13 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
 
     routes = [
         WebSocketRoute("/agent/ws", tunnel.endpoint),
-        *build_auth_routes(operator_tokens, user_store=user_store),
+        *build_auth_routes(operator_tokens, user_store=user_store, registry=registry),
         *build_oauth_routes(oauth_store=oauth_store, user_store=user_store),
         *chat_routes,
         *download_routes,
         *user_routes,
         *ticket_routes,
+        *inbox_routes,
         *api_routes,
         # Mounted last so it only catches what nothing above matched.
         Mount("/", app=mcp_app),
@@ -732,7 +868,9 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
     # Replaced by the lifespan with the tasks it actually started (if any).
     app.state.ticket_task = None
     app.state.discord_task = None
-    app.state.notifiers = notifiers
+    # The provider, not a list: a list captured here would be a snapshot of the
+    # channels at boot and would quietly disagree with what actually delivers.
+    app.state.notifier_provider = notifier_provider
     app.state.share_links = share_links
     app.state.mcp = mcp
     app.state.operator_token = operator_token

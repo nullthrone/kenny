@@ -1,0 +1,161 @@
+.root {
+  flex: 1;
+  padding: 48px 40px;
+  max-width: 880px;
+}
+
+.eyebrow {
+  font-family: var(--font-display);
+  font-size: 11px;
+  letter-spacing: var(--track-caps-wide);
+  color: var(--text-accent);
+  margin-bottom: 16px;
+}
+
+.headline {
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: var(--display-lg);
+  line-height: var(--leading-tight);
+  margin: 0 0 8px;
+}
+
+.subtitle {
+  font-size: var(--text-md);
+  color: var(--text-muted);
+  line-height: var(--leading-body);
+  margin: 0 0 32px;
+}
+
+.items {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border-strong);
+  margin-bottom: 44px;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: 88px 1fr auto;
+  gap: 16px;
+  align-items: center;
+  padding: 20px 4px;
+  border-bottom: 1px solid var(--border-line);
+  text-decoration: none;
+  color: var(--text-body);
+}
+.row:hover {
+  background: var(--surface-inset);
+}
+
+.sevBadge {
+  font-family: var(--font-display);
+  font-size: 10px;
+  letter-spacing: var(--track-caps);
+  border: 1px solid currentColor;
+  padding: 3px 0;
+  text-align: center;
+  align-self: start;
+  margin-top: 3px;
+}
+
+.rowTitle {
+  display: block;
+  font-size: var(--text-md);
+  font-weight: 600;
+}
+
+.rowDetail {
+  display: block;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.rowAction {
+  font-family: var(--font-display);
+  font-size: 10px;
+  letter-spacing: var(--track-caps);
+  color: var(--text-accent);
+}
+
+.healthRow {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 40px;
+  align-items: center;
+  margin-top: 44px;
+  padding-top: 32px;
+  border-top: 1px solid var(--border-line);
+}
+
+.donutWrap {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.legend {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--text-sm);
+}
+
+.legendDot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 8px;
+}
+
+.trendHead {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 8px;
+}
+
+.trendEyebrow {
+  font-family: var(--font-display);
+  font-size: 10px;
+  letter-spacing: var(--track-caps-wide);
+  color: var(--text-muted);
+}
+
+.trendLink {
+  font-family: var(--font-display);
+  font-size: 10px;
+  letter-spacing: var(--track-caps);
+}
+
+.kpis {
+  display: flex;
+  gap: 32px;
+  margin-top: 32px;
+  padding-top: 24px;
+  border-top: 1px solid var(--border-line);
+  flex-wrap: wrap;
+}
+
+.kpiValue {
+  display: block;
+  font-family: var(--font-display);
+  font-size: 24px;
+  font-weight: 500;
+}
+
+.kpiLabel {
+  display: block;
+  font-family: var(--font-display);
+  font-size: 9px;
+  letter-spacing: var(--track-caps);
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.calm {
+  margin: 0 0 44px;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}

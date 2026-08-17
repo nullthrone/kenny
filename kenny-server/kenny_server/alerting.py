@@ -20,6 +20,12 @@ skipped for offline agents so stale snapshots cannot flap.
 Every emitted notification is also persisted to the events table
 (``kind='alert'``) as the audit trail and the weekly digest's input.
 
+*Which* channels it is delivered on is asked fresh at every dispatch through a
+``notifier_provider`` (ADR-0054), not fixed at construction, so an operator who
+adds or clears a channel in the dashboard sees it apply to the next alert
+without a restart. Zero channels stays a legitimate state — the loop still
+evaluates and records, it just pushes nothing.
+
 An optional ``open_ticket`` callable may be injected to turn a notification
 into a ticket. It is opt-in (a server without the ticket surface simply passes
 nothing) and best-effort: delivery happens first and a failing ticket call is
@@ -38,7 +44,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
 
@@ -63,6 +69,12 @@ _PRUNE_EVERY = timedelta(hours=24)
 _FORECAST_COOLDOWN = timedelta(hours=24)
 
 _DAY_INDEX = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
+
+# A zero-argument callable returning the channels to deliver on right now. The
+# composition root passes ``notify.NotifierProvider`` (settings-backed, so an
+# operator change applies to the next dispatch, ADR-0054); a fixed list passed
+# as ``notifiers=`` is wrapped into one of these internally.
+NotifierSource = Callable[[], Sequence[Notifier]]
 
 
 class _Prunable(Protocol):
@@ -89,7 +101,8 @@ class AlertEngine:
         alert_state: AlertStateStore,
         event_store: EventStore,
         registry: AgentRegistry,
-        notifiers: list[Notifier],
+        notifiers: Sequence[Notifier] | None = None,
+        notifier_provider: NotifierSource | None = None,
         settings: Any = None,
         cooldown_s: int = DEFAULT_COOLDOWN_S,
         offline_after_s: int = DEFAULT_OFFLINE_AFTER_S,
@@ -104,7 +117,17 @@ class AlertEngine:
         self._alert_state = alert_state
         self._event_store = event_store
         self._registry = registry
-        self._notifiers = notifiers
+        # Channels are obtained per dispatch, never captured at boot (ADR-0054):
+        # ``notifier_provider`` is asked again for every notification, so adding,
+        # changing or clearing a channel from the dashboard applies immediately.
+        # ``notifiers=`` remains for direct construction (tests, a server with a
+        # deliberately fixed set) and is wrapped in a constant provider; passing
+        # both would make it ambiguous which one actually delivers, so it is
+        # refused loudly rather than resolved silently.
+        if notifiers is not None and notifier_provider is not None:
+            raise ValueError("pass either notifiers= or notifier_provider=, not both")
+        fixed: tuple[Notifier, ...] = tuple(notifiers or ())
+        self._notifier_source: NotifierSource = notifier_provider or (lambda: fixed)
         # When ``settings`` is provided the alerting knobs are read live from it
         # (DB > env > default) on every pass, so an operator change from the
         # dashboard takes effect without a restart. The scalar kwargs remain as
@@ -137,6 +160,22 @@ class AlertEngine:
         self._ticket_rules = ticket_rules
 
     # -- live config accessors -------------------------------------------------
+
+    @property
+    def _notifiers(self) -> Sequence[Notifier]:
+        """The channels to deliver on right now — resolved, never remembered.
+
+        Zero channels is a legitimate state: the loop keeps evaluating and
+        recording history, it just pushes nothing. A provider that raises is
+        treated the same way, because a broken channel lookup must not be able
+        to stop the evaluation pass.
+        """
+
+        try:
+            return self._notifier_source()
+        except Exception:  # noqa: BLE001 - delivery is best-effort (ADR-0027)
+            logger.exception("resolving the alert delivery channels failed")
+            return ()
 
     def _cfg(self, key: str, fallback: Any) -> Any:
         return self._settings.get(key) if self._settings is not None else fallback
@@ -504,8 +543,17 @@ class AlertEngine:
             fields={"kind": note.kind, "priority": note.priority},
             at=now.isoformat(),
         )
+        # Each channel is isolated: ``Notifier.send`` swallows its own transport
+        # errors (ADR-0027), and this guard covers everything else a channel
+        # could throw — so one misconfigured or misbehaving channel can never
+        # cost the others their delivery.
         for notifier in self._notifiers:
-            await notifier.send(note)  # best-effort; send() never raises
+            try:
+                await notifier.send(note)
+            except Exception:  # noqa: BLE001 - one dead channel must not stop the rest
+                logger.exception(
+                    "delivery via %s failed", getattr(notifier, "name", type(notifier).__name__)
+                )
         # Which notifications become a ticket is operator policy (ticket_rules.py),
         # decided by ``ticket_rules.decide`` -- called the same way whether or
         # not a mirror is wired, so "no rules configured" and "no mirror at

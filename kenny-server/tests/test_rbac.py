@@ -188,6 +188,63 @@ def test_self_service_totp_enable_disable(tmp_path) -> None:
             "password": "pw-123456"}).json()["totp_enabled"] is False
 
 
+def test_every_credential_change_rotates_sessions(tmp_path) -> None:
+    """Password change, 2FA enable, and 2FA disable all evict other sessions
+    the same way (CWE-613), pinned together so they cannot drift apart again.
+
+    Enabling 2FA is exactly when an already-compromised session should be
+    evicted -- it is the one credential-change path that used to return
+    without rotating anything.
+    """
+
+    from kenny_server.auth import COOKIE_NAME
+
+    app = _app(tmp_path)
+    with TestClient(app) as c:
+        _setup_admin(c)
+
+        def _assert_rotates_and_keeps_this_device(act) -> None:
+            old_sid = c.cookies.get(COOKIE_NAME)
+            assert old_sid
+            act()
+            new_sid = c.cookies.get(COOKIE_NAME)
+            # This device got a fresh session and stays authorized.
+            assert new_sid and new_sid != old_sid
+            assert c.get("/api/fleet").status_code == 200
+            # The pre-change session (as held by any other device) is now
+            # rejected. Passed as a one-off request cookie rather than
+            # written into ``c``'s jar, so it can't collide with the fresh
+            # one already stored there.
+            r = c.get(
+                "/api/fleet", cookies={COOKIE_NAME: old_sid}, follow_redirects=False
+            )
+            assert r.status_code == 401
+
+        # 1. Password change.
+        _assert_rotates_and_keeps_this_device(lambda: c.post(
+            "/api/me/password",
+            json={"current_password": "pw-123456", "new_password": "pw2-123456"},
+        ))
+
+        # 2. Enable 2FA.
+        setup = c.post("/api/me/totp").json()
+        secret = setup["secret"]
+
+        def _enable() -> None:
+            code = security.totp_at(secret, time.time())
+            r = c.request(
+                "PUT", "/api/me/totp", json={"secret": secret, "code": code}
+            )
+            assert r.json()["totp_enabled"] is True
+
+        _assert_rotates_and_keeps_this_device(_enable)
+
+        # 3. Disable 2FA (password changed in step 1, so use the new one).
+        _assert_rotates_and_keeps_this_device(lambda: c.request(
+            "DELETE", "/api/me/totp", json={"password": "pw2-123456"}
+        ))
+
+
 def test_avatars_endpoint(tmp_path) -> None:
     app = _app(tmp_path)
     with TestClient(app) as c:

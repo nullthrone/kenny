@@ -129,3 +129,47 @@ def test_updates_revoke_404_when_not_active(tmp_path) -> None:
     with TestClient(app) as c:
         r = c.post("/api/updates/campaigns/does-not-exist/revoke", headers=_bearer(app))
         assert r.status_code == 404
+
+
+def test_updates_campaign_suspend_and_resume(tmp_path, monkeypatch) -> None:
+    _write_cached_binary(tmp_path, monkeypatch, "updates_api.sqlite", "1.0.0")
+    app = _app(tmp_path)
+    with TestClient(app) as c:
+        h = _bearer(app)
+        created = c.post("/api/updates/campaigns", headers=h, json={"version": "1.0.0"})
+        campaign_id = created.json()["campaign"]["id"]
+
+        suspended = c.post(f"/api/updates/campaigns/{campaign_id}/suspend", headers=h)
+        assert suspended.status_code == 200
+        assert suspended.json()["ok"] is True
+
+        # no longer the active campaign, and apply-now refuses it
+        after_suspend = c.get("/api/updates", headers=h).json()
+        assert after_suspend["active_campaign"] is None
+        applied = c.post(f"/api/updates/campaigns/{campaign_id}/apply-now", headers=h)
+        assert applied.status_code == 400
+
+        # suspending again is refused (already suspended, not active)
+        again = c.post(f"/api/updates/campaigns/{campaign_id}/suspend", headers=h)
+        assert again.status_code == 404
+
+        resumed = c.post(f"/api/updates/campaigns/{campaign_id}/resume", headers=h)
+        assert resumed.status_code == 200
+        assert resumed.json()["ok"] is True
+
+        after_resume = c.get("/api/updates", headers=h).json()
+        assert after_resume["active_campaign"]["id"] == campaign_id
+
+
+def test_updates_suspend_404_when_not_active(tmp_path) -> None:
+    app = _app(tmp_path)
+    with TestClient(app) as c:
+        r = c.post("/api/updates/campaigns/does-not-exist/suspend", headers=_bearer(app))
+        assert r.status_code == 404
+
+
+def test_updates_resume_404_when_not_suspended(tmp_path) -> None:
+    app = _app(tmp_path)
+    with TestClient(app) as c:
+        r = c.post("/api/updates/campaigns/does-not-exist/resume", headers=_bearer(app))
+        assert r.status_code == 404

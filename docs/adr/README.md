@@ -69,3 +69,7 @@ kind of record kenny keeps. What qualifies: *When (not) to write an ADR* in the 
 | [0049](0049-ticket-blocked-on-axis.md) | The ticket lifecycle splits into two axes: state and blocked-on | accepted |
 | [0050](0050-the-ticket-is-its-own-chat-surface.md) | The ticket is its own chat surface | accepted |
 | [0051](0051-process-wide-sqlite-write-serialization.md) | Serialize this process's SQLite writers behind an in-process lock | accepted |
+| [0052](0052-dashboard-as-a-compiled-frontend.md) | Build the dashboard as a compiled frontend shipped in the wheel | accepted |
+| [0053](0053-guarded-minting-open-redemption-for-agent-distribution.md) | Guarded minting, open redemption for agent distribution | accepted |
+| [0054](0054-alert-channels-as-live-settings.md) | Alert delivery channels are live settings, resolved per dispatch | accepted |
+| [0055](0055-scheduled-web-filter-enforcement.md) | Scheduled web-filter enforcement: a standing rule the server enacts on a clock | accepted |

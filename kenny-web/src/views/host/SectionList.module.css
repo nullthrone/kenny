@@ -1,0 +1,78 @@
+.eyebrow {
+  font-family: var(--font-display);
+  font-size: 10px;
+  letter-spacing: var(--track-caps-wide);
+  color: var(--text-muted);
+  margin-bottom: 12px;
+}
+
+.problems {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 36px;
+}
+
+.problemCard {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: var(--surface-card);
+  border: 1px solid var(--border-line);
+  box-shadow: var(--shadow-1);
+  padding: 18px 20px;
+}
+.problemCard:hover {
+  background: var(--surface-inset);
+}
+
+.problemHead {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 6px;
+  flex-wrap: wrap;
+}
+
+.problemName {
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 500;
+  flex: 1;
+  min-width: 0;
+}
+
+.rule {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  border: 1px solid currentColor;
+  padding: 2px 8px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.problemSummary {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+
+.healthyGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 1px;
+  background: var(--border-line);
+  border: 1px solid var(--border-line);
+  margin-bottom: 36px;
+}
+
+.healthyCell {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 12px 14px;
+  background: var(--surface-card);
+  font-size: var(--text-sm);
+  color: var(--text-body);
+  min-height: 44px;
+  box-sizing: border-box;
+}

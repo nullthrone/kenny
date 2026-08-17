@@ -23,24 +23,32 @@ theme:
   icon:
     repo: fontawesome/brands/github
   font:
-    text: Hanken Grotesk
+    # Public Sans is Nullthrone's body face. Material's theme.font only takes
+    # one text family (used for body + fallback headings); Jost — the display
+    # face for headings and structural nav/caps labels — is layered on top in
+    # docs/css/kenny-theme.css since Material has no second `text` slot.
+    text: Public Sans
     code: JetBrains Mono
   palette:
-    # Dark first (matches the dashboard's warm "border-collie" theme).
-    - media: "(prefers-color-scheme: dark)"
-      scheme: slate
-      primary: amber
-      accent: amber
-      toggle:
-        icon: material/weather-sunny
-        name: Switch to light mode
+    # Light first — Nullthrone is light-by-default (ink on warm paper); the
+    # ink scheme is the alternate, reached via the toggle or a dark system
+    # preference. `primary`/`accent: custom` opt out of Material's built-in
+    # named swatches so the exact Nullthrone brass token drives both (see
+    # kenny-theme.css) — https://squidfunk.github.io/mkdocs-material/setup/changing-the-colors/#custom-colors
     - media: "(prefers-color-scheme: light)"
       scheme: default
-      primary: amber
-      accent: amber
+      primary: custom
+      accent: custom
       toggle:
         icon: material/weather-night
         name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
   features:
     - navigation.sections
     - navigation.top

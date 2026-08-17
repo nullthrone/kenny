@@ -6,13 +6,15 @@ commands on them through kenny. For installing and hosting the server, see
 
 ## What kenny gives you
 
-- An **Overview dashboard** — the whole fleet at a glance (health mix, inventory, security
-  posture, the loudest problems), every figure drill-down-able to the hosts behind it.
-- A **fleet view** with a traffic light per machine, and a **drill-down** per PC: every
-  telemetry section, a health trend, inventory changes + forecasts, and the last screenshot.
-- Two ways to act on a PC: talk to **Claude** (which calls kenny's tools), either from a local
-  Claude client over MCP or from **Ask kenny, built into the dashboard** — no local
-  client needed, with a confirm-gate on anything that changes state.
+- A **Today page** — the fleet in one sentence, the items that need attention ranked by
+  consequence, a health donut, a 30-day trend, and six fleet KPIs.
+- A **Fleet page** — a card per machine, worst-first, and a full **host page** per PC:
+  every telemetry section, a health trend, inventory changes + forecasts, and the last
+  screenshot.
+- Two ways to act on a PC: talk to **Claude** (which calls kenny's tools), either from a
+  local Claude client over MCP or from **Ask kenny**, a global overlay you open with ⌘K
+  anywhere in the dashboard — no local client needed, with a confirm-gate on anything that
+  changes state.
 - **Parental controls** (web activity + web filter, screen time) and **push alerts** with a
   weekly digest.
 - One-click **agent installer download** (and a shareable link) plus **server-triggered updates**.
@@ -56,23 +58,22 @@ own per-agent token; you authenticate to the server with the **operator token**.
 
 > The web UI and a local Claude client are two separate front doors to the same account. The
 > browser uses this login cookie; Claude Desktop uses the **OAuth flow** (see
-> [Option B](#option-b--a-local-claude-client-over-mcp) below), signing in with these same
+> [Option B](#option-b-a-local-claude-client-over-mcp) below), signing in with these same
 > credentials and approving the connection once.
 
-## The Overview tab
+## The Today page
 
-The landing view is a high-level dashboard built from every PC's latest snapshot:
-KPI tiles (hosts online, reboots pending, open/failed updates, quarantine, EOL, disks filling),
-a fleet **health** donut, an **inventory** breakdown (OS + laptop/desktop), a **security
-posture** row (encryption, Defender real-time, firewall), a **problem sections** bar, a **top
-hosts** ranking, a **problem-flow** Sankey, a **reliability** heatmap, and a **fleet health
-trend**. Every segment, bar, node, cell, and KPI is clickable — it opens a table of the hosts
-behind that number, and clicking a host jumps straight to it. Full details in the
-[dashboard reference](dashboard.md#the-overview-tab).
+The landing view: a plain-English **verdict sentence**, at most **three** items ranked by
+consequence (a critical section beats a warning section, which beats a held approval,
+which beats a stale ticket) with a link straight to the host or ticket behind each one, a
+fleet **health donut**, a **30-day trend**, and **six KPI numbers** (reboots pending,
+open/failed updates, quarantine, EOL, disks filling). When nothing needs attention, the
+page says so plainly instead of showing an empty chart — "all quiet" is a normal, expected
+state, not an error. Full details in the [dashboard reference](dashboard.md#today).
 
-## The fleet view
+## The Fleet page
 
-Each PC is a tile with a status dot:
+Each PC is a card with a status dot:
 
 | Dot | Status | Meaning |
 |-----|--------|---------|
@@ -81,29 +82,33 @@ Each PC is a tile with a status dot:
 | 🔴 | `crit` | acute problem (e.g. Defender real-time protection off, disk ≥ 95 %) |
 | ⚪ | `unknown`/offline | no recent telemetry / agent not connected |
 
-The header shows the **worst-of** health across the whole fleet. Click a tile to drill in.
+The header shows the **online count** for the whole fleet. Click a card to open that PC's
+own page.
 
-## The agent drill-down
+## The host page
 
-- **Sections** — each telemetry section with its status, a one-line summary, and the server's health
-  rule reason. Click a section tile to open a popup with its details rendered as readable tables and
-  fields (no raw JSON). For a *flagged* section, when an Anthropic API key is configured, an **AI
-  Recommendation** (Diagnosis / Action / Urgency) streams in at the top, sometimes with an
-  **Auto-Remediate** button that hands a fix prompt to Ask kenny. On **Reliability**, a noisy but
-  known-harmless Windows event pattern (e.g. a `CryptSvc` quirk repeating hundreds of times a day)
-  can be **suppressed** — a click next to the offending row, or the panel's manual form (event id
-  required, source optional) — so it stops dominating the health status while its raw count stays
-  visible. See [Alarm suppression](telemetry.md#alarm-suppression).
-- **AI Forecast** — a short, plain-English outlook pinned at the top of the drill-down: what is
-  likely to need attention on this PC soon, drawn from the disk-fill and battery trends and the
-  inventory changes since yesterday. With an Anthropic API key the model writes it (marked ✦);
-  without a key the same card shows a concise deterministic summary.
+- **Needs attention** — one card per flagged section: the rule reason and a one-line
+  summary. Click a card to open its **section modal**, rendered as readable tables and
+  fields (no raw JSON). When an Anthropic API key is configured, a **Recommendation**
+  (Diagnosis / Action / Urgency) streams in at the top, sometimes with a **Fix via Ask
+  kenny** button that opens the [Ask kenny overlay](dashboard.md#ask-kenny), scoped to this
+  host, with a fix prompt ready to send. On **Reliability**, a noisy but known-harmless
+  Windows event pattern (e.g. a `CryptSvc` quirk repeating hundreds of times a day) can be
+  **suppressed** — a click next to the offending row, or the panel's manual form (event id
+  required, source optional) — so it stops dominating the health status while its raw
+  count stays visible. See [Alarm suppression](telemetry.md#alarm-suppression).
+- **Healthy · N sections** — everything not flagged, as a compact checklist; click an
+  entry for the same section modal without the recommendation block.
+- **Forecast** — a short, plain-English outlook pinned near the top: what is likely to need
+  attention on this PC soon, drawn from the disk-fill and battery trends and the inventory
+  changes since yesterday. With an Anthropic API key the model writes it; without a key the
+  same panel shows a concise deterministic summary.
 - **Health trend** — recent snapshots as a sparkline.
 - **Last screenshot** — the most recent desktop capture, with a **recapture** button.
 - Action buttons: **refresh**, **remote help** (Quick Assist), **reinstall**, **re-share**,
-  **update**. Onboarding a *new* PC uses the **Add a PC** panel (**installer** / **share link**);
-  from a PC's drill-down, **reinstall** / **re-share** re-provision that existing PC (rotating its
-  token).
+  **update agent**, **remove**. Onboarding a *new* PC uses the **Add a PC** wizard on
+  [Fleet](dashboard.md#fleet) (installer / share link); from an existing PC's own page,
+  **reinstall** / **re-share** re-provision that PC (rotating its token).
 
 kenny reports around **30 telemetry sections** — disk & SMART, memory, CPU/thermals, uptime,
 network & routing, Wi‑Fi, Defender (+ quarantine), third-party AV, firewall, BitLocker, Windows
@@ -113,22 +118,26 @@ sync, web activity, and screen time. Health thresholds are evaluated **server-si
 (authoritative); the agent also sets a reasonable per-section status. See the
 [telemetry reference](telemetry.md) for every section and its rule.
 
-The **fleet-wide observability** lives on the **Activity** tab: a searchable, paged **tool-call
-audit log** (read-only vs state-changing, ok/err) and an **events & logs** stream (server + agent
-log lines and emitted [alerts](alerting.md)). The **Flagged** view — reached from the *warnings* /
-*critical* counts in the header — groups everything needing attention by PC for fast triage.
+The **fleet-wide observability** lives on the **Log** page: a searchable, server-paged stream
+of every tool call (read-only vs state-changing, ok/err), emitted [alerts](alerting.md), and
+server/agent log lines, filterable by chip (ALL / TOOLS / ALERTS / EVENTS) or free text. The
+**Inbox** — reached from the header's own badge — groups everything that needs a decision by
+who it's waiting on, flagged sections included, for fast triage.
 
 ## Running commands on a PC
 
-### Option A — the dashboard chat (no local client)
+### Option A — Ask kenny (no local client)
 
-Open the **chat** tab and ask in plain language (“is Defender on for example-pc?”, “free up disk on
-example-laptop”). Claude picks the right kenny tools and runs them.
+Press **⌘K** (Ctrl+K) anywhere in the dashboard, or use the header button, and ask in plain
+language (“is Defender on for example-pc?”, “free up disk on example-laptop”). Claude picks
+the right kenny tools and runs them. Opening the overlay from a host's own page scopes the
+conversation to that host automatically; opening it from anywhere else scopes it to the
+whole fleet.
 
 ```mermaid
 sequenceDiagram
   actor Op as Operator
-  participant Chat as Dashboard chat
+  participant Chat as Ask kenny overlay
   participant Claude as Claude (server-side)
   participant Agent as kenny-agent
   Op->>Chat: "Update 7-Zip on example-pc"
@@ -147,15 +156,16 @@ sequenceDiagram
 **Confirm-gate:** read-only tools (diagnostics, `fs_read`/`list`/`search`, `telemetry_collect`,
 `*_list`, `screen_capture`) run automatically. Anything **state-changing** —
 `powershell_exec`, `shell_exec`, `winget_install/uninstall/update`, `net_dns_flush`, `net_adapter_reset`,
-`agent_update` — pauses for your explicit confirmation before it runs. Every call is recorded in the
-tool-call log. `powershell_exec` (Windows) and `shell_exec` (Linux/macOS) are OS-scoped mirrors of
-each other — kenny refuses the wrong one for a given PC's OS before it ever runs.
+`agent_update` — pauses for your explicit confirmation before it runs, and this gate is not
+dismissible: there is no "decide later" here, so closing the overlay never reads as a
+decision. Every call is recorded in [Log](dashboard.md#log). `powershell_exec` (Windows) and
+`shell_exec` (Linux/macOS) are OS-scoped mirrors of each other — kenny refuses the wrong one
+for a given PC's OS before it ever runs.
 
-The chat mirrors your fleet selection: the **context** chip shows whether it's scoped to the
-selected PC or the whole fleet. Conversations are **saved** — **new** starts a fresh one and
-**history** browses, resumes, or deletes past ones. See the
-[tool reference](tools.md) for the full catalog and the [dashboard reference](dashboard.md#ask-kenny-chat-rail)
-for Ask kenny in detail.
+A **scope chip** in the overlay shows whether the chat is scoped to a host or the whole
+fleet. Conversations are **saved** — **new** starts a fresh one and **history** browses,
+resumes, or deletes past ones. See the [tool reference](tools.md) for the full catalog and
+the [dashboard reference](dashboard.md#ask-kenny) for Ask kenny in detail.
 
 ### Option B — a local Claude client over MCP
 
@@ -203,18 +213,21 @@ The person sitting at a managed PC can switch remote control **off** at any time
 the kenny tray icon (notification area) → **Fernsteuerung aktiv**. While off, the agent
 refuses every state-changing tool above (the ✅ rows) and a forwarded call comes back
 with `error.code = "disabled"`; **telemetry and all read-only tools keep working**, so
-the fleet view stays live. Remote control is **on by default** and the choice persists
+the dashboard stays live. Remote control is **on by default** and the choice persists
 across restarts. The tray icon shows the state at a glance (normal Kenny = on, greyed
 with a red slash = off). To re-enable, open the menu and toggle it back on. See
 [ADR-0011](adr/0011-local-remote-control-kill-switch.md).
 
 ## Adding a PC to the fleet
 
-From the **Add a PC** panel (left of the console), **installer** gives you a ZIP (the agent binary +
-an `install.bat` pre-filled with the server URL, the agent's id, and a freshly minted token). Or use
-**share link** to send the target user a one-time, expiring download link they can open without your
-login. For a PC that already exists, the drill-down's **reinstall** / **re-share** buttons do the
-same for that agent id (rotating its token, so the old install stops reporting).
+The **Add a PC** wizard, opened from [Fleet](dashboard.md#fleet), walks through three
+steps: name the machine, pick its OS, then hand it over. **Download installer** gives you
+a ZIP (the agent binary + an `install.bat` pre-filled with the server URL, the agent's id,
+and a freshly minted token). Or use **share a one-time link** to send the target user a
+single-use, 24-hour-expiring download link they can open without your login. For a PC
+that already exists, [its own page](dashboard.md#the-host-page)'s **reinstall** /
+**re-share** buttons do the same for that agent id (rotating its token, so the old install
+stops reporting).
 
 ```mermaid
 sequenceDiagram

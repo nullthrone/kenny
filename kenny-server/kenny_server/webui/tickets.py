@@ -30,6 +30,15 @@ mapping is a plain SQLite store that exists whether or not a bot is connected,
 while the guild member list and the connection status can only come from a live
 gateway (:class:`~kenny_server.discord_service.DiscordService`).
 
+**Self-service unbind (``/api/me/discord``).** ADR-0044 keeps *enrollment*
+operator-only — a chat platform's identity assertion carries no proof of
+possession, so kenny will not mint a binding from self-service. Seeing and
+*removing* your own binding is different: it only takes privilege away, so it
+needs no operator step. These two routes are floored at plain ``user`` and
+resolve their target from ``principal.user_id`` alone, never from anything
+the caller sends, so they answer with the same clean "not linked" shape
+whether the store holds nothing for that account or isn't configured at all.
+
 **Auto-ticket rules** (``ticket_rules.py``) live here too, as a thin CRUD skin over
 :class:`~kenny_server.ticket_rules.TicketRuleList` — the mirror
 ``AlertEngine._dispatch`` consults to decide which alerts open a ticket. See
@@ -51,7 +60,7 @@ from .. import tool_classes
 from ..auth import Principal
 from ..discord_identity import DiscordIdentityStore, IdentityConflict
 from ..ticket_rules import DECISIONS, EVENT_TYPES, KNOWN_SECTIONS, TicketRuleList
-from ..ticketstore import Ticket, TicketStore
+from ..ticketstore import Ticket, TicketApproval, TicketStore
 from ..tickets import (
     BLOCKED_REASONS,
     KNOWN_CATEGORIES,
@@ -62,7 +71,7 @@ from ..tickets import (
     TransitionError,
 )
 from ..userstore import UserStore
-from .authz import Forbidden, guard, require_user
+from .authz import Forbidden, guard, require_host, require_user
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle-free typing only
     from ..discord_service import DiscordService
@@ -311,6 +320,24 @@ def build_ticket_routes(
         return JSONResponse(counts)
 
     async def api_tickets_create(request: Request) -> JSONResponse:
+        """Open a ticket, optionally starting work on it in the same call.
+
+        ``start_immediately`` is a convenience over the two calls the dashboard
+        would otherwise make, **not** a way around the ``new -> in_progress``
+        gate. It goes through :meth:`TicketService.transition` as the caller,
+        so ``tickets.py``'s ``_ACTORS`` rule still decides: system/operator may
+        start work, a requester may not ("opening a ticket does not entitle its
+        author to drive its lifecycle"). Issuing it as ``actor="system"`` on a
+        requester's behalf would have made the flag a bypass of exactly that
+        rule, so it does not.
+
+        A refused start is reported, never forced and never fatal: the ticket
+        was created and that write is durable, so the response is still 201 with
+        the ticket, plus ``started`` and — when it did not start — ``start_error``
+        carrying the lifecycle's own reason. Failing the whole call would lose a
+        ticket the caller successfully opened.
+        """
+
         principal = require_user(request)
         body = await _body(request)
         title = str(body.get("title", "")).strip()
@@ -328,6 +355,16 @@ def build_ticket_routes(
         else:
             # A scoped `user` may only ever open a ticket on their own behalf.
             requester_user_id = principal.user_id
+        agent_id = body.get("agent_id")
+        if agent_id:
+            # A ticket's `agent_id` is frozen at creation as the routing target
+            # every later tool call is checked against (see `TicketService.create`),
+            # so a scoped `user` naming a host outside their scope here would let
+            # them aim work at a machine they cannot otherwise even see. Same
+            # check `guard(..., host_param=...)` runs for a path parameter; here
+            # the host is in the body, so it is checked by hand. A no-op for
+            # operator+, which is never host-scoped.
+            require_host(principal, str(agent_id))
         ticket = await tickets.create(
             title=title,
             origin=str(body.get("origin", "dashboard")),
@@ -338,7 +375,26 @@ def build_ticket_routes(
             summary=str(body.get("summary", "")),
             actor=_actor(principal),
         )
-        return JSONResponse(_affordances(tickets, ticket, principal), status_code=201)
+        started = False
+        start_error: str | None = None
+        if bool(body.get("start_immediately")):
+            try:
+                ticket = await tickets.transition(
+                    ticket.id,
+                    "in_progress",
+                    actor=_actor(principal),
+                    reason="started on creation",
+                )
+                started = True
+            except TicketError as exc:
+                start_error = str(exc)
+                logger.info(
+                    "ticket %s created but not started: %s", ticket.id, start_error
+                )
+        payload = _affordances(tickets, ticket, principal)
+        payload["started"] = started
+        payload["start_error"] = start_error
+        return JSONResponse(payload, status_code=201)
 
     async def api_ticket_get(request: Request) -> JSONResponse:
         principal = require_user(request)
@@ -612,8 +668,30 @@ def build_ticket_routes(
     # -- approvals -------------------------------------------------------------
 
     async def api_approvals_list(request: Request) -> JSONResponse:
-        q = request.query_params
-        approvals = await store.list_open_approvals(ticket_id=q.get("ticket_id"))
+        """Pending approval gates.
+
+        Operator+ sees every open gate, unmodified. A scoped ``user`` sees only
+        the gates on tickets *they themselves* opened: ``decide_approval``
+        already lets a requester decide a ``user_consent`` gate on their own
+        ticket ("Approving is enforced here", ``tickets.py``), but until now
+        this listing floored at ``operator`` so that requester had no way to
+        even find the gate they are the only person allowed to act on. See
+        ``api_approval_decide`` for the matching (and separately gated) widening
+        of who may *decide* one.
+        """
+
+        principal = require_user(request)
+        ticket_id = request.query_params.get("ticket_id")
+        if ticket_id is not None and not principal.at_least("operator"):
+            _owned_or_operator(principal, await tickets.get(ticket_id))
+        approvals = await store.list_open_approvals(ticket_id=ticket_id)
+        if not principal.at_least("operator"):
+            owned: list[TicketApproval] = []
+            for approval in approvals:
+                ticket = await tickets.get(approval.ticket_id)
+                if ticket.requester_user_id == principal.user_id:
+                    owned.append(approval)
+            approvals = owned
         return JSONResponse({"approvals": [a.as_dict() for a in approvals]})
 
     async def api_approval_decide(request: Request) -> JSONResponse:
@@ -647,6 +725,30 @@ def build_ticket_routes(
         approve = body.get("approve")
         if not isinstance(approve, bool):
             return _err("approve must be a boolean")
+        if not principal.at_least("operator"):
+            # ``TicketService.decide_approval`` enforces who may *approve* a
+            # gate (only an operator for ``operator_approval``, only the
+            # ticket's own requester for ``user_consent``), but it explicitly
+            # leaves *denial* open to any actor ("Denying stays open to every
+            # actor" — the sweeper's expiry and a requester's own withdrawal
+            # both rely on that). Left alone, that would let a scoped `user`
+            # deny anyone's pending gate over this route, not just their own —
+            # a real widening, not the neutral floor-lower it looks like. So
+            # this route adds the same pre-check ``handle_component`` already
+            # runs before ever reaching the service for the Discord button
+            # (``discord_service.py``): a `user` may reach only a
+            # ``user_consent`` gate on a ticket they themselves requested;
+            # everything else (another user's consent gate, any
+            # ``operator_approval``) is refused here, before either
+            # `approve=True` or `approve=False` gets near the service.
+            approval = await store.get_approval(request.path_params["aid"])
+            if approval is not None:
+                if approval.kind != "user_consent":
+                    raise Forbidden(403, "only an operator can decide this step")
+                ticket = await tickets.get(approval.ticket_id)
+                _owned_or_operator(principal, ticket)
+            # else: no pre-check to run — decide_approval itself raises
+            # ApprovalNotFoundError, translated to the usual 404 below.
         decided = await tickets.decide_approval(
             request.path_params["aid"],
             approve=approve,
@@ -693,6 +795,95 @@ def build_ticket_routes(
                 "resume_status": resume_status,
             }
         )
+
+    # -- Discord (self-service: see/remove the caller's own binding) -----------
+    #
+    # ADR-0044 requires an operator to *create* a Discord binding — a chat
+    # platform's identity assertion carries no proof of possession, so kenny
+    # will not mint one from self-service. That is unchanged here. But
+    # unbinding only takes *away* the privilege a binding carries, never
+    # grants any, so it needs no operator step: these two routes let a plain
+    # `user` see and remove their own binding, nothing else. Same 503-when-
+    # unconfigured posture as the rest of this section (``_need_identities``),
+    # so an unconfigured server still serves every other route.
+
+    async def api_me_discord_get(request: Request) -> JSONResponse:
+        """The caller's own Discord binding(s), or a clean "not linked" answer.
+
+        Only *active* (non-disabled) bindings are shown — a disabled row was
+        already revoked by an operator and, per ``resolve()``, carries no
+        privilege, so it is not this account's business to see or clear.
+        Never a 404: an unlinked account and an unconfigured server both read
+        as ``{"linked": false, "bindings": []}``, not an error.
+
+        Only what the store actually holds is returned — ``discord_user_id``
+        (the snowflake), ``guild_id``, ``linked_at``, ``linked_via``. No
+        display name is invented: ``display_hint`` lives on the mutable,
+        unverified ``/link`` claim, never on the identity itself (see
+        ADR-0044), so the caller only ever learns the raw Discord id.
+        """
+
+        principal = require_user(request)
+        rows = (
+            []
+            if identities is None or principal.user_id is None
+            else await identities.list_identities(
+                user_id=principal.user_id, include_disabled=False
+            )
+        )
+        return JSONResponse(
+            {
+                "linked": bool(rows),
+                "bindings": [
+                    {
+                        "discord_user_id": r.discord_user_id,
+                        "guild_id": r.guild_id,
+                        "linked_at": r.linked_at,
+                        "linked_via": r.linked_via,
+                    }
+                    for r in rows
+                ],
+                "note": (
+                    "kenny only knows the Discord account id (snowflake); "
+                    "it never stores a display name"
+                ),
+            }
+        )
+
+    async def api_me_discord_delete(request: Request) -> JSONResponse:
+        """Remove every one of the caller's own (active) Discord bindings.
+
+        The target is always ``principal.user_id`` — resolved from the
+        authenticated session and nothing else. This handler does not read a
+        path parameter, a query string, or the request body to decide *whose*
+        binding to remove, so nothing a caller sends can point it at another
+        account (see the cross-user test in ``tests/test_tickets_api.py``).
+
+        A user may hold a binding per guild (the ``(user_id, guild_id)``
+        unique index). This route takes no guild argument and removes all of
+        the caller's bindings in one call — self-service unbind is total, not
+        per-guild, since a binding is the same privilege grant in whichever
+        guild it lives in and the caller has no legitimate reason to keep one
+        while dropping another. A disabled (operator-revoked) row is left
+        alone; it already carries no privilege.
+
+        Always ``200``, even when nothing was removed — an idempotent "make
+        sure I'm unbound" call, not a lookup that can 404.
+        """
+
+        principal = require_user(request)
+        removed = (
+            0
+            if identities is None or principal.user_id is None
+            else await identities.unlink_user(principal.user_id)
+        )
+        if removed:
+            logger.info(
+                "discord: user %s removed their own Discord binding (%d guild(s))",
+                principal.user_id,
+                removed,
+            )
+        return JSONResponse({"ok": True, "removed": removed})
 
     # -- Discord (superuser-managed identities; operator-visible status) -------
 
@@ -994,11 +1185,17 @@ def build_ticket_routes(
             g(api_ticket_unblock, min_role="user"),
             methods=["POST"],
         ),
-        Route("/api/approvals", g(api_approvals_list, min_role="operator")),
+        Route("/api/approvals", g(api_approvals_list, min_role="user")),
         Route(
             "/api/approvals/{aid}",
-            g(api_approval_decide, min_role="operator"),
+            g(api_approval_decide, min_role="user"),
             methods=["POST"],
+        ),
+        Route("/api/me/discord", g(api_me_discord_get, min_role="user")),
+        Route(
+            "/api/me/discord",
+            g(api_me_discord_delete, min_role="user"),
+            methods=["DELETE"],
         ),
         Route("/api/discord/status", g(api_discord_status, min_role="operator")),
         Route(

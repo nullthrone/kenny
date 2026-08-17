@@ -60,26 +60,22 @@ flowchart LR
   server-side **diff + forecast** (inventory changes, disk-fill and battery forecasts).
 
 ### Operator dashboard (web UI)
-- **Overview tab**: a high-level dashboard — KPIs, fleet-health & inventory donuts, a
-  security-posture row, problem-section bars, top-host rankings, a problem-flow Sankey, a
-  reliability heatmap, and a fleet health trend — every figure drill-down-able to its hosts.
-- **Fleet tab**: a traffic-light per PC and a per-agent **drill-down** — every telemetry
-  section (click for a structured detail popup, with an optional **AI recommendation** +
-  Auto-Remediate), a **health trend**, a **changes & forecast** panel, and the last screenshot.
-- **Copilot**: a server-hosted Claude chat docked in the console, with saved history and a
-  confirm-gate on state-changing tools.
-- **Activity tab**: a searchable, paged **tool-call audit log** and an **events & logs** stream;
-  a **Flagged** view groups everything needing attention by PC.
-- **Parental controls**: web-activity monitoring, a per-host web filter, and screen time.
-- Action buttons: refresh, **remote help** (Quick Assist), reinstall, re-share, update agent;
-  onboard a new PC from **Add a PC** (installer / share link).
-- Single-page, dependency-light; dark & light themes; cookie login at `/login`.
+Five destinations: **Today** (a landing page with one verdict sentence and at most three
+  items ranked by consequence), **Fleet** (card grid with per-host drill-down to full
+  telemetry detail, health trend, changes & forecast, and the last screenshot), **Inbox**
+  (approvals, flagged sections, and tickets in one queue), **Log** (filtered stream of tool
+  calls, alerts, and events), and **Admin** (settings, users, updates). **Ask kenny** is a
+  global overlay (⌘K) with server-hosted Claude chat, saved history, and a confirm-gate on
+  state-changing tools. Parental controls include web-activity monitoring, per-host web
+  filter, and screen time. Action buttons: refresh, **remote help** (Quick Assist), reinstall,
+  re-share, update agent; onboard a new PC from **Add a PC** (installer / share link).
+  Single-page, dependency-light; dark & light themes; cookie login at `/login`.
 
 <div align="center">
 
-![The kenny fleet console](docs/assets/screenshots/overview.png)
+![The kenny dashboard — Today view](docs/assets/screenshots/today.png)
 
-_The Overview dashboard — see the **[dashboard reference](docs/dashboard.md)** for the full tour._
+_The Today dashboard — see the **[dashboard reference](docs/dashboard.md)** for the full tour._
 
 </div>
 

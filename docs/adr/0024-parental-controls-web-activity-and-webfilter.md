@@ -147,6 +147,11 @@ server as the authoritative matcher and the agent a dumb, idempotent enforcer.**
   `data/webfilter_seed.json`.
 - Code (agent): `kenny-agent/src/telemetry/collectors/web_activity.rs`,
   `kenny-agent/src/handlers/webfilter.rs`, `src/dispatch.rs`, `src/control.rs`.
+- Extended by [ADR-0055](0055-scheduled-web-filter-enforcement.md): named category layers, a
+  per-host time schedule, and bypass requests as tickets. It leaves this ADR's server/agent
+  split exactly where it is — the server is still the authoritative matcher, the agent still
+  a dumb enforcer receiving one flat `domains` list with no clock and no category — and moves
+  the *authorization* boundary instead, to admit a standing rule the server enacts unattended.
 - Related: [ADR-0007](0007-telemetry-push-model-and-sqlite-storage.md) (telemetry push + store),
   [ADR-0011](0011-local-remote-control-kill-switch.md) (kill switch),
   [ADR-0019](0019-agent-side-deterministic-tool-guard.md) (safety guard),

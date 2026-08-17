@@ -1,0 +1,57 @@
+.rail {
+  border-left: 1px solid var(--border-line);
+  padding-left: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+.entry {
+  position: relative;
+}
+
+.dot {
+  position: absolute;
+  left: -29px;
+  top: 4px;
+  width: 9px;
+  height: 9px;
+}
+
+.headRow {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  margin-bottom: 4px;
+  flex-wrap: wrap;
+}
+
+.who {
+  font-family: var(--font-display);
+  font-size: 10px;
+  letter-spacing: var(--track-caps);
+}
+
+.time {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-faint);
+}
+
+.text {
+  font-size: var(--text-sm);
+  line-height: var(--leading-body);
+  color: var(--text-body);
+  overflow-wrap: break-word;
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--surface-inset);
+  border: 1px solid var(--border-line);
+  padding: 8px 12px;
+  margin-top: 8px;
+  overflow-wrap: break-word;
+}

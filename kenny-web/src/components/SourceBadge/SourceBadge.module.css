@@ -1,0 +1,9 @@
+.badge {
+  font-family: var(--font-display);
+  font-size: 10px;
+  letter-spacing: var(--track-caps);
+  border: 1px solid currentColor;
+  padding: 3px 8px;
+  display: inline-block;
+  flex: none;
+}

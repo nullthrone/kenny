@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from kenny_server.alerting import AlertEngine
-from kenny_server.notify import Notification
+from kenny_server.notify import Notification, Notifier
 from kenny_server.store import AlertStateStore, EventStore, TelemetryStore
 
 NOW = datetime(2026, 7, 1, 12, 0, 0, tzinfo=timezone.utc)
@@ -603,3 +603,203 @@ async def test_maybe_prune_does_not_force_when_retention_grows(stores) -> None:
     # The regular cadence still applies once due.
     await engine._maybe_prune(NOW + timedelta(hours=25))
     assert spy.calls == [7, 30]
+
+
+# -- delivery channels are resolved per dispatch (ADR-0054) --------------------
+#
+# The engine holds a provider, not a list, so adding/changing/clearing a channel
+# in the dashboard reaches the next alert without restarting the server. These
+# drive a single long-lived engine across a configuration change -- rebuilding
+# it would prove nothing, since that is exactly what a restart does.
+
+
+class _RecordingNotifier:
+    """A channel that records what it was handed."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.sent: list[Notification] = []
+
+    async def send(self, notification: Notification) -> None:
+        self.sent.append(notification)
+
+
+class _ExplodingNotifier:
+    """A misconfigured channel whose send raises instead of swallowing."""
+
+    name = "boom"
+
+    def __init__(self) -> None:
+        self.attempts = 0
+
+    async def send(self, notification: Notification) -> None:
+        self.attempts += 1
+        raise RuntimeError("this channel is misconfigured")
+
+
+async def test_a_channel_configured_later_delivers_without_a_restart(stores) -> None:
+    store, events, state = stores
+    channels: list[Notifier] = []
+    engine = AlertEngine(
+        store=store,
+        alert_state=state,
+        event_store=events,
+        registry=FakeRegistry({"pc1"}),
+        notifier_provider=lambda: channels,
+    )
+
+    # Zero channels is legitimate: the pass still evaluates and records history.
+    await insert(store, snapshot(96.0), NOW - timedelta(minutes=1))
+    sent = await engine.evaluate_once(NOW)
+    assert len(sent) == 1
+    assert len(await events.query(kind="alert")) == 1
+
+    # The operator adds a channel. No new engine, no new app, no restart.
+    late = _RecordingNotifier("late")
+    channels.append(late)
+
+    await insert(store, snapshot(50.0), NOW + timedelta(minutes=1))
+    recovery = await engine.evaluate_once(NOW + timedelta(minutes=2))
+    assert [n.kind for n in recovery] == ["recovery"]
+    assert [n.kind for n in late.sent] == ["recovery"]
+
+
+async def test_a_channel_cleared_later_stops_delivering(stores) -> None:
+    store, events, state = stores
+    channel = _RecordingNotifier("configured")
+    channels: list[Notifier] = [channel]
+    engine = AlertEngine(
+        store=store,
+        alert_state=state,
+        event_store=events,
+        registry=FakeRegistry({"pc1"}),
+        notifier_provider=lambda: channels,
+    )
+
+    await insert(store, snapshot(96.0), NOW - timedelta(minutes=1))
+    await engine.evaluate_once(NOW)
+    assert len(channel.sent) == 1
+
+    channels.clear()
+    await insert(store, snapshot(50.0), NOW + timedelta(minutes=1))
+    assert len(await engine.evaluate_once(NOW + timedelta(minutes=2))) == 1
+    assert len(channel.sent) == 1  # the recovery went nowhere
+    assert len(await events.query(kind="alert")) == 2  # but is still on record
+
+
+async def test_a_channel_whose_send_raises_never_costs_the_others(stores) -> None:
+    """One dead channel must not stall alerting for the rest."""
+
+    store, events, state = stores
+    first, last = _RecordingNotifier("first"), _RecordingNotifier("last")
+    boom = _ExplodingNotifier()
+    engine = AlertEngine(
+        store=store,
+        alert_state=state,
+        event_store=events,
+        registry=FakeRegistry({"pc1"}),
+        # The exploding channel sits *between* two healthy ones, so a test that
+        # only proved "delivery continued" by ordering would not pass.
+        notifier_provider=lambda: [first, boom, last],
+    )
+
+    await insert(store, snapshot(96.0), NOW - timedelta(minutes=1))
+    sent = await engine.evaluate_once(NOW)
+
+    assert len(sent) == 1
+    assert boom.attempts == 1
+    assert len(first.sent) == 1
+    assert len(last.sent) == 1
+    assert len(await events.query(kind="alert")) == 1
+
+
+async def test_a_provider_that_raises_never_breaks_the_pass(stores) -> None:
+    store, events, state = stores
+
+    def _explode() -> list[Notifier]:
+        raise RuntimeError("resolving channels failed")
+
+    engine = AlertEngine(
+        store=store,
+        alert_state=state,
+        event_store=events,
+        registry=FakeRegistry({"pc1"}),
+        notifier_provider=_explode,
+    )
+    await insert(store, snapshot(96.0), NOW - timedelta(minutes=1))
+
+    sent = await engine.evaluate_once(NOW)
+    assert len(sent) == 1  # evaluated and recorded; it just pushed nothing
+    assert len(await events.query(kind="alert")) == 1
+
+
+def test_notifiers_and_a_provider_together_are_refused(stores) -> None:
+    """Two sources of truth for delivery is a mistake that must not be silent."""
+
+    store, events, state = stores
+    with pytest.raises(ValueError):
+        AlertEngine(
+            store=store,
+            alert_state=state,
+            event_store=events,
+            registry=FakeRegistry(),
+            notifiers=[FakeNotifier()],
+            notifier_provider=lambda: [],
+        )
+
+
+async def test_the_engine_delivers_on_channels_written_to_settings(stores) -> None:
+    """End to end: a dashboard write reaches the wire on the next alert.
+
+    The joined seam -- the real ``Settings`` resolver, the real
+    ``NotifierProvider``, the real ``WebhookNotifier`` -- against a mock
+    transport. A break in any one of the three fails this.
+    """
+
+    import httpx
+
+    from kenny_server.config import Settings
+    from kenny_server.notify import NotifierProvider
+
+    class _MemStore:
+        def __init__(self) -> None:
+            self.data: dict[str, str] = {}
+
+        async def all(self) -> dict[str, str]:
+            return dict(self.data)
+
+        async def set(self, key: str, value: str) -> None:
+            self.data[key] = value
+
+        async def delete(self, key: str) -> bool:
+            return self.data.pop(key, None) is not None
+
+    posted: list[httpx.Request] = []
+
+    def _client() -> httpx.AsyncClient:
+        def handler(request: httpx.Request) -> httpx.Response:
+            posted.append(request)
+            return httpx.Response(200)
+
+        return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    store, events, state = stores
+    settings = Settings(_MemStore(), env={}, apply_hooks={})
+    engine = AlertEngine(
+        store=store,
+        alert_state=state,
+        event_store=events,
+        registry=FakeRegistry({"pc1"}),
+        notifier_provider=NotifierProvider(settings=settings, client_factory=_client),
+        settings=settings,
+    )
+
+    await insert(store, snapshot(96.0), NOW - timedelta(minutes=1))
+    await engine.evaluate_once(NOW)
+    assert posted == []  # nothing configured yet
+
+    await settings.set("KENNY_WEBHOOK_URL", "https://hook.example/live")
+
+    await insert(store, snapshot(50.0), NOW + timedelta(minutes=1))
+    await engine.evaluate_once(NOW + timedelta(minutes=2))
+    assert [str(r.url) for r in posted] == ["https://hook.example/live"]

@@ -1,0 +1,12 @@
+:root{
+--font-display:'Jost',system-ui,sans-serif;
+--font-body:'Public Sans',system-ui,sans-serif;
+--font-mono:'JetBrains Mono',ui-monospace,monospace;
+/* Scale */
+--display-xl:56px;--display-lg:40px;--display-md:28px;--display-sm:20px;
+--text-lg:18px;--text-md:15px;--text-sm:13px;--text-xs:11px;
+/* Tracking — letterspaced caps are a core brand motif */
+--track-caps:0.14em;--track-caps-wide:0.22em;--track-display:0.01em;
+--leading-tight:1.15;--leading-body:1.55;
+--weight-display:500;--weight-body:400;--weight-strong:600;
+}

@@ -20,7 +20,7 @@ from typing import Any
 from starlette.background import BackgroundTask
 from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, Response, StreamingResponse
-from starlette.routing import Route
+from starlette.routing import Match, Route
 
 from .. import PROTOCOL_VERSION, __version__, agent_release, changelog
 from ..backup_targets import build_destination
@@ -44,23 +44,108 @@ from ..store import ChatHistoryStore, EventStore, PolicyStore, TelemetryStore
 from ..tokenstore import AgentTokenStore
 from ..tools import CallLog, ScreenshotStore, build_health, supports_tool
 from ..tunnel import AgentTunnel, ToolError
-from ..webfilter import WebFilterService, load_seed, normalize_domain
+from ..webfilter import (
+    BYPASS_REQUEST_CATEGORY,
+    ListTooLargeError,
+    WebFilterService,
+    describe_categories,
+    load_seed,
+    normalize_domain,
+    requested_domains,
+    validate_categories,
+)
 from .authz import guard, principal_of, visible_ids
 
 logger = logging.getLogger("kenny.webui")
 
-_INDEX = Path(__file__).parent / "index.html"
+# The dashboard's HTML entry point, in preference order (ADR-0052): the
+# compiled SPA (``kenny-web/``, built by ``npm run build``) if it has been
+# built, else the legacy hand-written page kept alive for the transition.
+# ``dist/`` is never committed -- it exists only after a build has run, so a
+# source checkout with no build and no legacy page has neither.
+_DIST_DIR = Path(__file__).parent / "dist"
+_DIST_INDEX = _DIST_DIR / "index.html"
+_LEGACY_INDEX = Path(__file__).parent / "index.html"
 _ASSETS = Path(__file__).parent / "assets"
-# Whitelist of static assets the dashboard loads via <link>/<img>/<script>.
-# Kept explicit (no directory walk) so the route can't serve anything else.
-# ``.js`` covers the vendored charting library (Apache ECharts) used by the
-# Overview dashboard — bundled locally so the UI never reaches for a CDN.
+# Whitelist of legacy static assets the old dashboard loads via
+# <link>/<img>/<script>. Kept explicit (no directory walk) so the route can't
+# serve anything else. ``.js`` covers the vendored charting library (Apache
+# ECharts) used by the legacy Overview tab -- bundled locally so the UI never
+# reaches for a CDN.
 _ASSET_TYPES = {
     ".png": "image/png",
     ".ico": "image/x-icon",
     ".svg": "image/svg+xml",
     ".js": "application/javascript",
 }
+
+_MISSING_BUILD_MESSAGE = (
+    "Frontend not built. Run: npm --prefix kenny-web install && npm --prefix kenny-web run build"
+)
+
+# Every path prefix another surface owns. The SPA catch-all route (see
+# ``_SpaFallbackRoute`` below) must never resolve one of these to the
+# dashboard's HTML, or it would swallow an API call or the agent tunnel behind
+# a 200 of markup instead of the real handler / a clean 404. Most of these are
+# also earlier in ``main.py``'s route list and would already win by order;
+# this list makes that guarantee independent of that ordering.
+_RESERVED_PREFIXES = (
+    "/api",
+    "/auth",
+    "/chat",
+    "/tickets",
+    "/users",
+    "/download",
+    "/d",  # the real prefix behind the "download" routes (distribution.py)
+    "/mcp",
+    "/agent/ws",
+    "/login",
+    "/logout",
+    "/setup",
+)
+
+
+def _entry_point() -> Path | None:
+    """The dashboard HTML file to serve, or ``None`` if neither exists."""
+
+    if _DIST_INDEX.is_file():
+        return _DIST_INDEX
+    if _LEGACY_INDEX.is_file():
+        return _LEGACY_INDEX
+    return None
+
+
+def _dist_file(rel: str) -> Path | None:
+    """Resolve ``rel`` (a URL path, no leading slash) to a real file under the
+    built SPA's ``dist/`` tree, or ``None`` if it isn't one. Traversal-safe:
+    the resolved path must still live under ``dist/``."""
+
+    if not _DIST_DIR.is_dir():
+        return None
+    dist_root = _DIST_DIR.resolve()
+    candidate = (_DIST_DIR / rel).resolve()
+    if candidate.is_relative_to(dist_root) and candidate.is_file():
+        return candidate
+    return None
+
+
+def _missing_build_response() -> Response:
+    """The dashboard has no built SPA and no legacy page -- state exactly what
+    happened and what to do, rather than serving a blank page or a 404."""
+
+    return Response(_MISSING_BUILD_MESSAGE, status_code=500, media_type="text/plain")
+
+
+class _SpaFallbackRoute(Route):
+    """A catch-all ``Route`` that yields (``Match.NONE``) to any reserved
+    prefix instead of matching it, so the dashboard's hash-router fallback
+    can own "everything else" without ever shadowing ``/api``, the agent
+    tunnel, or another server-owned surface (ADR-0052)."""
+
+    def matches(self, scope: Any) -> tuple[Match, dict[str, Any]]:
+        if scope.get("type") == "http" and scope.get("path", "").startswith(_RESERVED_PREFIXES):
+            return Match.NONE, {}
+        return super().matches(scope)
 
 
 def build_api_routes(
@@ -86,6 +171,8 @@ def build_api_routes(
     client_factory: Any = None,
     suppression: Any = None,
     ticket_rules: Any = None,
+    tickets: Any = None,
+    ticket_store: Any = None,
 ) -> list[Route]:
     """Build the dashboard's static + JSON routes.
 
@@ -95,17 +182,51 @@ def build_api_routes(
 
     _APPLIES_TO = {"powershell", "self_protection", "path"}
     _WEBFILTER_ACTIONS = {"watch", "block", "allow"}
+    # The two ticket states a bypass request is still waiting on a human in.
+    _OPEN_TICKET_STATES = ("new", "in_progress")
 
-    async def index(_request: Request) -> FileResponse:
-        return FileResponse(_INDEX)
+    async def index(_request: Request) -> Response:
+        """The dashboard's HTML entry point: the compiled SPA, the legacy page
+        during the transition, or an actionable diagnostic if neither is
+        built (ADR-0052). Also used as the SPA's hash-router fallback for any
+        other non-reserved path -- see ``_SpaFallbackRoute``."""
 
-    async def asset(request: Request) -> Response:
-        """Serve a whitelisted brand asset (logo, favicon) for the dashboard.
+        entry = _entry_point()
+        if entry is None:
+            return _missing_build_response()
+        return FileResponse(entry)
 
-        Resolved by basename only — no path traversal, no directory listing.
+    async def spa_fallback(request: Request) -> Response:
+        """Catch-all for any path not claimed by a reserved prefix or a more
+        specific route above (see ``_SpaFallbackRoute``): a real file at the
+        built SPA's ``dist/`` root (e.g. a ``public/``-sourced ``favicon.ico``
+        or ``manifest.json`` Vite copies verbatim) if there is one, else the
+        dashboard's entry point -- so a client-side hash-router path, or a
+        deep link someone bookmarked, resolves to the SPA rather than a 404.
         """
 
-        name = request.path_params["name"]
+        dist_file = _dist_file(request.path_params["path"])
+        if dist_file is not None:
+            return FileResponse(dist_file)
+        return await index(request)
+
+    async def asset(request: Request) -> Response:
+        """Serve a static dashboard asset requested under ``/assets/...``.
+
+        Tries the built SPA's ``dist/assets/`` tree first (Vite's default
+        ``assetsDir``, which may nest hashed JS/CSS/etc under
+        subdirectories), resolved safely under ``dist/`` with no path
+        traversal. Falls back to the legacy dashboard's whitelisted brand
+        assets (logo, favicon, vendored JS), resolved by basename only, so
+        the legacy page keeps loading its assets whether or not the SPA has
+        been built.
+        """
+
+        rel = request.path_params["path"]
+        dist_file = _dist_file(f"assets/{rel}")
+        if dist_file is not None:
+            return FileResponse(dist_file)
+        name = Path(rel).name
         path = (_ASSETS / name).resolve()
         media = _ASSET_TYPES.get(path.suffix.lower())
         if media is None or path.parent != _ASSETS.resolve() or not path.is_file():
@@ -238,6 +359,199 @@ def build_api_routes(
                 for d in daily
             ]
         return JSONResponse(fleet_stats.aggregate_trend(points_by_agent, days))
+
+    async def api_today(request: Request) -> JSONResponse:
+        """The landing aggregate: a thin re-packaging of
+        ``fleet_stats.aggregate_overview`` + ``aggregate_trend`` + the ticket and
+        approval stores — no new computation. See ``fleet_stats.py`` for the KPI
+        rows and the health mix, and ``health_rules.py`` for the section
+        thresholds; this handler only re-shapes and ranks what those already
+        computed.
+
+        ``items`` merges crit sections, warn sections, held approvals and stale
+        tickets (in that order) and caps the result at three — the server picks
+        the ranking once so every client agrees, rather than each screen
+        re-deriving "what matters most" from the full payload.
+        """
+
+        from datetime import datetime, timedelta, timezone
+
+        from ..ticketstore import to_iso
+        from .. import fleet_stats, trends
+
+        principal = principal_of(request)
+        ids = await _known_ids(registry, store)
+        if principal is not None:
+            ids = visible_ids(principal, ids)
+
+        forecast_since = (datetime.now(timezone.utc) - timedelta(days=30)).date().isoformat()
+        snapshots: list[dict[str, Any] | None] = []
+        rows = []
+        for agent_id in ids:
+            agent = registry.get(agent_id)
+            latest = await store.latest(agent_id)
+            snapshot = latest["snapshot"] if latest else None
+            snapshots.append(snapshot)
+            rows.append((agent_id, agent, snapshot, latest))
+        await _annotate_reliability(snapshots)
+        agents: list[dict[str, Any]] = [
+            {
+                "agent_id": agent_id,
+                "online": bool(agent and agent.online),
+                "os": agent.os if agent else "windows",
+                "meta": agent.meta if agent else {},
+                "snapshot": snapshot,
+                "health": build_health(snapshot, agent_os=agent.os if agent else "windows"),
+                "collected_at": latest["collected_at"] if latest else None,
+            }
+            for agent_id, agent, snapshot, latest in rows
+        ]
+
+        disk_forecasts: dict[str, list[dict[str, Any]]] = {}
+        points_by_agent: dict[str, list[dict[str, Any]]] = {}
+        for agent_id in ids:
+            agent = registry.get(agent_id)
+            agent_os = agent.os if agent else "windows"
+            daily = await _daily_latest_cached(agent_id, forecast_since)
+            disk_forecasts[agent_id] = trends.disk_forecast(daily)
+            points_by_agent[agent_id] = [
+                {
+                    "collected_at": d["collected_at"],
+                    "overall": build_health(d["snapshot"], agent_os=agent_os)["overall"],
+                }
+                for d in daily
+            ]
+
+        overview = fleet_stats.aggregate_overview(agents, disk_forecasts=disk_forecasts)
+        trend_raw = fleet_stats.aggregate_trend(points_by_agent, 30)
+
+        donut = overview["health"]
+        bad = sum(s["value"] for s in donut["segments"] if s["key"] in ("crit", "warn"))
+        verdict_sentence = _verdict_sentence(len(ids), bad)
+
+        # TrendDay's frozen shape is `{day, ok, warn, crit, unknown, members}`
+        # with `members` a flat list -- aggregate_trend's own bucket (shared with
+        # /api/fleet/trend) carries `date` and `members` split by status. Reshape
+        # only, no new computation.
+        trend_days = [
+            {
+                "day": d["date"],
+                "ok": d["ok"],
+                "warn": d["warn"],
+                "crit": d["crit"],
+                "unknown": d["unknown"],
+                "members": (
+                    d["members"]["ok"]
+                    + d["members"]["warn"]
+                    + d["members"]["crit"]
+                    + d["members"]["unknown"]
+                ),
+            }
+            for d in trend_raw["days"]
+        ]
+
+        section_rows = overview["sections"]["rows"]
+        crit_items = [
+            _today_section_item(row["section"], m, "crit")
+            for row in section_rows
+            for m in row["members_crit"]
+        ]
+        warn_items = [
+            _today_section_item(row["section"], m, "warn")
+            for row in section_rows
+            for m in row["members_warn"]
+        ]
+
+        # Held approvals: at least as strict as `/api/approvals` (operator-only)
+        # -- a scoped `user` gets none, matching /api/inbox's approvals slice.
+        approval_items: list[dict[str, Any]] = []
+        if ticket_store is not None and (principal is None or principal.at_least("operator")):
+            for approval in await ticket_store.list_open_approvals():
+                ticket = await ticket_store.get(approval.ticket_id)
+                if ticket is None:
+                    continue
+                approval_items.append(_today_approval_item(approval, ticket.number))
+
+        # Stale tickets: the same query nudge_stalled's own nudge pass runs
+        # (TicketStore.list(blocked_on_in=..., blocked_before=..., nudged=False)),
+        # read-only here -- this must never itself mark a ticket nudged or send a
+        # reminder, only report what the next sweep would.
+        stale_items: list[dict[str, Any]] = []
+        if ticket_store is not None and tickets is not None:
+            requester_user_id = (
+                principal.user_id if principal is not None and principal.scoped else None
+            )
+            nudge_cutoff = to_iso(
+                datetime.now(timezone.utc) - timedelta(seconds=tickets.stall_nudge_secs)
+            )
+            for t in await ticket_store.list(
+                blocked_on_in=("user", "operator"),
+                blocked_before=nudge_cutoff,
+                nudged=False,
+                requester_user_id=requester_user_id,
+                limit=50,
+            ):
+                if principal is not None and t.agent_id and not principal.may_see(t.agent_id):
+                    continue
+                stale_items.append(_today_ticket_item(t))
+
+        items = (crit_items + warn_items + approval_items + stale_items)[:3]
+
+        return JSONResponse(
+            {
+                "generated_at": overview["generated_at"],
+                "verdict_sentence": verdict_sentence,
+                "items": items,
+                "donut": donut,
+                "trend_30d": {"days": trend_days},
+                "kpis": overview["kpis"],
+            }
+        )
+
+    async def api_log(request: Request) -> JSONResponse:
+        """`GET /api/log?kind=tools|alerts|events&q=&cursor=` -- search + cursor
+        pagination over the merged ``events`` table (`EventStore`, ADR-0017).
+
+        The old dashboard fetched everything and filtered client-side; this
+        replaces that with server-side search and paging so a page is bounded
+        regardless of fleet/log size. ``kind`` is the console's vocabulary, not
+        the stored column value 1:1: ``tools``->``audit``, ``alerts``->``alert``,
+        ``events``->``log``.
+        """
+
+        params = request.query_params
+        kind_param = params.get("kind") or None
+        store_kind = _LOG_KIND_TO_STORE_KIND.get(kind_param) if kind_param else None
+        if kind_param is not None and store_kind is None:
+            return JSONResponse(
+                {"error": f"kind must be one of {sorted(_LOG_KIND_TO_STORE_KIND)}"},
+                status_code=400,
+            )
+        q = params.get("q") or None
+        try:
+            limit = int(params.get("limit", 50))
+        except ValueError:
+            limit = 50
+        limit = max(1, min(limit, 200))
+
+        principal = principal_of(request)
+        agent_ids = list(principal.hosts) if principal is not None and principal.scoped else None
+
+        cursor_param = params.get("cursor") or None
+        before: tuple[str, int] | None = None
+        if cursor_param is not None:
+            before = _decode_log_cursor(cursor_param)
+            if before is None:
+                return JSONResponse({"error": "invalid cursor"}, status_code=400)
+
+        rows = await event_store.query_log(
+            kind=store_kind, q=q, agent_ids=agent_ids, before=before, limit=limit
+        )
+        log_rows = [_log_row(r) for r in rows]
+        next_cursor = (
+            _encode_log_cursor(rows[-1]["at"], rows[-1]["id"]) if len(rows) == limit else None
+        )
+        return JSONResponse({"rows": log_rows, "next_cursor": next_cursor})
 
     async def api_agent(request: Request) -> JSONResponse:
         agent_id = request.path_params["id"]
@@ -990,6 +1304,24 @@ def build_api_routes(
             return JSONResponse({"error": "not found or not active"}, status_code=404)
         return JSONResponse({"ok": True})
 
+    async def api_updates_campaign_suspend(request: Request) -> JSONResponse:
+        if update_mgr is None:
+            return JSONResponse({"error": "updates not configured"}, status_code=503)
+        campaign_id = request.path_params["id"]
+        ok = await update_mgr.suspend_campaign(campaign_id)
+        if not ok:
+            return JSONResponse({"error": "not found or not active"}, status_code=404)
+        return JSONResponse({"ok": True})
+
+    async def api_updates_campaign_resume(request: Request) -> JSONResponse:
+        if update_mgr is None:
+            return JSONResponse({"error": "updates not configured"}, status_code=503)
+        campaign_id = request.path_params["id"]
+        ok = await update_mgr.resume_campaign(campaign_id)
+        if not ok:
+            return JSONResponse({"error": "not found or not suspended"}, status_code=404)
+        return JSONResponse({"ok": True})
+
     async def api_updates_campaign_apply_now(request: Request) -> JSONResponse:
         if update_mgr is None:
             return JSONResponse({"error": "updates not configured"}, status_code=503)
@@ -1021,24 +1353,37 @@ def build_api_routes(
     async def _webfilter_overview(agent_id: str) -> dict[str, Any]:
         config = await webfilter.get_config(agent_id)
         custom = await webfilter.list_domains(agent_id)
-        current_hash = await webfilter.current_list_hash(agent_id)
         applied_hash = config.get("applied_hash")
         stats = webfilter.cache.stats()
+        enabled_categories = set(config.get("categories") or ())
+        # An over-cap list must still be *viewable*: failing the read as well
+        # would leave the operator with an error banner and no way to see which
+        # category to turn off. Report it as state instead.
+        current_hash: str | None = None
+        oversize: dict[str, int] | None = None
+        try:
+            current_hash = await webfilter.current_list_hash(agent_id)
+        except ListTooLargeError as exc:
+            oversize = {"count": exc.count, "cap": exc.cap, "over_by": exc.count - exc.cap}
+        external = {
+            key: {**value, "enabled": key in enabled_categories}
+            for key, value in stats.items()
+        }
         return {
             "agent_id": agent_id,
             "config": config,
             "custom": custom,
             "seed_count": len(load_seed()),
-            "external": {
-                "adult": {**stats["adult"], "enabled": config["use_external_adult"]},
-                "bypass": {**stats["bypass"], "enabled": config["use_bypass_protection"]},
-            },
+            "external": external,
+            "categories": describe_categories(),
+            "schedule": await webfilter.schedule_state(agent_id),
             "applied": {
                 "hash": applied_hash,
                 "at": config.get("applied_at"),
                 "ok": config.get("applied_ok"),
             },
             "current_hash": current_hash,
+            "oversize": oversize,
             "drift": bool(applied_hash) and applied_hash != current_hash,
         }
 
@@ -1060,6 +1405,18 @@ def build_api_routes(
             return JSONResponse(
                 {"error": "doh_policy must be 'disable' or 'leave'"}, status_code=400
             )
+        raw_categories = body.get("categories")
+        categories: list[str] | None = None
+        if raw_categories is not None:
+            if not isinstance(raw_categories, list):
+                return JSONResponse(
+                    {"error": "categories must be a list of category keys"},
+                    status_code=400,
+                )
+            try:
+                categories = list(validate_categories(raw_categories))
+            except ValueError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=400)
         config = await webfilter.set_config(
             agent_id,
             enabled=body.get("enabled"),
@@ -1067,6 +1424,7 @@ def build_api_routes(
             use_external_adult=body.get("use_external_adult"),
             use_bypass_protection=body.get("use_bypass_protection"),
             doh_policy=doh,
+            categories=categories,
         )
         return JSONResponse({"config": config})
 
@@ -1087,10 +1445,100 @@ def build_api_routes(
         if normalize_domain(body.get("domain")) is None:
             return JSONResponse({"error": "invalid domain"}, status_code=400)
         note = body.get("note")
-        domain = await webfilter.add_domain(agent_id, str(body["domain"]), action, note)
+        try:
+            domain = await webfilter.add_domain(
+                agent_id, str(body["domain"]), action, note, body.get("category")
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
         return JSONResponse(
             {"domain": domain, "custom": await webfilter.list_domains(agent_id)}
         )
+
+    # -- schedule (ADR-0055) ----------------------------------------------
+
+    async def api_webfilter_schedule_get(request: Request) -> JSONResponse:
+        """The host's windows plus what is in force now and when it reverts."""
+
+        if webfilter is None:
+            return JSONResponse({"error": "webfilter not configured"}, status_code=503)
+        return JSONResponse(await webfilter.schedule_state(request.path_params["id"]))
+
+    async def api_webfilter_schedule_add(request: Request) -> JSONResponse:
+        if webfilter is None:
+            return JSONResponse({"error": "webfilter not configured"}, status_code=503)
+        agent_id = request.path_params["id"]
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - malformed JSON
+            return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
+        try:
+            window = await webfilter.add_window(
+                agent_id,
+                days=body.get("days", []),
+                start=body.get("start"),
+                end=body.get("end"),
+                categories=body.get("categories") or [],
+                label=body.get("label") or "",
+                tz=body.get("timezone"),
+                enabled=body.get("enabled", True),
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        return JSONResponse(
+            {
+                "window": window.as_dict(),
+                "schedule": await webfilter.schedule_state(agent_id),
+            }
+        )
+
+    async def api_webfilter_schedule_remove(request: Request) -> JSONResponse:
+        if webfilter is None:
+            return JSONResponse({"error": "webfilter not configured"}, status_code=503)
+        agent_id = request.path_params["id"]
+        removed = await webfilter.remove_window(agent_id, request.path_params["window_id"])
+        return JSONResponse(
+            {
+                "ok": True,
+                "removed": removed,
+                "schedule": await webfilter.schedule_state(agent_id),
+            }
+        )
+
+    async def api_webfilter_requests(request: Request) -> JSONResponse:
+        """Open bypass requests for this host.
+
+        A bypass request is a ticket (category ``web_filter``), so this is a
+        read over the ticket store, not a second queue: there is no state here
+        to advance, and granting one is the operator's ordinary
+        ``webfilter_set(add_domain, action="allow")`` + push (ADR-0024).
+        """
+
+        if ticket_store is None:
+            return JSONResponse({"error": "tickets not configured"}, status_code=503)
+        agent_id = request.path_params["id"]
+        # The ticket store has no category filter, so narrow on the axes it does
+        # index (host + open states) and sieve the category here rather than
+        # widening a shared query for one caller.
+        rows = await ticket_store.list(
+            agent_id=agent_id, states=_OPEN_TICKET_STATES, limit=50
+        )
+        out = []
+        for ticket in rows:
+            if ticket.category != BYPASS_REQUEST_CATEGORY:
+                continue
+            data = ticket.as_dict()
+            out.append(
+                {
+                    "ticket": data,
+                    "requested_domains": requested_domains(
+                        data.get("title"), data.get("summary")
+                    ),
+                }
+            )
+        return JSONResponse({"agent_id": agent_id, "requests": out})
 
     async def api_webfilter_remove_domain(request: Request) -> JSONResponse:
         if webfilter is None:
@@ -1106,7 +1554,22 @@ def build_api_routes(
             return JSONResponse({"error": "webfilter not configured"}, status_code=503)
         agent_id = request.path_params["id"]
         config = await webfilter.get_config(agent_id)
-        args = await webfilter.build_apply(agent_id)
+        try:
+            args = await webfilter.build_apply(agent_id)
+        except ListTooLargeError as exc:
+            # Refuse here: the agent rejects an over-cap list with `bad_args`
+            # and never truncates, so forwarding it would burn a round trip to
+            # learn what the server already knows.
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": "list_too_large",
+                    "message": str(exc),
+                    "count": exc.count,
+                    "cap": exc.cap,
+                },
+                status_code=400,
+            )
         block_mode = bool(config["block_mode"])
         tool = "webfilter_apply" if block_mode else "webfilter_clear"
         call_args: dict[str, Any] = args if block_mode else {}
@@ -1238,11 +1701,11 @@ def build_api_routes(
     #   - user (host-scoped): reads and routine operations on assigned hosts.
     op = {"min_role": "operator"}
     su = {"min_role": "superuser"}
-    scoped = {"host_param": "id"}
+    scoped = {"min_role": "user", "host_param": "id"}
     op_scoped = {"min_role": "operator", "host_param": "id"}
     return [
         Route("/", index),
-        Route("/assets/{name}", asset),
+        Route("/assets/{path:path}", asset),
         Route("/api/about", guard(api_about)),
         Route("/api/changelog", guard(api_changelog)),
         Route("/api/policy/rules", guard(api_policy_list, **op)),
@@ -1308,6 +1771,16 @@ def build_api_routes(
             methods=["POST"],
         ),
         Route(
+            "/api/updates/campaigns/{id}/suspend",
+            guard(api_updates_campaign_suspend, **op),
+            methods=["POST"],
+        ),
+        Route(
+            "/api/updates/campaigns/{id}/resume",
+            guard(api_updates_campaign_resume, **op),
+            methods=["POST"],
+        ),
+        Route(
             "/api/agent/{id}/channel",
             guard(api_agent_channel, **op_scoped),
             methods=["PUT"],
@@ -1320,6 +1793,8 @@ def build_api_routes(
         Route("/api/fleet", guard(api_fleet)),
         Route("/api/fleet/overview", guard(api_fleet_overview)),
         Route("/api/fleet/trend", guard(api_fleet_trend)),
+        Route("/api/today", guard(api_today)),
+        Route("/api/log", guard(api_log)),
         Route("/api/digest/preview", guard(api_digest_preview, **op)),
         Route("/api/audit", guard(api_audit)),
         Route("/api/events", guard(api_events)),
@@ -1360,11 +1835,35 @@ def build_api_routes(
         ),
         Route("/api/agent/{id}/webfilter/activity", guard(api_webfilter_activity, **scoped)),
         Route(
+            "/api/agent/{id}/webfilter/schedule",
+            guard(api_webfilter_schedule_get, **scoped),
+        ),
+        Route(
+            "/api/agent/{id}/webfilter/schedule",
+            guard(api_webfilter_schedule_add, **op_scoped),
+            methods=["POST"],
+        ),
+        Route(
+            "/api/agent/{id}/webfilter/schedule/{window_id}",
+            guard(api_webfilter_schedule_remove, **op_scoped),
+            methods=["DELETE"],
+        ),
+        Route(
+            "/api/agent/{id}/webfilter/requests",
+            guard(api_webfilter_requests, **scoped),
+        ),
+        Route(
             "/api/agent/{id}/accounts/{tool}",
             guard(api_account_action, **op_scoped),
             methods=["POST"],
         ),
         Route("/api/agents/{id}/token", guard(api_rotate_token, **op), methods=["POST"]),
+        # SPA fallback: any other GET that isn't a reserved prefix above
+        # resolves to the dashboard's entry point, so a hash-routed deep link
+        # (or any path the client-side router owns) works whether or not it
+        # was ever requested from the server before. Placed last so every
+        # route above always wins first (ADR-0052).
+        _SpaFallbackRoute("/{path:path}", spa_fallback),
     ]
 
 
@@ -1732,11 +2231,17 @@ async def _overview(
         "online": bool(agent and agent.online),
         "os": agent.os if agent else "windows",
         "meta": agent.meta if agent else {},
+        # The version the agent reported in its `register` frame's meta
+        # (docs/protocol.md) — the same field the self-update flow compares after
+        # a restart. Lifted out of `meta` so the fleet list and the rollout view
+        # can show it without every caller reaching into an untyped dict.
+        "agent_version": (agent.meta.get("version") if agent else None) or None,
         "overall": health["overall"],
         "flagged_sections": flagged,
         "warn_sections": _by_status("warn"),
         "crit_sections": _by_status("crit"),
         "summary": _fleet_summary(health, snapshot),
+        "severity_label": _severity_label(health, snapshot),
         "collected_at": latest["collected_at"] if latest else None,
     }
 
@@ -1755,3 +2260,164 @@ def _fleet_summary(health: dict[str, Any], snapshot: dict[str, Any] | None) -> s
             extra = f" +{len(worst) - 1} more" if len(worst) > 1 else ""
             return f"{text}{extra}"
     return "all green"
+
+
+def _severity_label(health: dict[str, Any], snapshot: dict[str, Any] | None) -> str:
+    """Caps label for the fleet card, e.g. ``CRITICAL · DISK`` or ``HEALTHY``.
+
+    Walks the same ``sections`` dict :func:`_fleet_summary` does (worst-first,
+    crit before warn) and names the worst section rather than restating any
+    threshold: the status a section carries here was decided once, in
+    ``health_rules.py``, and nowhere else.
+    """
+
+    if not snapshot:
+        return "NO DATA"
+    sections = health.get("sections", {})
+    for want, word in (("crit", "CRITICAL"), ("warn", "WARNING")):
+        worst = [n for n, s in sections.items() if s["status"] == want]
+        if worst:
+            return f"{word} · {worst[0].replace('_', ' ').upper()}"
+    return "HEALTHY"
+
+
+# -- /api/today ----------------------------------------------------------
+
+# Caps action label per flagged section, for the landing page's affordance.
+# Presentation only (which verb to show), never a threshold -- those are
+# health_rules.py's alone. A section with no entry falls back to "REVIEW".
+_SECTION_ACTION: dict[str, str] = {
+    "disk": "FREE UP SPACE",
+    "memory": "CHECK MEMORY",
+    "defender": "CHECK DEFENDER",
+    "win_update": "REVIEW UPDATES",
+    "reboot_pending": "REBOOT",
+    "battery": "CHECK BATTERY",
+    "thermals": "CHECK COOLING",
+    "os_support": "PLAN OS UPGRADE",
+    "web_activity": "REVIEW ACTIVITY",
+    "reliability": "REVIEW EVENTS",
+    "listening_ports": "REVIEW PORTS",
+    "local_accounts": "REVIEW ACCOUNTS",
+    "logon_failures": "REVIEW SIGN-INS",
+    "backup_status": "CHECK BACKUP",
+    "net_quality": "CHECK NETWORK",
+}
+
+# Small enough vocabulary (single digits, the whole fleet in a household) to
+# spell out rather than pull in a number-to-words dependency.
+_NUMBER_WORDS = (
+    "zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
+    "nine", "ten",
+)
+
+
+def _word(n: int) -> str:
+    return _NUMBER_WORDS[n] if 0 <= n < len(_NUMBER_WORDS) else str(n)
+
+
+def _verdict_sentence(agent_count: int, bad: int) -> str:
+    """Deterministic, template-based one-liner for the `/api/today` landing page.
+
+    No LLM call: this sits on the landing page's critical path and must always
+    render, including on a fresh install with zero telemetry. ``bad`` is the
+    donut's crit+warn count -- the same numbers the donut itself renders, not a
+    fresh computation.
+    """
+
+    if agent_count == 0:
+        return "No machines enrolled yet."
+    quiet = agent_count - bad
+    if bad == 0:
+        return "Every machine is quiet." if agent_count == 1 else f"All {agent_count} machines are quiet."
+    if quiet == 0:
+        return (
+            "This machine needs attention."
+            if agent_count == 1
+            else f"All {agent_count} machines need attention."
+        )
+    bad_word = "machine needs" if bad == 1 else "machines need"
+    quiet_verb = "is" if quiet == 1 else "are"
+    return (
+        f"{_word(bad).capitalize()} {bad_word} attention. "
+        f"The other {_word(quiet)} {quiet_verb} quiet."
+    )
+
+
+def _today_section_item(section: str, member: dict[str, Any], severity: str) -> dict[str, Any]:
+    """One `/api/today` item for a flagged section on one host.
+
+    ``member`` is a ``fleet_stats._member`` row (``{agent_id, value, detail}``)
+    already produced by ``aggregate_overview``'s ``sections`` -- a display
+    reshape, not a new computation.
+    """
+
+    return {
+        "severity": severity,
+        "host": member["agent_id"],
+        "title": section.replace("_", " ").title(),
+        "detail": member["detail"],
+        "action": _SECTION_ACTION.get(section, "REVIEW"),
+        "target": f"#/fleet/{member['agent_id']}",
+    }
+
+
+def _today_approval_item(approval: Any, ticket_number: int) -> dict[str, Any]:
+    return {
+        "severity": "held",
+        "host": approval.agent_id,
+        "title": f"{approval.tool} needs approval",
+        "detail": f"{approval.tool_class} · requested {approval.requested_at}",
+        "action": "REVIEW APPROVAL",
+        "target": f"#/inbox/ticket/{ticket_number}",
+    }
+
+
+def _today_ticket_item(ticket: Any) -> dict[str, Any]:
+    return {
+        "severity": "held",
+        "host": ticket.agent_id,
+        "title": ticket.title,
+        "detail": f"blocked on {ticket.blocked_on or 'nothing'} since {ticket.blocked_since}",
+        "action": "OPEN TICKET",
+        "target": f"#/inbox/ticket/{ticket.number}",
+    }
+
+
+# -- /api/log --------------------------------------------------------------
+
+# The console's `kind` vocabulary vs. EventStore's stored `kind` column -- not
+# a 1:1 passthrough (see notes/backend-map.md item 3's gotcha).
+_LOG_KIND_TO_STORE_KIND: dict[str, str] = {"tools": "audit", "alerts": "alert", "events": "log"}
+_STORE_KIND_TO_LOG_KIND: dict[str, str] = {v: k for k, v in _LOG_KIND_TO_STORE_KIND.items()}
+_LOG_TAG: dict[str, str] = {"audit": "TOOL", "alert": "ALERT", "log": "LOG"}
+
+
+def _log_row(row: dict[str, Any]) -> dict[str, Any]:
+    """One ``EventStore.query_log`` row reshaped to the frozen ``LogRow`` envelope."""
+
+    stored_kind = row["kind"]
+    return {
+        "ts": row["at"],
+        "kind": _STORE_KIND_TO_LOG_KIND.get(stored_kind, stored_kind),
+        "tag": _LOG_TAG.get(stored_kind, stored_kind.upper()),
+        "host": row["agent_id"],
+        "actor": row["source"],
+        "what": row.get("tool") or row.get("target") or "",
+        "message": row.get("message") or "",
+        "meta": row.get("fields") or {},
+    }
+
+
+def _encode_log_cursor(at: str, id_: int) -> str:
+    """Opaque `/api/log` page token over an ``(at, id)`` keyset."""
+
+    return base64.urlsafe_b64encode(f"{at}\x00{id_}".encode()).decode()
+
+
+def _decode_log_cursor(raw: str) -> tuple[str, int] | None:
+    try:
+        at, id_str = base64.urlsafe_b64decode(raw.encode()).decode().split("\x00")
+        return at, int(id_str)
+    except Exception:  # noqa: BLE001 - any malformed cursor is just "invalid"
+        return None
