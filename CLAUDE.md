@@ -59,6 +59,9 @@ the code and the commit message. Records are ~1 page, numbered gap-free `0001..N
 
 ## Build & test
 
+- Dashboard: `npm --prefix kenny-web install && npm --prefix kenny-web run build` (Vite + React + TypeScript);
+  `npm --prefix kenny-web run typecheck` and `npm --prefix kenny-web test` for checks.
+  Contributors only — end users get the prebuilt UI shipped in the server.
 - Server: `cd kenny-server && pytest` — exactly that; `python -m pytest` adds the working
   directory to `sys.path` and hides import errors CI will hit.
 - Agent: `cd kenny-agent && cargo test && cargo build`

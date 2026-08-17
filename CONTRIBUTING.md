@@ -18,6 +18,10 @@ For **security issues, do not open a public issue** — see [SECURITY.md](SECURI
 ## Build & test
 
 ```bash
+# Dashboard (Node.js; contributors only — end users get a prebuilt UI)
+npm --prefix kenny-web install && npm --prefix kenny-web run build
+npm --prefix kenny-web run typecheck && npm --prefix kenny-web test
+
 # Server (Python 3.11+)
 cd kenny-server && pip install -e ".[dev]" && pytest -q && ruff check .
 
@@ -28,6 +32,10 @@ cargo fmt --check && cargo clippy --all-targets -- -D warnings
 
 CI runs exactly these, plus a Windows job for `#[cfg(windows)]` code and a real
 agent↔server end-to-end test. Please make sure the suites are green before opening a PR.
+
+The dashboard builds from `kenny-web/` (Vite + React + TypeScript) to `kenny-server/kenny_server/webui/dist/`,
+which the server serves and which ships inside the Python package. See `docs/adr/0052-dashboard-as-a-compiled-frontend.md`
+for the rationale.
 
 ## The contract is authoritative
 
