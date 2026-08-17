@@ -17,7 +17,7 @@ export interface TimelineProps {
  */
 export default function Timeline({ events, directory }: TimelineProps) {
   return (
-    <div className={styles.rail}>
+    <div className={styles.rail} data-shot="ticket-timeline">
       {events.map((event) => {
         const f = formatEvent(event, directory)
         return (

@@ -25,14 +25,14 @@ export default function Transcript({ items }: TranscriptProps) {
 
   if (items.length === 0) {
     return (
-      <div className={styles.root} ref={scrollRef}>
+      <div className={styles.root} ref={scrollRef} data-shot="ask-kenny-transcript">
         <p className={styles.empty}>Ask kenny anything about this fleet — read-only checks run right away; anything that changes a machine waits for your confirmation.</p>
       </div>
     )
   }
 
   return (
-    <div className={styles.root} ref={scrollRef}>
+    <div className={styles.root} ref={scrollRef} data-shot="ask-kenny-transcript">
       {items.map((item) => {
         switch (item.kind) {
           case 'user':

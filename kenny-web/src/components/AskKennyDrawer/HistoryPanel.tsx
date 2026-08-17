@@ -43,7 +43,13 @@ export default function HistoryPanel({ listHistory, onSelect, deleteConversation
   return (
     <div className={styles.root}>
       {state.rows.map((row) => (
-        <button key={row.id} type="button" className={styles.row} onClick={() => onSelect(row.id)}>
+        <button
+          key={row.id}
+          type="button"
+          className={styles.row}
+          data-shot={`history-row-${row.id}`}
+          onClick={() => onSelect(row.id)}
+        >
           <div className={styles.rowMain}>
             <div className={styles.rowTitle}>{row.title || 'Untitled conversation'}</div>
             <div className={styles.rowMeta}>
