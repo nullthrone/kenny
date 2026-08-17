@@ -7,6 +7,7 @@ composed app (`build_app`) the same way `tests/test_today_api.py` does.
 
 from __future__ import annotations
 
+import re
 from functools import partial
 
 from starlette.testclient import TestClient
@@ -128,6 +129,88 @@ def test_inbox_groups_tickets_and_merges_sections_and_approvals(tmp_path) -> Non
 
         done = c.get("/api/inbox?group=done", headers=h).json()
         assert [i["title"] for i in done["items"]] == ["fixed already"]
+
+
+_TARGET_TICKET_ID_RE = re.compile(r"^#/inbox/ticket/[0-9a-f]{32}$")
+
+
+def test_inbox_ticket_target_is_fetchable_by_the_route_it_names(tmp_path) -> None:
+    """An inbox row's `target` must be the ticket's uuid `id`, not its display
+    `number` -- `/api/tickets/{tid}` only ever resolves `id` (see
+    `TicketStore.get`; `get_by_number` has no HTTP route). This is a joined
+    seam test: it fails if `_ticket_item`'s `target` ever regresses to
+    `ticket.number`, even though nothing about the item's own shape would
+    look wrong in isolation. Reproduces the "Could not load this ticket:
+    not_found" bug for a ticket clicked from the Working lane.
+    """
+
+    app = build_app(db_path=str(tmp_path / "inbox-target.sqlite"))
+    with TestClient(app) as c:
+        h = _bearer(app)
+        tickets = app.state.tickets
+
+        async def seed():
+            t = await tickets.create(title="DCOM errors", origin="dashboard", actor="system")
+            await tickets.transition(t.id, "in_progress", actor="system")
+            return t
+
+        ticket = c.portal.call(seed)
+
+        working = c.get("/api/inbox?group=working", headers=h).json()
+        assert [i["title"] for i in working["items"]] == ["DCOM errors"]
+        target = working["items"][0]["target"]
+
+        # Shape check: catches a revert to `.number` even in a fixture where
+        # `id` and `number` could both plausibly stringify to something short.
+        assert _TARGET_TICKET_ID_RE.match(target), target
+
+        # Round-trip: what the console actually does after following the
+        # link -- fetch /api/tickets/{tid} with the tail of `target`.
+        tid = target.removeprefix("#/inbox/ticket/")
+        detail = c.get(f"/api/tickets/{tid}", headers=h)
+        assert detail.status_code == 200
+        assert detail.json()["id"] == ticket.id
+
+
+def test_inbox_approval_target_is_fetchable_by_the_route_it_names(tmp_path) -> None:
+    """Same seam as above, for the standalone `needs_you` approval row: its
+    `target` must be the *ticket's* uuid `id`, not the ticket's `number`.
+    """
+
+    app = build_app(db_path=str(tmp_path / "inbox-approval-target.sqlite"))
+    with TestClient(app) as c:
+        h = _bearer(app)
+        tickets = app.state.tickets
+
+        async def seed():
+            t = await tickets.create(
+                title="apply update", origin="dashboard", agent_id="gate-pc", actor="system"
+            )
+            await tickets.transition(t.id, "in_progress", actor="system")
+            approval = await tickets.open_approval(
+                t.id,
+                tool_use_id="tu-target",
+                tool="winget_update",
+                tool_class="standard_change",
+                args={"id": "Some.App"},
+                agent_id="gate-pc",
+                actor="system",
+            )
+            await tickets.block(t.id, "approval", actor="system", ref=approval.id)
+            return t
+
+        ticket = c.portal.call(seed)
+
+        needs_you = c.get("/api/inbox?group=needs_you", headers=h).json()
+        approval_item = next(i for i in needs_you["items"] if i["kind"] == "approval")
+        target = approval_item["target"]
+
+        assert _TARGET_TICKET_ID_RE.match(target), target
+
+        tid = target.removeprefix("#/inbox/ticket/")
+        detail = c.get(f"/api/tickets/{tid}", headers=h)
+        assert detail.status_code == 200
+        assert detail.json()["id"] == ticket.id
 
 
 def test_inbox_rejects_unknown_group(tmp_path) -> None:

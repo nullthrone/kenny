@@ -79,11 +79,16 @@ def _ticket_item(ticket: Ticket, *, now: datetime) -> dict[str, Any]:
         "waits_on": ticket.blocked_on or "",
         "severity": None,
         "title": ticket.title,
+        # The display ref (#42) belongs here, in text -- never in `target` below.
         "meta": f"#{ticket.number} · {ticket.priority}",
         "host": ticket.agent_id,
         "age_seconds": _age_seconds(ticket.blocked_since or ticket.updated_at, now=now),
         "gate": None,
-        "target": f"#/inbox/ticket/{ticket.number}",
+        # A ticket has two ids: `id` (uuid, what every /api/tickets/{tid} route
+        # resolves) and `number` (the display ref, routable only through
+        # TicketStore.get_by_number(), which no HTTP route calls). `target` must
+        # carry `id` or the console's #/inbox/ticket/{id} link 404s.
+        "target": f"#/inbox/ticket/{ticket.id}",
     }
 
 
@@ -108,7 +113,7 @@ def _approval_item(
             "tool_class": approval.tool_class,
             "held_since": approval.requested_at,
         },
-        "target": f"#/inbox/ticket/{ticket.number}" if ticket is not None else "",
+        "target": f"#/inbox/ticket/{ticket.id}" if ticket is not None else "",
     }
 
 

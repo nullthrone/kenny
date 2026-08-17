@@ -123,7 +123,7 @@ export interface TodayItem {
   detail: string
   /** Caps label on the row's affordance, e.g. `FREE UP SPACE`. */
   action: string
-  /** A console route, e.g. `#/fleet/oma-pc` or `#/inbox/ticket/41`. */
+  /** A console route, e.g. `#/fleet/oma-pc` or `#/inbox/ticket/ae73db26ad3e4c078c93050f63395873`. */
   target: string
 }
 
