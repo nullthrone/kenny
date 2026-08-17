@@ -34,6 +34,17 @@ export function severityRank(s: Severity): number {
   }
 }
 
+/**
+ * Narrows a host's free-text OS family (`windows`/`linux`/`macos`/…) down to
+ * what the installer and share-link endpoints accept
+ * (`distribution.py::SUPPORTED_OS = {"windows", "linux"}`). Anything else
+ * falls back to `windows`, matching the server's own default when the `os`
+ * query param/body field is omitted (`_req_os`, `share_link_by_name`).
+ */
+export function toShareOs(os: string): 'windows' | 'linux' {
+  return os.toLowerCase() === 'linux' ? 'linux' : 'windows'
+}
+
 /** Binary-prefix byte formatter — disk volumes and directory sizes. */
 export function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes < 0) return '—'

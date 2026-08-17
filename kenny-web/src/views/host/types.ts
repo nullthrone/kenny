@@ -1,4 +1,4 @@
-import type { HostSection, Severity } from '../../api/types'
+import type { HostSection, Severity, ShareLinkResponse } from '../../api/types'
 
 /**
  * `GET /api/agent/{id}` — not yet in the frozen contract (types.ts only
@@ -208,3 +208,14 @@ export type RecommendationEvent =
   | { type: 'remediation'; available: boolean; prompt: string }
   | { type: 'done'; session_id?: string }
   | { type: 'error'; error: string; session_id?: string }
+
+/* ── Re-share (host action row, `POST /api/agents/share-link`) ──
+ *
+ * The frozen `ShareLinkResponse` (types.ts) doesn't yet carry `oneliner`:
+ * `distribution.py::_mint_share_link` returns it only for `os === "linux"`
+ * (a `curl | sudo sh` line built from the same `url`), and the Windows-only
+ * onboarding wizard that owns `ShareLinkResponse` never needed it. Extended
+ * locally rather than widening the shared contract file for one caller. */
+export interface ShareLinkResult extends ShareLinkResponse {
+  oneliner?: string
+}

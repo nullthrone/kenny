@@ -75,7 +75,7 @@ export default function FleetHost() {
         </span>
       </div>
 
-      <ActionRow agentId={data.agent_id} channel={data.meta.channel} />
+      <ActionRow agentId={data.agent_id} os={data.os} arch={data.meta.arch} channel={data.meta.channel} />
 
       <ForecastPanel agentId={data.agent_id} />
 

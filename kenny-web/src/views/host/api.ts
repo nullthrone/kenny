@@ -3,6 +3,7 @@ import { api } from '../../api/client'
 import type {
   AccountActionResult,
   AgentDetail,
+  ShareLinkResult,
   SuppressionRule,
   WebfilterActionResult,
   WebfilterDomainAction,
@@ -62,6 +63,22 @@ export function useSetChannel(agentId: string) {
 export function useRemoveAgent() {
   return useMutation({
     mutationFn: (agentId: string) => api.delete<{ ok?: boolean }>(`/api/agent/${agentId}`),
+  })
+}
+
+/**
+ * "Re-share" — mints a fresh, single-use installer link for a host that's
+ * already enrolled. Body-based, no `{id}` in the path (`distribution.py::
+ * share_link_by_name`): this host's own `agent_id` is sent as `name`, the
+ * same request shape the Add-a-PC wizard uses to name a NEW host — re-using
+ * an existing id is exactly the "onboard again" case that route already
+ * supports. `min_role="operator"` server-side; not exposed to a `user`
+ * principal in this UI (see `ActionRow`).
+ */
+export function useShareLink(agentId: string) {
+  return useMutation({
+    mutationFn: (os: 'windows' | 'linux') =>
+      api.post<ShareLinkResult>('/api/agents/share-link', { name: agentId, os }),
   })
 }
 
