@@ -641,12 +641,15 @@ The full onboarding and update flows (with sequence diagrams) are in the
 
 ---
 
-## The About box
+## Server and agent versions
 
-<figure markdown>
-  ![The About box](assets/screenshots/about.png)
-  <figcaption>Server, protocol, and staged-agent versions, the repository link, and a filterable changelog pulled from GitHub Releases.</figcaption>
-</figure>
+`GET /api/about` reports the server version, the protocol version and the
+repository, and `GET /api/changelog` proxies the project's GitHub releases.
+`GET /api/agent-binary` reports which agent installers are staged.
+
+The console does not yet present any of this. Admin's *Agent distribution* and
+*Updates* sections cover the staged binary and the rollout; the server's own
+version and the changelog have no surface.
 
 The **About** item in the [user menu](#the-shell-header-global-controls) shows the
 **server version**, **protocol version**, **staged agent version**, and a link to the

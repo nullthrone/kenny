@@ -18,6 +18,16 @@
   font-family: var(--font-mono);
   font-size: 11px;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  /* The reliability rule's `reason` can be a full sentence (health_rules.py's
+     `_reliability_reason`/`_reliability_pattern_reason`), unlike every other
+     section's short "89% full ⇒ warn" style reason. Without a cap here, a
+     long reason squeezed `.title` (flex:1, min-width:0) down to ~0px and its
+     text wrapped one character per line under the modal's inherited
+     overflow-wrap:break-word (see kc-modal in styles/global.css). */
+  max-width: 45%;
+  flex-shrink: 0;
 }
 
 .close {
