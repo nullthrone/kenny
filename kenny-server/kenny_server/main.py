@@ -42,7 +42,7 @@ from .discord_service import SLASH_COMMANDS, DiscordService
 from .distribution import ShareLinks, build_download_routes
 from .keystore import KeyStore
 from .logging_config import StoreLogHandler, configure_logging, drain_log_queue
-from .notify import Notification, load_notifiers
+from .notify import Notification, NotifierProvider
 from .oauth import build_oauth_routes
 from .oauthstore import OAuthStore
 from .policy import PolicyEngine
@@ -288,9 +288,14 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         )
 
     # Push alerting (ADR-0027): transition detection over the health rules,
-    # delivered best-effort via the env-configured channels (possibly none).
+    # delivered best-effort on the configured channels (possibly none).
     alert_state = AlertStateStore(db_path)
-    notifiers = load_notifiers()
+    # The channels are *not* resolved here. The provider is asked again at every
+    # dispatch and reads them through ``settings`` (DB > env > default), so a
+    # channel added or cleared in the dashboard applies to the next alert
+    # without a restart (ADR-0054). Building it before ``settings.load()`` is
+    # deliberate and safe: nothing is read until the first notification.
+    notifier_provider = NotifierProvider(settings=settings)
     # Cadence/cooldown/digest are read live from ``settings`` (DB > env >
     # default) on every pass; no env snapshot is baked in here.
     alert_engine = AlertEngine(
@@ -298,7 +303,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         alert_state=alert_state,
         event_store=event_store,
         registry=registry,
-        notifiers=notifiers,
+        notifier_provider=notifier_provider,
         settings=settings,
         # (store, settings_key) pairs -- only ``store`` (snapshots) has an
         # operator-facing retention setting so far (ADR-0051): it dominates
@@ -745,7 +750,9 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
     # Replaced by the lifespan with the tasks it actually started (if any).
     app.state.ticket_task = None
     app.state.discord_task = None
-    app.state.notifiers = notifiers
+    # The provider, not a list: a list captured here would be a snapshot of the
+    # channels at boot and would quietly disagree with what actually delivers.
+    app.state.notifier_provider = notifier_provider
     app.state.share_links = share_links
     app.state.mcp = mcp
     app.state.operator_token = operator_token

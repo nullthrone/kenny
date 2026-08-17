@@ -23,7 +23,7 @@ from typing import Any
 import pytest
 from starlette.testclient import TestClient
 
-from kenny_server import tool_classes
+from kenny_server import notify, tool_classes
 from kenny_server.chat import FleetSession, _context_note
 from kenny_server.main import build_app
 
@@ -273,6 +273,57 @@ def test_single_key_write_response_carries_editable_too(tmp_path) -> None:
         )
         assert r.status_code == 200
         assert r.json()["editable"] is True
+
+
+def test_alert_channels_are_editable_rows_and_stay_redacted(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The four push channels render as real controls, and never leak a value.
+
+    Admin renders the catalog generically, so "editable" here *is* the whole
+    frontend story (ADR-0054). The second half is the price of that: the value
+    goes in and is never readable back out — a webhook URL is bearer-equivalent.
+    """
+
+    # A host that happens to export one of these would otherwise make the
+    # "not set" starting point untrue.
+    for key in notify.CHANNEL_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    app = _app(tmp_path)
+    with TestClient(app) as c:
+        h = _bearer(app)
+        secret_key = "KENNY_WEBHOOK_URL"
+        secret = "https://hook.example/2f9c-never-echo-me"
+
+        rows = {
+            row["key"]: row
+            for g in c.get("/api/settings", headers=h).json()["groups"]
+            for row in g["settings"]
+        }
+        for key in notify.CHANNEL_KEYS:
+            assert rows[key]["editable"] is True, key
+            assert rows[key]["sensitive"] is True, key
+            assert rows[key]["value"] is None and rows[key]["is_set"] is False, key
+
+        written = c.put(f"/api/settings/{secret_key}", headers=h, json={"value": secret})
+        assert written.status_code == 200
+        assert written.json()["value"] is None  # the write does not echo it back
+        assert secret not in written.text
+
+        listed = c.get("/api/settings", headers=h)
+        assert secret not in listed.text
+        after = {
+            row["key"]: row
+            for g in listed.json()["groups"]
+            for row in g["settings"]
+        }[secret_key]
+        assert after["is_set"] is True and after["source"] == "db"
+
+        # And the live engine picks it up with no restart in between.
+        assert [n.name for n in app.state.notifier_provider.current()] == ["webhook"]
+
+        assert c.delete(f"/api/settings/{secret_key}", headers=h).status_code == 200
+        assert app.state.notifier_provider.current() == []
 
 
 # -- item 8: start_immediately -----------------------------------------------

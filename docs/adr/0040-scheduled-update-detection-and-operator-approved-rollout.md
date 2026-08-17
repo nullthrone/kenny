@@ -167,3 +167,6 @@ the deployment's actual scale doesn't justify.
 - Deferred, additive follow-up (not built now): an optional off-by-default docker-socket
   sidecar (compose profile) for automated server apply (Option C above); alerting
   (ADR-0027) wiring for held agents and failed detection passes.
+- A campaign can also be **suspended** (`active → suspended`) and later **resumed**; unlike
+  revoke it keeps the pinned artifacts and the per-agent attempt/held bookkeeping, since
+  revoke-then-recreate would hand a held agent a fresh attempt budget under a new `campaign_id`.

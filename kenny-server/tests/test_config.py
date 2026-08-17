@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from kenny_server import notify
 from kenny_server.alerting import AlertEngine
 from kenny_server.config import CATALOG, SettingNotWritable, Settings
 from kenny_server.store import SettingsStore
@@ -178,16 +179,49 @@ def test_group_slug_is_stable_and_unique() -> None:
 # -- catalog gaps: env vars the server reads but the old catalog didn't list --
 
 
-def test_alert_push_channels_are_in_catalog() -> None:
-    # notify.load_notifiers() reads these three directly from os.environ, not
-    # through Settings, so they must stay env_only — but they still belong in
-    # the catalog or the Settings page silently omits real configuration.
-    for key in ("KENNY_NTFY_URL", "KENNY_NTFY_TOKEN", "KENNY_WEBHOOK_URL"):
+def test_alert_push_channels_are_writable_and_sensitive() -> None:
+    # notify.NotifierProvider resolves these through Settings on every dispatch
+    # (ADR-0054), so they are genuinely live -- the catalog may advertise them
+    # as editable. Sensitive is the orthogonal axis and must not move with it:
+    # an ntfy topic URL and a webhook URL are bearer-equivalent, so the value
+    # is stored but never serialised back out.
+    for key in notify.CHANNEL_KEYS:
         spec = CATALOG[key]
-        assert spec.group == "Alerting & Digest"
-        assert spec.lifecycle == "env_only"
-        assert spec.sensitive is True
-        assert spec.writable is False
+        assert spec.lifecycle == "live", key
+        assert spec.writable is True, key
+        assert spec.sensitive is True, key
+        # A masked row's editor starts blank only for type "secret"; a
+        # sensitive "str" would prefill the console's draft with the literal
+        # mask text ("set"/"not set") and save that as the channel URL.
+        assert spec.type == "secret", key
+    for key in ("KENNY_NTFY_URL", "KENNY_NTFY_TOKEN", "KENNY_WEBHOOK_URL"):
+        assert CATALOG[key].group == "Alerting & Digest"
+
+
+def test_channel_keys_match_the_catalog() -> None:
+    """The provider's key list and the catalog cannot drift apart.
+
+    ``notify.CHANNEL_KEYS`` decides what is *read* per dispatch; the catalog
+    decides what is *writable* in Admin. A key in one and not the other is
+    either a dead control or a channel nobody can configure.
+    """
+
+    assert set(notify.CHANNEL_KEYS) <= set(CATALOG)
+    assert len(set(notify.CHANNEL_KEYS)) == len(notify.CHANNEL_KEYS)
+
+
+async def test_a_channel_secret_is_never_serialised_back(tmp_path) -> None:
+    """Writable does not mean readable: describe() still reports set/not set."""
+
+    s = _settings()
+    await s.set("KENNY_WEBHOOK_URL", "https://hook.example/very-secret")
+    flat = {row["key"]: row for g in s.describe() for row in g["settings"]}
+    row = flat["KENNY_WEBHOOK_URL"]
+    assert row["editable"] is True and row["source"] == "db"
+    assert row["value"] is None and row["is_set"] is True
+    assert row["default"] is None
+    assert "very-secret" not in str(s.describe())
+    assert s.describe_one("KENNY_WEBHOOK_URL")["value"] is None
 
 
 def test_oauth_ttls_are_in_catalog_with_matching_defaults() -> None:

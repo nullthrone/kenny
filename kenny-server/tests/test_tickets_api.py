@@ -1301,6 +1301,211 @@ def test_member_picker_links_and_unlinks_an_identity(tmp_path) -> None:
         assert c.delete("/api/discord/identities/900", headers=h).status_code == 404
 
 
+# -- self-service: see and remove your own Discord binding (ADR-0044) ----------
+
+
+def test_me_discord_shows_only_the_callers_own_binding(tmp_path) -> None:
+    """Two real users, two real bindings — GET /api/me/discord is per-caller."""
+
+    async def seed(users: UserStore, _store: TicketStore, _svc: TicketService) -> dict:
+        kid = await users.create_user("kid", "pw-123456", "user")
+        sib = await users.create_user("sib", "pw-123456", "user")
+        loner = await users.create_user("loner", "pw-123456", "user")
+        su = await users.create_user("su", "pw-123456", "superuser")
+        return {
+            "kid_pat": await users.create_pat(kid["id"], "t"),
+            "sib_pat": await users.create_pat(sib["id"], "t"),
+            "loner_pat": await users.create_pat(loner["id"], "t"),
+            "su_pat": await users.create_pat(su["id"], "t"),
+            "kid_id": kid["id"],
+            "sib_id": sib["id"],
+        }
+
+    app = _build_app(tmp_path, seed, with_discord=True)
+    with TestClient(app) as c:
+        s = app.state.seed
+        su_h = _hdr(s["su_pat"])
+        kid_h, sib_h, loner_h = _hdr(s["kid_pat"]), _hdr(s["sib_pat"]), _hdr(s["loner_pat"])
+
+        # Two real bindings, seeded through the real operator route — not an
+        # empty fixture that happens to make the negative case pass.
+        assert (
+            c.post(
+                "/api/discord/identities",
+                json={"discord_user_id": "900", "user_id": s["kid_id"]},
+                headers=su_h,
+            ).status_code
+            == 201
+        )
+        assert (
+            c.post(
+                "/api/discord/identities",
+                json={"discord_user_id": "901", "user_id": s["sib_id"]},
+                headers=su_h,
+            ).status_code
+            == 201
+        )
+
+        kid_body = c.get("/api/me/discord", headers=kid_h).json()
+        assert kid_body["linked"] is True
+        assert len(kid_body["bindings"]) == 1
+        binding = kid_body["bindings"][0]
+        assert binding["discord_user_id"] == "900"
+        assert binding["guild_id"] == GUILD
+        assert binding["linked_via"] == "member_list"
+        assert isinstance(binding["linked_at"], str) and binding["linked_at"]
+        # Only what the store actually holds — no invented display name, and
+        # no internal `linked_by` either.
+        assert set(binding) == {"discord_user_id", "guild_id", "linked_at", "linked_via"}
+
+        sib_body = c.get("/api/me/discord", headers=sib_h).json()
+        assert [b["discord_user_id"] for b in sib_body["bindings"]] == ["901"]
+
+        # A user with no binding at all gets a clean "not linked" answer, not
+        # a 404 or an error.
+        r = c.get("/api/me/discord", headers=loner_h)
+        assert r.status_code == 200
+        assert r.json()["linked"] is False
+        assert r.json()["bindings"] == []
+
+        # Unauthenticated is still 401, same as every other `user`-floor route.
+        assert c.get("/api/me/discord").status_code == 401
+
+
+def test_me_discord_not_linked_is_clean_without_discord_configured(tmp_path) -> None:
+    """No Discord collaborator at all still answers cleanly, not 503/error."""
+
+    async def seed(users: UserStore, _store: TicketStore, _svc: TicketService) -> dict:
+        kid = await users.create_user("kid", "pw-123456", "user")
+        return {"kid_pat": await users.create_pat(kid["id"], "t")}
+
+    app = _build_app(tmp_path, seed, with_discord=False)
+    with TestClient(app) as c:
+        h = _hdr(app.state.seed["kid_pat"])
+        r = c.get("/api/me/discord", headers=h)
+        assert r.status_code == 200
+        assert r.json()["linked"] is False
+        assert r.json()["bindings"] == []
+
+        r = c.delete("/api/me/discord", headers=h)
+        assert r.status_code == 200
+        assert r.json() == {"ok": True, "removed": 0}
+
+
+def test_user_cannot_remove_another_users_binding_by_any_route(tmp_path) -> None:
+    """The test that matters: kid can never take sib's binding down.
+
+    kid tries the obvious ways to aim ``DELETE /api/me/discord`` at sib's
+    binding — sib's snowflake, sib's guild, even sib's own user id — as query
+    params and as a JSON body, on top of the operator-only path-parameter
+    route. None of it works: the route resolves its target from
+    ``principal.user_id`` alone, so kid only ever removes kid's own binding.
+    """
+
+    async def seed(users: UserStore, _store: TicketStore, _svc: TicketService) -> dict:
+        kid = await users.create_user("kid", "pw-123456", "user")
+        sib = await users.create_user("sib", "pw-123456", "user")
+        su = await users.create_user("su", "pw-123456", "superuser")
+        return {
+            "kid_pat": await users.create_pat(kid["id"], "t"),
+            "sib_pat": await users.create_pat(sib["id"], "t"),
+            "su_pat": await users.create_pat(su["id"], "t"),
+            "kid_id": kid["id"],
+            "sib_id": sib["id"],
+        }
+
+    app = _build_app(tmp_path, seed, with_discord=True)
+    with TestClient(app) as c:
+        s = app.state.seed
+        su_h = _hdr(s["su_pat"])
+        kid_h, sib_h = _hdr(s["kid_pat"]), _hdr(s["sib_pat"])
+
+        assert (
+            c.post(
+                "/api/discord/identities",
+                json={"discord_user_id": "900", "user_id": s["kid_id"]},
+                headers=su_h,
+            ).status_code
+            == 201
+        )
+        assert (
+            c.post(
+                "/api/discord/identities",
+                json={"discord_user_id": "901", "user_id": s["sib_id"]},
+                headers=su_h,
+            ).status_code
+            == 201
+        )
+
+        # kid supplies sib's snowflake, sib's guild and sib's own user id —
+        # as both query params and a JSON body — trying to reach sib's row
+        # through the self-service route.
+        r = c.request(
+            "DELETE",
+            "/api/me/discord",
+            params={"discord_user_id": "901", "guild_id": GUILD, "user_id": str(s["sib_id"])},
+            json={"discord_user_id": "901", "guild_id": GUILD, "user_id": s["sib_id"]},
+            headers=kid_h,
+        )
+        assert r.status_code == 200
+        # Exactly one row removed — kid's own, never sib's.
+        assert r.json() == {"ok": True, "removed": 1}
+
+        # kid is unlinked now...
+        kid_after = c.get("/api/me/discord", headers=kid_h).json()
+        assert kid_after == {
+            "linked": False,
+            "bindings": [],
+            "note": kid_after["note"],
+        }
+        # ...but sib's binding is completely untouched, confirmed both from
+        # sib's own view and from the operator's admin listing.
+        sib_after = c.get("/api/me/discord", headers=sib_h).json()
+        assert sib_after["linked"] is True
+        assert [b["discord_user_id"] for b in sib_after["bindings"]] == ["901"]
+        listed = c.get("/api/discord/identities", headers=su_h).json()["identities"]
+        assert [i["discord_user_id"] for i in listed] == ["901"]
+
+        # A second self-service delete is a clean, idempotent no-op.
+        r = c.delete("/api/me/discord", headers=kid_h)
+        assert r.status_code == 200
+        assert r.json() == {"ok": True, "removed": 0}
+
+
+def test_operator_identity_delete_route_is_unchanged(tmp_path) -> None:
+    """Adding self-service unbind must not touch the operator confirmation path."""
+
+    async def seed(users: UserStore, _store: TicketStore, _svc: TicketService) -> dict:
+        kid = await users.create_user("kid", "pw-123456", "user")
+        su = await users.create_user("su", "pw-123456", "superuser")
+        return {
+            "su_pat": await users.create_pat(su["id"], "t"),
+            "kid_pat": await users.create_pat(kid["id"], "t"),
+            "kid_id": kid["id"],
+        }
+
+    app = _build_app(tmp_path, seed, with_discord=True)
+    with TestClient(app) as c:
+        s = app.state.seed
+        su_h, kid_h = _hdr(s["su_pat"]), _hdr(s["kid_pat"])
+
+        assert (
+            c.post(
+                "/api/discord/identities",
+                json={"discord_user_id": "900", "user_id": s["kid_id"]},
+                headers=su_h,
+            ).status_code
+            == 201
+        )
+        # A plain `user` still can't reach the operator route at all.
+        assert c.delete("/api/discord/identities/900", headers=kid_h).status_code == 403
+
+        assert c.delete("/api/discord/identities/900", headers=su_h).status_code == 200
+        assert c.delete("/api/discord/identities/900", headers=su_h).status_code == 404
+        # And the self-service view now agrees it's gone.
+        assert c.get("/api/me/discord", headers=kid_h).json()["linked"] is False
+
+
 def test_pending_claim_is_listed_and_confirmed_once(tmp_path) -> None:
     """Enrollment path A: `/link` opens a claim, an operator confirms it."""
 

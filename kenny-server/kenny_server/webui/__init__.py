@@ -1293,6 +1293,24 @@ def build_api_routes(
             return JSONResponse({"error": "not found or not active"}, status_code=404)
         return JSONResponse({"ok": True})
 
+    async def api_updates_campaign_suspend(request: Request) -> JSONResponse:
+        if update_mgr is None:
+            return JSONResponse({"error": "updates not configured"}, status_code=503)
+        campaign_id = request.path_params["id"]
+        ok = await update_mgr.suspend_campaign(campaign_id)
+        if not ok:
+            return JSONResponse({"error": "not found or not active"}, status_code=404)
+        return JSONResponse({"ok": True})
+
+    async def api_updates_campaign_resume(request: Request) -> JSONResponse:
+        if update_mgr is None:
+            return JSONResponse({"error": "updates not configured"}, status_code=503)
+        campaign_id = request.path_params["id"]
+        ok = await update_mgr.resume_campaign(campaign_id)
+        if not ok:
+            return JSONResponse({"error": "not found or not suspended"}, status_code=404)
+        return JSONResponse({"ok": True})
+
     async def api_updates_campaign_apply_now(request: Request) -> JSONResponse:
         if update_mgr is None:
             return JSONResponse({"error": "updates not configured"}, status_code=503)
@@ -1608,6 +1626,16 @@ def build_api_routes(
         Route(
             "/api/updates/campaigns/{id}/revoke",
             guard(api_updates_campaign_revoke, **op),
+            methods=["POST"],
+        ),
+        Route(
+            "/api/updates/campaigns/{id}/suspend",
+            guard(api_updates_campaign_suspend, **op),
+            methods=["POST"],
+        ),
+        Route(
+            "/api/updates/campaigns/{id}/resume",
+            guard(api_updates_campaign_resume, **op),
             methods=["POST"],
         ),
         Route(

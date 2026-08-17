@@ -249,6 +249,93 @@ async def test_apply_now_raises_without_an_active_campaign(tmp_path, monkeypatch
     await mgr.store.close()
 
 
+# -- suspend / resume ---------------------------------------------------------
+
+
+async def test_suspend_stops_both_triggers(tmp_path, monkeypatch):
+    mgr, tunnel, campaign = await _campaign_with_agent(tmp_path, monkeypatch)
+    assert await mgr.suspend_campaign(campaign["id"]) is True
+
+    # get_active_campaign() no longer returns it...
+    assert await mgr.store.get_active_campaign() is None
+    # ...and apply_now() refuses rather than silently no-oping.
+    with pytest.raises(ValueError, match="suspended"):
+        await mgr.apply_now(campaign["id"])
+    assert tunnel.calls == []
+    await mgr.store.close()
+
+
+async def test_suspend_keeps_the_pinned_artifact_directory(tmp_path, monkeypatch):
+    mgr, _tunnel, campaign = await _campaign_with_agent(tmp_path, monkeypatch)
+    campaign_dir = tmp_path / "update_campaigns" / campaign["id"]
+    assert campaign_dir.exists()
+
+    await mgr.suspend_campaign(campaign["id"])
+    assert campaign_dir.exists()  # unlike revoke, suspend never cleans this up
+    await mgr.store.close()
+
+
+async def test_resume_restores_the_campaign_and_artifacts_stay_on_disk(tmp_path, monkeypatch):
+    mgr, tunnel, campaign = await _campaign_with_agent(tmp_path, monkeypatch)
+    campaign_dir = tmp_path / "update_campaigns" / campaign["id"]
+    await mgr.suspend_campaign(campaign["id"])
+
+    assert await mgr.resume_campaign(campaign["id"]) is True
+    assert campaign_dir.exists()
+    active = await mgr.store.get_active_campaign()
+    assert active is not None and active["id"] == campaign["id"]
+
+    # and it is applicable again, exactly as before suspension.
+    result = await mgr.apply_now(campaign["id"])
+    assert result["attempted"] == ["pc-1"]
+    assert len(tunnel.calls) == 1
+    await mgr.store.close()
+
+
+async def test_held_agents_attempt_count_survives_suspend_and_resume(tmp_path, monkeypatch):
+    """The entire point of suspend over revoke-then-recreate: a held agent's
+    attempt budget must not reset just because the campaign was paused."""
+
+    outcomes = {"pc-1": [ToolError("disabled", "remote control is off")] * ATTEMPT_BUDGET}
+    _write_cached_binary(tmp_path, monkeypatch, "windows", "x86_64", "1.0.0")
+    registry = AgentRegistry()
+    registry.register_signed_async("pc-1", {"os": "windows", "arch": "x86_64", "version": "0.9.0"}, _noop)
+    tunnel = _FakeTunnel(outcomes)
+    mgr = _mgr(tmp_path, tunnel=tunnel, registry=registry)
+    await mgr.store.connect()
+    campaign = await mgr.approve_campaign(version="1.0.0")
+
+    for _ in range(ATTEMPT_BUDGET):
+        await mgr.apply_now(campaign["id"])
+    held_state = await mgr.store.get_agent_state(campaign["id"], "pc-1")
+    assert held_state["attempts"] == ATTEMPT_BUDGET
+    assert held_state["held"] is True
+
+    await mgr.suspend_campaign(campaign["id"])
+    await mgr.resume_campaign(campaign["id"])
+
+    resumed_state = await mgr.store.get_agent_state(campaign["id"], "pc-1")
+    assert resumed_state["attempts"] == ATTEMPT_BUDGET
+    assert resumed_state["held"] is True
+
+    # and a held agent is still never retried again under the resumed campaign.
+    await mgr.apply_now(campaign["id"])
+    assert len(tunnel.calls) == ATTEMPT_BUDGET  # no new call spent on the held agent
+    await mgr.store.close()
+
+
+async def test_suspend_refused_on_completed_campaign(tmp_path, monkeypatch):
+    mgr, _tunnel, campaign = await _campaign_with_agent(tmp_path, monkeypatch)
+    await mgr.apply_now(campaign["id"])  # the only eligible agent succeeds -> auto-completes
+    completed = await mgr.store.get_campaign(campaign["id"])
+    assert completed["status"] == "completed"
+
+    assert await mgr.suspend_campaign(campaign["id"]) is False
+    still = await mgr.store.get_campaign(campaign["id"])
+    assert still["status"] == "completed"
+    await mgr.store.close()
+
+
 # -- on-connect hook -----------------------------------------------------------
 
 

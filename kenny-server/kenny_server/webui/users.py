@@ -3,7 +3,8 @@
 Two families, both gated by the auth middleware + :mod:`authz`:
 
 * ``/api/me*`` — any authenticated user manages *their own* account (email,
-  avatar, theme, password, TOTP, personal access tokens).
+  avatar, theme, password, TOTP, personal access tokens, and browser sessions —
+  list them, or sign every other one out).
 * ``/api/users*`` — **superuser only**: list/create/edit/delete accounts, set
   roles, manage host scope, reset TOTP, and mint/revoke PATs for others.
 
@@ -141,13 +142,23 @@ def build_user_routes(
     ) -> JSONResponse:
         """Kill all of a user's sessions, then re-issue one for this device.
 
-        Used after a credential change (password / 2FA) so every other session is
-        invalidated (CWE-613) while the caller stays logged in on the current
-        browser — the response carries a fresh session cookie.
+        Used after a credential change (password / 2FA) and by explicit
+        session revocation, so every other session is invalidated (CWE-613)
+        while the caller stays logged in on the current browser — the
+        response carries a fresh session cookie.
+
+        Every session id being killed here also owns a per-principal
+        active-agent slot in the registry, keyed ``s:<session_id>``
+        (ADR-0033, ``Principal.active_key``). Without clearing those too, a
+        stale slot lingers in memory for a session that no longer exists in
+        the database.
         """
 
+        doomed = await user_store.list_sessions(user_id)
         await user_store.delete_user_sessions(user_id)
         await _revoke_oauth(user_id)
+        for session in doomed:
+            registry.clear(f"s:{session['id']}")
         sid = await user_store.create_session(
             user_id,
             ttl_secs=_session_ttl_secs(),
@@ -194,7 +205,14 @@ def build_user_routes(
         if not secret or not security.verify_totp(secret, code):
             return _err("invalid code for this secret")
         await user_store.set_totp_secret(principal.user_id, secret)
-        return JSONResponse({"ok": True, "totp_enabled": True})
+        # Enabling 2FA is a credential change too: an already-compromised
+        # session is exactly what turning 2FA *on* should evict, not leave
+        # valid until it expires on its own (CWE-613).
+        return await _rotate_own_session(
+            request,
+            JSONResponse({"ok": True, "totp_enabled": True}),
+            principal.user_id,
+        )
 
     async def api_me_totp_disable(request: Request) -> JSONResponse:
         principal = require_user(request)
@@ -211,6 +229,54 @@ def build_user_routes(
         return await _rotate_own_session(
             request,
             JSONResponse({"ok": True, "totp_enabled": False}),
+            principal.user_id,
+        )
+
+    async def api_me_sessions(request: Request) -> JSONResponse:
+        """List the caller's own sessions — never another user's (ADR-0033).
+
+        The raw session id (a bearer credential) is never put on the wire;
+        each row is reduced to what a "where am I signed in" UI needs, plus
+        ``current`` for the row that answered this very request.
+        """
+
+        principal = require_user(request)
+        if principal.user_id is None:
+            return JSONResponse({"sessions": []})
+        sessions = await user_store.list_sessions(principal.user_id)
+        return JSONResponse(
+            {
+                "sessions": [
+                    {
+                        "created_at": s["created_at"],
+                        "expires_at": s["expires_at"],
+                        "ip": s["ip"],
+                        "user_agent": s["user_agent"],
+                        "current": s["id"] == principal.session_id,
+                    }
+                    for s in sessions
+                ]
+            }
+        )
+
+    async def api_me_sessions_revoke_others(request: Request) -> JSONResponse:
+        """Sign out every *other* session (and OAuth grant) for this account.
+
+        This device stays signed in — it gets a fresh session cookie, via the
+        same "kill all, re-issue one" mechanism a password/2FA change already
+        uses. Personal access tokens are a separate credential (how Claude
+        Desktop reaches ``/mcp``) and are deliberately out of scope: nothing
+        here touches them.
+        """
+
+        principal = require_user(request)
+        if principal.user_id is None:
+            return _err("shared-token session has no other sessions")
+        sessions = await user_store.list_sessions(principal.user_id)
+        revoked = sum(1 for s in sessions if s["id"] != principal.session_id)
+        return await _rotate_own_session(
+            request,
+            JSONResponse({"ok": True, "revoked": revoked}),
             principal.user_id,
         )
 
@@ -406,6 +472,12 @@ def build_user_routes(
         Route("/api/me", guard(api_me_update), methods=["PATCH"]),
         Route("/api/me/theme", guard(api_me_theme), methods=["PUT"]),
         Route("/api/me/password", guard(api_me_password), methods=["POST"]),
+        Route("/api/me/sessions", guard(api_me_sessions, min_role="user")),
+        Route(
+            "/api/me/sessions/revoke-others",
+            guard(api_me_sessions_revoke_others, min_role="user"),
+            methods=["POST"],
+        ),
         Route("/api/me/totp", guard(api_me_totp_setup), methods=["POST"]),
         Route("/api/me/totp", guard(api_me_totp_enable), methods=["PUT"]),
         Route("/api/me/totp", guard(api_me_totp_disable), methods=["DELETE"]),

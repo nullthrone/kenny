@@ -524,6 +524,34 @@ class UserStore:
         await self._conn.commit()
         return sid
 
+    async def list_sessions(self, user_id: int) -> list[dict]:
+        """All sessions for ``user_id``, newest first.
+
+        Each dict's ``id`` is the raw session token — the same string the
+        cookie carries, so it doubles as a bearer credential. Callers must
+        never serialize it back to a client; it exists here only so a caller
+        can compare it against the current request's session id (to flag
+        "current") or use it to evict a per-session registry slot when the
+        session is revoked.
+        """
+
+        async with self._conn.execute(
+            "SELECT id, created_at, expires_at, ip, user_agent FROM sessions "
+            "WHERE user_id = ? ORDER BY created_at DESC",
+            (user_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [
+            {
+                "id": r["id"],
+                "created_at": r["created_at"],
+                "expires_at": r["expires_at"],
+                "ip": r["ip"],
+                "user_agent": r["user_agent"],
+            }
+            for r in rows
+        ]
+
     async def resolve_session(self, session_id: str) -> aiosqlite.Row | None:
         """Resolve a session id to its (enabled) account row, or ``None``.
 

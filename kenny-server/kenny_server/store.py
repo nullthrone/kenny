@@ -1471,9 +1471,29 @@ class UpdateStore:
         return [dict(r) for r in rows]
 
     async def set_campaign_status(
-        self, campaign_id: str, status: str, *, at_field: str | None = None
+        self,
+        campaign_id: str,
+        status: str,
+        *,
+        from_status: str = "active",
+        at_field: str | None = None,
     ) -> bool:
-        """Transition a campaign to a terminal status (``revoked``/``expired``/``completed``)."""
+        """Transition a campaign out of ``from_status`` and into ``status``.
+
+        Guarded the same way regardless of which transition this is: the
+        ``UPDATE`` only touches a row currently in ``from_status``, so a stale
+        or duplicate call against a campaign that already moved on (including
+        one that raced it) is a silent no-op (returns ``False``) rather than
+        clobbering whatever status a concurrent transition already set.
+
+        ``from_status`` defaults to ``"active"`` — every terminal transition
+        (``revoked``/``expired``/``completed``) and ``suspended`` itself leave
+        ``active``. Resume is the one caller that passes
+        ``from_status="suspended"`` to go back the other way. Terminal statuses
+        also stamp a timestamp column (``at_field``, defaulting to the
+        ``revoked_at``/``completed_at`` mapping below); ``suspended`` and
+        ``active`` (resume) have no such column and leave it alone.
+        """
 
         now = datetime.now(timezone.utc).isoformat()
         field = at_field or {
@@ -1483,14 +1503,14 @@ class UpdateStore:
         }.get(status)
         if field is None:
             cur = await self._conn.execute(
-                "UPDATE update_campaigns SET status = ? WHERE id = ? AND status = 'active'",
-                (status, campaign_id),
+                "UPDATE update_campaigns SET status = ? WHERE id = ? AND status = ?",
+                (status, campaign_id, from_status),
             )
         else:
             cur = await self._conn.execute(
                 f"UPDATE update_campaigns SET status = ?, {field} = ? "
-                "WHERE id = ? AND status = 'active'",
-                (status, now, campaign_id),
+                "WHERE id = ? AND status = ?",
+                (status, now, campaign_id, from_status),
             )
         await self._conn.commit()
         return (cur.rowcount or 0) > 0

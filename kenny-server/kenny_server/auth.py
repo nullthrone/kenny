@@ -33,6 +33,7 @@ from starlette.routing import Route
 
 from . import security
 from .urls import mcp_resource_url, public_base_url
+from .userstore import _DEFAULT_SESSION_TTL_SECS
 
 if TYPE_CHECKING:
     from .oauthstore import OAuthStore
@@ -42,7 +43,6 @@ logger = logging.getLogger("kenny.auth")
 
 COOKIE_NAME = "kenny_op"
 _DEV_OPERATOR_TOKEN = "dev-operator-token"
-_DEFAULT_SESSION_TTL_SECS = 7 * 24 * 3600  # 7 days
 
 
 # -- principal ----------------------------------------------------------------
@@ -486,7 +486,7 @@ _LOGIN_HTML = (
     <button type="submit">Sign in</button>
     {msg}
   </form>
-  <div class="foot">Sessions expire after 12 h of inactivity.</div>
+  <div class="foot">Sessions expire {ttl} after sign-in — not renewed by use.</div>
  </div>
 </body></html>"""
 )
@@ -507,6 +507,21 @@ def _safe_next(raw: str | None) -> str:
     return ""
 
 
+def _ttl_human(secs: int) -> str:
+    """Render a TTL in whatever whole unit fits it cleanly, e.g. ``"7 days"``.
+
+    ``KENNY_SESSION_TTL_SECS`` is free-form seconds, so the footer copy has to
+    cope with a value that is not a whole number of days (an operator could set
+    it to an hour for testing) without printing something like "0 days".
+    """
+
+    for unit_secs, name in ((86400, "day"), (3600, "hour"), (60, "minute")):
+        if secs % unit_secs == 0:
+            n = secs // unit_secs
+            return f"{n} {name}" + ("" if n == 1 else "s")
+    return f"{secs} seconds"
+
+
 def _login_page(msg: str = "", next_val: str = "") -> str:
     """Render the login page, carrying a validated ``next`` target through POST."""
 
@@ -517,7 +532,9 @@ def _login_page(msg: str = "", next_val: str = "") -> str:
         if next_val
         else ""
     )
-    return _LOGIN_HTML.format(msg=msg, next_field=field)
+    return _LOGIN_HTML.format(
+        msg=msg, next_field=field, ttl=_ttl_human(_session_ttl_secs())
+    )
 
 _SETUP_HTML = (
     """<!DOCTYPE html>
