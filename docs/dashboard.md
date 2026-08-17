@@ -38,16 +38,15 @@ Every view shares one header:
 - **Ask kenny (⌘K)** — a header button (labelled `ASK KENNY ⌘K` on desktop, an icon on
   mobile) that opens the [Ask kenny overlay](#ask-kenny). The same shortcut works from
   anywhere in the dashboard, not just one destination.
-- **User menu** — your avatar (a selectable dog-breed image, or your initials when none is
-  set) and username, top-right. Opens a dropdown with:
-    - **Profile** — see [Profile](#profile).
-    - **Light mode / Dark mode** — the theme toggle; the item names the theme it switches
-      *to*. The choice is saved per account (`PUT /api/me/theme`) and applied before first
-      paint (no flash); charts repaint from cached data on toggle.
-    - **Admin** *(operator+ only)* — opens [the Admin page](#admin).
-    - **About** — opens the [About box](#the-about-box).
-    - **Documentation** — opens the project's docs site (this site) in a new tab.
-    - **Log out** (`/logout`).
+- **Theme toggle** — a header button carrying a moon or sun; it names the theme it switches
+  *to*. The choice is saved per account (`PUT /api/me/theme`) and also kept in the browser,
+  so it applies before first paint rather than flashing the other theme. A legacy
+  shared-token identity has no account to save against and keeps the browser copy only.
+- **Account block** — at the foot of the sidebar: your initials, your username and your
+  role. It links to [Profile](#profile). Beside it is **log out** (`/logout`), a plain link
+  rather than a request, so signing out survives a broken session.
+- **Fleet line** — under the account block: how many agents are enrolled and whether they
+  are all reporting.
 
 ---
 
