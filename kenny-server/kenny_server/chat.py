@@ -129,20 +129,38 @@ def _cached_tools() -> list[dict[str, Any]]:
 
 
 def _context_note(session: "FleetSession") -> list[dict[str, Any]]:
-    """An extra, uncached system block naming the dashboard's selected agent.
+    """An extra, uncached system block naming the session's scope.
 
     The dashboard shows the operator a "context: <agent>" pill and scopes
     forwarded capability tools to it (see the ``agent_id`` handling in
     ``webui/__init__.py``), but that selection was never stated to the model in
     words — only tool routing saw it. Without this, the model has no lexical
     signal of which machine is selected and can't answer "which PC is this?"
-    without first calling a tool. Kept separate from the cached
-    ``_SYSTEM_PROMPT`` block (``_cached_system``) since it varies per session
-    and must not bust that prompt-cache prefix.
+    without first calling a tool. The fleet-wide case gets its own sentence for
+    the same reason: "no host selected" is a state the model should be able to
+    name, not the absence of information.
+
+    Kept separate from the cached ``_SYSTEM_PROMPT`` block (``_cached_system``)
+    since it varies per session and must not bust that prompt-cache prefix —
+    every per-session sentence belongs here, never there.
+
+    This block says which machines are in view. It never says what may run: the
+    confirm-gate is stated once, in the cached prompt, and applies identically
+    in both scopes (ADR-0045).
     """
 
     if not session.agent_id:
-        return []
+        return [
+            {
+                "type": "text",
+                "text": (
+                    "The operator has no single agent selected in the dashboard: this "
+                    "conversation is fleet-wide. Unqualified references are about the "
+                    "fleet as a whole; call select_agent (or pass agent_id) before any "
+                    "capability tool that must run on one machine."
+                ),
+            }
+        ]
     return [
         {
             "type": "text",
@@ -174,6 +192,25 @@ class FleetSession:
     _staged_results: list[dict[str, Any]] = field(default_factory=list)
     # tool_use blocks from the current assistant turn not yet executed.
     _queue: list[dict[str, Any]] = field(default_factory=list)
+
+    @property
+    def scope(self) -> str:
+        """``"host"`` when one agent is selected, ``"fleet"`` otherwise.
+
+        Derived, never stored. ``agent_id`` stays the single field the session
+        carries — ``run_turn``, ``toolloop.drive_events`` and
+        ``toolloop._resolve_chat_target`` all key off it, and a second stored
+        field could disagree with it. Scope is a label over that one fact, for
+        the drawer's chip and for :func:`_context_note`'s wording.
+
+        It is deliberately inert for authorization: it must never reach
+        :meth:`FleetPolicy.gate` or ``tool_classes``. The tier is a property of
+        the tool and the gate a property of the surface (ADR-0045); a scope is
+        neither, so widening or narrowing it can never change what a tool is
+        classified as or whether it needs a confirmation.
+        """
+
+        return "host" if self.agent_id else "fleet"
 
 
 class ChatSessions:
@@ -274,6 +311,10 @@ class FleetPolicy:
     ) -> GateDecision:
         # Both change tiers hold on this surface — identical to the previous
         # binary gate. A tier is not permission to skip the operator's dialog.
+        # Note what this does *not* read: ``session.scope``/``session.agent_id``.
+        # Which machines are in view is not an input to whether a call needs a
+        # confirmation, so a fleet-wide chat gates exactly like a host-scoped
+        # one (ADR-0045).
         return Allow() if classify(tool) == READ_ONLY else Hold("operator_approval")
 
     async def on_hold(self, session: "FleetSession", pending: PendingCall) -> None:
@@ -339,6 +380,11 @@ def public_transcript(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
                         "tool": info["tool"],
                         "args": info["args"],
                         "ok": not is_error,
+                        # A replayed transcript has no record of whether the
+                        # call was confirmed (gate state is never persisted —
+                        # ADR-0025), so this reports the tool's own tier, which
+                        # is what the live loop's flag means on this surface.
+                        "auto_run": classify(info["tool"]) == READ_ONLY,
                     }
                     image = None if is_error else _tool_result_image(block_content)
                     if image is not None:

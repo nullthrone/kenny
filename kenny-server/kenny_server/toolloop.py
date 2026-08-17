@@ -27,7 +27,7 @@ from typing import Any, Protocol
 
 from .registry import AgentRegistry
 from .store import TelemetryStore
-from .tool_classes import classify, is_state_changing
+from .tool_classes import READ_ONLY, classify, is_state_changing
 from .tools import (
     CAPABILITY_TOOLS,
     CallLog,
@@ -535,6 +535,20 @@ def _resolve_chat_target(session: Any, args: dict[str, Any]) -> str:
     return target
 
 
+def _tier_auto_runs(tool: str) -> bool:
+    """True when ``tool``'s *tier* is read-only, i.e. nothing has to decide it.
+
+    Read from :func:`~kenny_server.tool_classes.classify` and nothing else, so
+    this can never disagree with the tier map, and never varies with a session's
+    scope or selected host: the tier is a property of the tool, the gate is a
+    property of the calling surface (ADR-0045). Used for the one ``tool_result``
+    the loop emits *before* reaching the gate (a routing failure); the events
+    emitted after a gate decision report that decision directly instead.
+    """
+
+    return classify(tool) == READ_ONLY
+
+
 async def _execute_one(
     executor: ToolExecutor,
     tool: str,
@@ -578,10 +592,14 @@ async def drive_events(
 
     * ``{"type": "text_delta", "text": ...}`` — one per token as the assistant
       block streams;
-    * ``{"type": "tool_result", "tool": ..., "args": ..., "ok": bool[, "error":
-      {"code": ..., "message": ...}][, "image_b64", "format"]}`` — emitted the
-      moment each tool executes (live); ``error`` is present iff ``ok`` is
-      false;
+    * ``{"type": "tool_result", "tool": ..., "args": ..., "ok": bool,
+      "auto_run": bool[, "error": {"code": ..., "message": ...}][, "image_b64",
+      "format"]}`` — emitted the moment each tool executes (live); ``error`` is
+      present iff ``ok`` is false. ``auto_run`` says the loop ran the call
+      without anyone deciding it, which is what separates a read-only call the
+      operator only ever sees *after* the fact from a state-changing one they
+      had to approve first (the ``pending`` event below). It reports the gate
+      outcome, never the scope: a session's selected host cannot change it;
     * ``{"type": "pending", "tool": ..., "args": ..., "agent_id": ...}`` — a call
       the policy held, awaiting a decision;
     * ``{"type": "denied", "tool": ..., "args": ..., "agent_id": ..., "code": ...,
@@ -622,6 +640,9 @@ async def drive_events(
                     "tool": tool,
                     "args": args,
                     "ok": False,
+                    # Routing failed before the gate was consulted, so there is
+                    # no decision to report — fall back to the tool's own tier.
+                    "auto_run": _tier_auto_runs(tool),
                     "error": payload["error"],
                 }
                 session._staged_results.append(
@@ -684,6 +705,11 @@ async def drive_events(
                 "tool": tool,
                 "args": args,
                 "ok": not is_error,
+                # Reached only on an ``Allow``: the policy let this run with
+                # nobody asked. On the dashboard chat that is exactly the
+                # read-only tier (``chat.FleetPolicy.gate`` holds both change
+                # tiers), which is what the frontend contract states.
+                "auto_run": True,
             }
             if is_error:
                 event["error"] = payload.get("error")
@@ -857,6 +883,9 @@ async def apply_confirmation(
             "tool": pending.tool,
             "args": pending.args,
             "ok": not is_error,
+            # This call was held and explicitly decided; by construction it did
+            # not run unattended, whatever its tier.
+            "auto_run": False,
         }
         if is_error:
             resume_event["error"] = payload.get("error")

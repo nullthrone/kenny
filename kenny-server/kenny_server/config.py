@@ -551,6 +551,12 @@ class Settings:
         """Grouped catalog with effective values for ``GET /api/settings``.
 
         Secrets never expose their value: they report ``is_set`` instead.
+
+        ``editable`` restates :attr:`SettingSpec.writable` on the wire so a
+        console never has to re-derive it from ``lifecycle``. It is the same
+        predicate ``PUT``/``DELETE`` enforce with a 403, read from the same
+        property, so a control that renders can always be submitted and one
+        that cannot be submitted never renders.
         """
 
         by_group: dict[str, list[dict[str, Any]]] = {g: [] for g in GROUP_ORDER}
@@ -563,6 +569,7 @@ class Settings:
                 "label": spec.label,
                 "help": spec.help,
                 "lifecycle": spec.lifecycle,
+                "editable": spec.writable,
                 "source": source,
                 "choices": list(spec.choices) if spec.choices else None,
                 "min": spec.min,
@@ -592,6 +599,7 @@ class Settings:
             "key": key,
             "source": source,
             "lifecycle": spec.lifecycle,
+            "editable": spec.writable,
         }
         if spec.sensitive:
             row["value"] = None

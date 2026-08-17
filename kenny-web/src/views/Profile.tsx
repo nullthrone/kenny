@@ -1,8 +1,6 @@
-/** Placeholder — the next wave fills this view in. */
+import ProfileView from './profile/ProfileView'
+
+/** `#/profile` — see `views/profile/ProfileView.tsx` for the implementation. */
 export default function Profile() {
-  return (
-    <div className="kc-content kc-view">
-      <h1 className="kc-h1">Profile</h1>
-    </div>
-  )
+  return <ProfileView />
 }

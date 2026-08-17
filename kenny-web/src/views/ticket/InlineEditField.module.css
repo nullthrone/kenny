@@ -1,0 +1,54 @@
+.row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.label {
+  font-family: var(--font-display);
+  font-size: 9px;
+  letter-spacing: var(--track-caps);
+  color: var(--text-muted);
+}
+
+.value {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-body);
+}
+
+.editBtn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-family: var(--font-display);
+  font-size: 9px;
+  letter-spacing: var(--track-caps);
+  min-height: 28px;
+}
+.editBtn:hover {
+  color: var(--text-accent);
+}
+
+.input,
+.select {
+  padding: 6px 8px;
+  border: 1px solid var(--border-line);
+  background: var(--surface-card);
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
+  color: var(--text-body);
+  min-height: 32px;
+}
+
+.saveBtn,
+.cancelBtn {
+  padding: 6px 10px;
+  background: transparent;
+  border: 1px solid var(--border-mid);
+  font-family: var(--font-display);
+  font-size: 9px;
+  letter-spacing: var(--track-caps);
+  min-height: 32px;
+}

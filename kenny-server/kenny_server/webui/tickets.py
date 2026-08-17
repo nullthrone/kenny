@@ -311,6 +311,24 @@ def build_ticket_routes(
         return JSONResponse(counts)
 
     async def api_tickets_create(request: Request) -> JSONResponse:
+        """Open a ticket, optionally starting work on it in the same call.
+
+        ``start_immediately`` is a convenience over the two calls the dashboard
+        would otherwise make, **not** a way around the ``new -> in_progress``
+        gate. It goes through :meth:`TicketService.transition` as the caller,
+        so ``tickets.py``'s ``_ACTORS`` rule still decides: system/operator may
+        start work, a requester may not ("opening a ticket does not entitle its
+        author to drive its lifecycle"). Issuing it as ``actor="system"`` on a
+        requester's behalf would have made the flag a bypass of exactly that
+        rule, so it does not.
+
+        A refused start is reported, never forced and never fatal: the ticket
+        was created and that write is durable, so the response is still 201 with
+        the ticket, plus ``started`` and — when it did not start — ``start_error``
+        carrying the lifecycle's own reason. Failing the whole call would lose a
+        ticket the caller successfully opened.
+        """
+
         principal = require_user(request)
         body = await _body(request)
         title = str(body.get("title", "")).strip()
@@ -338,7 +356,26 @@ def build_ticket_routes(
             summary=str(body.get("summary", "")),
             actor=_actor(principal),
         )
-        return JSONResponse(_affordances(tickets, ticket, principal), status_code=201)
+        started = False
+        start_error: str | None = None
+        if bool(body.get("start_immediately")):
+            try:
+                ticket = await tickets.transition(
+                    ticket.id,
+                    "in_progress",
+                    actor=_actor(principal),
+                    reason="started on creation",
+                )
+                started = True
+            except TicketError as exc:
+                start_error = str(exc)
+                logger.info(
+                    "ticket %s created but not started: %s", ticket.id, start_error
+                )
+        payload = _affordances(tickets, ticket, principal)
+        payload["started"] = started
+        payload["start_error"] = start_error
+        return JSONResponse(payload, status_code=201)
 
     async def api_ticket_get(request: Request) -> JSONResponse:
         principal = require_user(request)

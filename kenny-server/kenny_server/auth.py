@@ -387,41 +387,74 @@ class OperatorAuthMiddleware:
 # -- login / setup pages ------------------------------------------------------
 
 _PAGE_STYLE = """
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link rel="stylesheet"
+  href="https://fonts.googleapis.com/css2?family=Jost:wght@400;500;600&family=Public+Sans:wght@400;600&family=JetBrains+Mono:wght@400;500&display=swap" />
 <style>
-  /* Warm border-collie palette (see kenny design system). Flat, hairline
-     borders, amber accent. Inline hex (no shared token file on this page). */
-  :root {{ --bg:#1A1917; --surface:#23211E; --sunken:#141311; --border:#34312C;
-    --fg:#ECE6DA; --muted:#A89F8E; --faint:#756B5C; --amber:#E8A33D; --amber-deep:#C9852A;
-    --crit:#DD7A62; }}
+  /* Nullthrone: ink on warm paper, one brass accent, square corners, 1px
+     hairlines. Inline hex — this page is served before the app's token files
+     are reachable. The webfonts are the same three the console loads; every
+     stack keeps a system fallback so an air-gapped deployment still renders
+     a correct, if plainer, page rather than failing. */
+  :root {{ --ink:#141317; --ink-900:#1E1C21; --paper:#F4F2EC; --paper-white:#FFFFFF;
+    --rule:#C8C4BA; --label:#4A4750; --muted:#928F96; --faint:#6E6B72;
+    --brass:#C09A4B; --crit:#8C2F2E; }}
   * {{ box-sizing:border-box; }}
-  body {{ margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
-    font-family:'Hanken Grotesk', ui-sans-serif, system-ui, 'Segoe UI', sans-serif;
-    font-size:15px; line-height:1.55; background:var(--bg); color:var(--fg);
+  body {{ margin:0; min-height:100vh; display:grid; place-items:center; padding:48px 24px;
+    font-family:'Public Sans', ui-sans-serif, system-ui, 'Segoe UI', sans-serif;
+    font-size:15px; line-height:1.55; background:var(--ink); color:var(--paper);
     -webkit-font-smoothing:antialiased; }}
-  form {{ background:var(--surface); border:1px solid var(--border); border-radius:10px;
-    padding:28px; width:340px; }}
-  .brand {{ display:flex; align-items:center; gap:12px; margin-bottom:20px; }}
-  .brand img {{ width:40px; height:40px; border-radius:50%; display:block; }}
-  .brand .name {{ font-size:19px; font-weight:600; letter-spacing:-0.01em; line-height:1; }}
-  .brand .sub {{ font-size:11px; color:var(--muted); letter-spacing:.04em;
-    text-transform:uppercase; margin-top:3px; }}
-  label {{ font-size:11px; color:var(--muted); letter-spacing:.04em; text-transform:uppercase;
-    display:block; margin-bottom:6px; margin-top:14px; }}
+  .shell {{ width:min(400px, 100%); text-align:center; }}
+  .brand svg {{ color:var(--brass); margin-bottom:20px; }}
+  .brand .name {{ font-family:'Jost', ui-sans-serif, system-ui, sans-serif; font-weight:500;
+    font-size:26px; letter-spacing:0.14em; color:var(--paper); }}
+  .brand .sub {{ font-family:'Jost', ui-sans-serif, system-ui, sans-serif; font-size:10px;
+    letter-spacing:0.22em; color:var(--muted); margin-bottom:36px; }}
+  form {{ background:var(--paper); padding:28px; text-align:left; }}
+  label {{ font-family:'Jost', ui-sans-serif, system-ui, sans-serif; font-size:10px;
+    letter-spacing:0.14em; text-transform:uppercase; color:var(--label);
+    display:block; margin-bottom:6px; margin-top:16px; }}
   label:first-of-type {{ margin-top:0; }}
-  input {{ width:100%; padding:9px 11px; border-radius:5px; border:1px solid var(--border);
-    background:var(--sunken); color:var(--fg); font-size:14px; font-family:inherit;
-    transition:border-color .16s cubic-bezier(.2,0,0,1), box-shadow .16s cubic-bezier(.2,0,0,1); }}
+  input {{ width:100%; padding:12px; border:1px solid var(--rule); border-radius:0;
+    background:var(--paper-white); color:var(--ink); font-size:13px;
+    font-family:'JetBrains Mono', ui-monospace, monospace;
+    transition:border-color 120ms cubic-bezier(.2,0,0,1); }}
   input::placeholder {{ color:var(--faint); }}
-  input:focus {{ outline:none; border-color:var(--amber); box-shadow:0 0 0 2px rgba(232,163,61,.12); }}
-  button {{ margin-top:20px; width:100%; background:var(--amber); color:#1A1917; border:0;
-    padding:10px; border-radius:5px; font-size:14px; font-weight:600; font-family:inherit;
-    cursor:pointer; transition:background .16s cubic-bezier(.2,0,0,1); }}
-  button:hover {{ background:#F0B65C; }}
-  button:active {{ background:var(--amber-deep); }}
-  .err {{ color:var(--crit); margin:12px 0 0; font-size:13px; }}
-  .muted {{ color:var(--muted); font-size:12px; margin-top:14px; }}
+  input:focus {{ outline:none; border-color:var(--ink);
+    box-shadow:0 0 0 2px var(--paper), 0 0 0 4px #A87E2F; }}
+  button {{ margin-top:22px; width:100%; background:var(--ink); color:var(--paper); border:0;
+    border-radius:0; padding:14px; min-height:48px;
+    font-family:'Jost', ui-sans-serif, system-ui, sans-serif; font-size:11px;
+    letter-spacing:0.14em; text-transform:uppercase; cursor:pointer;
+    transition:background 120ms cubic-bezier(.2,0,0,1); }}
+  button:hover {{ background:#2A282E; }}
+  button:active {{ background:var(--ink-900); }}
+  .err {{ color:var(--crit); margin:14px 0 0; font-size:13px; }}
+  .muted {{ color:var(--label); font-size:12px; margin-top:14px; }}
+  .foot {{ font-family:'JetBrains Mono', ui-monospace, monospace; font-size:10px;
+    color:var(--faint); margin-top:20px; }}
+  @media (prefers-reduced-motion:reduce) {{ input, button {{ transition:none; }} }}
 </style>
 """
+
+# The stepped-arch monogram, filled with ``currentColor`` so the brass comes from
+# the wrapper. Same mark the console's sidebar carries, so the sign-in page and
+# the app it opens read as one object.
+_MARK_SVG = (
+    '<svg viewBox="0 0 274 266" width="52" height="50" aria-hidden="true">'
+    '<g fill="currentColor" fill-rule="nonzero">'
+    '<path d="M81,0 H193 V17 H81 Z"></path>'
+    '<path fill-rule="evenodd" d="M61,21 H213 V266 H61 Z '
+    'M92,97 A45,45 0 0 1 182,97 V199 A45,45 0 0 1 92,199 Z"></path>'
+    '<path d="M39,62 L56,50 V266 H39 Z"></path>'
+    '<path transform="translate(274,0) scale(-1,1)" d="M39,62 L56,50 V266 H39 Z"></path>'
+    '<path d="M17,106 L34,94 V266 H17 Z"></path>'
+    '<path transform="translate(274,0) scale(-1,1)" d="M17,106 L34,94 V266 H17 Z"></path>'
+    '<path d="M0,257 H56 V266 H0 Z"></path>'
+    '<path transform="translate(274,0) scale(-1,1)" d="M0,257 H56 V266 H0 Z"></path>'
+    "</g></svg>"
+)
 
 _LOGIN_HTML = (
     """<!DOCTYPE html>
@@ -433,11 +466,13 @@ _LOGIN_HTML = (
     + _PAGE_STYLE
     + """</head>
 <body>
+ <div class="shell">
+  <div class="brand">"""
+    + _MARK_SVG
+    + """
+    <div class="name">KENNY</div><div class="sub">FLEET CONSOLE</div>
+  </div>
   <form method="post" action="/login">
-    <div class="brand">
-      <img src="/assets/kenny-mark-64.png" alt="kenny" width="40" height="40" />
-      <div><div class="name">kenny</div><div class="sub">sign in</div></div>
-    </div>
     <label for="username">Username</label>
     <input id="username" type="text" name="username" placeholder="username" autofocus
       autocomplete="username" />
@@ -451,6 +486,8 @@ _LOGIN_HTML = (
     <button type="submit">Sign in</button>
     {msg}
   </form>
+  <div class="foot">Sessions expire after 12 h of inactivity.</div>
+ </div>
 </body></html>"""
 )
 
@@ -492,13 +529,15 @@ _SETUP_HTML = (
     + _PAGE_STYLE
     + """</head>
 <body>
+ <div class="shell">
+  <div class="brand">"""
+    + _MARK_SVG
+    + """
+    <div class="name">KENNY</div><div class="sub">CREATE ADMINISTRATOR</div>
+  </div>
   <form method="post" action="/setup">
-    <div class="brand">
-      <img src="/assets/kenny-mark-64.png" alt="kenny" width="40" height="40" />
-      <div><div class="name">kenny</div><div class="sub">create administrator</div></div>
-    </div>
     <p class="muted" style="margin-top:0">
-      Welcome. Create the first account — it becomes the superuser.
+      This is the first account on this server. It becomes the superuser.
     </p>
     <label for="username">Username</label>
     <input id="username" type="text" name="username" placeholder="username" autofocus
@@ -512,6 +551,7 @@ _SETUP_HTML = (
     <button type="submit">Create &amp; sign in</button>
     {msg}
   </form>
+ </div>
 </body></html>"""
 )
 

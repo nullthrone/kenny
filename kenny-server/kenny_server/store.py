@@ -531,6 +531,62 @@ class EventStore:
             rows = await cur.fetchall()
         return [self._row_to_event(r) for r in rows]
 
+    async def query_log(
+        self,
+        *,
+        kind: str | None = None,
+        q: str | None = None,
+        agent_ids: list[str] | None = None,
+        before: tuple[str, int] | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Search/paginate events for ``/api/log`` (tools/alerts/events, merged).
+
+        ``agent_ids`` is the caller's visible-host allowlist (``None`` means
+        unrestricted; an *empty* list means "nothing visible" and short-circuits
+        without a query) — the scoping happens in SQL, not by filtering the page
+        after the fact, so a scoped caller's page is never short (see
+        ``api_events``'s post-filter, which this deliberately does not repeat).
+        ``before`` is an exclusive keyset cursor over ``(at, id)`` (both already
+        indexed by ``idx_events_time``'s ``at DESC`` and the primary key) — the
+        caller reads the last returned row's ``(at, id)`` back in for the next
+        page. ``q`` is a plain ``LIKE`` scan over message/tool/target; there is
+        no FTS table, consistent with this codebase's scale (see module ADR-0017).
+        """
+
+        if agent_ids is not None and not agent_ids:
+            return []
+        clauses: list[str] = []
+        params: list[Any] = []
+        if kind is not None:
+            clauses.append("kind = ?")
+            params.append(kind)
+        if agent_ids is not None:
+            clauses.append(f"agent_id IN ({', '.join('?' for _ in agent_ids)})")
+            params.extend(agent_ids)
+        if q:
+            like = f"%{q}%"
+            clauses.append("(message LIKE ? OR tool LIKE ? OR target LIKE ?)")
+            params.extend([like, like, like])
+        if before is not None:
+            clauses.append("(at, id) < (?, ?)")
+            params.extend([before[0], before[1]])
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(limit)
+        async with self._conn.execute(
+            "SELECT id, at, agent_id, source, level, kind, tool, ok, error, target, message, fields "
+            f"FROM events {where} ORDER BY at DESC, id DESC LIMIT ?",
+            params,
+        ) as cur:
+            rows = await cur.fetchall()
+        return [
+            {
+                "id": int(row["id"]),
+                **self._row_to_event(row),
+            }
+            for row in rows
+        ]
+
     async def prune(
         self, *, now: datetime | None = None, retention_days: int | None = None
     ) -> int:

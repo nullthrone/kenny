@@ -230,26 +230,63 @@ def _kpis(
 
     total = len(agents)
     online_count = len(online)
+    # ``severity`` is a display-only "is this count worth flagging" label, not a
+    # new health threshold: it says whether the KPI's own number is nonzero
+    # (and, for a couple of counts that are worth treating as more than a
+    # routine nudge, "crit"). It never re-derives anything `health_rules.py`
+    # already scores — those thresholds stay there.
     return [
         {
             "key": "online",
             "label": "Hosts online",
             "value": online_count,
             "suffix": f"/ {total}",
+            "severity": "warn" if online_count < total else "ok",
             "members": [
                 _member(a["agent_id"], a.get("online", False), "online" if a.get("online") else "offline")
                 for a in agents
             ],
         },
-        {"key": "reboot", "label": "Reboots pending", "value": len(reboot_members), "members": reboot_members},
-        {"key": "app_updates", "label": "Open app updates", "value": updates_total, "members": updates_members},
-        {"key": "failed_updates", "label": "Failed updates", "value": failed_total, "members": failed_members},
-        {"key": "quarantine", "label": "Quarantined threats", "value": quarantine_total, "members": quarantine_members},
-        {"key": "os_eol", "label": "OS end-of-life", "value": len(eol_members), "members": eol_members},
+        {
+            "key": "reboot",
+            "label": "Reboots pending",
+            "value": len(reboot_members),
+            "severity": "warn" if reboot_members else "ok",
+            "members": reboot_members,
+        },
+        {
+            "key": "app_updates",
+            "label": "Open app updates",
+            "value": updates_total,
+            "severity": "warn" if updates_total else "ok",
+            "members": updates_members,
+        },
+        {
+            "key": "failed_updates",
+            "label": "Failed updates",
+            "value": failed_total,
+            "severity": "crit" if failed_total else "ok",
+            "members": failed_members,
+        },
+        {
+            "key": "quarantine",
+            "label": "Quarantined threats",
+            "value": quarantine_total,
+            "severity": "crit" if quarantine_total else "ok",
+            "members": quarantine_members,
+        },
+        {
+            "key": "os_eol",
+            "label": "OS end-of-life",
+            "value": len(eol_members),
+            "severity": "warn" if eol_members else "ok",
+            "members": eol_members,
+        },
         {
             "key": "disk_forecast",
             "label": "Disks filling <30d",
             "value": len(filling_members),
+            "severity": "warn" if filling_members else "ok",
             "members": filling_members,
         },
     ]

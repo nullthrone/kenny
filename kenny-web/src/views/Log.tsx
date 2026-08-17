@@ -1,8 +1,6 @@
-/** Placeholder — the next wave fills this view in. */
+import LogView from './log/LogView'
+
+/** `#/log` — see `views/log/LogView.tsx` for the implementation. */
 export default function Log() {
-  return (
-    <div className="kc-content kc-view">
-      <h1 className="kc-h1">Log</h1>
-    </div>
-  )
+  return <LogView />
 }

@@ -162,6 +162,8 @@ def build_api_routes(
     client_factory: Any = None,
     suppression: Any = None,
     ticket_rules: Any = None,
+    tickets: Any = None,
+    ticket_store: Any = None,
 ) -> list[Route]:
     """Build the dashboard's static + JSON routes.
 
@@ -346,6 +348,199 @@ def build_api_routes(
                 for d in daily
             ]
         return JSONResponse(fleet_stats.aggregate_trend(points_by_agent, days))
+
+    async def api_today(request: Request) -> JSONResponse:
+        """The landing aggregate: a thin re-packaging of
+        ``fleet_stats.aggregate_overview`` + ``aggregate_trend`` + the ticket and
+        approval stores — no new computation. See ``fleet_stats.py`` for the KPI
+        rows and the health mix, and ``health_rules.py`` for the section
+        thresholds; this handler only re-shapes and ranks what those already
+        computed.
+
+        ``items`` merges crit sections, warn sections, held approvals and stale
+        tickets (in that order) and caps the result at three — the server picks
+        the ranking once so every client agrees, rather than each screen
+        re-deriving "what matters most" from the full payload.
+        """
+
+        from datetime import datetime, timedelta, timezone
+
+        from ..ticketstore import to_iso
+        from .. import fleet_stats, trends
+
+        principal = principal_of(request)
+        ids = await _known_ids(registry, store)
+        if principal is not None:
+            ids = visible_ids(principal, ids)
+
+        forecast_since = (datetime.now(timezone.utc) - timedelta(days=30)).date().isoformat()
+        snapshots: list[dict[str, Any] | None] = []
+        rows = []
+        for agent_id in ids:
+            agent = registry.get(agent_id)
+            latest = await store.latest(agent_id)
+            snapshot = latest["snapshot"] if latest else None
+            snapshots.append(snapshot)
+            rows.append((agent_id, agent, snapshot, latest))
+        await _annotate_reliability(snapshots)
+        agents: list[dict[str, Any]] = [
+            {
+                "agent_id": agent_id,
+                "online": bool(agent and agent.online),
+                "os": agent.os if agent else "windows",
+                "meta": agent.meta if agent else {},
+                "snapshot": snapshot,
+                "health": build_health(snapshot, agent_os=agent.os if agent else "windows"),
+                "collected_at": latest["collected_at"] if latest else None,
+            }
+            for agent_id, agent, snapshot, latest in rows
+        ]
+
+        disk_forecasts: dict[str, list[dict[str, Any]]] = {}
+        points_by_agent: dict[str, list[dict[str, Any]]] = {}
+        for agent_id in ids:
+            agent = registry.get(agent_id)
+            agent_os = agent.os if agent else "windows"
+            daily = await _daily_latest_cached(agent_id, forecast_since)
+            disk_forecasts[agent_id] = trends.disk_forecast(daily)
+            points_by_agent[agent_id] = [
+                {
+                    "collected_at": d["collected_at"],
+                    "overall": build_health(d["snapshot"], agent_os=agent_os)["overall"],
+                }
+                for d in daily
+            ]
+
+        overview = fleet_stats.aggregate_overview(agents, disk_forecasts=disk_forecasts)
+        trend_raw = fleet_stats.aggregate_trend(points_by_agent, 30)
+
+        donut = overview["health"]
+        bad = sum(s["value"] for s in donut["segments"] if s["key"] in ("crit", "warn"))
+        verdict_sentence = _verdict_sentence(len(ids), bad)
+
+        # TrendDay's frozen shape is `{day, ok, warn, crit, unknown, members}`
+        # with `members` a flat list -- aggregate_trend's own bucket (shared with
+        # /api/fleet/trend) carries `date` and `members` split by status. Reshape
+        # only, no new computation.
+        trend_days = [
+            {
+                "day": d["date"],
+                "ok": d["ok"],
+                "warn": d["warn"],
+                "crit": d["crit"],
+                "unknown": d["unknown"],
+                "members": (
+                    d["members"]["ok"]
+                    + d["members"]["warn"]
+                    + d["members"]["crit"]
+                    + d["members"]["unknown"]
+                ),
+            }
+            for d in trend_raw["days"]
+        ]
+
+        section_rows = overview["sections"]["rows"]
+        crit_items = [
+            _today_section_item(row["section"], m, "crit")
+            for row in section_rows
+            for m in row["members_crit"]
+        ]
+        warn_items = [
+            _today_section_item(row["section"], m, "warn")
+            for row in section_rows
+            for m in row["members_warn"]
+        ]
+
+        # Held approvals: at least as strict as `/api/approvals` (operator-only)
+        # -- a scoped `user` gets none, matching /api/inbox's approvals slice.
+        approval_items: list[dict[str, Any]] = []
+        if ticket_store is not None and (principal is None or principal.at_least("operator")):
+            for approval in await ticket_store.list_open_approvals():
+                ticket = await ticket_store.get(approval.ticket_id)
+                if ticket is None:
+                    continue
+                approval_items.append(_today_approval_item(approval, ticket.number))
+
+        # Stale tickets: the same query nudge_stalled's own nudge pass runs
+        # (TicketStore.list(blocked_on_in=..., blocked_before=..., nudged=False)),
+        # read-only here -- this must never itself mark a ticket nudged or send a
+        # reminder, only report what the next sweep would.
+        stale_items: list[dict[str, Any]] = []
+        if ticket_store is not None and tickets is not None:
+            requester_user_id = (
+                principal.user_id if principal is not None and principal.scoped else None
+            )
+            nudge_cutoff = to_iso(
+                datetime.now(timezone.utc) - timedelta(seconds=tickets.stall_nudge_secs)
+            )
+            for t in await ticket_store.list(
+                blocked_on_in=("user", "operator"),
+                blocked_before=nudge_cutoff,
+                nudged=False,
+                requester_user_id=requester_user_id,
+                limit=50,
+            ):
+                if principal is not None and t.agent_id and not principal.may_see(t.agent_id):
+                    continue
+                stale_items.append(_today_ticket_item(t))
+
+        items = (crit_items + warn_items + approval_items + stale_items)[:3]
+
+        return JSONResponse(
+            {
+                "generated_at": overview["generated_at"],
+                "verdict_sentence": verdict_sentence,
+                "items": items,
+                "donut": donut,
+                "trend_30d": {"days": trend_days},
+                "kpis": overview["kpis"],
+            }
+        )
+
+    async def api_log(request: Request) -> JSONResponse:
+        """`GET /api/log?kind=tools|alerts|events&q=&cursor=` -- search + cursor
+        pagination over the merged ``events`` table (`EventStore`, ADR-0017).
+
+        The old dashboard fetched everything and filtered client-side; this
+        replaces that with server-side search and paging so a page is bounded
+        regardless of fleet/log size. ``kind`` is the console's vocabulary, not
+        the stored column value 1:1: ``tools``->``audit``, ``alerts``->``alert``,
+        ``events``->``log``.
+        """
+
+        params = request.query_params
+        kind_param = params.get("kind") or None
+        store_kind = _LOG_KIND_TO_STORE_KIND.get(kind_param) if kind_param else None
+        if kind_param is not None and store_kind is None:
+            return JSONResponse(
+                {"error": f"kind must be one of {sorted(_LOG_KIND_TO_STORE_KIND)}"},
+                status_code=400,
+            )
+        q = params.get("q") or None
+        try:
+            limit = int(params.get("limit", 50))
+        except ValueError:
+            limit = 50
+        limit = max(1, min(limit, 200))
+
+        principal = principal_of(request)
+        agent_ids = list(principal.hosts) if principal is not None and principal.scoped else None
+
+        cursor_param = params.get("cursor") or None
+        before: tuple[str, int] | None = None
+        if cursor_param is not None:
+            before = _decode_log_cursor(cursor_param)
+            if before is None:
+                return JSONResponse({"error": "invalid cursor"}, status_code=400)
+
+        rows = await event_store.query_log(
+            kind=store_kind, q=q, agent_ids=agent_ids, before=before, limit=limit
+        )
+        log_rows = [_log_row(r) for r in rows]
+        next_cursor = (
+            _encode_log_cursor(rows[-1]["at"], rows[-1]["id"]) if len(rows) == limit else None
+        )
+        return JSONResponse({"rows": log_rows, "next_cursor": next_cursor})
 
     async def api_agent(request: Request) -> JSONResponse:
         agent_id = request.path_params["id"]
@@ -1851,6 +2046,7 @@ async def _overview(
         "warn_sections": _by_status("warn"),
         "crit_sections": _by_status("crit"),
         "summary": _fleet_summary(health, snapshot),
+        "severity_label": _severity_label(health, snapshot),
         "collected_at": latest["collected_at"] if latest else None,
     }
 
@@ -1869,3 +2065,22 @@ def _fleet_summary(health: dict[str, Any], snapshot: dict[str, Any] | None) -> s
             extra = f" +{len(worst) - 1} more" if len(worst) > 1 else ""
             return f"{text}{extra}"
     return "all green"
+
+
+def _severity_label(health: dict[str, Any], snapshot: dict[str, Any] | None) -> str:
+    """Caps label for the fleet card, e.g. ``CRITICAL · DISK`` or ``HEALTHY``.
+
+    Walks the same ``sections`` dict :func:`_fleet_summary` does (worst-first,
+    crit before warn) and names the worst section rather than restating any
+    threshold: the status a section carries here was decided once, in
+    ``health_rules.py``, and nowhere else.
+    """
+
+    if not snapshot:
+        return "NO DATA"
+    sections = health.get("sections", {})
+    for want, word in (("crit", "CRITICAL"), ("warn", "WARNING")):
+        worst = [n for n, s in sections.items() if s["status"] == want]
+        if worst:
+            return f"{word} · {worst[0].replace('_', ' ').upper()}"
+    return "HEALTHY"

@@ -1,36 +1,470 @@
-/* kenny docs theme — match the dashboard's warm "border-collie" palette
-   (amber accent on warm neutrals). Values mirror the webui design tokens. */
+/* kenny docs theme — Nullthrone ("rational Art Deco"): ink on warm paper,
+   one brass accent used sparingly, square corners, 1px hairlines instead of
+   shadows, no gradients/blur/transparency. Values mirror the Nullthrone
+   design tokens (ink/paper/brass triad; Jost + Public Sans + JetBrains Mono).
 
-:root {
-  --md-primary-fg-color: #E8A33D;       /* amber */
-  --md-primary-fg-color--light: #F0B65C;
-  --md-primary-fg-color--dark: #C9852A;
-  --md-accent-fg-color: #E8A33D;
+   Light (`[data-md-color-scheme="default"]`) is the default scheme; ink
+   (`[data-md-color-scheme="slate"]`) is the alternate reached via the
+   palette toggle — see mkdocs.yml. Both schemes are defined in full below;
+   nothing here relies on Material's built-in swatches. */
+
+/* Material's own font machinery already fetches Public Sans + JetBrains Mono
+   from Google Fonts via theme.font in mkdocs.yml. Jost — needed for
+   headings and structural nav/caps labels, which theme.font has no slot for
+   — is pulled from the same CDN, not a second font provider. */
+@import url('https://fonts.googleapis.com/css2?family=Jost:ital,wght@0,300..700;1,400&display=swap');
+
+/* ==========================================================================
+   1. Palette — Material's own custom properties, defined for BOTH schemes
+   ========================================================================== */
+
+:root,
+[data-md-color-scheme="default"] {
+  --md-hue: 42; /* brass/paper hue family */
+
+  /* Brass — the single accent (buttons, active nav, code links, highlights). */
+  --md-primary-fg-color: #A87E2F;         /* brass-500 */
+  --md-primary-fg-color--light: #C09A4B;  /* brass-400 */
+  --md-primary-fg-color--dark: #7A5A1F;   /* brass-700 */
+  --md-primary-bg-color: #F4F2EC;         /* paper */
+  --md-primary-bg-color--light: #F4F2EC;
+  --md-accent-fg-color: #A87E2F;          /* brass-500 */
+  --md-accent-fg-color--transparent: #EFE6CD; /* brass-100, solid — no alpha */
+  --md-accent-bg-color: #F4F2EC;
+  --md-accent-bg-color--light: #F4F2EC;
+
+  /* Ink on paper. */
+  --md-default-fg-color: #141317;          /* ink-950 */
+  --md-default-fg-color--light: #6E6B72;   /* ink-500, muted text */
+  --md-default-fg-color--lighter: #928F96; /* ink-400, faint text */
+  --md-default-fg-color--lightest: #D9D6D3;/* ink-200 — hairlines drawn from this */
+  --md-default-bg-color: #F4F2EC;          /* paper */
+  --md-default-bg-color--light: #FBFAF6;   /* paper-raised */
+  --md-default-bg-color--lighter: #FBFAF6;
+  --md-default-bg-color--lightest: #E9E6DF;
+
+  --md-typeset-color: var(--md-default-fg-color);
+  /* Links read as ink text with a brass underline (see §4), not brass text. */
+  --md-typeset-a-color: var(--md-default-fg-color);
+
+  --md-code-fg-color: #141317;
+  --md-code-bg-color: #FBFAF6;             /* paper-raised */
+  --md-code-bg-color--light: #FBFAF6;
+  --md-code-bg-color--lighter: #E9E6DF;
+  --md-code-hl-color: #C09A4B;             /* brass-400, solid search-match marker */
+  --md-code-hl-color--light: #EFE6CD;      /* brass-100, solid */
+
+  --md-typeset-del-color: #F0DDDC;         /* red-100, solid */
+  --md-typeset-ins-color: #DFEAE3;         /* green-100, solid */
+  --md-typeset-kbd-color: #E9E6DF;
+  --md-typeset-kbd-accent-color: #FFFFFF;
+  --md-typeset-kbd-border-color: #B6B3B8;
+  --md-typeset-mark-color: #E4D5AC;        /* brass-200, solid — no alpha */
+  --md-typeset-table-color: #D9D6D3;       /* ink-200, solid */
+  --md-typeset-table-color--light: #E9E6DF;
+
+  --md-admonition-fg-color: var(--md-default-fg-color);
+  --md-admonition-bg-color: var(--md-default-bg-color--light);
+
+  /* Header/footer are deliberate ink panels in both schemes — see §6 — so
+     their fg/bg tokens stay constant here rather than flipping per scheme. */
+  --md-footer-fg-color: #F4F2EC;
+  --md-footer-fg-color--light: #B6B3B8;
+  --md-footer-fg-color--lighter: #6E6B72;
+  --md-footer-bg-color: #141317;
+  --md-footer-bg-color--dark: #0E0D10;
+
+  /* Shadows become 1px hairlines — no blur, no elevation. */
+  --md-shadow-z1: 0 0 0 1px #D9D6D3;
+  --md-shadow-z2: 0 0 0 1px #D9D6D3;
+  --md-shadow-z3: 0 0 0 1px #141317;
 }
 
-/* Amber links/accents read better on the warm dark background. */
 [data-md-color-scheme="slate"] {
-  --md-hue: 30;
-  --md-default-bg-color: #1A1917;       /* warm-900 */
-  --md-default-bg-color--light: #201E1B;
-  --md-default-fg-color: #ECE6DA;       /* warm-100 */
-  --md-default-fg-color--light: #A89F8E;
-  --md-code-bg-color: #141311;          /* warm-950 */
-  --md-code-fg-color: #ECE6DA;
-  --md-typeset-a-color: #F0B65C;
-  --md-footer-bg-color: #141311;
-  --md-accent-fg-color: #F0B65C;
+  --md-hue: 42;
+
+  /* Brighter brass reads correctly against the ink surface. */
+  --md-primary-fg-color: #C09A4B;          /* brass-400 */
+  --md-primary-fg-color--light: #E4D5AC;   /* brass-200 */
+  --md-primary-fg-color--dark: #A87E2F;    /* brass-500 */
+  --md-primary-bg-color: #141317;
+  --md-primary-bg-color--light: #141317;
+  --md-accent-fg-color: #C09A4B;
+  --md-accent-fg-color--transparent: #2A282E; /* surface-inset, solid */
+  --md-accent-bg-color: #141317;
+  --md-accent-bg-color--light: #141317;
+
+  --md-default-fg-color: #E9E6DF;          /* ink-100 */
+  --md-default-fg-color--light: #928F96;
+  --md-default-fg-color--lighter: #6E6B72;
+  --md-default-fg-color--lightest: #3A3740;/* border-line, ink scheme */
+  --md-default-bg-color: #141317;          /* ink-950 */
+  --md-default-bg-color--light: #1E1C21;   /* surface-card */
+  --md-default-bg-color--lighter: #1E1C21;
+  --md-default-bg-color--lightest: #2A282E;/* surface-inset */
+
+  --md-typeset-color: var(--md-default-fg-color);
+  --md-typeset-a-color: var(--md-default-fg-color);
+
+  --md-code-fg-color: #E9E6DF;
+  --md-code-bg-color: #1E1C21;
+  --md-code-bg-color--light: #1E1C21;
+  --md-code-bg-color--lighter: #2A282E;
+  --md-code-hl-color: #8F6B26;             /* brass-600, solid */
+  --md-code-hl-color--light: #2A282E;
+
+  --md-typeset-del-color: #2E1B1A;         /* dark oxblood tint, solid */
+  --md-typeset-ins-color: #1E2A24;         /* dark verdigris tint, solid */
+  --md-typeset-kbd-color: #2A282E;
+  --md-typeset-kbd-accent-color: #3A3740;
+  --md-typeset-kbd-border-color: #141317;
+  --md-typeset-mark-color: #8F6B26;
+  --md-typeset-table-color: #3A3740;
+  --md-typeset-table-color--light: #1E1C21;
+
+  --md-admonition-fg-color: var(--md-default-fg-color);
+  --md-admonition-bg-color: var(--md-default-bg-color--light);
+
+  --md-footer-fg-color: #F4F2EC;
+  --md-footer-fg-color--light: #B6B3B8;
+  --md-footer-fg-color--lighter: #6E6B72;
+  --md-footer-bg-color: #141317;
+  --md-footer-bg-color--dark: #0E0D10;
+
+  --md-shadow-z1: 0 0 0 1px #3A3740;
+  --md-shadow-z2: 0 0 0 1px #3A3740;
+  --md-shadow-z3: 0 0 0 1px #E9E6DF;
 }
+
+/* ==========================================================================
+   2. Signal tokens — used by admonitions (§8); muted architectural colors,
+      not Material's stock note-blue/warning-orange/danger-red.
+   ========================================================================== */
 
 [data-md-color-scheme="default"] {
-  --md-default-bg-color: #F3EEE3;       /* warm-50 */
-  --md-code-bg-color: #FBF7EF;          /* warm-0 */
-  --md-typeset-a-color: #92610F;        /* amber-text */
+  --kt-ok: #2F6B4F;     --kt-ok-bg: #DFEAE3;
+  --kt-warn: #A05E14;   --kt-warn-bg: #F3E5D2;
+  --kt-danger: #8C2F2E; --kt-danger-bg: #F0DDDC;
+  --kt-info: #7A5A1F;   --kt-info-bg: #EFE6CD;   /* brass-tinted, not blue */
 }
 
-/* Keep the amber header/footer regardless of scheme. */
+[data-md-color-scheme="slate"] {
+  --kt-ok: #5FA37F;     --kt-ok-bg: #1E2A24;
+  --kt-warn: #D9A94B;   --kt-warn-bg: #2E2418;
+  --kt-danger: #C96A5E; --kt-danger-bg: #2E1B1A;
+  --kt-info: #C09A4B;   --kt-info-bg: #2A282E;
+}
+
+/* ==========================================================================
+   3. Type — Jost for display/headings/structural caps labels, square corners
+   ========================================================================== */
+
+.md-typeset h1,
+.md-typeset h2,
+.md-typeset h3,
+.md-typeset h4 {
+  font-family: 'Jost', var(--md-text-font-family);
+  font-weight: 500;
+  letter-spacing: 0.01em; /* --track-display — not caps tracking; this is prose */
+}
+
+/* Structural labels: nav, tabs, section eyebrows. Letterspaced uppercase is
+   reserved for these — never for prose (h1-h4 above stay sentence case). */
+.md-nav__title,
+.md-tabs__link,
+.md-nav--primary > .md-nav__list > .md-nav__item > .md-nav__link,
+.md-typeset .admonition-title,
+.md-typeset summary {
+  font-family: 'Jost', var(--md-text-font-family);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+/* ==========================================================================
+   4. Links — brass underline, not brass text
+   ========================================================================== */
+
+.md-typeset a {
+  color: var(--md-default-fg-color);
+  text-decoration: underline;
+  text-decoration-color: var(--md-accent-fg-color);
+  text-underline-offset: 3px;
+  transition: color 120ms cubic-bezier(.2, 0, 0, 1);
+}
+
+.md-typeset a:hover,
+.md-typeset a:focus {
+  color: var(--md-primary-fg-color--dark);
+}
+
+[data-md-color-scheme="slate"] .md-typeset a:hover,
+[data-md-color-scheme="slate"] .md-typeset a:focus {
+  color: var(--md-primary-fg-color--light);
+}
+
+/* ==========================================================================
+   5. Double-rule flourish — a Deco marker for major section breaks
+   ========================================================================== */
+
+.md-typeset h2 {
+  position: relative;
+  padding-bottom: 10px;
+  margin-bottom: 28px;
+  border-bottom: 1px solid var(--md-default-fg-color--lightest);
+}
+
+.md-typeset h2::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -4px; /* 1px hairline, 3px gap, 1px hairline */
+  height: 1px;
+  background: var(--md-default-fg-color--lightest);
+}
+
+/* ==========================================================================
+   6. Square corners everywhere — zero Material's border radii
+   ========================================================================== */
+
+.md-typeset code,
+.md-typeset kbd,
+.md-typeset table:not([class]),
+.md-typeset .md-button,
+.md-typeset .md-tag,
+.md-typeset .tabbed-set,
+.md-typeset .tabbed-labels > label,
+.md-typeset .tabbed-button,
+.md-typeset .grid.cards > ol > li,
+.md-typeset .grid.cards > ul > li,
+.md-typeset .grid > .card,
+.md-typeset .admonition,
+.md-typeset details,
+.md-typeset .highlight span.filename,
+.highlight .gd,
+.highlight .gi,
+.md-clipboard,
+.md-code__nav,
+.md-skip,
+.md-consent__inner,
+.md-dialog,
+.md-select__inner,
+.md-select__list,
+.md-tooltip,
+.md-tooltip2__inner,
+.md-top,
+.md-version__list,
+.md-nav__icon,
+.md-nav__icon:after,
+.md-search__form,
+.md-search__overlay,
+.md-search__output,
+[data-md-toggle="search"]:checked ~ .md-header .md-search__form {
+  border-radius: 0 !important;
+}
+
+.md-typeset .admonition:focus-within,
+.md-typeset details:focus-within {
+  box-shadow: 0 0 0 1px var(--md-accent-fg-color); /* was a blurred accent glow */
+}
+
+.md-consent__inner,
+[data-md-toggle="search"]:checked ~ .md-header .md-search__output {
+  box-shadow: var(--md-shadow-z2);
+}
+
+/* ==========================================================================
+   7. Header, tabs, footer — deliberate ink panels (a Deco "monumental
+      moment", matching the dashboard's own dark sidebar chrome) in both
+      schemes. Kept identical across schemes so it always reads correctly.
+   ========================================================================== */
+
 .md-header,
 .md-tabs {
-  background-color: #23221E;            /* surface */
-  color: #ECE6DA;
+  background-color: #141317; /* ink-950 */
+  color: #F4F2EC;            /* paper */
+}
+
+.md-header {
+  box-shadow: none;
+}
+
+.md-header--shadow {
+  box-shadow: 0 1px 0 0 #3A3740;
+}
+
+.md-header .md-search__form {
+  background-color: #2A282E; /* surface-inset, ink scheme — solid, no alpha */
+  border: 1px solid #3A3740;
+}
+
+.md-header .md-search__form:hover {
+  background-color: #3A3740;
+}
+
+[data-md-toggle="search"]:checked ~ .md-header .md-search__form {
+  background-color: var(--md-default-bg-color);
+  border-color: var(--md-default-fg-color--lightest);
+  color: var(--md-default-fg-color);
+}
+
+.md-tabs__item--active .md-tabs__link {
+  border-bottom: 2px solid var(--md-primary-fg-color--light);
+}
+
+.md-footer {
+  border-top: 1px solid #3A3740;
+}
+
+/* ==========================================================================
+   8. Admonitions — square, hairline-bordered, muted architectural signal
+      colors instead of Material's saturated note-blue/danger-red tints
+   ========================================================================== */
+
+.md-typeset .admonition,
+.md-typeset details {
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-left-width: 2px;
+  box-shadow: none;
+}
+
+.md-typeset .note > .admonition-title,
+.md-typeset .note > summary,
+.md-typeset .info > .admonition-title,
+.md-typeset .info > summary,
+.md-typeset .abstract > .admonition-title,
+.md-typeset .abstract > summary,
+.md-typeset .question > .admonition-title,
+.md-typeset .question > summary {
+  background-color: var(--kt-info-bg);
+}
+
+.md-typeset .note,
+.md-typeset .info,
+.md-typeset .abstract,
+.md-typeset .question {
+  border-left-color: var(--kt-info);
+}
+
+.md-typeset .note > .admonition-title::before,
+.md-typeset .note > summary::before,
+.md-typeset .info > .admonition-title::before,
+.md-typeset .info > summary::before,
+.md-typeset .abstract > .admonition-title::before,
+.md-typeset .abstract > summary::before,
+.md-typeset .question > .admonition-title::before,
+.md-typeset .question > summary::before {
+  background-color: var(--kt-info);
+}
+
+.md-typeset .tip > .admonition-title,
+.md-typeset .tip > summary,
+.md-typeset .success > .admonition-title,
+.md-typeset .success > summary,
+.md-typeset .example > .admonition-title,
+.md-typeset .example > summary {
+  background-color: var(--kt-ok-bg);
+}
+
+.md-typeset .tip,
+.md-typeset .success,
+.md-typeset .example {
+  border-left-color: var(--kt-ok);
+}
+
+.md-typeset .tip > .admonition-title::before,
+.md-typeset .tip > summary::before,
+.md-typeset .success > .admonition-title::before,
+.md-typeset .success > summary::before,
+.md-typeset .example > .admonition-title::before,
+.md-typeset .example > summary::before {
+  background-color: var(--kt-ok);
+}
+
+.md-typeset .warning > .admonition-title,
+.md-typeset .warning > summary,
+.md-typeset .caution > .admonition-title,
+.md-typeset .caution > summary {
+  background-color: var(--kt-warn-bg);
+}
+
+.md-typeset .warning,
+.md-typeset .caution {
+  border-left-color: var(--kt-warn);
+}
+
+.md-typeset .warning > .admonition-title::before,
+.md-typeset .warning > summary::before,
+.md-typeset .caution > .admonition-title::before,
+.md-typeset .caution > summary::before {
+  background-color: var(--kt-warn);
+}
+
+.md-typeset .danger > .admonition-title,
+.md-typeset .danger > summary,
+.md-typeset .failure > .admonition-title,
+.md-typeset .failure > summary,
+.md-typeset .bug > .admonition-title,
+.md-typeset .bug > summary {
+  background-color: var(--kt-danger-bg);
+}
+
+.md-typeset .danger,
+.md-typeset .failure,
+.md-typeset .bug {
+  border-left-color: var(--kt-danger);
+}
+
+.md-typeset .danger > .admonition-title::before,
+.md-typeset .danger > summary::before,
+.md-typeset .failure > .admonition-title::before,
+.md-typeset .failure > summary::before,
+.md-typeset .bug > .admonition-title::before,
+.md-typeset .bug > summary::before {
+  background-color: var(--kt-danger);
+}
+
+/* ==========================================================================
+   9. Code blocks, copy button, tables
+   ========================================================================== */
+
+.md-typeset .highlight {
+  border: 1px solid var(--md-default-fg-color--lightest);
+}
+
+.md-typeset pre > code {
+  border: none;
+}
+
+.md-clipboard {
+  color: var(--md-default-fg-color--lighter);
+}
+
+.md-clipboard:hover {
+  color: var(--md-accent-fg-color);
+}
+
+.md-typeset table:not([class]) {
+  border: 1px solid var(--md-typeset-table-color);
+  box-shadow: none;
+}
+
+.md-typeset table:not([class]) th {
+  font-family: 'Jost', var(--md-text-font-family);
+  font-weight: 500;
+  letter-spacing: 0.05em;
+}
+
+/* ==========================================================================
+   10. Search result list — square, hairline separators instead of shadow
+   ========================================================================== */
+
+.md-search-result__list {
+  border-top: 1px solid var(--md-default-fg-color--lightest);
+}
+
+.md-search-result__item {
+  border-bottom: 1px solid var(--md-default-fg-color--lightest);
+  box-shadow: none;
 }

@@ -128,7 +128,7 @@ def test_settings_put_and_reset_roundtrip(tmp_path):
                   headers=_bearer(app), json={"value": 120})
         assert r.status_code == 200
         assert r.json() == {"key": "KENNY_ALERT_COOLDOWN_SECS", "source": "db",
-                            "lifecycle": "live", "value": 120}
+                            "lifecycle": "live", "editable": True, "value": 120}
         # reflected in the list
         flat = {s["key"]: s for g in c.get("/api/settings", headers=_bearer(app)).json()["groups"]
                 for s in g["settings"]}

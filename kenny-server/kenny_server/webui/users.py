@@ -3,7 +3,7 @@
 Two families, both gated by the auth middleware + :mod:`authz`:
 
 * ``/api/me*`` — any authenticated user manages *their own* account (email,
-  avatar, password, TOTP, personal access tokens).
+  avatar, theme, password, TOTP, personal access tokens).
 * ``/api/users*`` — **superuser only**: list/create/edit/delete accounts, set
   roles, manage host scope, reset TOTP, and mint/revoke PATs for others.
 
@@ -25,7 +25,7 @@ from ..auth import COOKIE_NAME, _session_ttl_secs, _set_session_cookie
 from ..oauthstore import OAuthStore
 from ..registry import AgentRegistry
 from ..store import TelemetryStore
-from ..userstore import UserExists, UserStore
+from ..userstore import THEMES, UserExists, UserStore
 from . import _known_ids
 from .authz import guard, principal_of, require_user
 
@@ -85,6 +85,9 @@ def build_user_routes(
                     "email": None,
                     "avatar": None,
                     "totp_enabled": False,
+                    # No backing row, so no stored preference. The key is present
+                    # so the response shape does not change with the identity.
+                    "theme": None,
                     "hosts": [],
                     "is_shared_token": True,
                 }
@@ -110,6 +113,28 @@ def build_user_routes(
             avatar=avatar,
         )
         return JSONResponse(user)
+
+    async def api_me_theme(request: Request) -> JSONResponse:
+        """Persist the caller's console theme (``{"theme": "light"|"dark"}``).
+
+        A shared-token identity has no row to store a preference against, so the
+        call is a **clean skip**, not an error: ``200 {"theme": ..., "stored":
+        false}``. That principal's client keeps its own local choice, and the
+        console never has to special-case a failure for the one identity that
+        can never succeed — unlike the account-mutating ``/api/me`` handlers
+        above, where a 400 is the honest answer because the caller asked to
+        change an account that does not exist.
+        """
+
+        principal = require_user(request)
+        body = await _body(request)
+        theme = body.get("theme")
+        if theme not in THEMES:
+            return _err(f"theme must be one of {', '.join(sorted(THEMES))}")
+        if principal.user_id is None:
+            return JSONResponse({"theme": theme, "stored": False})
+        await user_store.set_theme(principal.user_id, theme)
+        return JSONResponse({"theme": theme, "stored": True})
 
     async def _rotate_own_session(
         request: Request, resp: JSONResponse, user_id: int
@@ -379,6 +404,7 @@ def build_user_routes(
         Route("/api/avatars", guard(api_avatars)),
         Route("/api/me", guard(api_me)),
         Route("/api/me", guard(api_me_update), methods=["PATCH"]),
+        Route("/api/me/theme", guard(api_me_theme), methods=["PUT"]),
         Route("/api/me/password", guard(api_me_password), methods=["POST"]),
         Route("/api/me/totp", guard(api_me_totp_setup), methods=["POST"]),
         Route("/api/me/totp", guard(api_me_totp_enable), methods=["PUT"]),

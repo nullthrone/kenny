@@ -610,22 +610,36 @@ def evaluate_section(
     now: datetime | None = None,
     agent_os: str = "windows",
 ) -> dict[str, Any]:
-    """Return ``{status, summary, reason?}`` for one section after applying rules."""
+    """Return ``{status, summary, attention, reason?}`` for one section after
+    applying rules.
+
+    ``attention`` is ``status != "ok"`` — computed here, alongside ``status``,
+    and nowhere else (``kenny-server/CLAUDE.md``: "health thresholds live only
+    in health_rules.py"). Every consumer (``tools.build_health``,
+    ``fleet_stats``, the dashboard's ``_overview``, the MCP ``agent_health``
+    tool) reads it straight off this dict rather than re-deriving it from
+    ``status``.
+    """
 
     now = now or datetime.now(timezone.utc)
     reported = payload.get("status", "ok")
     summary = payload.get("summary", "")
     rule = RULES.get(name)
     if rule is None:
-        return {"status": reported, "summary": summary}
+        return {"status": reported, "summary": summary, "attention": reported != "ok"}
     outcome = (
         rule(payload, now, agent_os) if name in OS_AWARE_RULES else rule(payload, now)
     )
     if outcome is None:
-        return {"status": reported, "summary": summary}
+        return {"status": reported, "summary": summary, "attention": reported != "ok"}
     rule_status, reason = outcome
     final = worst(reported, rule_status)
-    return {"status": final, "summary": summary, "reason": reason}
+    return {
+        "status": final,
+        "summary": summary,
+        "attention": final != "ok",
+        "reason": reason,
+    }
 
 
 def evaluate_snapshot(

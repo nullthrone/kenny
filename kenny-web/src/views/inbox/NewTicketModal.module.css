@@ -1,0 +1,134 @@
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 24px;
+  border-bottom: 1px solid var(--border-line);
+}
+
+.headerTitle {
+  font-family: var(--font-display);
+  font-size: 12px;
+  letter-spacing: var(--track-caps);
+}
+
+.close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  min-width: 44px;
+  min-height: 44px;
+  display: grid;
+  place-items: center;
+}
+.close:hover {
+  color: var(--text-body);
+}
+
+.body {
+  padding: 24px;
+}
+
+.label {
+  display: block;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.hosts {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+
+.hostPill {
+  padding: 8px 12px;
+  border: 1px solid var(--border-line);
+  background: transparent;
+  color: var(--text-body);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  min-height: 40px;
+}
+
+.hostPillActive {
+  border-color: var(--border-strong);
+  background: var(--surface-inset);
+}
+
+.textarea {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 96px;
+  padding: 12px;
+  border: 1px solid var(--border-line);
+  background: var(--paper-white);
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
+  color: var(--text-body);
+  resize: vertical;
+  margin-bottom: 8px;
+}
+
+.checkboxRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  margin: 6px 0 20px;
+  min-height: 44px;
+}
+
+.checkbox {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--brass-500);
+}
+
+.error {
+  font-size: var(--text-sm);
+  color: var(--danger);
+  margin: 0 0 12px;
+}
+
+.footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  border-top: 1px solid var(--border-line);
+  padding-top: 16px;
+}
+
+.cancel {
+  padding: 10px 16px;
+  background: transparent;
+  border: 1px solid var(--border-mid);
+  font-family: var(--font-display);
+  font-size: 10px;
+  letter-spacing: var(--track-caps);
+  min-height: 44px;
+}
+.cancel:hover {
+  background: var(--surface-inset);
+}
+
+.create {
+  padding: 10px 20px;
+  background: var(--accent);
+  color: var(--paper-white);
+  border: none;
+  font-family: var(--font-display);
+  font-size: 10px;
+  letter-spacing: var(--track-caps);
+  min-height: 44px;
+}
+.create:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+.create:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
