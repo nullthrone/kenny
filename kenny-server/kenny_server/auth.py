@@ -37,6 +37,7 @@ from .userstore import _DEFAULT_SESSION_TTL_SECS
 
 if TYPE_CHECKING:
     from .oauthstore import OAuthStore
+    from .registry import AgentRegistry
     from .userstore import UserStore
 
 logger = logging.getLogger("kenny.auth")
@@ -660,8 +661,13 @@ def build_auth_routes(
     *,
     user_store: "UserStore | None" = None,
     cookie_name: str = COOKIE_NAME,
+    registry: "AgentRegistry | None" = None,
 ) -> list[Route]:
-    """Login / setup / logout routes (public; the middleware exempts them)."""
+    """Login / setup / logout routes (public; the middleware exempts them).
+
+    ``registry`` is optional so a test can build these routes alone; when it is
+    supplied, logging out also releases the caller's active-agent slot.
+    """
 
     limiter = LoginRateLimiter()
 
@@ -776,6 +782,13 @@ def build_auth_routes(
             sid = request.cookies.get(cookie_name)
             if sid:
                 await user_store.delete_session(sid)
+                # Release the per-caller active-agent selection keyed on this
+                # session (``Principal.active_key``, ADR-0033). Without it the
+                # registry keeps a slot for a session that no longer exists —
+                # the same leak the credential-rotation paths close, and what
+                # ``AgentRegistry.clear``'s own docstring means by "on logout".
+                if registry is not None:
+                    registry.clear(f"s:{sid}")
         resp = RedirectResponse(url="/login", status_code=303)
         resp.delete_cookie(cookie_name, path="/")
         return resp

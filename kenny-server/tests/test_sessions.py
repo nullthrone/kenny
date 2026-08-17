@@ -159,3 +159,28 @@ def test_shared_token_identity_has_no_sessions_to_list_or_revoke(tmp_path) -> No
         h = {"Authorization": f"Bearer {app.state.operator_token}"}
         assert c.get("/api/me/sessions", headers=h).json() == {"sessions": []}
         assert c.post("/api/me/sessions/revoke-others", headers=h).status_code == 400
+
+
+async def test_logout_releases_the_active_agent_slot(tmp_path) -> None:
+    """Signing out drops the caller's active-agent selection.
+
+    ``AgentRegistry.clear``'s docstring names logout as its reason to exist, but
+    ``/logout`` only ever deleted the session row — leaving the registry holding a
+    slot keyed on a session that no longer resolves. The rotation paths close the
+    same leak; this covers the one that is not a rotation.
+    """
+
+    from starlette.testclient import TestClient
+
+    from kenny_server.main import build_app
+
+    app = build_app(db_path=str(tmp_path / "logout.sqlite"))
+    with TestClient(app) as c:
+        c.post("/setup", data={"username": "op", "password": "correct-horse-battery"})
+        sid = c.cookies.get("kenny_op")
+        assert sid, "setup should have signed the browser in"
+
+        app.state.registry._active_by_key[f"s:{sid}"] = "example-pc"
+        c.get("/logout", follow_redirects=False)
+
+        assert f"s:{sid}" not in app.state.registry._active_by_key

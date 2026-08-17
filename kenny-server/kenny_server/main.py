@@ -687,7 +687,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
 
     routes = [
         WebSocketRoute("/agent/ws", tunnel.endpoint),
-        *build_auth_routes(operator_tokens, user_store=user_store),
+        *build_auth_routes(operator_tokens, user_store=user_store, registry=registry),
         *build_oauth_routes(oauth_store=oauth_store, user_store=user_store),
         *chat_routes,
         *download_routes,
