@@ -18,6 +18,7 @@ import asyncio
 import contextlib
 import logging
 import os
+from datetime import datetime, timezone
 from typing import Any, AsyncIterator
 
 from fastmcp import FastMCP
@@ -93,6 +94,105 @@ async def _webfilter_refresh_loop(
         # Re-read the cadence each pass so a dashboard change retimes the loop.
         interval = settings.get("KENNY_WEBFILTER_REFRESH_SECS")
         await asyncio.sleep(interval if interval and interval > 0 else interval_s)
+
+
+# Cadence of the schedule loop below. Read from the environment rather than the
+# settings catalog because the catalog is not this feature's to extend; `0`
+# disables the loop entirely, matching the other loops' restart-lifecycle gate.
+_SCHEDULE_INTERVAL_ENV = "KENNY_WEBFILTER_SCHEDULE_SECS"
+_SCHEDULE_DELAY_ENV = "KENNY_WEBFILTER_SCHEDULE_INITIAL_DELAY"
+_SCHEDULE_INTERVAL_DEFAULT = 60
+_SCHEDULE_DELAY_DEFAULT = 15.0
+
+
+def _env_int(key: str, default: int) -> int:
+    try:
+        return int(os.environ.get(key, "") or default)
+    except ValueError:
+        logging.getLogger("kenny.webfilter").warning(
+            "%s is not an integer; using %d", key, default
+        )
+        return default
+
+
+def _env_float(key: str, default: float) -> float:
+    try:
+        return float(os.environ.get(key, "") or default)
+    except ValueError:
+        logging.getLogger("kenny.webfilter").warning(
+            "%s is not a number; using %s", key, default
+        )
+        return default
+
+
+async def webfilter_schedule_pass(
+    webfilter: WebFilterService, tunnel: AgentTunnel, call_log: CallLog
+) -> dict[str, int]:
+    """One pass of the web-filter schedule: push where now differs from applied.
+
+    For every host with an enabled schedule window whose feature and block mode
+    are both on, compare the list the schedule says applies *now* against the
+    ``applied_hash`` already on the host and forward ``webfilter_apply`` only
+    when they differ — so a pass over an unchanged fleet costs nothing on the
+    wire and re-running it is idempotent.
+
+    Every failure is contained to its host: an offline or kill-switched agent,
+    or a list that has grown past the agent's cap, is logged and skipped, never
+    retried in a tight loop and never allowed to end the pass. Returns
+    ``{pushed, failed, skipped}`` for the caller to log.
+    """
+
+    log = logging.getLogger("kenny.webfilter")
+    counts = {"pushed": 0, "failed": 0, "skipped": 0}
+    for item in await webfilter.schedule_due():
+        agent_id = item["agent_id"]
+        if item["error"] is not None:
+            counts["skipped"] += 1
+            log.error("scheduled webfilter push for %s skipped: %s", agent_id, item["error"])
+            continue
+        args = item["args"]
+        try:
+            result = await tunnel.send_request(agent_id, "webfilter_apply", args, 30)
+            await call_log.record(agent_id, "webfilter_apply", args, ok=True)
+        except Exception as exc:  # noqa: BLE001 - one host must not end the pass
+            counts["failed"] += 1
+            await call_log.record(
+                agent_id, "webfilter_apply", args, ok=False, error=str(exc)
+            )
+            log.info("scheduled webfilter push for %s failed: %s", agent_id, exc)
+            continue
+        applied_at = str(
+            result.get("applied_at") or datetime.now(timezone.utc).isoformat()
+        )
+        await webfilter.set_applied_state(
+            agent_id, args["list_hash"], applied_at, bool(result.get("ok", True))
+        )
+        counts["pushed"] += 1
+        log.info(
+            "scheduled webfilter push applied to %s (%d domains, hash %s)",
+            agent_id,
+            len(args["domains"]),
+            args["list_hash"],
+        )
+    return counts
+
+
+async def _webfilter_schedule_loop(
+    webfilter: WebFilterService,
+    tunnel: AgentTunnel,
+    call_log: CallLog,
+    interval_s: int,
+    initial_delay_s: float,
+) -> None:
+    """Periodically enact per-host web-filter schedule windows (ADR-0055)."""
+
+    await asyncio.sleep(initial_delay_s)
+    while True:
+        try:
+            await webfilter_schedule_pass(webfilter, tunnel, call_log)
+        except Exception:  # noqa: BLE001 - never let the loop die
+            logging.getLogger("kenny.webfilter").exception("schedule pass failed")
+        await asyncio.sleep(interval_s)
 
 
 async def _backup_loop(
@@ -475,6 +575,20 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
             webfilter_task = asyncio.create_task(
                 _webfilter_refresh_loop(webfilter_cache, settings, refresh_secs, initial_delay)
             )
+        # Web-filter schedule loop (ADR-0055). Only hosts that have an enabled
+        # window are ever touched, so on a fleet with no schedule this is a
+        # no-op query per pass. KENNY_WEBFILTER_SCHEDULE_SECS=0 disables it
+        # entirely (a "restart" decision, like the loops around it); the initial
+        # delay keeps short-lived test app instances from pushing anything.
+        schedule_secs = _env_int(_SCHEDULE_INTERVAL_ENV, _SCHEDULE_INTERVAL_DEFAULT)
+        schedule_task: asyncio.Task | None = None
+        if schedule_secs > 0:
+            schedule_delay = _env_float(_SCHEDULE_DELAY_ENV, _SCHEDULE_DELAY_DEFAULT)
+            schedule_task = asyncio.create_task(
+                _webfilter_schedule_loop(
+                    webfilter, tunnel, call_log, schedule_secs, schedule_delay
+                )
+            )
         # Alert evaluation loop (ADR-0027). The initial delay keeps short-lived
         # test app instances silent; KENNY_ALERT_INTERVAL_SECS=0 disables.
         alert_secs = int(settings.get("KENNY_ALERT_INTERVAL_SECS"))
@@ -561,6 +675,10 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
                 webfilter_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await webfilter_task
+            if schedule_task is not None:
+                schedule_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await schedule_task
             if alert_task is not None:
                 alert_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):

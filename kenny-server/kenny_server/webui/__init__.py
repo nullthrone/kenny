@@ -44,7 +44,16 @@ from ..store import ChatHistoryStore, EventStore, PolicyStore, TelemetryStore
 from ..tokenstore import AgentTokenStore
 from ..tools import CallLog, ScreenshotStore, build_health, supports_tool
 from ..tunnel import AgentTunnel, ToolError
-from ..webfilter import WebFilterService, load_seed, normalize_domain
+from ..webfilter import (
+    BYPASS_REQUEST_CATEGORY,
+    ListTooLargeError,
+    WebFilterService,
+    describe_categories,
+    load_seed,
+    normalize_domain,
+    requested_domains,
+    validate_categories,
+)
 from .authz import guard, principal_of, visible_ids
 
 logger = logging.getLogger("kenny.webui")
@@ -173,6 +182,8 @@ def build_api_routes(
 
     _APPLIES_TO = {"powershell", "self_protection", "path"}
     _WEBFILTER_ACTIONS = {"watch", "block", "allow"}
+    # The two ticket states a bypass request is still waiting on a human in.
+    _OPEN_TICKET_STATES = ("new", "in_progress")
 
     async def index(_request: Request) -> Response:
         """The dashboard's HTML entry point: the compiled SPA, the legacy page
@@ -1342,24 +1353,37 @@ def build_api_routes(
     async def _webfilter_overview(agent_id: str) -> dict[str, Any]:
         config = await webfilter.get_config(agent_id)
         custom = await webfilter.list_domains(agent_id)
-        current_hash = await webfilter.current_list_hash(agent_id)
         applied_hash = config.get("applied_hash")
         stats = webfilter.cache.stats()
+        enabled_categories = set(config.get("categories") or ())
+        # An over-cap list must still be *viewable*: failing the read as well
+        # would leave the operator with an error banner and no way to see which
+        # category to turn off. Report it as state instead.
+        current_hash: str | None = None
+        oversize: dict[str, int] | None = None
+        try:
+            current_hash = await webfilter.current_list_hash(agent_id)
+        except ListTooLargeError as exc:
+            oversize = {"count": exc.count, "cap": exc.cap, "over_by": exc.count - exc.cap}
+        external = {
+            key: {**value, "enabled": key in enabled_categories}
+            for key, value in stats.items()
+        }
         return {
             "agent_id": agent_id,
             "config": config,
             "custom": custom,
             "seed_count": len(load_seed()),
-            "external": {
-                "adult": {**stats["adult"], "enabled": config["use_external_adult"]},
-                "bypass": {**stats["bypass"], "enabled": config["use_bypass_protection"]},
-            },
+            "external": external,
+            "categories": describe_categories(),
+            "schedule": await webfilter.schedule_state(agent_id),
             "applied": {
                 "hash": applied_hash,
                 "at": config.get("applied_at"),
                 "ok": config.get("applied_ok"),
             },
             "current_hash": current_hash,
+            "oversize": oversize,
             "drift": bool(applied_hash) and applied_hash != current_hash,
         }
 
@@ -1381,6 +1405,18 @@ def build_api_routes(
             return JSONResponse(
                 {"error": "doh_policy must be 'disable' or 'leave'"}, status_code=400
             )
+        raw_categories = body.get("categories")
+        categories: list[str] | None = None
+        if raw_categories is not None:
+            if not isinstance(raw_categories, list):
+                return JSONResponse(
+                    {"error": "categories must be a list of category keys"},
+                    status_code=400,
+                )
+            try:
+                categories = list(validate_categories(raw_categories))
+            except ValueError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=400)
         config = await webfilter.set_config(
             agent_id,
             enabled=body.get("enabled"),
@@ -1388,6 +1424,7 @@ def build_api_routes(
             use_external_adult=body.get("use_external_adult"),
             use_bypass_protection=body.get("use_bypass_protection"),
             doh_policy=doh,
+            categories=categories,
         )
         return JSONResponse({"config": config})
 
@@ -1408,10 +1445,100 @@ def build_api_routes(
         if normalize_domain(body.get("domain")) is None:
             return JSONResponse({"error": "invalid domain"}, status_code=400)
         note = body.get("note")
-        domain = await webfilter.add_domain(agent_id, str(body["domain"]), action, note)
+        try:
+            domain = await webfilter.add_domain(
+                agent_id, str(body["domain"]), action, note, body.get("category")
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
         return JSONResponse(
             {"domain": domain, "custom": await webfilter.list_domains(agent_id)}
         )
+
+    # -- schedule (ADR-0055) ----------------------------------------------
+
+    async def api_webfilter_schedule_get(request: Request) -> JSONResponse:
+        """The host's windows plus what is in force now and when it reverts."""
+
+        if webfilter is None:
+            return JSONResponse({"error": "webfilter not configured"}, status_code=503)
+        return JSONResponse(await webfilter.schedule_state(request.path_params["id"]))
+
+    async def api_webfilter_schedule_add(request: Request) -> JSONResponse:
+        if webfilter is None:
+            return JSONResponse({"error": "webfilter not configured"}, status_code=503)
+        agent_id = request.path_params["id"]
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - malformed JSON
+            return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
+        try:
+            window = await webfilter.add_window(
+                agent_id,
+                days=body.get("days", []),
+                start=body.get("start"),
+                end=body.get("end"),
+                categories=body.get("categories") or [],
+                label=body.get("label") or "",
+                tz=body.get("timezone"),
+                enabled=body.get("enabled", True),
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        return JSONResponse(
+            {
+                "window": window.as_dict(),
+                "schedule": await webfilter.schedule_state(agent_id),
+            }
+        )
+
+    async def api_webfilter_schedule_remove(request: Request) -> JSONResponse:
+        if webfilter is None:
+            return JSONResponse({"error": "webfilter not configured"}, status_code=503)
+        agent_id = request.path_params["id"]
+        removed = await webfilter.remove_window(agent_id, request.path_params["window_id"])
+        return JSONResponse(
+            {
+                "ok": True,
+                "removed": removed,
+                "schedule": await webfilter.schedule_state(agent_id),
+            }
+        )
+
+    async def api_webfilter_requests(request: Request) -> JSONResponse:
+        """Open bypass requests for this host.
+
+        A bypass request is a ticket (category ``web_filter``), so this is a
+        read over the ticket store, not a second queue: there is no state here
+        to advance, and granting one is the operator's ordinary
+        ``webfilter_set(add_domain, action="allow")`` + push (ADR-0024).
+        """
+
+        if ticket_store is None:
+            return JSONResponse({"error": "tickets not configured"}, status_code=503)
+        agent_id = request.path_params["id"]
+        # The ticket store has no category filter, so narrow on the axes it does
+        # index (host + open states) and sieve the category here rather than
+        # widening a shared query for one caller.
+        rows = await ticket_store.list(
+            agent_id=agent_id, states=_OPEN_TICKET_STATES, limit=50
+        )
+        out = []
+        for ticket in rows:
+            if ticket.category != BYPASS_REQUEST_CATEGORY:
+                continue
+            data = ticket.as_dict()
+            out.append(
+                {
+                    "ticket": data,
+                    "requested_domains": requested_domains(
+                        data.get("title"), data.get("summary")
+                    ),
+                }
+            )
+        return JSONResponse({"agent_id": agent_id, "requests": out})
 
     async def api_webfilter_remove_domain(request: Request) -> JSONResponse:
         if webfilter is None:
@@ -1427,7 +1554,22 @@ def build_api_routes(
             return JSONResponse({"error": "webfilter not configured"}, status_code=503)
         agent_id = request.path_params["id"]
         config = await webfilter.get_config(agent_id)
-        args = await webfilter.build_apply(agent_id)
+        try:
+            args = await webfilter.build_apply(agent_id)
+        except ListTooLargeError as exc:
+            # Refuse here: the agent rejects an over-cap list with `bad_args`
+            # and never truncates, so forwarding it would burn a round trip to
+            # learn what the server already knows.
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": "list_too_large",
+                    "message": str(exc),
+                    "count": exc.count,
+                    "cap": exc.cap,
+                },
+                status_code=400,
+            )
         block_mode = bool(config["block_mode"])
         tool = "webfilter_apply" if block_mode else "webfilter_clear"
         call_args: dict[str, Any] = args if block_mode else {}
@@ -1559,7 +1701,7 @@ def build_api_routes(
     #   - user (host-scoped): reads and routine operations on assigned hosts.
     op = {"min_role": "operator"}
     su = {"min_role": "superuser"}
-    scoped = {"host_param": "id"}
+    scoped = {"min_role": "user", "host_param": "id"}
     op_scoped = {"min_role": "operator", "host_param": "id"}
     return [
         Route("/", index),
@@ -1692,6 +1834,24 @@ def build_api_routes(
             methods=["POST"],
         ),
         Route("/api/agent/{id}/webfilter/activity", guard(api_webfilter_activity, **scoped)),
+        Route(
+            "/api/agent/{id}/webfilter/schedule",
+            guard(api_webfilter_schedule_get, **scoped),
+        ),
+        Route(
+            "/api/agent/{id}/webfilter/schedule",
+            guard(api_webfilter_schedule_add, **op_scoped),
+            methods=["POST"],
+        ),
+        Route(
+            "/api/agent/{id}/webfilter/schedule/{window_id}",
+            guard(api_webfilter_schedule_remove, **op_scoped),
+            methods=["DELETE"],
+        ),
+        Route(
+            "/api/agent/{id}/webfilter/requests",
+            guard(api_webfilter_requests, **scoped),
+        ),
         Route(
             "/api/agent/{id}/accounts/{tool}",
             guard(api_account_action, **op_scoped),

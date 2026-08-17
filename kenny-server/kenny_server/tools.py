@@ -37,7 +37,13 @@ from . import health_rules
 from .registry import AgentRegistry
 from .store import EventStore, TelemetryStore
 from .tunnel import AgentTunnel, ToolError
-from .webfilter import WebFilterService, load_seed
+from .webfilter import (
+    ListTooLargeError,
+    WebFilterService,
+    describe_categories,
+    load_seed,
+    validate_categories,
+)
 
 logger = logging.getLogger("kenny.tools")
 
@@ -315,6 +321,17 @@ def _require_role(principal, min_role: str) -> None:
 
     if principal is not None and not principal.at_least(min_role):
         raise ToolError("forbidden", f"requires {min_role} role")
+
+
+def _split_keys(raw: str | None) -> list[str]:
+    """Split a comma-separated MCP argument into trimmed, non-empty parts.
+
+    MCP tool arguments stay flat scalars so the generated schema is trivial for
+    a model to fill in correctly; category and weekday sets arrive as
+    ``"a,b,c"``.
+    """
+
+    return [part.strip() for part in (raw or "").split(",") if part.strip()]
 
 
 def _active_key(principal) -> str | None:
@@ -662,21 +679,36 @@ def register_tools(
     async def _webfilter_overview(agent_id: str) -> dict[str, Any]:
         config = await webfilter.get_config(agent_id)
         custom = await webfilter.list_domains(agent_id)
-        current_hash = await webfilter.current_list_hash(agent_id)
         applied_hash = config.get("applied_hash")
+        # An over-cap list is a state the overview has to be able to *show*:
+        # failing the read too would leave the operator with an error and no way
+        # to see which category to turn off.
+        current_hash: str | None = None
+        oversize: dict[str, int] | None = None
+        try:
+            current_hash = await webfilter.current_list_hash(agent_id)
+        except ListTooLargeError as exc:
+            oversize = {"count": exc.count, "cap": exc.cap}
         return {
             "agent_id": agent_id,
             "config": config,
             "custom": custom,
             "seed_count": len(load_seed()),
             "external": webfilter.cache.stats(),
+            "categories": describe_categories(),
+            "schedule": await webfilter.schedule_state(agent_id),
             "current_hash": current_hash,
+            "oversize": oversize,
             "drift": bool(applied_hash) and applied_hash != current_hash,
         }
 
     @mcp.tool(
         name="webfilter_get",
-        description="Get the parental-controls config, custom list, and drift for an agent.",
+        description=(
+            "Get the parental-controls config, category set, custom list, schedule "
+            "state (which categories are in force now and when they revert), and "
+            "drift for an agent."
+        ),
     )
     async def webfilter_get(id: str) -> dict[str, Any]:
         _require_scope(_mcp_principal(), id)
@@ -685,9 +717,16 @@ def register_tools(
     @mcp.tool(
         name="webfilter_set",
         description=(
-            "Update parental-controls config and/or the custom domain list for an agent "
-            "(state-changing). Toggles: enabled, block_mode, use_external_adult, "
-            "use_bypass_protection, doh_policy. Optional add_domain/remove_domain (+action)."
+            "Update parental-controls config, the custom domain list, and/or the "
+            "schedule for an agent (state-changing). Toggles: enabled, block_mode, "
+            "use_external_adult, use_bypass_protection, doh_policy. Categories: a "
+            "comma-separated set of category keys (replaces the enabled set). "
+            "Optional add_domain/remove_domain (+action, +domain_category, so an "
+            "entry applies only while that category is on). Schedule: pass "
+            "window_days ('mon,tue' or 'daily'), window_start and window_end "
+            "('21:00'), window_categories and optionally window_label/window_tz to "
+            "add a window that adds those categories for that range; or "
+            "remove_window with a window id."
         ),
     )
     async def webfilter_set(
@@ -697,13 +736,30 @@ def register_tools(
         use_external_adult: bool | None = None,
         use_bypass_protection: bool | None = None,
         doh_policy: str | None = None,
+        categories: str | None = None,
         add_domain: str | None = None,
         remove_domain: str | None = None,
         action: str | None = None,
+        domain_category: str | None = None,
+        window_days: str | None = None,
+        window_start: str | None = None,
+        window_end: str | None = None,
+        window_categories: str | None = None,
+        window_label: str | None = None,
+        window_tz: str | None = None,
+        remove_window: str | None = None,
     ) -> dict[str, Any]:
         principal = _mcp_principal()
         _require_role(principal, "operator")
         _require_scope(principal, id)
+        try:
+            keys = (
+                validate_categories(_split_keys(categories))
+                if categories is not None
+                else None
+            )
+        except ValueError as exc:
+            raise ToolError("bad_args", str(exc)) from exc
         await webfilter.set_config(
             id,
             enabled=enabled,
@@ -711,21 +767,40 @@ def register_tools(
             use_external_adult=use_external_adult,
             use_bypass_protection=use_bypass_protection,
             doh_policy=doh_policy,
+            categories=list(keys) if keys is not None else None,
         )
         if add_domain:
             try:
-                await webfilter.add_domain(id, add_domain, action or "block")
+                await webfilter.add_domain(
+                    id, add_domain, action or "block", None, domain_category
+                )
             except ValueError as exc:
                 raise ToolError("bad_args", str(exc)) from exc
         if remove_domain:
             await webfilter.remove_domain(id, remove_domain)
+        if window_days or window_start or window_end or window_categories:
+            try:
+                await webfilter.add_window(
+                    id,
+                    days=window_days or "daily",
+                    start=window_start,
+                    end=window_end,
+                    categories=_split_keys(window_categories),
+                    label=window_label or "",
+                    tz=window_tz,
+                )
+            except ValueError as exc:
+                raise ToolError("bad_args", str(exc)) from exc
+        if remove_window:
+            await webfilter.remove_window(id, remove_window)
         return await _webfilter_overview(id)
 
     @mcp.tool(
         name="webfilter_push",
         description=(
             "Push the effective parental-controls block list to an agent (state-changing): "
-            "forwards webfilter_apply when block mode is on, else webfilter_clear."
+            "forwards webfilter_apply when block mode is on, else webfilter_clear. The "
+            "list reflects any schedule window open right now."
         ),
     )
     async def webfilter_push(id: str) -> dict[str, Any]:
@@ -733,7 +808,12 @@ def register_tools(
         _require_role(principal, "operator")
         _require_scope(principal, id)
         config = await webfilter.get_config(id)
-        args = await webfilter.build_apply(id)
+        try:
+            args = await webfilter.build_apply(id)
+        except ListTooLargeError as exc:
+            # Refuse here rather than hand the agent a list it rejects with
+            # `bad_args` anyway — the operator gets a count and a way out.
+            raise ToolError("bad_args", str(exc)) from exc
         block_mode = bool(config["block_mode"])
         tool = "webfilter_apply" if block_mode else "webfilter_clear"
         call_args = args if block_mode else {}
