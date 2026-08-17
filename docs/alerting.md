@@ -147,11 +147,21 @@ time.
 Delivery goes through three best-effort channels, **all off unless configured** (a single
 HTTP POST each):
 
-| Channel | Configure with | Payload |
-|---------|----------------|---------|
+| Channel | Setting | Payload |
+|---------|---------|---------|
 | **ntfy** | `KENNY_NTFY_URL` (+ optional `KENNY_NTFY_TOKEN` bearer) | POST body to an ntfy topic; title/priority/tags as headers — works out of the box with the ntfy phone apps |
 | **Generic webhook** | `KENNY_WEBHOOK_URL` | JSON POST (`kind`, `title`, `body`, `priority`, `tags`, `agent_id`, `event_type`, `sections`, `at`) |
 | **Discord** | `KENNY_DISCORD_WEBHOOK_URL` | JSON POST of a Discord embed — title, body as the description, priority as the embed colour, and `kind` / `agent_id` as fields |
+
+Set them in **Admin → Alerting & Digest**, or in the environment. A value saved in the
+dashboard wins over the environment and takes effect on the next alert, with no restart.
+Clearing the field turns the channel off — it does not fall back to the environment value,
+because a field an operator has just emptied should not keep delivering. Resetting the row
+to its default is what hands control back to the environment.
+
+The values are write-only in the dashboard: a saved token or webhook URL is never read
+back, only replaced. A webhook URL is bearer-equivalent — whoever holds it can receive
+your alerts — so treat it as a secret in either location (ADR-0054).
 
 Delivery is strictly best-effort: send errors are logged and swallowed, a dead target
 never stalls or kills the loop. **With no channel configured, evaluation still runs and
@@ -159,7 +169,8 @@ records alert history — it just pushes nothing.**
 
 ## Configuration
 
-Alerting environment variables (see [`setup.md`](setup.md) for the full list):
+The four channel keys below are editable in **Admin → Alerting & Digest**; the rest are
+read at startup and need a restart. See [`setup.md`](setup.md) for the full list.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
