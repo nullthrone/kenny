@@ -1,0 +1,92 @@
+.card {
+  background: var(--warn-bg);
+  border: 1px solid var(--amber-600);
+  padding: 18px 20px;
+}
+
+.eyebrow {
+  font-family: var(--font-display);
+  font-size: 9px;
+  letter-spacing: var(--track-caps);
+  color: var(--amber-600);
+  margin-bottom: 10px;
+}
+
+/* The operator's only evidence of what approving will run. overflow-wrap:
+ * break-word (not `anywhere` — see src/styles/global.css) lets a long
+ * value wrap without being torn apart letter-by-letter; it is NOT
+ * white-space:nowrap, unlike the caps labels around it, because this text
+ * must be free to wrap rather than overflow or get clipped. */
+.call {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  margin-bottom: 14px;
+  overflow-wrap: break-word;
+  color: var(--text-body);
+}
+
+.tool {
+  font-weight: 600;
+}
+
+.args {
+  color: var(--text-body);
+}
+
+.meta {
+  color: var(--text-muted);
+}
+
+/* MUST have flex-wrap: at 402px viewport width a third button escapes an
+ * action row without it. */
+.actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.approve {
+  padding: 11px 18px;
+  background: var(--kc-btn-bg);
+  color: var(--kc-btn-fg);
+  border: none;
+  font-family: var(--font-display);
+  font-size: 10px;
+  letter-spacing: var(--track-caps);
+  min-height: 44px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.deny {
+  padding: 11px 18px;
+  background: transparent;
+  border: 1px solid var(--danger);
+  color: var(--danger);
+  font-family: var(--font-display);
+  font-size: 10px;
+  letter-spacing: var(--track-caps);
+  min-height: 44px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.decideLater {
+  padding: 11px 18px;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-family: var(--font-display);
+  font-size: 10px;
+  letter-spacing: var(--track-caps);
+  min-height: 44px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.approve:disabled,
+.deny:disabled,
+.decideLater:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

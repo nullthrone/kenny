@@ -29,3 +29,9 @@ kenny-server/*.sqlite*
 # mkdocs build output
 site/
 uv.lock
+
+# Node (kenny-web) -- ADR-0052: the SPA is built, never committed. Its
+# compiled output lands directly in kenny-server/kenny_server/webui/dist/
+# (see kenny-web/vite.config.ts), not under kenny-web/ itself.
+kenny-web/node_modules/
+/kenny-server/kenny_server/webui/dist/

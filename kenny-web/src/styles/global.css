@@ -1,0 +1,332 @@
+/**
+ * kenny console — global CSS.
+ *
+ * Load order matters: main.tsx imports the token files (fonts, colors,
+ * typography, spacing, effects, motion, base — in that order, matching the
+ * prototype's <helmet>) before this file, so every var() reference below
+ * resolves.
+ *
+ * This file also carries a small set of GLOBAL, unscoped class names
+ * (`kc-*`). They exist because the prototype's single 760px breakpoint (see
+ * "RESPONSIVE — MOBILE BREAKPOINT" below) has to reach into markup that many
+ * independently-authored view components will render — CSS Modules are
+ * scoped per file and cannot share a breakpoint rule across files. Any view
+ * that wants the documented mobile behaviour for its header/content/rows
+ * MUST use these exact class names (they can be combined with a module
+ * class on the same element: `className={`${styles.row} kc-todayrow`}`).
+ * They are listed with the component/view that is expected to use each one.
+ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+/* ── Theme polarity ──────────────────────────────────────────────────────
+ * The prototype is LIGHT by default: tokens/colors.css's bare :root IS the
+ * light palette (paper #F4F2EC / ink #141317), so light needs no override
+ * here. [data-theme="dark"] is the prototype's `.kc-dark` block (lines
+ * 62-70), transcribed exactly. There is no `prefers-color-scheme` handling:
+ * theme is explicit-only (localStorage `kenny-theme`, applied as
+ * `data-theme` on <html> by ThemeProvider / the inline boot script in
+ * index.html), never OS-derived — see src/theme.
+ */
+:root {
+  /* The "always-inverted" surfaces: the Ask Kenny button (light mode) and
+   * the sidebar/host-forecast-band ink panels. Prototype :root default. */
+  --kc-btn-bg: #141317;
+  --kc-btn-fg: #f4f2ec;
+  --kc-inv-bg: #141317;
+  --kc-inv-fg: #f4f2ec;
+}
+
+:root[data-theme='dark'] {
+  --surface-page: #141317;
+  --surface-card: #1e1c21;
+  --surface-inset: #2a282e;
+  --paper-white: #1e1c21;
+  --text-body: #e9e6df;
+  --text-muted: #928f96;
+  --text-faint: #6e6b72;
+  --text-accent: #c09a4b;
+  --border-line: #3a3740;
+  --border-mid: #4a4750;
+  --border-strong: #e9e6df;
+  --ink-100: #2a282e;
+  --ink-200: #3a3740;
+  --brass-600: #c09a4b;
+  --ok: #5fa37f;
+  --warn: #d9a94b;
+  --danger: #c96a5e;
+  --green-100: #1e2a24;
+  --green-600: #5fa37f;
+  --amber-600: #d9a94b;
+  --red-600: #c96a5e;
+  --warn-bg: #2e2418;
+  --danger-bg: #2e1b1a;
+  --ok-bg: #1e2a24;
+  --kc-btn-bg: #e9e6df;
+  --kc-btn-fg: #141317;
+  --kc-inv-bg: #1e1c21;
+  --kc-inv-fg: #e9e6df;
+  background: #141317;
+}
+
+/* ── Base element behaviour ────────────────────────────────────────────── */
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+button {
+  cursor: pointer;
+  color: var(--text-body);
+  font: inherit;
+}
+
+button,
+a {
+  transition:
+    background-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease);
+}
+
+/* ── Nullthrone double focus ring: 2px paper gap + 2px brass ──────────── */
+
+:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* ── Long-string hardening ────────────────────────────────────────────────
+ * Each rule below fixed one real breakage; do not "simplify" any of them.
+ *
+ * overflow-wrap: break-word (never `anywhere`) on content containers.
+ * `anywhere` feeds into min-content width and lets flex children collapse
+ * to one letter per line — that is what once stacked "DENY" vertically
+ * down an approval button.
+ */
+.kc-content,
+.kc-chat,
+.kc-modal {
+  overflow-wrap: break-word;
+}
+
+/* min-width: 0 is applied ONLY here — to text cells inside grid/flex rows
+ * that must be allowed to shrink and truncate/wrap their content, not
+ * globally. Put this on the cell that holds the long string (a row title,
+ * a ticket summary), never on the row's fixed-width siblings. */
+.kc-cell {
+  min-width: 0;
+}
+
+/* UI labels — buttons and uppercase caps labels — never wrap and never
+ * shrink to nothing in a flex row. */
+.kc-btn,
+.kc-caps {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* Every gate/action button row. Without flex-wrap a third button escapes
+ * its container at 402px viewport width. */
+.kc-actions {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+/* Log-style rows: single line, ellipsis, never push the row taller. */
+.kc-logline {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+/* Value spans like `enabled` or `thomas#1121` must not break mid-token. */
+.kc-value {
+  white-space: nowrap;
+}
+
+/* ── Motion ─────────────────────────────────────────────────────────────
+ * Durations/easing come from tokens/effects.css (--ease, --dur-*).
+ * Keyframes nt-fade-up / nt-fade-in are in tokens/motion.css; kc-slide-left
+ * and kc-modal-in are the two prototype-specific keyframes, transcribed
+ * exactly (prototype lines 50-51).
+ */
+@keyframes kc-slide-left {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: none;
+  }
+}
+@keyframes kc-modal-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -50%) translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%);
+  }
+}
+
+/* View fade-up, 200ms. Apply to each top-level view's root element. */
+.kc-view {
+  animation: nt-fade-up 200ms var(--ease) both;
+}
+
+/* Backdrop fade, 200ms. */
+.kc-backdrop {
+  animation: nt-fade-in 200ms var(--ease) both;
+}
+
+/* Drawer (Ask Kenny chat rail) slide, 240ms. */
+.kc-chat {
+  animation: kc-slide-left 240ms var(--ease) both;
+}
+
+/* Modal scale-in, 200ms. Pair with a panel positioned
+ * `position:fixed; top:50%; left:50%; transform:translate(-50%,-50%)` —
+ * the keyframe's translate values assume that positioning, exactly as the
+ * prototype's modal panels are positioned. */
+.kc-modal {
+  animation: kc-modal-in 200ms var(--ease) both;
+}
+
+/* List-row stagger: 50ms per row, 200ms fade-up. Rows 5+ repeat the last
+ * computed delay rather than continuing to stack — the prototype only ever
+ * staggered the first few visible rows before the eye has moved on. */
+.kc-stagger-row {
+  animation: nt-fade-up 200ms var(--ease) both;
+}
+.kc-stagger-row:nth-child(2) {
+  animation-delay: 50ms;
+}
+.kc-stagger-row:nth-child(3) {
+  animation-delay: 100ms;
+}
+.kc-stagger-row:nth-child(4) {
+  animation-delay: 150ms;
+}
+.kc-stagger-row:nth-child(n + 5) {
+  animation-delay: 200ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .kc-view,
+  .kc-backdrop,
+  .kc-chat,
+  .kc-modal,
+  .kc-stagger-row {
+    animation: none;
+  }
+  button,
+  a {
+    transition: none;
+  }
+}
+
+/* ── Responsive — mobile breakpoint ───────────────────────────────────────
+ * Transcribed exactly from the prototype's `@media (max-width:760px)` block
+ * (lines 30-49). This is the ONE authoritative responsive spec: below
+ * 760px the ink sidebar is replaced by MobileTabBar's fixed 5-tab bottom
+ * bar, and the header collapses to logo + view title.
+ *
+ * Usage by class, for the next wave:
+ *   kc-sidebar     — Shell's <aside> (hidden below 760px)
+ *   kc-mobilebar   — MobileTabBar's bottom nav + the header's mobile logo/
+ *                    title spans (`display:none` above 760px, shown below)
+ *   kc-content     — every view's root padding container
+ *   kc-header      — Shell's <header>
+ *   kc-crumb       — Shell header's crumb label (hidden on mobile)
+ *   kc-h1          — every view's <h1>
+ *   kc-2col        — any two-column layout that must stack (Today's health
+ *                    summary, Fleet host's health/screenshot pair)
+ *   kc-todayrow    — Today's per-item row grid
+ *   kc-rowaction   — the action label inside a kc-todayrow
+ *   kc-kpis        — Today's KPI strip
+ *   kc-chat        — Ask Kenny drawer (full-viewport width on mobile)
+ *   kc-online      — header's "N/N ONLINE" indicator (hidden on mobile)
+ *   kc-askword     — the "ASK KENNY" text next to the ⌘K hint (hidden,
+ *                    icon-only, on mobile)
+ *   kc-hostactions — Fleet host's action button row (44px min touch target)
+ *   kc-modal       — any modal panel (full-width minus 24px on mobile)
+ *   kc-adminwrap   — Admin's nav+content grid (stacks on mobile)
+ *   kc-adminnav    — Admin's section nav (becomes a horizontal scroller)
+ */
+.kc-mobilebar {
+  display: none;
+}
+
+@media (max-width: 760px) {
+  .kc-sidebar {
+    display: none !important;
+  }
+  .kc-mobilebar {
+    display: grid !important;
+  }
+  .kc-content {
+    padding: 24px 16px 104px !important;
+  }
+  .kc-header {
+    padding: 0 16px !important;
+    height: 56px !important;
+  }
+  .kc-crumb {
+    display: none !important;
+  }
+  .kc-h1 {
+    font-size: 28px !important;
+  }
+  .kc-2col {
+    grid-template-columns: 1fr !important;
+  }
+  .kc-todayrow {
+    grid-template-columns: 64px 1fr !important;
+  }
+  .kc-todayrow .kc-rowaction {
+    grid-column: 2;
+  }
+  .kc-kpis {
+    flex-wrap: wrap;
+    gap: 20px !important;
+  }
+  .kc-chat {
+    width: 100vw !important;
+  }
+  .kc-online {
+    display: none !important;
+  }
+  .kc-askword {
+    display: none;
+  }
+  .kc-hostactions button {
+    min-height: 44px;
+  }
+  .kc-modal {
+    width: calc(100vw - 24px) !important;
+  }
+  .kc-adminwrap {
+    grid-template-columns: 1fr !important;
+  }
+  .kc-adminnav {
+    display: flex;
+    overflow-x: auto;
+    border-right: none !important;
+    border-bottom: 1px solid var(--border-line);
+    padding-bottom: 8px;
+  }
+  .kc-adminnav a {
+    white-space: nowrap;
+    border-left: none !important;
+    border-bottom: 2px solid transparent;
+  }
+}

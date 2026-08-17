@@ -1,0 +1,41 @@
+/* `display` is intentionally NOT set here — it's owned entirely by the
+ * global `.kc-mobilebar` class (src/styles/global.css): `display:none` by
+ * default, `display:grid !important` under the 760px breakpoint. Setting
+ * `display` here too would fight that toggle on specificity. */
+.bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 20;
+  grid-template-columns: repeat(5, 1fr);
+  background: #141317;
+  border-top: 1px solid var(--ink-700);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.tab {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 0 8px;
+  min-height: 52px;
+  text-decoration: none;
+  position: relative;
+}
+
+.label {
+  font-family: var(--font-display);
+  font-size: 8px;
+  letter-spacing: var(--track-caps);
+}
+
+.badgeDot {
+  position: absolute;
+  top: 6px;
+  right: calc(50% - 18px);
+  width: 7px;
+  height: 7px;
+  background: var(--brass-400);
+}

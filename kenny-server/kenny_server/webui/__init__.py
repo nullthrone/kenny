@@ -20,7 +20,7 @@ from typing import Any
 from starlette.background import BackgroundTask
 from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, Response, StreamingResponse
-from starlette.routing import Route
+from starlette.routing import Match, Route
 
 from .. import PROTOCOL_VERSION, __version__, agent_release, changelog
 from ..backup_targets import build_destination
@@ -49,18 +49,94 @@ from .authz import guard, principal_of, visible_ids
 
 logger = logging.getLogger("kenny.webui")
 
-_INDEX = Path(__file__).parent / "index.html"
+# The dashboard's HTML entry point, in preference order (ADR-0052): the
+# compiled SPA (``kenny-web/``, built by ``npm run build``) if it has been
+# built, else the legacy hand-written page kept alive for the transition.
+# ``dist/`` is never committed -- it exists only after a build has run, so a
+# source checkout with no build and no legacy page has neither.
+_DIST_DIR = Path(__file__).parent / "dist"
+_DIST_INDEX = _DIST_DIR / "index.html"
+_LEGACY_INDEX = Path(__file__).parent / "index.html"
 _ASSETS = Path(__file__).parent / "assets"
-# Whitelist of static assets the dashboard loads via <link>/<img>/<script>.
-# Kept explicit (no directory walk) so the route can't serve anything else.
-# ``.js`` covers the vendored charting library (Apache ECharts) used by the
-# Overview dashboard — bundled locally so the UI never reaches for a CDN.
+# Whitelist of legacy static assets the old dashboard loads via
+# <link>/<img>/<script>. Kept explicit (no directory walk) so the route can't
+# serve anything else. ``.js`` covers the vendored charting library (Apache
+# ECharts) used by the legacy Overview tab -- bundled locally so the UI never
+# reaches for a CDN.
 _ASSET_TYPES = {
     ".png": "image/png",
     ".ico": "image/x-icon",
     ".svg": "image/svg+xml",
     ".js": "application/javascript",
 }
+
+_MISSING_BUILD_MESSAGE = (
+    "Frontend not built. Run: npm --prefix kenny-web install && npm --prefix kenny-web run build"
+)
+
+# Every path prefix another surface owns. The SPA catch-all route (see
+# ``_SpaFallbackRoute`` below) must never resolve one of these to the
+# dashboard's HTML, or it would swallow an API call or the agent tunnel behind
+# a 200 of markup instead of the real handler / a clean 404. Most of these are
+# also earlier in ``main.py``'s route list and would already win by order;
+# this list makes that guarantee independent of that ordering.
+_RESERVED_PREFIXES = (
+    "/api",
+    "/auth",
+    "/chat",
+    "/tickets",
+    "/users",
+    "/download",
+    "/d",  # the real prefix behind the "download" routes (distribution.py)
+    "/mcp",
+    "/agent/ws",
+    "/login",
+    "/logout",
+    "/setup",
+)
+
+
+def _entry_point() -> Path | None:
+    """The dashboard HTML file to serve, or ``None`` if neither exists."""
+
+    if _DIST_INDEX.is_file():
+        return _DIST_INDEX
+    if _LEGACY_INDEX.is_file():
+        return _LEGACY_INDEX
+    return None
+
+
+def _dist_file(rel: str) -> Path | None:
+    """Resolve ``rel`` (a URL path, no leading slash) to a real file under the
+    built SPA's ``dist/`` tree, or ``None`` if it isn't one. Traversal-safe:
+    the resolved path must still live under ``dist/``."""
+
+    if not _DIST_DIR.is_dir():
+        return None
+    dist_root = _DIST_DIR.resolve()
+    candidate = (_DIST_DIR / rel).resolve()
+    if candidate.is_relative_to(dist_root) and candidate.is_file():
+        return candidate
+    return None
+
+
+def _missing_build_response() -> Response:
+    """The dashboard has no built SPA and no legacy page -- state exactly what
+    happened and what to do, rather than serving a blank page or a 404."""
+
+    return Response(_MISSING_BUILD_MESSAGE, status_code=500, media_type="text/plain")
+
+
+class _SpaFallbackRoute(Route):
+    """A catch-all ``Route`` that yields (``Match.NONE``) to any reserved
+    prefix instead of matching it, so the dashboard's hash-router fallback
+    can own "everything else" without ever shadowing ``/api``, the agent
+    tunnel, or another server-owned surface (ADR-0052)."""
+
+    def matches(self, scope: Any) -> tuple[Match, dict[str, Any]]:
+        if scope.get("type") == "http" and scope.get("path", "").startswith(_RESERVED_PREFIXES):
+            return Match.NONE, {}
+        return super().matches(scope)
 
 
 def build_api_routes(
@@ -96,16 +172,48 @@ def build_api_routes(
     _APPLIES_TO = {"powershell", "self_protection", "path"}
     _WEBFILTER_ACTIONS = {"watch", "block", "allow"}
 
-    async def index(_request: Request) -> FileResponse:
-        return FileResponse(_INDEX)
+    async def index(_request: Request) -> Response:
+        """The dashboard's HTML entry point: the compiled SPA, the legacy page
+        during the transition, or an actionable diagnostic if neither is
+        built (ADR-0052). Also used as the SPA's hash-router fallback for any
+        other non-reserved path -- see ``_SpaFallbackRoute``."""
 
-    async def asset(request: Request) -> Response:
-        """Serve a whitelisted brand asset (logo, favicon) for the dashboard.
+        entry = _entry_point()
+        if entry is None:
+            return _missing_build_response()
+        return FileResponse(entry)
 
-        Resolved by basename only — no path traversal, no directory listing.
+    async def spa_fallback(request: Request) -> Response:
+        """Catch-all for any path not claimed by a reserved prefix or a more
+        specific route above (see ``_SpaFallbackRoute``): a real file at the
+        built SPA's ``dist/`` root (e.g. a ``public/``-sourced ``favicon.ico``
+        or ``manifest.json`` Vite copies verbatim) if there is one, else the
+        dashboard's entry point -- so a client-side hash-router path, or a
+        deep link someone bookmarked, resolves to the SPA rather than a 404.
         """
 
-        name = request.path_params["name"]
+        dist_file = _dist_file(request.path_params["path"])
+        if dist_file is not None:
+            return FileResponse(dist_file)
+        return await index(request)
+
+    async def asset(request: Request) -> Response:
+        """Serve a static dashboard asset requested under ``/assets/...``.
+
+        Tries the built SPA's ``dist/assets/`` tree first (Vite's default
+        ``assetsDir``, which may nest hashed JS/CSS/etc under
+        subdirectories), resolved safely under ``dist/`` with no path
+        traversal. Falls back to the legacy dashboard's whitelisted brand
+        assets (logo, favicon, vendored JS), resolved by basename only, so
+        the legacy page keeps loading its assets whether or not the SPA has
+        been built.
+        """
+
+        rel = request.path_params["path"]
+        dist_file = _dist_file(f"assets/{rel}")
+        if dist_file is not None:
+            return FileResponse(dist_file)
+        name = Path(rel).name
         path = (_ASSETS / name).resolve()
         media = _ASSET_TYPES.get(path.suffix.lower())
         if media is None or path.parent != _ASSETS.resolve() or not path.is_file():
@@ -1242,7 +1350,7 @@ def build_api_routes(
     op_scoped = {"min_role": "operator", "host_param": "id"}
     return [
         Route("/", index),
-        Route("/assets/{name}", asset),
+        Route("/assets/{path:path}", asset),
         Route("/api/about", guard(api_about)),
         Route("/api/changelog", guard(api_changelog)),
         Route("/api/policy/rules", guard(api_policy_list, **op)),
@@ -1365,6 +1473,12 @@ def build_api_routes(
             methods=["POST"],
         ),
         Route("/api/agents/{id}/token", guard(api_rotate_token, **op), methods=["POST"]),
+        # SPA fallback: any other GET that isn't a reserved prefix above
+        # resolves to the dashboard's entry point, so a hash-routed deep link
+        # (or any path the client-side router owns) works whether or not it
+        # was ever requested from the server before. Placed last so every
+        # route above always wins first (ADR-0052).
+        _SpaFallbackRoute("/{path:path}", spa_fallback),
     ]
 
 

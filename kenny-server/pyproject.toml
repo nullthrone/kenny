@@ -69,7 +69,23 @@ include = ["kenny_server*"]
 
 [tool.setuptools.package-data]
 "kenny_server" = ["data/*.json"]
-"kenny_server.webui" = ["*.html", "*.css", "*.js", "assets/*.png", "assets/*.ico", "assets/*.svg", "assets/*.js"]
+# The legacy hand-written dashboard (kept alive during the transition) plus
+# the compiled SPA's output tree (ADR-0052). setuptools only globs files that
+# already exist at build time -- it cannot invoke npm -- so `dist/` must be
+# built (`npm --prefix kenny-web install && npm --prefix kenny-web run
+# build`) *before* `python -m build`/`pip install`; CI and the Dockerfile do
+# this. `dist/**` covers Vite's nested `assets/` output plus any `public/`
+# files it copies to the tree root (favicon, manifest, etc.) at any depth.
+"kenny_server.webui" = [
+    "*.html",
+    "*.css",
+    "*.js",
+    "assets/*.png",
+    "assets/*.ico",
+    "assets/*.svg",
+    "assets/*.js",
+    "dist/**/*",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

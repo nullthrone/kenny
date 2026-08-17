@@ -1,0 +1,18 @@
+:root{
+/* Base — ink & paper */
+--ink-950:#141317;--ink-900:#1E1C21;--ink-700:#3A3740;--ink-500:#6E6B72;--ink-400:#928F96;--ink-300:#B6B3B8;--ink-200:#D9D6D3;--ink-100:#E9E6DF;
+--paper:#F4F2EC;--paper-raised:#FBFAF6;--paper-white:#FFFFFF;
+/* Brass — the single accent */
+--brass-700:#7A5A1F;--brass-600:#8F6B26;--brass-500:#A87E2F;--brass-400:#C09A4B;--brass-200:#E4D5AC;--brass-100:#EFE6CD;
+/* Signals — muted, architectural */
+--green-600:#2F6B4F;--green-100:#DFEAE3;
+--amber-600:#A05E14;--amber-100:#F3E5D2;
+--red-600:#8C2F2E;--red-100:#F0DDDC;
+/* Semantic aliases */
+--text-body:var(--ink-950);--text-muted:var(--ink-500);--text-faint:var(--ink-400);--text-inverse:var(--paper);--text-accent:var(--brass-600);
+--surface-page:var(--paper);--surface-card:var(--paper-raised);--surface-inset:var(--ink-100);--surface-inverse:var(--ink-950);
+--border-line:var(--ink-200);--border-strong:var(--ink-950);--border-mid:var(--ink-300);
+--accent:var(--brass-500);--accent-hover:var(--brass-600);--accent-active:var(--brass-700);
+--focus-ring:0 0 0 2px var(--paper),0 0 0 4px var(--brass-500);
+--ok:var(--green-600);--ok-bg:var(--green-100);--warn:var(--amber-600);--warn-bg:var(--amber-100);--danger:var(--red-600);--danger-bg:var(--red-100);
+}

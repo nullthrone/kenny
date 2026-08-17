@@ -1,10 +1,28 @@
 # kenny-server image. Build from the repo root:
 #   docker build -f kenny-server/Dockerfile -t kenny-server .
 # (compose.yaml does this for you.)
+
+# Stage 1: compile the dashboard SPA (kenny-web/) to static files. Nothing
+# from this stage ends up in the final image except its dist/ output -- the
+# runtime never needs Node (ADR-0052).
+FROM node:22-slim AS web-build
+WORKDIR /repo
+COPY kenny-web/package.json kenny-web/package-lock.json ./kenny-web/
+RUN npm --prefix kenny-web ci
+COPY kenny-web/ ./kenny-web/
+# vite.config.ts's outDir (../kenny-server/kenny_server/webui/dist, relative
+# to kenny-web/) lands this at /repo/kenny-server/kenny_server/webui/dist.
+RUN npm --prefix kenny-web run build
+
 FROM python:3.14-slim
 
 WORKDIR /app
 COPY kenny-server/ /app/
+# The compiled SPA (ADR-0052). Placed after the bulk COPY above so it wins
+# over anything already at this path (there shouldn't be one -- dist/ is
+# gitignored and .dockerignore keeps a stray local build out of the context
+# -- but this ordering makes that guarantee independent of either).
+COPY --from=web-build /repo/kenny-server/kenny_server/webui/dist /app/kenny_server/webui/dist
 # Ship the shared deny-rule catalog so the best-effort policy mirror can load it
 # (the resolver's container candidate is /app/docs/policy/deny_rules.json). ADR-0021.
 COPY docs/policy/ /app/docs/policy/
