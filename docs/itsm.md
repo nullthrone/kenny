@@ -198,6 +198,11 @@ An account can be **unlinked** at any time (Admin → Discord & Tickets → the 
 a linked row); a disabled/removed mapping makes that Discord user completely inert
 again — no ticket, no reply, no model call, exactly as if they had never linked.
 
+A user can also see and remove their **own** binding, from their [Profile](dashboard.md#profile)
+— the raw Discord account id only, never a display name. Unlinking is self-service because
+it only ever takes privilege away; *linking* stays the two-path operator-confirmed process
+above, on purpose ([ADR-0044](adr/0044-delegated-identity-from-a-chat-platform.md)).
+
 ## Which PC a request is about
 
 A ticket is about exactly one machine, and that machine is fixed before the ticket exists

@@ -501,8 +501,17 @@ Detection never applies anything by itself; every rollout is an explicit operato
   version and whether on-connect auto-apply is on, plus:
     - **Apply to online agents now** — pushes the pinned version to every currently-online,
       eligible agent immediately.
-    - **Revoke** — stops future pushes under this campaign; an update already in flight to
-      an agent cannot be recalled.
+    - **Suspend** — stops both the on-connect push and **apply now** without discarding
+      anything: the pinned artifact and every agent's attempt/held bookkeeping stay exactly
+      as they were. A suspended campaign drops off this card into **campaign history**
+      below, with a **resume** button on its row that reactivates the same campaign exactly
+      where it left off. This is the one thing suspend/resume can do that revoking and
+      re-approving cannot: a fresh campaign gets a fresh id, and per-agent attempt tracking
+      is keyed to the campaign id — recreating would silently hand a previously **held**
+      agent (one that exhausted its retry budget, often because it's crash-looping) a brand
+      new budget. Suspending and later resuming the *same* campaign keeps that agent held.
+    - **Revoke** — stops future pushes under this campaign **for good**; an update already
+      in flight to an agent cannot be recalled, and a revoked campaign cannot be resumed.
     - A per-agent table: current version, **channel** (built / desired), online/offline,
       and status (**updated**, **pending**, **held** after repeated refusal — e.g. the
       agent's local remote-control switch is off — or **n/a** for an (os, arch, channel)
@@ -572,6 +581,19 @@ not from Admin. It lets you:
   Claude Desktop normally uses the OAuth flow instead (see
   [Accounts & roles](#accounts-roles-the-user-menu)); a PAT is for scripts and other
   clients that can't do OAuth.
+- **Sessions** — a modal listing every browser session on your account (device/user-agent,
+  IP, when it signed in, when it expires, which one is this one), with **sign out other
+  sessions**: ends every *other* session and revokes any OAuth grant tied to your account,
+  while this browser stays signed in on a freshly issued session. It does **not** touch
+  personal access tokens — a PAT is a separate credential (how Claude Desktop and other MCP
+  clients reach `/mcp`), and revoking it is a deliberate, separate action from the PAT row
+  above, not a side effect of ending sessions.
+- **Discord** — a modal showing your own Discord binding(s) (the raw account id only — kenny
+  never stores a display name) with an **unlink** button. Linking a Discord account is still
+  not self-service: run `/link` in Discord and have an operator confirm the claim in
+  **Admin → Discord & Tickets** (see
+  [Enrollment: linking a Discord account](itsm.md#enrollment-linking-a-discord-account)).
+  Unlinking only takes privilege away, so it needs no operator step.
 - **Set your theme** — persisted per account, independent of the browser you're on.
 
 A legacy shared-token identity (the back-compat `KENNY_OPERATOR_TOKEN` superuser) has no
