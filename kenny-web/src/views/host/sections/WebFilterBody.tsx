@@ -1,8 +1,12 @@
-import { useState, type FormEvent } from 'react'
+import { useMemo, useState, type FormEvent } from 'react'
 import type { WebfilterDomainAction, WebfilterOverview } from '../types'
 import { describeActionError } from '../errors'
 import { formatRelativeTime } from '../format'
 import { useAddWebfilterDomain, useApplyWebfilter, useRemoveWebfilterDomain, useSetWebfilterConfig } from '../api'
+import WebFilterStateBanner, { type OversizeCandidate } from './WebFilterStateBanner'
+import WebFilterCategories from './WebFilterCategories'
+import WebFilterSchedule from './WebFilterSchedule'
+import WebFilterRequests from './WebFilterRequests'
 import styles from './WebFilterBody.module.css'
 
 export interface WebFilterBodyProps {
@@ -16,13 +20,31 @@ const ACTION_COLOR: Record<WebfilterDomainAction, string> = {
   watch: 'var(--text-muted)',
 }
 
-/** Full-edit web filter section modal body — config toggles, the custom
- * domain list, and Apply. `GET/PUT/POST/DELETE /api/agent/{id}/webfilter*`
- * (notes/view-endpoint-map.md, Host). Every mutation invalidates and re-pulls
- * this overview rather than patching it optimistically. */
+/** The largest currently-enabled external category, by cached list size —
+ * the concrete "turn this off" answer the over-cap banner and the category
+ * list both point at. `null` when nothing is over the cap or nothing
+ * external is enabled (an all-custom-entries list can still be oversize). */
+function findOversizeCandidate(overview: WebfilterOverview): OversizeCandidate | null {
+  if (!overview.oversize) return null
+  const enabled = new Set(overview.config.categories)
+  let best: OversizeCandidate | null = null
+  for (const cat of overview.categories) {
+    if (!cat.external || !enabled.has(cat.key)) continue
+    const count = overview.external[cat.key]?.count ?? 0
+    if (!best || count > best.count) best = { key: cat.key, label: cat.label, count }
+  }
+  return best
+}
+
+/** Full-edit web filter section modal body — the state banner, category
+ * toggles, schedule, bypass requests, the custom domain list, and Apply.
+ * `GET/PUT/POST/DELETE /api/agent/{id}/webfilter*` (ADR-0024, ADR-0055).
+ * Every mutation invalidates and re-pulls this overview rather than
+ * patching it optimistically. */
 export default function WebFilterBody({ agentId, overview }: WebFilterBodyProps) {
   const [domain, setDomain] = useState('')
   const [action, setAction] = useState<WebfilterDomainAction>('block')
+  const [category, setCategory] = useState('')
   const [applyResult, setApplyResult] = useState<{ ok: boolean; text: string } | null>(null)
 
   const setConfig = useSetWebfilterConfig(agentId)
@@ -30,13 +52,22 @@ export default function WebFilterBody({ agentId, overview }: WebFilterBodyProps)
   const removeDomain = useRemoveWebfilterDomain(agentId)
   const apply = useApplyWebfilter(agentId)
 
-  const { config, custom } = overview
+  const { config, custom, schedule, oversize, categories, external } = overview
+  const oversizeCandidate = useMemo(() => findOversizeCandidate(overview), [overview])
 
   function onAddDomain(e: FormEvent<HTMLFormElement>) {
     e.preventDefault()
     const trimmed = domain.trim()
     if (!trimmed) return
-    addDomain.mutate({ domain: trimmed, action }, { onSuccess: () => setDomain('') })
+    addDomain.mutate(
+      { domain: trimmed, action, category: category || null },
+      { onSuccess: () => setDomain('') },
+    )
+  }
+
+  function onRequestDomain(requested: string) {
+    setDomain(requested)
+    setAction('allow')
   }
 
   function onApply() {
@@ -44,14 +75,22 @@ export default function WebFilterBody({ agentId, overview }: WebFilterBodyProps)
     apply.mutate(undefined, {
       onSuccess: (r) => {
         if (r.ok) setApplyResult({ ok: true, text: 'Rules applied.' })
-        else setApplyResult({ ok: false, text: describeActionError(String(r.error)) })
+        else setApplyResult({ ok: false, text: describeActionError(String(r.error), r.message, r.count, r.cap) })
       },
-      onError: (e) => setApplyResult({ ok: false, text: e instanceof Error ? e.message : 'Could not apply.' }),
+      onError: (e) =>
+        setApplyResult({ ok: false, text: e instanceof Error ? describeActionError(e.message) : 'Could not apply.' }),
     })
   }
 
   return (
     <div>
+      <WebFilterStateBanner
+        filteringEnabled={config.enabled}
+        schedule={schedule}
+        oversize={oversize}
+        oversizeCandidate={oversizeCandidate}
+      />
+
       <div className={styles.section}>
         <div className={styles.eyebrow}>CONFIGURATION</div>
         <label className={styles.toggleRow}>
@@ -71,25 +110,6 @@ export default function WebFilterBody({ agentId, overview }: WebFilterBodyProps)
             disabled={setConfig.isPending}
           />
           Block mode <span className={styles.help}>— off logs matches without blocking them</span>
-        </label>
-        <label className={styles.toggleRow}>
-          <input
-            type="checkbox"
-            checked={config.use_external_adult}
-            onChange={(e) => setConfig.mutate({ use_external_adult: e.target.checked })}
-            disabled={setConfig.isPending}
-          />
-          Use external adult-content list{' '}
-          <span className={styles.help}>({overview.external.adult.enabled ? 'active' : 'off'})</span>
-        </label>
-        <label className={styles.toggleRow}>
-          <input
-            type="checkbox"
-            checked={config.use_bypass_protection}
-            onChange={(e) => setConfig.mutate({ use_bypass_protection: e.target.checked })}
-            disabled={setConfig.isPending}
-          />
-          Block VPN/proxy bypass domains
         </label>
         <div className={styles.dohRow}>
           <span>DNS-over-HTTPS</span>
@@ -111,6 +131,27 @@ export default function WebFilterBody({ agentId, overview }: WebFilterBodyProps)
       </div>
 
       <div className={styles.section}>
+        <div className={styles.eyebrow}>CATEGORIES</div>
+        <WebFilterCategories
+          agentId={agentId}
+          config={config}
+          categories={categories}
+          external={external}
+          oversizeCandidate={oversizeCandidate}
+        />
+      </div>
+
+      <div className={styles.section}>
+        <div className={styles.eyebrow}>SCHEDULE</div>
+        <WebFilterSchedule agentId={agentId} schedule={schedule} categories={categories} />
+      </div>
+
+      <div className={styles.section}>
+        <div className={styles.eyebrow}>BYPASS REQUESTS</div>
+        <WebFilterRequests agentId={agentId} onRequestDomain={onRequestDomain} />
+      </div>
+
+      <div className={styles.section}>
         <div className={styles.eyebrow}>CUSTOM DOMAINS · {custom.length}</div>
         <form className={styles.domainForm} onSubmit={onAddDomain}>
           <input
@@ -127,6 +168,14 @@ export default function WebFilterBody({ agentId, overview }: WebFilterBodyProps)
             <option value="block">block</option>
             <option value="allow">allow</option>
             <option value="watch">watch</option>
+          </select>
+          <select className={styles.select} value={category} onChange={(e) => setCategory(e.target.value)}>
+            <option value="">no category — always applies</option>
+            {categories.map((c) => (
+              <option key={c.key} value={c.key}>
+                {c.label}
+              </option>
+            ))}
           </select>
           <button type="submit" className={styles.addButton} disabled={addDomain.isPending || !domain.trim()}>
             ADD DOMAIN
@@ -148,6 +197,7 @@ export default function WebFilterBody({ agentId, overview }: WebFilterBodyProps)
                 <span className={styles.actionChip} style={{ color: ACTION_COLOR[d.action] }}>
                   {d.action.toUpperCase()}
                 </span>
+                {d.category && <span className={styles.categoryChip}>{d.category}</span>}
                 <span className={styles.added}>{formatRelativeTime(d.added_at)}</span>
                 <button
                   type="button"

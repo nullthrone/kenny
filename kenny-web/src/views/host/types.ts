@@ -120,7 +120,34 @@ export interface DiskSection extends RawSection {
   top_dirs: DiskTopDir[]
 }
 
-/* ── Web filter (GET/PUT/POST/DELETE /api/agent/{id}/webfilter*) ── */
+/* ── Web filter (GET/PUT/POST/DELETE /api/agent/{id}/webfilter*) ──
+ *
+ * Categories, schedule and bypass requests (ADR-0055,
+ * `kenny_server/webfilter.py::CATEGORY_CATALOG`/`schedule_state`,
+ * `webui/__init__.py::_webfilter_overview`/`api_webfilter_requests`).
+ * `use_external_adult`/`use_bypass_protection` are still on the wire (the
+ * two legacy toggle columns the server merges into `categories`) but are
+ * deliberately not surfaced as separate controls — `adult` and `bypass`
+ * render as ordinary rows in the category list instead.
+ */
+
+/** `describe_categories()` — the catalog, not a per-host setting. */
+export interface WebfilterCategory {
+  key: string
+  label: string
+  /** External: fetched upstream (`ExternalListCache`). Local: gathers only the
+   * per-host custom entries tagged with this category. */
+  external: boolean
+  /** False only for `bypass` — deliberately uncapped so it can't be silently thinned. */
+  capped: boolean
+}
+
+/** One entry of `_webfilter_overview`'s `external` map, keyed by category key. */
+export interface WebfilterExternalStat {
+  count: number
+  last_fetch: string | null
+  enabled: boolean
+}
 
 export interface WebfilterConfig {
   agent_id: string
@@ -128,6 +155,10 @@ export interface WebfilterConfig {
   block_mode: boolean
   use_external_adult: boolean
   use_bypass_protection: boolean
+  /** Canonical merged set — the two legacy toggles above are already folded
+   * in (`WebFilterStore._merge_categories`). This is the one list to read or
+   * write; a category is enabled iff its key is in here. */
+  categories: string[]
   doh_policy: 'disable' | 'leave'
   updated_at: string | null
   applied_hash: string | null
@@ -141,7 +172,58 @@ export interface WebfilterDomain {
   domain: string
   action: WebfilterDomainAction
   note: string | null
+  /** Null for an entry that always applies (the pre-category shape). Tagged
+   * only applies while its category is on — by the host's own toggles or by
+   * an open schedule window. */
+  category: string | null
   added_at: string
+}
+
+/** `ScheduleWindow.as_dict()` — one recurring per-host window. */
+export interface WebfilterScheduleWindow {
+  id: string
+  agent_id: string
+  label: string
+  days: number[]
+  day_keys: string[]
+  start: string
+  end: string
+  wraps_midnight: boolean
+  categories: string[]
+  timezone: string
+  enabled: boolean
+  created_at: string
+}
+
+/**
+ * `schedule_state()` — the observable answer to the two questions an
+ * operator has about a host's schedule: is the stricter list in force right
+ * now, and when does it revert. Instants are UTC (`*_at`) with a
+ * zone-localized twin (`*_local`) for display; never re-derive one from the
+ * other client-side.
+ */
+export interface WebfilterScheduleState {
+  now: string
+  timezone: string
+  local_now: string
+  base_categories: string[]
+  extra_categories: string[]
+  effective_categories: string[]
+  active_windows: WebfilterScheduleWindow[]
+  stricter: boolean
+  next_change_at: string | null
+  next_change_local: string | null
+  /** Set only while `stricter` — the instant the extra categories drop off. */
+  reverts_at: string | null
+  windows: WebfilterScheduleWindow[]
+}
+
+/** `ListTooLargeError` surfaced as state, not an error banner — the overview
+ * still reads so the operator can see which category to turn off. */
+export interface WebfilterOversize {
+  count: number
+  cap: number
+  over_by: number
 }
 
 export interface WebfilterOverview {
@@ -149,16 +231,41 @@ export interface WebfilterOverview {
   config: WebfilterConfig
   custom: WebfilterDomain[]
   seed_count: number
-  external: {
-    adult: { enabled: boolean; [key: string]: unknown }
-    bypass: { enabled: boolean; [key: string]: unknown }
-  }
+  external: Record<string, WebfilterExternalStat>
+  categories: WebfilterCategory[]
+  schedule: WebfilterScheduleState
   applied: { hash: string | null; at: string | null; ok: boolean | null }
-  current_hash: string
+  /** Null when the effective list is over the cap (see `oversize`). */
+  current_hash: string | null
+  oversize: WebfilterOversize | null
   drift: boolean
 }
 
-export type WebfilterActionResult = { ok: true; [key: string]: unknown } | { ok: false; error: string }
+export type WebfilterActionResult =
+  | { ok: true; [key: string]: unknown }
+  | { ok: false; error: string; message?: string; count?: number; cap?: number }
+
+/** `api_webfilter_requests` — pending bypass-request tickets for one host.
+ * `ticket` is the ticket row verbatim (`Ticket.as_dict()`); this view only
+ * ever reads `id`/`number`/`title`/`summary`/`created_at` from it and links
+ * the rest to the Inbox rather than modeling the whole ticket shape. */
+export interface WebfilterBypassRequest {
+  ticket: {
+    id: string
+    number: number
+    title: string
+    summary: string
+    state: string
+    created_at: string
+    [key: string]: unknown
+  }
+  requested_domains: string[]
+}
+
+export interface WebfilterRequestsResponse {
+  agent_id: string
+  requests: WebfilterBypassRequest[]
+}
 
 /* ── Reliability suppressions (/api/reliability/suppressions) ── */
 

@@ -71,6 +71,34 @@ export function formatRelativeTime(iso: string | null | undefined): string {
   return `${days}d ago`
 }
 
+/** The wall-clock time of an ISO instant, in the viewer's own locale/zone —
+ * used for "reverts at 21:00", never for the countdown itself (that reads
+ * the ISO instant directly against `Date.now()`). */
+export function formatClockTime(iso: string | null | undefined): string {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return '—'
+  return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+}
+
+/** A forward time-until as "3h 12m" / "45m" / "any moment" — the web filter
+ * schedule banner's "reverts in …" (`schedule_state().reverts_at`). Never
+ * negative: a past instant reads as "any moment" rather than "-3m". */
+export function formatCountdown(iso: string | null | undefined): string {
+  if (!iso) return ''
+  const then = new Date(iso).getTime()
+  if (Number.isNaN(then)) return ''
+  const ms = then - Date.now()
+  if (ms <= 0) return 'any moment'
+  const minutes = Math.round(ms / 60_000)
+  if (minutes < 1) return 'under a minute'
+  const hours = Math.floor(minutes / 60)
+  const mins = minutes % 60
+  if (hours === 0) return `${mins}m`
+  if (mins === 0) return `${hours}h`
+  return `${hours}h ${mins}m`
+}
+
 /**
  * Best-effort text rendering for an arbitrary telemetry field whose shape
  * this view has no specific model for — the generic-walk fallback the notes

@@ -18,10 +18,15 @@ interface HostWebfilterToggleConfig {
   doh_policy: string | null
 }
 
-/** `GET /api/agent/{id}/webfilter` — `webui/__init__.py::_webfilter_overview`. */
+/** `GET /api/agent/{id}/webfilter` — `webui/__init__.py::_webfilter_overview`.
+ * Narrowed to what the roster row needs: the toggle config plus the two
+ * at-a-glance facts ADR-0055 added — whether the stricter list is in force
+ * right now, and whether the effective list is over the agent's cap. */
 interface HostWebfilterOverview {
   agent_id: string
   config: HostWebfilterToggleConfig
+  schedule: { stricter: boolean; reverts_at: string | null }
+  oversize: { count: number; cap: number } | null
 }
 
 /**
@@ -54,13 +59,27 @@ export default function WebFilterSection({ rows }: WebFilterSectionProps) {
       ) : (
         <div className={shared.table} style={{ marginBottom: 24 }}>
           {agentIds.map((id, i) => {
-            const c = configs[i]?.data?.config
+            const data = configs[i]?.data
+            const c = data?.config
             return (
               <div key={id} className={shared.tableRow}>
                 <div className={shared.tableMeta}>
-                  <div className={shared.tableLabel}>{id}</div>
+                  <div className={shared.tableLabel}>
+                    {id}
+                    {data?.schedule.stricter && (
+                      <span className={shared.tag} style={{ marginLeft: 8, color: 'var(--brass-600)', borderColor: 'var(--brass-600)' }}>
+                        STRICTER NOW
+                      </span>
+                    )}
+                    {data?.oversize && (
+                      <span className={shared.tag} style={{ marginLeft: 8, color: 'var(--danger)', borderColor: 'var(--danger)' }}>
+                        OVER CAP
+                      </span>
+                    )}
+                  </div>
                   <div className={shared.tableSub}>
                     {c ? (c.enabled ? `filtering on · ${c.block_mode ? 'block' : 'monitor'} mode` : 'filtering off') : '…'}
+                    {data?.oversize && ` · ${data.oversize.count.toLocaleString()} of ${data.oversize.cap.toLocaleString()} domains`}
                   </div>
                 </div>
                 <Link to={`/fleet/${id}`} className={shared.btnSmall} style={{ textDecoration: 'none', textAlign: 'center' }}>

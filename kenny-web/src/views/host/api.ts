@@ -8,6 +8,8 @@ import type {
   WebfilterActionResult,
   WebfilterDomainAction,
   WebfilterOverview,
+  WebfilterRequestsResponse,
+  WebfilterScheduleWindow,
 } from './types'
 
 export const agentQueryKey = (agentId: string) => ['agent', agentId] as const
@@ -106,8 +108,18 @@ function useInvalidateWebfilter(agentId: string) {
 export function useSetWebfilterConfig(agentId: string) {
   const invalidate = useInvalidateWebfilter(agentId)
   return useMutation({
-    mutationFn: (patch: Partial<{ enabled: boolean; block_mode: boolean; use_external_adult: boolean; use_bypass_protection: boolean; doh_policy: 'disable' | 'leave' }>) =>
-      api.put<{ config: WebfilterOverview['config'] }>(`/api/agent/${agentId}/webfilter/config`, patch),
+    mutationFn: (
+      patch: Partial<{
+        enabled: boolean
+        block_mode: boolean
+        doh_policy: 'disable' | 'leave'
+        /** The whole enabled set, not a delta — sending it also settles the
+         * two legacy toggle columns server-side so the representations can't
+         * drift (`WebFilterStore.set_config`). This is how a category,
+         * including `adult`/`bypass`, is turned on or off from this view. */
+        categories: string[]
+      }>,
+    ) => api.put<{ config: WebfilterOverview['config'] }>(`/api/agent/${agentId}/webfilter/config`, patch),
     onSuccess: () => invalidate(),
   })
 }
@@ -115,7 +127,7 @@ export function useSetWebfilterConfig(agentId: string) {
 export function useAddWebfilterDomain(agentId: string) {
   const invalidate = useInvalidateWebfilter(agentId)
   return useMutation({
-    mutationFn: (body: { domain: string; action: WebfilterDomainAction }) =>
+    mutationFn: (body: { domain: string; action: WebfilterDomainAction; category?: string | null }) =>
       api.post<{ domain: unknown; custom: unknown }>(`/api/agent/${agentId}/webfilter/domains`, body),
     onSuccess: () => invalidate(),
   })
@@ -135,6 +147,54 @@ export function useApplyWebfilter(agentId: string) {
   return useMutation({
     mutationFn: () => api.post<WebfilterActionResult>(`/api/agent/${agentId}/webfilter/apply`),
     onSuccess: () => invalidate(),
+  })
+}
+
+/* ── Web filter schedule (ADR-0055) ─────────────────────────────────────── */
+
+/** `overview.schedule` already carries the current windows + state, so
+ * adding/removing a window invalidates the same query rather than a
+ * dedicated one — there is no separate schedule cache to keep in step. */
+export function useAddWebfilterWindow(agentId: string) {
+  const invalidate = useInvalidateWebfilter(agentId)
+  return useMutation({
+    mutationFn: (body: {
+      days: string[]
+      start: string
+      end: string
+      categories: string[]
+      label?: string
+      timezone?: string
+    }) => api.post<{ window: WebfilterScheduleWindow; schedule: WebfilterOverview['schedule'] }>(
+      `/api/agent/${agentId}/webfilter/schedule`,
+      body,
+    ),
+    onSuccess: () => invalidate(),
+  })
+}
+
+export function useRemoveWebfilterWindow(agentId: string) {
+  const invalidate = useInvalidateWebfilter(agentId)
+  return useMutation({
+    mutationFn: (windowId: string) =>
+      api.delete<{ ok: boolean; removed: boolean; schedule: WebfilterOverview['schedule'] }>(
+        `/api/agent/${agentId}/webfilter/schedule/${encodeURIComponent(windowId)}`,
+      ),
+    onSuccess: () => invalidate(),
+  })
+}
+
+/* ── Web filter bypass requests ─────────────────────────────────────────── */
+
+/** Open `web_filter`-category tickets for this host — a read over the
+ * ticket store, not a second queue (ADR-0055). Granting one is the ordinary
+ * `useAddWebfilterDomain` allow-domain call above; there is no separate
+ * approve/deny mutation here. */
+export function useWebfilterRequests(agentId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ['webfilter', agentId, 'requests'],
+    queryFn: () => api.get<WebfilterRequestsResponse>(`/api/agent/${agentId}/webfilter/requests`),
+    enabled,
   })
 }
 

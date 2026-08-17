@@ -70,12 +70,17 @@ site that would otherwise be caught by a broad list).
 Only `block` entries (and the enabled categories) are enforced on the agent; `watch`
 entries are matchable for the alarm but never blocked.
 
-The dashboard's per-host [Web filter section](dashboard.md#web-filter) still exposes only
-the two legacy toggles (`use_external_adult`, `use_bypass_protection`), `doh_policy`, and
-the custom-domain editor — that panel has not changed. The rest of the catalog, the
-schedule below, and bypass requests are reachable today through the API
-(`GET`/`PUT /api/agent/{id}/webfilter/config`, `categories: [...]`) and the `webfilter_get`
-/ `webfilter_set` MCP tools.
+The dashboard's per-host [Web filter section](dashboard.md#web-filter) edits the whole
+catalog: every category is one row, including `adult` and `bypass`, so there is a single
+control per category rather than a legacy toggle competing with a catalog entry. The
+schedule and pending bypass requests live in the same panel. The same state is reachable
+through the API (`GET`/`PUT /api/agent/{id}/webfilter/config`, `categories: [...]`) and the
+`webfilter_get` / `webfilter_set` MCP tools.
+
+The panel leads with the filter's current state rather than making you infer it from the
+window table: whether the stricter list is in force right now, when it reverts, and — if
+the effective list has outgrown the agent's cap — that the block did not go out, that
+matching continues, and which category to turn off.
 
 ## Schedule
 

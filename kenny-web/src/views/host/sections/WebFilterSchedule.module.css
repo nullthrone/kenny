@@ -1,0 +1,197 @@
+.empty {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  padding: 4px 0 16px;
+}
+
+.windowList {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border-strong);
+  margin-bottom: 20px;
+}
+
+.windowRow {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 4px;
+  border-bottom: 1px solid var(--border-line);
+}
+
+.windowMeta {
+  min-width: 0;
+  flex: 1;
+}
+
+.windowHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+
+.windowLabel {
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.activeTag {
+  font-family: var(--font-display);
+  font-size: 9px;
+  letter-spacing: var(--track-caps);
+  border: 1px solid var(--brass-600);
+  color: var(--brass-600);
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+
+.offTag {
+  font-family: var(--font-display);
+  font-size: 9px;
+  letter-spacing: var(--track-caps);
+  color: var(--text-faint);
+  border: 1px solid var(--border-mid);
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+
+.windowDetail {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+
+.chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.chip {
+  font-family: var(--font-display);
+  font-size: 9px;
+  letter-spacing: var(--track-caps);
+  border: 1px solid var(--border-mid);
+  color: var(--text-muted);
+  padding: 1px 6px;
+}
+
+.removeButton {
+  font-family: var(--font-display);
+  font-size: 9px;
+  letter-spacing: var(--track-caps);
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  padding: 0;
+  flex-shrink: 0;
+}
+.removeButton:hover {
+  color: var(--danger);
+}
+.removeButton:disabled {
+  color: var(--text-faint);
+  cursor: default;
+}
+
+.form {
+  border-top: 1px solid var(--border-strong);
+  padding-top: 16px;
+}
+
+.formRow {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.input {
+  flex: 1;
+  min-width: 140px;
+  padding: 9px 10px;
+  border: 1px solid var(--border-line);
+  background: var(--paper-white);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-body);
+}
+
+.timeField {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  flex: 1;
+  min-width: 120px;
+}
+
+.fieldLabel {
+  font-family: var(--font-display);
+  font-size: 9px;
+  letter-spacing: var(--track-caps-wide);
+  color: var(--text-muted);
+  margin: 12px 0 6px;
+}
+
+.pickRow {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pickChip {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--text-xs);
+  border: 1px solid var(--border-mid);
+  padding: 5px 9px;
+}
+
+.pickChip input {
+  width: 13px;
+  height: 13px;
+  accent-color: var(--brass-500);
+}
+
+.formActions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
+.addButton {
+  padding: 9px 16px;
+  background: transparent;
+  border: 1px solid var(--border-mid);
+  font-family: var(--font-display);
+  font-size: 10px;
+  letter-spacing: var(--track-caps);
+  color: var(--text-body);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.addButton:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.hint {
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+}
+
+.error {
+  color: var(--danger);
+  font-size: var(--text-xs);
+  margin-top: 8px;
+}

@@ -1,0 +1,42 @@
+.banner {
+  border: 1px solid var(--border-mid);
+  padding: 14px 16px;
+  margin-bottom: 20px;
+}
+
+.label {
+  font-family: var(--font-display);
+  font-size: 10px;
+  letter-spacing: var(--track-caps);
+  margin-bottom: 6px;
+}
+
+.text {
+  font-size: var(--text-sm);
+  color: var(--text-body);
+  margin: 0;
+}
+
+.base {
+  border-color: var(--border-mid);
+}
+.base .label {
+  color: var(--text-muted);
+}
+
+.stricter {
+  border-color: var(--brass-600);
+  background: var(--surface-inset);
+}
+.stricter .label {
+  color: var(--brass-600);
+}
+
+.danger {
+  border-color: var(--danger);
+  background: var(--danger-bg);
+}
+.danger .label,
+.danger .text {
+  color: var(--danger);
+}
