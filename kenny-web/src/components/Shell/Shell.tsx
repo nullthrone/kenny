@@ -10,6 +10,7 @@ import { NAV_ITEMS, activeNavKey } from '../navItems'
 import { Sun, Moon, Terminal, LogOut, X, ICON_STROKE_WIDTH } from '../icons'
 import { initialsOf, roleLabel } from '../format'
 import { deriveCrumb } from './crumb'
+import AskKennyDrawer from '../AskKennyDrawer/AskKennyDrawer'
 import styles from './Shell.module.css'
 
 /**
@@ -54,6 +55,20 @@ export default function Shell({ navBadges }: ShellProps) {
     }
     window.addEventListener('keydown', onKeydown)
     return () => window.removeEventListener('keydown', onKeydown)
+  }, [])
+
+  /**
+   * "Fix via Ask kenny" on a host's section modal starts a real chat turn through
+   * the chat store, but the drawer's visible state lives here. Without this the
+   * turn would run unseen until the operator happened to open the drawer — the
+   * one case where kenny appears to have done nothing while actually working.
+   */
+  useEffect(() => {
+    function onOpenRequest() {
+      setChatOpen(true)
+    }
+    window.addEventListener('kenny:ask-kenny-open', onOpenRequest)
+    return () => window.removeEventListener('kenny:ask-kenny-open', onOpenRequest)
   }, [])
 
   return (
@@ -169,8 +184,7 @@ export default function Shell({ navBadges }: ShellProps) {
               </button>
             </div>
             <div className={styles.chatBody}>
-              The Ask Kenny transcript and composer are built by the next wave on top
-              of GateCard, Modal and the SSE client in src/api/sse.ts.
+              <AskKennyDrawer />
             </div>
           </div>
         </>

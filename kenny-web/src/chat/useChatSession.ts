@@ -4,11 +4,11 @@ import type { ChatSessionState } from './types'
 
 export interface ChatSession {
   state: ChatSessionState
-  sendMessage: (message: string) => Promise<void>
-  resolveGate: (approve: boolean) => Promise<void>
-  stop: () => void
+  sendMessage: typeof chatStore.sendMessage
+  resolveGate: typeof chatStore.resolveGate
+  stop: typeof chatStore.stop
   startNew: () => void
-  loadConversation: (id: string) => Promise<void>
+  loadConversation: typeof chatStore.loadConversation
   listHistory: typeof chatStore.listHistory
   deleteConversation: typeof chatStore.deleteConversation
 }
@@ -24,20 +24,20 @@ export function useChatSession(agentId: string): ChatSession {
   // Runs once per mount — the drawer remounts fresh on every open (Shell
   // fully unmounts it on close), so this correctly captures "the scope this
   // open of the drawer was invoked with" without re-firing on unrelated
-  // re-renders.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+  // re-renders. Deliberately not depending on `agentId`.
   useEffect(() => {
     chatStore.openForScope(agentId)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   return {
     state,
-    sendMessage: (message: string) => chatStore.sendMessage(message),
-    resolveGate: (approve: boolean) => chatStore.resolveGate(approve),
-    stop: () => chatStore.stop(),
+    sendMessage: chatStore.sendMessage,
+    resolveGate: chatStore.resolveGate,
+    stop: chatStore.stop,
     startNew: () => chatStore.reset(agentId),
-    loadConversation: (id: string) => chatStore.loadConversation(id),
-    listHistory: chatStore.listHistory.bind(chatStore),
-    deleteConversation: chatStore.deleteConversation.bind(chatStore),
+    loadConversation: chatStore.loadConversation,
+    listHistory: chatStore.listHistory,
+    deleteConversation: chatStore.deleteConversation,
   }
 }

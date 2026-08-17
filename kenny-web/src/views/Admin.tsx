@@ -1,11 +1,6 @@
-import { useParams } from 'react-router'
+import AdminView from './admin/AdminView'
 
-/** Placeholder — the next wave fills this view in. */
+/** `#/admin/:section` — see `views/admin/AdminView.tsx` for the implementation. */
 export default function Admin() {
-  const { section } = useParams<{ section: string }>()
-  return (
-    <div className="kc-content kc-view">
-      <h1 className="kc-h1">Admin{section ? ` · ${section}` : ''}</h1>
-    </div>
-  )
+  return <AdminView />
 }

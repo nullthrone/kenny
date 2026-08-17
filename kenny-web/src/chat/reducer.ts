@@ -73,6 +73,8 @@ export function applyChatEvent(state: ChatSessionState, event: ChatEvent): ChatS
         return {
           ...state,
           resolvingGateItemId: null,
+          pendingGate: null,
+          deciding: false,
           openAssistantId: null,
           items: state.items.map((it) =>
             it.kind === 'gate' && it.id === gateId ? { ...it, resolution: 'approved', ok: event.ok } : it,
@@ -123,6 +125,8 @@ export function applyChatEvent(state: ChatSessionState, event: ChatEvent): ChatS
         return {
           ...state,
           resolvingGateItemId: null,
+          pendingGate: null,
+          deciding: false,
           openAssistantId: null,
           items: state.items.map((it) => (it.kind === 'gate' && it.id === gateId ? { ...it, resolution: 'denied' } : it)),
         }
@@ -149,11 +153,21 @@ export function applyChatEvent(state: ChatSessionState, event: ChatEvent): ChatS
         ...pushItem(s1, { kind: 'error', id, error: event.error }),
         streaming: false,
         pendingGate: null,
+        deciding: false,
         resolvingGateItemId: null,
         openAssistantId: null,
         sessionId: event.session_id ?? state.sessionId,
       }
     }
+
+    /**
+     * Emitted only by the recommendation stream, which a host section modal
+     * consumes directly — it never reaches a chat transcript. The event union is
+     * shared across all four streams, so it is named here rather than left to the
+     * exhaustiveness check, which would otherwise fail the build.
+     */
+    case 'remediation':
+      return state
 
     default: {
       const _exhaustive: never = event

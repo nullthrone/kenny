@@ -121,10 +121,14 @@ export interface BackupVerifyResult {
 /* ── Updates ─────────────────────────────────────────────────────────────── */
 
 export interface UpdateAvailability {
+  component: string
+  version: string | null
+  url: string | null
+  sha256: string | null
+  digest: string | null
   ok: boolean
-  version?: string
-  digest?: string
-  message?: string
+  message: string | null
+  checked_at: string | null
 }
 
 export interface UpdateCampaign {
@@ -152,7 +156,8 @@ export interface UpdateAgentRow {
 }
 
 export interface UpdatesResponse {
-  available: { agent?: UpdateAvailability; server?: UpdateAvailability }
+  /** Keyed by `"agent"`/`"server"` (stable) or `"agent:dev"`/`"server:dev"` (`store._availability_key`). */
+  available: Record<string, UpdateAvailability>
   active_campaign: UpdateCampaign | null
   campaigns: UpdateCampaign[]
   agents: UpdateAgentRow[]

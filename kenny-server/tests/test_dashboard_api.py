@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import sqlite3
+from functools import partial
 
 from starlette.testclient import TestClient
 
 from kenny_server.main import build_app
-from kenny_server.webui import _fleet_summary
+from kenny_server.webui import _fleet_summary, _severity_label
 
 
 def _bearer(app):
@@ -44,6 +45,41 @@ def test_fleet_summary_warn_when_no_crit():
 
 def test_fleet_summary_no_telemetry():
     assert _fleet_summary({"overall": "unknown", "sections": {}}, None) == "no telemetry yet"
+
+
+def test_severity_label_healthy():
+    health = {"overall": "ok", "sections": {"disk": {"status": "ok", "summary": "C: 41% full"}}}
+    assert _severity_label(health, {"disk": {}}) == "HEALTHY"
+
+
+def test_severity_label_critical_names_the_worst_section():
+    health = {
+        "overall": "crit",
+        "sections": {
+            "disk": {"status": "crit", "summary": "C: 96% full"},
+            "reboot_pending": {"status": "warn", "summary": "Reboot required"},
+        },
+    }
+    assert _severity_label(health, {"disk": {}, "reboot_pending": {}}) == "CRITICAL · DISK"
+
+
+def test_severity_label_warning_when_no_crit():
+    health = {"overall": "warn", "sections": {"win_update": {"status": "warn", "summary": "x"}}}
+    assert _severity_label(health, {"win_update": {}}) == "WARNING · WIN UPDATE"
+
+
+def test_severity_label_no_telemetry():
+    assert _severity_label({"overall": "unknown", "sections": {}}, None) == "NO DATA"
+
+
+def test_fleet_endpoint_carries_severity_label(tmp_path) -> None:
+    app = build_app(db_path=str(tmp_path / "severity-label.sqlite"))
+    with TestClient(app) as c:
+        snapshot = {"disk": {"status": "ok", "summary": "", "volumes": [{"mount": "C:", "percent_used": 97}]}}
+        c.portal.call(partial(app.state.store.insert, "hot-pc", "2026-08-01T00:00:00+00:00", snapshot))
+        body = c.get("/api/fleet", headers=_bearer(app)).json()
+        agent = next(a for a in body["agents"] if a["agent_id"] == "hot-pc")
+        assert agent["severity_label"] == "CRITICAL · DISK"
 
 
 def test_agent_endpoint_reports_ai_enabled(tmp_path, monkeypatch):

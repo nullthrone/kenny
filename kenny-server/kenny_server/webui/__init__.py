@@ -1623,6 +1623,8 @@ def build_api_routes(
         Route("/api/fleet", guard(api_fleet)),
         Route("/api/fleet/overview", guard(api_fleet_overview)),
         Route("/api/fleet/trend", guard(api_fleet_trend)),
+        Route("/api/today", guard(api_today)),
+        Route("/api/log", guard(api_log)),
         Route("/api/digest/preview", guard(api_digest_preview, **op)),
         Route("/api/audit", guard(api_audit)),
         Route("/api/events", guard(api_events)),
@@ -2084,3 +2086,145 @@ def _severity_label(health: dict[str, Any], snapshot: dict[str, Any] | None) -> 
         if worst:
             return f"{word} · {worst[0].replace('_', ' ').upper()}"
     return "HEALTHY"
+
+
+# -- /api/today ----------------------------------------------------------
+
+# Caps action label per flagged section, for the landing page's affordance.
+# Presentation only (which verb to show), never a threshold -- those are
+# health_rules.py's alone. A section with no entry falls back to "REVIEW".
+_SECTION_ACTION: dict[str, str] = {
+    "disk": "FREE UP SPACE",
+    "memory": "CHECK MEMORY",
+    "defender": "CHECK DEFENDER",
+    "win_update": "REVIEW UPDATES",
+    "reboot_pending": "REBOOT",
+    "battery": "CHECK BATTERY",
+    "thermals": "CHECK COOLING",
+    "os_support": "PLAN OS UPGRADE",
+    "web_activity": "REVIEW ACTIVITY",
+    "reliability": "REVIEW EVENTS",
+    "listening_ports": "REVIEW PORTS",
+    "local_accounts": "REVIEW ACCOUNTS",
+    "logon_failures": "REVIEW SIGN-INS",
+    "backup_status": "CHECK BACKUP",
+    "net_quality": "CHECK NETWORK",
+}
+
+# Small enough vocabulary (single digits, the whole fleet in a household) to
+# spell out rather than pull in a number-to-words dependency.
+_NUMBER_WORDS = (
+    "zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
+    "nine", "ten",
+)
+
+
+def _word(n: int) -> str:
+    return _NUMBER_WORDS[n] if 0 <= n < len(_NUMBER_WORDS) else str(n)
+
+
+def _verdict_sentence(agent_count: int, bad: int) -> str:
+    """Deterministic, template-based one-liner for the `/api/today` landing page.
+
+    No LLM call: this sits on the landing page's critical path and must always
+    render, including on a fresh install with zero telemetry. ``bad`` is the
+    donut's crit+warn count -- the same numbers the donut itself renders, not a
+    fresh computation.
+    """
+
+    if agent_count == 0:
+        return "No machines enrolled yet."
+    quiet = agent_count - bad
+    if bad == 0:
+        return "Every machine is quiet." if agent_count == 1 else f"All {agent_count} machines are quiet."
+    if quiet == 0:
+        return (
+            "This machine needs attention."
+            if agent_count == 1
+            else f"All {agent_count} machines need attention."
+        )
+    bad_word = "machine needs" if bad == 1 else "machines need"
+    quiet_verb = "is" if quiet == 1 else "are"
+    return (
+        f"{_word(bad).capitalize()} {bad_word} attention. "
+        f"The other {_word(quiet)} {quiet_verb} quiet."
+    )
+
+
+def _today_section_item(section: str, member: dict[str, Any], severity: str) -> dict[str, Any]:
+    """One `/api/today` item for a flagged section on one host.
+
+    ``member`` is a ``fleet_stats._member`` row (``{agent_id, value, detail}``)
+    already produced by ``aggregate_overview``'s ``sections`` -- a display
+    reshape, not a new computation.
+    """
+
+    return {
+        "severity": severity,
+        "host": member["agent_id"],
+        "title": section.replace("_", " ").title(),
+        "detail": member["detail"],
+        "action": _SECTION_ACTION.get(section, "REVIEW"),
+        "target": f"#/fleet/{member['agent_id']}",
+    }
+
+
+def _today_approval_item(approval: Any, ticket_number: int) -> dict[str, Any]:
+    return {
+        "severity": "held",
+        "host": approval.agent_id,
+        "title": f"{approval.tool} needs approval",
+        "detail": f"{approval.tool_class} · requested {approval.requested_at}",
+        "action": "REVIEW APPROVAL",
+        "target": f"#/inbox/ticket/{ticket_number}",
+    }
+
+
+def _today_ticket_item(ticket: Any) -> dict[str, Any]:
+    return {
+        "severity": "held",
+        "host": ticket.agent_id,
+        "title": ticket.title,
+        "detail": f"blocked on {ticket.blocked_on or 'nothing'} since {ticket.blocked_since}",
+        "action": "OPEN TICKET",
+        "target": f"#/inbox/ticket/{ticket.number}",
+    }
+
+
+# -- /api/log --------------------------------------------------------------
+
+# The console's `kind` vocabulary vs. EventStore's stored `kind` column -- not
+# a 1:1 passthrough (see notes/backend-map.md item 3's gotcha).
+_LOG_KIND_TO_STORE_KIND: dict[str, str] = {"tools": "audit", "alerts": "alert", "events": "log"}
+_STORE_KIND_TO_LOG_KIND: dict[str, str] = {v: k for k, v in _LOG_KIND_TO_STORE_KIND.items()}
+_LOG_TAG: dict[str, str] = {"audit": "TOOL", "alert": "ALERT", "log": "LOG"}
+
+
+def _log_row(row: dict[str, Any]) -> dict[str, Any]:
+    """One ``EventStore.query_log`` row reshaped to the frozen ``LogRow`` envelope."""
+
+    stored_kind = row["kind"]
+    return {
+        "ts": row["at"],
+        "kind": _STORE_KIND_TO_LOG_KIND.get(stored_kind, stored_kind),
+        "tag": _LOG_TAG.get(stored_kind, stored_kind.upper()),
+        "host": row["agent_id"],
+        "actor": row["source"],
+        "what": row.get("tool") or row.get("target") or "",
+        "message": row.get("message") or "",
+        "meta": row.get("fields") or {},
+    }
+
+
+def _encode_log_cursor(at: str, id_: int) -> str:
+    """Opaque `/api/log` page token over an ``(at, id)`` keyset."""
+
+    return base64.urlsafe_b64encode(f"{at}\x00{id_}".encode()).decode()
+
+
+def _decode_log_cursor(raw: str) -> tuple[str, int] | None:
+    try:
+        at, id_str = base64.urlsafe_b64decode(raw.encode()).decode().split("\x00")
+        return at, int(id_str)
+    except Exception:  # noqa: BLE001 - any malformed cursor is just "invalid"
+        return None

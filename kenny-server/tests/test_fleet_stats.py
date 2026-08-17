@@ -152,6 +152,18 @@ def test_kpis_action_totals_and_members():
     assert kpis["quarantine"]["value"] == 1
 
 
+def test_kpis_carry_severity():
+    """Kpi.severity (frozen contract) is a display label off the same count,
+    not a new threshold: nonzero -> at least warn, some counts (failed
+    updates, quarantine) -> crit."""
+
+    kpis = {k["key"]: k for k in fleet_stats.aggregate_overview(_fleet(), now=NOW)["kpis"]}
+    assert kpis["reboot"]["severity"] == "warn"  # 1 pending
+    assert kpis["failed_updates"]["severity"] == "crit"
+    assert kpis["quarantine"]["severity"] == "crit"
+    assert kpis["disk_forecast"]["severity"] == "ok"  # none filling in this fixture
+
+
 def test_section_severity_sorted_with_drilldown():
     rows = fleet_stats.aggregate_overview(_fleet(), now=NOW)["sections"]["rows"]
     by_section = {r["section"]: r for r in rows}

@@ -54,6 +54,9 @@
   border: 1px solid currentColor;
   padding: 2px 0;
   text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .line {
@@ -73,6 +76,10 @@
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 160px;
 }
 
 .olderWrap {

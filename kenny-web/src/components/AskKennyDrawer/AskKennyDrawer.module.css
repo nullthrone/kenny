@@ -1,0 +1,56 @@
+/* Cancels Shell's `.chatBody` padding (20px, fixed CSS we don't own) so the
+ * transcript/composer can lay out edge-to-edge exactly like the design,
+ * with the composer pinned below a scrolling transcript rather than
+ * scrolling away with it. See AskKennyDrawer.tsx's top comment. */
+.root {
+  margin: -20px;
+  height: calc(100% + 40px);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.scopeRow {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--border-line);
+}
+
+.scopeChip {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  border: 1px solid var(--border-line);
+  padding: 2px 8px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scopeActions {
+  display: flex;
+  gap: 2px;
+  flex: none;
+}
+
+.iconButton {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  min-width: 40px;
+  min-height: 40px;
+  display: grid;
+  place-items: center;
+}
+.iconButton:hover {
+  color: var(--text-body);
+  background: var(--surface-inset);
+}
+.iconButtonActive {
+  color: var(--brass-600);
+}

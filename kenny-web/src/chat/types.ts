@@ -78,8 +78,17 @@ export interface ChatSessionState {
   agentId: string
   sessionId: string | null
   items: TranscriptItem[]
-  /** Non-null = the confirm gate is open. The composer MUST be locked while this is set. */
+  /**
+   * Non-null = the confirm gate is open OR a decision on it is in flight
+   * (`deciding`). The composer MUST be locked whenever this is set — it is
+   * cleared only once the confirm/stream round-trip actually resolves the
+   * call, not the moment CONFIRM/CANCEL is clicked, so the gate modal stays
+   * up (buttons disabled via `deciding`) through the whole round-trip
+   * instead of vanishing before anything has actually happened.
+   */
   pendingGate: PendingGate | null
+  /** True from the moment CONFIRM/CANCEL is clicked until its result lands. */
+  deciding: boolean
   /** Set when a decision has been posted and we're waiting on its result to land,
    * so the matching `gate` transcript item is updated in place rather than a
    * second item being appended. */
@@ -98,6 +107,7 @@ export function makeInitialState(agentId: string): ChatSessionState {
     sessionId: null,
     items: [],
     pendingGate: null,
+    deciding: false,
     resolvingGateItemId: null,
     streaming: false,
     openAssistantId: null,

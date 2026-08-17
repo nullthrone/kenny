@@ -59,7 +59,7 @@ export function normalizeSections(raw: unknown): HostSection[] {
     return Object.entries(raw as Record<string, Record<string, unknown>>).map(([name, s]) => ({
       name,
       status: (s.status as Severity) ?? 'unknown',
-      attention: Boolean(s.attention ?? s.status === 'warn' || s.status === 'crit'),
+      attention: Boolean(s.attention ?? (s.status === 'warn' || s.status === 'crit')),
       reason: s.reason as string | undefined,
       summary: s.summary as string | undefined,
     }))

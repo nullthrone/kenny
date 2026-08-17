@@ -66,14 +66,21 @@ class ChatStore {
    * conversation didn't actually run against. A pending gate or an active
    * turn always wins — never reset out from under those.
    */
-  openForScope(agentId: string): void {
+  // Every public method below is an arrow-function class field, not a
+  // prototype method — deliberately, so `chatStore.sendMessage` etc. are
+  // stable references usable directly as hook return values. `useChatSession`
+  // hands these straight to components; `HistoryPanel` depends on
+  // `listHistory` inside a `useEffect`, and a fresh function identity on
+  // every render would re-fire that effect on every unrelated store update.
+
+  openForScope = (agentId: string): void => {
     const s = this.state
     if (s.agentId !== agentId && !s.pendingGate && !s.streaming) {
       this.set(makeInitialState(agentId))
     }
   }
 
-  async sendMessage(message: string): Promise<void> {
+  sendMessage = async (message: string): Promise<void> => {
     const s = this.state
     if (s.streaming || s.pendingGate) return // never overlap turns
     this.update((st) => startUserTurn(st, message))
@@ -93,10 +100,13 @@ class ChatStore {
     await this.runStream('/api/chat/stream', body, controller)
   }
 
-  async resolveGate(approve: boolean): Promise<void> {
+  resolveGate = async (approve: boolean): Promise<void> => {
     const gate = this.state.pendingGate
-    if (!gate) return
-    this.update((st) => ({ ...st, pendingGate: null, resolvingGateItemId: gate.itemId, streaming: true }))
+    if (!gate || this.state.deciding) return
+    // pendingGate stays set — the modal stays open with its buttons disabled
+    // (`deciding`) through the whole round-trip. It's cleared only once the
+    // reducer sees the matching tool_result/denied land (reducer.ts).
+    this.update((st) => ({ ...st, deciding: true, resolvingGateItemId: gate.itemId, streaming: true }))
 
     const controller = new AbortController()
     this.controller = controller
@@ -104,7 +114,7 @@ class ChatStore {
     await this.runStream('/api/chat/confirm/stream', body, controller)
   }
 
-  private async runStream(url: string, body: ChatStreamRequest | ChatConfirmRequest, controller: AbortController): Promise<void> {
+  private runStream = async (url: string, body: ChatStreamRequest | ChatConfirmRequest, controller: AbortController): Promise<void> => {
     try {
       for await (const event of streamChatEvents(url, body, { signal: controller.signal })) {
         this.update((st) => applyChatEvent(st, event))
@@ -124,17 +134,17 @@ class ChatStore {
     }
   }
 
-  stop(): void {
+  stop = (): void => {
     this.controller?.abort()
   }
 
   /** Discards the current conversation and starts a new one scoped to `agentId`. */
-  reset(agentId: string): void {
+  reset = (agentId: string): void => {
     this.controller?.abort()
     this.set(makeInitialState(agentId))
   }
 
-  async loadConversation(id: string): Promise<void> {
+  loadConversation = async (id: string): Promise<void> => {
     this.controller?.abort()
     const detail = await api.get<ChatHistoryDetailResponse>(`/api/chat/history/${encodeURIComponent(id)}`)
     let replayed: ChatSessionState = { ...makeInitialState(detail.agent_id), sessionId: detail.id }
@@ -147,12 +157,12 @@ class ChatStore {
     this.set(replayed)
   }
 
-  async listHistory(): Promise<ConversationSummary[]> {
+  listHistory = async (): Promise<ConversationSummary[]> => {
     const res = await api.get<ChatHistoryListResponse>('/api/chat/history')
     return res.conversations
   }
 
-  async deleteConversation(id: string): Promise<void> {
+  deleteConversation = async (id: string): Promise<void> => {
     await api.delete(`/api/chat/history/${encodeURIComponent(id)}`)
     if (this.state.sessionId === id) {
       this.set(makeInitialState(this.state.agentId))

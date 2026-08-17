@@ -35,6 +35,45 @@ def test_snapshot_overall_is_crit() -> None:
     assert result["overall"] == "crit"
 
 
+def test_attention_flag_matches_status() -> None:
+    """`attention` is computed alongside `status` in evaluate_section itself
+    (kenny-server/CLAUDE.md: thresholds live only here) -- every section in
+    the golden snapshot must carry `attention == (status != "ok")`."""
+
+    result = health_rules.evaluate_snapshot(_snapshot(), now=NOW)
+    for name, section in result["sections"].items():
+        assert section["attention"] == (section["status"] != "ok"), name
+
+
+def test_attention_true_for_warn_and_crit() -> None:
+    crit = health_rules.evaluate_section(
+        "disk", {"status": "ok", "summary": "", "volumes": [{"mount": "C:", "percent_used": 96}]},
+        now=NOW,
+    )
+    warn = health_rules.evaluate_section(
+        "disk", {"status": "ok", "summary": "", "volumes": [{"mount": "C:", "percent_used": 85}]},
+        now=NOW,
+    )
+    ok = health_rules.evaluate_section(
+        "disk", {"status": "ok", "summary": "", "volumes": [{"mount": "C:", "percent_used": 10}]},
+        now=NOW,
+    )
+    assert crit["attention"] is True
+    assert warn["attention"] is True
+    assert ok["attention"] is False
+
+
+def test_attention_present_with_no_rule_for_section() -> None:
+    """A section with no entry in RULES defers to the reported status, and
+    still carries `attention` -- the deferred-return branch, not just the
+    rule-computed one."""
+
+    ok = health_rules.evaluate_section("unknown_section", {"status": "ok"}, now=NOW)
+    bad = health_rules.evaluate_section("unknown_section", {"status": "warn"}, now=NOW)
+    assert ok["attention"] is False
+    assert bad["attention"] is True
+
+
 def test_disk_thresholds() -> None:
     crit = health_rules.evaluate_section(
         "disk", {"status": "ok", "summary": "", "volumes": [{"mount": "C:", "percent_used": 95}]},

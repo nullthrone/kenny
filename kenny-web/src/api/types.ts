@@ -355,6 +355,14 @@ export type ChatEvent =
   | { type: 'denied'; tool: string; message?: string }
   | { type: 'done'; session_id?: string }
   | { type: 'error'; error: string; session_id?: string }
+  /**
+   * Recommendation stream only. Carries a ready-made prompt for the fix the
+   * recommendation just described; it is what a section modal's "Fix via Ask
+   * kenny" hands to the drawer. The chat and forecast streams never emit it, but
+   * all four streams share one parser and one event vocabulary, so it belongs in
+   * the union rather than in a per-caller superset.
+   */
+  | { type: 'remediation'; available: boolean; prompt: string }
 
 /**
  * `POST /api/chat/stream`.

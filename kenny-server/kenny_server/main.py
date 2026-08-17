@@ -74,6 +74,7 @@ from .userstore import UserStore
 from .webfilter import ExternalListCache, WebFilterService
 from .webui import _anthropic_client, build_api_routes, build_chat_routes
 from .webui.authz import guard
+from .webui.inbox import build_inbox_routes
 from .webui.tickets import build_ticket_routes
 from .webui.users import build_user_routes
 
@@ -617,6 +618,8 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         update_mgr=update_mgr,
         suppression=suppression,
         ticket_rules=ticket_rules,
+        tickets=ticket_service,
+        ticket_store=ticket_store,
     )
     user_routes = build_user_routes(
         user_store=user_store, registry=registry, store=store, oauth_store=oauth_store
@@ -662,6 +665,15 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         share_links=share_links,
         key_store=key_store,
     )
+    # The merged ticket/approval/flagged-section inbox (webui/inbox.py) --
+    # deliberately its own module and route builder, not folded into
+    # build_ticket_routes, so it stays out of webui/tickets.py entirely.
+    inbox_routes = build_inbox_routes(
+        tickets=ticket_service,
+        ticket_store=ticket_store,
+        registry=registry,
+        telemetry_store=store,
+    )
 
     # `operator_token` is the canonical single token (cookie value, tests);
     # `operator_tokens` is the full accepted set (supports KENNY_OPERATOR_TOKENS).
@@ -676,6 +688,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         *download_routes,
         *user_routes,
         *ticket_routes,
+        *inbox_routes,
         *api_routes,
         # Mounted last so it only catches what nothing above matched.
         Mount("/", app=mcp_app),

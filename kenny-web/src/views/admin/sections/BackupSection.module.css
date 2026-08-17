@@ -1,0 +1,43 @@
+.intro {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  margin: 0 0 16px;
+}
+
+.sectionHeading {
+  font-family: var(--font-display);
+  font-size: 11px;
+  letter-spacing: var(--track-caps);
+  color: var(--text-muted);
+  margin: 28px 0 4px;
+}
+
+.sizeHint {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.download {
+  display: inline-flex;
+  align-items: center;
+  padding: 8px 14px;
+  border: 1px solid var(--border-mid);
+  color: var(--text-body);
+  font-family: var(--font-display);
+  font-size: 10px;
+  letter-spacing: var(--track-caps);
+  min-height: 40px;
+  text-decoration: none;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.download:hover {
+  background: var(--surface-inset);
+}
+
+.resultInline {
+  width: 100%;
+  font-size: var(--text-xs);
+  margin-top: 4px;
+}
