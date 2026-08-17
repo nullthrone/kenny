@@ -62,13 +62,19 @@ export interface MappedAdminSection extends AdminSection {
 export const CONFIG_SOURCE_COLOR: Record<ConfigSource, string> = {
   default: 'var(--text-faint)',
   env: 'var(--text-muted)',
-  custom: 'var(--brass-600)',
+  db: 'var(--brass-600)',
 }
 
+/**
+ * The server's vocabulary is the wire value; these are the words the operator
+ * reads. `db` — an override stored in the database — is shown as "custom",
+ * which is what the design calls it and what the previous dashboard displayed.
+ * The translation lives here and nowhere else.
+ */
 export const CONFIG_SOURCE_LABEL: Record<ConfigSource, string> = {
   default: 'DEFAULT',
   env: 'ENV',
-  custom: 'CUSTOM',
+  db: 'CUSTOM',
 }
 
 /* ── Backup ──────────────────────────────────────────────────────────────── */

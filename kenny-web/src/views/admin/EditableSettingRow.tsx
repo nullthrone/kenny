@@ -156,7 +156,7 @@ export default function EditableSettingRow({ row }: EditableSettingRowProps) {
             CANCEL
           </button>
         </div>
-        {row.source === 'custom' && (
+        {row.source === 'db' && (
           <button type="button" className={styles.resetBtn} onClick={() => reset.mutate()} disabled={busy}>
             {reset.isPending ? 'RESETTING…' : 'RESET TO DEFAULT'}
           </button>

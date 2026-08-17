@@ -23,8 +23,20 @@ export type Severity = 'ok' | 'warn' | 'crit' | 'unknown'
 /** Role hierarchy is superuser > operator > user (`security.py`). */
 export type Role = 'superuser' | 'operator' | 'user'
 
-/** Where a config value came from. Env-derived keys are read-only and reject writes with 403. */
-export type ConfigSource = 'default' | 'env' | 'custom'
+/**
+ * Where a config value came from, as the server states it.
+ *
+ * `db` is an operator override stored in the database. The console renders it
+ * with the word "custom", which is the design's label and the wording the legacy
+ * dashboard already used — but the wire value is `db`, and renaming it
+ * server-side would break `test_config.py` and the bundled dashboard for no gain.
+ * The vocabulary has one owner (the server) and the translation happens once, at
+ * the render boundary, in `views/admin/settingsMap.ts`.
+ *
+ * Env-derived keys are read-only: the server rejects those writes with 403, so
+ * the console must not offer a control for them.
+ */
+export type ConfigSource = 'default' | 'env' | 'db'
 
 /**
  * A host reference carried inside aggregate rows.

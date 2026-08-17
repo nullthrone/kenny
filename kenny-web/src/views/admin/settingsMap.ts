@@ -1,18 +1,13 @@
 import type { ConfigSource } from '../../api/types'
 import type { AdminRow, MappedAdminSection, RawSettingGroup, RawSettingRow, RawSettingsResponse } from './types'
 
-function mapSource(raw: RawSettingRow['source']): ConfigSource {
-  // The wire format calls a persisted override "db"; the console's vocabulary is "custom".
-  return raw === 'db' ? 'custom' : raw
-}
-
 function displayValue(row: RawSettingRow): string | number | boolean | null {
   if (row.sensitive) return row.is_set ? 'set' : 'not set'
   return row.value
 }
 
 function mapRow(raw: RawSettingRow): AdminRow {
-  const source = mapSource(raw.source)
+  const source: ConfigSource = raw.source
   return {
     key: raw.key,
     label: raw.label,

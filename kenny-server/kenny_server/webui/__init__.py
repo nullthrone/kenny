@@ -2043,6 +2043,11 @@ async def _overview(
         "online": bool(agent and agent.online),
         "os": agent.os if agent else "windows",
         "meta": agent.meta if agent else {},
+        # The version the agent reported in its `register` frame's meta
+        # (docs/protocol.md) — the same field the self-update flow compares after
+        # a restart. Lifted out of `meta` so the fleet list and the rollout view
+        # can show it without every caller reaching into an untyped dict.
+        "agent_version": (agent.meta.get("version") if agent else None) or None,
         "overall": health["overall"],
         "flagged_sections": flagged,
         "warn_sections": _by_status("warn"),
