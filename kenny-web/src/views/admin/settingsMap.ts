@@ -14,9 +14,7 @@ function mapRow(raw: RawSettingRow): AdminRow {
     help: raw.help,
     value: displayValue(raw),
     source,
-    // The server rejects a write to an env-sourced key with 403 regardless of
-    // lifecycle — never render a control that is guaranteed to fail.
-    editable: source !== 'env',
+    editable: raw.editable,
     type: raw.type,
     choices: raw.choices,
     min: raw.min,

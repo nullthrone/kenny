@@ -24,8 +24,8 @@ function initialEditValue(row: AdminRow): string {
  * uses). Edit mode swaps in a control matched to the setting's real type —
  * a toggle for `bool`, a `<select>` for `enum`, a number input with its
  * min/max for `int`/`float`, otherwise text — plus RESET when the value is
- * a `custom` override. Rows the server would reject (`source === 'env'`)
- * never get an edit control at all.
+ * a `custom` override. Rows the server would reject (`row.editable === false`,
+ * the server's own `SettingSpec.writable`) never get an edit control at all.
  */
 export default function EditableSettingRow({ row }: EditableSettingRowProps) {
   const queryClient = useQueryClient()

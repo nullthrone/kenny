@@ -8,6 +8,12 @@ import styles from './UpdatesSection.module.css'
 
 type Channel = 'stable' | 'dev'
 
+function statusChipColor(status: UpdateCampaign['status']): string {
+  if (status === 'active') return 'var(--brass-600)'
+  if (status === 'suspended') return 'var(--warn)'
+  return 'var(--text-faint)'
+}
+
 function hostStatus(row: UpdateAgentRow, campaignVersion: string): { label: string; pct: number; color: string } {
   if (row.updated) return { label: campaignVersion, pct: 100, color: 'var(--ok)' }
   if (row.held) return { label: 'HELD', pct: 40, color: 'var(--danger)' }
@@ -19,12 +25,17 @@ function hostStatus(row: UpdateAgentRow, campaignVersion: string): { label: stri
 
 /**
  * Admin → Updates. The rollout card from the design, wired to
- * `/api/updates/campaigns`. The design shows a single PAUSE/RESUME toggle;
- * the real campaign lifecycle only has `active` → `revoked`/`expired`/
- * `completed` (`update_manager.py`) — there is no pause. REVOKE (stop
- * future triggers) and APPLY NOW (force-push to every eligible online agent
- * immediately) are the two real actions, so those are what render here
- * instead of a fabricated pause.
+ * `/api/updates/campaigns`. The campaign lifecycle
+ * (`update_manager.py`) is `active` → `suspended` → `active` again, or
+ * → `revoked`/`expired`/`completed` (terminal). SUSPEND stops both the
+ * on-connect push and `apply-now` without discarding pinned artifacts or
+ * per-agent attempt history; RESUME reactivates the same campaign exactly
+ * where it left off. REVOKE is the terminal, non-reversible stop.
+ *
+ * A suspended campaign is no longer `active_campaign` (the server only
+ * ever reports one *active* campaign there) — it drops into the history
+ * list with `status: "suspended"`, so RESUME renders on its history row,
+ * not on the rollout card.
  */
 export default function UpdatesSection() {
   const queryClient = useQueryClient()
@@ -53,6 +64,16 @@ export default function UpdatesSection() {
 
   const revoke = useMutation({
     mutationFn: (campaignId: string) => api.post<{ ok: boolean }>(`/api/updates/campaigns/${campaignId}/revoke`),
+    onSuccess: invalidate,
+  })
+
+  const suspend = useMutation({
+    mutationFn: (campaignId: string) => api.post<{ ok: boolean }>(`/api/updates/campaigns/${campaignId}/suspend`),
+    onSuccess: invalidate,
+  })
+
+  const resume = useMutation({
+    mutationFn: (campaignId: string) => api.post<{ ok: boolean }>(`/api/updates/campaigns/${campaignId}/resume`),
     onSuccess: invalidate,
   })
 
@@ -93,9 +114,9 @@ export default function UpdatesSection() {
         ))}
       </div>
 
-      {(check.isError || approve.isError || applyNow.isError || revoke.isError) && (
+      {(check.isError || approve.isError || applyNow.isError || revoke.isError || suspend.isError || resume.isError) && (
         <div className={shared.errorBox}>
-          {[check, approve, applyNow, revoke]
+          {[check, approve, applyNow, revoke, suspend, resume]
             .map((m) => (m.error instanceof ApiError ? m.error.message : null))
             .find((m) => m) ?? 'Something went wrong. Try again.'}
         </div>
@@ -145,6 +166,9 @@ export default function UpdatesSection() {
               <button type="button" className={shared.btn} onClick={() => applyNow.mutate(activeCampaign.id)} disabled={applyNow.isPending}>
                 {applyNow.isPending ? 'APPLYING…' : 'APPLY NOW'}
               </button>
+              <button type="button" className={shared.btn} onClick={() => suspend.mutate(activeCampaign.id)} disabled={suspend.isPending}>
+                {suspend.isPending ? 'SUSPENDING…' : 'SUSPEND'}
+              </button>
               <button type="button" className={shared.btnDanger} onClick={() => revoke.mutate(activeCampaign.id)} disabled={revoke.isPending}>
                 {revoke.isPending ? 'REVOKING…' : 'REVOKE ROLLOUT'}
               </button>
@@ -173,9 +197,14 @@ export default function UpdatesSection() {
                   <div className={`${shared.tableLabel} ${shared.mono}`}>{c.version}</div>
                   <div className={shared.tableSub}>{new Date(c.created_at).toLocaleString()}</div>
                 </div>
-                <span className={shared.tag} style={{ color: c.status === 'active' ? 'var(--brass-600)' : 'var(--text-faint)' }}>
+                <span className={shared.tag} style={{ color: statusChipColor(c.status) }}>
                   {c.status.toUpperCase()}
                 </span>
+                {c.status === 'suspended' && (
+                  <button type="button" className={shared.btnSmall} onClick={() => resume.mutate(c.id)} disabled={resume.isPending}>
+                    {resume.isPending ? 'RESUMING…' : 'RESUME'}
+                  </button>
+                )}
               </div>
             ))}
           </div>

@@ -22,6 +22,7 @@ export interface RawSettingRow {
   help: string
   lifecycle: 'live' | 'restart' | 'env_only'
   source: RawSettingSource
+  editable: boolean
   choices: string[] | null
   min: number | null
   max: number | null
@@ -142,7 +143,7 @@ export interface UpdateCampaign {
   channel: 'stable' | 'dev'
   version: string
   on_connect: boolean
-  status: 'active' | 'revoked' | 'expired' | 'completed'
+  status: 'active' | 'suspended' | 'revoked' | 'expired' | 'completed'
   expires_at: string | null
   created_at: string
 }

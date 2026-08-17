@@ -78,49 +78,6 @@
   border-top: 1px solid var(--border-strong);
 }
 
-.sessions {
-  margin-top: 28px;
-  padding: 18px 20px;
-  border: 1px solid var(--danger);
-  background: var(--danger-bg);
-}
-
-.sessionsTitle {
-  font-family: var(--font-display);
-  font-size: 10px;
-  letter-spacing: var(--track-caps);
-  color: var(--danger);
-  margin-bottom: 6px;
-}
-
-.sessionsBody {
-  font-size: var(--text-sm);
-  color: var(--text-body);
-  margin: 0 0 12px;
-}
-
-.sessionsActions {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.logoutLink {
-  display: inline-flex;
-  align-items: center;
-  padding: 9px 14px;
-  background: transparent;
-  border: 1px solid var(--danger);
-  color: var(--danger);
-  font-family: var(--font-display);
-  font-size: 10px;
-  letter-spacing: var(--track-caps);
-  min-height: 44px;
-  white-space: nowrap;
-  flex-shrink: 0;
-  text-decoration: none;
-}
-
 .sharedNotice {
   padding: 18px 20px;
   border: 1px solid var(--border-line);

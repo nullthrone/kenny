@@ -46,3 +46,49 @@ export interface TotpSetup {
   secret: string
   uri: string
 }
+
+/**
+ * One row of `GET /api/me/sessions` → `{sessions: [...]}`
+ * (`webui/users.py::api_me_sessions`). The raw session id never leaves the
+ * server — `current` is how this browser's own row is told apart from the
+ * others.
+ */
+export interface SessionRow {
+  created_at: string
+  expires_at: string
+  ip: string | null
+  user_agent: string | null
+  current: boolean
+}
+
+/** `POST /api/me/sessions/revoke-others` → `{ok, revoked}` — count of sessions ended. */
+export interface RevokeOthersResponse {
+  ok: boolean
+  revoked: number
+}
+
+/**
+ * One row of `GET /api/me/discord` → `bindings` (`webui/tickets.py::api_me_discord_get`).
+ * Only the raw Discord account id (the snowflake) — no display name is ever
+ * stored, since the only one the server sees lives on the mutable, unverified
+ * `/link` claim, never on the identity itself (ADR-0044).
+ */
+export interface DiscordBinding {
+  discord_user_id: string
+  guild_id: string
+  linked_at: string
+  linked_via: string
+}
+
+/** `GET /api/me/discord` — never a 404; an unlinked account reads as `{linked: false, bindings: []}`. */
+export interface DiscordMeStatus {
+  linked: boolean
+  bindings: DiscordBinding[]
+  note: string
+}
+
+/** `DELETE /api/me/discord` → `{ok, removed}` — count of bindings removed. */
+export interface DiscordUnlinkResponse {
+  ok: boolean
+  removed: number
+}
