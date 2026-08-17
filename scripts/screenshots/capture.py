@@ -138,12 +138,16 @@ async def _capture_shot(context: Any, base_url: str, shot: shots.Shot, out_dir: 
     )
     try:
         await page.goto(base_url + "/" + shot.hash, wait_until="networkidle", timeout=30000)
-        await page.wait_for_selector("#app", state="attached", timeout=15000)
+        # kenny-web mounts React at #root (index.html), not the old hand-written
+        # app's #app.
+        await page.wait_for_selector("#root", state="attached", timeout=15000)
         await _assert_fonts(page)
         await _run_actions(page, shot.actions)
         out_path = out_dir / f"{shot.name}.png"
         if shot.mode == "full_page":
             await page.screenshot(path=str(out_path), full_page=True)
+        elif shot.mode == "viewport":
+            await page.screenshot(path=str(out_path), full_page=False)
         else:
             locator = page.locator(shot.selector).first
             await locator.wait_for(state="visible", timeout=15000)
@@ -172,7 +176,7 @@ async def run(only: list[str] | None, out: str) -> int:
 
     server, serve_task = await _serve(app, port)
     seeded = await seed.seed_app(app)
-    print(f"seeded {len(seeded)} hosts: {', '.join(seeded)}")
+    print(f"seeded {len(seeded.agent_ids)} hosts: {', '.join(seeded.agent_ids)}")
 
     results: list[tuple[str, str]] = []
     proxy_server = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
@@ -190,32 +194,17 @@ async def run(only: list[str] | None, out: str) -> int:
             device_scale_factor=DEVICE_SCALE,
             ignore_https_errors=True,
         )
+        # A real "thomas" superuser session (seed.SeedResult.session_id), not the
+        # legacy shared-token cookie — see OPERATOR_TOKEN's comment above.
         await context.add_cookies(
-            [{"name": "kenny_op", "value": OPERATOR_TOKEN, "url": base_url}]
-        )
-        # Serve the About changelog locally so the modal never waits on GitHub.
-        await context.route(
-            "**/api/changelog",
-            lambda route: route.fulfill(
-                status=200, content_type="application/json", body=_CHANGELOG_JSON
-            ),
-        )
-        # Report a staged agent binary so the Fleet tab omits the "no installer"
-        # banner and enables the Add-a-PC controls (a clean demo, not an error).
-        await context.route(
-            "**/api/agent-binary",
-            lambda route: route.fulfill(
-                status=200,
-                content_type="application/json",
-                body='{"available": true, "version": "1.4.0", "github_configured": true}',
-            ),
+            [{"name": "kenny_op", "value": seeded.session_id, "url": base_url}]
         )
 
         # Font preflight on the first real page — fail loudly before doing work.
         preflight = await context.new_page()
-        await preflight.goto(base_url + "/#/overview", wait_until="networkidle", timeout=30000)
+        await preflight.goto(base_url + "/#/today", wait_until="networkidle", timeout=30000)
         await _assert_fonts(preflight)
-        print("font check: Hanken Grotesk + JetBrains Mono loaded OK")
+        print("font check: Jost + Public Sans + JetBrains Mono loaded OK")
         await preflight.close()
 
         for shot in manifest:
