@@ -502,6 +502,7 @@ class TicketService:
         actor: str = "system",
         reason: str = "",
         id: str | None = None,
+        dedup_key: str = "",
     ) -> Ticket:
         """Mint a ticket in state ``new`` and record its genesis event.
 
@@ -510,6 +511,14 @@ class TicketService:
         ``role_snapshot``/``profile_snapshot`` freeze the requester's
         authorization at creation time so a later account change cannot
         retroactively widen what an in-flight ticket was allowed to do.
+
+        ``dedup_key`` names *what this ticket is about* so a caller can ask
+        :meth:`~kenny_server.ticketstore.TicketStore.find_open_by_dedup_key`
+        whether one is already open for the same thing before minting another.
+        This method does not deduplicate on its own — a caller that wants that
+        must look first, because "already open, so say nothing" and "already
+        open, so note the recurrence there" are the caller's decision, not this
+        one's. Empty (the default) opts out entirely.
         """
 
         stamp = to_iso(self.now())
@@ -525,6 +534,7 @@ class TicketService:
             role_snapshot=role_snapshot,
             profile_snapshot=profile_snapshot,
             summary=summary,
+            dedup_key=dedup_key,
             now=stamp,
         )
         await self.store.append_event(

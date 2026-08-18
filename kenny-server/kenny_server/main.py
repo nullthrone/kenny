@@ -366,6 +366,24 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
     )
     discord_identities = DiscordIdentityStore(db_path)
 
+    def alert_dedup_key(note: Notification) -> str:
+        """Name what an alert notification is *about*, for ticket deduplication.
+
+        Built from the structured discriminators the notification already
+        carries for the auto-ticket rules (``notify.Notification``) -- the host,
+        which producer raised it, and which sections it is about -- never from
+        the free-text title, which is a display string and would silently change
+        this identity whenever its wording did.
+
+        Sorted, so the same set of sections yields the same key whatever order
+        the evaluation happened to visit them in. A notification with no
+        sections (offline, disk forecast) keys on its ``event_type`` alone,
+        which is exactly its subject.
+        """
+
+        subject = "+".join(sorted(note.sections)) if note.sections else ""
+        return f"alert|{note.agent_id or ''}|{note.event_type or note.kind}|{subject}"
+
     async def open_alert_ticket(note: Notification) -> None:
         """Open the ticket an alert asks for (ADR-0027 stays best-effort).
 
@@ -373,8 +391,27 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         owner and is operator-only by the ticket API's own listing rule. The
         alerting agent is frozen as the ticket's target the same way a Discord
         requester's host is.
+
+        **One open ticket per subject.** A condition that keeps re-crossing a
+        threshold used to mint a fresh ticket every time it did, which is how a
+        four-host family fleet produced 38 alert tickets in a month and had 34
+        of them cancelled or left untouched. While a ticket for the same subject
+        is still open, the recurrence is recorded *on that ticket* instead --
+        the information is kept, the second ticket is not. A ``resolved`` ticket
+        does not suppress a new one (see ``find_open_by_dedup_key``): once
+        somebody has dealt with the condition, its return is news again.
         """
 
+        key = alert_dedup_key(note)
+        existing = await ticket_store.find_open_by_dedup_key(key)
+        if existing is not None:
+            await ticket_service.append_event(
+                existing.id,
+                kind="note",
+                actor="system",
+                summary=f"the same condition alerted again: {note.title}",
+            )
+            return
         await ticket_service.create(
             title=note.title,
             origin="alert",
@@ -385,6 +422,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
             summary=note.body,
             actor="system",
             reason="opened from an alert",
+            dedup_key=key,
         )
 
     # Push alerting (ADR-0027): transition detection over the health rules,

@@ -663,7 +663,10 @@ payload the agent sends:
 ```
 
 `stability_index` (Windows Reliability Index, 0–10, or `null`) and `recent_crashes` (the total
-count = sum of the groups' counts) are retained. On the read path the server annotates each
+count = sum of the groups' counts) are retained. The agent always reports `status: "ok"` — it
+reports what happened and does not grade it; the server's health rules are authoritative for
+this section (like `web_activity` above). A `status` an agent does send is not folded into the
+rule's verdict. On the read path the server annotates each
 group with a friendly `category`, a `severity` (`benign`/`notable`/`serious`/`unknown`), and a
 short `suspected_cause` (via the connected LLM, cached) — used both for the dashboard's
 reliability heatmaps and to drive the health rule's crit/warn scoring by pattern, not raw

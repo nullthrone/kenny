@@ -94,17 +94,16 @@ try {
 "#;
 
         let Some(v) = winps::run_json(script) else {
-            return Section::with_fields(
-                Status::Ok,
-                "reliability unavailable",
-                json!({
-                    "stability_index": null,
-                    "recent_crashes": 0,
-                    "window_days": WINDOW_DAYS,
-                    "events": [],
-                    "truncated": false,
-                }),
-            );
+            // A probe that timed out or failed carries NO reading, and must not
+            // be mistaken for one: reporting `recent_crashes: 0` here claims the
+            // host had zero error events, which reads as a clean bill of health
+            // and clears any standing alarm until the next push says otherwise.
+            // Reporting only `status` + `summary` -- all the contract requires
+            // of a section -- makes the server's reliability rule defer instead
+            // (`health_rules._rule_reliability` returns None when the payload
+            // carries no events, no total and no index), so the section shows
+            // "unavailable" rather than "fine".
+            return Section::with_fields(Status::Warn, "reliability unavailable", json!({}));
         };
 
         let total = v.get("recent_crashes").and_then(Value::as_u64).unwrap_or(0);
@@ -122,19 +121,18 @@ try {
         let truncated = groups.len() > MAX_GROUPS;
         groups.truncate(MAX_GROUPS);
 
-        let has_critical = groups
-            .iter()
-            .any(|g| g.get("level").and_then(Value::as_str) == Some("critical"));
-
-        // The agent sets a reasonable status; health_rules.py is authoritative.
-        let (status, summary) = if has_critical || total >= 20 {
-            (Status::Warn, format!("{total} error/critical events in 7d"))
-        } else {
-            (Status::Ok, format!("{total} error event(s) in 7d"))
-        };
+        // Report what happened; do not grade it. Every threshold that decides
+        // whether these counts are worth an operator's attention lives in the
+        // server's `health_rules.py`, and the server does not fold this status
+        // into the rule's verdict (see docs/protocol.md, this section). A
+        // grade here would be one the server cannot lower and one this binary
+        // cannot change without being redeployed: the old
+        // `total >= 20 -> Warn` bar is cleared by every real Windows PC, which
+        // pinned the section at `warn` no matter what the server decided.
+        let summary = format!("{total} error/critical events in 7d");
 
         Section::with_fields(
-            status,
+            Status::Ok,
             summary,
             json!({
                 "stability_index": index,
@@ -158,5 +156,16 @@ mod tests {
         // The breakdown is always present (empty on non-Windows).
         assert!(v.get("events").and_then(|e| e.as_array()).is_some());
         assert!(v.get("window_days").is_some());
+    }
+
+    #[test]
+    fn reliability_never_grades_the_host() {
+        // The server's `health_rules.py` owns every reliability threshold and
+        // does not fold this status into its verdict (docs/protocol.md). A
+        // grade here is one the server cannot lower -- see the comment on the
+        // summary in `windows_impl::collect`. The Windows path is not
+        // reachable in this test on a non-Windows runner; the assertion holds
+        // for the portable stub and pins the intent for both.
+        assert_eq!(collect().into_value().get("status").unwrap(), "ok");
     }
 }

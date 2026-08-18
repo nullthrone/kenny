@@ -88,6 +88,10 @@ export default function ReliabilityBody({ agentId, reliability }: ReliabilityBod
   const [scope, setScope] = useState<'host' | 'fleet'>('host')
 
   const relevantRules = (suppressions.data?.rules ?? []).filter((r) => r.agent_id === '' || r.agent_id === agentId)
+  const events = reliability.events ?? []
+  // A push whose probe failed carries no raw fields at all — only `status` and
+  // `summary`. Distinguish that from a genuine reading of zero.
+  const reading = reliability.recent_crashes !== undefined
 
   function onAddRule(e: FormEvent<HTMLFormElement>) {
     e.preventDefault()
@@ -101,17 +105,26 @@ export default function ReliabilityBody({ agentId, reliability }: ReliabilityBod
 
   return (
     <div>
-      <p className={styles.summary}>
-        Stability index {reliability.stability_index ?? '—'}/10 · {reliability.recent_crashes} error/critical events
-        over {reliability.window_days} days.
-      </p>
+      {reading ? (
+        <p className={styles.summary}>
+          Stability index {reliability.stability_index ?? '—'}/10 · {reliability.recent_crashes} error/critical
+          events over {reliability.window_days} days.
+        </p>
+      ) : (
+        <p className={styles.summary}>
+          No reading: the collector could not read the event log on this push. This is not a
+          clean bill of health — the last successful reading still stands.
+        </p>
+      )}
 
-      <div className={styles.eyebrow}>EVENTS · {reliability.events.length}{reliability.truncated ? '+' : ''}</div>
-      {reliability.events.length === 0 ? (
-        <p className={styles.empty}>No error/critical events in the window.</p>
+      <div className={styles.eyebrow}>EVENTS · {events.length}{reliability.truncated ? '+' : ''}</div>
+      {events.length === 0 ? (
+        <p className={styles.empty}>
+          {reading ? 'No error/critical events in the window.' : 'No breakdown in this push.'}
+        </p>
       ) : (
         <div className={styles.events}>
-          {reliability.events.map((ev) => (
+          {events.map((ev) => (
             <EventCard key={`${ev.source}-${ev.event_id}`} agentId={agentId} event={ev} />
           ))}
         </div>
