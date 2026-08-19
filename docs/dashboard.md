@@ -333,6 +333,23 @@ from a cold load, not just from clicking through the queue. It shows:
   requester, assignee (both shown by username, not a bare id), target PC, and the
   created/updated timestamps.
 - Kenny's running **summary**, and the **resolution** once one is set.
+- A **RESOLVED BY KENNY** chip next to the status, when an unprompted
+  [investigation](itsm.md#kenny-looks-first-before-you-are-asked-to) — not a person — put
+  the ticket in the state it is in. It is a chip and not a footnote because it changes how
+  everything below it should be read. Disagreeing with it needs nothing special: the
+  ordinary reopen button is right there, and the chip disappears the moment somebody uses
+  it, because it describes the ticket's state now and not one it used to be in.
+- A **triage verdict** on the timeline, where an investigation left one. This is the one
+  row that is a finding rather than a line of history, so it gets a frame: the verdict
+  itself (*phantom*, *benign known*, *resolved itself*, *actionable*, *inconclusive* —
+  coloured by whether it needs you, not by which of the five it is), what kenny concluded
+  in a sentence, and **what it checked to conclude that**. The evidence sits next to the
+  verdict rather than behind a click, because it is the reason to believe it. If the server
+  declined to act on a closing verdict, the row says why — while
+  [`KENNY_TRIAGE_RESOLVE`](setup.md) is still off that line is the most informative one on
+  the page, since it says exactly what would have happened with it on. Where the verdict
+  proposes muting a recurring event pattern, the row carries a one-click **MUTE ON THIS PC**
+  button that creates the suppression rule for that host.
 - The **timeline**, above the composer — every event in order, oldest first, scrolling
   inside its own bounded panel: state changes, block/unblock changes, messages (tagged by
   who sent them), tool calls (with their arguments, tagged by [tier](tools.md)),

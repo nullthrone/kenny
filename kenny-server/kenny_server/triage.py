@@ -206,6 +206,11 @@ class TriageService:
                 "resolved",
                 actor="system",
                 reason=f"triage: {verdict} — {finding}" if finding else f"triage: {verdict}",
+                # Stamped on the ticket as well as the trail, so "what did kenny
+                # decide, and was it right" is a query over tickets rather than a
+                # read-through of every history. Cleared automatically if anyone
+                # moves the ticket afterwards.
+                resolved_by=TRIAGE_ACTOR,
             )
             return {"recorded": True, "verdict": verdict, "ticket_state": "resolved"}
         return {

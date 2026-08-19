@@ -192,6 +192,31 @@ sounds. Only having *looked* can. How sure kenny says it is plays no part — a 
 stated confidence is not a measurement, and it is exactly the thing a plausible-but-wrong
 answer would get right.
 
+### What you see
+
+<figure markdown>
+  ![A ticket kenny investigated and resolved by itself: the RESOLVED BY KENNY chip, the phantom verdict, the finding, what was checked, and a one-click mute.](assets/screenshots/ticket-triage.png)
+  <figcaption>An alert kenny looked into before anyone was asked to. The verdict, the
+  evidence behind it, and the suppression it proposes — the whole answer without
+  scrolling.</figcaption>
+</figure>
+
+The verdict lands on the ticket's timeline as a framed row: the verdict word, kenny's
+one-sentence finding, and **what it checked** — the evidence sits with the verdict rather
+than behind a click, because it is the reason to believe it. A verdict the server declined
+to act on says why, which while the resolve switch is off is the most useful line on the
+page: it tells you what would have happened with it on.
+
+A ticket kenny resolved itself carries a **RESOLVED BY KENNY** chip next to its status, and
+says so in the Inbox's DONE list too — so judging the hit rate is reading one list, not
+opening every ticket. The chip goes away as soon as anyone moves the ticket: it describes
+where the ticket stands now, not where it once did.
+
+Where a verdict proposes muting a recurring event pattern, the row has a one-click button
+that creates that suppression rule for that PC. Host-scoped on purpose — the investigation
+looked at one machine and can only vouch for that one; widening a rule to the whole fleet
+stays a separate decision in the [Reliability section](dashboard.md#reliability).
+
 Nothing is closed outright: `resolved` keeps the full reopen window
 (`KENNY_TICKET_AUTOCLOSE_SECS`, default 2 days), and you or the requester can put it back
 to in-progress at any point in it. The verdict, its evidence and the fact that kenny

@@ -468,6 +468,66 @@ async def _seed_tickets(tickets: Any, base: datetime, user_ids: dict[str, int]) 
             defender.id, "operator", actor="system",
             reason="waiting for an operator to pick this up",
         )
+
+        # -- an alert kenny investigated by itself and closed out --------------
+        #
+        # The real case from the operator's own fleet: a disk error naming a
+        # device that is not on that PC. It is the shot worth having because it
+        # is the one a statistical filter gets wrong -- new, high-volume,
+        # disk-related, and meaningless. See ADR-0056.
+        _at(minutes=12)
+        phantom = await tickets.create(
+            id="demo-tkt-phantom",
+            title="grandpa-pc health: crit",
+            origin="alert",
+            requester_user_id=None,
+            agent_id="grandpa-pc",
+            category="alert",
+            summary=(
+                "grandpa-pc health: crit\n"
+                "reliability: ok -> crit (disk/7 ×650 (~93/day) — bad block reported "
+                "on a storage device)"
+            ),
+            actor="system",
+            reason="opened from an alert",
+        )
+        await tickets.append_event(
+            phantom.id, kind="note", actor="triage",
+            summary="looking into this before anyone is asked to",
+        )
+        _at(minutes=11)
+        await tickets.append_event(
+            phantom.id, kind="tool_call", actor="triage", tool="diag_services",
+            tool_class="read_only", ok=True, summary="diag_services succeeded",
+            fields={"agent_id": "grandpa-pc"},
+        )
+        await tickets.append_event(
+            phantom.id, kind="note", actor="triage",
+            summary=(
+                "triage verdict: phantom — the drive this error names is not attached "
+                "to this PC"
+            ),
+            fields={
+                "verdict": "phantom",
+                "finding": (
+                    "The error names \\Device\\Harddisk1, but this PC only has "
+                    "Harddisk0. It is the empty card reader reporting on itself — "
+                    "nothing is failing."
+                ),
+                "evidence": (
+                    "diag_services on grandpa-pc lists one physical disk (Harddisk0); "
+                    "no device answers as Harddisk1"
+                ),
+                "resolvable": True,
+                "suppression_suggestion": {"source": "disk", "event_id": 7},
+            },
+        )
+        _at(minutes=10)
+        await tickets.transition(
+            phantom.id, "resolved", actor="system",
+            reason="triage: phantom — the drive this error names is not attached to this PC",
+            resolved_by="triage",
+        )
     finally:
         tickets._now = original_now  # noqa: SLF001
 

@@ -656,9 +656,15 @@ async def test_only_an_operator_may_assign(service: TicketService) -> None:
 def test_transition_has_no_agent_id_parameter() -> None:
     # Retargeting a ticket is a security control, so it must not ride along on a
     # routine state change -- it is operator-only ``reassign``.
+    #
+    # The exhaustive set is the guard: any parameter added here has to be looked
+    # at, and the question to ask is whether it changes *where* the ticket
+    # points. `resolved_by` does not -- it records who moved it (only ever
+    # "triage" today), so the frozen routing target stays untouchable by a state
+    # change, which is the property this test exists to keep.
     params = inspect.signature(TicketService.transition).parameters
     assert "agent_id" not in params
-    assert set(params) == {"self", "ticket_id", "to_state", "actor", "reason"}
+    assert set(params) == {"self", "ticket_id", "to_state", "actor", "reason", "resolved_by"}
 
 
 async def test_only_an_operator_may_reassign(service: TicketService) -> None:

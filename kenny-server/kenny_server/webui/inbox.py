@@ -79,7 +79,16 @@ def _ticket_item(ticket: Ticket, *, now: datetime) -> dict[str, Any]:
         "waits_on": ticket.blocked_on or "",
         "severity": None,
         "title": ticket.title,
-        "meta": f"#{ticket.number} · {ticket.priority}",
+        # A ticket kenny resolved by itself says so in the row, not only on its
+        # own page: the DONE list is where the hit rate gets read, and that is
+        # only possible if kenny's decisions are distinguishable from a
+        # person's without opening each one. Appended to `meta` rather than
+        # given its own field — the row already has a place for "what else is
+        # true about this ticket".
+        "meta": (
+            f"#{ticket.number} · {ticket.priority}"
+            + (" · resolved by kenny" if ticket.resolved_by == "triage" else "")
+        ),
         "host": ticket.agent_id,
         "age_seconds": _age_seconds(ticket.blocked_since or ticket.updated_at, now=now),
         "gate": None,
