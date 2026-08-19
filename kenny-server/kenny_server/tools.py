@@ -266,9 +266,16 @@ def build_health(
     return health_rules.evaluate_snapshot(snapshot, agent_os=agent_os)
 
 
-async def _agent_overview(
+async def agent_overview(
     agent_id: str, registry: AgentRegistry, store: TelemetryStore
 ) -> dict[str, Any]:
+    """One host's online/health rollup: the shape ``list_agents``/``fleet_overview``
+
+    return per agent. Public (not ``_``-prefixed) because ``ticket_assistant.py``
+    calls it too, to give a ticket turn's system prompt the target host's state
+    without spending a tool round-trip on it.
+    """
+
     agent = registry.get(agent_id)
     latest = await store.latest(agent_id)
     snapshot = latest["snapshot"] if latest else None
@@ -447,7 +454,7 @@ def register_tools(
         ids = await _known_agent_ids(registry, store)
         if principal is not None and principal.scoped:
             ids = [i for i in ids if i in principal.hosts]
-        agents = [await _agent_overview(i, registry, store) for i in ids]
+        agents = [await agent_overview(i, registry, store) for i in ids]
         return {"active_agent": registry.active_for(_active_key(principal)), "agents": agents}
 
     @mcp.tool(
@@ -481,7 +488,7 @@ def register_tools(
         ids = await _known_agent_ids(registry, store)
         if principal is not None and principal.scoped:
             ids = [i for i in ids if i in principal.hosts]
-        agents = [await _agent_overview(i, registry, store) for i in ids]
+        agents = [await agent_overview(i, registry, store) for i in ids]
         overall = health_rules.worst(*(a["overall"] for a in agents if a["overall"] != "unknown"))
         return {"overall": overall or "unknown", "agents": agents}
 

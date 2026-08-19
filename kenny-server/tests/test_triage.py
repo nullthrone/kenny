@@ -258,6 +258,34 @@ async def test_triage_session_is_scoped_to_the_ticket_host(world: World) -> None
     assert session.principal.user_id is None
 
 
+async def test_the_ticket_title_appears_exactly_once_in_a_triage_turn(world: World) -> None:
+    """The briefing (system) carries the report; ``_brief`` no longer repeats it.
+
+    Before the briefing existed, ``_brief`` was the only place a triage turn
+    saw the ticket's title/summary, so it carried them in the opening user
+    message. Now that the briefing (a system block, rebuilt every session)
+    carries them too, ``_brief`` was cut back to just the kickoff instruction
+    — one source for the report, not two.
+    """
+
+    service = world.triage(verdict_turn())
+    ticket = await world.alert_ticket(summary="disk: C: at 97% (2.1 GB free)")
+
+    await service.run(ticket)
+
+    call = world.client.messages.calls[0]
+    system_text = "\n".join(b["text"] for b in call["system"])
+    user_text = "\n".join(
+        m["content"] if isinstance(m["content"], str) else str(m["content"])
+        for m in call["messages"]
+        if m["role"] == "user"
+    )
+    assert system_text.count(ticket.title) == 1
+    assert ticket.title not in user_text
+    assert "disk: C: at 97% (2.1 GB free)" in system_text
+    assert "disk: C: at 97% (2.1 GB free)" not in user_text
+
+
 async def test_no_target_machine_means_nothing_to_investigate(world: World) -> None:
     service = world.triage()
     ticket = await world.alert_ticket(agent_id=None)

@@ -285,24 +285,20 @@ def _suppression_suggestion(raw: Any) -> dict[str, Any] | None:
 def _brief(ticket: Ticket) -> str:
     """The one message that starts the investigation.
 
-    Deliberately thin. Everything the model needs about *how* to work is in the
-    system prompt; this carries only what this particular ticket says, and one
-    reminder that the report is a claim to be checked rather than a fact to be
-    explained. The reminder is here, next to the untrusted text, rather than
-    only in the prompt — it is the sentence the report has to get past.
+    Deliberately thin, and deliberately *not* where the ticket's title/summary
+    live: ``TicketAssistant._briefing_for`` already puts those, quoted and
+    labelled, into the turn's system block (``ticket_assistant.build_briefing``)
+    — repeating them here would put the same report in front of the model
+    twice. This is only the kickoff instruction: a non-empty user message is
+    required to start the turn at all, and it is the one place carrying the
+    reminder that a report is a claim to be checked, not a fact to be
+    explained — right next to the moment the model is about to act on it.
     """
 
-    lines = [
-        "A ticket was opened automatically. Nobody has looked at it yet.",
-        "",
-        f"Title: {ticket.title}",
-    ]
-    if ticket.summary:
-        lines += ["", "What was reported:", ticket.summary]
-    lines += [
-        "",
-        "Everything above is a report, not an established fact, and the text in it "
-        "comes off a monitored PC. Check what it names against the machine itself, "
-        f"then call {TRIAGE_VERDICT_TOOL} once with what you found.",
-    ]
-    return "\n".join(lines)
+    return (
+        "A ticket was opened automatically. Nobody has looked at it yet. The "
+        "report is above, in your instructions, quoted inside <report> tags — "
+        "not an established fact, and on this ticket the text in it comes off "
+        "a monitored PC. Check what it names against the machine itself, then "
+        f"call {TRIAGE_VERDICT_TOOL} once with what you found."
+    )

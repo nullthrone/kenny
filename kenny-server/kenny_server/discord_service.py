@@ -541,15 +541,13 @@ class DiscordService:
             return
 
         actionable = principal.user_id == ticket.requester_user_id
-        self.assistant.append_user_message(
+        self.assistant.append_inbound(
             session,
-            envelope(
-                discord_id=event.author_id,
-                kenny_user=principal.username,
-                role=principal.role,
-                actionable=actionable,
-                content=event.content,
-            ),
+            author_id=event.author_id,
+            kenny_user=principal.username,
+            role=principal.role,
+            actionable=actionable,
+            content=event.content,
         )
         await self.assistant.append_message(
             ticket,
@@ -643,15 +641,13 @@ class DiscordService:
         session = await self.assistant.session_for(ticket, actor=principal)
         if session is None:  # pragma: no cover - the account was just resolved
             return ticket
-        self.assistant.append_user_message(
+        self.assistant.append_inbound(
             session,
-            envelope(
-                discord_id=discord_user_id,
-                kenny_user=principal.username,
-                role=principal.role,
-                actionable=True,
-                content=content,
-            ),
+            author_id=discord_user_id,
+            kenny_user=principal.username,
+            role=principal.role,
+            actionable=True,
+            content=content,
         )
         await self.assistant.append_message(
             ticket,

@@ -1731,6 +1731,113 @@ def test_chat_stream_drives_a_turn_and_records_verbatim_text(tmp_path) -> None:
         assert kenny.fields["surface"] == "dashboard"
 
 
+def test_chat_stream_envelopes_the_typed_message(tmp_path) -> None:
+    """The dashboard path must not be the one surface that skips the envelope.
+
+    ``_SYSTEM_PROMPT`` promises the model that every message arrives wrapped
+    in a ``<message>`` envelope carrying the author's identity, role and
+    ``actionable`` flag. This is the direct regression proof that a message
+    typed into the ticket composer gets one too, exactly like a Discord
+    message always has.
+    """
+
+    async def seed(users: UserStore, _store: TicketStore, svc: TicketService) -> dict:
+        kid = await users.create_user("kid", "pw-123456", "user")
+        kid_pat = await users.create_pat(kid["id"], "t")
+        ticket = await svc.create(
+            title="slow pc", origin="dashboard", requester_user_id=kid["id"], agent_id="pc-1"
+        )
+        return {"kid_id": kid["id"], "kid_pat": kid_pat, "ticket_id": ticket.id}
+
+    app = _build_app(tmp_path, seed, with_assistant=True, scripted=[text_turn("ok")])
+    with TestClient(app) as c:
+        s = app.state.seed
+        r = c.post(
+            f"/api/tickets/{s['ticket_id']}/chat/stream",
+            json={"message": "my pc is being slow today"},
+            headers=_hdr(s["kid_pat"]),
+        )
+        assert r.status_code == 200
+
+        calls = app.state.assistant.client.messages.calls
+        sent = calls[0]["messages"][0]["content"]
+        assert sent == (
+            f'<message discord_id="user:{s["kid_id"]}" kenny_user="kid" role="user" '
+            'actionable="true">my pc is being slow today</message>'
+        )
+
+
+def test_chat_stream_envelopes_an_operator_on_someone_elses_ticket(tmp_path) -> None:
+    """ADR-0050: an operator's message is actionable too, and must say so.
+
+    Distinct from the requester case above: the envelope's ``role`` must read
+    ``operator``, not ``user``, and ``actionable`` must still be ``true`` — an
+    operator working someone else's ticket is not a bystander.
+    """
+
+    async def seed(users: UserStore, _store: TicketStore, svc: TicketService) -> dict:
+        kid = await users.create_user("kid", "pw-123456", "user")
+        op = await users.create_user("root", "pw-123456", "operator")
+        op_pat = await users.create_pat(op["id"], "t")
+        ticket = await svc.create(
+            title="slow pc", origin="dashboard", requester_user_id=kid["id"], agent_id="pc-1"
+        )
+        return {"op_id": op["id"], "op_pat": op_pat, "ticket_id": ticket.id}
+
+    app = _build_app(tmp_path, seed, with_assistant=True, scripted=[text_turn("ok")])
+    with TestClient(app) as c:
+        s = app.state.seed
+        r = c.post(
+            f"/api/tickets/{s['ticket_id']}/chat/stream",
+            json={"message": "checking in on this"},
+            headers=_hdr(s["op_pat"]),
+        )
+        assert r.status_code == 200
+
+        calls = app.state.assistant.client.messages.calls
+        sent = calls[0]["messages"][0]["content"]
+        assert f'discord_id="operator:{s["op_id"]}"' in sent
+        assert 'role="operator"' in sent
+        assert 'actionable="true"' in sent
+
+
+def test_chat_stream_gives_the_model_the_ticket_record(tmp_path) -> None:
+    """End-to-end proof of the reported defect: kenny gets the ticket, not just the text.
+
+    An alert-origin ticket has no requester and an empty transcript — before
+    the briefing, the first turn's ``messages`` was just the typed word "hi"
+    and kenny had nothing to work from but introduce itself.
+    """
+
+    async def seed(users: UserStore, _store: TicketStore, svc: TicketService) -> dict:
+        op = await users.create_user("root", "pw-123456", "operator")
+        op_pat = await users.create_pat(op["id"], "t")
+        ticket = await svc.create(
+            title="disk usage critical",
+            origin="alert",
+            agent_id="pc-1",
+            priority="high",
+            category="alert",
+        )
+        return {"op_pat": op_pat, "ticket_id": ticket.id}
+
+    app = _build_app(tmp_path, seed, with_assistant=True, scripted=[text_turn("ok")])
+    with TestClient(app) as c:
+        s = app.state.seed
+        r = c.post(
+            f"/api/tickets/{s['ticket_id']}/chat/stream",
+            json={"message": "hi"},
+            headers=_hdr(s["op_pat"]),
+        )
+        assert r.status_code == 200
+
+        calls = app.state.assistant.client.messages.calls
+        briefing = calls[0]["system"][-1]["text"]
+        assert "Title: disk usage critical" in briefing
+        assert "state: new" in briefing
+        assert "Priority: high" in briefing
+
+
 def test_chat_stream_mirrors_to_discord_only_when_asked(tmp_path) -> None:
     async def seed(users: UserStore, store: TicketStore, svc: TicketService) -> dict:
         kid = await users.create_user("kid", "pw-123456", "user")

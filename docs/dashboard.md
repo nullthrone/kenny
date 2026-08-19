@@ -372,7 +372,11 @@ from a cold load, not just from clicking through the queue. It shows:
   [Ask kenny overlay](#ask-kenny) — it has no host to leave, since it is permanently scoped
   to the ticket's one target PC. "Add a note" keeps its operator+ gating; "Ask kenny" does
   not — any `user` may chat on their own ticket the same way they always could over
-  Discord. Sending streams `POST /api/tickets/{id}/chat/stream` through the same SSE event
+  Discord. Every turn opens with kenny already briefed on the ticket: its title, state,
+  priority and category, the target machine's current health, who it belongs to and who is
+  working it, and a digest of the trail (notes, state moves, consent/approval decisions) —
+  so kenny picks up where the ticket actually is instead of starting from nothing. Sending
+  streams `POST /api/tickets/{id}/chat/stream` through the same SSE event
   vocabulary the overlay renders, so a reply appears token-by-token in the timeline. An
   **"Enter to send"** checkbox (off by default, remembered per browser) controls whether
   Enter sends the message or inserts a newline. A checkbox — **"also post in the Discord
