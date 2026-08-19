@@ -17,8 +17,11 @@ wire shape see [`protocol.md`](protocol.md).
 - The server evaluates **health rules server-side** ([`health_rules.py`](https://github.com/t11z/kenny/blob/main/kenny-server/kenny_server/health_rules.py)).
   These rules are **authoritative** for fleet aggregation: thresholds can change without
   redeploying agents.
-- Each section also carries an **agent-set status**. The final status of a section is the
-  **worst-of** (agent-reported status, server-rule status). An agent's **overall health**
+- Each section also carries an **agent-set status**. Where a section has a server-side
+  rule, **that rule's verdict is the section's status** — the agent-set one is not folded
+  in, so a threshold change (or an operator suppression) can relax a section and not only
+  tighten it. The agent-set status stands alone for a section with no rule, and for a rule
+  that defers because the payload lacks the fields it scores. An agent's **overall health**
   is the worst-of all its sections.
 
 See [ADR-0007](adr/0007-telemetry-push-model-and-sqlite-storage.md) for the push-model and
@@ -36,9 +39,10 @@ Every section, every agent, and the fleet header use the same four-state model:
 | Dashed grey | `unknown` / offline | no recent telemetry / agent not connected |
 
 Statuses **roll up by worst-of**. Within a PC, the overall status is the worst section
-status; the agent-reported and server-rule status for a section are themselves combined
-worst-of. Across the fleet, the header shows the worst status of any agent. `crit` beats
-`warn` beats `ok`; an offline agent contributes `unknown` rather than a false `ok`.
+status; across the fleet, the header shows the worst status of any agent. `crit` beats
+`warn` beats `ok`; an offline agent contributes `unknown` rather than a false `ok`. The
+roll-up is between *sections*, not between the two opinions about one section — for that,
+see the rule precedence above.
 
 ## Telemetry sections
 
@@ -100,7 +104,10 @@ donut (noted in the rule column).
 
 The `reliability` section reports a **breakdown** of Error/Critical Windows event-log
 entries — grouped by `source` + `event_id`, each with a sample message and per-day counts
-— rather than a single number. To make those groups legible (and to score them
+— rather than a single number. The agent reports what happened and does not grade it: it
+always sends `status: "ok"` for this section, and the health rule below is the only
+judgement. A push whose event-log probe failed carries no counts at all (only a
+`reliability unavailable` summary), so a failed reading is never mistaken for a clean one. To make those groups legible (and to score them
 meaningfully, see below), the server sorts each distinct group into one **friendly
 category**:
 

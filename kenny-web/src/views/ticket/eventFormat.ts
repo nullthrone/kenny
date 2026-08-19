@@ -14,6 +14,7 @@ export function formatEventTime(at: string): string {
  */
 export function actorLabel(actor: string, directory: DirectoryUser[] | undefined): string {
   if (actor === 'assistant') return 'KENNY'
+  if (actor === 'triage') return 'KENNY · UNPROMPTED'
   if (actor === 'system') return 'SYSTEM'
   const [role, idPart] = actor.split(':')
   const id = idPart !== undefined ? Number(idPart) : NaN
@@ -24,15 +25,98 @@ export function actorLabel(actor: string, directory: DirectoryUser[] | undefined
 }
 
 export function actorColor(actor: string): string {
-  if (actor === 'assistant') return 'var(--brass-600)'
+  // `triage` shares kenny's colour deliberately: it is the same assistant, and
+  // the label carries the one thing that differs — nobody asked it to look.
+  if (actor === 'assistant' || actor === 'triage') return 'var(--brass-600)'
   if (actor === 'system') return 'var(--text-faint)'
   return 'var(--text-muted)'
 }
 
 export function actorDot(actor: string): string {
-  if (actor === 'assistant') return 'var(--brass-500)'
+  if (actor === 'assistant' || actor === 'triage') return 'var(--brass-500)'
   if (actor === 'system') return 'var(--ink-200)'
   return 'var(--ink-300)'
+}
+
+/** The five verdicts `ticket_triage_verdict` may report (`toolloop.TRIAGE_VERDICTS`). */
+export const TRIAGE_VERDICTS = [
+  'phantom',
+  'benign_known',
+  'resolved_itself',
+  'actionable',
+  'inconclusive',
+] as const
+
+export type TriageVerdict = (typeof TRIAGE_VERDICTS)[number]
+
+/**
+ * How a verdict reads at a glance. Three colours, not five: the only
+ * distinction the reader acts on is "nothing to do" / "your turn" / "nobody
+ * knows yet". Which of the three benign shapes it was matters when you read
+ * the finding, not when you scan the timeline.
+ */
+export function verdictTone(verdict: string): 'settled' | 'attention' | 'unclear' {
+  if (verdict === 'actionable') return 'attention'
+  // Unknown falls to `unclear`, not `settled`. The five verdicts live on the
+  // server (`toolloop.TRIAGE_VERDICTS`), so a build of this UI can be older
+  // than the set — and a verdict word it has never heard of must not be
+  // painted as an all-clear. "I don't recognise this" reads as unclear, which
+  // is what it is.
+  if (verdict === 'phantom' || verdict === 'benign_known' || verdict === 'resolved_itself') {
+    return 'settled'
+  }
+  return 'unclear'
+}
+
+export function verdictLabel(verdict: string): string {
+  return verdict.replace(/_/g, ' ').toUpperCase()
+}
+
+/** A suppression an investigation proposed — a suggestion, never a rule. */
+export interface SuppressionSuggestion {
+  source: string
+  event_id: number
+}
+
+/** The parts of a triage verdict the timeline renders. */
+export interface TriageFinding {
+  verdict: string
+  finding: string
+  evidence: string
+  /** Present only when the server declined to act on the verdict, and says why. */
+  notResolvedBecause: string | null
+  suggestion: SuppressionSuggestion | null
+}
+
+function asSuggestion(value: unknown): SuppressionSuggestion | null {
+  const raw = asRecord(value)
+  if (!raw) return null
+  const source = typeof raw.source === 'string' ? raw.source : ''
+  const eventId = typeof raw.event_id === 'number' ? raw.event_id : null
+  return source && eventId !== null ? { source, event_id: eventId } : null
+}
+
+/**
+ * A triage verdict, or null for every other note.
+ *
+ * An investigation writes two kinds of note: the "looking into this" line it
+ * opens with, and the verdict it ends with. Only the second carries a
+ * `verdict` field, and only the second is worth more than one line — so the
+ * field, not the actor, is what decides.
+ */
+export function triageFinding(event: TicketEvent): TriageFinding | null {
+  if (event.kind !== 'note' || event.actor !== 'triage') return null
+  const fields = asRecord(event.fields)
+  const verdict = typeof fields?.verdict === 'string' ? fields.verdict : ''
+  if (!verdict) return null
+  const why = typeof fields?.not_resolved_because === 'string' ? fields.not_resolved_because : ''
+  return {
+    verdict,
+    finding: typeof fields?.finding === 'string' ? fields.finding : '',
+    evidence: typeof fields?.evidence === 'string' ? fields.evidence : '',
+    notResolvedBecause: why || null,
+    suggestion: asSuggestion(fields?.suppression_suggestion),
+  }
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {

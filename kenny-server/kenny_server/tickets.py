@@ -188,6 +188,12 @@ APPROVAL_KINDS: frozenset[str] = frozenset({"operator_approval", "user_consent"}
 #: something has to be told, never what a model or a chat platform is.
 GateResumer = Callable[[TicketApproval], Awaitable[None]]
 
+#: Called with a ticket this module just created, to investigate it before a
+#: person is asked to. Registered by whoever can actually drive an assistant
+#: turn (``main.py`` wires ``triage.TriageService.run``); this module only knows
+#: that a new ticket is worth looking into, never how looking is done.
+TriageRunner = Callable[["Ticket"], Awaitable[None]]
+
 #: Called with ``(ticket, to_state)`` right after a transition (or an
 #: auto-close) commits. Same shape of seam as :data:`GateResumer`: this module
 #: stays transport- and model-blind (see the module docstring), so it only
@@ -436,6 +442,48 @@ class TicketService:
         self._gate_resumer: GateResumer | None = None
         self._transition_notifier: TransitionNotifier | None = None
         self._stall_notifier: StallNotifier | None = None
+        self._triage: TriageRunner | None = None
+        self._triage_tasks: set[asyncio.Task[None]] = set()
+
+    def set_triage(self, runner: "TriageRunner | None") -> None:
+        """Register who investigates a newly created ticket (see :data:`TriageRunner`).
+
+        Unset — the default, and what every test that does not ask for it gets —
+        means tickets are created exactly as they were before triage existed.
+        """
+
+        self._triage = runner
+
+    def _schedule_triage(self, ticket: Ticket) -> None:
+        """Start the investigation without making the creator wait for it.
+
+        An investigation talks to a model and to a PC; it takes seconds to tens
+        of seconds. :meth:`create` is called from an alert loop and from a
+        request handler, and neither may block on that — a slow or wedged
+        triage must not delay, let alone fail, the creation of the ticket it is
+        about.
+
+        The task reference is held (``_triage_tasks``) because a bare
+        ``create_task`` may be garbage-collected mid-flight, and discarded on
+        completion so the set cannot grow without bound. Exceptions are the
+        runner's own to handle — ``TriageService.run`` never raises — and the
+        done-callback re-reads the result only to keep the loop from logging an
+        unretrieved exception if some other runner ever does.
+        """
+
+        if self._triage is None:
+            return
+        task = asyncio.create_task(self._triage(ticket))
+        self._triage_tasks.add(task)
+
+        def _done(finished: asyncio.Task[None]) -> None:
+            self._triage_tasks.discard(finished)
+            if not finished.cancelled():
+                exc = finished.exception()
+                if exc is not None:
+                    logger.exception("triage task for ticket %s failed", ticket.id, exc_info=exc)
+
+        task.add_done_callback(_done)
 
     def set_gate_resumer(self, resumer: GateResumer | None) -> None:
         """Register who answers a gate this service closes by itself.
@@ -502,6 +550,7 @@ class TicketService:
         actor: str = "system",
         reason: str = "",
         id: str | None = None,
+        dedup_key: str = "",
     ) -> Ticket:
         """Mint a ticket in state ``new`` and record its genesis event.
 
@@ -510,6 +559,14 @@ class TicketService:
         ``role_snapshot``/``profile_snapshot`` freeze the requester's
         authorization at creation time so a later account change cannot
         retroactively widen what an in-flight ticket was allowed to do.
+
+        ``dedup_key`` names *what this ticket is about* so a caller can ask
+        :meth:`~kenny_server.ticketstore.TicketStore.find_open_by_dedup_key`
+        whether one is already open for the same thing before minting another.
+        This method does not deduplicate on its own — a caller that wants that
+        must look first, because "already open, so say nothing" and "already
+        open, so note the recurrence there" are the caller's decision, not this
+        one's. Empty (the default) opts out entirely.
         """
 
         stamp = to_iso(self.now())
@@ -525,6 +582,7 @@ class TicketService:
             role_snapshot=role_snapshot,
             profile_snapshot=profile_snapshot,
             summary=summary,
+            dedup_key=dedup_key,
             now=stamp,
         )
         await self.store.append_event(
@@ -537,6 +595,10 @@ class TicketService:
             fields={"origin": origin, "agent_id": agent_id},
             now=stamp,
         )
+        # Last, and only once the ticket is durably on the record: the
+        # investigation writes into this ticket, so it cannot start before the
+        # ticket exists, and it must not be able to prevent it from existing.
+        self._schedule_triage(ticket)
         return ticket
 
     async def get(self, ticket_id: str) -> Ticket:
@@ -550,7 +612,13 @@ class TicketService:
     # -- the chokepoint (state) ---------------------------------------------
 
     async def transition(
-        self, ticket_id: str, to_state: str, *, actor: str, reason: str = ""
+        self,
+        ticket_id: str,
+        to_state: str,
+        *,
+        actor: str,
+        reason: str = "",
+        resolved_by: str = "",
     ) -> Ticket:
         """Move a ticket to ``to_state`` on behalf of ``actor``.
 
@@ -576,6 +644,12 @@ class TicketService:
         exactly what this transition is ending. A held call must not execute,
         and a settled ticket must not be nudged back to ``in_progress``, just
         because someone later decides the gate.
+
+        ``resolved_by`` names a non-human mover of the ticket (today only
+        ``"triage"``) and is stamped on the ticket itself, not just the trail.
+        It defaults to empty and is rewritten on every transition, so it always
+        describes how the ticket reached the state it is in now — see
+        :meth:`~kenny_server.ticketstore.TicketStore.set_state`.
         """
 
         ticket = await self.get(ticket_id)
@@ -590,7 +664,12 @@ class TicketService:
                     decided_via=f"ticket moved to {to_state}",
                 )
         updated = await self.store.set_state(
-            ticket_id, to_state, actor=actor, reason=reason, now=to_iso(self.now())
+            ticket_id,
+            to_state,
+            actor=actor,
+            reason=reason,
+            resolved_by=resolved_by,
+            now=to_iso(self.now()),
         )
         if updated is None:  # pragma: no cover - existence checked above
             raise TicketNotFoundError(ticket_id)

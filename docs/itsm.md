@@ -148,6 +148,91 @@ tells the requester so. See [`dashboard.md`](dashboard.md#approval-gates) for th
 inline decision and [Ticket detail](dashboard.md#ticket-detail) for the same gate on a
 ticket's own timeline.
 
+## kenny looks first, before you are asked to
+
+A ticket used to be a question put to you. Most of them did not need your judgement —
+they needed somebody to go and check. So kenny now does that first, unprompted: the
+moment a ticket is created, it runs **one read-only investigation** on that ticket's PC
+and writes what it found into the ticket, before you ever open it.
+
+The point is that the raw signal often cannot answer the question it raises. A Windows
+event reading *"bad block on device \Device\Harddisk1"* is alarming by every measure —
+new, high volume, disk-related — and means nothing at all if that PC has no `Harddisk1`.
+Whether it does is not in the event. It is only on the machine.
+
+**What an investigation may do is deliberately small:**
+
+- **Read-only tools only**, and not even all of them: nothing that looks at somebody's
+  screen, reads their files, or lists the sites they visited. Those need the person's
+  consent, and nobody is present in an investigation to give it. Everything that changes
+  a PC is simply not available to it.
+- **One PC** — the one the ticket is about, frozen when the ticket was created.
+- **A bounded number of steps** (`KENNY_TRIAGE_MAX_ITERATIONS`, default 8). An
+  investigation that runs out does not guess: it produces no verdict, and the ticket
+  stays open with whatever it did find.
+
+It ends with a **verdict**: *phantom* (the report names something that is not on this
+PC), *benign known* (real but harmless, confirmed), *resolved itself*, *actionable* (a
+real problem — this always stays open for you), or *inconclusive* (it could not tell, and
+says what was missing). On a recurring reliability pattern it may also **suggest a
+suppression rule** — a suggestion only; creating one stays yours.
+
+### Letting kenny close what it checked
+
+Off by default. With **Let triage resolve a ticket** (`KENNY_TRIAGE_RESOLVE`) on, kenny
+may set a ticket to `resolved` itself — but only when all three hold:
+
+1. the verdict is one that can close anything (never *actionable* or *inconclusive*),
+2. **a read-only check actually ran and actually succeeded** on that ticket, and
+3. the ticket was opened by an alert, not by a person.
+
+The second is the important one, and it is the server's own check, not kenny's word for
+it: a conclusion reached by reasoning alone cannot close a ticket, however confident it
+sounds. Only having *looked* can. How sure kenny says it is plays no part — a model's
+stated confidence is not a measurement, and it is exactly the thing a plausible-but-wrong
+answer would get right.
+
+### What you see
+
+<figure markdown>
+  ![A ticket kenny investigated and resolved by itself: the RESOLVED BY KENNY chip, the phantom verdict, the finding, what was checked, and a one-click mute.](assets/screenshots/ticket-triage.png)
+  <figcaption>An alert kenny looked into before anyone was asked to. The verdict, the
+  evidence behind it, and the suppression it proposes — the whole answer without
+  scrolling.</figcaption>
+</figure>
+
+The verdict lands on the ticket's timeline as a framed row: the verdict word, kenny's
+one-sentence finding, and **what it checked** — the evidence sits with the verdict rather
+than behind a click, because it is the reason to believe it. A verdict the server declined
+to act on says why, which while the resolve switch is off is the most useful line on the
+page: it tells you what would have happened with it on.
+
+A ticket kenny resolved itself carries a **RESOLVED BY KENNY** chip next to its status, and
+says so in the Inbox's DONE list too — so judging the hit rate is reading one list, not
+opening every ticket. The chip goes away as soon as anyone moves the ticket: it describes
+where the ticket stands now, not where it once did.
+
+Where a verdict proposes muting a recurring event pattern, the row has a one-click button
+that creates that suppression rule for that PC. Host-scoped on purpose — the investigation
+looked at one machine and can only vouch for that one; widening a rule to the whole fleet
+stays a separate decision in the [Reliability section](dashboard.md#reliability).
+
+Nothing is closed outright: `resolved` keeps the full reopen window
+(`KENNY_TICKET_AUTOCLOSE_SECS`, default 2 days), and you or the requester can put it back
+to in-progress at any point in it. The verdict, its evidence and the fact that kenny
+decided are all on the ticket's timeline.
+
+Leave the switch off to keep every verdict as a recommendation — the investigation still
+runs and still writes its findings, you just make the call. That is the sensible way to
+start: read a few weeks of verdicts, then decide whether they earn the switch.
+
+Turn the whole thing off with **Investigate new tickets automatically**
+(`KENNY_TRIAGE_ENABLED`); tickets then arrive uninvestigated, as they did before. It also
+stays off entirely without an `ANTHROPIC_API_KEY` — there is nothing to investigate with.
+
+See [ADR-0056](adr/0056-unprompted-ticket-triage.md) for the reasoning and the three
+controls that bound it.
+
 ## Operator approval vs. user consent — two different questions
 
 A held step can be waiting on one of two different things, and they are not

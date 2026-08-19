@@ -99,3 +99,116 @@ def test_setup_closes_after_first_account(tmp_path) -> None:
         # Once an account exists, setup is closed.
         assert c.post("/setup", data={"username": "x", "password": "y"},
                       follow_redirects=False).status_code == 409
+
+
+def _tickets_schema_without(column: str) -> str:
+    """``ticketstore._SCHEMA`` as it looked before ``column`` was added.
+
+    Derived from the live schema rather than copied, so it stays honest as the
+    table grows — and it repairs the column list properly instead of patching
+    one comma by hand. The hand-patched version worked only while the column
+    under test happened to be the last one; the next column added made it emit
+    invalid SQL, which is exactly the brittleness this avoids.
+    """
+
+    from kenny_server import ticketstore
+
+    out: list[str] = []
+    for line in ticketstore._SCHEMA.splitlines():
+        if column in line:
+            continue
+        out.append(line)
+    # Whichever column definition is now last must not end with a comma. Walk
+    # back from the closing paren of the tickets table, skipping comment lines.
+    end = next(i for i, line in enumerate(out) if line.strip() == ");")
+    for i in range(end - 1, -1, -1):
+        stripped = out[i].strip()
+        if not stripped or stripped.startswith("--"):
+            continue
+        out[i] = out[i].rstrip().rstrip(",")
+        break
+    return "\n".join(out)
+
+
+def test_tickets_created_before_resolved_by_gain_the_column_and_keep_their_rows(
+    tmp_path,
+) -> None:
+    """Same migration path as ``dedup_key`` below, for the same reason.
+
+    A column added after the table's original release reaches a *live*
+    deployment only through ``PRAGMA table_info`` + ``ALTER TABLE ADD COLUMN``;
+    the ``CREATE TABLE IF NOT EXISTS`` in ``_SCHEMA`` is a no-op there. Every
+    fresh-database test passes either way, so this is the one that would catch a
+    missing ``_TICKET_MIGRATED_COLUMNS`` entry.
+    """
+
+    from kenny_server import ticketstore
+
+    db_path = str(tmp_path / "old-resolved-by.sqlite")
+    con = sqlite3.connect(db_path)
+    con.executescript(_tickets_schema_without("resolved_by"))
+    con.execute(
+        "INSERT INTO tickets (id, number, title, state, origin, priority, summary, "
+        "created_at, updated_at) VALUES ('t1', 1, 'resolved before the upgrade', "
+        "'resolved', 'alert', 'normal', '', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')"
+    )
+    con.commit()
+    assert "resolved_by" not in {r[1] for r in con.execute("PRAGMA table_info(tickets)")}
+    con.close()
+
+    async def reopen() -> None:
+        store = ticketstore.TicketStore(db_path)
+        await store.connect()  # runs _migrate
+        tickets = await store.list(limit=10)
+        assert len(tickets) == 1
+        assert tickets[0].title == "resolved before the upgrade"
+        # Backfilled empty: a ticket resolved before triage existed was not
+        # resolved by it, and must not start claiming so.
+        assert tickets[0].resolved_by == ""
+        await store.close()
+
+    asyncio.run(reopen())
+
+
+def test_tickets_created_before_dedup_key_gain_the_column_and_keep_their_rows(tmp_path) -> None:
+    """An existing ``tickets`` table gains ``dedup_key`` without losing a row.
+
+    ``TicketStore`` has no migration framework beyond ``PRAGMA table_info`` +
+    ``ALTER TABLE ADD COLUMN`` (see its docstring), so a column added after the
+    table's original release only reaches a *live* deployment through that path
+    — the ``CREATE TABLE IF NOT EXISTS`` in ``_SCHEMA`` is a no-op there. This
+    test is the one that would catch forgetting the ``_TICKET_MIGRATED_COLUMNS``
+    entry, because every fresh-database test passes either way.
+
+    The backfilled value must be the empty "not deduplicated" sentinel: a
+    pre-existing ticket was never keyed, and must not start suppressing new ones.
+    """
+
+    from kenny_server import ticketstore
+
+    db_path = str(tmp_path / "old-tickets.sqlite")
+
+    con = sqlite3.connect(db_path)
+    con.executescript(_tickets_schema_without("dedup_key"))
+    con.execute(
+        "INSERT INTO tickets (id, number, title, state, origin, priority, summary, "
+        "created_at, updated_at) VALUES ('t1', 1, 'from before the upgrade', 'new', "
+        "'discord', 'normal', '', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')"
+    )
+    con.commit()
+    cols = {r[1] for r in con.execute("PRAGMA table_info(tickets)")}
+    assert "dedup_key" not in cols  # the pre-upgrade shape
+    con.close()
+
+    async def reopen() -> None:
+        store = ticketstore.TicketStore(db_path)
+        await store.connect()  # runs _migrate
+        tickets = await store.list(limit=10)
+        assert len(tickets) == 1
+        assert tickets[0].title == "from before the upgrade"
+        assert tickets[0].dedup_key == ""
+        # And the empty sentinel never matches, so nothing is suppressed by it.
+        assert await store.find_open_by_dedup_key("") is None
+        await store.close()
+
+    asyncio.run(reopen())

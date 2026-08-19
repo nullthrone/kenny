@@ -280,3 +280,38 @@ def test_inbox_scopes_flagged_sections_to_a_users_own_hosts(tmp_path) -> None:
         assert "bob-pc" not in hosts
         assert "alice-pc" in hosts
         assert body["counts"]["needs_you"] == 1
+
+
+def test_the_done_list_says_which_tickets_kenny_resolved_itself(tmp_path) -> None:
+    """The DONE group is where the hit rate gets read.
+
+    That only works if kenny's decisions are distinguishable from a person's
+    without opening each ticket — otherwise judging whether to switch on
+    `KENNY_TRIAGE_RESOLVE` means reading every timeline, which is the work this
+    whole feature exists to remove.
+    """
+
+    app = build_app(db_path=str(tmp_path / "done.sqlite"))
+    with TestClient(app) as c:
+        h = _bearer(app)
+        tickets = app.state.tickets
+
+        async def seed():
+            by_kenny = await tickets.create(
+                title="phantom disk", origin="alert", agent_id="pc1", actor="system"
+            )
+            await tickets.transition(
+                by_kenny.id, "resolved", actor="system", reason="triage: phantom",
+                resolved_by="triage",
+            )
+            by_person = await tickets.create(
+                title="printer jam", origin="alert", agent_id="pc1", actor="system"
+            )
+            await tickets.transition(by_person.id, "resolved", actor="operator", reason="fixed it")
+
+        c.portal.call(seed)
+
+        rows = c.get("/api/inbox?group=done", headers=h).json()["items"]
+        by_title = {r["title"]: r["meta"] for r in rows}
+        assert "resolved by kenny" in by_title["phantom disk"]
+        assert "resolved by kenny" not in by_title["printer jam"]

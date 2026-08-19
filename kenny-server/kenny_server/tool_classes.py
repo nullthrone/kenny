@@ -115,7 +115,28 @@ TOOL_CLASSES: dict[str, str] = {
     "account_delete": NORMAL_CHANGE,
     "account_session_action": NORMAL_CHANGE,
     "password_policy_set": NORMAL_CHANGE,
+    # -- unprompted triage (kenny_server/triage.py) -------------------------
+    # Records the verdict of an unprompted investigation and, when the server's
+    # own preconditions hold, resolves the ticket. STANDARD_CHANGE, not
+    # NORMAL_CHANGE, and the distinction is load-bearing: a normal change holds
+    # for an operator, and an unprompted triage session has no operator to
+    # answer the hold -- the ticket would simply stall on
+    # ``blocked_on="operator"``. It earns the "routine, reversible,
+    # low-blast-radius" reading on its own terms: it moves a ticket to
+    # ``resolved``, never to ``closed``, and ``resolved`` carries a reopen
+    # window (``tickets.auto_close_resolved``) plus a ``resolved -> in_progress``
+    # transition any requester or operator may make.
+    "ticket_triage_verdict": STANDARD_CHANGE,
 }
+
+#: Every tool that only observes. Derived, never hand-listed, so a tool added to
+#: :data:`TOOL_CLASSES` is in or out of this set by its own tier and cannot be
+#: forgotten here. This is what bounds an unprompted triage session: it is
+#: handed exactly these names plus its own verdict tool, so a change-tier call
+#: is not merely refused at the gate -- it is never in the schemas to attempt.
+READ_ONLY_TOOLS: frozenset[str] = frozenset(
+    name for name, tier in TOOL_CLASSES.items() if tier == READ_ONLY
+)
 
 # Tools whose *invocation* touches someone's privacy or needs the person at the
 # keyboard to know: looking at their screen, opening a remote-help session on

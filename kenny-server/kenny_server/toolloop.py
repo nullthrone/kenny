@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from collections.abc import AsyncIterator, Collection
+from collections.abc import AsyncIterator, Awaitable, Callable, Collection
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -36,6 +36,10 @@ from .tools import (
 )
 from .tunnel import AgentTunnel, ToolError
 
+#: How many model round-trips one drive may take before it stops and returns
+#: what it has. A ceiling on a runaway loop, not a budget anyone spends
+#: deliberately — a caller that wants a *tighter* bound (unprompted triage does,
+#: see ``triage.py``) passes ``max_iterations`` to :func:`drive_events`.
 _MAX_ITERATIONS = 16
 # Cap the serialized size of a single tool result fed back to the model. Agent
 # telemetry, fs_read file contents, and command output are attacker-influenceable
@@ -45,6 +49,38 @@ _MAX_TOOL_RESULT_CHARS = 100_000
 
 # Server-only tools and their JSON-schema arg keys. These read the registry /
 # store and are always READ_ONLY.
+#: The tool an unprompted triage turn ends with (see ``kenny_server/triage.py``).
+TRIAGE_VERDICT_TOOL = "ticket_triage_verdict"
+
+#: The verdicts it may report, and the subset the server will act on. Fixed, so
+#: the model cannot invent a category, and validated server-side: an unknown
+#: value is not a new kind of answer, it is a malformed one.
+TRIAGE_VERDICTS: tuple[str, ...] = (
+    "phantom",
+    "benign_known",
+    "resolved_itself",
+    "actionable",
+    "inconclusive",
+)
+
+#: Verdicts that *may* let the server resolve a ticket. Necessary, never
+#: sufficient — see ``triage.may_resolve`` for the rest of the preconditions.
+TRIAGE_CLOSING_VERDICTS: frozenset[str] = frozenset(
+    {"phantom", "benign_known", "resolved_itself"}
+)
+
+#: Server tools no surface gets unless it names them. ``build_tool_schemas``
+#: emits the whole catalog when a caller passes no allowlist (the dashboard
+#: copilot does exactly that, ``chat.py``), so a tool that belongs to one
+#: surface alone has to be withheld from that default rather than added to it.
+SURFACE_ONLY_TOOLS: frozenset[str] = frozenset({TRIAGE_VERDICT_TOOL})
+
+#: Server tools :class:`ToolExecutor` dispatches itself. Guards
+#: :meth:`ToolExecutor.register_server_tool` against shadowing one of them.
+_BUILTIN_SERVER_TOOLS: frozenset[str] = frozenset(
+    {"list_agents", "select_agent", "fleet_overview", "agent_health", "agent_snapshot"}
+)
+
 SERVER_TOOLS: dict[str, dict[str, Any]] = {
     "list_agents": {
         "description": "List known agents with online state and rolled-up health.",
@@ -76,6 +112,54 @@ SERVER_TOOLS: dict[str, dict[str, Any]] = {
             "section": {"type": "string", "description": "Optional single section name."},
         },
         "required": ["id"],
+    },
+    TRIAGE_VERDICT_TOOL: {
+        "description": (
+            "Record the verdict of this triage investigation and finish. Call this "
+            "exactly once, as the last thing you do. The server decides what happens "
+            "to the ticket; your job is to state what you found and what proves it."
+        ),
+        "properties": {
+            "verdict": {
+                "type": "string",
+                "enum": list(TRIAGE_VERDICTS),
+                "description": (
+                    "phantom: the report names something that does not exist on this "
+                    "host. benign_known: real but harmless, confirmed on the host. "
+                    "resolved_itself: the condition existed and no longer does. "
+                    "actionable: a real problem needing a human. inconclusive: you "
+                    "could not decide -- say what is missing."
+                ),
+            },
+            "finding": {
+                "type": "string",
+                "description": (
+                    "One or two plain sentences for the household's admin: what is "
+                    "actually going on. No jargon, no event-log text pasted back."
+                ),
+            },
+            "evidence": {
+                "type": "string",
+                "description": (
+                    "Which check you ran and what it showed. Name the tool and the "
+                    "part of its output the verdict rests on."
+                ),
+            },
+            "suppression_suggestion": {
+                "type": "object",
+                "description": (
+                    "Optional, and only for a recurring reliability event pattern you "
+                    "judged phantom or benign_known: the (source, event_id) an operator "
+                    "could mute. A suggestion only -- you cannot create the rule."
+                ),
+                "properties": {
+                    "source": {"type": "string"},
+                    "event_id": {"type": "integer"},
+                },
+                "required": ["source", "event_id"],
+            },
+        },
+        "required": ["verdict", "finding", "evidence"],
     },
 }
 
@@ -200,7 +284,10 @@ def build_tool_schemas(allowed: frozenset[str] | None = None) -> list[dict[str, 
 
     schemas: list[dict[str, Any]] = []
     for name, spec in SERVER_TOOLS.items():
-        if allowed is not None and name not in allowed:
+        if allowed is None:
+            if name in SURFACE_ONLY_TOOLS:
+                continue
+        elif name not in allowed:
             continue
         gated = (
             " (state-changing — requires operator confirmation)" if is_state_changing(name) else ""
@@ -382,10 +469,35 @@ class ToolExecutor:
         self.tunnel = tunnel
         self.call_log = call_log
         self.screenshots = screenshots
+        #: Server tools handled by a collaborator rather than by this class, as
+        #: ``handler(args, session) -> dict``. An additive seam, in the shape of
+        #: ``TelemetryStore.annotate`` (ADR-0041): the executor is shared by
+        #: every surface and deliberately knows nothing about tickets, so a tool
+        #: that needs a ``TicketService`` registers itself here at wiring time
+        #: instead of dragging that dependency into this module. Empty by
+        #: default, so an executor nobody extends behaves exactly as before.
+        self.server_tool_handlers: dict[str, Callable[..., Awaitable[dict[str, Any]]]] = {}
+
+    def register_server_tool(
+        self, name: str, handler: Callable[..., Awaitable[dict[str, Any]]]
+    ) -> None:
+        """Route ``name`` to ``handler`` instead of this class's own dispatch.
+
+        Registering a name this class already handles is refused: silently
+        shadowing ``agent_snapshot`` (say) would be invisible at the call site
+        and change what every surface gets back from it.
+        """
+
+        if name in _BUILTIN_SERVER_TOOLS:
+            raise ValueError(f"{name} is handled by ToolExecutor itself and cannot be overridden")
+        self.server_tool_handlers[name] = handler
 
     async def run_server_tool(
         self, tool: str, args: dict[str, Any], *, session: Any = None
     ) -> dict[str, Any]:
+        handler = self.server_tool_handlers.get(tool)
+        if handler is not None:
+            return await handler(args, session=session)
         if tool == "list_agents":
             return await self._list_agents(session)
         if tool == "select_agent":
@@ -585,6 +697,7 @@ async def drive_events(
     client: Any,
     model: str,
     policy: LoopPolicy,
+    max_iterations: int = _MAX_ITERATIONS,
 ) -> AsyncIterator[dict[str, Any]]:
     """Run the tool-use loop, yielding structured events as they happen.
 
@@ -619,7 +732,7 @@ async def drive_events(
     acceptable for this single-user, self-hosted dashboard.
     """
 
-    for _ in range(_MAX_ITERATIONS):
+    for _ in range(max(1, max_iterations)):
         # Drain any queued tool_use blocks from the prior assistant turn.
         while session._queue:
             block = session._queue.pop(0)

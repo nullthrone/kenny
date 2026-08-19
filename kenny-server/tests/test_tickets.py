@@ -656,9 +656,15 @@ async def test_only_an_operator_may_assign(service: TicketService) -> None:
 def test_transition_has_no_agent_id_parameter() -> None:
     # Retargeting a ticket is a security control, so it must not ride along on a
     # routine state change -- it is operator-only ``reassign``.
+    #
+    # The exhaustive set is the guard: any parameter added here has to be looked
+    # at, and the question to ask is whether it changes *where* the ticket
+    # points. `resolved_by` does not -- it records who moved it (only ever
+    # "triage" today), so the frozen routing target stays untouchable by a state
+    # change, which is the property this test exists to keep.
     params = inspect.signature(TicketService.transition).parameters
     assert "agent_id" not in params
-    assert set(params) == {"self", "ticket_id", "to_state", "actor", "reason"}
+    assert set(params) == {"self", "ticket_id", "to_state", "actor", "reason", "resolved_by"}
 
 
 async def test_only_an_operator_may_reassign(service: TicketService) -> None:
@@ -1103,3 +1109,88 @@ async def test_update_patches_fields_without_touching_state(
     assert patched.state == "in_progress"
     with pytest.raises(TicketNotFoundError):
         await service.update("nope", summary="x")
+
+
+# -- the triage trigger --------------------------------------------------------
+
+
+async def test_creating_a_ticket_starts_an_investigation(service: TicketService) -> None:
+    """A new ticket schedules the registered investigation, and hands it the ticket."""
+
+    seen: list[str] = []
+    started = asyncio.Event()
+
+    async def runner(ticket) -> None:  # type: ignore[no-untyped-def]
+        seen.append(ticket.id)
+        started.set()
+
+    service.set_triage(runner)
+    ticket = await service.create(title="t", origin="alert", agent_id="pc1")
+    await asyncio.wait_for(started.wait(), timeout=2)
+    assert seen == [ticket.id]
+
+
+async def test_without_a_registered_investigator_nothing_is_scheduled(
+    service: TicketService,
+) -> None:
+    """The default. Every test and every deployment without a key gets this."""
+
+    ticket = await service.create(title="t", origin="alert", agent_id="pc1")
+    assert ticket.state == "new"
+    assert service._triage is None
+    assert not service._triage_tasks
+
+
+async def test_an_investigation_that_blows_up_still_leaves_the_ticket(
+    service: TicketService, caplog
+) -> None:
+    """The creator must not be able to lose a ticket to a broken investigator.
+
+    ``TriageService.run`` swallows its own failures, so this exercises the
+    scheduling side: a runner that raises anyway must be contained here too,
+    because a bare ``create_task`` exception would otherwise surface as an
+    unretrieved-exception warning on the loop and nowhere useful.
+    """
+
+    failed = asyncio.Event()
+
+    async def runner(_ticket) -> None:  # type: ignore[no-untyped-def]
+        failed.set()
+        raise RuntimeError("the model is on fire")
+
+    service.set_triage(runner)
+    ticket = await service.create(title="t", origin="alert", agent_id="pc1")
+    await asyncio.wait_for(failed.wait(), timeout=2)
+    # Wait for the done-callback rather than yielding a fixed number of times:
+    # how many loop iterations that takes is an implementation detail, and
+    # guessing it is how a test becomes flaky on a busy machine.
+    async with asyncio.timeout(2):
+        while service._triage_tasks:
+            await asyncio.sleep(0)
+
+    assert await service.get(ticket.id) is not None
+
+
+async def test_the_investigation_does_not_delay_the_creator(
+    service: TicketService,
+) -> None:
+    """``create`` returns before the investigation has run a single step.
+
+    It is called from the alert loop and from a request handler, and an
+    investigation takes seconds: neither may wait on it.
+    """
+
+    release = asyncio.Event()
+    entered = asyncio.Event()
+
+    async def runner(_ticket) -> None:  # type: ignore[no-untyped-def]
+        entered.set()
+        await release.wait()
+
+    service.set_triage(runner)
+    ticket = await service.create(title="t", origin="alert", agent_id="pc1")
+    assert ticket.id  # returned while the runner is still parked
+    await asyncio.wait_for(entered.wait(), timeout=2)
+    assert service._triage_tasks
+    release.set()
+    await asyncio.sleep(0)
