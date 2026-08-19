@@ -612,7 +612,13 @@ class TicketService:
     # -- the chokepoint (state) ---------------------------------------------
 
     async def transition(
-        self, ticket_id: str, to_state: str, *, actor: str, reason: str = ""
+        self,
+        ticket_id: str,
+        to_state: str,
+        *,
+        actor: str,
+        reason: str = "",
+        resolved_by: str = "",
     ) -> Ticket:
         """Move a ticket to ``to_state`` on behalf of ``actor``.
 
@@ -638,6 +644,12 @@ class TicketService:
         exactly what this transition is ending. A held call must not execute,
         and a settled ticket must not be nudged back to ``in_progress``, just
         because someone later decides the gate.
+
+        ``resolved_by`` names a non-human mover of the ticket (today only
+        ``"triage"``) and is stamped on the ticket itself, not just the trail.
+        It defaults to empty and is rewritten on every transition, so it always
+        describes how the ticket reached the state it is in now — see
+        :meth:`~kenny_server.ticketstore.TicketStore.set_state`.
         """
 
         ticket = await self.get(ticket_id)
@@ -652,7 +664,12 @@ class TicketService:
                     decided_via=f"ticket moved to {to_state}",
                 )
         updated = await self.store.set_state(
-            ticket_id, to_state, actor=actor, reason=reason, now=to_iso(self.now())
+            ticket_id,
+            to_state,
+            actor=actor,
+            reason=reason,
+            resolved_by=resolved_by,
+            now=to_iso(self.now()),
         )
         if updated is None:  # pragma: no cover - existence checked above
             raise TicketNotFoundError(ticket_id)

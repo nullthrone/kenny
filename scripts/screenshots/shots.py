@@ -217,6 +217,17 @@ MANIFEST: list[Shot] = [
         note="the grandpa-pc Wi-Fi ticket — full lifecycle: message, tool calls, a held+approved gate, resolution.",
         actions=[{"wait_for": "[data-shot=ticket-timeline]"}, {"sleep": SETTLE_MS}],
     ),
+    Shot(
+        name="ticket-triage",
+        hash="#/inbox/ticket/demo-tkt-phantom",
+        mode="full_page",
+        theme="light",
+        note=(
+            "an alert kenny investigated unprompted and closed out: the verdict, what it "
+            "checked, and the one-click mute it proposes (ADR-0056)."
+        ),
+        actions=[{"wait_for": "[data-shot=triage-verdict]"}, {"sleep": SETTLE_MS}],
+    ),
     # -- Log ----------------------------------------------------------------
     Shot(
         name="log",

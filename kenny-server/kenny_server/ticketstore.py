@@ -79,7 +79,12 @@ CREATE TABLE IF NOT EXISTS tickets (
     -- Comment above, not trailing: SQLite rewrites this CREATE statement on
     -- ALTER TABLE ... DROP COLUMN and cannot parse a comment after the last
     -- column definition.
-    dedup_key         TEXT NOT NULL DEFAULT ''
+    dedup_key         TEXT NOT NULL DEFAULT '',
+    -- Who put the ticket in the state it is in now, when that was not a person:
+    -- 'triage' for an unprompted investigation, '' for everyone else. Rewritten
+    -- by every state change, so it describes the current state and not some
+    -- earlier one -- a reopened ticket no longer claims kenny resolved it.
+    resolved_by       TEXT NOT NULL DEFAULT ''
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tickets_number ON tickets (number);
 CREATE INDEX IF NOT EXISTS idx_tickets_state ON tickets (state, updated_at DESC);
@@ -213,6 +218,12 @@ class Ticket:
     #: ticket a human opened -- two people asking the same question are two
     #: cases, and only a machine repeats itself verbatim.
     dedup_key: str = ""
+    #: ``"triage"`` when an unprompted investigation put the ticket in its
+    #: current state, empty otherwise. The trail knows this too (a ``state`` row
+    #: with actor ``system`` and a ``triage:`` reason); the column exists so
+    #: "what did kenny decide" is a query rather than a read-through of every
+    #: ticket's history.
+    resolved_by: str = ""
 
     @classmethod
     def from_row(cls, row: aiosqlite.Row) -> Ticket:
@@ -243,6 +254,7 @@ class Ticket:
                 None if row["assignee_user_id"] is None else int(row["assignee_user_id"])
             ),
             dedup_key=row["dedup_key"] or "",
+            resolved_by=row["resolved_by"] or "",
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -453,7 +465,7 @@ _TICKET_COLUMNS = (
     "agent_id, role_snapshot, profile_snapshot, summary, resolution, "
     "created_at, updated_at, closed_at, "
     "blocked_on, blocked_since, blocked_ref, blocked_nudged_at, assignee_user_id, "
-    "dedup_key"
+    "dedup_key, resolved_by"
 )
 _EVENT_COLUMNS = (
     "id, ticket_id, at, kind, actor, tool, tool_class, ok, from_state, to_state, "
@@ -486,6 +498,7 @@ _TICKET_MIGRATED_COLUMNS: dict[str, str] = {
     "blocked_nudged_at": "TEXT",
     "assignee_user_id": "INTEGER",
     "dedup_key": "TEXT NOT NULL DEFAULT ''",
+    "resolved_by": "TEXT NOT NULL DEFAULT ''",
 }
 
 
@@ -621,7 +634,7 @@ class TicketStore:
         await self._conn.execute(
             f"INSERT INTO tickets ({_TICKET_COLUMNS}) "
             "SELECT ?, COALESCE(MAX(number), 0) + 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
-            "NULL, ?, ?, NULL, '', NULL, '', NULL, NULL, ? FROM tickets",
+            "NULL, ?, ?, NULL, '', NULL, '', NULL, NULL, ?, '' FROM tickets",
             (
                 ticket_id,
                 title,
@@ -829,6 +842,7 @@ class TicketStore:
         *,
         actor: str,
         reason: str = "",
+        resolved_by: str = "",
         now: datetime | str | None = None,
     ) -> Ticket | None:
         """Low-level state write. Do not call this directly.
@@ -843,6 +857,12 @@ class TicketStore:
         Leaving ``to_state != "in_progress"`` also clears the blocked-on axis
         in the same UPDATE: ``blocked_on`` is only meaningful while a ticket is
         being worked, so "resolved but still blocked" must not be representable.
+
+        ``resolved_by`` is written on **every** state change, defaulting to
+        empty. It describes the state the ticket is in *now*, so a human
+        resolving a ticket clears whatever was there and reopening it clears it
+        too — a reopened ticket that no longer claims kenny resolved it is the
+        whole point of rewriting rather than only setting.
         """
 
         stamp = _stamp(now)
@@ -853,15 +873,16 @@ class TicketStore:
         async with write_lock():
             if to_state == "in_progress":
                 await self._conn.execute(
-                    "UPDATE tickets SET state = ?, updated_at = ?, closed_at = ? WHERE id = ?",
-                    (to_state, stamp, closed_at, ticket_id),
+                    "UPDATE tickets SET state = ?, updated_at = ?, closed_at = ?, "
+                    "resolved_by = ? WHERE id = ?",
+                    (to_state, stamp, closed_at, resolved_by, ticket_id),
                 )
             else:
                 await self._conn.execute(
                     "UPDATE tickets SET state = ?, updated_at = ?, closed_at = ?, "
                     "blocked_on = '', blocked_since = NULL, blocked_ref = '', "
-                    "blocked_nudged_at = NULL WHERE id = ?",
-                    (to_state, stamp, closed_at, ticket_id),
+                    "blocked_nudged_at = NULL, resolved_by = ? WHERE id = ?",
+                    (to_state, stamp, closed_at, resolved_by, ticket_id),
                 )
             await self._insert_event(
                 ticket_id=ticket_id,

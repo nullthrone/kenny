@@ -145,6 +145,16 @@ export default function InboxTicket() {
         <span className={styles.statusChip} style={{ color: status.color }}>
           {status.label}
         </span>
+        {t.resolved_by === 'triage' && (
+          // Said in the header, not only on the timeline where it scrolls: a
+          // ticket nobody looked at was still decided by something, and the
+          // reader has to know which before they read anything else. The
+          // reopen button below is the ordinary `resolved -> in_progress`
+          // affordance — no special case needed to disagree with it.
+          <span className={styles.autoChip} title="Resolved by an unprompted investigation">
+            RESOLVED BY KENNY
+          </span>
+        )}
       </div>
       <div className={styles.meta}>
         {t.agent_id ?? 'no host yet'} · opened {formatAge(createdAgeSeconds)} ago by {requesterLabel} via {t.origin} ·{' '}
@@ -195,7 +205,11 @@ export default function InboxTicket() {
 
       {events.data && (
         <div className={styles.sectionGap}>
-          <Timeline events={events.data.events} directory={directory.data?.users} />
+          <Timeline
+            events={events.data.events}
+            directory={directory.data?.users}
+            agentId={t.agent_id}
+          />
         </div>
       )}
 

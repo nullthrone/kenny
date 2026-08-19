@@ -373,6 +373,61 @@ async def test_an_investigation_that_looked_first_resolves_the_ticket(world: Wor
     assert note["resolvable"] is True
 
 
+async def test_a_ticket_kenny_resolved_says_so_on_the_ticket(world: World) -> None:
+    """``resolved_by`` is what makes "what did kenny decide" a query.
+
+    The trail knows it too, but reading it means walking every ticket's history.
+    """
+
+    service = world.triage(
+        tool_turn("t1", "diag_services", {}), verdict_turn(), text_turn("done")
+    )
+    ticket = await world.alert_ticket()
+    await service.run(ticket)
+
+    after = await world.ticket_store.get(ticket.id)
+    assert after is not None
+    assert after.state == "resolved"
+    assert after.resolved_by == TRIAGE_ACTOR
+
+
+async def test_a_person_resolving_a_ticket_does_not_get_attributed_to_kenny(
+    world: World,
+) -> None:
+    """The default is empty, and only triage ever fills it."""
+
+    ticket = await world.alert_ticket()
+    await world.tickets.transition(ticket.id, "resolved", actor="operator", reason="handled")
+    after = await world.ticket_store.get(ticket.id)
+    assert after is not None and after.resolved_by == ""
+
+
+async def test_reopening_a_kenny_resolved_ticket_drops_the_attribution(
+    world: World,
+) -> None:
+    """It describes the state the ticket is in *now*, not one it used to be in.
+
+    A reopened ticket that still said "resolved by kenny" would be read as a
+    verdict that still stands, when in fact somebody disagreed with it — which
+    inverts exactly the signal this column exists to carry.
+    """
+
+    service = world.triage(
+        tool_turn("t1", "diag_services", {}), verdict_turn(), text_turn("done")
+    )
+    ticket = await world.alert_ticket()
+    await service.run(ticket)
+    assert (await world.ticket_store.get(ticket.id)).resolved_by == TRIAGE_ACTOR
+
+    await world.tickets.transition(
+        ticket.id, "in_progress", actor="operator", reason="not convinced"
+    )
+    after = await world.ticket_store.get(ticket.id)
+    assert after is not None
+    assert after.state == "in_progress"
+    assert after.resolved_by == ""
+
+
 async def test_an_investigation_that_only_reasoned_leaves_the_ticket_open(world: World) -> None:
     """The same verdict, no check run: recorded, not acted on, and it says why."""
 

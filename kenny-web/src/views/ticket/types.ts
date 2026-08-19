@@ -49,6 +49,12 @@ export interface Ticket {
   blocked_since: string | null
   blocked_ref: string
   assignee_user_id: number | null
+  /**
+   * `'triage'` when an unprompted investigation put the ticket in its current
+   * state, `''` otherwise. Rewritten on every transition, so it describes the
+   * state now — a reopened ticket no longer claims kenny resolved it.
+   */
+  resolved_by: string
   allowed_transitions: string[]
   allowed_blocks: string[]
   can_unblock: boolean

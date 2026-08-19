@@ -84,3 +84,14 @@
 .sectionGap {
   margin-bottom: 28px;
 }
+
+/* "kenny decided this, not a person" — next to the status chip, because the
+ * two answer the same question and one qualifies the other. */
+.autoChip {
+  font-family: var(--font-display);
+  font-size: 10px;
+  letter-spacing: var(--track-caps);
+  color: var(--brass-600);
+  border: 1px solid var(--border-line);
+  padding: 2px 8px;
+}
