@@ -65,7 +65,9 @@ from .store import (
 from .ticket_assistant import TicketAssistant
 from .ticket_rules import TicketRuleList
 from .ticketstore import TicketStore
+from .recommend import ai_available
 from .tickets import TicketService, ticket_sweep_loop
+from .triage import TriageService
 from .tokenstore import AgentTokenStore
 from .toolloop import ToolExecutor
 from .tools import CallLog, ScreenshotStore, register_tools
@@ -366,6 +368,24 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
     )
     discord_identities = DiscordIdentityStore(db_path)
 
+    def alert_dedup_key(note: Notification) -> str:
+        """Name what an alert notification is *about*, for ticket deduplication.
+
+        Built from the structured discriminators the notification already
+        carries for the auto-ticket rules (``notify.Notification``) -- the host,
+        which producer raised it, and which sections it is about -- never from
+        the free-text title, which is a display string and would silently change
+        this identity whenever its wording did.
+
+        Sorted, so the same set of sections yields the same key whatever order
+        the evaluation happened to visit them in. A notification with no
+        sections (offline, disk forecast) keys on its ``event_type`` alone,
+        which is exactly its subject.
+        """
+
+        subject = "+".join(sorted(note.sections)) if note.sections else ""
+        return f"alert|{note.agent_id or ''}|{note.event_type or note.kind}|{subject}"
+
     async def open_alert_ticket(note: Notification) -> None:
         """Open the ticket an alert asks for (ADR-0027 stays best-effort).
 
@@ -373,8 +393,27 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         owner and is operator-only by the ticket API's own listing rule. The
         alerting agent is frozen as the ticket's target the same way a Discord
         requester's host is.
+
+        **One open ticket per subject.** A condition that keeps re-crossing a
+        threshold used to mint a fresh ticket every time it did, which is how a
+        four-host family fleet produced 38 alert tickets in a month and had 34
+        of them cancelled or left untouched. While a ticket for the same subject
+        is still open, the recurrence is recorded *on that ticket* instead --
+        the information is kept, the second ticket is not. A ``resolved`` ticket
+        does not suppress a new one (see ``find_open_by_dedup_key``): once
+        somebody has dealt with the condition, its return is news again.
         """
 
+        key = alert_dedup_key(note)
+        existing = await ticket_store.find_open_by_dedup_key(key)
+        if existing is not None:
+            await ticket_service.append_event(
+                existing.id,
+                kind="note",
+                actor="system",
+                summary=f"the same condition alerted again: {note.title}",
+            )
+            return
         await ticket_service.create(
             title=note.title,
             origin="alert",
@@ -385,6 +424,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
             summary=note.body,
             actor="system",
             reason="opened from an alert",
+            dedup_key=key,
         )
 
     # Push alerting (ADR-0027): transition detection over the health rules,
@@ -432,22 +472,44 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
             "the ticket assistant is disabled: no usable Anthropic client (%s)", exc
         )
     ticket_assistant: TicketAssistant | None = None
+    triage: TriageService | None = None
     if ticket_client is not None:
+        ticket_executor = ToolExecutor(
+            registry=registry,
+            store=store,
+            tunnel=tunnel,
+            call_log=call_log,
+            screenshots=screenshots,
+        )
         ticket_assistant = TicketAssistant(
             tickets=ticket_service,
             users=user_store,
-            executor=ToolExecutor(
-                registry=registry,
-                store=store,
-                tunnel=tunnel,
-                call_log=call_log,
-                screenshots=screenshots,
-            ),
+            executor=ticket_executor,
             client=ticket_client,
             model=str(settings.get("KENNY_CHAT_MODEL")),
             max_turns_per_ticket=int(settings.get("KENNY_DISCORD_MAX_TURNS_PER_TICKET")),
             approval_ttl_secs=int(settings.get("KENNY_TICKET_APPROVAL_TTL_SECS")),
         )
+        # Unprompted triage rides on the same assistant and the same executor —
+        # one investigation is an ordinary ticket turn with a narrower tool set
+        # and its own prompt, not a second engine. It registers its verdict tool
+        # on the executor here rather than being handed to it, so `toolloop`
+        # keeps knowing nothing about tickets (see triage.py).
+        triage = TriageService(
+            tickets=ticket_service,
+            assistant=ticket_assistant,
+            max_iterations=int(settings.get("KENNY_TRIAGE_MAX_ITERATIONS")),
+            resolve_enabled=bool(settings.get("KENNY_TRIAGE_RESOLVE")),
+        )
+        triage.register(ticket_executor)
+        # Wired only when a key is actually configured. ``client_factory()``
+        # succeeding is not the same question: the client constructs happily
+        # without ``ANTHROPIC_API_KEY`` and only fails when it is used, so
+        # binding triage to that would fire one doomed investigation per ticket
+        # created. ``ai_available`` is the predicate the rest of the AI features
+        # already answer this with (``event_categories``, ``recommend``).
+        if ai_available() and bool(settings.get("KENNY_TRIAGE_ENABLED")):
+            ticket_service.set_triage(triage.run)
 
     # Discord bot surface (optional). The service is constructed only when a bot
     # token exists — an env-only secret, so its presence is already known here —

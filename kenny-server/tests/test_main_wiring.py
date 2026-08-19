@@ -450,3 +450,152 @@ def test_ticket_rules_are_wired_and_a_seeded_rule_survives_a_boot(tmp_path) -> N
         assert len(sent) == 1
         assert sent[0].event_type == "offline"
         assert opened == []  # suppressed by the seeded rule
+
+
+def _alert(agent: str, *, title: str, sections: dict[str, str]) -> Notification:
+    return Notification(
+        title=title,
+        body="body",
+        agent_id=agent,
+        kind="alert",
+        event_type="health",
+        sections=sections,
+    )
+
+
+def test_a_recurring_alert_notes_itself_on_the_open_ticket_instead_of_opening_another(
+    tmp_path,
+) -> None:
+    """One open ticket per subject; the recurrence is kept, the duplicate is not.
+
+    The measured failure this closes: a condition that keeps re-crossing a
+    threshold minted a fresh ticket every time, because ``crit`` escalations
+    deliberately bypass the alert cooldown (``alerting.py``). On a real
+    four-host fleet that produced 38 alert tickets in a month, 34 of which were
+    cancelled or never touched.
+    """
+
+    app = build_app(db_path=str(tmp_path / "dedup.sqlite"))
+    with TestClient(app):
+        open_ticket = app.state.alert_engine._open_ticket
+        store = app.state.ticket_store
+
+        note = _alert("pc1", title="pc1 health: crit", sections={"reliability": "crit"})
+        asyncio.run(open_ticket(note))
+        asyncio.run(open_ticket(note))
+        asyncio.run(open_ticket(note))
+
+        tickets = asyncio.run(store.list(limit=50))
+        assert len(tickets) == 1
+        # The two suppressed alerts are still on the record, on that ticket.
+        events = asyncio.run(store.list_events(tickets[0].id))
+        recurrences = [e for e in events if "alerted again" in (e.summary or "")]
+        assert len(recurrences) == 2
+
+
+def test_a_different_subject_still_opens_its_own_ticket(tmp_path) -> None:
+    """Deduplication must not merge two unrelated problems on one host.
+
+    The key is built from the notification's structured discriminators, so a
+    different section -- or a different producer -- is a different subject.
+    """
+
+    app = build_app(db_path=str(tmp_path / "dedup2.sqlite"))
+    with TestClient(app):
+        open_ticket = app.state.alert_engine._open_ticket
+        store = app.state.ticket_store
+
+        asyncio.run(open_ticket(_alert("pc1", title="t", sections={"reliability": "crit"})))
+        asyncio.run(open_ticket(_alert("pc1", title="t", sections={"disk": "crit"})))
+        # Same section, different host.
+        asyncio.run(open_ticket(_alert("pc2", title="t", sections={"reliability": "crit"})))
+
+        assert len(asyncio.run(store.list(limit=50))) == 3
+
+
+def test_the_dedup_key_ignores_section_ordering_but_not_the_title(tmp_path) -> None:
+    """The subject is the set of sections, not the wording of the headline.
+
+    Keying on the title would tie this identity to a display string; keying on
+    an unsorted join would make it depend on dict iteration order.
+    """
+
+    app = build_app(db_path=str(tmp_path / "dedup3.sqlite"))
+    with TestClient(app):
+        open_ticket = app.state.alert_engine._open_ticket
+        store = app.state.ticket_store
+
+        asyncio.run(
+            open_ticket(_alert("pc1", title="one wording", sections={"disk": "warn", "memory": "warn"}))
+        )
+        asyncio.run(
+            open_ticket(_alert("pc1", title="quite another", sections={"memory": "warn", "disk": "warn"}))
+        )
+        assert len(asyncio.run(store.list(limit=50))) == 1
+
+
+def test_a_resolved_ticket_does_not_suppress_a_fresh_one(tmp_path) -> None:
+    """Once somebody has dealt with the condition, its return is news again."""
+
+    app = build_app(db_path=str(tmp_path / "dedup4.sqlite"))
+    with TestClient(app):
+        open_ticket = app.state.alert_engine._open_ticket
+        service = app.state.tickets
+        store = app.state.ticket_store
+
+        note = _alert("pc1", title="pc1 health: crit", sections={"reliability": "crit"})
+        asyncio.run(open_ticket(note))
+        first = asyncio.run(store.list(limit=50))[0]
+        asyncio.run(service.transition(first.id, "resolved", actor="operator", reason="handled"))
+
+        asyncio.run(open_ticket(note))
+        assert len(asyncio.run(store.list(limit=50))) == 2
+
+
+def test_human_tickets_are_never_deduplicated(tmp_path) -> None:
+    """Two people asking the same question are two cases.
+
+    ``dedup_key`` defaults to empty, and an empty key never matches -- so the
+    suppression can only ever reach tickets a producer deliberately keyed.
+    """
+
+    app = build_app(db_path=str(tmp_path / "dedup5.sqlite"))
+    with TestClient(app):
+        service = app.state.tickets
+        store = app.state.ticket_store
+
+        for _ in range(3):
+            asyncio.run(service.create(title="my PC is slow", origin="discord", agent_id="pc1"))
+        assert len(asyncio.run(store.list(limit=50))) == 3
+        assert asyncio.run(store.find_open_by_dedup_key("")) is None
+
+
+def test_triage_is_not_wired_without_an_api_key(tmp_path, monkeypatch) -> None:
+    """No key, no investigation — and specifically not one doomed per ticket.
+
+    ``anthropic.Anthropic()`` constructs happily without ``ANTHROPIC_API_KEY``
+    and only fails when it is used, so "the assistant was built" is not the same
+    question as "an investigation could work". Binding triage to the former
+    would schedule one failing task for every ticket ever created, including in
+    every test that opens one.
+    """
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    app = build_app(db_path=str(tmp_path / "nokey.sqlite"))
+    with TestClient(app):
+        assert app.state.tickets._triage is None
+
+
+def test_triage_is_wired_when_a_key_is_configured(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-not-a-real-key")
+    app = build_app(db_path=str(tmp_path / "key.sqlite"))
+    with TestClient(app):
+        assert app.state.tickets._triage is not None
+
+
+def test_triage_can_be_switched_off_while_a_key_is_configured(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-not-a-real-key")
+    monkeypatch.setenv("KENNY_TRIAGE_ENABLED", "0")
+    app = build_app(db_path=str(tmp_path / "off.sqlite"))
+    with TestClient(app):
+        assert app.state.tickets._triage is None

@@ -99,3 +99,55 @@ def test_setup_closes_after_first_account(tmp_path) -> None:
         # Once an account exists, setup is closed.
         assert c.post("/setup", data={"username": "x", "password": "y"},
                       follow_redirects=False).status_code == 409
+
+
+def test_tickets_created_before_dedup_key_gain_the_column_and_keep_their_rows(tmp_path) -> None:
+    """An existing ``tickets`` table gains ``dedup_key`` without losing a row.
+
+    ``TicketStore`` has no migration framework beyond ``PRAGMA table_info`` +
+    ``ALTER TABLE ADD COLUMN`` (see its docstring), so a column added after the
+    table's original release only reaches a *live* deployment through that path
+    — the ``CREATE TABLE IF NOT EXISTS`` in ``_SCHEMA`` is a no-op there. This
+    test is the one that would catch forgetting the ``_TICKET_MIGRATED_COLUMNS``
+    entry, because every fresh-database test passes either way.
+
+    The backfilled value must be the empty "not deduplicated" sentinel: a
+    pre-existing ticket was never keyed, and must not start suppressing new ones.
+    """
+
+    from kenny_server import ticketstore
+
+    db_path = str(tmp_path / "old-tickets.sqlite")
+
+    # Build the pre-upgrade shape out of the live schema rather than a copy of
+    # it, so this stays honest as the schema grows: everything today's server
+    # creates, minus exactly the column under test.
+    legacy_schema = "\n".join(
+        line
+        for line in ticketstore._SCHEMA.splitlines()
+        if "dedup_key" not in line and "idx_tickets_dedup" not in line
+    ).replace("assignee_user_id  INTEGER,", "assignee_user_id  INTEGER")
+    con = sqlite3.connect(db_path)
+    con.executescript(legacy_schema)
+    con.execute(
+        "INSERT INTO tickets (id, number, title, state, origin, priority, summary, "
+        "created_at, updated_at) VALUES ('t1', 1, 'from before the upgrade', 'new', "
+        "'discord', 'normal', '', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')"
+    )
+    con.commit()
+    cols = {r[1] for r in con.execute("PRAGMA table_info(tickets)")}
+    assert "dedup_key" not in cols  # the pre-upgrade shape
+    con.close()
+
+    async def reopen() -> None:
+        store = ticketstore.TicketStore(db_path)
+        await store.connect()  # runs _migrate
+        tickets = await store.list(limit=10)
+        assert len(tickets) == 1
+        assert tickets[0].title == "from before the upgrade"
+        assert tickets[0].dedup_key == ""
+        # And the empty sentinel never matches, so nothing is suppressed by it.
+        assert await store.find_open_by_dedup_key("") is None
+        await store.close()
+
+    asyncio.run(reopen())

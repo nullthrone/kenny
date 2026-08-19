@@ -160,6 +160,9 @@ connected, install the optional dependency first: `pip install -e ".[discord]"`.
 | `KENNY_TICKET_SWEEP_INTERVAL_SECS` | `300` | Ticket housekeeping loop interval (expires gates, auto-closes); `0` disables (restart to re-enable). Re-read live. |
 | `KENNY_TICKET_SWEEP_INITIAL_DELAY` | `30` | Delay before the first sweep after startup. |
 | `KENNY_TICKET_RETENTION_DAYS` | `30` | How long a **closed** ticket keeps its raw working transcript. The ticket, its summary and its audit trail are never pruned. |
+| `KENNY_TRIAGE_ENABLED` | `1` | On a new ticket, run one read-only investigation on its PC and write the finding into the ticket before anyone is asked to look. Needs `ANTHROPIC_API_KEY`; without one it stays off whatever this says. See [Tickets → kenny looks first](itsm.md#kenny-looks-first-before-you-are-asked-to). |
+| `KENNY_TRIAGE_RESOLVE` | `0` | Let an investigation set a ticket to `resolved` itself — only for an alert-opened ticket, only on a closing verdict, and only when a read-only check actually ran and succeeded. Off means every verdict is a recommendation. |
+| `KENNY_TRIAGE_MAX_ITERATIONS` | `8` | Model round-trips one investigation may take. Spending them all produces no verdict: the ticket stays open with what was found. |
 
 Everything above except the bot token and the webhook URL (secrets, env-only) is also
 editable from the dashboard's **[Admin](dashboard.md#admin) → Discord & Tickets** section —

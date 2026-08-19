@@ -60,11 +60,17 @@ decided independently by whichever surface is calling: today the Ask kenny overl
 and — for the Discord ticket surface described in [ITSM & the Discord bot](itsm.md) — a
 per-tier autonomy split.
 
-| Tier | Dashboard chat | MCP | Discord (see [`itsm.md`](itsm.md)) |
-|---|---|---|---|
-| `read_only` | runs | runs | runs (a consent hold first, for a [privacy-sensitive](itsm.md#operator-approval-vs-user-consent-two-different-questions) one) |
-| `standard_change` | **holds** (confirm-gate) | runs | runs autonomously, with a trail row |
-| `normal_change` | **holds** (confirm-gate) | runs | **holds** for an operator's approval |
+| Tier | Dashboard chat | MCP | Ticket chat (see [`itsm.md`](itsm.md)) | [Triage](itsm.md#kenny-looks-first-before-you-are-asked-to) |
+|---|---|---|---|---|
+| `read_only` | runs | runs | runs (a consent hold first, for a [privacy-sensitive](itsm.md#operator-approval-vs-user-consent-two-different-questions) one) | runs — but the privacy-sensitive ones are **withheld entirely** |
+| `standard_change` | **holds** (confirm-gate) | runs | runs autonomously, with a trail row | same, and only `ticket_triage_verdict` is on offer |
+| `normal_change` | **holds** (confirm-gate) | runs | **holds** for an operator's approval | **withheld entirely** |
+
+The triage column is the one surface that *withholds* rather than gates, and the reason is
+that it is the one surface with nobody in it: an unprompted investigation has no operator
+to answer an approval and no person to give consent, so a hold would park the ticket
+forever. A tool absent from its schemas is never a call to hold. See
+[ADR-0056](adr/0056-unprompted-ticket-triage.md).
 
 The Ask kenny overlay holds **both** change tiers, exactly as it always has — moving a tool
 from `normal_change` to `standard_change` changes its blast-radius classification, never

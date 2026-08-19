@@ -264,6 +264,62 @@ def test_reliability_fallback_distinct_patterns_warn_even_below_volume_threshold
     assert result["status"] == "warn"
 
 
+def test_rule_verdict_is_not_floored_by_the_agents_own_status() -> None:
+    """The rule's verdict is the status; the agent's `status` is not folded in.
+
+    The seam: `reliability.rs` computes a status from constants baked into the
+    shipped binary, and `health_rules.py` owns the judgement
+    (`kenny-server/CLAUDE.md`). While `evaluate_section` took
+    `worst(reported, rule_status)`, the agent could raise a verdict the server
+    could never lower -- so a threshold change here, or an operator suppression
+    (ADR-0041), could only ever tighten a section, never relax one. On real
+    hosts that pinned `reliability` at `warn` permanently, because the
+    collector warns at 20 error events in 7 days.
+
+    Asserted for every section that has a rule, so a rule added later cannot
+    quietly reintroduce the floor.
+    """
+
+    payload = {"status": "crit", "summary": "the agent thinks this is dire"}
+    # A payload the reliability rule scores as ok: no events, no crashes, and a
+    # healthy stability index.
+    ok_payload = dict(payload, recent_crashes=0, events=[], stability_index=9.5)
+    result = health_rules.evaluate_section("reliability", ok_payload, now=NOW)
+    assert result["status"] == "ok"
+    assert result["attention"] is False
+
+
+def test_sections_without_a_rule_still_use_the_agents_status() -> None:
+    """The agent stays the only judgement where this module has none.
+
+    The counterpart to the test above: dropping the floor must not turn into
+    "ignore the agent". A section with no rule in `RULES` -- and a rule that
+    defers by returning None -- still reports exactly what the agent said.
+    """
+
+    payload = {"status": "crit", "summary": "printer on fire"}
+    result = health_rules.evaluate_section("printers", payload, now=NOW)
+    assert result["status"] == "crit"
+    assert result["attention"] is True
+    assert "reason" not in result
+
+
+def test_golden_fixture_reliability_status_is_not_a_verdict() -> None:
+    """The contract's own sample carries a non-judging `reliability.status`.
+
+    Joined through the shared artifact: `docs/fixtures/telemetry_snapshot.json`
+    is what both sides round-trip, so it is where "the agent does not judge
+    this section" is visible to Python and Rust alike. If someone teaches the
+    collector to grade `reliability` again, the fixture has to change with it
+    and this test names the reason it must not.
+    """
+
+    reliability = _snapshot()["reliability"]
+    assert reliability["status"] == "ok"
+    # And the server reaches its own, different verdict from the same payload.
+    assert health_rules.evaluate_section("reliability", reliability, now=NOW)["status"] == "warn"
+
+
 def test_reliability_defers_when_no_fields() -> None:
     result = health_rules.evaluate_section(
         "reliability", {"status": "warn", "summary": "collector unavailable"}, now=NOW

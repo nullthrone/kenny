@@ -392,7 +392,11 @@ def test_suppression_affects_agent_health_response(tmp_path) -> None:
         asyncio.run(app.state.store.insert("PC-166", "2026-07-29T21:00:00Z", snapshot))
 
         before = c.get("/api/agent/PC-166", headers=h).json()
-        assert before["health"]["sections"]["reliability"]["status"] == "crit"
+        # "warn", not the "crit" the payload claims: the rule's verdict is the
+        # status, and the agent's own `status` is not folded in on top of it
+        # (see health_rules.evaluate_section). Here the rule scores one serious
+        # pattern (Kernel-Power/41) at count 1, below the crit recurrence bar.
+        assert before["health"]["sections"]["reliability"]["status"] == "warn"
 
         resp = c.post(
             "/api/reliability/suppressions",
@@ -407,6 +411,11 @@ def test_suppression_affects_agent_health_response(tmp_path) -> None:
         assert "CAPI2" not in rel["reason"]
         assert "Kernel-Power" in rel["reason"]
         assert "suppressed" in rel["reason"]
+        # Suppressing the 3439-event noise pattern does not quiet the section:
+        # the Kernel-Power/41 group is still scored and still warrants a look.
+        # Suppression narrows *which* patterns score, never the independent
+        # signals (ADR-0041).
+        assert rel["status"] == "warn"
         # Raw counts are untouched -- only scoring changed.
         assert after["snapshot"]["reliability"]["recent_crashes"] == 3440
         stamped = {e["source"]: e for e in after["snapshot"]["reliability"]["events"]}

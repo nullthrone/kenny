@@ -619,6 +619,23 @@ def evaluate_section(
     ``fleet_stats``, the dashboard's ``_overview``, the MCP ``agent_health``
     tool) reads it straight off this dict rather than re-deriving it from
     ``status``.
+
+    **A rule's verdict is final, not a floor over the agent's own.** When a
+    section has a rule and that rule reaches a verdict, that verdict *is* the
+    status — the ``status`` the agent put in the payload is not folded in. The
+    agent computes its own status from a handful of local constants it cannot
+    change without being redeployed, which is exactly the judgement this module
+    exists to own; letting it raise a verdict it can never lower means a
+    server-side threshold change (or an operator suppression, ADR-0041) can
+    only ever tighten a section, never relax one. ``reliability`` showed what
+    that costs: the collector reports ``warn`` at 20 error events in 7 days, a
+    bar every real Windows PC clears, so no amount of server-side scoring could
+    put the section back to ``ok``.
+
+    The agent's ``status`` still stands alone where this module has nothing to
+    say — a section with no rule, or a rule that defers by returning ``None``
+    (a payload missing the fields it scores). There the agent is the only
+    judgement available, and it is used unchanged.
     """
 
     now = now or datetime.now(timezone.utc)
@@ -633,11 +650,10 @@ def evaluate_section(
     if outcome is None:
         return {"status": reported, "summary": summary, "attention": reported != "ok"}
     rule_status, reason = outcome
-    final = worst(reported, rule_status)
     return {
-        "status": final,
+        "status": rule_status,
         "summary": summary,
-        "attention": final != "ok",
+        "attention": rule_status != "ok",
         "reason": reason,
     }
 

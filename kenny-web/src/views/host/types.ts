@@ -295,11 +295,14 @@ export interface ReliabilityEvent {
 }
 
 export interface ReliabilitySection extends RawSection {
-  stability_index: number | null
-  recent_crashes: number
-  window_days: number
-  events: ReliabilityEvent[]
-  truncated: boolean
+  /* All raw fields are optional: a collector whose probe failed reports only
+   * `status` + `summary` ("reliability unavailable"), so that a failed reading
+   * is not mistaken for a reading of zero. See docs/protocol.md. */
+  stability_index?: number | null
+  recent_crashes?: number
+  window_days?: number
+  events?: ReliabilityEvent[]
+  truncated?: boolean
 }
 
 /* ── Recommendation stream — extends the frozen ChatEvent vocabulary ──

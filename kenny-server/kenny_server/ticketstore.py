@@ -73,7 +73,13 @@ CREATE TABLE IF NOT EXISTS tickets (
     blocked_since     TEXT,
     blocked_ref       TEXT NOT NULL DEFAULT '',  -- opaque pointer (e.g. an approval id)
     blocked_nudged_at TEXT,
-    assignee_user_id  INTEGER                    -- the operator working it, if claimed
+    assignee_user_id  INTEGER,                   -- the operator working it, if claimed
+    -- What a ticket is about, for suppressing a duplicate while one is open.
+    -- '' means "never deduplicated" and is what every human-opened ticket has.
+    -- Comment above, not trailing: SQLite rewrites this CREATE statement on
+    -- ALTER TABLE ... DROP COLUMN and cannot parse a comment after the last
+    -- column definition.
+    dedup_key         TEXT NOT NULL DEFAULT ''
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tickets_number ON tickets (number);
 CREATE INDEX IF NOT EXISTS idx_tickets_state ON tickets (state, updated_at DESC);
@@ -202,6 +208,11 @@ class Ticket:
     blocked_ref: str
     blocked_nudged_at: str | None
     assignee_user_id: int | None
+    #: Stable identity of *what this ticket is about*, for suppressing a second
+    #: ticket while one is already open for the same thing. Empty for every
+    #: ticket a human opened -- two people asking the same question are two
+    #: cases, and only a machine repeats itself verbatim.
+    dedup_key: str = ""
 
     @classmethod
     def from_row(cls, row: aiosqlite.Row) -> Ticket:
@@ -231,6 +242,7 @@ class Ticket:
             assignee_user_id=(
                 None if row["assignee_user_id"] is None else int(row["assignee_user_id"])
             ),
+            dedup_key=row["dedup_key"] or "",
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -243,6 +255,12 @@ class Ticket:
 #: ``TicketStore._migrate`` for the one-time rename from the old ``"kenny"``
 #: value.
 ASSISTANT_ACTOR = "assistant"
+
+#: The principal name an unprompted triage session runs under (``triage.py``).
+#: Not an account and never resolvable to one — it exists so a trail row, a log
+#: line and a denied call can all say *which* assistant did this: the one a
+#: person is talking to, or the one that let itself in.
+TRIAGE_ACTOR = "triage"
 
 
 @dataclass(slots=True)
@@ -434,7 +452,8 @@ _TICKET_COLUMNS = (
     "id, number, title, state, origin, priority, category, requester_user_id, "
     "agent_id, role_snapshot, profile_snapshot, summary, resolution, "
     "created_at, updated_at, closed_at, "
-    "blocked_on, blocked_since, blocked_ref, blocked_nudged_at, assignee_user_id"
+    "blocked_on, blocked_since, blocked_ref, blocked_nudged_at, assignee_user_id, "
+    "dedup_key"
 )
 _EVENT_COLUMNS = (
     "id, ticket_id, at, kind, actor, tool, tool_class, ok, from_state, to_state, "
@@ -466,6 +485,7 @@ _TICKET_MIGRATED_COLUMNS: dict[str, str] = {
     "blocked_ref": "TEXT NOT NULL DEFAULT ''",
     "blocked_nudged_at": "TEXT",
     "assignee_user_id": "INTEGER",
+    "dedup_key": "TEXT NOT NULL DEFAULT ''",
 }
 
 
@@ -514,6 +534,15 @@ class TicketStore:
         for col, ddl in _TICKET_MIGRATED_COLUMNS.items():
             if col not in cols:
                 await self._conn.execute(f"ALTER TABLE tickets ADD COLUMN {col} {ddl}")
+        # An index over a migrated column belongs *here*, not in ``_SCHEMA``:
+        # the schema script runs before this method, so on an existing database
+        # -- one whose ``tickets`` table predates the column -- a CREATE INDEX
+        # there fails outright with "no such column" and takes the whole boot
+        # with it. Fresh databases reach this line too, so the index is created
+        # exactly once either way.
+        await self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tickets_dedup ON tickets (dedup_key, state)"
+        )
         # blocked_since best-approximates "since when" as the row's last
         # updated_at (the moment the old awaiting_* state was entered) — the
         # exact original transition timestamp is not retrievable without
@@ -569,6 +598,7 @@ class TicketStore:
         role_snapshot: str | None = None,
         profile_snapshot: str | None = None,
         summary: str = "",
+        dedup_key: str = "",
         now: datetime | str | None = None,
     ) -> Ticket:
         """Insert a ticket and return it, display ``number`` included.
@@ -591,7 +621,7 @@ class TicketStore:
         await self._conn.execute(
             f"INSERT INTO tickets ({_TICKET_COLUMNS}) "
             "SELECT ?, COALESCE(MAX(number), 0) + 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
-            "NULL, ?, ?, NULL, '', NULL, '', NULL, NULL FROM tickets",
+            "NULL, ?, ?, NULL, '', NULL, '', NULL, NULL, ? FROM tickets",
             (
                 ticket_id,
                 title,
@@ -606,6 +636,7 @@ class TicketStore:
                 summary,
                 stamp,
                 stamp,
+                dedup_key,
             ),
         )
         await self._conn.commit()
@@ -613,6 +644,31 @@ class TicketStore:
         if ticket is None:  # pragma: no cover - insert just succeeded
             raise RuntimeError(f"ticket {ticket_id} vanished after insert")
         return ticket
+
+    async def find_open_by_dedup_key(self, dedup_key: str) -> Ticket | None:
+        """Return the oldest still-open ticket carrying ``dedup_key``, or None.
+
+        "Open" is ``new``/``in_progress`` — the states in which a case is still
+        somebody's to answer. A ``resolved`` ticket is deliberately *not* a
+        match: the condition was dealt with, so a fresh occurrence deserves a
+        fresh ticket rather than reopening a case someone already closed out.
+
+        Oldest-first, so a recurrence attaches to the ticket that has been
+        waiting longest rather than to whichever one sorted first. An empty
+        ``dedup_key`` never matches — it is the "not deduplicated" sentinel
+        that every human-opened ticket carries.
+        """
+
+        if not dedup_key:
+            return None
+        async with self._conn.execute(
+            f"SELECT {_TICKET_COLUMNS} FROM tickets "
+            "WHERE dedup_key = ? AND state IN ('new', 'in_progress') "
+            "ORDER BY created_at ASC, number ASC LIMIT 1",
+            (dedup_key,),
+        ) as cur:
+            row = await cur.fetchone()
+        return Ticket.from_row(row) if row else None
 
     async def get(self, ticket_id: str) -> Ticket | None:
         """Return one ticket by id, or None."""

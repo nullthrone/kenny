@@ -535,6 +535,15 @@ See [Enrollment: linking a Discord account](itsm.md#enrollment-linking-a-discord
 On a server with no Discord identity store configured, the panel says so instead of
 erroring.
 
+The catalog rows of this group also hold the two switches that decide how much a ticket
+does for itself: **Investigate new tickets automatically** (on by default — kenny runs one
+read-only check on the PC and writes the finding into the ticket before you open it) and
+**Let triage resolve a ticket** (off by default — with it on, an alert-opened ticket whose
+investigation reached a closing verdict *and* actually ran a check is set to `resolved`,
+still inside its normal reopen window). **Triage steps per ticket** bounds how far one
+investigation may go. Both switches are inert without an `ANTHROPIC_API_KEY`. See
+[Tickets → kenny looks first](itsm.md#kenny-looks-first-before-you-are-asked-to).
+
 ### Auto-ticket rules
 
 *(operator+ — like Updates, this section has no settings-catalog group behind it, so it's

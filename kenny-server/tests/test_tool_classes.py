@@ -66,6 +66,16 @@ LEGACY_STATE_CHANGING = frozenset(
     }
 )
 
+# State-changing tools that did not exist when ``LEGACY_STATE_CHANGING`` was
+# written. Each one is a deliberate addition, not a reclassification.
+SINCE_LEGACY = frozenset(
+    {
+        # Records a triage verdict and, when the server's preconditions hold,
+        # resolves the ticket (kenny_server/triage.py).
+        "ticket_triage_verdict",
+    }
+)
+
 # The MCP-only server tools registered in ``tools.py`` (neither forwarded
 # capabilities nor part of ``chat.SERVER_TOOLS``).
 MCP_ONLY_SERVER_TOOLS = frozenset(
@@ -110,11 +120,20 @@ AGENT_MUTATING = (
 
 
 def test_no_behaviour_change_vs_legacy() -> None:
-    """The tier map must not have made a single tool auto-executable."""
+    """The tier map must not have made a single tool auto-executable.
 
-    assert {t for t in TOOL_CLASSES if classify(t) != READ_ONLY} == LEGACY_STATE_CHANGING
+    ``LEGACY_STATE_CHANGING`` is the pre-ADR-0045 list, so it can only be
+    compared against tools that existed then: a tool added later is not evidence
+    that an old one was reclassified, which is the regression this guards. New
+    names are named in :data:`SINCE_LEGACY` and subtracted, so adding one stays
+    a visible edit here rather than a silently widening assertion.
+    """
+
+    current = {t for t in TOOL_CLASSES if classify(t) != READ_ONLY}
+    assert current - SINCE_LEGACY == LEGACY_STATE_CHANGING
+    assert current >= SINCE_LEGACY, "a tool in SINCE_LEGACY is no longer state-changing"
     # And the re-derived frozenset ``chat`` still exports agrees with it.
-    assert chat.STATE_CHANGING_TOOLS == LEGACY_STATE_CHANGING
+    assert chat.STATE_CHANGING_TOOLS - SINCE_LEGACY == LEGACY_STATE_CHANGING
 
 
 def test_catalog_exhaustive() -> None:
@@ -149,6 +168,12 @@ def test_standard_change_is_the_short_deliberate_list() -> None:
         "remotehelp_stop",
         "winget_update",
         "webfilter_push",
+        # Moves a ticket to `resolved` — reversible by construction (a reopen
+        # window plus a `resolved -> in_progress` transition), and it has to run
+        # without a decision because the session that calls it has nobody in it
+        # to make one. `normal_change` would hold for an operator who is not
+        # coming, parking the ticket on an open gate. See tool_classes.py.
+        "ticket_triage_verdict",
     }
 
 
