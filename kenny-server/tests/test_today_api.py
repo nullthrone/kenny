@@ -8,6 +8,7 @@ for the scoped ones (see `notes/backend-map.md`'s "test idiom" section).
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 from functools import partial
 
@@ -92,6 +93,72 @@ def test_today_ranks_and_caps_at_three(tmp_path) -> None:
         assert "segments" in body["donut"]
         assert "days" in body["trend_30d"]
         assert isinstance(body["kpis"], list) and body["kpis"]
+
+
+_TARGET_TICKET_ID_RE = re.compile(r"^#/inbox/ticket/[0-9a-f]{32}$")
+
+
+def test_today_items_target_is_fetchable_by_the_route_it_names(tmp_path) -> None:
+    """Both `_today_approval_item` and `_today_ticket_item` must link
+    `target` to the ticket's uuid `id`, not its display `number` -- same seam
+    as `/api/inbox` (see `test_inbox_api.py`'s matching test): a `#/inbox/
+    ticket/{number}` target 404s against `/api/tickets/{tid}`, which only
+    resolves `id`.
+    """
+
+    app = build_app(db_path=str(tmp_path / "today-target.sqlite"))
+    with TestClient(app) as c:
+        h = _bearer(app)
+        tickets = app.state.tickets
+        ticket_store = app.state.ticket_store
+
+        async def seed():
+            approval_ticket = await tickets.create(
+                title="restart print spooler",
+                origin="dashboard",
+                agent_id="approval-pc",
+                actor="system",
+            )
+            await tickets.transition(approval_ticket.id, "in_progress", actor="system")
+            approval = await tickets.open_approval(
+                approval_ticket.id,
+                tool_use_id="tu-target",
+                tool="service_restart",
+                tool_class="standard_change",
+                args={"name": "spooler"},
+                agent_id="approval-pc",
+                actor="system",
+            )
+            await tickets.block(approval_ticket.id, "approval", actor="system", ref=approval.id)
+
+            stale_ticket = await ticket_store.create(
+                title="printer wont print",
+                origin="dashboard",
+                agent_id="stale-pc",
+                requester_user_id=None,
+            )
+            await ticket_store.set_state(stale_ticket.id, "in_progress", actor="system")
+            old = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
+            await ticket_store.set_blocked(stale_ticket.id, "user", actor="system", now=old)
+
+            return approval_ticket, stale_ticket
+
+        approval_ticket, stale_ticket = c.portal.call(seed)
+
+        body = c.get("/api/today", headers=h).json()
+        by_action = {i["action"]: i for i in body["items"]}
+
+        for action, expected_id in (
+            ("REVIEW APPROVAL", approval_ticket.id),
+            ("OPEN TICKET", stale_ticket.id),
+        ):
+            item = by_action[action]
+            target = item["target"]
+            assert _TARGET_TICKET_ID_RE.match(target), target
+            tid = target.removeprefix("#/inbox/ticket/")
+            detail = c.get(f"/api/tickets/{tid}", headers=h)
+            assert detail.status_code == 200
+            assert detail.json()["id"] == expected_id
 
 
 def test_today_empty_is_first_class(tmp_path) -> None:

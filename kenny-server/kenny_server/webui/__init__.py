@@ -470,7 +470,7 @@ def build_api_routes(
                 ticket = await ticket_store.get(approval.ticket_id)
                 if ticket is None:
                     continue
-                approval_items.append(_today_approval_item(approval, ticket.number))
+                approval_items.append(_today_approval_item(approval, ticket.id))
 
         # Stale tickets: the same query nudge_stalled's own nudge pass runs
         # (TicketStore.list(blocked_on_in=..., blocked_before=..., nudged=False)),
@@ -2362,14 +2362,16 @@ def _today_section_item(section: str, member: dict[str, Any], severity: str) -> 
     }
 
 
-def _today_approval_item(approval: Any, ticket_number: int) -> dict[str, Any]:
+def _today_approval_item(approval: Any, ticket_id: str) -> dict[str, Any]:
     return {
         "severity": "held",
         "host": approval.agent_id,
         "title": f"{approval.tool} needs approval",
         "detail": f"{approval.tool_class} · requested {approval.requested_at}",
         "action": "REVIEW APPROVAL",
-        "target": f"#/inbox/ticket/{ticket_number}",
+        # `target` needs the ticket's uuid `id`, not its display `number` --
+        # #/inbox/ticket/{id} is the only shape /api/tickets/{tid} resolves.
+        "target": f"#/inbox/ticket/{ticket_id}",
     }
 
 
@@ -2380,7 +2382,7 @@ def _today_ticket_item(ticket: Any) -> dict[str, Any]:
         "title": ticket.title,
         "detail": f"blocked on {ticket.blocked_on or 'nothing'} since {ticket.blocked_since}",
         "action": "OPEN TICKET",
-        "target": f"#/inbox/ticket/{ticket.number}",
+        "target": f"#/inbox/ticket/{ticket.id}",
     }
 
 

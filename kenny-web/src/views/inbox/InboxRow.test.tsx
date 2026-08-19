@@ -51,7 +51,7 @@ describe('InboxRow gate rendering', () => {
         tool_class: 'standard_change',
         held_since: '2026-08-17T10:00:00Z',
       },
-      target: '#/inbox/ticket/41',
+      target: '#/inbox/ticket/ae73db26ad3e4c078c93050f63395873',
     }
 
     renderRow(item)
