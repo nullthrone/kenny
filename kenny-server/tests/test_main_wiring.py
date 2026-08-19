@@ -568,3 +568,34 @@ def test_human_tickets_are_never_deduplicated(tmp_path) -> None:
             asyncio.run(service.create(title="my PC is slow", origin="discord", agent_id="pc1"))
         assert len(asyncio.run(store.list(limit=50))) == 3
         assert asyncio.run(store.find_open_by_dedup_key("")) is None
+
+
+def test_triage_is_not_wired_without_an_api_key(tmp_path, monkeypatch) -> None:
+    """No key, no investigation — and specifically not one doomed per ticket.
+
+    ``anthropic.Anthropic()`` constructs happily without ``ANTHROPIC_API_KEY``
+    and only fails when it is used, so "the assistant was built" is not the same
+    question as "an investigation could work". Binding triage to the former
+    would schedule one failing task for every ticket ever created, including in
+    every test that opens one.
+    """
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    app = build_app(db_path=str(tmp_path / "nokey.sqlite"))
+    with TestClient(app):
+        assert app.state.tickets._triage is None
+
+
+def test_triage_is_wired_when_a_key_is_configured(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-not-a-real-key")
+    app = build_app(db_path=str(tmp_path / "key.sqlite"))
+    with TestClient(app):
+        assert app.state.tickets._triage is not None
+
+
+def test_triage_can_be_switched_off_while_a_key_is_configured(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-not-a-real-key")
+    monkeypatch.setenv("KENNY_TRIAGE_ENABLED", "0")
+    app = build_app(db_path=str(tmp_path / "off.sqlite"))
+    with TestClient(app):
+        assert app.state.tickets._triage is None

@@ -65,7 +65,9 @@ from .store import (
 from .ticket_assistant import TicketAssistant
 from .ticket_rules import TicketRuleList
 from .ticketstore import TicketStore
+from .recommend import ai_available
 from .tickets import TicketService, ticket_sweep_loop
+from .triage import TriageService
 from .tokenstore import AgentTokenStore
 from .toolloop import ToolExecutor
 from .tools import CallLog, ScreenshotStore, register_tools
@@ -470,22 +472,44 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
             "the ticket assistant is disabled: no usable Anthropic client (%s)", exc
         )
     ticket_assistant: TicketAssistant | None = None
+    triage: TriageService | None = None
     if ticket_client is not None:
+        ticket_executor = ToolExecutor(
+            registry=registry,
+            store=store,
+            tunnel=tunnel,
+            call_log=call_log,
+            screenshots=screenshots,
+        )
         ticket_assistant = TicketAssistant(
             tickets=ticket_service,
             users=user_store,
-            executor=ToolExecutor(
-                registry=registry,
-                store=store,
-                tunnel=tunnel,
-                call_log=call_log,
-                screenshots=screenshots,
-            ),
+            executor=ticket_executor,
             client=ticket_client,
             model=str(settings.get("KENNY_CHAT_MODEL")),
             max_turns_per_ticket=int(settings.get("KENNY_DISCORD_MAX_TURNS_PER_TICKET")),
             approval_ttl_secs=int(settings.get("KENNY_TICKET_APPROVAL_TTL_SECS")),
         )
+        # Unprompted triage rides on the same assistant and the same executor —
+        # one investigation is an ordinary ticket turn with a narrower tool set
+        # and its own prompt, not a second engine. It registers its verdict tool
+        # on the executor here rather than being handed to it, so `toolloop`
+        # keeps knowing nothing about tickets (see triage.py).
+        triage = TriageService(
+            tickets=ticket_service,
+            assistant=ticket_assistant,
+            max_iterations=int(settings.get("KENNY_TRIAGE_MAX_ITERATIONS")),
+            resolve_enabled=bool(settings.get("KENNY_TRIAGE_RESOLVE")),
+        )
+        triage.register(ticket_executor)
+        # Wired only when a key is actually configured. ``client_factory()``
+        # succeeding is not the same question: the client constructs happily
+        # without ``ANTHROPIC_API_KEY`` and only fails when it is used, so
+        # binding triage to that would fire one doomed investigation per ticket
+        # created. ``ai_available`` is the predicate the rest of the AI features
+        # already answer this with (``event_categories``, ``recommend``).
+        if ai_available() and bool(settings.get("KENNY_TRIAGE_ENABLED")):
+            ticket_service.set_triage(triage.run)
 
     # Discord bot surface (optional). The service is constructed only when a bot
     # token exists — an env-only secret, so its presence is already known here —

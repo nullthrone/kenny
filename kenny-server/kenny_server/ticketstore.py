@@ -256,6 +256,12 @@ class Ticket:
 #: value.
 ASSISTANT_ACTOR = "assistant"
 
+#: The principal name an unprompted triage session runs under (``triage.py``).
+#: Not an account and never resolvable to one — it exists so a trail row, a log
+#: line and a denied call can all say *which* assistant did this: the one a
+#: person is talking to, or the one that let itself in.
+TRIAGE_ACTOR = "triage"
+
 
 @dataclass(slots=True)
 class TicketEvent:

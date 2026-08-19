@@ -25,6 +25,7 @@ from kenny_server.toolloop import (
     _MAX_TOOL_RESULT_CHARS,
     _resolve_chat_target,
     SERVER_TOOLS,
+    SURFACE_ONLY_TOOLS,
     Allow,
     Deny,
     GateDecision,
@@ -134,13 +135,31 @@ def _fed_back_tool_results(client: FakeAnthropic, call_index: int) -> list[dict[
 
 
 def test_schemas_unfiltered_by_default() -> None:
-    """``allowed=None`` must emit exactly what the loop emitted before."""
+    """``allowed=None`` emits the catalog, minus the tools no default may see."""
 
     full = build_tool_schemas()
     assert full == build_tool_schemas(None)
     names = [t["name"] for t in full]
-    assert names[: len(SERVER_TOOLS)] == list(SERVER_TOOLS)  # server tools first, in order
+    default_server_tools = [t for t in SERVER_TOOLS if t not in SURFACE_ONLY_TOOLS]
+    assert names[: len(default_server_tools)] == default_server_tools  # server tools first, in order
     assert set(CAPABILITY_TOOLS) <= set(names)
+
+
+def test_surface_only_tools_are_absent_unless_named() -> None:
+    """A surface-only tool must not reach a caller that passes no allowlist.
+
+    The dashboard copilot builds its schemas that way (``chat.py``), so the
+    default is what decides whether a tool meant for one surface leaks into
+    every surface. Withholding is the safe direction: a name added to
+    ``SERVER_TOOLS`` for one caller is invisible to the rest until asked for.
+    """
+
+    assert SURFACE_ONLY_TOOLS, "the exception is pointless if the set is empty"
+    default = {t["name"] for t in build_tool_schemas()}
+    assert not (SURFACE_ONLY_TOOLS & default)
+    for name in SURFACE_ONLY_TOOLS:
+        named = {t["name"] for t in build_tool_schemas(frozenset({name}))}
+        assert named == {name}
 
 
 def test_schemas_filtered_to_an_allowlist() -> None:

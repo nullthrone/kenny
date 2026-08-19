@@ -429,6 +429,24 @@ _SPECS: list[SettingSpec] = [
           help="How long a held tool call waits for a decision before the "
                "sweeper expires it (an expiry counts as a denial). 0 means the "
                "gate never expires."),
+    _spec("KENNY_TRIAGE_ENABLED", "Discord & Tickets", "bool", "1",
+          "Investigate new tickets automatically", lifecycle="live",
+          help="On a new ticket, kenny runs one read-only investigation on the "
+               "host and writes what it found into the ticket, before anyone is "
+               "asked to look. Off means tickets arrive uninvestigated, as they "
+               "did before."),
+    _spec("KENNY_TRIAGE_RESOLVE", "Discord & Tickets", "bool", "0",
+          "Let triage resolve a ticket", lifecycle="live",
+          help="When an investigation both reaches a closing verdict AND can "
+               "point at a read-only check that actually ran, resolve the "
+               "ticket instead of only recommending it. Alert-opened tickets "
+               "only; a resolved ticket stays reopenable for the auto-close "
+               "window. Off means every verdict is a recommendation."),
+    _spec("KENNY_TRIAGE_MAX_ITERATIONS", "Discord & Tickets", "int", "8",
+          "Triage steps per ticket", lifecycle="live", min=1,
+          help="How many model round-trips one investigation may take. Spending "
+               "them all produces no verdict: the ticket stays open with what "
+               "was found so far."),
     _spec("KENNY_TICKET_AUTOCLOSE_SECS", "Discord & Tickets", "int", "172800",
           "Auto-close resolved after (s)", lifecycle="live", min=0,
           help="Reopen window: a resolved ticket untouched for this long is "
