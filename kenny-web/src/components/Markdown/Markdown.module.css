@@ -1,0 +1,107 @@
+/*
+ * Block rhythm and inline marks only. Font size and line height are inherited
+ * from the call site on purpose — the timeline, the ticket stream and the
+ * drawer each set their own, and markdown must not override the surface it
+ * sits in.
+ */
+.root > :first-child {
+  margin-top: 0;
+}
+.root > :last-child {
+  margin-bottom: 0;
+}
+
+.root p {
+  margin: 0;
+}
+.root p + p {
+  margin-top: 10px;
+}
+
+.root ul,
+.root ol {
+  margin: 8px 0;
+  /* Inside the content column, not hanging into the gutter: these lists sit in
+     a timeline row and a chat bubble, both of which own their left edge. */
+  padding-left: 20px;
+}
+.root li {
+  margin: 2px 0;
+}
+.root li > ul,
+.root li > ol {
+  margin: 2px 0;
+}
+
+.root h1,
+.root h2,
+.root h3,
+.root h4,
+.root h5,
+.root h6 {
+  margin: 12px 0 6px;
+  font-family: var(--font-display);
+  /* A heading inside a chat message is a lead-in, not a page title — it earns
+     weight, not size. */
+  font-size: inherit;
+  font-weight: 600;
+  line-height: var(--leading-tight);
+}
+
+.root strong {
+  font-weight: 600;
+}
+
+.root code {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  background: var(--surface-inset);
+  padding: 1px 4px;
+}
+
+.root pre {
+  margin: 8px 0;
+  padding: 8px 10px;
+  background: var(--surface-inset);
+  border: 1px solid var(--border-line);
+  overflow-x: auto;
+}
+.root pre code {
+  background: none;
+  padding: 0;
+}
+
+.root blockquote {
+  margin: 8px 0;
+  padding-left: 10px;
+  border-left: 2px solid var(--border-line);
+  color: var(--text-muted);
+}
+
+.root a {
+  color: var(--text-accent);
+}
+
+.root hr {
+  margin: 12px 0;
+  border: 0;
+  border-top: 1px solid var(--border-line);
+}
+
+/* Not what the model is asked for (see Markdown.tsx), but rendered as a real
+   table when it produces one anyway — and never widening its container. */
+.root table {
+  display: block;
+  overflow-x: auto;
+  margin: 8px 0;
+  border-collapse: collapse;
+}
+.root th,
+.root td {
+  border: 1px solid var(--border-line);
+  padding: 3px 8px;
+  text-align: left;
+}
+.root th {
+  font-weight: 600;
+}

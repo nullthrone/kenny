@@ -171,3 +171,12 @@
   color: var(--danger);
   margin-top: 6px;
 }
+
+/*
+ * A message a person typed. Their line breaks are theirs and are kept; their
+ * `*` and `_` are theirs too, and are never read as markup — only kenny's own
+ * prose goes through the markdown renderer.
+ */
+.verbatim {
+  white-space: pre-wrap;
+}

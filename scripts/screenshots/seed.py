@@ -53,6 +53,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from kenny_server import event_categories, security
+from kenny_server.ticketstore import ASSISTANT_ACTOR
 
 from . import demo_fleet
 from .desktop_image import demo_desktop_png_b64
@@ -341,7 +342,7 @@ async def _seed_tickets(tickets: Any, base: datetime, user_ids: dict[str, int]) 
         )
         _at(hours=2, minutes=6)
         await tickets.append_event(
-            flush.id, kind="tool_call", actor="kenny", tool="diag_processes",
+            flush.id, kind="tool_call", actor=ASSISTANT_ACTOR, tool="diag_processes",
             tool_class="read_only", ok=True, summary="diag_processes succeeded",
             fields={"agent_id": "grandpa-pc"},
         )
@@ -358,7 +359,7 @@ async def _seed_tickets(tickets: Any, base: datetime, user_ids: dict[str, int]) 
             },
         )
         await tickets.append_event(
-            flush.id, kind="message", actor="kenny", summary="message",
+            flush.id, kind="message", actor=ASSISTANT_ACTOR, summary="message",
             fields={
                 "text": (
                     "No, plenty of room — 128 GB free out of 512 GB on the main drive. "
@@ -369,12 +370,12 @@ async def _seed_tickets(tickets: Any, base: datetime, user_ids: dict[str, int]) 
         )
         _at(hours=2, minutes=4)
         await tickets.append_event(
-            flush.id, kind="tool_call", actor="kenny", tool="net_dns_flush",
+            flush.id, kind="tool_call", actor=ASSISTANT_ACTOR, tool="net_dns_flush",
             tool_class="standard_change", args={},
             summary="net_dns_flush authorized autonomously as a standard change",
         )
         await tickets.append_event(
-            flush.id, kind="tool_call", actor="kenny", tool="net_dns_flush",
+            flush.id, kind="tool_call", actor=ASSISTANT_ACTOR, tool="net_dns_flush",
             tool_class="standard_change", ok=True, summary="net_dns_flush succeeded",
             fields={"agent_id": "grandpa-pc"},
         )
@@ -382,7 +383,7 @@ async def _seed_tickets(tickets: Any, base: datetime, user_ids: dict[str, int]) 
         approval = await tickets.open_approval(
             flush.id, tool_use_id="toolu_demo1", tool="winget_install",
             tool_class="normal_change", args={"id": "Realtek.WiFiDriver"},
-            kind="operator_approval", agent_id="grandpa-pc", actor="kenny",
+            kind="operator_approval", agent_id="grandpa-pc", actor=ASSISTANT_ACTOR,
         )
         await tickets.block(
             flush.id, "approval", actor="system",
@@ -395,7 +396,7 @@ async def _seed_tickets(tickets: Any, base: datetime, user_ids: dict[str, int]) 
         await tickets.unblock(flush.id, actor="system", reason="gate decided")
         _at(hours=1, minutes=38)
         await tickets.append_event(
-            flush.id, kind="tool_call", actor="kenny", tool="winget_install",
+            flush.id, kind="tool_call", actor=ASSISTANT_ACTOR, tool="winget_install",
             tool_class="normal_change", ok=True, summary="winget_install succeeded",
             fields={"agent_id": "grandpa-pc"},
         )
@@ -430,7 +431,7 @@ async def _seed_tickets(tickets: Any, base: datetime, user_ids: dict[str, int]) 
         printer_approval = await tickets.open_approval(
             printer.id, tool_use_id="toolu_demo2", tool="winget_install",
             tool_class="normal_change", args={"id": "Brother.iPrintScan"},
-            kind="operator_approval", agent_id="living-room-pc", actor="kenny",
+            kind="operator_approval", agent_id="living-room-pc", actor=ASSISTANT_ACTOR,
         )
         await tickets.block(
             printer.id, "approval", actor="system",
