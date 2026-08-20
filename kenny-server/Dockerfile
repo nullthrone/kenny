@@ -5,7 +5,7 @@
 # Stage 1: compile the dashboard SPA (kenny-web/) to static files. Nothing
 # from this stage ends up in the final image except its dist/ output -- the
 # runtime never needs Node (ADR-0052).
-FROM node:22-slim AS web-build
+FROM node:26-slim AS web-build
 WORKDIR /repo
 COPY kenny-web/package.json kenny-web/package-lock.json ./kenny-web/
 RUN npm --prefix kenny-web ci
