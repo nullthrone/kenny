@@ -550,7 +550,18 @@ def build_ticket_routes(
             # ``None`` on failure rather than raise.
             return _err("could not build a session for this ticket", 400)
 
-        assistant.append_user_message(session, message)
+        # actionable=True: ``_owned_or_operator`` above already admitted only
+        # the ticket's own requester or an operator+, exactly who _SYSTEM_PROMPT
+        # describes as actionable — the same reasoning the trail row below
+        # has always used for this route.
+        assistant.append_inbound(
+            session,
+            author_id=_actor(principal),
+            kenny_user=principal.username,
+            role=principal.role,
+            actionable=True,
+            content=message,
+        )
         await assistant.append_message(
             ticket,
             actor=_actor(principal),
