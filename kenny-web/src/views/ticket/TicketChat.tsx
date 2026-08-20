@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useDeferredValue } from 'react'
 import { streamChatEvents } from '../../api/sse'
 import type { ChatEvent } from '../../api/types'
 import Modal from '../../components/Modal/Modal'
 import { ArrowUp, ICON_STROKE_WIDTH } from '../../components/icons'
 import ApprovalGate, { type DecisionOutcome } from './ApprovalGate'
 import type { TicketApproval } from './types'
+import Markdown from '../../components/Markdown/Markdown'
 import styles from './TicketChat.module.css'
 
 interface StreamChip {
@@ -122,6 +123,12 @@ export default function TicketChat({
     abortRef.current?.abort()
   }
 
+  // The renderer takes the whole accumulated buffer on every delta — a delta can
+  // split a markdown token, and only re-parsing the complete buffer recovers
+  // from that. Deferring it keeps a fast token stream off the critical path;
+  // `Markdown` is memoised, so an unchanged buffer costs nothing.
+  const deferredStreamText = useDeferredValue(streamText)
+
   const disabled = streaming || blockedOnApproval || !assistantAvailable
 
   return (
@@ -134,7 +141,7 @@ export default function TicketChat({
               {chip.tool}
             </span>
           ))}
-          {streamText && <div className={styles.streamText}>{streamText}</div>}
+          {deferredStreamText && <Markdown className={styles.streamText} text={deferredStreamText} />}
           {error && <div className={styles.errorText}>{error}</div>}
         </div>
       )}

@@ -24,16 +24,23 @@ export function actorLabel(actor: string, directory: DirectoryUser[] | undefined
   return role.toUpperCase()
 }
 
+/**
+ * Whether an actor is kenny itself. `triage` counts: it is the same assistant
+ * writing the same way — the label carries the one thing that differs, that
+ * nobody asked it to look.
+ */
+export function isAssistant(actor: string): boolean {
+  return actor === 'assistant' || actor === 'triage'
+}
+
 export function actorColor(actor: string): string {
-  // `triage` shares kenny's colour deliberately: it is the same assistant, and
-  // the label carries the one thing that differs — nobody asked it to look.
-  if (actor === 'assistant' || actor === 'triage') return 'var(--brass-600)'
+  if (isAssistant(actor)) return 'var(--brass-600)'
   if (actor === 'system') return 'var(--text-faint)'
   return 'var(--text-muted)'
 }
 
 export function actorDot(actor: string): string {
-  if (actor === 'assistant' || actor === 'triage') return 'var(--brass-500)'
+  if (isAssistant(actor)) return 'var(--brass-500)'
   if (actor === 'system') return 'var(--ink-200)'
   return 'var(--ink-300)'
 }
@@ -123,13 +130,34 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === 'object' ? (value as Record<string, unknown>) : undefined
 }
 
+/**
+ * How `FormattedEvent.text` must be rendered.
+ *
+ * `markdown` is kenny's own prose, and only kenny's: the conversational system
+ * prompts ask for markdown and the model writes it. `verbatim` is text a person
+ * typed — their line breaks are kept, but their `*` and `_` are theirs, never
+ * markup. `status` is a line this module composed from the event's own fields;
+ * parsing it could only misread it, since a tool name beginning with `-` is not
+ * a bullet.
+ */
+export type EventBody = 'markdown' | 'verbatim' | 'status'
+
 export interface FormattedEvent {
   who: string
   whoColor: string
   dot: string
   text: string
+  body: EventBody
   /** Rendered verbatim in mono, same discipline as a gate's frozen args — never reformatted. */
   mono: string | null
+}
+
+function eventBody(event: TicketEvent): EventBody {
+  if (event.kind === 'message') return isAssistant(event.actor) ? 'markdown' : 'verbatim'
+  // An operator's note is free text they typed; triage's own notes are either a
+  // fixed line or a verdict the timeline renders as a finding, not as prose.
+  if (event.kind === 'note') return 'verbatim'
+  return 'status'
 }
 
 /**
@@ -148,6 +176,7 @@ export function formatEvent(event: TicketEvent, directory: DirectoryUser[] | und
     who: event.kind === 'message' && fields?.surface === 'discord' ? `${who} · DISCORD` : who,
     whoColor: actorColor(event.actor),
     dot: actorDot(event.actor),
+    body: eventBody(event),
   }
 
   switch (event.kind) {

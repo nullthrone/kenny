@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import type { TranscriptItem } from '../../chat/types'
 import { Check, X, ICON_STROKE_WIDTH } from '../icons'
-import { renderMarkdownLite } from './markdownLite'
+import Markdown from '../Markdown/Markdown'
 import styles from './Transcript.module.css'
 
 export interface TranscriptProps {
@@ -44,9 +44,7 @@ export default function Transcript({ items }: TranscriptProps) {
 
           case 'assistant':
             return (
-              <div key={item.id} className={styles.assistant}>
-                {renderMarkdownLite(item.text)}
-              </div>
+              <Markdown key={item.id} className={styles.assistant} text={item.text} />
             )
 
           case 'auto_run':

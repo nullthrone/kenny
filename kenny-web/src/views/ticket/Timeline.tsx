@@ -2,6 +2,7 @@ import type { DirectoryUser, TicketEvent } from './types'
 import type { TriageFinding } from './eventFormat'
 import { formatEvent, formatEventTime, triageFinding, verdictLabel, verdictTone } from './eventFormat'
 import { useAddSuppression } from '../host/api'
+import Markdown from '../../components/Markdown/Markdown'
 import styles from './Timeline.module.css'
 
 export interface TimelineProps {
@@ -84,6 +85,10 @@ function Verdict({ finding, agentId }: { finding: TriageFinding; agentId?: strin
  * as a gate's frozen args): this is a historical trail entry, not an
  * editable value.
  *
+ * How a row's text reads is `formatEvent`'s call, not this component's:
+ * `f.body` says whether it is kenny's markdown, a person's verbatim message,
+ * or a status line this UI composed.
+ *
  * One row is not history: a triage verdict (see `Verdict`).
  */
 export default function Timeline({ events, directory, agentId }: TimelineProps) {
@@ -101,7 +106,14 @@ export default function Timeline({ events, directory, agentId }: TimelineProps) 
               </span>
               <span className={styles.time}>{formatEventTime(event.at)}</span>
             </div>
-            {!finding && <div className={styles.text}>{f.text}</div>}
+            {!finding &&
+              (f.body === 'markdown' ? (
+                <Markdown className={styles.text} text={f.text} />
+              ) : (
+                <div className={`${styles.text}${f.body === 'verbatim' ? ` ${styles.verbatim}` : ''}`}>
+                  {f.text}
+                </div>
+              ))}
             {f.mono && <div className={styles.mono}>{f.mono}</div>}
             {finding && <Verdict finding={finding} agentId={agentId} />}
           </div>

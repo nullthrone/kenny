@@ -943,3 +943,67 @@ async def test_a_failed_turn_records_the_real_error_on_the_trail(world: World) -
     error = fields["error"]
     assert error["code"] == "RuntimeError"
     assert len(error["message"]) == _MAX_TRAIL_ERROR_CHARS
+
+
+def test_conversational_prompt_names_the_markdown_subset_the_ui_renders() -> None:
+    """The two halves of a seam that has no shared type to bind them.
+
+    What the model writes and what the dashboard renders are decided in
+    different languages: the prompt here, and
+    ``kenny-web/src/components/Markdown/Markdown.tsx`` there. The dashboard
+    renders bold, inline code and both list kinds; the same reply is also
+    delivered to Discord, which renders exactly that subset natively and no
+    more. So the prompt must keep naming that subset — a rewrite that drops
+    the line lets the model drift to tables and raw HTML, which one surface
+    would mangle and the other would print as punctuation.
+
+    The triage prompt is deliberately excluded: a verdict is structured tool
+    output the timeline renders as a finding, never markdown prose.
+    """
+
+    from kenny_server.chat import _SYSTEM_PROMPT as FLEET_PROMPT
+    from kenny_server.ticket_assistant import _SYSTEM_PROMPT, _TRIAGE_SYSTEM_PROMPT
+
+    for prompt in (_SYSTEM_PROMPT, FLEET_PROMPT):
+        assert "**bold**" in prompt
+        assert "`inline code`" in prompt
+        assert "numbered lists" in prompt
+        # And the shapes neither surface renders.
+        assert "Do not use headings, tables, images, links, or raw HTML" in prompt
+
+    assert "**bold**" not in _TRIAGE_SYSTEM_PROMPT
+
+
+def test_dashboard_agrees_with_the_stored_actor_names() -> None:
+    """The actor column and the code that reads it live in two languages.
+
+    ``ASSISTANT_ACTOR``/``TRIAGE_ACTOR`` are stored column values; the
+    dashboard decides from them whether a trail row is kenny's prose (rendered
+    as markdown) or somebody else's (rendered verbatim). Nothing in either
+    language binds them, so a rename on one side is silent on the other — and
+    the failure is quiet: the row still says KENNY, because ``actorLabel``
+    upper-cases any unknown role, it just stops being treated as kenny's.
+
+    That is not hypothetical. The store migrated this column from ``"kenny"``
+    to ``"assistant"`` (``TicketStore._migrate``), and the screenshot seed went
+    on writing the old value for long enough that the demo dashboard rendered
+    kenny's replies as a stranger's.
+    """
+
+    from pathlib import Path
+
+    from kenny_server.ticketstore import ASSISTANT_ACTOR, TRIAGE_ACTOR
+
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "kenny-web"
+        / "src"
+        / "views"
+        / "ticket"
+        / "eventFormat.ts"
+    ).read_text(encoding="utf-8")
+
+    assert f"actor === '{ASSISTANT_ACTOR}'" in source
+    assert f"actor === '{TRIAGE_ACTOR}'" in source
+    # The pre-migration value must not be what the dashboard keys off.
+    assert "actor === 'kenny'" not in source
