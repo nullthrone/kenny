@@ -48,11 +48,56 @@ export interface Member {
   detail: string
 }
 
-/** `GET /api/about` — static server identity. Sources the sidebar's version line. */
+/**
+ * `GET /api/about` — static server identity, produced by `webui/__init__.py::api_about`.
+ * Sources the sidebar's version line and the About dialog it opens.
+ */
 export interface About {
   server_version: string
   protocol_version: string
   repo: string | null
+}
+
+/**
+ * One release in `GET /api/changelog`, produced by `changelog._to_public`, which
+ * strips a leading `v`/`V` from `tag_name` for `version` and falls back to the tag
+ * for `name`. Drafts and (by default) prereleases never reach the client.
+ *
+ * `tag` — not `version` — is the unique key: `version` is the tag with its `v`
+ * stripped, so `v1.0` and `1.0` would collide.
+ */
+export interface ChangelogRelease {
+  version: string
+  tag: string
+  name: string
+  /** ISO-8601, or null for a release GitHub never published. */
+  published_at: string | null
+  body: string
+  html_url: string | null
+  prerelease: boolean
+}
+
+/**
+ * `GET /api/changelog` — GitHub Releases, proxied server-side and cached for five
+ * minutes. `changelog.fetch_releases` is best-effort and never raises, so an empty
+ * `releases` means "GitHub had nothing to say", not "the server broke".
+ */
+export interface ChangelogResponse {
+  repo: string
+  releases: ChangelogRelease[]
+}
+
+/**
+ * The slice of `GET /api/agent-binary` the About dialog reads. The endpoint
+ * (`distribution.agent_binary_status`) also returns `ok`, `source`, `sha256`,
+ * `by_os`, `targets` and `github_configured` for Admin's distribution section;
+ * only what is consumed is typed here. Widen it when a caller needs more rather
+ * than transcribing the whole shape speculatively.
+ */
+export interface AgentBinaryStatus {
+  /** The staged binary's version, or null when nothing is cached. */
+  version: string | null
+  available: boolean
 }
 
 /** `GET /api/me` — identity, role and host scope for the signed-in principal. */

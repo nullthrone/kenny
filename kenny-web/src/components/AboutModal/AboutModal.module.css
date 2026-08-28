@@ -1,0 +1,146 @@
+/* Header follows SectionModal (icon + title + close); body/footer follow the
+   Profile modals. The rules are transcribed rather than imported:
+   views/profile/shared.module.css is view-scoped, and a component reaching into
+   a view's stylesheet inverts the layering. */
+.header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--border-line);
+  color: var(--text-body);
+}
+
+.title {
+  font-family: var(--font-display);
+  font-size: 12px;
+  letter-spacing: var(--track-caps);
+  flex: 1;
+  min-width: 0;
+}
+
+.close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  min-width: 44px;
+  min-height: 44px;
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+.close:hover {
+  color: var(--text-body);
+}
+
+.body {
+  padding: 24px;
+}
+
+.footer {
+  padding: 14px 24px;
+  border-top: 1px solid var(--border-line);
+}
+
+.errorBox {
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--danger);
+  background: var(--surface-inset);
+  color: var(--text-body);
+  font-size: var(--text-sm);
+}
+
+.link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-accent);
+  text-decoration: none;
+  font-size: var(--text-sm);
+}
+.link:hover {
+  text-decoration: underline;
+}
+
+.changelogBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 20px 0 8px;
+}
+
+.groupLabel {
+  font-family: var(--font-display);
+  font-size: 11px;
+  letter-spacing: var(--track-caps);
+  color: var(--text-muted);
+}
+
+.select {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-body);
+  background: var(--surface-card);
+  border: 1px solid var(--border-line);
+  border-radius: var(--radius-1);
+  padding: 4px 6px;
+  flex: none;
+  width: auto;
+}
+.select:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.changelog {
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid var(--border-line);
+  border-radius: var(--radius-1);
+  background: var(--surface-inset);
+}
+
+.entry {
+  padding: 10px 13px;
+  border-bottom: 1px solid var(--border-line);
+}
+.entry:last-child {
+  border-bottom: 0;
+}
+
+.entryHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.entryVersion {
+  font-weight: 700;
+  font-size: var(--text-sm);
+}
+
+.entryDate {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* Markdown deliberately sets no type scale of its own — the call site supplies
+   it. Wrapping is left to `.kc-modal`'s overflow-wrap:break-word; the legacy
+   rule used `anywhere`, which global.css warns broke a control once. */
+.entryBody {
+  font-size: var(--text-sm);
+  line-height: var(--leading-body);
+  color: var(--text-body);
+}
+
+.fallback {
+  margin: 0;
+  padding: 12px 13px;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}

@@ -7,6 +7,7 @@ from functools import partial
 
 from starlette.testclient import TestClient
 
+from kenny_server import PROTOCOL_VERSION, agent_release
 from kenny_server.main import build_app
 from kenny_server.webui import _fleet_summary, _severity_label
 
@@ -461,3 +462,34 @@ def test_refresh_reports_stored_true_on_success(tmp_path):
     assert body["ok"] is True
     assert body["stored"] is True
     assert "warning" not in body
+
+
+def test_about_reports_server_protocol_and_repo(tmp_path) -> None:
+    """The identity the About dialog renders.
+
+    Nothing else pinned this shape, so the route could drop or rename a key and
+    every Python test would still pass while the console silently rendered a
+    broken GitHub link. ``repo`` in particular is what the dashboard builds
+    ``github.com/{repo}`` from (kenny-web `AboutModal`).
+    """
+
+    app = build_app(db_path=str(tmp_path / "about.sqlite"))
+    with TestClient(app) as c:
+        resp = c.get("/api/about", headers=_bearer(app))
+    assert resp.status_code == 200
+    body = resp.json()
+    assert set(body) == {"server_version", "protocol_version", "repo"}
+    assert body["protocol_version"] == PROTOCOL_VERSION
+    assert body["repo"] == agent_release.github_repo()
+
+
+def test_about_requires_authentication(tmp_path) -> None:
+    """About sits at the authenticated floor — no ``min_role``, but not open.
+
+    That floor is the only access control on it, which is also why the dialog
+    needs no role gating of its own.
+    """
+
+    app = build_app(db_path=str(tmp_path / "about-auth.sqlite"))
+    with TestClient(app) as c:
+        assert c.get("/api/about").status_code == 401

@@ -1,8 +1,10 @@
 /**
- * The complete set of lucide glyphs the prototype uses (grepped from every
- * `data-lucide="…"` in Kenny Console.dc.html, including the ones only
- * reachable through data arrays — hostActions, problems, wizard steps,
- * nav, theme toggle). Render at stroke-width 1.75 (Nullthrone spec) —
+ * The complete set of lucide glyphs the console renders: the prototype's
+ * (grepped from every `data-lucide="…"` in Kenny Console.dc.html, including
+ * the ones only reachable through data arrays — hostActions, problems,
+ * wizard steps, nav, theme toggle), plus `Info`, which titles the About
+ * dialog as it did in the legacy dashboard's user menu. Render at
+ * stroke-width 1.75 (Nullthrone spec) —
  * `ICON_STROKE_WIDTH` below, pass it as the `strokeWidth` prop.
  *
  * Import icons from here, not from `lucide-react` directly, so the set
@@ -16,6 +18,7 @@ export {
   Download,
   HardDrive,
   Inbox,
+  Info,
   LifeBuoy,
   Link,
   LogOut,
