@@ -4,6 +4,12 @@
  * verbatim; do not round them. */
 
 .root {
+  /* The header and the sidebar's logo block share one height, so the rule
+     under each lands on the same line and reads as one line across the
+     full width. Both rules below read this; nothing else sets either height.
+     88px is the first 8px step above the logo block's own 86.85px
+     (24 + 17px*1.55 + 10px*1.55 + 20 + 1), so nothing in it is squeezed. */
+  --kc-header-h: 88px;
   display: flex;
   min-height: 100vh;
   background: var(--surface-page);
@@ -26,6 +32,7 @@
   display: flex;
   align-items: center;
   gap: 12px;
+  height: var(--kc-header-h);
   padding: 24px 20px 20px;
   border-bottom: 1px solid var(--ink-700);
 }
@@ -187,7 +194,7 @@
   align-items: center;
   justify-content: space-between;
   padding: 0 40px;
-  height: 64px;
+  height: var(--kc-header-h);
   border-bottom: 1px solid var(--border-line);
   background: var(--surface-page);
   position: sticky;
