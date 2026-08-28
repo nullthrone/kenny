@@ -156,6 +156,23 @@
   font-family: var(--font-mono);
   font-size: 10px;
   color: var(--ink-500);
+  /* Button resets — this line opens the About dialog. Deliberately NOT `kc-btn`:
+     that sets white-space:nowrap, and "v2.2.0 · 6 agents · all reporting" is
+     wider than the 232px sidebar's text column. It has to be free to wrap. */
+  background: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  text-align: left;
+  line-height: 1.4;
+  cursor: pointer;
+}
+.versionLine:hover {
+  color: var(--ink-300);
+}
+.versionLine:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 
 .main {

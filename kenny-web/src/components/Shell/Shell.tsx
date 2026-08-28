@@ -11,6 +11,8 @@ import { Sun, Moon, Terminal, LogOut, X, ICON_STROKE_WIDTH } from '../icons'
 import { initialsOf, roleLabel } from '../format'
 import { deriveCrumb } from './crumb'
 import AskKennyDrawer from '../AskKennyDrawer/AskKennyDrawer'
+import AboutModal from '../AboutModal/AboutModal'
+import { useAbout } from '../AboutModal/api'
 import styles from './Shell.module.css'
 
 /**
@@ -19,10 +21,14 @@ import styles from './Shell.module.css'
  * `<Outlet/>`. Used as the element of the wrapping layout Route
  * (src/router/routes.tsx) — every view renders inside it.
  *
- * Self-sufficient for its own chrome data: fetches `/api/me` (user block)
- * and `/api/fleet` (online count) itself, the same way the old dashboard's
- * header re-derives these on every render rather than a view passing them
- * down. Per-nav badge counts (e.g. Inbox's "needs you" count) are not
+ * Self-sufficient for its own chrome data: fetches `/api/me` (user block),
+ * `/api/fleet` (online count) and `/api/about` (the version segment of the
+ * sidebar's fleet line) itself, the same way the old dashboard's header
+ * re-derives these on every render rather than a view passing them down.
+ * `/api/about` is a process constant and is cached accordingly — see
+ * `AboutModal/api.ts`, which the About dialog shares the entry with.
+ *
+ * Per-nav badge counts (e.g. Inbox's "needs you" count) are not
  * wired — there is no documented endpoint for a lightweight global badge
  * count in the frozen contract, only full `/api/inbox` list responses.
  * Wire `navBadges` once that's decided; it renders correctly already.
@@ -35,9 +41,11 @@ export default function Shell({ navBadges }: ShellProps) {
   const location = useLocation()
   const { theme, toggleTheme } = useTheme()
   const [chatOpen, setChatOpen] = useState(false)
+  const [aboutOpen, setAboutOpen] = useState(false)
 
   const me = useQuery({ queryKey: ['me'], queryFn: () => api.get<Me>('/api/me') })
   const fleet = useQuery({ queryKey: ['fleet'], queryFn: () => api.get<FleetResponse>('/api/fleet') })
+  const about = useAbout()
 
   const fleetTotal = fleet.data?.agents.length ?? null
   const online = fleet.data ? fleet.data.agents.filter((a) => a.online).length : null
@@ -47,7 +55,8 @@ export default function Shell({ navBadges }: ShellProps) {
 
   useEffect(() => {
     function onKeydown(e: KeyboardEvent) {
-      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+      // Not while About is up: the drawer would open behind the dialog.
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k' && !aboutOpen) {
         e.preventDefault()
         setChatOpen((v) => !v)
       }
@@ -55,7 +64,7 @@ export default function Shell({ navBadges }: ShellProps) {
     }
     window.addEventListener('keydown', onKeydown)
     return () => window.removeEventListener('keydown', onKeydown)
-  }, [])
+  }, [aboutOpen])
 
   /**
    * "Fix via Ask kenny" on a host's section modal starts a real chat turn through
@@ -120,16 +129,30 @@ export default function Shell({ navBadges }: ShellProps) {
               <LogOut width={14} height={14} strokeWidth={ICON_STROKE_WIDTH} aria-hidden="true" />
             </a>
           </div>
-          {/* The prototype's line is "v0.10 · 6 agents · all reporting" — the
-              version segment is dropped here: there is no version field in
-              the frozen contract (types.ts) to source it from honestly. */}
-          <div className={styles.versionLine}>
+          {/* The prototype's line: "v0.10 · 6 agents · all reporting". It is also
+              the only way into the About dialog — the legacy dashboard opened
+              About from a header user menu this shell does not have. The
+              version segment is omitted entirely until /api/about resolves, so
+              a slow or failed read degrades to the fleet half rather than
+              rendering "vundefined".
+
+              The visible text describes fleet state, not the action, so the
+              button carries an accessible name of its own. */}
+          <button
+            type="button"
+            className={styles.versionLine}
+            onClick={() => setAboutOpen(true)}
+            aria-haspopup="dialog"
+            title="About kenny"
+            aria-label={about.data ? `About kenny — server version ${about.data.server_version}` : 'About kenny'}
+          >
+            {about.data ? `v${about.data.server_version} · ` : ''}
             {fleetTotal !== null && online !== null
               ? `${fleetTotal} agent${fleetTotal === 1 ? '' : 's'} · ${
                   online === fleetTotal ? 'all reporting' : `${fleetTotal - online} offline`
                 }`
               : '— agents'}
-          </div>
+          </button>
         </div>
       </aside>
 
@@ -171,6 +194,8 @@ export default function Shell({ navBadges }: ShellProps) {
       </main>
 
       <MobileTabBar navBadges={navBadges} />
+
+      <AboutModal open={aboutOpen} onClose={() => setAboutOpen(false)} />
 
       {chatOpen && (
         <>

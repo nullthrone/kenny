@@ -23,7 +23,7 @@ come back here when you want to know what a particular control does.
 
 <figure markdown>
   ![The console header](assets/screenshots/header.png)
-  <figcaption>The header: brand, destination nav, the online count, the Ask kenny trigger, and the user menu.</figcaption>
+  <figcaption>The header: brand, destination nav, the online count, the Ask kenny trigger, and the theme toggle.</figcaption>
 </figure>
 
 Every view shares one header:
@@ -45,8 +45,9 @@ Every view shares one header:
 - **Account block** — at the foot of the sidebar: your initials, your username and your
   role. It links to [Profile](#profile). Beside it is **log out** (`/logout`), a plain link
   rather than a request, so signing out survives a broken session.
-- **Fleet line** — under the account block: how many agents are enrolled and whether they
-  are all reporting.
+- **Fleet line** — under the account block: the running server version, how many agents
+  are enrolled and whether they are all reporting. Clicking it opens
+  **[About kenny](#server-and-agent-versions)**.
 
 ---
 
@@ -599,8 +600,8 @@ environment: none of them are writable from here, and a sensitive one shows as *
   <figcaption>Profile: your own account, separate from fleet administration.</figcaption>
 </figure>
 
-`#/profile` — your account, reached from the [user menu](#the-shell-header-global-controls),
-not from Admin. It lets you:
+`#/profile` — your account, reached from the
+[account block in the sidebar](#the-shell-header-global-controls), not from Admin. It lets you:
 
 - **Change your name/email** and pick an avatar from the dog-breed grid.
 - **Change your password.**
@@ -695,16 +696,26 @@ The full onboarding and update flows (with sequence diagrams) are in the
 ## Server and agent versions
 
 `GET /api/about` reports the server version, the protocol version and the
-repository, and `GET /api/changelog` proxies the project's GitHub releases.
-`GET /api/agent-binary` reports which agent installers are staged.
+repository, `GET /api/changelog` proxies the project's GitHub releases
+(server-side, cached five minutes, stable releases only), and
+`GET /api/agent-binary` reports which agent installers are staged. All three sit
+at the authenticated floor, so every role reaches them.
 
-The console does not yet present any of this. Admin's *Agent distribution* and
-*Updates* sections cover the staged binary and the rollout; the server's own
-version and the changelog have no surface.
+The sidebar's **fleet line** carries the running server version —
+`v2.2.0 · 6 agents · all reporting` — and clicking it opens **About kenny**:
+the **server version**, **protocol version**, **staged agent version**, and a link
+to the repository, plus a live **changelog** filtered from the project's GitHub
+Releases. The version dropdown starts on the release matching the running server
+(marked *(running)*) when there is one, and on *all versions* otherwise; release
+notes render as markdown. Only `/api/about` is load-bearing: if GitHub is
+unreachable or no agent binary is staged, the dialog still opens and the rest of
+it still fills in.
 
-The **About** item in the [user menu](#the-shell-header-global-controls) shows the
-**server version**, **protocol version**, **staged agent version**, and a link to the
-repository, plus a live **changelog** filtered from the project's GitHub Releases.
+Because the box hangs off the sidebar, it is reached at desktop width — below
+760px the sidebar gives way to the tab bar.
+
+Admin's *Agent distribution* and *Updates* sections cover the staged binary and
+the rollout in operational detail.
 
 ---
 
@@ -729,7 +740,7 @@ and the "see the dashboard" links kenny has already posted into Discord all keep
 ## Themes, deep links & accessibility
 
 - **Light & dark** — the light theme (ink on warm paper) is the default; the toggle lives
-  in the [user menu](#the-shell-header-global-controls), is persisted per account, and is
+  in the [header](#the-shell-header-global-controls), is persisted per account, and is
   applied before first paint. Dark is the alternate theme, reached via the toggle or a
   dark system preference.
 - **Status is never colour-only** — each status has a distinct **shape + icon + label**

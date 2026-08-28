@@ -90,7 +90,7 @@ clients share one bucket). The bundled TLS profile sets this for you.
 | `KENNY_COEXIST_PROCESSES` | agent | anti-cheat set | Comma-separated extra process names to treat as "a protected game is running", extending the built-in anti-cheat list (`EasyAntiCheat.exe`, `BEService*.exe`, …). Add game exes here, e.g. `ARC-Raiders.exe`. Matched case- and `.exe`-insensitively. |
 | `KENNY_COEXIST_POLL_SECS` | agent | `5` | How often the agent checks whether a watched process is running. |
 | `KENNY_COEXIST_TELEMETRY_INTERVAL_SECS` | agent | `3600` | Telemetry push interval while a protected game is running (never shorter than `KENNY_TELEMETRY_INTERVAL_SECS`). |
-| `KENNY_SERVER_VERSION` | server | `0.0.0-dev` | Version string shown in the **About** box and `/api/about`. |
+| `KENNY_SERVER_VERSION` | server | `0.0.0-dev` | Version string shown on the sidebar's fleet line, in the **About kenny** dialog, and in `/api/about`. |
 | `KENNY_LOG_LEVEL` | server | `INFO` | Root log level. Server logs are also persisted to the event store (ADR-0017). |
 
 **Agent authentication & identity** (ADR-0022 mutual Ed25519 auth, token rotation):

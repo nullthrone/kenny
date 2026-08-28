@@ -6,6 +6,11 @@
  * parsed markdown while the timeline printed the asterisks. Each surface's
  * test renders THIS text, so a surface that stops rendering markdown fails
  * while the others still pass, which is the divergence itself.
+ *
+ * The About dialog's changelog is a fourth consumer of the same renderer. Its
+ * text is not kenny's — it is release notes written on GitHub — so it shares
+ * these samples for the renderer's behaviour, and `HOSTILE` matters more there
+ * than anywhere: that body is third-party text.
  */
 
 /** A reply in the shape kenny actually writes: lead-in, bold, bullets, a numbered list. */
