@@ -1,26 +1,28 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="Corgi avatar">
-  <circle cx="64" cy="64" r="64" fill="#FBE0C4"/>
-  <!-- big pointy ears -->
-  <path d="M30 52 C24 24 34 18 46 30 C50 40 48 50 44 56 Z" fill="#DE9042"/>
-  <path d="M98 52 C104 24 94 18 82 30 C78 40 80 50 84 56 Z" fill="#DE9042"/>
-  <path d="M33 50 C29 30 36 26 44 34 C47 42 45 49 43 53 Z" fill="#F5D6AE"/>
-  <path d="M95 50 C99 30 92 26 84 34 C81 42 83 49 85 53 Z" fill="#F5D6AE"/>
-  <!-- head orange -->
-  <path d="M34 56 C34 40 46 34 64 34 C82 34 94 40 94 56 C94 80 82 98 64 98 C46 98 34 80 34 56 Z" fill="#E89B45"/>
-  <!-- white lower face / cheeks -->
-  <path d="M40 68 C40 60 50 58 64 58 C78 58 88 60 88 68 C88 86 78 98 64 98 C50 98 40 86 40 68 Z" fill="#F7F1E8"/>
-  <!-- white blaze -->
-  <path d="M64 40 C60 40 57 44 57 52 C57 60 60 66 64 70 C68 66 71 60 71 52 C71 44 68 40 64 40 Z" fill="#F7F1E8"/>
+  <rect width="128" height="128" fill="#E9E6DF"/>
+  <!-- tall upright ears -->
+  <path d="M30 62 L40 20 L57 47 Z" fill="#8F6B26"/>
+  <path d="M98 62 L88 20 L71 47 Z" fill="#8F6B26"/>
+  <path d="M37 56 L42 30 L50 48 Z" fill="#E4D5AC"/>
+  <path d="M91 56 L86 30 L78 48 Z" fill="#E4D5AC"/>
+  <!-- shoulders -->
+  <path d="M20 128 V119 C20 107 38 99 64 99 C90 99 108 107 108 119 V128 Z" fill="#141317"/>
+  <!-- collar and tag -->
+  <path d="M48 95 H80 V104 H48 Z" fill="#A87E2F"/>
+  <path d="M60.5 107 H67.5 V114 H60.5 Z" fill="#A87E2F"/>
+  <!-- head -->
+  <path d="M34 58 C34 42 47 32 64 32 C81 32 94 42 94 58 L94 62 C94 82 81 96 64 96 C47 96 34 82 34 62 Z" fill="#8F6B26"/>
+  <!-- blaze -->
+  <path d="M59 35 H69 L72 66 H56 Z" fill="#F4F2EC"/>
+  <!-- white lower face -->
+  <path d="M41 74 C41 65 51 63 64 63 C77 63 87 65 87 74 C87 87 77 96 64 96 C51 96 41 87 41 74 Z" fill="#F4F2EC"/>
   <!-- eyes -->
-  <circle cx="51" cy="60" r="5.4" fill="#3A2A18"/>
-  <circle cx="77" cy="60" r="5.4" fill="#3A2A18"/>
-  <circle cx="53" cy="58" r="1.7" fill="#fff"/>
-  <circle cx="79" cy="58" r="1.7" fill="#fff"/>
+  <circle cx="51" cy="57" r="5" fill="#141317"/>
+  <circle cx="77" cy="57" r="5" fill="#141317"/>
   <!-- nose -->
-  <ellipse cx="64" cy="72" rx="6" ry="4.6" fill="#2B2B2B"/>
-  <!-- mouth + tongue -->
-  <path d="M64 76.6 C64 82 58 85 55 83 M64 76.6 C64 82 70 85 73 83" fill="none" stroke="#8A5A2B" stroke-width="2.4" stroke-linecap="round"/>
-  <path d="M60 83 C60 91 68 91 68 83 Z" fill="#E86A6A"/>
-  <!-- amber collar -->
-  <path d="M49 95 C55 101 73 101 79 95" fill="none" stroke="#E8A33D" stroke-width="5" stroke-linecap="round"/>
+  <path d="M56 72 H72 V77 C72 81.5 68.4 84.5 64 84.5 C59.6 84.5 56 81.5 56 77 Z" fill="#141317"/>
+  <!-- mouth -->
+  <path d="M64 84.5 V88" fill="none" stroke="#7A5A1F" stroke-width="2.2" stroke-linecap="round"/>
+  <path d="M56.5 88 C58.5 91.5 61.5 91.5 64 88 C66.5 91.5 69.5 91.5 71.5 88" fill="none" stroke="#7A5A1F" stroke-width="2.2" stroke-linecap="round"/>
+  <rect x=".5" y=".5" width="127" height="127" fill="none" stroke="#D9D6D3"/>
 </svg>

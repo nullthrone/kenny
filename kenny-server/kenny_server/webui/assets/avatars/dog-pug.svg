@@ -1,25 +1,26 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="Pug avatar">
-  <circle cx="64" cy="64" r="64" fill="#F7D8DC"/>
-  <!-- small folded dark ears -->
-  <path d="M40 40 C32 36 28 44 32 54 C38 56 44 50 46 44 Z" fill="#3A312A"/>
-  <path d="M88 40 C96 36 100 44 96 54 C90 56 84 50 82 44 Z" fill="#3A312A"/>
-  <!-- round fawn head -->
-  <path d="M34 60 C34 42 46 36 64 36 C82 36 94 42 94 60 C94 82 82 98 64 98 C46 98 34 82 34 60 Z" fill="#E7C48C"/>
-  <!-- dark mask -->
-  <path d="M44 66 C44 56 52 52 64 52 C76 52 84 56 84 66 C84 84 76 96 64 96 C52 96 44 84 44 66 Z" fill="#4A3D30"/>
+  <rect width="128" height="128" fill="#E9E6DF"/>
+  <!-- shoulders -->
+  <path d="M20 128 V119 C20 107 38 99 64 99 C90 99 108 107 108 119 V128 Z" fill="#141317"/>
+  <!-- collar and tag -->
+  <path d="M48 95 H80 V104 H48 Z" fill="#A87E2F"/>
+  <path d="M60.5 107 H67.5 V114 H60.5 Z" fill="#A87E2F"/>
+  <!-- broad fawn head -->
+  <path d="M35 62 C35 45 47 37 64 37 C81 37 93 45 93 62 L93 66 C93 84 81 96 64 96 C47 96 35 84 35 66 Z" fill="#E4D5AC"/>
+  <!-- button ears, folded down over the top corners -->
+  <path d="M40 36 C33 37 31 46 36 53 C43 51 46 44 45 38 Z" fill="#141317"/>
+  <path d="M88 36 C95 37 97 46 92 53 C85 51 82 44 83 38 Z" fill="#141317"/>
   <!-- forehead wrinkle -->
-  <path d="M56 46 C60 42 68 42 72 46" fill="none" stroke="#C9A46A" stroke-width="3" stroke-linecap="round"/>
-  <!-- big eyes -->
-  <circle cx="53" cy="64" r="6.2" fill="#1C140E"/>
-  <circle cx="75" cy="64" r="6.2" fill="#1C140E"/>
-  <circle cx="55" cy="61.5" r="2" fill="#fff"/>
-  <circle cx="77" cy="61.5" r="2" fill="#fff"/>
-  <!-- flat nose -->
-  <ellipse cx="64" cy="78" rx="7.5" ry="5.4" fill="#1C140E"/>
-  <!-- wrinkle over nose -->
-  <path d="M56 72 C60 69 68 69 72 72" fill="none" stroke="#6b5844" stroke-width="2.2" stroke-linecap="round"/>
+  <path d="M56 50 C59 46 69 46 72 50" fill="none" stroke="#C09A4B" stroke-width="3" stroke-linecap="round"/>
+  <!-- eyes -->
+  <circle cx="51" cy="61" r="5.4" fill="#141317"/>
+  <circle cx="77" cy="61" r="5.4" fill="#141317"/>
+  <!-- dark muzzle patch -->
+  <path d="M48 79 C48 70 55 66 64 66 C73 66 80 70 80 79 C80 88 73 95 64 95 C55 95 48 88 48 79 Z" fill="#3A3740"/>
+  <!-- flat wide nose -->
+  <path d="M55 76 H73 V79.5 C73 83.5 69 86 64 86 C59 86 55 83.5 55 79.5 Z" fill="#141317"/>
   <!-- mouth -->
-  <path d="M64 83 C64 88 59 90 56 89 M64 83 C64 88 69 90 72 89" fill="none" stroke="#2b2018" stroke-width="2.4" stroke-linecap="round"/>
-  <!-- amber collar -->
-  <path d="M49 95 C55 101 73 101 79 95" fill="none" stroke="#E8A33D" stroke-width="5" stroke-linecap="round"/>
+  <path d="M64 86 V89" fill="none" stroke="#141317" stroke-width="2.2" stroke-linecap="round"/>
+  <path d="M56 89 C58.5 92.5 61.5 92.5 64 89 C66.5 92.5 69.5 92.5 72 89" fill="none" stroke="#141317" stroke-width="2.2" stroke-linecap="round"/>
+  <rect x=".5" y=".5" width="127" height="127" fill="none" stroke="#D9D6D3"/>
 </svg>

@@ -7,12 +7,15 @@ scoping for the ``user`` role, and operator-only host removal.
 
 from __future__ import annotations
 
+import struct
 import time
+from pathlib import Path
 
 from starlette.testclient import TestClient
 
 from kenny_server import security
 from kenny_server.main import build_app
+from kenny_server.webui import users
 
 
 def _app(tmp_path):
@@ -253,3 +256,25 @@ def test_avatars_endpoint(tmp_path) -> None:
         assert "dog-border-collie" in avatars
         # The rasterized PNG is actually served.
         assert c.get("/assets/dog-border-collie.png").status_code == 200
+
+
+def test_avatar_sources_and_rasters_match(tmp_path) -> None:
+    """Every offered avatar is an SVG source, a 128x128 PNG, and nothing else.
+
+    The PNG is derived from the SVG by hand (see webui/assets/README.md), so the
+    three can drift: an id added to AVATARS with no artwork offers a broken image
+    in the picker, and an SVG edited without re-rasterizing ships the old picture.
+    """
+    assets = Path(users.__file__).parent / "assets"
+    svgs = {p.stem for p in (assets / "avatars").glob("dog-*.svg")}
+    pngs = {p.stem for p in assets.glob("dog-*.png")}
+    assert svgs == set(users.AVATARS) == pngs
+
+    app = _app(tmp_path)
+    with TestClient(app) as c:
+        for avatar in users.AVATARS:
+            r = c.get(f"/assets/{avatar}.png")  # public: the login screen needs it
+            assert r.status_code == 200, avatar
+            # PNG signature, then IHDR's big-endian width/height.
+            assert r.content[:8] == b"\x89PNG\r\n\x1a\n", avatar
+            assert struct.unpack(">II", r.content[16:24]) == (128, 128), avatar
