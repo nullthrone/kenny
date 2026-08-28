@@ -17,9 +17,13 @@ import styles from './Shell.module.css'
 
 /**
  * The app shell: 232px ink sidebar (desktop) / MobileTabBar (below 760px,
- * rendered as a sibling here), 64px header, content area rendered through
+ * rendered as a sibling here), header, content area rendered through
  * `<Outlet/>`. Used as the element of the wrapping layout Route
  * (src/router/routes.tsx) — every view renders inside it.
+ *
+ * The header and the sidebar's logo block are the same height
+ * (`--kc-header-h`, set on `.root` in Shell.module.css), so the rule under
+ * each is one continuous line across the full width.
  *
  * Self-sufficient for its own chrome data: fetches `/api/me` (user block),
  * `/api/fleet` (online count) and `/api/about` (the version segment of the
