@@ -232,7 +232,7 @@ configured (ADR-0015):
 ```yaml
 environment:
   KENNY_GITHUB_TOKEN: ${KENNY_GITHUB_TOKEN}   # a token with read access to releases
-  KENNY_GITHUB_REPO: nullthrone/kenny               # default
+  KENNY_GITHUB_REPO: nullthrone/kenny         # default
 ```
 
 On startup (and via the dashboard's **retry GitHub fetch** button) the server downloads the latest
@@ -242,6 +242,14 @@ them on the `/data` volume. The fetch is **best-effort** and per-asset — if th
 or no token is set, the dashboard shows a banner with manual instructions instead. Operator-placed
 `KENNY_AGENT_BINARY` / `KENNY_AGENT_BINARY_LINUX` always win over the fetched cache. The dashboard's
 **Add a PC** wizard lets you onboard the very first machine without a pre-existing agent.
+
+Best-effort does not mean quiet. Every attempt is recorded, including the two that decide not to
+fetch at all (no token, or an operator-placed binary taking precedence), and the outcome survives a
+restart. **About kenny** shows it on the *staged agent version* row and Fleet's banner repeats it, so
+a stale staged version always comes with the reason it stopped moving. An expired token is the case
+worth knowing: GitHub answers an invalid `Authorization` header with **401 even on a public repo**,
+which stops both the binary fetch and the About dialog's changelog at once. Renew the token, or
+unset `KENNY_GITHUB_TOKEN` to fall back to anonymous reads of a public repo.
 
 ## Installing the agent on Windows
 
