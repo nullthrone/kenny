@@ -4,7 +4,8 @@ import KeyValueRow from '../KeyValueRow/KeyValueRow'
 import Markdown from '../Markdown/Markdown'
 import EmptyState from '../EmptyState/EmptyState'
 import { Info, Link as LinkIcon, X, ICON_STROKE_WIDTH } from '../icons'
-import { useAbout, useAgentBinary, useChangelog } from './api'
+import { useAgentBinary } from '../../api/agentBinary'
+import { useAbout, useChangelog } from './api'
 import styles from './AboutModal.module.css'
 
 /**

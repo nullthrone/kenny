@@ -24,15 +24,18 @@ export interface ActionRowProps {
 
 /**
  * The host action button row: REFRESH, REMOTE HELP, REINSTALL, RE-SHARE,
- * UPDATE AGENT, REMOVE — all six of the prototype's demo buttons.
- * REINSTALL/RE-SHARE were briefly missing from this view: an earlier pass
- * mapped their routes (`/api/agents/{id}/installer`,
- * `/api/agents/share-link`) only under Fleet's Add-a-PC wizard, but the old
- * dashboard also served both from the agent detail panel
- * (notes/api-contract-actual.md, "Fleet tab") — a lost capability, not a
- * deliberate simplification. Both routes are `min_role="operator"`
- * server-side (`distribution.py`), so this row hides them for a `user`
- * principal rather than rendering a button guaranteed to 403.
+ * UPDATE AGENT, REMOVE, and the stable/dev channel selector.
+ *
+ * Only REFRESH and REMOTE HELP floor at `user` server-side
+ * (`/api/agent/{id}/refresh`, `/api/agent/{id}/remotehelp`, both `scoped`).
+ * Everything else is operator+: `/api/agents/{id}/installer` and
+ * `/api/agents/share-link` (`distribution.py`), `/api/agents/{id}/update` and
+ * `/api/agent/{id}/channel` (`op_scoped`), and `DELETE /api/agent/{id}` (`op`).
+ * So a scoped `user` sees the first two and nothing else — this list mirrors
+ * those `min_role` values, and `ActionRow.test.tsx` fails if the two drift.
+ * Hiding is a courtesy, not the boundary: the server refuses regardless. But a
+ * REMOVE button that offers to purge a host and is guaranteed to 403 is worse
+ * than no button at all.
  */
 export default function ActionRow({ agentId, os, arch, channel }: ActionRowProps) {
   const navigate = useNavigate()
@@ -144,32 +147,38 @@ export default function ActionRow({ agentId, os, arch, channel }: ActionRowProps
             RE-SHARE
           </button>
         )}
-        <button type="button" className={styles.button} onClick={doUpdate} disabled={update.isPending}>
-          <ArrowUpCircle width={13} height={13} strokeWidth={ICON_STROKE_WIDTH} aria-hidden="true" />
-          {update.isPending ? 'UPDATING…' : 'UPDATE AGENT'}
-        </button>
-        <button type="button" className={`${styles.button} ${styles.remove}`} onClick={() => setConfirmRemove(true)}>
-          <Trash2 width={13} height={13} strokeWidth={ICON_STROKE_WIDTH} aria-hidden="true" />
-          REMOVE
-        </button>
+        {isOperator && (
+          <button type="button" className={styles.button} onClick={doUpdate} disabled={update.isPending}>
+            <ArrowUpCircle width={13} height={13} strokeWidth={ICON_STROKE_WIDTH} aria-hidden="true" />
+            {update.isPending ? 'UPDATING…' : 'UPDATE AGENT'}
+          </button>
+        )}
+        {isOperator && (
+          <button type="button" className={`${styles.button} ${styles.remove}`} onClick={() => setConfirmRemove(true)}>
+            <Trash2 width={13} height={13} strokeWidth={ICON_STROKE_WIDTH} aria-hidden="true" />
+            REMOVE
+          </button>
+        )}
       </div>
 
       {message && <p className={`${styles.message}${message.error ? ` ${styles.messageError}` : ''}`}>{message.text}</p>}
 
-      <div className={styles.channelRow}>
-        <span className={styles.channelLabel}>CHANNEL</span>
-        {(['stable', 'dev'] as const).map((c) => (
-          <button
-            key={c}
-            type="button"
-            className={`${styles.channelButton}${channel === c ? ` ${styles.channelActive}` : ''}`}
-            disabled={setChannel.isPending}
-            onClick={() => setChannel.mutate(c)}
-          >
-            {c.toUpperCase()}
-          </button>
-        ))}
-      </div>
+      {isOperator && (
+        <div className={styles.channelRow}>
+          <span className={styles.channelLabel}>CHANNEL</span>
+          {(['stable', 'dev'] as const).map((c) => (
+            <button
+              key={c}
+              type="button"
+              className={`${styles.channelButton}${channel === c ? ` ${styles.channelActive}` : ''}`}
+              disabled={setChannel.isPending}
+              onClick={() => setChannel.mutate(c)}
+            >
+              {c.toUpperCase()}
+            </button>
+          ))}
+        </div>
+      )}
 
       <Modal open={confirmRemove} onClose={() => setConfirmRemove(false)} labelledBy="remove-host-title" width={440}>
         <div className={styles.modalHeader}>

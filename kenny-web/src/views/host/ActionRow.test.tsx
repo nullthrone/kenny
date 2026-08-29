@@ -32,26 +32,40 @@ beforeEach(() => {
   apiPostMock.mockReset()
 })
 
+/**
+ * This row is the client half of a seam: which buttons it draws must match the
+ * `min_role` on the routes behind them. Only REFRESH and REMOTE HELP floor at
+ * `user` (`scoped`); everything else is operator+. When only REINSTALL and
+ * RE-SHARE were gated, a scoped `user` was offered UPDATE AGENT, the channel
+ * selector and a REMOVE button that opens a "this cannot be undone" dialog and
+ * then 403s. If either side moves, these lists stop matching.
+ */
+const USER_ACTIONS = ['REFRESH', 'REMOTE HELP']
+const OPERATOR_ACTIONS = ['REINSTALL', 'RE-SHARE', 'UPDATE AGENT', 'REMOVE']
+
 describe('ActionRow — operator gating', () => {
-  it('hides REINSTALL and RE-SHARE for a user-role principal', async () => {
+  it('offers a scoped user only the two actions their role can actually run', async () => {
     apiGetMock.mockResolvedValue({ user_id: '1', username: 'mia', role: 'user', hosts: ['oma-pc'], is_shared_token: false })
 
     renderRow()
 
     await waitFor(() => expect(apiGetMock).toHaveBeenCalledWith('/api/me'))
-    expect(screen.queryByText('REINSTALL')).not.toBeInTheDocument()
-    expect(screen.queryByText('RE-SHARE')).not.toBeInTheDocument()
-    // The rest of the row stays available to every principal.
-    expect(screen.getByText('REFRESH')).toBeInTheDocument()
+    for (const label of USER_ACTIONS) expect(screen.getByText(label)).toBeInTheDocument()
+    for (const label of OPERATOR_ACTIONS) expect(screen.queryByText(label)).not.toBeInTheDocument()
+    // PUT /api/agent/{id}/channel is operator-scoped too, so the selector goes with them.
+    expect(screen.queryByText('CHANNEL')).not.toBeInTheDocument()
   })
 
-  it('shows REINSTALL and RE-SHARE for an operator principal', async () => {
+  it('offers an operator the whole row', async () => {
     apiGetMock.mockResolvedValue({ user_id: '1', username: 'thomas', role: 'operator', hosts: [], is_shared_token: false })
 
     renderRow()
 
     expect(await screen.findByText('REINSTALL')).toBeInTheDocument()
-    expect(screen.getByText('RE-SHARE')).toBeInTheDocument()
+    for (const label of [...USER_ACTIONS, ...OPERATOR_ACTIONS]) {
+      expect(screen.getByText(label)).toBeInTheDocument()
+    }
+    expect(screen.getByText('CHANNEL')).toBeInTheDocument()
   })
 })
 

@@ -3,7 +3,9 @@
  * (grepped from every `data-lucide="…"` in Kenny Console.dc.html, including
  * the ones only reachable through data arrays — hostActions, problems,
  * wizard steps, nav, theme toggle), plus `Info`, which titles the About
- * dialog as it did in the legacy dashboard's user menu. Render at
+ * dialog as it did in the legacy dashboard's user menu, and `AlertTriangle`,
+ * which carries Fleet's "no installer is staged" banner — warning is a triangle
+ * everywhere in this console, never colour alone. Render at
  * stroke-width 1.75 (Nullthrone spec) —
  * `ICON_STROKE_WIDTH` below, pass it as the `strokeWidth` prop.
  *
@@ -11,6 +13,7 @@
  * stays enumerable and every view agent uses the same stroke width.
  */
 export {
+  AlertTriangle,
   AppWindow,
   ArrowUp,
   ArrowUpCircle,

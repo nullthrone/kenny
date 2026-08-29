@@ -3,6 +3,7 @@ import { streamChatEvents } from '../../api/sse'
 import type { ChatEvent } from '../../api/types'
 import Modal from '../../components/Modal/Modal'
 import { ArrowUp, ICON_STROKE_WIDTH } from '../../components/icons'
+import { composerKeyAction, readEnterToSend, writeEnterToSend } from '../../preferences'
 import ApprovalGate, { type DecisionOutcome } from './ApprovalGate'
 import type { TicketApproval } from './types'
 import Markdown from '../../components/Markdown/Markdown'
@@ -47,6 +48,9 @@ export default function TicketChat({
 }: TicketChatProps) {
   const [message, setMessage] = useState('')
   const [mirrorToDiscord, setMirrorToDiscord] = useState(false)
+  // Read once at mount; the checkbox below is the only thing that changes it,
+  // and it writes both this state and the stored preference.
+  const [enterSends, setEnterSends] = useState(readEnterToSend)
   const [streaming, setStreaming] = useState(false)
   const [streamText, setStreamText] = useState('')
   const [chips, setChips] = useState<StreamChip[]>([])
@@ -160,7 +164,8 @@ export default function TicketChat({
           disabled={disabled}
           onChange={(e) => setMessage(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
+            if (e.key !== 'Enter') return
+            if (composerKeyAction(e, enterSends) === 'send') {
               e.preventDefault()
               void send()
             }
@@ -187,6 +192,22 @@ export default function TicketChat({
           Also send to the Discord thread
         </label>
       )}
+      {/* Off by default, so Enter inserts a newline and Cmd/Ctrl+Enter sends — a
+          ticket reply is often several lines, and Enter sending them one at a time
+          is the failure this preference exists to prevent. Remembered per browser
+          (`kenny-enter-send`), and the same preference governs the Ask kenny drawer. */}
+      <label className={styles.mirrorRow}>
+        <input
+          type="checkbox"
+          className={styles.checkbox}
+          checked={enterSends}
+          onChange={(e) => {
+            setEnterSends(e.target.checked)
+            writeEnterToSend(e.target.checked)
+          }}
+        />
+        Enter to send
+      </label>
       {!assistantAvailable && <div className={styles.disabledNote}>The AI assistant is not configured on this server.</div>}
 
       <Modal

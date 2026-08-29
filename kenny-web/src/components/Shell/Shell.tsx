@@ -2,11 +2,11 @@ import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link, NavLink, Outlet, useLocation } from 'react-router'
 import { api } from '../../api/client'
-import type { FleetResponse, Me } from '../../api/types'
+import type { FleetResponse, Me, TicketSummary } from '../../api/types'
 import { useTheme } from '../../theme/ThemeProvider'
 import Monogram from '../Monogram/Monogram'
 import MobileTabBar from '../MobileTabBar/MobileTabBar'
-import { NAV_ITEMS, activeNavKey } from '../navItems'
+import { activeNavKey, navItemsFor, type NavKey } from '../navItems'
 import { Sun, Moon, Terminal, LogOut, X, ICON_STROKE_WIDTH } from '../icons'
 import { initialsOf, roleLabel } from '../format'
 import { deriveCrumb } from './crumb'
@@ -25,37 +25,63 @@ import styles from './Shell.module.css'
  * (`--kc-header-h`, set on `.root` in Shell.module.css), so the rule under
  * each is one continuous line across the full width.
  *
- * Self-sufficient for its own chrome data: fetches `/api/me` (user block),
- * `/api/fleet` (online count) and `/api/about` (the version segment of the
- * sidebar's fleet line) itself, the same way the old dashboard's header
- * re-derives these on every render rather than a view passing them down.
+ * Self-sufficient for its own chrome data, the same way the old dashboard's
+ * header re-derived these on every render rather than a view passing them
+ * down: `/api/me` (user block and which destinations the role may reach),
+ * `/api/fleet` (online count), `/api/about` (the version segment of the
+ * sidebar's fleet line) and `/api/tickets/summary` (the Inbox badge).
  * `/api/about` is a process constant and is cached accordingly — see
  * `AboutModal/api.ts`, which the About dialog shares the entry with.
  *
- * Per-nav badge counts (e.g. Inbox's "needs you" count) are not
- * wired — there is no documented endpoint for a lightweight global badge
- * count in the frozen contract, only full `/api/inbox` list responses.
- * Wire `navBadges` once that's decided; it renders correctly already.
+ * The Inbox badge mirrors the queue's NEEDS YOU count. It rides
+ * `/api/tickets/summary` rather than `/api/inbox` because that endpoint
+ * exists precisely to be the cheap count (`TicketSummary` in api/types.ts)
+ * — a badge must never pull a full list response. It floors at `user` and
+ * narrows to the caller's own tickets, so every role gets its own number.
+ * The badge is informational: the nav item still opens the Inbox unfiltered.
  */
-export interface ShellProps {
-  navBadges?: Partial<Record<(typeof NAV_ITEMS)[number]['key'], string>>
-}
-
-export default function Shell({ navBadges }: ShellProps) {
+export default function Shell() {
   const location = useLocation()
-  const { theme, toggleTheme } = useTheme()
+  const { theme, toggleTheme, adoptTheme } = useTheme()
   const [chatOpen, setChatOpen] = useState(false)
   const [aboutOpen, setAboutOpen] = useState(false)
 
   const me = useQuery({ queryKey: ['me'], queryFn: () => api.get<Me>('/api/me') })
   const fleet = useQuery({ queryKey: ['fleet'], queryFn: () => api.get<FleetResponse>('/api/fleet') })
   const about = useAbout()
+  const summary = useQuery({
+    queryKey: ['tickets', 'summary'],
+    queryFn: () => api.get<TicketSummary>('/api/tickets/summary'),
+  })
 
   const fleetTotal = fleet.data?.agents.length ?? null
   const online = fleet.data ? fleet.data.agents.filter((a) => a.online).length : null
 
+  const role = me.data?.role ?? null
+  const navItems = navItemsFor(role)
+  // Nothing needing you is the ordinary state, and an unread "0" would read
+  // as a thing to clear — so the badge is absent rather than zero.
+  const needsYou = summary.data?.needs_you ?? 0
+  const navBadges: Partial<Record<NavKey, string>> =
+    needsYou > 0 ? { inbox: needsYou > 99 ? '99+' : String(needsYou) } : {}
+
   const { crumb, mobileTitle } = deriveCrumb(location.pathname, fleetTotal)
   const active = activeNavKey(location.pathname)
+
+  /**
+   * The account's stored theme wins over this browser's copy on load.
+   *
+   * The inline boot script in index.html has already painted from localStorage
+   * — that is what keeps the first frame from flashing the wrong theme — so this
+   * only ever corrects a browser the operator has not set a theme on before.
+   * `adoptTheme` deliberately does not write back: this is the server's value
+   * arriving, not a choice being made. A shared-token identity reports
+   * `theme: null` and keeps the browser copy.
+   */
+  const accountTheme = me.data?.theme ?? null
+  useEffect(() => {
+    if (accountTheme && accountTheme !== theme) adoptTheme(accountTheme)
+  }, [accountTheme, theme, adoptTheme])
 
   useEffect(() => {
     function onKeydown(e: KeyboardEvent) {
@@ -94,8 +120,12 @@ export default function Shell({ navBadges }: ShellProps) {
             <div className={styles.tagline}>FLEET CONSOLE</div>
           </div>
         </div>
-        <nav className={styles.nav}>
-          {NAV_ITEMS.map((item) => {
+        {/* The tab bar below renders the same destinations for narrow viewports and
+            is only hidden by CSS, so both navs carry a name — two unlabelled
+            navigation landmarks with identical contents are indistinguishable to a
+            screen reader. */}
+        <nav className={styles.nav} aria-label="Sections">
+          {navItems.map((item) => {
             const isActive = active === item.key
             const Icon = item.icon
             return (
@@ -197,7 +227,7 @@ export default function Shell({ navBadges }: ShellProps) {
         <Outlet />
       </main>
 
-      <MobileTabBar navBadges={navBadges} />
+      <MobileTabBar role={role} navBadges={navBadges} />
 
       <AboutModal open={aboutOpen} onClose={() => setAboutOpen(false)} />
 

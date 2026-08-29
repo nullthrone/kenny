@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router'
 import { api } from '../api/client'
 import type { FleetResponse } from '../api/types'
+import BinaryBanner from '../components/BinaryBanner/BinaryBanner'
 import EmptyState from '../components/EmptyState/EmptyState'
 import SeverityChip from '../components/SeverityChip/SeverityChip'
 import { severityColor } from '../components/tone'
@@ -22,6 +23,11 @@ export default function Fleet() {
         <h1 className="kc-h1">The fleet</h1>
         <WizardMount />
       </div>
+
+      {/* Above the grid and above Add a PC: an operator about to onboard a machine
+          needs to know there is nothing to hand it before they start, not after
+          the download 503s. */}
+      <BinaryBanner />
 
       {isPending && <p style={{ color: 'var(--text-muted)', fontSize: 'var(--text-sm)' }}>Loading the fleet…</p>}
 

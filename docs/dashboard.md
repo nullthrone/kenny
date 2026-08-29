@@ -63,7 +63,9 @@ gate what each destination shows:
   not the rest of Admin.
 - **User** — only the hosts assigned to them: they see and can operate on those hosts on
   Fleet, and can open and work their own tickets in the Inbox, but cannot remove a host
-  from inventory and never see the Log or Admin.
+  from inventory and never see Admin. The Log *is* theirs, narrowed to their own machines:
+  `GET /api/log` filters every row to the caller's host scope, so a `user` reads the tool
+  calls, alerts and log lines for the PCs assigned to them and nothing else.
 
 **[Profile](#profile)** (all roles with a real account) lets you set your email, pick an
 avatar from the dog-breed grid, change your password, enable/disable **two-factor
@@ -149,13 +151,21 @@ GitHub token is configured, offers **retry GitHub fetch** (see
 
 1. **Name the machine** — the agent id: lowercase, no spaces. It appears everywhere this
    PC is shown afterward.
-2. **Operating system** — **Windows** or **Linux**.
+2. **Operating system** — **Windows** or **Linux**. Where the server has published more
+   than one binary for that OS, a **processor architecture** picker appears alongside it,
+   listing only the architectures a binary is actually staged for
+   (`GET /api/agent-binary`'s `targets`). Leaving it on *detect on the machine* keeps the
+   Linux script's own `uname -m` detection, which is the right answer when nobody knows
+   better. If nothing is staged for the chosen OS the step says so, and the download in
+   step 3 is disabled rather than sending you to an error page.
 3. **Hand it over** — either **download installer** (a ZIP with the agent binary, a
    pre-filled `setup.bat`, and a freshly minted token — for Windows; the Linux path
    produces the one-line install command described in
    [Installing the agent on Linux](setup.md#installing-the-agent-on-linux)), or **share a
    one-time link**: a single-use, 24-hour-expiring URL the person at the PC opens without
-   your login (`POST /api/agents/share-link`).
+   your login (`POST /api/agents/share-link`). A Linux share link comes with its
+   `curl … | sudo sh` command next to the URL — that command, not the URL on its own, is
+   what gets handed over.
 
 See [Adding & updating PCs](#adding-updating-pcs) for the full onboarding and update
 flows, and the **[User guide](user-guide.md#adding-a-pc-to-the-fleet)** for a walkthrough
@@ -401,6 +411,9 @@ from a cold load, not just from clicking through the queue. It shows:
   auto-close window.
 - **Cancel** — withdraw the ticket. Available to the ticket's own requester as well as an
   operator+, from `new` or `in_progress`.
+- **Wait on …** — park the ticket on whatever it is waiting for (`user`, `operator`, or
+  `approval`), which is what moves it into the Inbox's **WAITING** group. One button per
+  reason the ticket's `allowed_blocks` names for the account looking at it.
 - **Unblock** — clear whatever the ticket is currently blocked on. The requester sees this
   for their own `user` block; an operator sees it for any block.
 
@@ -734,7 +747,7 @@ and the "see the dashboard" links kenny has already posted into Discord all keep
 | `#/tickets` | `#/inbox` |
 | `#/tickets/{id}` | `#/inbox/ticket/{id}` |
 | `#/flagged`, `#/flagged/warn`, `#/flagged/crit` | `#/inbox` |
-| `#/settings`, `#/settings/{section}` | `#/admin`, `#/admin/{section}` — the section slug is unchanged |
+| `#/settings`, `#/settings/{section}` | `#/admin`, `#/admin/{section}` — the section slug carries over, except `ticket-rules`, which resolves to `auto-ticket-rules` |
 | `#/backup` | `#/admin/backup` |
 | `#/updates` | `#/admin/updates` |
 

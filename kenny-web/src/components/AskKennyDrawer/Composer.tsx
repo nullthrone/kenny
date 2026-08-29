@@ -1,5 +1,5 @@
 import { useState, type KeyboardEvent } from 'react'
-import { readEnterToSend } from '../../preferences'
+import { composerKeyAction } from '../../preferences'
 import { ArrowUp, ICON_STROKE_WIDTH } from '../icons'
 import styles from './Composer.module.css'
 
@@ -29,11 +29,7 @@ export default function Composer({ gateLocked, streaming, onSend, onStop }: Comp
 
   function onKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key !== 'Enter') return
-    const enterSends = readEnterToSend()
-    if (enterSends && !e.shiftKey) {
-      e.preventDefault()
-      submit()
-    } else if (!enterSends && (e.metaKey || e.ctrlKey)) {
+    if (composerKeyAction(e) === 'send') {
       e.preventDefault()
       submit()
     }

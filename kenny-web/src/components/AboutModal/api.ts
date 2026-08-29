@@ -1,11 +1,13 @@
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../../api/client'
-import type { About, AgentBinaryStatus, ChangelogResponse } from '../../api/types'
+import type { About, ChangelogResponse } from '../../api/types'
 
 /**
- * The three reads behind the About dialog. Split out so the Shell's version
- * line and the dialog itself share one cache entry per endpoint: opening the
- * dialog costs no second `/api/about` request.
+ * Two of the three reads behind the About dialog. Split out so the Shell's
+ * version line and the dialog itself share one cache entry per endpoint: opening
+ * the dialog costs no second `/api/about` request. The third, `useAgentBinary`,
+ * moved to `api/agentBinary.ts` once Fleet and the Add-a-PC wizard needed it too
+ * — the About dialog is one of its readers, not its owner.
  *
  * All three sit at the server's authenticated floor (`guard(...)` with no
  * `min_role`), so there is no role gating to mirror here — About is reachable
@@ -51,12 +53,3 @@ export function useChangelog(enabled: boolean) {
   })
 }
 
-/** Best-effort, like the legacy dashboard's `.catch(() => null)`. */
-export function useAgentBinary(enabled: boolean) {
-  return useQuery({
-    queryKey: ['agent-binary'],
-    queryFn: () => api.get<AgentBinaryStatus>('/api/agent-binary'),
-    enabled,
-    retry: false,
-  })
-}
