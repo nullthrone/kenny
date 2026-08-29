@@ -1,22 +1,24 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="Dachshund avatar">
-  <circle cx="64" cy="64" r="64" fill="#DED2F0"/>
-  <!-- long floppy ears -->
-  <path d="M40 46 C24 46 18 74 30 96 C42 94 46 68 46 54 Z" fill="#5A3A24"/>
-  <path d="M88 46 C104 46 110 74 98 96 C86 94 82 68 82 54 Z" fill="#5A3A24"/>
-  <!-- head (narrow) -->
-  <path d="M40 52 C40 38 50 32 64 32 C78 32 88 38 88 52 C88 70 82 82 74 90 L54 90 C46 82 40 70 40 52 Z" fill="#8A5A34"/>
+  <rect width="128" height="128" fill="#E9E6DF"/>
+  <!-- long hanging ears -->
+  <path d="M44 42 C29 45 25 68 33 88 C45 88 49 70 49 52 Z" fill="#141317"/>
+  <path d="M84 42 C99 45 103 68 95 88 C83 88 79 70 79 52 Z" fill="#141317"/>
+  <!-- shoulders -->
+  <path d="M20 128 V119 C20 107 38 99 64 99 C90 99 108 107 108 119 V128 Z" fill="#141317"/>
+  <!-- collar and tag -->
+  <path d="M48 95 H80 V104 H48 Z" fill="#A87E2F"/>
+  <path d="M60.5 107 H67.5 V114 H60.5 Z" fill="#A87E2F"/>
+  <!-- narrow head -->
+  <path d="M44 54 C44 39 53 30 64 30 C75 30 84 39 84 54 L84 62 C84 84 75 96 64 96 C53 96 44 84 44 62 Z" fill="#7A5A1F"/>
   <!-- long snout -->
-  <path d="M54 76 C54 70 58 66 64 66 C70 66 74 70 74 76 C74 92 70 104 64 108 C58 104 54 92 54 76 Z" fill="#A06E42"/>
+  <path d="M54 76 C54 68 58 63 64 63 C70 63 74 68 74 76 C74 88 70 95 64 95 C58 95 54 88 54 76 Z" fill="#8F6B26"/>
   <!-- eyes -->
-  <circle cx="53" cy="56" r="5" fill="#2B1B10"/>
-  <circle cx="75" cy="56" r="5" fill="#2B1B10"/>
-  <circle cx="55" cy="54" r="1.6" fill="#fff"/>
-  <circle cx="77" cy="54" r="1.6" fill="#fff"/>
-  <!-- nose at tip of snout -->
-  <ellipse cx="64" cy="98" rx="6" ry="4.6" fill="#2B2B2B"/>
+  <circle cx="53" cy="56" r="4.2" fill="#141317"/>
+  <circle cx="75" cy="56" r="4.2" fill="#141317"/>
+  <!-- nose -->
+  <path d="M58 72 H70 V77 C70 81 67.3 84 64 84 C60.7 84 58 81 58 77 Z" fill="#141317"/>
   <!-- mouth -->
-  <path d="M64 102.6 C64 107 60 109 57 108 M64 102.6 C64 107 68 109 71 108" fill="none" stroke="#5A3A24" stroke-width="2.2" stroke-linecap="round"/>
-  <!-- amber collar accent near neck -->
-  <path d="M44 46 C40 54 40 66 42 74" fill="none" stroke="#E8A33D" stroke-width="4" stroke-linecap="round" opacity="0.9"/>
-  <path d="M84 46 C88 54 88 66 86 74" fill="none" stroke="#E8A33D" stroke-width="4" stroke-linecap="round" opacity="0.9"/>
+  <path d="M64 84 V87.5" fill="none" stroke="#3A3740" stroke-width="2" stroke-linecap="round"/>
+  <path d="M58 87.5 C59.7 90.5 62.3 90.5 64 87.5 C65.7 90.5 68.3 90.5 70 87.5" fill="none" stroke="#3A3740" stroke-width="2" stroke-linecap="round"/>
+  <rect x=".5" y=".5" width="127" height="127" fill="none" stroke="#D9D6D3"/>
 </svg>
