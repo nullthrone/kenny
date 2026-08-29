@@ -24,7 +24,7 @@ function mockApi(over: Record<string, unknown> = {}) {
   const routes: Record<string, unknown> = {
     '/api/me': ME,
     '/api/fleet': FLEET,
-    '/api/about': { server_version: '2.2.0', protocol_version: '0.17', repo: 't11z/kenny' },
+    '/api/about': { server_version: '2.2.0', protocol_version: '0.17', repo: 'nullthrone/kenny' },
     '/api/tickets/summary': NO_TICKETS,
     ...over,
   }

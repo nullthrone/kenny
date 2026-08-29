@@ -318,7 +318,7 @@ _SPECS: list[SettingSpec] = [
                "raising 'database is locked' (ADR-0051). Read once at import "
                "time, so it cannot be changed live from the dashboard."),
     # -- Agent distribution (read-only this iteration) -------------------------
-    _spec("KENNY_GITHUB_REPO", "Agent distribution", "str", "t11z/kenny",
+    _spec("KENNY_GITHUB_REPO", "Agent distribution", "str", "nullthrone/kenny",
           "Agent GitHub repo", lifecycle="env_only"),
     _spec("KENNY_GITHUB_TOKEN", "Agent distribution", "secret", "",
           "GitHub API token", lifecycle="env_only", sensitive=True),
@@ -358,7 +358,7 @@ _SPECS: list[SettingSpec] = [
     _spec("KENNY_UPDATE_CHECK_INITIAL_DELAY", "Updates", "float", "30",
           "Initial check delay (s)", lifecycle="restart", min=0,
           help="Delay before the first update check after startup."),
-    _spec("KENNY_SERVER_IMAGE_REF", "Updates", "str", "ghcr.io/t11z/kenny-server",
+    _spec("KENNY_SERVER_IMAGE_REF", "Updates", "str", "ghcr.io/nullthrone/kenny-server",
           "Server image ref (GHCR)", lifecycle="live",
           help="GHCR repository polled (read-only, tags + manifest digest) to "
                "detect a newer server image. Never pulled or applied automatically "

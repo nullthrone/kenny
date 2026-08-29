@@ -64,9 +64,9 @@ flowchart LR
 
 ## Contributing
 
-kenny is open source under **[AGPL-3.0-only](https://github.com/t11z/kenny/blob/main/LICENSE)**.
-See **[CONTRIBUTING](https://github.com/t11z/kenny/blob/main/CONTRIBUTING.md)**,
-the **[Code of Conduct](https://github.com/t11z/kenny/blob/main/CODE_OF_CONDUCT.md)**, and the
-**[Security policy](https://github.com/t11z/kenny/blob/main/SECURITY.md)** (report
+kenny is open source under **[AGPL-3.0-only](https://github.com/nullthrone/kenny/blob/main/LICENSE)**.
+See **[CONTRIBUTING](https://github.com/nullthrone/kenny/blob/main/CONTRIBUTING.md)**,
+the **[Code of Conduct](https://github.com/nullthrone/kenny/blob/main/CODE_OF_CONDUCT.md)**, and the
+**[Security policy](https://github.com/nullthrone/kenny/blob/main/SECURITY.md)** (report
 vulnerabilities privately). Questions and ideas go to
-**[Discussions](https://github.com/t11z/kenny/discussions)**.
+**[Discussions](https://github.com/nullthrone/kenny/discussions)**.

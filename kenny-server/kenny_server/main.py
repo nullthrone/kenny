@@ -72,7 +72,7 @@ from .tokenstore import AgentTokenStore
 from .toolloop import ToolExecutor
 from .tools import CallLog, ScreenshotStore, register_tools
 from .tunnel import AgentTunnel
-from .update_manager import UpdateManager, update_check_loop
+from .update_manager import UpdateManager, record_agent_fetch, update_check_loop
 from .userstore import UserStore
 from .webfilter import ExternalListCache, WebFilterService
 from .webui import _anthropic_client, build_api_routes, build_chat_routes
@@ -714,16 +714,38 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         logging.getLogger().addHandler(log_handler)
         # Best-effort: fetch the prebuilt agent binary from GitHub when configured
         # and not overridden by an operator-placed binary (ADR-0015). Non-fatal.
-        if (
-            agent_release.github_configured()
-            and not os.environ.get("KENNY_AGENT_BINARY", "").strip()
-        ):
-            try:
+        #
+        # Every branch records an outcome, including the two that decide not to
+        # fetch at all. A silent skip is what let a server run for weeks handing
+        # out a months-old agent with the dashboard showing only the stale
+        # version and no reason for it.
+        release_log = logging.getLogger("kenny.release")
+        try:
+            if os.environ.get("KENNY_AGENT_BINARY", "").strip():
+                result = agent_release.FetchResult(
+                    ok=True,
+                    source="manual",
+                    message=(
+                        "GitHub fetch skipped: operator-placed KENNY_AGENT_BINARY "
+                        "takes precedence"
+                    ),
+                )
+                release_log.info("agent binary fetch: %s", result.message)
+            elif not agent_release.github_configured():
+                result = agent_release.FetchResult(
+                    ok=False,
+                    source="none",
+                    message="GitHub fetch not configured (set KENNY_GITHUB_TOKEN)",
+                )
+                release_log.warning("agent binary fetch skipped: %s", result.message)
+            else:
                 result = await asyncio.to_thread(agent_release.fetch_latest_agent_binary)
-                app.state.last_fetch = result
-                logging.getLogger("kenny.release").info("agent binary fetch: %s", result.message)
-            except Exception as exc:  # noqa: BLE001 - never break startup
-                logging.getLogger("kenny.release").warning("agent binary fetch failed: %s", exc)
+                log = release_log.info if result.ok else release_log.warning
+                log("agent binary fetch: %s", result.message)
+            app.state.last_fetch = result
+            await record_agent_fetch(update_store, result)
+        except Exception as exc:  # noqa: BLE001 - never break startup
+            release_log.warning("agent binary fetch failed: %s", exc)
         # Chain the MCP app's own lifespan (session manager, etc.).
         try:
             async with mcp_app.router.lifespan_context(app):

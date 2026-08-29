@@ -14,7 +14,7 @@ wire shape see [`protocol.md`](protocol.md).
   real data at once. The on-demand `telemetry_collect` tool forces a "refresh now".
 - The server **persists** every snapshot in SQLite — the latest plus roughly **30 days of
   per-agent history** for the health trend and heatmaps.
-- The server evaluates **health rules server-side** ([`health_rules.py`](https://github.com/t11z/kenny/blob/main/kenny-server/kenny_server/health_rules.py)).
+- The server evaluates **health rules server-side** ([`health_rules.py`](https://github.com/nullthrone/kenny/blob/main/kenny-server/kenny_server/health_rules.py)).
   These rules are **authoritative** for fleet aggregation: thresholds can change without
   redeploying agents.
 - Each section also carries an **agent-set status**. Where a section has a server-side

@@ -47,7 +47,7 @@ async def test_fetch_latest_server_tag_picks_highest_semver_and_digest():
         return httpx.Response(404)
 
     res = await server_release.fetch_latest_server_tag(
-        "ghcr.io/t11z/kenny-server", client_factory=_factory(handle)
+        "ghcr.io/nullthrone/kenny-server", client_factory=_factory(handle)
     )
     assert res.ok
     assert res.tag == "1.4.10"  # highest well-formed semver, not lexicographic ("1.4.2" > "1.4.10")
@@ -64,7 +64,7 @@ async def test_fetch_latest_server_tag_no_semver_tags():
         return httpx.Response(404)
 
     res = await server_release.fetch_latest_server_tag(
-        "ghcr.io/t11z/kenny-server", client_factory=_factory(handle)
+        "ghcr.io/nullthrone/kenny-server", client_factory=_factory(handle)
     )
     assert not res.ok
     assert res.tag is None
@@ -75,7 +75,7 @@ async def test_fetch_latest_server_tag_unreachable_is_non_fatal():
         raise httpx.ConnectError("boom", request=request)
 
     res = await server_release.fetch_latest_server_tag(
-        "ghcr.io/t11z/kenny-server", client_factory=_factory(handle)
+        "ghcr.io/nullthrone/kenny-server", client_factory=_factory(handle)
     )
     assert not res.ok
     assert "GHCR check failed" in res.message
@@ -97,7 +97,7 @@ async def test_fetch_latest_server_tag_no_such_package():
         return httpx.Response(404)
 
     res = await server_release.fetch_latest_server_tag(
-        "ghcr.io/t11z/kenny-server", client_factory=_factory(handle)
+        "ghcr.io/nullthrone/kenny-server", client_factory=_factory(handle)
     )
     assert not res.ok
     assert "no such package" in res.message
@@ -164,7 +164,7 @@ async def test_fetch_latest_server_tag_dev_picks_highest_dev_tag():
         return httpx.Response(404)
 
     res = await server_release.fetch_latest_server_tag(
-        "ghcr.io/t11z/kenny-server", client_factory=_factory(handle), channel="dev"
+        "ghcr.io/nullthrone/kenny-server", client_factory=_factory(handle), channel="dev"
     )
     assert res.ok
     assert res.tag == "2.0.5-dev.17"  # highest dev_n, never the floating "edge" alias
@@ -181,7 +181,7 @@ async def test_fetch_latest_server_tag_dev_no_prerelease_tags():
         return httpx.Response(404)
 
     res = await server_release.fetch_latest_server_tag(
-        "ghcr.io/t11z/kenny-server", client_factory=_factory(handle), channel="dev"
+        "ghcr.io/nullthrone/kenny-server", client_factory=_factory(handle), channel="dev"
     )
     assert not res.ok
     assert res.tag is None
@@ -203,7 +203,7 @@ async def test_fetch_latest_server_tag_uses_pat_for_private_package(monkeypatch)
         return httpx.Response(404)
 
     res = await server_release.fetch_latest_server_tag(
-        "ghcr.io/t11z/kenny-server", github_token="ghp_secret", client_factory=_factory(handle)
+        "ghcr.io/nullthrone/kenny-server", github_token="ghp_secret", client_factory=_factory(handle)
     )
     assert res.ok
     assert res.tag == "2.0.0"

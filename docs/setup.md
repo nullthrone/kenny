@@ -78,7 +78,7 @@ clients share one bucket). The bundled TLS profile sets this for you.
 | `KENNY_AGENT_BINARY_LINUX` | server | — | Path to the prebuilt **Linux** `x86_64` agent binary (static musl) the server serves for the Linux install script + self-update. Overrides the GitHub auto-fetch when set. |
 | `KENNY_AGENT_BINARY_LINUX_AARCH64` | server | — | As above for **Linux `aarch64`** (Raspberry Pi / ARM NAS). |
 | `KENNY_GITHUB_TOKEN` | server | — | GitHub token enabling auto-fetch of the agent binary from Releases (ADR-0015). When set (and `KENNY_AGENT_BINARY` is not), the server fetches `kenny-agent.exe` on startup. |
-| `KENNY_GITHUB_REPO` | server | `t11z/kenny` | Repo to fetch the agent binary release from. |
+| `KENNY_GITHUB_REPO` | server | `nullthrone/kenny` | Repo to fetch the agent binary release from. |
 | `KENNY_AGENT_BINARY_CACHE` | server | `<dir of KENNY_DB_PATH>/kenny-agent.exe` | Where the auto-fetched binary is cached (the `/data` volume in the container). |
 | `KENNY_AGENT_VERSION` | server | `0.2.0` | **Fallback** version label only — the GitHub release tag of the fetched binary leads (ADR-0015). Used when no tag is known (e.g. a manually-placed binary without a `.version` sidecar). |
 | `KENNY_HOST` / `KENNY_PORT` | server | `127.0.0.1` / `8000` | Bind address (container sets `0.0.0.0`). |
@@ -232,7 +232,7 @@ configured (ADR-0015):
 ```yaml
 environment:
   KENNY_GITHUB_TOKEN: ${KENNY_GITHUB_TOKEN}   # a token with read access to releases
-  KENNY_GITHUB_REPO: t11z/kenny               # default
+  KENNY_GITHUB_REPO: nullthrone/kenny         # default
 ```
 
 On startup (and via the dashboard's **retry GitHub fetch** button) the server downloads the latest
@@ -242,6 +242,14 @@ them on the `/data` volume. The fetch is **best-effort** and per-asset — if th
 or no token is set, the dashboard shows a banner with manual instructions instead. Operator-placed
 `KENNY_AGENT_BINARY` / `KENNY_AGENT_BINARY_LINUX` always win over the fetched cache. The dashboard's
 **Add a PC** wizard lets you onboard the very first machine without a pre-existing agent.
+
+Best-effort does not mean quiet. Every attempt is recorded, including the two that decide not to
+fetch at all (no token, or an operator-placed binary taking precedence), and the outcome survives a
+restart. **About kenny** shows it on the *staged agent version* row and Fleet's banner repeats it, so
+a stale staged version always comes with the reason it stopped moving. An expired token is the case
+worth knowing: GitHub answers an invalid `Authorization` header with **401 even on a public repo**,
+which stops both the binary fetch and the About dialog's changelog at once. Renew the token, or
+unset `KENNY_GITHUB_TOKEN` to fall back to anonymous reads of a public repo.
 
 ## Installing the agent on Windows
 
@@ -300,7 +308,7 @@ journalctl -u kenny-agent -f          # follow the agent log
 
 The single binary manages its own service. For a manual / air-gapped install, download
 `kenny-agent-<tag>-<arch>-unknown-linux-musl` from the
-[latest release](https://github.com/t11z/kenny/releases/latest), then (as root):
+[latest release](https://github.com/nullthrone/kenny/releases/latest), then (as root):
 
 ```bash
 chmod +x kenny-agent-*-unknown-linux-musl
@@ -435,7 +443,7 @@ read-only) on a schedule, and surfaces both from the dashboard's **Admin → Upd
 |----------|---------|---------|
 | `KENNY_UPDATE_CHECK_INTERVAL_SECS` | `86400` (24 h) | Scheduled update-check loop interval; `0` disables (restart to re-enable). Re-read live. |
 | `KENNY_UPDATE_CHECK_INITIAL_DELAY` | `30` | Delay before the first check after startup. |
-| `KENNY_SERVER_IMAGE_REF` | `ghcr.io/t11z/kenny-server` | GHCR image polled for a newer server tag. |
+| `KENNY_SERVER_IMAGE_REF` | `ghcr.io/nullthrone/kenny-server` | GHCR image polled for a newer server tag. |
 | `KENNY_AGENT_ROLLOUT_ON_CONNECT` | `0` | Auto-apply an active, approved campaign to agents as they connect. Off by default — a campaign must still be approved first either way. |
 | `KENNY_UPDATE_CAMPAIGN_MAX_AGE_SECS` | `1209600` (14 d) | A campaign auto-expires after this long even if not every agent was reached. |
 

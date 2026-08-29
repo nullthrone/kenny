@@ -57,14 +57,21 @@ def test_log_kind_mapping_and_shape(tmp_path) -> None:
         assert alerts[0]["tag"] == "ALERT"
         assert alerts[0]["message"] == "disk critical"
 
+        # The server logs during boot too (a missing KENNY_GITHUB_TOKEN, for
+        # one), and those records land here by design (ADR-0017). Assert on the
+        # seeded rows rather than on the absence of the server's own.
         events = c.get("/api/log?kind=events", headers=h).json()["rows"]
-        assert len(events) == 1
-        assert events[0]["kind"] == "events"
-        assert events[0]["message"] == "hello world"
+        seeded = [r for r in events if r["message"] == "hello world"]
+        assert len(seeded) == 1
+        assert seeded[0]["kind"] == "events"
 
-        # Merged (no kind filter): all three, newest first.
+        # Merged (no kind filter): all three seeded rows, newest first.
         merged = c.get("/api/log", headers=h).json()["rows"]
-        assert [r["message"] for r in merged] == ["hello world", "disk critical", ""]
+        seeded_ts = {"2026-08-01T00:00:01+00:00", "2026-08-01T00:00:02+00:00",
+                     "2026-08-01T00:00:03+00:00"}
+        assert [r["message"] for r in merged if r["ts"] in seeded_ts] == [
+            "hello world", "disk critical", ""
+        ]
 
         assert c.get("/api/log?kind=bogus", headers=h).status_code == 400
 

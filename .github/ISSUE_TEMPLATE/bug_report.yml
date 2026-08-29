@@ -6,7 +6,7 @@ body:
     attributes:
       value: |
         Thanks for filing a bug! For **security vulnerabilities, do not use this form** —
-        see [SECURITY.md](https://github.com/t11z/kenny/blob/main/SECURITY.md) and report privately.
+        see [SECURITY.md](https://github.com/nullthrone/kenny/blob/main/SECURITY.md) and report privately.
   - type: dropdown
     id: component
     attributes:

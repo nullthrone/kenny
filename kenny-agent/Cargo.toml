@@ -5,8 +5,8 @@ edition = "2021"
 description = "kenny agent: outbound-tunnel remote-admin and telemetry agent for Windows PCs"
 license = "AGPL-3.0-only"
 authors = ["t11z and the kenny contributors"]
-repository = "https://github.com/t11z/kenny"
-homepage = "https://github.com/t11z/kenny"
+repository = "https://github.com/nullthrone/kenny"
+homepage = "https://github.com/nullthrone/kenny"
 keywords = ["remote-admin", "telemetry", "windows", "mcp", "agent"]
 categories = ["command-line-utilities"]
 

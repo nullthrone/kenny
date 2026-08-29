@@ -52,10 +52,10 @@ screenshots = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/t11z/kenny"
-Repository = "https://github.com/t11z/kenny"
-Documentation = "https://t11z.github.io/kenny/"
-Issues = "https://github.com/t11z/kenny/issues"
+Homepage = "https://github.com/nullthrone/kenny"
+Repository = "https://github.com/nullthrone/kenny"
+Documentation = "https://nullthrone.github.io/kenny/"
+Issues = "https://github.com/nullthrone/kenny/issues"
 
 [project.scripts]
 kenny-server = "kenny_server.main:run"

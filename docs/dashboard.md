@@ -723,9 +723,25 @@ the **server version**, **protocol version**, **staged agent version**, and a li
 to the repository, plus a live **changelog** filtered from the project's GitHub
 Releases. The version dropdown starts on the release matching the running server
 (marked *(running)*) when there is one, and on *all versions* otherwise; release
-notes render as markdown. Only `/api/about` is load-bearing: if GitHub is
-unreachable or no agent binary is staged, the dialog still opens and the rest of
-it still fills in.
+notes render as markdown.
+
+Only `/api/about` is load-bearing: if GitHub is unreachable or no agent binary is
+staged, the dialog still opens and the rest of it still fills in — **and says
+which it is**. A changelog that comes back empty because GitHub could not be read
+shows the reason (an expired `KENNY_GITHUB_TOKEN`, a rate limit, an unreachable
+host), never "no releases published"; that wording is reserved for a read that
+succeeded and found nothing. When a refresh fails but earlier notes are still
+cached, they are shown and labelled as cached.
+
+The **staged agent version** is the binary currently on the server's data volume,
+not a live query — so the row also carries why it last stood still: a failed
+refresh with its reason, or `auto-fetch is off` when no `KENNY_GITHUB_TOKEN` is
+set. That reason survives a server restart. Because a release stamps the same git
+tag into the server and the agent, a staged version behind the running server is
+flagged as such (`expected 2.2.1 — this binary is from an older release`); nothing
+is claimed when either side is a dev build, whose versions legitimately differ.
+Operators get a **FETCH NOW** action on the row to retry against GitHub without a
+restart; a scoped `user` sees the explanation without the button.
 
 Because the box hangs off the sidebar, it is reached at desktop width — below
 760px the sidebar gives way to the tab bar.

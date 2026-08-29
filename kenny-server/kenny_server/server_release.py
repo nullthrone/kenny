@@ -1,6 +1,6 @@
 """Read-only GHCR polling for the kenny-server container image (ADR-0040).
 
-The server ships as ``ghcr.io/t11z/kenny-server``, semver-tagged on every git
+The server ships as ``ghcr.io/nullthrone/kenny-server``, semver-tagged on every git
 tag (ADR-0010). This module answers one question — "is there a newer tag than
 the one currently running?" — via the anonymous OCI Distribution v2 API, and
 nothing else: it never pulls an image and never touches Docker. Detection is
@@ -21,7 +21,7 @@ from typing import Any, Callable
 
 import httpx
 
-DEFAULT_IMAGE_REF = "ghcr.io/t11z/kenny-server"
+DEFAULT_IMAGE_REF = "ghcr.io/nullthrone/kenny-server"
 FETCH_TIMEOUT_S = 10.0
 
 # The exact-version tag docker/metadata-action publishes (`{{version}}`), e.g.

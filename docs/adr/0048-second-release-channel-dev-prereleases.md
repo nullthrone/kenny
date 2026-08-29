@@ -27,7 +27,7 @@ approval.
 - **A. GitHub's `prerelease` flag drives the channel, one repo/one workflow family.**
   Every `main` push publishes a **prerelease** GitHub Release tagged
   `v<next-patch>-dev.<run_number>` via a reusable workflow shared with the stable release
-  job, plus a `ghcr.io/t11z/kenny-server:edge` image tag. `GET /releases/latest` **excludes
+  job, plus a `ghcr.io/nullthrone/kenny-server:edge` image tag. `GET /releases/latest` **excludes
   prereleases by definition**, so the stable path is untouched; a new dev path reads
   `GET /releases` and takes the newest entry with `prerelease: true`. A per-agent desired
   channel (stored server-side, reported by the agent on the wire) decides which agents an
@@ -82,7 +82,7 @@ correct.
   (ADR-0034's rejected-autonomous-update reasoning applies unchanged) — so dev artifacts pass
   through the **same publish gate** as stable: the image smoke test and the e2e round-trip
   against the exact release binary on Windows and Linux-x86_64, before anything is pushed.
-- **Server image parallel:** `ghcr.io/t11z/kenny-server:edge` alongside the existing
+- **Server image parallel:** `ghcr.io/nullthrone/kenny-server:edge` alongside the existing
   `:latest`/semver tags, built and smoke-tested by the same shared job — the server-side
   equivalent of a prerelease for `server_release.py`'s GHCR poll.
 - **CI stays one artifact-producing definition.** `release.yml`'s three jobs move into a

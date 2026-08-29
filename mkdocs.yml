@@ -1,8 +1,8 @@
 site_name: kenny
 site_description: Self-hosted remote administration and fleet monitoring for Windows PCs, driven by Claude.
-site_url: https://t11z.github.io/kenny/
-repo_url: https://github.com/t11z/kenny
-repo_name: t11z/kenny
+site_url: https://nullthrone.github.io/kenny/
+repo_url: https://github.com/nullthrone/kenny
+repo_name: nullthrone/kenny
 edit_uri: edit/main/docs/
 docs_dir: docs
 # The ADR template carries placeholder links (xxxx-…); keep it in the repo but out of the site.
@@ -91,4 +91,4 @@ markdown_extensions:
 extra:
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/t11z/kenny
+      link: https://github.com/nullthrone/kenny

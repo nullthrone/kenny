@@ -3,7 +3,7 @@
 Thanks for your interest in kenny! 🐕 This guide covers how to build, test, and propose
 changes. By participating you agree to our [Code of Conduct](CODE_OF_CONDUCT.md).
 
-For questions and ideas, use [GitHub Discussions](https://github.com/t11z/kenny/discussions).
+For questions and ideas, use [GitHub Discussions](https://github.com/nullthrone/kenny/discussions).
 For **security issues, do not open a public issue** — see [SECURITY.md](SECURITY.md).
 
 ## Project layout

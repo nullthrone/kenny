@@ -1688,11 +1688,19 @@ def build_api_routes(
         )
 
     async def api_changelog(_request: Request) -> JSONResponse:
-        """GitHub Releases for the About modal's changelog, server-proxied + cached."""
+        """GitHub Releases for the About modal's changelog, server-proxied + cached.
+
+        Always 200, including when GitHub could not be reached: this endpoint
+        succeeded, and the payload carries the upstream outcome in ``ok`` /
+        ``error`` / ``stale``. A 5xx here would trip the client's error path and
+        discard the cached releases we may still be holding — the opposite of
+        the degradation this is for. ``changelog.isError`` on the client stays
+        reserved for a failure of *this* API.
+        """
 
         repo = agent_release.github_repo()
-        releases = await changelog.fetch_releases(repo)
-        return JSONResponse({"repo": repo, "releases": releases})
+        result = await changelog.fetch_releases(repo)
+        return JSONResponse({"repo": repo, "releases": result.releases, **result.to_public()})
 
     # Role/scope policy (ADR-0033), enforced by ``guard``:
     #   - superuser only: core settings.

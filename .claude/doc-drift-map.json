@@ -61,7 +61,7 @@
       "why": "Who may sign in to a PC: the account_* tools, the accounts panel, and the local_accounts/logon_failures sections behind them. Local and Microsoft accounts share one surface, so a change to what is possible for one changes the reference for both.",
       "sources": ["kenny-server/kenny_server/webui/index.html", "kenny-server/kenny_server/tools.py"],
       "docs": ["docs/account-governance.md"],
-      "screenshots": ["drilldown", "agent-detail"],
+      "screenshots": [],
       "adr": "Changing what kenny may do to an account, or the privacy line around naming accounts, is architectural (see ADR-0042); a panel-layout tweak is not."
     },
     {

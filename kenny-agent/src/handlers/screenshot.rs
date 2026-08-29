@@ -70,8 +70,12 @@ fn encode_png(width: u32, height: u32, bgra: &[u8]) -> Result<Vec<u8>, String> {
     }
 
     // BGRA -> RGBA, alpha forced opaque. Source layout is [B, G, R, A].
+    // Both remainders are empty by construction: `expected` is width*height*4,
+    // and `bgra.len()` was checked equal to it above.
     let mut rgba = vec![0u8; expected];
-    for (dst, src) in rgba.chunks_exact_mut(4).zip(bgra.chunks_exact(4)) {
+    let (dst_pixels, _) = rgba.as_chunks_mut::<4>();
+    let (src_pixels, _) = bgra.as_chunks::<4>();
+    for (dst, src) in dst_pixels.iter_mut().zip(src_pixels) {
         dst[0] = src[2]; // R
         dst[1] = src[1]; // G
         dst[2] = src[0]; // B

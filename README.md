@@ -7,9 +7,9 @@
 **Self-hosted remote administration _and fleet monitoring_ for Windows PCs, driven by Claude (MCP) and a web dashboard.**
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-E8A33D.svg)](LICENSE)
-[![CI](https://github.com/t11z/kenny/actions/workflows/ci.yml/badge.svg)](https://github.com/t11z/kenny/actions/workflows/ci.yml)
-[![Docs](https://img.shields.io/badge/docs-mkdocs-E8A33D.svg)](https://t11z.github.io/kenny/)
-[![Release](https://img.shields.io/github/v/release/t11z/kenny?color=E8A33D)](https://github.com/t11z/kenny/releases)
+[![CI](https://github.com/nullthrone/kenny/actions/workflows/ci.yml/badge.svg)](https://github.com/nullthrone/kenny/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/badge/docs-mkdocs-E8A33D.svg)](https://nullthrone.github.io/kenny/)
+[![Release](https://img.shields.io/github/v/release/nullthrone/kenny?color=E8A33D)](https://github.com/nullthrone/kenny/releases)
 
 </div>
 
@@ -156,7 +156,7 @@ _The Today dashboard — see the **[dashboard reference](docs/dashboard.md)** fo
 
 ## 📚 Documentation
 
-The full docs site: **<https://t11z.github.io/kenny/>** (built from `docs/` with MkDocs Material).
+The full docs site: **<https://nullthrone.github.io/kenny/>** (built from `docs/` with MkDocs Material).
 
 - **[User guide](docs/user-guide.md)** — operator workflows: dashboard, chat, running tools,
   adding/updating agents (with diagrams).
@@ -202,7 +202,7 @@ Helper commands inside Claude Code: `/new-adr`, `/add-tool`, `/add-collector`,
 - **[Code of Conduct](CODE_OF_CONDUCT.md)** — Contributor Covenant.
 - **[Security policy](SECURITY.md)** — please report vulnerabilities **privately**, never in a
   public issue (kenny is a remote-admin tool).
-- Questions and ideas: **[GitHub Discussions](https://github.com/t11z/kenny/discussions)**.
+- Questions and ideas: **[GitHub Discussions](https://github.com/nullthrone/kenny/discussions)**.
 
 ## 📄 License
 

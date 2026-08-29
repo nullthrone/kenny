@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import logging
 import json
 import os
 import secrets
@@ -53,6 +54,7 @@ import time
 import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, Response
@@ -66,6 +68,8 @@ from .tokenstore import AgentTokenStore
 from .tunnel import AgentTunnel, ToolError
 from .urls import public_base_url
 from .webui.authz import guard
+
+logger = logging.getLogger("kenny.distribution")
 
 INSTALLER_TTL_S = 3600  # one hour for an operator-shared installer link
 BINARY_TTL_S = 600  # ten minutes for a self-update binary fetch
@@ -715,6 +719,30 @@ def build_download_routes(
         filename = "kenny-agent" if os_name == "linux" else "kenny-agent.exe"
         return FileResponse(binary, filename=filename, media_type="application/octet-stream")
 
+    async def _durable_last_check(request: Request) -> dict[str, Any] | None:
+        """The last recorded agent-fetch outcome, or None if nothing is recorded.
+
+        Best-effort: this route is read on every Fleet render and by test apps
+        built without an update store, so it degrades to None rather than 500.
+        """
+
+        store = getattr(request.app.state, "update_store", None)
+        if store is None:
+            return None
+        try:
+            row = await store.get_availability("agent")
+        except Exception as exc:  # noqa: BLE001 - a status read must not 500 on a store hiccup
+            logger.warning("could not read the agent availability row: %s", exc)
+            return None
+        if row is None:
+            return None
+        return {
+            "ok": bool(row["ok"]),
+            "message": row["message"],
+            "checked_at": row["checked_at"],
+            "version": row["version"],
+        }
+
     async def agent_binary_status(request: Request) -> Response:
         """Report binary availability + GitHub-fetch config for the dashboard (no network)."""
 
@@ -741,6 +769,11 @@ def build_download_routes(
         body["repo"] = agent_release.github_repo()
         last = getattr(request.app.state, "last_fetch", None)
         body["last_fetch"] = last.to_public() if last is not None else None
+        # The durable counterpart (ADR-0040's ``update_availability`` row), which
+        # ``last_fetch`` is not: that one is per-process, so a restart erases the
+        # reason a refresh has been failing and the dashboard falls back to
+        # "no fetch has been attempted yet" while a real failure stands.
+        body["last_check"] = await _durable_last_check(request)
         # Dev-channel cache status, additive (ADR-0048): lets the dashboard show
         # "dev binary available: yes/no" without a second round trip.
         win_dev = agent_binary_path(channel="dev")
@@ -774,6 +807,13 @@ def build_download_routes(
             )
         result = await asyncio.to_thread(agent_release.fetch_latest_agent_binary)
         request.app.state.last_fetch = result
+        # Same outcome, durably: an operator's retry that fails is exactly the
+        # thing the next person opening the dashboard needs to see.
+        store = getattr(request.app.state, "update_store", None)
+        if store is not None:
+            from .update_manager import record_agent_fetch
+
+            await record_agent_fetch(store, result)
         return JSONResponse(result.to_public(), status_code=200 if result.ok else 502)
 
     # See the module docstring for the rule these two blocks encode. Provisioning
