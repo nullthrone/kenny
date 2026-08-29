@@ -534,10 +534,13 @@ Detection never applies anything by itself; every rollout is an explicit operato
       new budget. Suspending and later resuming the *same* campaign keeps that agent held.
     - **Revoke** — stops future pushes under this campaign **for good**; an update already
       in flight to an agent cannot be recalled, and a revoked campaign cannot be resumed.
-    - A per-agent table: current version, **channel** (built / desired), online/offline,
-      and status (**updated**, **pending**, **held** after repeated refusal — e.g. the
-      agent's local remote-control switch is off — or **n/a** for an (os, arch, channel)
-      the release doesn't cover).
+    - A per-agent table: current version, os/arch, **channel** (built / desired) with a
+      selector that sets the desired one, online/offline, and rollout status — the pinned
+      version once **updated**, **queued** or **updating** while in flight, **held** after
+      repeated refusal (e.g. the agent's local remote-control switch is off), **not
+      eligible** for an (os, arch, channel) the release doesn't cover, and for a
+      disconnected agent **on connect** when auto-apply-on-connect is on, **offline** when
+      it is off and only **apply now** will reach it.
 
 A campaign always pins one exact version at approval time: a later check finding
 something newer never changes what an already-approved campaign pushes — it just becomes
