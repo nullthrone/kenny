@@ -87,17 +87,45 @@ export interface ChangelogResponse {
   releases: ChangelogRelease[]
 }
 
+/** One published (os, arch) pair and whether a binary for it is staged. */
+export interface AgentBinaryTarget {
+  os: 'windows' | 'linux'
+  arch: string
+  available: boolean
+}
+
+/** What the last GitHub fetch attempt did, for the Fleet banner's explanation. */
+export interface AgentBinaryFetch {
+  ok: boolean
+  message: string
+}
+
 /**
- * The slice of `GET /api/agent-binary` the About dialog reads. The endpoint
- * (`distribution.agent_binary_status`) also returns `ok`, `source`, `sha256`,
- * `by_os`, `targets` and `github_configured` for Admin's distribution section;
- * only what is consumed is typed here. Widen it when a caller needs more rather
- * than transcribing the whole shape speculatively.
+ * `GET /api/agent-binary` (`distribution.agent_binary_status`) — what the server
+ * has staged to hand a new PC, and whether it can go get more.
+ *
+ * Read by the About dialog (`version` alone) and by provisioning: Fleet's banner
+ * and the Add-a-PC wizard both need to know, before offering a download, whether
+ * a binary for the chosen target exists at all — otherwise the download navigates
+ * the operator into a raw 503 JSON body. `targets` is what ADR-0036 added the
+ * per-(os, arch) breakdown for: offer only the combinations we can actually serve.
+ *
+ * `ok`, `source`, `sha256` and the parallel `dev` block are also returned and are
+ * not typed here — widen when a caller needs them, rather than transcribing the
+ * whole shape speculatively.
  */
 export interface AgentBinaryStatus {
   /** The staged binary's version, or null when nothing is cached. */
   version: string | null
+  /** Windows availability. Keeps its historical meaning; prefer `by_os`/`targets`. */
   available: boolean
+  by_os?: Record<'windows' | 'linux', boolean>
+  targets?: AgentBinaryTarget[]
+  /** True when a GitHub token is configured, i.e. a re-fetch is worth offering. */
+  github_configured?: boolean
+  repo?: string
+  /** Null until a fetch has been attempted this process. */
+  last_fetch?: AgentBinaryFetch | null
 }
 
 /** `GET /api/me` — identity, role and host scope for the signed-in principal. */
@@ -107,6 +135,12 @@ export interface Me {
   role: Role
   /** Empty for operator+ (unrestricted). Populated only for a scoped `user`. */
   hosts: string[]
+  /**
+   * The theme stored against this account, or null when there is none to store
+   * one against (a shared-token identity) or none has been chosen yet. The
+   * console adopts it on load — see `ThemePreference` below.
+   */
+  theme: 'light' | 'dark' | null
   /**
    * Legacy shared-token identity. Has no editable account: profile, PATs and 2FA
    * are hidden entirely when this is true.
@@ -454,6 +488,13 @@ export interface ShareLinkResponse {
   expires_at: string
   os: 'windows' | 'linux'
   name: string
+  /**
+   * The `curl -fsSL <url> | sudo sh` command, returned for `os === "linux"` only
+   * (`distribution.py::_mint_share_link`). It is the whole point of a Linux share
+   * link — the URL alone leaves the person at the machine to work out that it must
+   * be piped to a root shell — so every caller that shows the URL shows this too.
+   */
+  oneliner?: string
 }
 
 /* ── Preferences ─────────────────────────────────────────────────────────── */
@@ -462,10 +503,11 @@ export interface ShareLinkResponse {
  * `PUT /api/me/theme` — persists the operator's theme server-side so it follows
  * them between browsers. NEW.
  *
- * localStorage stays the fast path and the offline fallback; the server value wins
- * on load when the two disagree. A shared-token identity has no account to store it
- * against, so for that principal this call is skipped and localStorage is the only
- * store.
+ * localStorage stays the fast path and the offline fallback — the inline boot script
+ * paints from it before React mounts — and the server value wins on load when the two
+ * disagree (`Shell`'s `adoptTheme`). A shared-token identity has no account row to
+ * store against; the server answers `200 {"stored": false}` for it rather than an
+ * error, so the caller needs no principal check and localStorage remains its only store.
  */
 export interface ThemePreference {
   theme: 'light' | 'dark'

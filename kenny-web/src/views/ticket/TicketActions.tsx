@@ -3,7 +3,7 @@ import { useMutation } from '@tanstack/react-query'
 import { api } from '../../api/client'
 import type { FleetAgent } from '../../api/types'
 import type { Ticket } from './types'
-import { transitionLabel } from './stateLabels'
+import { blockLabel, transitionLabel } from './stateLabels'
 import styles from './TicketActions.module.css'
 
 export interface TicketActionsProps {
@@ -17,9 +17,16 @@ export interface TicketActionsProps {
 
 /**
  * Every lifecycle action but note/chat/inline-edit (their own components):
- * transition, close, unblock, reassign, assign. Which transition/unblock
- * buttons render is decided ENTIRELY by `ticket.allowed_transitions` and
- * `ticket.can_unblock` — nothing here infers legality from `state`.
+ * transition, block, unblock, close, reassign, assign. Which transition/block/
+ * unblock buttons render is decided ENTIRELY by `ticket.allowed_transitions`,
+ * `ticket.allowed_blocks` and `ticket.can_unblock` — nothing here infers legality
+ * from `state`. The server computes all three per principal in
+ * `webui/tickets.py::_affordances`, so an option only ever appears when the API
+ * would actually accept it from the account looking at it.
+ *
+ * Blocking is what puts a ticket into the Inbox's WAITING group. Without these
+ * buttons the group had no entrance from the console at all — a ticket could be
+ * unblocked here but only ever blocked from elsewhere.
  */
 export default function TicketActions({ ticket, isOperator, meUserId, fleetAgents, onMutated }: TicketActionsProps) {
   const [reassignTarget, setReassignTarget] = useState('')
@@ -36,6 +43,10 @@ export default function TicketActions({ ticket, isOperator, meUserId, fleetAgent
     mutationFn: () => api.post(`/api/tickets/${ticket.id}/unblock`, {}),
     onSuccess: onMutated,
   })
+  const block = useMutation({
+    mutationFn: (blockedOn: string) => api.post(`/api/tickets/${ticket.id}/block`, { blocked_on: blockedOn }),
+    onSuccess: onMutated,
+  })
   const reassign = useMutation({
     mutationFn: (agentId: string) => api.post(`/api/tickets/${ticket.id}/reassign`, { agent_id: agentId }),
     onSuccess: () => {
@@ -49,15 +60,22 @@ export default function TicketActions({ ticket, isOperator, meUserId, fleetAgent
     onSuccess: onMutated,
   })
 
-  const busy = transition.isPending || close.isPending || unblock.isPending || reassign.isPending || assign.isPending
-  const errors = [transition, close, unblock, reassign, assign]
+  const busy =
+    transition.isPending || close.isPending || unblock.isPending || block.isPending || reassign.isPending || assign.isPending
+  const errors = [transition, close, unblock, block, reassign, assign]
     .map((m) => m.error)
     .filter((e): e is Error => e instanceof Error)
 
   const isClaimedByMe = meUserId !== null && ticket.assignee_user_id === meUserId
   const isClaimedByOther = ticket.assignee_user_id !== null && ticket.assignee_user_id !== meUserId
 
-  if (ticket.allowed_transitions.length === 0 && !ticket.can_unblock && !isOperator) return null
+  if (
+    ticket.allowed_transitions.length === 0 &&
+    ticket.allowed_blocks.length === 0 &&
+    !ticket.can_unblock &&
+    !isOperator
+  )
+    return null
 
   return (
     <div className={styles.wrap}>
@@ -71,6 +89,17 @@ export default function TicketActions({ ticket, isOperator, meUserId, fleetAgent
             onClick={() => (state === 'closed' ? close.mutate() : transition.mutate(state))}
           >
             {transitionLabel(state)}
+          </button>
+        ))}
+        {ticket.allowed_blocks.map((reason) => (
+          <button
+            key={`block-${reason}`}
+            type="button"
+            className={`${styles.btn} kc-btn`}
+            disabled={busy}
+            onClick={() => block.mutate(reason)}
+          >
+            {blockLabel(reason)}
           </button>
         ))}
         {ticket.can_unblock && (

@@ -1,0 +1,61 @@
+.banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  margin-bottom: 18px;
+  border: 1px solid var(--warn);
+  border-left-width: 3px;
+  border-radius: 2px;
+  background: var(--surface-2, transparent);
+  font-size: var(--text-sm);
+  color: var(--text);
+}
+
+.icon {
+  flex: none;
+  margin-top: 1px;
+  color: var(--warn);
+}
+
+.text {
+  flex: 1 1 auto;
+  line-height: 1.5;
+}
+
+.title {
+  font-weight: 600;
+}
+
+.reason {
+  color: var(--text-muted);
+}
+
+.consequence {
+  margin-top: 4px;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.retry {
+  flex: none;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  background: transparent;
+  font-family: var(--font-display);
+  font-size: 11px;
+  letter-spacing: var(--track-caps);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.retry:hover:not(:disabled) {
+  border-color: var(--text);
+}
+
+.retry:disabled {
+  opacity: 0.6;
+  cursor: default;
+}

@@ -1,10 +1,14 @@
 import { NavLink, useLocation } from 'react-router'
-import { NAV_ITEMS, activeNavKey } from '../navItems'
+import type { Role } from '../../api/types'
+import { activeNavKey, navItemsFor, type NavKey } from '../navItems'
 import { ICON_STROKE_WIDTH } from '../icons'
 import styles from './MobileTabBar.module.css'
 
 export interface MobileTabBarProps {
-  navBadges?: Partial<Record<(typeof NAV_ITEMS)[number]['key'], string>>
+  /** The signed-in role, so the bar shows exactly the destinations the sidebar does. */
+  role: Role | null
+  /** Per-destination badge text, keyed by nav key. Shown as a dot at this size. */
+  navBadges?: Partial<Record<NavKey, string>>
 }
 
 /**
@@ -14,15 +18,16 @@ export interface MobileTabBarProps {
  * class — see that class's comment in src/styles/global.css.
  *
  * Rendered once by Shell, as a fixed-position sibling of the sidebar/main
- * — not per-view.
+ * — not per-view. Shell owns both the role and the badge counts and passes
+ * them down, so the two nav surfaces always show the same destinations.
  */
-export default function MobileTabBar({ navBadges }: MobileTabBarProps) {
+export default function MobileTabBar({ role, navBadges }: MobileTabBarProps) {
   const location = useLocation()
   const active = activeNavKey(location.pathname)
 
   return (
-    <nav className={`${styles.bar} kc-mobilebar`}>
-      {NAV_ITEMS.map((item) => {
+    <nav className={`${styles.bar} kc-mobilebar`} aria-label="Sections (compact)">
+      {navItemsFor(role).map((item) => {
         const isActive = active === item.key
         const Icon = item.icon
         const badge = navBadges?.[item.key]

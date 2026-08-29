@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
+import { useAgentBinary } from '../../api/agentBinary'
 import { api } from '../../api/client'
-import type { ShareLinkResponse } from '../../api/types'
+import type { AgentBinaryTarget, ShareLinkResponse } from '../../api/types'
 import Modal from '../Modal/Modal'
 import { AppWindow, Download, Link, Server, X, ICON_STROKE_WIDTH } from '../icons'
 import styles from './Wizard.module.css'
@@ -24,10 +25,21 @@ const NAME_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/
  * section, "Changed"): unlike every other per-agent endpoint, there is no
  * `{id}` in the path, because at this point in the wizard the agent doesn't
  * exist in the fleet yet — naming it here is what creates it.
+ *
+ * `arch` is optional and pins the CPU architecture (ADR-0036). Sent when the
+ * operator picked one, omitted when there is only one published target for the
+ * chosen OS — in which case the Linux install script keeps its `uname -m`
+ * auto-detection rather than being pinned to a guess.
  */
 interface ShareLinkRequest {
   name: string
   os: Os
+  arch?: string
+}
+
+/** The targets the server publishes for one OS, in the order it lists them (`agent_release.SUPPORTED_TARGETS`). */
+function targetsForOs(targets: AgentBinaryTarget[] | undefined, os: Os): AgentBinaryTarget[] {
+  return (targets ?? []).filter((t) => t.os === os)
 }
 
 /**
@@ -44,11 +56,34 @@ export default function Wizard({ open, onClose, onProvisioned }: WizardProps) {
   const [step, setStep] = useState(0)
   const [name, setName] = useState('')
   const [os, setOs] = useState<Os>('windows')
+  const [arch, setArch] = useState<string | null>(null)
   const [handover, setHandover] = useState<Handover | null>(null)
   const [shareState, setShareState] = useState<
     { status: 'idle' } | { status: 'loading' } | { status: 'error'; message: string } | { status: 'done'; link: ShareLinkResponse }
   >({ status: 'idle' })
-  const [copied, setCopied] = useState(false)
+  const [copied, setCopied] = useState<'url' | 'oneliner' | null>(null)
+
+  // Only read while the wizard is open: it is the one place the answer changes
+  // what the operator is offered, and Fleet's banner already fetched it if the
+  // fleet page is what they opened this from.
+  const binary = useAgentBinary(open)
+
+  const osTargets = useMemo(() => targetsForOs(binary.data?.targets, os), [binary.data, os])
+  const availableTargets = useMemo(() => osTargets.filter((t) => t.available), [osTargets])
+  /**
+   * `targets` is the authority when the server sends it (ADR-0036). Without it —
+   * an older server — fall back to `by_os`, then to the Windows-only `available`,
+   * and finally to "assume yes": never block provisioning because the status read
+   * failed, only because it came back and said no.
+   */
+  const osAvailable = binary.data
+    ? binary.data.targets
+      ? availableTargets.length > 0
+      : (binary.data.by_os?.[os] ?? (os === 'windows' ? binary.data.available : true))
+    : true
+  // Offering a choice of one is noise; the server resolves the single target itself.
+  const archChoices = availableTargets.length > 1 ? availableTargets : []
+  const effectiveArch = arch && archChoices.some((t) => t.arch === arch) ? arch : null
 
   const nameValid = NAME_PATTERN.test(name)
 
@@ -56,9 +91,10 @@ export default function Wizard({ open, onClose, onProvisioned }: WizardProps) {
     setStep(0)
     setName('')
     setOs('windows')
+    setArch(null)
     setHandover(null)
     setShareState({ status: 'idle' })
-    setCopied(false)
+    setCopied(null)
   }
 
   function handleClose() {
@@ -70,7 +106,7 @@ export default function Wizard({ open, onClose, onProvisioned }: WizardProps) {
   async function requestShareLink() {
     setShareState({ status: 'loading' })
     try {
-      const body: ShareLinkRequest = { name, os }
+      const body: ShareLinkRequest = { name, os, ...(effectiveArch ? { arch: effectiveArch } : {}) }
       const link = await api.post<ShareLinkResponse>('/api/agents/share-link', body)
       setShareState({ status: 'done', link })
       onProvisioned?.(name)
@@ -81,19 +117,23 @@ export default function Wizard({ open, onClose, onProvisioned }: WizardProps) {
 
   function startDownload() {
     // Browser-handled navigation, not a fetch — same pattern as every other
-    // installer download in the app (notes/api-contract-actual.md §6):
-    // Content-Disposition and cookie auth need a real navigation.
-    window.location.href = `/api/agents/${encodeURIComponent(name)}/installer?os=${encodeURIComponent(os)}`
+    // installer download in the app (`ActionRow`'s reinstall): Content-Disposition
+    // and cookie auth need a real navigation. Which is also why the availability
+    // check above the button matters: a 503 from this route does not surface as a
+    // caught error, it replaces the page with a JSON body.
+    const params = new URLSearchParams({ os })
+    if (effectiveArch) params.set('arch', effectiveArch)
+    window.location.href = `/api/agents/${encodeURIComponent(name)}/installer?${params.toString()}`
     onProvisioned?.(name)
   }
 
-  async function copyLink(url: string) {
+  async function copyValue(field: 'url' | 'oneliner', value: string) {
     try {
-      await navigator.clipboard.writeText(url)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
+      await navigator.clipboard.writeText(value)
+      setCopied(field)
+      setTimeout(() => setCopied(null), 2000)
     } catch {
-      // Clipboard access can be denied by the browser — the URL is still
+      // Clipboard access can be denied by the browser — the value is still
       // right there in the readonly field to select and copy by hand.
     }
   }
@@ -155,7 +195,10 @@ export default function Wizard({ open, onClose, onProvisioned }: WizardProps) {
               <button
                 type="button"
                 className={`${styles.osOption}${os === 'windows' ? ` ${styles.osOptionActive}` : ''}`}
-                onClick={() => setOs('windows')}
+                onClick={() => {
+                  setOs('windows')
+                  setArch(null)
+                }}
                 aria-pressed={os === 'windows'}
               >
                 <AppWindow width={20} height={20} strokeWidth={ICON_STROKE_WIDTH} aria-hidden="true" />
@@ -164,13 +207,49 @@ export default function Wizard({ open, onClose, onProvisioned }: WizardProps) {
               <button
                 type="button"
                 className={`${styles.osOption}${os === 'linux' ? ` ${styles.osOptionActive}` : ''}`}
-                onClick={() => setOs('linux')}
+                onClick={() => {
+                  setOs('linux')
+                  setArch(null)
+                }}
                 aria-pressed={os === 'linux'}
               >
                 <Server width={20} height={20} strokeWidth={ICON_STROKE_WIDTH} aria-hidden="true" />
                 LINUX
               </button>
             </div>
+
+            {/* Only when the server has published more than one target for this OS
+                (ADR-0036). Leaving it unset keeps the Linux script's `uname -m`
+                auto-detection, which is the right answer when nobody knows better —
+                so this is an override, not a required step. */}
+            {archChoices.length > 0 && (
+              <>
+                <label className={styles.label} htmlFor="wizard-arch" style={{ marginTop: 18 }}>
+                  Processor architecture
+                </label>
+                <select
+                  id="wizard-arch"
+                  className={styles.archSelect}
+                  value={arch ?? ''}
+                  onChange={(e) => setArch(e.target.value || null)}
+                >
+                  <option value="">Detect on the machine</option>
+                  {archChoices.map((t) => (
+                    <option key={t.arch} value={t.arch}>
+                      {t.arch}
+                    </option>
+                  ))}
+                </select>
+                <p className={styles.hint}>Only architectures kenny has a binary staged for are listed.</p>
+              </>
+            )}
+
+            {!osAvailable && (
+              <p className={styles.unavailable}>
+                No {os === 'windows' ? 'Windows' : 'Linux'} agent binary is staged on the server, so there is nothing
+                to hand this machine yet. Fleet explains why, and offers a retry when kenny can fetch one itself.
+              </p>
+            )}
           </>
         )}
 
@@ -178,9 +257,14 @@ export default function Wizard({ open, onClose, onProvisioned }: WizardProps) {
           <>
             <label className={styles.label}>Hand it over</label>
             <div className={styles.handoverList}>
+              {/* Disabled rather than hidden, with the reason: the operator needs to
+                  know this path exists and why it is unavailable right now. The
+                  download is a page navigation, so letting it through would replace
+                  the wizard with the route's raw 503 body. */}
               <button
                 type="button"
                 className={`${styles.handoverOption}${handover === 'download' ? ` ${styles.handoverOptionActive}` : ''}`}
+                disabled={!osAvailable}
                 onClick={() => {
                   setHandover('download')
                   startDownload()
@@ -189,7 +273,13 @@ export default function Wizard({ open, onClose, onProvisioned }: WizardProps) {
                 <Download width={16} height={16} strokeWidth={ICON_STROKE_WIDTH} aria-hidden="true" />
                 <span>
                   <span className={styles.handoverTitle}>Download installer</span>
-                  <span className={styles.handoverDetail}>ZIP with agent + setup.bat + a fresh token — you run it on the PC.</span>
+                  <span className={styles.handoverDetail}>
+                    {osAvailable
+                      ? os === 'linux'
+                        ? 'A pre-filled install script carrying a fresh token — you run it as root on the machine.'
+                        : 'ZIP with agent + setup.bat + a fresh token — you run it on the PC.'
+                      : 'Unavailable — no agent binary is staged for this operating system.'}
+                  </span>
                 </span>
               </button>
               <button
@@ -220,11 +310,38 @@ export default function Wizard({ open, onClose, onProvisioned }: WizardProps) {
             {handover === 'share' && shareState.status === 'done' && (
               <div className={styles.handoverResult}>
                 <div className={styles.linkRow}>
-                  <input className={styles.linkInput} readOnly value={shareState.link.url} onFocus={(e) => e.target.select()} />
-                  <button type="button" className={styles.copyButton} onClick={() => void copyLink(shareState.link.url)}>
-                    {copied ? 'COPIED' : 'COPY'}
+                  <input
+                    className={styles.linkInput}
+                    readOnly
+                    value={shareState.link.url}
+                    onFocus={(e) => e.target.select()}
+                    aria-label="Share link"
+                  />
+                  <button type="button" className={styles.copyButton} onClick={() => void copyValue('url', shareState.link.url)}>
+                    {copied === 'url' ? 'COPIED' : 'COPY'}
                   </button>
                 </div>
+                {/* Linux only. The URL on its own is not usable — the person at the
+                    machine has to know it must be piped to a root shell — so the
+                    command is what actually gets handed over. */}
+                {shareState.link.oneliner && (
+                  <div className={styles.linkRow}>
+                    <input
+                      className={styles.linkInput}
+                      readOnly
+                      value={shareState.link.oneliner}
+                      onFocus={(e) => e.target.select()}
+                      aria-label="Install one-liner"
+                    />
+                    <button
+                      type="button"
+                      className={styles.copyButton}
+                      onClick={() => void copyValue('oneliner', shareState.link.oneliner as string)}
+                    >
+                      {copied === 'oneliner' ? 'COPIED' : 'COPY'}
+                    </button>
+                  </div>
+                )}
                 <span className={styles.handoverMeta}>Expires {new Date(shareState.link.expires_at).toLocaleString()}</span>
               </div>
             )}
