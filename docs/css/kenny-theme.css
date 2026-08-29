@@ -168,14 +168,30 @@
   letter-spacing: 0.01em; /* --track-display — not caps tracking; this is prose */
 }
 
-/* Structural labels: nav, tabs, section eyebrows. Letterspaced uppercase is
-   reserved for these — never for prose (h1-h4 above stay sentence case). */
+/* Material greys the page title down to its muted foreground; a Nullthrone
+   heading is full ink. */
+.md-typeset h1 {
+  color: var(--md-default-fg-color);
+}
+
+/* Structural labels: tabs, admonition titles, section eyebrows. Letterspaced
+   uppercase is reserved for these — never for prose (h1-h4 above stay
+   sentence case). The sidebar's own labels are set in §11. */
 .md-nav__title,
 .md-tabs__link,
-.md-nav--primary > .md-nav__list > .md-nav__item > .md-nav__link,
 .md-typeset .admonition-title,
 .md-typeset summary {
   font-family: 'Jost', var(--md-text-font-family);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+/* The header wordmark is a structural label too — the lockup sets NULLTHRONE
+   in letterspaced caps, and the product name follows it. */
+.md-header__topic:first-child .md-ellipsis {
+  font-family: 'Jost', var(--md-text-font-family);
+  font-size: 0.75rem;
   font-weight: 500;
   text-transform: uppercase;
   letter-spacing: 0.1em;
@@ -313,8 +329,33 @@
   border-bottom: 2px solid var(--md-primary-fg-color--light);
 }
 
+/* The mobile drawer's header is the same ink panel, not Material's brass
+   fill — and the paper-coloured mark in `docs/assets/kenny-mark-64.png` only
+   reads against ink. Bounded to the drawer: above this width the same
+   element is the sidebar's own sticky title and stays on paper. */
+@media screen and (max-width: 76.1875em) {
+  .md-nav--primary .md-nav__title[for="__drawer"] {
+    background-color: #141317;
+    color: #F4F2EC;
+  }
+
+  /* The repository row sits directly under it — Material fills it with the
+     accent, which would put a brass slab in the drawer. It takes the same
+     inset ink as the header's search field. */
+  .md-nav__source {
+    background-color: #2A282E;
+    color: #F4F2EC;
+  }
+}
+
 .md-footer {
   border-top: 1px solid #3A3740;
+}
+
+/* Material sets the copyright line in the faintest footer tone; on the ink
+   panel that lands under 4.5:1. The `--light` step carries it. */
+.md-copyright {
+  color: var(--md-footer-fg-color--light);
 }
 
 /* ==========================================================================
@@ -467,4 +508,129 @@
 .md-search-result__item {
   border-bottom: 1px solid var(--md-default-fg-color--lightest);
   box-shadow: none;
+}
+
+/* ==========================================================================
+   11. Sidebar navigation — Jost caps entries on a 2px rail; the active page
+       is the one brass moment on the page
+   ========================================================================== */
+
+/* Both sidebar levels, spelled out: top-level entries and section labels,
+   then the page links nested under a section. The chains stay explicit
+   because the table of contents rides inside the primary nav as a
+   `.md-nav--secondary` on the mobile drawer — that is prose and keeps its
+   sentence case. */
+.md-nav--primary > .md-nav__list > .md-nav__item > .md-nav__link,
+.md-nav--primary > .md-nav__list > .md-nav__item > .md-nav > .md-nav__list > .md-nav__item > .md-nav__link {
+  font-family: 'Jost', var(--md-text-font-family);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  border-left: 2px solid transparent;
+}
+
+.md-nav--primary > .md-nav__list > .md-nav__item > .md-nav__link--active,
+.md-nav--primary > .md-nav__list > .md-nav__item > .md-nav > .md-nav__list > .md-nav__item > .md-nav__link--active {
+  color: var(--md-accent-fg-color);
+  background-color: var(--md-accent-fg-color--transparent);
+  border-left-color: var(--md-accent-fg-color);
+}
+
+/* "Guides", "Developer" — group eyebrows, not entries. They are not links,
+   so they carry no rail. */
+.md-nav__item--section > .md-nav__link {
+  color: var(--md-default-fg-color--light);
+  font-size: 0.65rem;
+  border-left-color: transparent;
+}
+
+@media screen and (min-width: 76.25em) {
+  /* Material spaces desktop nav links by margin alone. Padding plus a 2px
+     gap gives the rail something to run along. */
+  .md-nav--primary > .md-nav__list > .md-nav__item > .md-nav__link,
+  .md-nav--primary > .md-nav__list > .md-nav__item > .md-nav > .md-nav__list > .md-nav__item > .md-nav__link {
+    margin-top: 2px;
+    padding: 0.35rem 0.4rem;
+  }
+
+  /* Columns divided by a hairline rather than a gap. */
+  [dir="ltr"] .md-sidebar--primary {
+    border-right: 1px solid var(--md-default-fg-color--lightest);
+  }
+
+  [dir="rtl"] .md-sidebar--primary {
+    border-left: 1px solid var(--md-default-fg-color--lightest);
+  }
+}
+
+/* ==========================================================================
+   12. Figures — a framed plate on paper-raised, with a muted roman caption
+   ========================================================================== */
+
+.md-typeset figure {
+  width: 100%;
+  border: 1px solid var(--md-default-fg-color--lightest);
+  background-color: var(--md-default-bg-color--light);
+  padding: 1.2rem;
+  text-align: left;
+}
+
+.md-typeset figcaption {
+  max-width: none;
+  margin: 0.6rem 0 0;
+  font-style: normal; /* Material italicises captions; Nullthrone sets roman */
+  font-size: 0.625rem;
+  color: var(--md-default-fg-color--light);
+}
+
+/* ==========================================================================
+   13. Card grid — one brass icon per card, hairline emphasis on hover
+   ========================================================================== */
+
+/* Material trades the border for a shadow on hover. Emphasis here is the
+   1px ink border instead — no elevation. */
+.md-typeset .grid.cards > ul > li:hover,
+.md-typeset .grid.cards > ul > li:focus-within,
+.md-typeset .grid.cards > ol > li:hover,
+.md-typeset .grid.cards > ol > li:focus-within,
+.md-typeset .grid > .card:hover,
+.md-typeset .grid > .card:focus-within {
+  border-color: var(--md-default-fg-color);
+  box-shadow: none;
+}
+
+/* The leading `:material-…:` icon is the card's single brass mark. The
+   hanging indent keeps wrapped lines flush with the text rather than tucked
+   under the icon. */
+.md-typeset .grid.cards > ul > li > .twemoji:first-child {
+  color: var(--md-accent-fg-color);
+  margin-right: 0.2rem;
+}
+
+.md-typeset .grid.cards > ul > li:has(> .twemoji:first-child) {
+  padding-left: 1.9rem;
+  text-indent: -1.1rem;
+}
+
+/* ==========================================================================
+   14. Mermaid — Material routes every diagram colour through these tokens,
+       so the diagrams follow the palette by retuning them here. Nodes are
+       ink hairlines on paper (brass is not a fill), labels are set in the
+       code face, edges recede to the faint tone.
+   ========================================================================== */
+
+.md-typeset .mermaid {
+  --md-mermaid-font-family: var(--md-code-font-family), monospace;
+  --md-mermaid-node-bg-color: var(--md-default-bg-color);
+  --md-mermaid-node-fg-color: var(--md-default-fg-color);
+  --md-mermaid-label-bg-color: var(--md-default-bg-color);
+  --md-mermaid-label-fg-color: var(--md-default-fg-color);
+  --md-mermaid-edge-color: var(--md-default-fg-color--lighter);
+}
+
+/* Material fills subgraph clusters with a solid grey plane; a hairline says
+   the same thing without a second surface. */
+.md-typeset .mermaid .cluster rect {
+  fill: var(--md-default-bg-color);
+  stroke: var(--md-default-fg-color--lightest);
 }
