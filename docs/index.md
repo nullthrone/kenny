@@ -1,4 +1,4 @@
-# 🐕 kenny
+# kenny
 
 **Self-hosted remote administration _and fleet monitoring_ for Windows PCs, driven by
 Claude (MCP) and a web dashboard.**
@@ -9,7 +9,7 @@ Claude instead of a clunky console. It works for any small fleet you administer 
 
 <figure markdown>
   ![The Today page](assets/screenshots/today.png)
-  <figcaption>The Today page — the fleet in one sentence, with the items that need attention ranked by consequence. See the <a href="dashboard.md">dashboard reference</a> for the full tour.</figcaption>
+  <figcaption>The Today page — the fleet in one sentence, with the items that need attention ranked by consequence. See the <a href="dashboard/">dashboard reference</a> for the full tour.</figcaption>
 </figure>
 
 ```mermaid
