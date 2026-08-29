@@ -1204,12 +1204,12 @@
     // configurable server-side (GITHUB_REPO); we cache it from /api/about (see
     // renderAboutModal and the boot fetch below) and fall back to the default
     // so the link is correct even before the About modal is opened.
-    let serverRepo = "t11z/kenny";
+    let serverRepo = "nullthrone/kenny";
     function docsUrl() {
       const [owner, name] = serverRepo.split("/");
       return owner && name
         ? `https://${owner}.github.io/${name}/`
-        : "https://t11z.github.io/kenny/";
+        : "https://nullthrone.github.io/kenny/";
     }
 
     // -- about modal: server/agent identity + a live, filterable GitHub changelog --
@@ -1234,7 +1234,7 @@
     }
 
     function renderAboutModal(about, bin, releases) {
-      const repo = about.repo || "t11z/kenny";
+      const repo = about.repo || "nullthrone/kenny";
       serverRepo = repo;  // keep the docs link in sync with the real repo
       const repoUrl = `https://github.com/${repo}`;
       const current = String(about.server_version || "");

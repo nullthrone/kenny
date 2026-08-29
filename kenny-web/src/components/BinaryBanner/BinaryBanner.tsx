@@ -37,6 +37,7 @@ export default function BinaryBanner() {
 
   const isOperator = me.data ? me.data.role !== 'user' : false
   const canRetry = isOperator && status.github_configured === true
+  const attempt = status.last_check?.message ?? status.last_fetch?.message ?? ''
 
   return (
     <div className={styles.banner} role="status">
@@ -46,8 +47,14 @@ export default function BinaryBanner() {
         {status.github_configured
           ? `kenny fetches it from ${status.repo ?? 'GitHub'} releases. `
           : 'Set a GitHub token so kenny can fetch it, or place a binary on the server. '}
-        {status.last_fetch && <span className={styles.reason}>Last attempt: {status.last_fetch.message}</span>}
-        {!status.last_fetch && status.github_configured && <span className={styles.reason}>No fetch has been attempted yet.</span>}
+        {/*
+          The durable row (`last_check`) leads: `last_fetch` lives on the server
+          process, so after a restart it is null while a refresh has in fact
+          been failing for weeks — and "no fetch has been attempted yet" then
+          describes the wrong problem. Say that only when neither record exists.
+        */}
+        {attempt && <span className={styles.reason}>Last attempt: {attempt}</span>}
+        {!attempt && status.github_configured && <span className={styles.reason}>No fetch has been attempted yet.</span>}
         <div className={styles.consequence}>
           Adding a PC still mints a token and a link, but there is no binary to hand over yet.
         </div>

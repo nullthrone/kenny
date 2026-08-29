@@ -215,15 +215,19 @@ def test_events_endpoint_filters(tmp_path):
         )
         c.portal.call(partial(es.insert_audit, agent_id="example-pc", tool="winget_update", ok=True))
 
-        # Unfiltered: all three events, newest-first.
+        # Unfiltered: the three seeded events, newest-first. The server also
+        # logs during boot (ADR-0017 persists its own records here), so scope
+        # the counts to what this test seeded rather than to an empty server.
+        seeded_at = {"2026-06-05T10:00:00Z", "2026-06-05T10:00:01Z"}
         entries = c.get("/api/events", headers=_bearer(app)).json()["entries"]
-        assert len(entries) == 3
+        seeded = [e for e in entries if e["at"] in seeded_at or e["kind"] == "audit"]
+        assert len(seeded) == 3
         assert set(entries[0]) >= {"at", "agent_id", "source", "level", "kind", "message"}
 
         # kind filter.
         logs = c.get("/api/events?kind=log", headers=_bearer(app)).json()["entries"]
         assert {e["kind"] for e in logs} == {"log"}
-        assert len(logs) == 2
+        assert len([e for e in logs if e["at"] in seeded_at]) == 2
 
         # agent + level filters compose.
         warns = c.get("/api/events?agent=example-pc&level=warn", headers=_bearer(app)).json()["entries"]

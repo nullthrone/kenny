@@ -112,7 +112,7 @@ For each candidate finding, derive a stable fingerprint slug: `kenny-sec:<area>/
 (e.g. `kenny-sec:webui/telemetry-innerhtml-xss`). Then, using the GitHub MCP tools, check whether it
 is already tracked — **including past closed issues**:
 
-- `mcp__github__search_issues` with `repo:t11z/kenny "kenny-sec:<slug>"` (do NOT add `is:open` — search
+- `mcp__github__search_issues` with `repo:nullthrone/kenny "kenny-sec:<slug>"` (do NOT add `is:open` — search
   must include closed). Also do a broader title/keyword search to catch issues filed before this
   convention existed.
 - `mcp__github__list_issues` for label `security` (state `all`) to build a dedup map up front.

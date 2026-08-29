@@ -79,12 +79,25 @@ export interface ChangelogRelease {
 
 /**
  * `GET /api/changelog` — GitHub Releases, proxied server-side and cached for five
- * minutes. `changelog.fetch_releases` is best-effort and never raises, so an empty
- * `releases` means "GitHub had nothing to say", not "the server broke".
+ * minutes. The request always succeeds; `ok` carries whether the *upstream* read
+ * did. An empty `releases` therefore means "this repo has published nothing" only
+ * when `ok` is true — reading it as that unconditionally is what made the dialog
+ * report a dead token as an empty repository.
+ *
+ * `error`/`stale`/`fetched_at` are optional so a dashboard bundle newer than its
+ * server still type-checks; treat a missing `ok` as true.
  */
 export interface ChangelogResponse {
   repo: string
   releases: ChangelogRelease[]
+  /** False when GitHub could not be read. `releases` may still hold cached notes. */
+  ok?: boolean
+  /** Operator-readable reason, naming the remedy. Null when `ok`. */
+  error?: string | null
+  /** True when `releases` is a previously cached list served past a failed refresh. */
+  stale?: boolean
+  /** ISO-8601 of the fetch that produced `releases` — the data, not the attempt. */
+  fetched_at?: string | null
 }
 
 /** One published (os, arch) pair and whether a binary for it is staged. */
@@ -98,6 +111,23 @@ export interface AgentBinaryTarget {
 export interface AgentBinaryFetch {
   ok: boolean
   message: string
+}
+
+/**
+ * The same outcome, read back off the server's durable availability row
+ * (ADR-0040) rather than from process memory.
+ *
+ * `last_fetch` is per-process: after a restart it is null even while a refresh
+ * has been failing for weeks, which is how a months-old staged version came to
+ * be shown with no reason attached. Prefer this; fall back to `last_fetch`.
+ */
+export interface AgentBinaryCheck {
+  ok: boolean
+  message: string
+  /** ISO-8601 of the attempt. */
+  checked_at: string
+  /** The staged version at the time of the check. */
+  version: string
 }
 
 /**
@@ -126,6 +156,8 @@ export interface AgentBinaryStatus {
   repo?: string
   /** Null until a fetch has been attempted this process. */
   last_fetch?: AgentBinaryFetch | null
+  /** The durable last-refresh outcome; survives a restart. Null if never recorded. */
+  last_check?: AgentBinaryCheck | null
 }
 
 /** `GET /api/me` — identity, role and host scope for the signed-in principal. */

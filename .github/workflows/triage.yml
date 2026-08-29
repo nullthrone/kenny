@@ -95,7 +95,7 @@ jobs:
             5. Look for likely duplicates (`gh issue list --search ...`) and, if found, link them
                in your comment.
             6. Post a brief, welcoming first-response comment with relevant docs links
-               (https://t11z.github.io/kenny/ , docs/setup.md, docs/user-guide.md). Keep it short.
+               (https://nullthrone.github.io/kenny/ , docs/setup.md, docs/user-guide.md). Keep it short.
             7. Close ONLY if the issue is obvious spam or empty (`gh issue close` with a polite
                note). When unsure, never close — leave it for a human.
 

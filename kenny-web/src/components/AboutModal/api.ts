@@ -39,9 +39,10 @@ export function useAbout() {
  * a GitHub outage must never stop the dialog showing the version rows.
  *
  * `staleTime` matches the server's own `changelog.CACHE_TTL_S`, and `retry` is
- * off because `fetch_releases` already swallows failures and serves its last
- * good cache — a client retry only delays the degraded state the user should
- * see.
+ * off because the server already degrades on its own — it serves its last good
+ * cache and reports the upstream failure in the payload's `ok`/`error`, so a
+ * client retry only delays the degraded state the user should see. Read that
+ * pair: a 200 here says this API worked, not that GitHub did.
  */
 export function useChangelog(enabled: boolean) {
   return useQuery({

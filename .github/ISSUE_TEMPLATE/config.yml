@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: 💬 Questions & ideas
-    url: https://github.com/t11z/kenny/discussions
+    url: https://github.com/nullthrone/kenny/discussions
     about: Ask questions, share setups, and discuss ideas in Discussions.
   - name: 🔒 Report a security vulnerability
-    url: https://github.com/t11z/kenny/security/advisories/new
+    url: https://github.com/nullthrone/kenny/security/advisories/new
     about: Report security issues privately — never in a public issue.

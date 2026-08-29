@@ -22,7 +22,7 @@ Chosen option: "Containerize + GHCR". A `python:3.11-slim` image installs the
 the operator/agent/Anthropic env, persists the SQLite store on a named volume, and
 offers an optional Caddy reverse-proxy profile for TLS termination (so agents dial
 `wss://` and operators use `https://`, per ADR-0008). Release images are published to
-`ghcr.io/t11z/kenny-server` by the release workflow (ADR-0012/WS4).
+`ghcr.io/nullthrone/kenny-server` by the release workflow (ADR-0012/WS4).
 
 ### Consequences
 

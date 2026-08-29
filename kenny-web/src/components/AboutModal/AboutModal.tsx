@@ -4,7 +4,11 @@ import KeyValueRow from '../KeyValueRow/KeyValueRow'
 import Markdown from '../Markdown/Markdown'
 import EmptyState from '../EmptyState/EmptyState'
 import { Info, Link as LinkIcon, X, ICON_STROKE_WIDTH } from '../icons'
-import { useAgentBinary } from '../../api/agentBinary'
+import { useAgentBinary, useRetryAgentBinaryFetch } from '../../api/agentBinary'
+import { api } from '../../api/client'
+import { useQuery } from '@tanstack/react-query'
+import type { Me } from '../../api/types'
+import { formatRelativeTime } from '../../views/host/format'
 import { useAbout, useChangelog } from './api'
 import styles from './AboutModal.module.css'
 
@@ -17,14 +21,23 @@ import styles from './AboutModal.module.css'
  * Only `/api/about` is load-bearing. The staged agent version and the changelog
  * are best-effort reads that degrade to a rendered dialog, never a broken one —
  * see `./api.ts`.
+ *
+ * Degrading has to stay distinguishable from succeeding, though. This dialog
+ * once rendered a failed GitHub read as "no releases published for <repo> yet"
+ * and a months-stale staged binary as a bare version number, so the one surface
+ * an operator opens to check kenny's identity was also the one that hid a dead
+ * token. Every best-effort read here now says which of the two it is.
  */
 export interface AboutModalProps {
   open: boolean
   onClose: () => void
 }
 
-/** Matches the server's own fallback (`agent_release.DEFAULT_REPO`). */
-const DEFAULT_REPO = 't11z/kenny'
+/**
+ * Matches the server's own fallback (`agent_release.DEFAULT_REPO`).
+ * `kenny-server/tests/test_ownership_defaults.py` fails if the two drift.
+ */
+const DEFAULT_REPO = 'nullthrone/kenny'
 
 function formatPublished(iso: string | null): string {
   if (!iso) return ''
@@ -32,10 +45,24 @@ function formatPublished(iso: string | null): string {
   return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString()
 }
 
+/**
+ * A clean `X.Y.Z`, i.e. a stable release build.
+ *
+ * The guard for the mismatch hint below: a dev-channel server (`0.0.0-dev`) or
+ * a dev agent (`X.Y.Z-dev.N`) legitimately differs from its counterpart, so
+ * nothing is claimed unless both sides are stable releases. Same discipline as
+ * `server_release.is_newer`: on ambiguity, say nothing.
+ */
+function isReleaseVersion(v: string): boolean {
+  return /^\d+\.\d+\.\d+$/.test(v)
+}
+
 export default function AboutModal({ open, onClose }: AboutModalProps) {
   const about = useAbout()
   const binary = useAgentBinary(open)
   const changelog = useChangelog(open)
+  const retry = useRetryAgentBinaryFetch()
+  const me = useQuery({ queryKey: ['me'], queryFn: () => api.get<Me>('/api/me'), enabled: open })
 
   /**
    * `null` means "the operator has not chosen", so the derived default applies
@@ -50,6 +77,40 @@ export default function AboutModal({ open, onClose }: AboutModalProps) {
   const running = about.data?.server_version ?? ''
   const repo = about.data?.repo || DEFAULT_REPO
   const repoUrl = `https://github.com/${repo}`
+
+  // A server older than this bundle sends no `ok`; absent means it succeeded.
+  const changelogOk = changelog.data?.ok !== false
+  const changelogError = changelog.data?.error ?? null
+
+  const staged = binary.data?.version ?? ''
+  // The durable row first: `last_fetch` is per-process and reads as "never
+  // attempted" after a restart, which is exactly when the operator is looking.
+  const lastCheck = binary.data?.last_check ?? null
+  const lastFetch = binary.data?.last_fetch ?? null
+  const refreshFailed = lastCheck ? !lastCheck.ok : lastFetch ? !lastFetch.ok : false
+  const refreshMessage = lastCheck?.message ?? lastFetch?.message ?? ''
+  /**
+   * CI stamps one git tag into both `KENNY_SERVER_VERSION` and
+   * `KENNY_AGENT_VERSION` (`.github/workflows/_release-artifacts.yml`), so for
+   * two stable builds a difference is not a preference — it means the staged
+   * binary has not been refreshed since an older release.
+   */
+  const stagedIsBehind =
+    isReleaseVersion(running) && isReleaseVersion(staged) && staged !== running
+
+  function stagedHelp(): string | undefined {
+    if (binary.isError) return 'binary status unavailable'
+    if (refreshFailed) return `last refresh failed — ${refreshMessage}`
+    if (binary.data?.github_configured === false)
+      return 'auto-fetch is off — set KENNY_GITHUB_TOKEN, or place a binary on the server'
+    if (stagedIsBehind) return `expected ${running} — this binary is from an older release`
+    if (lastCheck?.ok) return `refreshed ${formatRelativeTime(lastCheck.checked_at)}`
+    return undefined
+  }
+
+  // Retrying reaches out to GitHub and writes the cache, so it is operator+
+  // server-side; a scoped `user` gets the explanation without a dead button.
+  const canRetry = (me.data ? me.data.role !== 'user' : false) && !!binary.data
 
   // The legacy default: preselect the running version only if a release matches
   // it exactly, otherwise show every version.
@@ -86,7 +147,15 @@ export default function AboutModal({ open, onClose }: AboutModalProps) {
         <KeyValueRow
           label="staged agent version"
           value={binary.data?.version ?? 'unknown'}
-          help={binary.isError ? 'binary status unavailable' : undefined}
+          help={stagedHelp()}
+          action={
+            canRetry
+              ? {
+                  label: retry.isPending ? 'FETCHING…' : 'FETCH NOW',
+                  onClick: () => retry.mutate(),
+                }
+              : undefined
+          }
         />
         <KeyValueRow
           label="repository"
@@ -123,7 +192,27 @@ export default function AboutModal({ open, onClose }: AboutModalProps) {
           {changelog.isError && (
             <p className={styles.fallback}>Could not reach GitHub for release notes.</p>
           )}
-          {changelog.isSuccess && shown.length === 0 && (
+          {/*
+            Three states that used to collapse into one. The empty state is now
+            reserved for the only case that actually justifies it: GitHub
+            answered, and there was nothing to report.
+          */}
+          {changelog.isSuccess && !changelogOk && releases.length === 0 && (
+            <EmptyState
+              title="Release notes unavailable"
+              message={changelogError ?? 'kenny could not read the releases from GitHub.'}
+            />
+          )}
+          {changelog.isSuccess && !changelogOk && releases.length > 0 && (
+            <p className={styles.fallback}>
+              Showing cached notes
+              {changelog.data?.fetched_at
+                ? ` from ${formatRelativeTime(changelog.data.fetched_at)}`
+                : ''}
+              . {changelogError}
+            </p>
+          )}
+          {changelog.isSuccess && changelogOk && shown.length === 0 && (
             <EmptyState title="No release notes" message={`No releases published on GitHub for ${repo} yet.`} />
           )}
           {shown.map((r) => (

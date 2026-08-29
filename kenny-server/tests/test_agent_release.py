@@ -332,13 +332,13 @@ def _channel_handler():
 
 def test_select_release_stable_ignores_prerelease(token):
     with _factory(_channel_handler())() as client:
-        release = agent_release._select_release(client, "t11z/kenny", "stable")
+        release = agent_release._select_release(client, "nullthrone/kenny", "stable")
     assert release["tag_name"] == "v0.2.4"  # the /releases/latest response, never the dev one
 
 
 def test_select_release_dev_picks_newest_prerelease(token):
     with _factory(_channel_handler())() as client:
-        release = agent_release._select_release(client, "t11z/kenny", "dev")
+        release = agent_release._select_release(client, "nullthrone/kenny", "dev")
     assert release["tag_name"] == "v2.0.5-dev.17"
 
 

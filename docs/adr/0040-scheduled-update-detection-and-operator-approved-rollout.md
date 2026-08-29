@@ -12,7 +12,7 @@ clicks "update" for one specific agent, which calls `trigger_update`
 (`kenny-server/kenny_server/distribution.py:493`) — no scheduling, no fleet-wide rollout, no
 awareness of which agents are behind.
 
-Separately, `kenny-server` ships as a container published to `ghcr.io/t11z/kenny-server` on
+Separately, `kenny-server` ships as a container published to `ghcr.io/nullthrone/kenny-server` on
 every git tag (ADR-0010), and the running process already knows its own version
 (`KENNY_SERVER_VERSION`, exposed at `/api/about`). There is no mechanism today to notice a
 newer server image exists, and a container cannot replace its own running image from the

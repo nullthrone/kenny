@@ -24,7 +24,7 @@ from typing import Any, Callable
 import httpx
 
 GITHUB_API = "https://api.github.com"
-DEFAULT_REPO = "t11z/kenny"
+DEFAULT_REPO = "nullthrone/kenny"
 # Release asset naming (shared contract with the agent's release workflow):
 #   windows: kenny-agent-<tag>-x86_64-pc-windows-msvc.exe
 #   linux:   kenny-agent-<tag>-<arch>-unknown-linux-musl  (arch: x86_64 | aarch64)
