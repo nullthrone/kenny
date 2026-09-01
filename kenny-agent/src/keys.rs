@@ -412,7 +412,7 @@ mod tests {
             let len = (rng.next() % 200) as usize;
             let raw: Vec<u8> = (0..len).map(|_| (rng.next() % 256) as u8).collect();
             // Exercise both raw-garbage strings and validly-base64-encoded random bytes.
-            let s = if rng.next() % 2 == 0 {
+            let s = if rng.next().is_multiple_of(2) {
                 String::from_utf8_lossy(&raw).into_owned()
             } else {
                 STANDARD.encode(&raw)

@@ -300,7 +300,7 @@ mod tests {
         assert!(std::panic::catch_unwind(|| encode_png(0, 0, &[])).is_ok());
         assert!(std::panic::catch_unwind(|| encode_png(0, 5000, &[])).is_ok());
         assert!(std::panic::catch_unwind(|| encode_png(5000, 0, &[])).is_ok());
-        let buf = vec![0u8; 100_000 * 1 * 4];
+        let buf = vec![0u8; 100_000 * 4];
         assert!(std::panic::catch_unwind(|| encode_png(100_000, 1, &buf)).is_ok());
     }
 
@@ -321,12 +321,12 @@ mod tests {
         let mut rng = Rng(0xDEADBEEF);
         let interesting: [u32; 7] = [0, 1, 2, 0xFFFF_FFFF, 0x7FFF_FFFF, 65536, 100_000];
         for iter in 0..2000u32 {
-            let width = if rng.next() % 2 == 0 {
+            let width = if rng.next().is_multiple_of(2) {
                 interesting[(rng.next() as usize) % interesting.len()]
             } else {
                 (rng.next() % 5000) as u32
             };
-            let height = if rng.next() % 2 == 0 {
+            let height = if rng.next().is_multiple_of(2) {
                 interesting[(rng.next() as usize) % interesting.len()]
             } else {
                 (rng.next() % 5000) as u32
