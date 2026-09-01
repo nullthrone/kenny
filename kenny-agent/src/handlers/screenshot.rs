@@ -291,4 +291,53 @@ mod tests {
         let err = encode_png(2, 2, &[0u8; 4]).unwrap_err();
         assert!(err.contains("mismatch"), "unexpected error: {err}");
     }
+
+    /// Zero-area (width or height 0, matching empty buffer) and a lopsided-but-matching
+    /// buffer must not panic either — random buffer lengths in the loop below almost never
+    /// happen to exactly match `width*height*4`, so this exercises that path directly.
+    #[test]
+    fn encode_png_handles_zero_dimensions_and_matching_lopsided_buffer() {
+        assert!(std::panic::catch_unwind(|| encode_png(0, 0, &[])).is_ok());
+        assert!(std::panic::catch_unwind(|| encode_png(0, 5000, &[])).is_ok());
+        assert!(std::panic::catch_unwind(|| encode_png(5000, 0, &[])).is_ok());
+        let buf = vec![0u8; 100_000 * 1 * 4];
+        assert!(std::panic::catch_unwind(|| encode_png(100_000, 1, &buf)).is_ok());
+    }
+
+    /// Randomized dimensions/buffer-length combinations, including zero, huge, and
+    /// overflow-triggering sizes, must only ever return `Err`, never panic.
+    #[test]
+    fn encode_png_never_panics_on_random_dimensions_and_buffers() {
+        struct Rng(u64);
+        impl Rng {
+            fn next(&mut self) -> u64 {
+                self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
+                let mut z = self.0;
+                z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+                z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+                z ^ (z >> 31)
+            }
+        }
+        let mut rng = Rng(0xDEADBEEF);
+        let interesting: [u32; 7] = [0, 1, 2, 0xFFFF_FFFF, 0x7FFF_FFFF, 65536, 100_000];
+        for iter in 0..2000u32 {
+            let width = if rng.next() % 2 == 0 {
+                interesting[(rng.next() as usize) % interesting.len()]
+            } else {
+                (rng.next() % 5000) as u32
+            };
+            let height = if rng.next() % 2 == 0 {
+                interesting[(rng.next() as usize) % interesting.len()]
+            } else {
+                (rng.next() % 5000) as u32
+            };
+            // Buffer length: sometimes correct, sometimes wildly off.
+            let buf_len = (rng.next() % 20_000) as usize;
+            let buf = vec![0u8; buf_len];
+            let result = std::panic::catch_unwind(|| encode_png(width, height, &buf));
+            if result.is_err() {
+                panic!("iter {iter}: panic on width={width} height={height} buf_len={buf_len}");
+            }
+        }
+    }
 }
