@@ -190,6 +190,7 @@ class AgentTokenStore:
         await self._conn.commit()
         return token
 
+    # POSSIBLY DEAD: no caller in kenny_server — only tested directly.
     async def list_agents(self) -> list[dict[str, str | None]]:
         """Return stored agents with timestamps (no token material)."""
 

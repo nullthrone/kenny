@@ -45,6 +45,9 @@ export function actorDot(actor: string): string {
   return 'var(--ink-300)'
 }
 
+// POSSIBLY DEAD: no import references this array anywhere in kenny-web/src/ — verdictTone below
+// checks verdict strings directly rather than reading from this set. Kept because it mirrors the
+// server-side `toolloop.TRIAGE_VERDICTS` enum; may be intended as forward-looking documentation.
 /** The five verdicts `ticket_triage_verdict` may report (`toolloop.TRIAGE_VERDICTS`). */
 export const TRIAGE_VERDICTS = [
   'phantom',
@@ -53,8 +56,6 @@ export const TRIAGE_VERDICTS = [
   'actionable',
   'inconclusive',
 ] as const
-
-export type TriageVerdict = (typeof TRIAGE_VERDICTS)[number]
 
 /**
  * How a verdict reads at a glance. Three colours, not five: the only

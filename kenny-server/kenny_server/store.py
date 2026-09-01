@@ -1172,6 +1172,8 @@ class BackupTargetStore:
         await self._conn.commit()
         return (cur.rowcount or 0) > 0
 
+    # POSSIBLY DEAD: no webui route calls set_enabled (the update route only
+    # touches label/config) — only tested directly today.
     async def set_enabled(self, id: str, enabled: bool) -> bool:
         """Flip the enabled flag on one target. Returns True if it existed."""
 
@@ -1623,6 +1625,8 @@ class UpdateStore:
         )
         await self._conn.commit()
 
+    # POSSIBLY DEAD: no caller in kenny_server — update_manager.py always reads
+    # channels one agent at a time via get_desired_channel; only tested directly.
     async def list_desired_channels(self) -> dict[str, str]:
         """Every agent with an explicit desired-channel row, ``agent_id -> channel``.
 

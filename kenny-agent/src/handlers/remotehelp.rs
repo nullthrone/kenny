@@ -141,6 +141,7 @@ $net = Test-NetConnection -ComputerName 'login.live.com' -Port 443 -InformationL
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(windows))]
     use super::*;
 
     #[cfg(not(windows))]

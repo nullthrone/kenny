@@ -624,6 +624,7 @@ mod windows_impl {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(windows))]
     use serde_json::json;
 
     fn sample() -> Vec<String> {

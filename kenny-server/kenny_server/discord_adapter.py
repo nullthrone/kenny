@@ -268,6 +268,9 @@ class DiscordGateway(Protocol):
 
     async def list_guild_members(self, *, guild_id: str) -> list[GuildMember]: ...
 
+    # POSSIBLY DEAD: no caller in kenny_server invokes member_role_ids today
+    # (discord_service.py never uses Discord roles for routing/visibility yet);
+    # only exercised directly by tests against this protocol / its implementations.
     async def member_role_ids(self, *, guild_id: str, user_id: str) -> frozenset[str]:
         """Return the caller's Discord role IDs (snowflakes) in ``guild_id``.
 

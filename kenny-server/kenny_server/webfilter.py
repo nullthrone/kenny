@@ -257,11 +257,6 @@ CATEGORY_CATALOG: dict[str, CategorySpec] = {
 #: Every valid category key, in catalog order.
 CATEGORY_KEYS: tuple[str, ...] = tuple(CATEGORY_CATALOG)
 
-#: Categories toggled on for a host that has never been configured. Matches the
-#: pre-category defaults (``use_external_adult`` on, ``use_bypass_protection``
-#: off), so turning this feature on changes nothing for an existing host.
-DEFAULT_CATEGORIES: frozenset[str] = frozenset({"adult"})
-
 #: The two categories that predate the catalog and keep their own boolean
 #: columns on ``webfilter_config`` (``use_external_adult`` /
 #: ``use_bypass_protection``). Those columns stay the single source of truth for

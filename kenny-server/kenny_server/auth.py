@@ -69,6 +69,9 @@ class Principal:
     pat_id: str | None = None
     oauth_token_id: str | None = None
     oauth_client_id: str | None = None
+    # POSSIBLY DEAD: set on construction (see the env-token Principal below) but
+    # never read anywhere else in kenny_server — no authz/display path branches
+    # on it today.
     is_env_token: bool = False
 
     @property

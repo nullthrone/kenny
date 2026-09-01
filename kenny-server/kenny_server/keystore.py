@@ -169,6 +169,9 @@ class KeyStore:
         )
         await self._conn.commit()
 
+    # POSSIBLY DEAD: no webui/tools.py route calls rotate() yet (only tested
+    # directly) — looks like it's meant for an operator-facing re-key action
+    # that hasn't been wired up.
     async def rotate(self, agent_id: str, public_key_b64: str) -> None:
         """Replace an agent's public key, demoting the old one to a grace key.
 
@@ -257,6 +260,7 @@ class KeyStore:
             return True
         return datetime.now(timezone.utc) >= datetime.fromisoformat(expires_at)
 
+    # POSSIBLY DEAD: no caller in kenny_server (only tested directly).
     async def is_enrolled(self, agent_id: str) -> bool:
         async with self._conn.execute(
             "SELECT 1 FROM agent_keys WHERE agent_id = ?", (agent_id,)

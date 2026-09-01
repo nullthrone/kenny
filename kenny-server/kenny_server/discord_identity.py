@@ -185,6 +185,7 @@ class DiscordLinkClaim:
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
 
+    # POSSIBLY DEAD: no caller in kenny_server — only tested directly.
     def is_open(self, now: datetime | str | None = None) -> bool:
         """True while the claim can still be consumed."""
 
@@ -345,6 +346,8 @@ class DiscordIdentityStore:
         await self._conn.commit()
         return cur.rowcount or 0
 
+    # POSSIBLY DEAD: no caller in kenny_server (no operator-facing "disable
+    # binding" route wires this up yet) — only tested directly.
     async def set_disabled(self, discord_user_id: str, *, disabled: bool) -> bool:
         """Flip a binding's ``disabled`` flag. Returns True if the row existed.
 

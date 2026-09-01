@@ -16,10 +16,6 @@ export function transitionLabel(state: string): string {
   return TRANSITION_VERBS[state] ?? state.toUpperCase().replace(/_/g, ' ')
 }
 
-export function stateDisplay(state: string): string {
-  return state.toUpperCase().replace(/_/g, ' ')
-}
-
 /**
  * Display-only labels for a block reason (`tickets.py`'s `BLOCKED_REASONS`).
  * As with transitions, which of them may be offered comes entirely from

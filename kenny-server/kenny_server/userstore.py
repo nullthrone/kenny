@@ -332,6 +332,8 @@ class UserStore:
         )
         await self._conn.commit()
 
+    # POSSIBLY DEAD in production: auth.py reads ``totp_secret`` off the raw
+    # row directly instead of calling this; only tested directly here.
     async def get_totp_secret(self, user_id: int) -> str | None:
         row = await self._get_row(user_id)
         return row["totp_secret"] if row else None
@@ -380,10 +382,6 @@ class UserStore:
             (theme, _now_iso(), user_id),
         )
         await self._conn.commit()
-
-    async def get_theme(self, user_id: int) -> str | None:
-        row = await self._get_row(user_id)
-        return row["theme"] if row else None
 
     async def get_capability_profile(self, user_id: int) -> str | None:
         row = await self._get_row(user_id)
@@ -585,6 +583,9 @@ class UserStore:
         )
         await self._conn.commit()
 
+    # POSSIBLY DEAD: no caller anywhere (not even a test) — main.py's boot-time
+    # prune sequence prunes the telemetry/event/webfilter/oauth stores but never
+    # calls this one, so expired session rows are never actively swept.
     async def prune_sessions(self) -> int:
         """Delete expired sessions; return how many were removed."""
 
