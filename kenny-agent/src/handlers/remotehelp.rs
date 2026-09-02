@@ -141,6 +141,9 @@ $net = Test-NetConnection -ComputerName 'login.live.com' -Port 443 -InformationL
 
 #[cfg(test)]
 mod tests {
+    // Every test below is `#[cfg(not(windows))]`; gate the import the same way so a
+    // Windows build (where this module would otherwise be empty) doesn't warn.
+    #[cfg(not(windows))]
     use super::*;
 
     #[cfg(not(windows))]

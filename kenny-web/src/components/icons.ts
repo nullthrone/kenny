@@ -40,7 +40,6 @@ export {
   Trash2,
   X,
   type LucideIcon,
-  type LucideProps,
 } from 'lucide-react'
 
 /** Nullthrone spec: render icons at this stroke width, 16/20px, currentColor. */
