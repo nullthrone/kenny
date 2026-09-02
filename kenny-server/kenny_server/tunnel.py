@@ -265,7 +265,12 @@ class AgentTunnel:
 
     async def _handshake(self, websocket: WebSocket) -> str | None:
         raw = await websocket.receive_text()
-        frame = parse_frame(raw)
+        try:
+            frame = parse_frame(raw)
+        except Exception:  # noqa: BLE001 - malformed frame
+            logger.warning("handshake rejected: unparseable first frame; closing 4400")
+            await websocket.close(code=4400)  # expected register
+            return None
         if not isinstance(frame, Register):
             logger.warning(
                 "agent handshake rejected: first frame was %s, expected register; "
@@ -412,7 +417,11 @@ class AgentTunnel:
                     _MAX_FRAME_BYTES,
                 )
                 continue
-            frame = parse_frame(raw)
+            try:
+                frame = parse_frame(raw)
+            except Exception:  # noqa: BLE001 - malformed frame from an already-connected agent
+                logger.warning("dropping unparseable frame from %s", agent_id)
+                continue
 
             # The host may have been removed from inventory mid-connection
             # (DELETE /api/agent/{id} → inventory.purge_agent → registry.remove).

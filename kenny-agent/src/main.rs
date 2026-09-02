@@ -18,6 +18,8 @@ mod coexist;
 mod config;
 mod control;
 mod dispatch;
+#[cfg(test)]
+mod fuzz_tests;
 mod handlers;
 mod ipc;
 mod keys;
