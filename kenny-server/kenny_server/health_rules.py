@@ -27,6 +27,24 @@ def worst(*statuses: Status) -> Status:
     return max((s for s in statuses if s), key=lambda s: _ORDER.get(s, 0), default="ok")
 
 
+def _valid_status(value: Any) -> Status:
+    """Coerce an untrusted ``status`` value to one of ``ok``/``warn``/``crit``.
+
+    The wire ``Section.status`` field is ``Literal["ok", "warn", "crit"]``, so a
+    pushed ``telemetry`` frame can never carry anything else. But the
+    ``telemetry_collect`` **request/response** round trip (an agent replying to
+    a server-initiated tool call) carries its result as an unvalidated
+    ``dict[str, Any]`` (``protocol.Response.result``) that is stored and later
+    read the same way as a pushed snapshot -- so a compromised/buggy agent can
+    make ``status`` anything JSON allows, including an unhashable list/dict.
+    :func:`worst` needs a hashable known literal; treat anything else as
+    ``warn`` (a malformed status is itself worth a look) rather than let it
+    propagate into a `TypeError` on read.
+    """
+
+    return value if value in ("ok", "warn", "crit") else "warn"
+
+
 def _parse_ts(value: Any) -> datetime | None:
     if not isinstance(value, str):
         return None
@@ -523,7 +541,7 @@ def _rule_logon_failures(payload: dict[str, Any], now: datetime) -> "tuple[Statu
     hours = payload.get("window_hours") or 24
     worst: dict[str, Any] | None = None
     for account in _dicts(payload.get("accounts")):
-        count = account.get("count") or 0
+        count = _number(account.get("count")) or 0
         if count >= LOGON_FAILURES_WARN and (worst is None or count > worst["count"]):
             worst = {"name": account.get("name", "?"), "count": count}
     if worst:
@@ -533,7 +551,7 @@ def _rule_logon_failures(payload: dict[str, Any], now: datetime) -> "tuple[Statu
         )
     # Attempts against names that are not accounts here: password spraying or a
     # scanner, never a household member mistyping their own name.
-    unmatched = payload.get("unmatched_count") or 0
+    unmatched = _number(payload.get("unmatched_count")) or 0
     if unmatched >= LOGON_FAILURES_WARN:
         return "warn", f"{unmatched} failed sign-ins for unknown usernames in {hours}h"
     return None
@@ -662,7 +680,7 @@ def evaluate_section(
     """
 
     now = now or datetime.now(timezone.utc)
-    reported = payload.get("status", "ok")
+    reported = _valid_status(payload.get("status", "ok"))
     summary = payload.get("summary", "")
     rule = RULES.get(name)
     if rule is None:
