@@ -1127,15 +1127,6 @@ class TicketStore:
         await self._conn.commit()
         return merged
 
-    async def delete_run(self, ticket_id: str) -> bool:
-        """Drop one ticket's run state. Returns True if a row was removed."""
-
-        cur = await self._conn.execute(
-            "DELETE FROM ticket_runs WHERE ticket_id = ?", (ticket_id,)
-        )
-        await self._conn.commit()
-        return (cur.rowcount or 0) > 0
-
     # -- events ------------------------------------------------------------
 
     async def _insert_event(

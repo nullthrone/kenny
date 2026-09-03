@@ -28,7 +28,12 @@ export const KENNY_REPLY = [
   '2. Eine Unterdrückungsregel vorschlagen',
 ].join('\n')
 
-/** Every mark `KENNY_REPLY` must produce, as literal source, for "did it stay unparsed?" assertions. */
+/**
+ * Every mark `KENNY_REPLY` must produce, as literal source, for "did it stay
+ * unparsed?" assertions. Not currently imported by any test — flagging as
+ * potentially dead rather than removing, since the surfaces this was written
+ * for (ticket timeline, live stream, Ask kenny drawer) may still want it.
+ */
 export const KENNY_REPLY_MARKS = ['**', '- ', '1. ', '`']
 
 /**
