@@ -150,8 +150,12 @@ pub mod core {
     }
 
     /// Convert Chromium `last_visit_time` (microseconds since 1601-01-01 UTC) to RFC3339.
+    ///
+    /// `micros_since_1601` comes straight from a SQLite column in a browser history file
+    /// on disk, which is not a trusted input (a compromised profile could contain any
+    /// `i64`). Saturate instead of panicking on overflow for out-of-range values.
     pub fn chrome_epoch_to_rfc3339(micros_since_1601: i64) -> String {
-        unix_micros_to_rfc3339(micros_since_1601 - EPOCH_1601_TO_1970_US)
+        unix_micros_to_rfc3339(micros_since_1601.saturating_sub(EPOCH_1601_TO_1970_US))
     }
 
     /// Convert microseconds since the Unix epoch (Firefox `visit_date`) to RFC3339 UTC.
@@ -389,6 +393,14 @@ pub mod core {
             );
             // Unix epoch zero.
             assert_eq!(unix_micros_to_rfc3339(0), "1970-01-01T00:00:00Z");
+        }
+
+        /// `last_visit_time` comes from a browser history file on disk, not a trusted
+        /// input; an out-of-range value must saturate rather than panic on overflow.
+        #[test]
+        fn chrome_epoch_extreme_values_saturate_instead_of_panicking() {
+            let _ = chrome_epoch_to_rfc3339(i64::MIN);
+            let _ = chrome_epoch_to_rfc3339(i64::MAX);
         }
 
         #[test]
