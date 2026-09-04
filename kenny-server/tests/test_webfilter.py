@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -28,6 +29,7 @@ from kenny_server.webfilter import (
     make_window,
     matches,
     normalize_domain,
+    requested_domains,
     schedule_state,
 )
 
@@ -60,6 +62,37 @@ def test_matches_suffix_and_subdomains() -> None:
     assert matches("a.b.bad.example", "bad.example")
     assert not matches("notbad.example", "bad.example")
     assert not matches("bad.example.org", "bad.example")
+
+
+def test_requested_domains_finds_mentions_in_free_text() -> None:
+    domains = requested_domains(
+        "please unblock discord.com", "also need roblox.com for a school project"
+    )
+    assert domains == ["discord.com", "roblox.com"]
+
+
+def test_requested_domains_ignores_non_string_input() -> None:
+    assert requested_domains(None, 123, ["not", "a", "string"]) == []
+
+
+def test_requested_domains_bounds_pathological_text(monkeypatch) -> None:
+    """Regression for a ReDoS in ``_TEXT_DOMAIN_RE`` (CWE-1333).
+
+    A title/summary built from many short "label." repeats with no valid TLD
+    tail (e.g. ``"a." * n``) makes the regex's backtracking cost grow
+    quadratically with input length -- ticket title/summary is untrusted,
+    attacker-sized text (see the module docstring on ``requested_domains``),
+    so an unbounded string here could hang the single-threaded event loop for
+    the whole server. ``requested_domains`` must stay fast regardless of how
+    long the input is.
+    """
+
+    pathological = "a." * 200_000 + "!"
+    start = time.perf_counter()
+    result = requested_domains(pathological)
+    elapsed = time.perf_counter() - start
+    assert elapsed < 1.0, f"requested_domains took {elapsed:.2f}s on pathological input"
+    assert result == []
 
 
 def test_classify_categories_and_allow_precedence() -> None:
