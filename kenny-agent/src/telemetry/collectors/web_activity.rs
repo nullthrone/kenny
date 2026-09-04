@@ -150,8 +150,17 @@ pub mod core {
     }
 
     /// Convert Chromium `last_visit_time` (microseconds since 1601-01-01 UTC) to RFC3339.
+    ///
+    /// `last_visit_time` comes straight out of a browser's `History` SQLite file, which is
+    /// untrusted (corrupted or adversarially crafted) input: it can be any `i64`, including
+    /// values so far from a real timestamp that subtracting the epoch offset would overflow.
+    /// A `checked_sub` failure falls back to the Unix epoch, matching
+    /// [`unix_micros_to_rfc3339`]'s own out-of-range fallback below.
     pub fn chrome_epoch_to_rfc3339(micros_since_1601: i64) -> String {
-        unix_micros_to_rfc3339(micros_since_1601 - EPOCH_1601_TO_1970_US)
+        match micros_since_1601.checked_sub(EPOCH_1601_TO_1970_US) {
+            Some(micros_since_1970) => unix_micros_to_rfc3339(micros_since_1970),
+            None => unix_micros_to_rfc3339(0),
+        }
     }
 
     /// Convert microseconds since the Unix epoch (Firefox `visit_date`) to RFC3339 UTC.
@@ -548,11 +557,156 @@ pub mod core {
             assert_eq!(obs[0].sources, vec!["browser_history".to_string()]);
         }
 
+        /// Regression test: a corrupted/adversarial `History` file can carry any `i64` in
+        /// `last_visit_time`, not just plausible timestamps. A value far enough from the
+        /// epoch previously overflowed the `i64` subtraction in `chrome_epoch_to_rfc3339`
+        /// and panicked (`attempt to subtract with overflow`) instead of returning a
+        /// degraded-but-valid result. See `chrome_epoch_to_rfc3339`.
+        #[test]
+        fn read_chromium_history_survives_extreme_last_visit_time() {
+            let dir = std::env::temp_dir().join(format!(
+                "kenny-webact-overflow-repro-{}-{}",
+                std::process::id(),
+                line!()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            let db = dir.join("History");
+            {
+                let conn = rusqlite::Connection::open(&db).unwrap();
+                conn.execute_batch(
+                    "CREATE TABLE urls (id INTEGER PRIMARY KEY, url TEXT, \
+                     last_visit_time INTEGER, visit_count INTEGER);",
+                )
+                .unwrap();
+                for extreme in [i64::MIN, i64::MIN + 1, i64::MAX] {
+                    conn.execute(
+                        "INSERT INTO urls (url, last_visit_time, visit_count) VALUES (?1, ?2, ?3)",
+                        rusqlite::params![
+                            format!("https://evil-{extreme}.example.com/a"),
+                            extreme,
+                            1i64
+                        ],
+                    )
+                    .unwrap();
+                }
+            }
+            // since = i64::MIN so every row (including last_visit_time == i64::MIN) is
+            // in-window; must not panic, and every row must still parse to an Observation.
+            let obs = read_chromium_history(&db, i64::MIN).unwrap();
+            std::fs::remove_dir_all(&dir).ok();
+            assert_eq!(obs.len(), 2, "only last_visit_time > since survives");
+        }
+
+        #[test]
+        fn chrome_epoch_to_rfc3339_does_not_panic_on_extreme_input() {
+            // Falls back to the Unix epoch rather than overflowing.
+            assert_eq!(chrome_epoch_to_rfc3339(i64::MIN), "1970-01-01T00:00:00Z");
+            // A merely-large-but-in-range value still converts normally (no fallback).
+            assert_eq!(
+                chrome_epoch_to_rfc3339(EPOCH_1601_TO_1970_US),
+                "1970-01-01T00:00:00Z"
+            );
+        }
+
         #[test]
         fn read_missing_db_is_err_not_panic() {
             let missing = std::env::temp_dir().join("kenny-webact-does-not-exist.sqlite");
             assert!(read_chromium_history(&missing, 0).is_err());
             assert!(read_firefox_places(&missing, 0).is_err());
+        }
+
+        /// Randomized/corrupted/truncated raw bytes written straight to disk as a would-be
+        /// `History`/`places.sqlite` file (not a well-formed DB at all — the untrusted case
+        /// of a hand-corrupted or adversarial browser history file) must only ever surface
+        /// as an `Err`, never panic, when read through the real readers.
+        #[test]
+        fn readers_never_panic_on_random_corrupted_files() {
+            struct Rng(u64);
+            impl Rng {
+                fn next(&mut self) -> u64 {
+                    self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
+                    let mut z = self.0;
+                    z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+                    z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+                    z ^ (z >> 31)
+                }
+            }
+            let mut rng = Rng(0x5CA1AB1E_5CA1AB1E);
+            let dir = std::env::temp_dir().join(format!(
+                "kenny-webact-corrupt-fuzz-{}-{}",
+                std::process::id(),
+                line!()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+
+            // A real (empty-schema) DB, whose bytes are then randomly truncated/mutated —
+            // this is far more likely to reach interesting SQLite parsing states than pure
+            // random bytes, which mostly bail out at the "not a database" header check.
+            let seed_db = dir.join("seed.sqlite");
+            {
+                let conn = rusqlite::Connection::open(&seed_db).unwrap();
+                conn.execute_batch(
+                    "CREATE TABLE urls (id INTEGER PRIMARY KEY, url TEXT, \
+                     last_visit_time INTEGER, visit_count INTEGER); \
+                     INSERT INTO urls (url, last_visit_time, visit_count) \
+                     VALUES ('https://example.com/', 13300000000000000, 1); \
+                     CREATE TABLE moz_places (id INTEGER PRIMARY KEY, url TEXT); \
+                     CREATE TABLE moz_historyvisits (id INTEGER PRIMARY KEY, \
+                     place_id INTEGER, visit_date INTEGER); \
+                     INSERT INTO moz_places (id, url) VALUES (1, 'https://example.org/'); \
+                     INSERT INTO moz_historyvisits (place_id, visit_date) VALUES (1, 1700000000000000);",
+                )
+                .unwrap();
+            }
+            let seed_bytes = std::fs::read(&seed_db).unwrap();
+
+            for iter in 0..1500u32 {
+                let mut bytes = seed_bytes.clone();
+                let choice = rng.next() % 4;
+                match choice {
+                    0 => {
+                        // Truncate to a random length.
+                        let cut = (rng.next() as usize) % (bytes.len() + 1);
+                        bytes.truncate(cut);
+                    }
+                    1 => {
+                        // Fully random bytes, random length.
+                        let len = (rng.next() % 4096) as usize;
+                        bytes = (0..len).map(|_| rng.next() as u8).collect();
+                    }
+                    2 => {
+                        // Flip a handful of random bytes in the real DB (bit rot / adversarial
+                        // tampering of an otherwise well-formed file).
+                        let flips = 1 + (rng.next() % 20) as usize;
+                        for _ in 0..flips {
+                            if bytes.is_empty() {
+                                break;
+                            }
+                            let idx = (rng.next() as usize) % bytes.len();
+                            bytes[idx] = rng.next() as u8;
+                        }
+                    }
+                    _ => {
+                        // Empty file.
+                        bytes.clear();
+                    }
+                }
+                let path = dir.join(format!("corrupt-{iter}.sqlite"));
+                std::fs::write(&path, &bytes).unwrap();
+
+                let since = (rng.next() as i64).wrapping_sub(i64::MAX / 2);
+                let r1 = std::panic::catch_unwind(|| read_chromium_history(&path, since));
+                let r2 = std::panic::catch_unwind(|| read_firefox_places(&path, since));
+                let _ = std::fs::remove_file(&path);
+
+                if r1.is_err() {
+                    panic!("iter {iter}: read_chromium_history panicked");
+                }
+                if r2.is_err() {
+                    panic!("iter {iter}: read_firefox_places panicked");
+                }
+            }
+            std::fs::remove_dir_all(&dir).ok();
         }
     }
 }

@@ -390,4 +390,54 @@ mod tests {
         assert!(parse_server_pubkey("not base64!!!").is_err());
         assert!(parse_server_pubkey(&STANDARD.encode([0u8; 10])).is_err());
     }
+
+    /// Randomized/malformed/truncated base64 and signature bytes through the handshake's
+    /// parse+verify entry points (attacker-controlled: a `challenge` frame's `server_nonce`/
+    /// `server_sig` come straight off the wire) must only ever return `Err`, never panic.
+    #[test]
+    fn handshake_parsing_never_panics_on_random_input() {
+        struct Rng(u64);
+        impl Rng {
+            fn next(&mut self) -> u64 {
+                self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
+                let mut z = self.0;
+                z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+                z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+                z ^ (z >> 31)
+            }
+        }
+        let mut rng = Rng(0xFEED_FACE_CAFE_BABE);
+        let dummy_key = AgentKey::from_seed([1u8; 32]).verifying_key();
+        for iter in 0..3000u32 {
+            let len = (rng.next() % 200) as usize;
+            let raw: Vec<u8> = (0..len).map(|_| (rng.next() % 256) as u8).collect();
+            // Exercise both raw-garbage strings and validly-base64-encoded random bytes.
+            let s = if rng.next().is_multiple_of(2) {
+                String::from_utf8_lossy(&raw).into_owned()
+            } else {
+                STANDARD.encode(&raw)
+            };
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _ = parse_server_pubkey(&s);
+                let _ = verify_server_sig(&dummy_key, b"transcript", &s);
+            }));
+            if result.is_err() {
+                panic!("iter {iter}: panic on input {s:?}");
+            }
+        }
+        // Also fuzz build_transcript with random (possibly non-UTF8-looking-but-valid)
+        // agent_id strings and nonce byte lengths, including empty and huge.
+        for iter in 0..500u32 {
+            let id_len = (rng.next() % 100) as usize;
+            let agent_id: String = (0..id_len)
+                .map(|_| char::from_u32((rng.next() % 0x110000) as u32).unwrap_or('?'))
+                .collect();
+            let n1: Vec<u8> = (0..(rng.next() % 64)).map(|_| rng.next() as u8).collect();
+            let n2: Vec<u8> = (0..(rng.next() % 64)).map(|_| rng.next() as u8).collect();
+            let result = std::panic::catch_unwind(|| build_transcript(&agent_id, &n1, &n2));
+            if result.is_err() {
+                panic!("iter {iter}: panic on agent_id {agent_id:?}");
+            }
+        }
+    }
 }
