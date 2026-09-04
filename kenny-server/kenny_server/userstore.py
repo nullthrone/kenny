@@ -381,10 +381,6 @@ class UserStore:
         )
         await self._conn.commit()
 
-    async def get_theme(self, user_id: int) -> str | None:
-        row = await self._get_row(user_id)
-        return row["theme"] if row else None
-
     async def get_capability_profile(self, user_id: int) -> str | None:
         row = await self._get_row(user_id)
         return row["capability_profile"] if row else None
@@ -585,6 +581,7 @@ class UserStore:
         )
         await self._conn.commit()
 
+    # TODO(dead-code-audit): appears unreferenced as of 2026-09 — no scheduled caller wires this in; verify before removing (security-adjacent: session store)
     async def prune_sessions(self) -> int:
         """Delete expired sessions; return how many were removed."""
 

@@ -24,7 +24,7 @@ import secrets
 import uuid
 from typing import Any, Awaitable, Callable
 
-from starlette.websockets import WebSocket, WebSocketDisconnect, WebSocketState
+from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from datetime import datetime, timezone
 
@@ -547,7 +547,3 @@ class AgentTunnel:
         for future in list(self._pending.values()):
             if not future.done():
                 future.set_exception(ToolError("internal", "agent disconnected"))
-
-    @staticmethod
-    def _is_open(websocket: WebSocket) -> bool:
-        return websocket.client_state == WebSocketState.CONNECTED

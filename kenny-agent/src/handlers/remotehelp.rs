@@ -141,6 +141,9 @@ $net = Test-NetConnection -ComputerName 'login.live.com' -Port 443 -InformationL
 
 #[cfg(test)]
 mod tests {
+    // Every test below is `#[cfg(not(windows))]`; gate the glob import the same way so
+    // it isn't reported unused when this module compiles (empty) on Windows.
+    #[cfg(not(windows))]
     use super::*;
 
     #[cfg(not(windows))]

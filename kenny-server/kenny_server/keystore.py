@@ -257,6 +257,7 @@ class KeyStore:
             return True
         return datetime.now(timezone.utc) >= datetime.fromisoformat(expires_at)
 
+    # TODO(dead-code-audit): appears unreferenced as of 2026-09 — verify before removing (security-adjacent: agent key store)
     async def is_enrolled(self, agent_id: str) -> bool:
         async with self._conn.execute(
             "SELECT 1 FROM agent_keys WHERE agent_id = ?", (agent_id,)
