@@ -670,6 +670,17 @@ _TEXT_DOMAIN_RE = re.compile(
     re.IGNORECASE,
 )
 
+# A string built from many short "label." repeats that never resolves to a
+# valid TLD tail (so the match ultimately fails) makes _TEXT_DOMAIN_RE's
+# backtracking cost grow quadratically with input length (CWE-1333): the
+# outer `+` must retry every rep count, and nothing bounds how large `title`/
+# `summary` can be (ticket text is untrusted, see the docstring below). Cap
+# what actually reaches the regex rather than trying to make the pattern
+# itself immune to every pathological shape — same defensive idiom as this
+# module's other input ceilings (`_MAX_BODY_BYTES`, `_MAX_EXTERNAL_DOMAINS`).
+# Generous for a genuine mention of a domain in typed text.
+_MAX_SCAN_CHARS = 1_000
+
 
 def requested_domains(*texts: Any, limit: int = 10) -> list[str]:
     """Normalized domains mentioned in a bypass request's text.
@@ -677,7 +688,8 @@ def requested_domains(*texts: Any, limit: int = 10) -> list[str]:
     A convenience for showing the operator *what* is being asked for next to the
     ticket; it never decides anything. Ticket text is untrusted agent-adjacent
     input (ADR-0023), so candidates go through :func:`normalize_domain` like any
-    other domain and the result is bounded.
+    other domain and the result is bounded. Each text is also truncated to
+    :data:`_MAX_SCAN_CHARS` before scanning (see its docstring).
     """
 
     out: list[str] = []
@@ -685,7 +697,7 @@ def requested_domains(*texts: Any, limit: int = 10) -> list[str]:
     for text in texts:
         if not isinstance(text, str):
             continue
-        for match in _TEXT_DOMAIN_RE.finditer(text):
+        for match in _TEXT_DOMAIN_RE.finditer(text[:_MAX_SCAN_CHARS]):
             nd = normalize_domain(match.group(1))
             if nd is None or nd in seen:
                 continue
