@@ -2,44 +2,51 @@
 //!
 //! `request.args` arrives off the wire as an untyped `serde_json::Value` (see
 //! `protocol::Request`) — a malicious or buggy server can put anything there. This
-//! feeds `dispatch::handle` adversarial `(tool, args)` pairs for every known tool
-//! (plus a few unknown ones) and asserts the call never panics, only ever returning
-//! an `ok`/`err` response.
+//! feeds `dispatch::handle` adversarial `(tool, args)` pairs and asserts the call
+//! never panics, only ever returning an `ok`/`err` response.
 //!
 //! Mutating tools (see `control::is_mutating`) are exercised with remote control at
 //! its default OFF state, so the fuzzer-generated args never reach a handler that
 //! would actually run a shell command, touch an account, or change network config —
-//! they only exercise the `Disabled` short-circuit in `dispatch::run`. Every
-//! non-mutating (read-only) tool is fuzzed for real.
+//! they only exercise the `Disabled` short-circuit in `dispatch::run`.
+//!
+//! Tools are split by whether their handler actually reads `args`:
+//! - [`RANDOM_LOOP_TOOLS`] either deserialize `args` into something handler-specific
+//!   (`fs_*`, `telemetry_collect`) or are mutating and gated off before a handler
+//!   ever sees `args` — cheap either way, so these run thousands of times with fresh
+//!   random args each iteration.
+//! - [`SMOKE_ONCE_TOOLS`] are non-mutating handlers whose top-level signature is
+//!   `_args: Value` (Windows-only diagnostics/network/remotehelp/webfilter status
+//!   reads, `winget_list`): they ignore `args` completely, so randomizing it
+//!   thousands of times adds no coverage, while several of them do a real OS/WMI/
+//!   subprocess call on Windows (e.g. `winget_list` shells out to `winget`) that is
+//!   too slow to repeat thousands of times in CI. Each is called exactly once, which
+//!   is all the args-blind routing path needs. `screen_capture` is deliberately not
+//!   dispatched for real here at all (not even once) — like the existing
+//!   `dispatch::tests::screen_capture_paused_while_protected_game_runs`, which only
+//!   exercises it behind the coexist gate, its real Windows capture path depends on
+//!   an interactive session/IPC pipe that a CI runner may not have, so it belongs in
+//!   the dedicated integration job, not a unit-test fuzz loop.
 
 use serde_json::{json, Map, Value};
 
 use crate::dispatch::handle;
 use crate::protocol::Request;
 
-const TOOLS: &[&str] = &[
+const RANDOM_LOOP_TOOLS: &[&str] = &[
     "powershell_exec",
     "shell_exec",
     "fs_list",
     "fs_search",
     "fs_read",
     "fs_disk_usage",
-    "winget_list",
     "winget_install",
     "winget_uninstall",
     "winget_update",
-    "diag_processes",
-    "diag_services",
-    "diag_eventlog",
-    "diag_autostart",
-    "net_config",
     "net_dns_flush",
     "net_adapter_reset",
-    "screen_capture",
-    "remotehelp_status",
     "remotehelp_start",
     "remotehelp_stop",
-    "webfilter_status",
     "webfilter_apply",
     "webfilter_clear",
     "account_set_enabled",
@@ -54,6 +61,17 @@ const TOOLS: &[&str] = &[
     "",
     "not_a_real_tool",
     "🔥unicode_tool🔥",
+];
+
+const SMOKE_ONCE_TOOLS: &[&str] = &[
+    "diag_processes",
+    "diag_services",
+    "diag_eventlog",
+    "diag_autostart",
+    "net_config",
+    "remotehelp_status",
+    "webfilter_status",
+    "winget_list",
 ];
 
 /// Tiny dependency-free xorshift64* PRNG. Fixed seed so a failure is reproducible.
@@ -170,8 +188,6 @@ fn random_args(rng: &mut Rng, tool: &str) -> Value {
         "powershell_exec" => &["script"],
         "shell_exec" => &["command"],
         "winget_install" | "winget_uninstall" | "winget_update" => &["id", "package_id"],
-        "diag_eventlog" => &["log", "hours", "limit"],
-        "diag_processes" | "diag_services" | "diag_autostart" => &["filter"],
         "net_adapter_reset" => &["name"],
         "webfilter_apply" => &["domains", "doh_policy", "list_hash"],
         "account_set_enabled" | "account_set_admin" | "account_delete" => {
@@ -196,6 +212,20 @@ fn random_args(rng: &mut Rng, tool: &str) -> Value {
     Value::Object(map)
 }
 
+async fn dispatch_once(tool: &str, args: Value) -> Result<(), (String, Value)> {
+    let req = Request {
+        id: "fuzz".to_string(),
+        tool: tool.to_string(),
+        args: args.clone(),
+    };
+    let task = tokio::spawn(async move { handle(req).await });
+    match task.await {
+        Ok(_resp) => Ok(()),
+        Err(e) if e.is_panic() => Err((tool.to_string(), args)),
+        Err(_) => Ok(()), // cancelled; not a panic
+    }
+}
+
 #[allow(clippy::await_holding_lock)] // single-threaded test runtime; lock guards env
 #[tokio::test]
 async fn fuzz_dispatch_never_panics() {
@@ -209,18 +239,18 @@ async fn fuzz_dispatch_never_panics() {
     const ITERATIONS: usize = 8_000;
 
     for _ in 0..ITERATIONS {
-        let tool = TOOLS[rng.range(TOOLS.len())].to_string();
-        let args = random_args(&mut rng, &tool);
-        let req = Request {
-            id: "fuzz".to_string(),
-            tool: tool.clone(),
-            args: args.clone(),
-        };
-        let task = tokio::spawn(async move { handle(req).await });
-        match task.await {
-            Ok(_resp) => {}
-            Err(e) if e.is_panic() => panics.push((tool, args)),
-            Err(_) => {} // cancelled; not a panic
+        let tool = RANDOM_LOOP_TOOLS[rng.range(RANDOM_LOOP_TOOLS.len())];
+        let args = random_args(&mut rng, tool);
+        if let Err(p) = dispatch_once(tool, args).await {
+            panics.push(p);
+        }
+    }
+
+    // Args-blind handlers (see module docs): args are never read, so one call each
+    // is all the routing path needs — no point repeating it thousands of times.
+    for tool in SMOKE_ONCE_TOOLS {
+        if let Err(p) = dispatch_once(tool, random_args(&mut rng, tool)).await {
+            panics.push(p);
         }
     }
 
