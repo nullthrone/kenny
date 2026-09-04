@@ -24,6 +24,7 @@ import secrets
 import uuid
 from typing import Any, Awaitable, Callable
 
+from pydantic import ValidationError
 from starlette.websockets import WebSocket, WebSocketDisconnect, WebSocketState
 
 from datetime import datetime, timezone
@@ -265,7 +266,18 @@ class AgentTunnel:
 
     async def _handshake(self, websocket: WebSocket) -> str | None:
         raw = await websocket.receive_text()
-        frame = parse_frame(raw)
+        try:
+            frame = parse_frame(raw)
+        except ValidationError:
+            # Malformed/adversarial first frame (bad JSON, unknown discriminator,
+            # missing/extra fields): never let a wire-format bug from an
+            # unauthenticated peer surface as an unhandled traceback. Same
+            # rejection as an unexpected non-register frame, below.
+            logger.warning(
+                "agent handshake rejected: first frame failed to parse; closing 4400"
+            )
+            await websocket.close(code=4400)  # expected register
+            return None
         if not isinstance(frame, Register):
             logger.warning(
                 "agent handshake rejected: first frame was %s, expected register; "
@@ -412,7 +424,19 @@ class AgentTunnel:
                     _MAX_FRAME_BYTES,
                 )
                 continue
-            frame = parse_frame(raw)
+            try:
+                frame = parse_frame(raw)
+            except ValidationError:
+                # Malformed/adversarial frame from an already-authenticated agent
+                # (bad JSON, unknown discriminator, missing/extra fields): drop +
+                # log, exactly like an oversized frame above, rather than let a
+                # wire-format bug tear down the whole connection with an unhandled
+                # traceback (an agent that has authenticated is still untrusted
+                # input past this point).
+                logger.warning(
+                    "dropping unparsable frame from %s (%d bytes)", agent_id, len(raw)
+                )
+                continue
 
             # The host may have been removed from inventory mid-connection
             # (DELETE /api/agent/{id} → inventory.purge_agent → registry.remove).
