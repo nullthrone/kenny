@@ -1,5 +1,5 @@
 site_name: kenny
-site_description: Self-hosted remote administration and fleet monitoring for Windows PCs, driven by Claude.
+site_description: Self-hosted remote administration and fleet monitoring for Windows and Linux, driven by Claude.
 site_url: https://nullthrone.github.io/kenny/
 repo_url: https://github.com/nullthrone/kenny
 repo_name: nullthrone/kenny

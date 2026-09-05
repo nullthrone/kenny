@@ -1,6 +1,6 @@
 # kenny — User Guide
 
-This guide is for the **operator**: the person who watches the family's Windows PCs and runs
+This guide is for the **operator**: the person who watches the machines in the fleet and runs
 commands on them through kenny. For installing and hosting the server, see
 [`setup.md`](setup.md).
 
@@ -35,7 +35,7 @@ flowchart LR
     Store[("Telemetry store<br/>SQLite")]
   end
   Claude["Claude<br/>(local client, optional)"]
-  Agent["kenny-agent<br/>(Windows PC)"]
+  Agent["kenny-agent<br/>(Windows / Linux host)"]
 
   Operator -->|"https + login"| UI
   Operator -->|"chat"| UI
@@ -273,7 +273,7 @@ sequenceDiagram
 
 - Treat `powershell_exec`/`shell_exec` and the `winget`/`net` write tools as real admin power —
   confirm deliberately. Screenshots and `fs_read` can expose private content; use them sparingly.
-- Telemetry summaries come from the agent; the dashboard is for **your** family's machines only.
+- Telemetry summaries come from the agent; the dashboard is for **your own** machines only.
 - If a PC shows `crit`, open it and read the section reason before acting.
 - Rotate a PC's token (re-download the installer) if you suspect a leaked token.
 

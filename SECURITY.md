@@ -1,7 +1,8 @@
 # Security Policy
 
-kenny is a **remote-administration tool**: a server that can run PowerShell, install
-packages, and read files on enrolled Windows PCs. Please treat vulnerabilities accordingly.
+kenny is a **remote-administration tool**: a server that can run PowerShell or a shell, install
+packages, and read files on enrolled Windows and Linux hosts. Please treat vulnerabilities
+accordingly.
 
 ## Reporting a vulnerability
 

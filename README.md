@@ -4,7 +4,7 @@
 
 # 🐕 kenny
 
-**Self-hosted remote administration _and fleet monitoring_ for Windows PCs, driven by Claude (MCP) and a web dashboard.**
+**Self-hosted remote administration _and fleet monitoring_ for Windows and Linux, driven by Claude (MCP) and a web dashboard.**
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-E8A33D.svg)](LICENSE)
 [![CI](https://github.com/nullthrone/kenny/actions/workflows/ci.yml/badge.svg)](https://github.com/nullthrone/kenny/actions/workflows/ci.yml)
@@ -13,9 +13,12 @@
 
 </div>
 
-kenny started as a way to look after the family's Windows PCs — keep an eye on disk space and
-Defender, fix things over the phone without "can you read me what it says" — operated through
-Claude instead of a clunky console. It works for any small fleet you administer with consent.
+kenny administers a small fleet of Windows and Linux machines from one place: pushed telemetry
+with server-side health rules and alerting, capability tools that act on a host, account
+governance, a web filter and screen time, and a ticket queue the people who use those machines
+can open themselves. Operate it through Claude over MCP, through the built-in chat, or by hand
+in the console. It is for the machines **you** administer, with the consent of the people who
+use them — family PCs, a home lab, a small office.
 
 ```mermaid
 flowchart LR
@@ -27,7 +30,7 @@ flowchart LR
     Tunnel["Agent tunnel /agent/ws"]
     Store[("Telemetry store<br/>SQLite")]
   end
-  Agent["kenny-agent (Windows PC)<br/>PowerShell · Win32 · winget<br/>filesystem · screenshot · collectors"]
+  Agent["kenny-agent (Windows / Linux host)<br/>PowerShell / shell · winget · systemd<br/>filesystem · screenshot · collectors"]
 
   Operator -->|https dashboard + chat| UI
   Operator --> Claude -->|MCP, OAuth| MCP
@@ -40,9 +43,9 @@ flowchart LR
 
 - **kenny-server** (Python / FastMCP): stable MCP endpoint for Claude, the agent tunnel,
   the telemetry store (SQLite), and the operator dashboard. One ASGI app, one port.
-- **kenny-agent** (Rust, single binary): runs on each Windows PC, dials **out** to the
-  server (NAT/firewall friendly), executes tool calls in the user's session, and pushes
-  periodic health snapshots.
+- **kenny-agent** (Rust, single binary): runs on each managed host — Windows or Linux —
+  dials **out** to the server (NAT/firewall friendly), executes tool calls in the user's
+  session, and pushes periodic health snapshots.
 
 ## ✨ Features
 
@@ -92,7 +95,10 @@ _The Today dashboard — see the **[dashboard reference](docs/dashboard.md)** fo
   `webfilter_get` · `webfilter_set` · `webfilter_push` · `web_activity_query`)
 - **Server-only orchestration**: `list_agents` · `select_agent` · `fleet_overview` ·
   `agent_health` · `agent_snapshot`
-- Windows-only tools have **portable Linux fallbacks**, so the agent builds and runs in CI/dev.
+- **Linux hosts are a first-class target** (ADR-0031/0034): static musl binary (x86_64 and
+  aarch64), a one-line install script, a systemd service, and server-triggered self-update.
+  Windows-only tools (`winget_*`, Defender, BitLocker) answer `unsupported` there, and the
+  server refuses a wrong-OS call before it reaches the wire.
 
 ### Family self-service via Discord (simplified ITSM)
 - An optional **Discord bot** (its own application — no shared/hosted bot exists): a family
