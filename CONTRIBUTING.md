@@ -12,7 +12,7 @@ For **security issues, do not open a public issue** — see [SECURITY.md](SECURI
   truth). Frame and tool schemas live here, nowhere else.
 - `kenny-server/` — Python / FastMCP server (MCP endpoint, agent tunnel, telemetry store, web
   dashboard).
-- `kenny-agent/` — Rust single-binary agent for the Windows PC.
+- `kenny-agent/` — Rust single-binary agent for each managed host (Windows, Linux).
 - `docs/adr/` — architecture decisions (MADR).
 
 ## Build & test

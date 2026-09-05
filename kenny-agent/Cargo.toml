@@ -2,7 +2,7 @@
 name = "kenny-agent"
 version = "0.1.0"
 edition = "2021"
-description = "kenny agent: outbound-tunnel remote-admin and telemetry agent for Windows PCs"
+description = "kenny agent: outbound-tunnel remote-admin and telemetry agent for Windows and Linux hosts"
 license = "AGPL-3.0-only"
 authors = ["t11z and the kenny contributors"]
 repository = "https://github.com/nullthrone/kenny"

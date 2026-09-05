@@ -5,7 +5,7 @@ description = "kenny server: MCP endpoint for Claude, agent tunnel, telemetry st
 requires-python = ">=3.11"
 license = "AGPL-3.0-only"
 authors = [{ name = "t11z and the kenny contributors" }]
-keywords = ["remote-admin", "telemetry", "windows", "mcp", "fastmcp", "fleet-monitoring"]
+keywords = ["remote-admin", "telemetry", "windows", "linux", "mcp", "fastmcp", "fleet-monitoring"]
 classifiers = [
     "Programming Language :: Python :: 3.11",
     "Framework :: AsyncIO",
