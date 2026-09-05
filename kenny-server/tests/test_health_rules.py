@@ -330,6 +330,29 @@ def test_reliability_defers_when_no_fields() -> None:
     assert "reason" not in result
 
 
+@pytest.mark.parametrize("bad", [float("inf"), float("-inf"), float("nan")])
+def test_reliability_non_finite_recent_crashes_does_not_crash(bad: float) -> None:
+    """`recent_crashes` is an unvalidated `telemetry_collect` response field (see
+    `_number`'s docstring) -- Python's json module happily decodes the `Infinity`/
+    `NaN` extension, and `int()` on one of those raises `OverflowError`/`ValueError`.
+    """
+
+    result = health_rules.evaluate_section(
+        "reliability", {"status": "ok", "summary": "", "recent_crashes": bad}, now=NOW
+    )
+    assert result["status"] in ("ok", "warn", "crit")
+
+
+@pytest.mark.parametrize("bad", [float("inf"), float("-inf"), float("nan")])
+def test_reliability_non_finite_event_count_does_not_crash(bad: float) -> None:
+    result = health_rules.evaluate_section(
+        "reliability",
+        {"status": "ok", "summary": "", "events": [{"source": "x", "count": bad}]},
+        now=NOW,
+    )
+    assert result["status"] in ("ok", "warn", "crit")
+
+
 def test_worst_of() -> None:
     assert health_rules.worst("ok", "warn", "crit") == "crit"
     assert health_rules.worst("ok", "warn") == "warn"
