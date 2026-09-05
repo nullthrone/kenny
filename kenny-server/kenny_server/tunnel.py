@@ -25,7 +25,7 @@ import uuid
 from typing import Any, Awaitable, Callable
 
 from pydantic import ValidationError
-from starlette.websockets import WebSocket, WebSocketDisconnect, WebSocketState
+from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from datetime import datetime, timezone
 
@@ -575,6 +575,3 @@ class AgentTunnel:
             if not future.done():
                 future.set_exception(ToolError("internal", "agent disconnected"))
 
-    @staticmethod
-    def _is_open(websocket: WebSocket) -> bool:
-        return websocket.client_state == WebSocketState.CONNECTED
