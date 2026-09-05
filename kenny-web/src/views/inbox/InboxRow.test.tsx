@@ -68,3 +68,40 @@ describe('InboxRow gate rendering', () => {
     expect(expected).toContain('\\"Backup\\"')
   })
 })
+
+/**
+ * Every row's title is the way into the thing the row is about, so it must
+ * either go somewhere or not look clickable. A `<Link to="">` does neither: it
+ * renders as a link and then navigates back to the inbox the reader is already
+ * on, which reads as a click that did nothing.
+ */
+describe('InboxRow title link', () => {
+  const base: InboxItem = {
+    id: 'section:oma-pc:defender',
+    kind: 'section',
+    waits_on: 'attention',
+    severity: 'crit',
+    title: 'real-time protection off',
+    meta: 'defender',
+    host: 'oma-pc',
+    age_seconds: 60,
+    gate: null,
+    target: '#/fleet/oma-pc?section=defender',
+  }
+
+  it('links a flagged section to that section, not to the bare host page', () => {
+    renderRow(base)
+
+    expect(screen.getByRole('link', { name: base.title })).toHaveAttribute(
+      'href',
+      expect.stringContaining('/fleet/oma-pc?section=defender'),
+    )
+  })
+
+  it('renders a row with no route as plain text rather than a dead link', () => {
+    renderRow({ ...base, target: '' })
+
+    expect(screen.queryByRole('link')).toBeNull()
+    expect(screen.getByText(base.title)).toBeInTheDocument()
+  })
+})

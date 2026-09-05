@@ -42,7 +42,7 @@ from ..registry import AgentRegistry
 from ..store import TelemetryStore
 from ..ticketstore import Ticket, TicketApproval, TicketStore
 from ..tickets import TicketService
-from . import _known_ids, _overview
+from . import _known_ids, _overview, section_target
 from .authz import guard, principal_of, visible_ids
 
 __all__ = ["build_inbox_routes"]
@@ -101,9 +101,7 @@ def _ticket_item(ticket: Ticket, *, now: datetime) -> dict[str, Any]:
     }
 
 
-def _approval_item(
-    approval: TicketApproval, ticket: Ticket | None, *, now: datetime
-) -> dict[str, Any]:
+def _approval_item(approval: TicketApproval, *, now: datetime) -> dict[str, Any]:
     return {
         "id": approval.id,
         "kind": "approval",
@@ -122,7 +120,12 @@ def _approval_item(
             "tool_class": approval.tool_class,
             "held_since": approval.requested_at,
         },
-        "target": f"#/inbox/ticket/{ticket.id}" if ticket is not None else "",
+        # The gate's own ticket, always -- `approval.ticket_id` is the row's
+        # foreign key and is the same uuid `id` #/inbox/ticket/{id} resolves.
+        # Deriving it from a separately fetched Ticket meant a row whose ticket
+        # failed to load rendered a link to "", which navigates nowhere; a
+        # ticket that really is gone should say so on the ticket page.
+        "target": f"#/inbox/ticket/{approval.ticket_id}",
     }
 
 
@@ -145,7 +148,9 @@ def _section_item(
         "host": agent_id,
         "age_seconds": _age_seconds(collected_at, now=now),
         "gate": None,
-        "target": f"#/fleet/{agent_id}",
+        # The flagged section itself, not the machine it sits on -- see
+        # `section_target`.
+        "target": section_target(agent_id, name),
     }
 
 
@@ -215,8 +220,7 @@ def build_inbox_routes(
             return []
         items: list[dict[str, Any]] = []
         for approval in await ticket_store.list_open_approvals():
-            ticket = await ticket_store.get(approval.ticket_id)
-            items.append(_approval_item(approval, ticket, now=now))
+            items.append(_approval_item(approval, now=now))
         return items
 
     async def api_inbox(request: Request) -> JSONResponse:

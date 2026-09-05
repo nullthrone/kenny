@@ -22,13 +22,23 @@ export default function InboxRow({ item, onDecided }: InboxRowProps) {
   // it (CRITICAL/WARNING) instead is truer to what the row is about.
   const badgeLabel = item.kind === 'section' && item.severity ? severityLabel(item.severity) : undefined
 
+  // Every row the server emits carries a route to the thing the row is about
+  // (a ticket, or the flagged section itself — never just the machine it sits
+  // on). A row without one is rendered as plain text rather than as a link to
+  // `''`, which reads as clickable and then navigates back to the inbox.
+  const route = toRoutePath(item.target)
+
   return (
     <div className={`${styles.row} kc-stagger-row`}>
       <SourceBadge kind={item.kind} label={badgeLabel} tone={item.severity ?? undefined} className={styles.badge} />
       <div className={`${styles.body} kc-cell`}>
-        <Link to={toRoutePath(item.target)} className={styles.title}>
-          {item.title}
-        </Link>
+        {route ? (
+          <Link to={route} className={styles.title}>
+            {item.title}
+          </Link>
+        ) : (
+          <span className={styles.title}>{item.title}</span>
+        )}
         <div className={styles.meta}>{item.meta}</div>
         {item.gate && (
           <div className={styles.gate}>

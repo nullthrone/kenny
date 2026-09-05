@@ -1,5 +1,4 @@
-import { useState } from 'react'
-import { Link, useParams } from 'react-router'
+import { Link, useParams, useSearchParams } from 'react-router'
 import type { HostSection } from '../api/types'
 import EmptyState from '../components/EmptyState/EmptyState'
 import Sparkline from '../components/Sparkline/Sparkline'
@@ -10,6 +9,7 @@ import { normalizeSections } from './host/types'
 import { osLabel, severityRank } from './host/format'
 import ActionRow from './host/ActionRow'
 import ForecastPanel from './host/ForecastPanel'
+import { SECTION_PARAM } from './host/sections'
 import SectionList from './host/SectionList'
 import SectionModal from './host/SectionModal'
 import ScreenshotCard from './host/ScreenshotCard'
@@ -19,7 +19,35 @@ export default function FleetHost() {
   const { host } = useParams<{ host: string }>()
   const agentId = host ?? ''
   const { data, isPending, isError, error } = useAgentDetail(agentId)
-  const [openSection, setOpenSection] = useState<HostSection | null>(null)
+  // Which section's detail is open lives in the URL, not in component state:
+  // `#/fleet/{host}?section={name}` is what a queue row in Inbox or Today
+  // links to (the server builds it in `section_target()`), so arriving on that
+  // link has to open the section — and closing it, or going back, has to be
+  // the same state as never having opened it.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const openSectionName = searchParams.get(SECTION_PARAM)
+
+  function openSection(section: HostSection) {
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev)
+        next.set(SECTION_PARAM, section.name)
+        return next
+      },
+      { replace: true },
+    )
+  }
+
+  function closeSection() {
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev)
+        next.delete(SECTION_PARAM)
+        return next
+      },
+      { replace: true },
+    )
+  }
 
   if (isPending) {
     return (
@@ -79,7 +107,7 @@ export default function FleetHost() {
 
       <ForecastPanel agentId={data.agent_id} />
 
-      <SectionList sections={sections} onOpenProblem={setOpenSection} />
+      <SectionList sections={sections} onOpenProblem={openSection} />
 
       <div className={`${styles.bottomRow} kc-2col`}>
         <div>
@@ -100,10 +128,10 @@ export default function FleetHost() {
 
       <SectionModal
         agentId={data.agent_id}
-        section={openSection}
+        section={sections.find((s) => s.name === openSectionName) ?? null}
         snapshot={data.snapshot}
         aiEnabled={data.ai_enabled}
-        onClose={() => setOpenSection(null)}
+        onClose={closeSection}
       />
     </div>
   )

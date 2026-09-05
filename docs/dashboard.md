@@ -108,10 +108,11 @@ read in a few seconds, not studied.
   described next.
 - **Ranked items** — at most **three**, ordered by consequence: a critical section beats a
   warning section, which beats a held approval, which beats a stale ticket. Each row shows
-  a severity tag, a title, a one-line detail, and an action link that jumps straight to the
-  host or the ticket behind it. "Ranked by consequence. Work top to bottom; the rest of the
-  fleet can wait" is the intent — everything else is one click away on [Fleet](#fleet) or
-  [Inbox](#inbox), never buried here.
+  a severity tag, a title, a one-line detail, and an action link that jumps straight to
+  what the row is about — the flagged section's own detail, or the ticket behind it.
+  "Ranked by consequence. Work top to bottom; the rest of the fleet can wait" is the
+  intent — everything else is one click away on [Fleet](#fleet) or [Inbox](#inbox), never
+  buried here.
 - **Health donut** — the fleet's status mix as three numbers: healthy, warning, critical.
 - **Fleet health · 30 days** — a trend line of the same mix over the last month, with a
   **full fleet →** link into [Fleet](#fleet).
@@ -216,7 +217,9 @@ shows a concise deterministic summary of the same signals. See
 ### Needs attention
 
 One card per **flagged** section: an icon, the rule that fired (e.g. `C: 96 % ⇒ crit`),
-and a one-line summary. Click a card to open that section's **detail modal**:
+and a one-line summary. Click a card to open that section's **detail modal** — which the
+URL carries (`#/fleet/{host}?section={name}`), so it can be linked to and shared, and is
+what an [Inbox](#inbox) or [Today](#today) row points at:
 
 - **Recommendation** — for a flagged section, when an Anthropic API key is configured, a
   short **Diagnosis / Action / Urgency** advisory. If the issue looks fixable with kenny's
@@ -305,8 +308,9 @@ The header's Inbox badge mirrors NEEDS YOU's count.
 
 A row shows a **kind** tag (`APPROVAL`, `CRITICAL`, `WARNING`, `TICKET`, or `ALERT`), a
 title, a one-line meta description, and an age. Clicking a ticket or approval row opens
-[ticket detail](#ticket-detail); clicking a flagged-section row opens that
-[host page](#the-host-page).
+[ticket detail](#ticket-detail); clicking a flagged-section row opens **that section's
+detail** on its [host page](#the-host-page) (`#/fleet/{host}?section={name}`) — the
+finding the row is about, not just the machine it sits on.
 
 ### Approval gates
 
@@ -781,8 +785,8 @@ and the "see the dashboard" links kenny has already posted into Discord all keep
   (OK = ● check, Warning = ◍ triangle, Critical = ■ octagon, Unknown = dashed ○), so the
   dashboard is legible without colour.
 - **Deep links** — every view is a URL hash you can bookmark or share: `#/today`,
-  `#/fleet`, `#/fleet/{host}`, `#/inbox`, `#/inbox/{group}`, `#/inbox/ticket/{id}`,
-  `#/log`, `#/admin/{section}`, `#/profile`. See
+  `#/fleet`, `#/fleet/{host}`, `#/fleet/{host}?section={name}`, `#/inbox`,
+  `#/inbox/{group}`, `#/inbox/ticket/{id}`, `#/log`, `#/admin/{section}`, `#/profile`. See
   [Old bookmarks & redirects](#old-bookmarks-redirects) above for what still works from
   before.
 - **Keyboard & motion** — Escape closes modals and the Ask kenny overlay; ⌘K/Ctrl+K opens

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 from functools import partial
+from urllib.parse import unquote
 
 from starlette.testclient import TestClient
 
@@ -315,3 +316,79 @@ def test_the_done_list_says_which_tickets_kenny_resolved_itself(tmp_path) -> Non
         by_title = {r["title"]: r["meta"] for r in rows}
         assert "resolved by kenny" in by_title["phantom disk"]
         assert "resolved by kenny" not in by_title["printer jam"]
+
+
+_TARGET_SECTION_RE = re.compile(r"^#/fleet/(?P<host>[^?]+)\?section=(?P<section>[^&]+)$")
+
+
+def _health_section_names(detail: dict) -> dict[str, dict]:
+    """`/api/agent/{id}`'s health sections, keyed by name.
+
+    Accepts both shapes the console's `normalizeSections` accepts (a dict keyed
+    by section name, or an array of sections carrying their own `name`), so
+    this test pins the *link*, not which of the two the handler happens to
+    return today.
+    """
+
+    sections = detail["health"]["sections"]
+    if isinstance(sections, list):
+        return {s["name"]: s for s in sections}
+    return dict(sections)
+
+
+def test_inbox_section_target_opens_the_section_not_the_machine(tmp_path) -> None:
+    """A flagged-section row links to the finding it is about, not to the host.
+
+    Joined seam between `section_target()` and the console's `FleetHost.tsx`:
+    the target is followed the way the console follows it -- the path names a
+    host `/api/agent/{id}` resolves, and `?section=` carries a raw section
+    name that host really reports as needing attention, which is the key
+    `FleetHost.tsx` matches against `HostSection.name` to open the detail. It
+    fails on a regression to a bare `#/fleet/{host}` (the reader lands on the
+    machine and has to find the section again) and on a param carrying a
+    humanised label ("Disk") instead of the stored name ("disk").
+    """
+
+    app = build_app(db_path=str(tmp_path / "inbox-section-target.sqlite"))
+    with TestClient(app) as c:
+        h = _bearer(app)
+        store = app.state.store
+        c.portal.call(partial(store.insert, "crit-pc", "2026-08-01T00:00:00+00:00", _CRIT_SNAPSHOT))
+
+        needs_you = c.get("/api/inbox?group=needs_you", headers=h).json()
+        row = next(i for i in needs_you["items"] if i["kind"] == "section")
+
+        match = _TARGET_SECTION_RE.match(row["target"])
+        assert match, row["target"]
+        host = unquote(match["host"])
+        section = unquote(match["section"])
+        assert host == row["host"] == "crit-pc"
+
+        detail = c.get(f"/api/agent/{host}", headers=h)
+        assert detail.status_code == 200
+        sections = _health_section_names(detail.json())
+        assert section in sections, sorted(sections)
+        assert sections[section]["status"] in ("warn", "crit")
+
+
+def test_today_and_inbox_agree_on_a_flagged_section_target(tmp_path) -> None:
+    """The two queues render the same finding, so they must link to the same
+    place: `/api/today`'s capped preview and `/api/inbox`'s full list both go
+    through `section_target()`. A divergence here means clicking one row opens
+    the section and clicking its twin opens the machine.
+    """
+
+    app = build_app(db_path=str(tmp_path / "inbox-today-section.sqlite"))
+    with TestClient(app) as c:
+        h = _bearer(app)
+        store = app.state.store
+        c.portal.call(partial(store.insert, "crit-pc", "2026-08-01T00:00:00+00:00", _CRIT_SNAPSHOT))
+
+        inbox_row = next(
+            i for i in c.get("/api/inbox?group=needs_you", headers=h).json()["items"]
+            if i["kind"] == "section"
+        )
+        today_item = next(
+            i for i in c.get("/api/today", headers=h).json()["items"] if i["severity"] == "crit"
+        )
+        assert today_item["target"] == inbox_row["target"]
