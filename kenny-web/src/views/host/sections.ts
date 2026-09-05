@@ -152,3 +152,15 @@ export function isReliabilitySection(name: string): boolean {
 export function isDiskSection(name: string): boolean {
   return name.toLowerCase() === 'disk'
 }
+
+/**
+ * Query param on the host route that names the section whose detail is open:
+ * `#/fleet/{host}?section={name}`.
+ *
+ * This is the console half of a seam with the server's `section_target()`
+ * (`kenny_server/webui/__init__.py`): a queue row in Inbox or Today links to
+ * the finding it is about, and the host page opens that finding rather than
+ * leaving the reader to spot it again among the machine's other sections. The
+ * value is a raw `HostSection.name` (`defender`, `disk`, …), matched exactly.
+ */
+export const SECTION_PARAM = 'section'

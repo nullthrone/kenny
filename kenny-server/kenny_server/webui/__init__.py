@@ -16,6 +16,7 @@ import signal
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from starlette.background import BackgroundTask
 from starlette.requests import Request
@@ -2352,6 +2353,23 @@ def _verdict_sentence(agent_count: int, bad: int) -> str:
     )
 
 
+def section_target(agent_id: str, section: str) -> str:
+    """Console route for one flagged section -- the section, not the machine.
+
+    A queue row (``/api/inbox``, ``/api/today``) is about one finding, so its
+    link opens that finding: ``#/fleet/{host}?section={name}`` is the host page
+    with that section's detail already open (the console reads the param in
+    ``FleetHost.tsx`` and resolves it against the section names in
+    ``/api/agent/{id}``'s health). Bare ``#/fleet/{host}`` drops the reader on
+    the machine and makes them find the section again.
+
+    Both halves are percent-encoded: the value has to survive being a query
+    string, and the section name here is the same key the console matches on.
+    """
+
+    return f"#/fleet/{quote(agent_id, safe='')}?section={quote(section, safe='')}"
+
+
 def _today_section_item(section: str, member: dict[str, Any], severity: str) -> dict[str, Any]:
     """One `/api/today` item for a flagged section on one host.
 
@@ -2366,7 +2384,7 @@ def _today_section_item(section: str, member: dict[str, Any], severity: str) -> 
         "title": section.replace("_", " ").title(),
         "detail": member["detail"],
         "action": _SECTION_ACTION.get(section, "REVIEW"),
-        "target": f"#/fleet/{member['agent_id']}",
+        "target": section_target(member["agent_id"], section),
     }
 
 
