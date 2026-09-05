@@ -28,9 +28,6 @@ export const KENNY_REPLY = [
   '2. Eine Unterdrückungsregel vorschlagen',
 ].join('\n')
 
-/** Every mark `KENNY_REPLY` must produce, as literal source, for "did it stay unparsed?" assertions. */
-export const KENNY_REPLY_MARKS = ['**', '- ', '1. ', '`']
-
 /**
  * Markdown that must NOT become live markup. The server stores and serves
  * kenny's text verbatim, so this is the barrier, not a nicety.

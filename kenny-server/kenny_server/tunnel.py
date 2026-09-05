@@ -25,7 +25,7 @@ import uuid
 from typing import Any, Awaitable, Callable
 
 from pydantic import ValidationError
-from starlette.websockets import WebSocket, WebSocketDisconnect, WebSocketState
+from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from datetime import datetime, timezone
 
@@ -269,14 +269,17 @@ class AgentTunnel:
         try:
             frame = parse_frame(raw)
         except ValidationError:
-            # Malformed/adversarial first frame (bad JSON, unknown discriminator,
-            # missing/extra fields): never let a wire-format bug from an
-            # unauthenticated peer surface as an unhandled traceback. Same
-            # rejection as an unexpected non-register frame, below.
+            # Malformed JSON or a frame that doesn't match any known shape
+            # (pydantic wraps JSON decode errors into ValidationError too, since
+            # this goes through validate_json). Nobody is authenticated yet, so
+            # this is reachable by anyone who can open a socket to /agent/ws —
+            # treat it the same as "first frame was not register": close 4400
+            # rather than let the exception propagate out of the handshake.
             logger.warning(
-                "agent handshake rejected: first frame failed to parse; closing 4400"
+                "agent handshake rejected: first frame was not valid JSON/a known "
+                "frame; closing 4400"
             )
-            await websocket.close(code=4400)  # expected register
+            await websocket.close(code=4400)
             return None
         if not isinstance(frame, Register):
             logger.warning(
@@ -427,14 +430,14 @@ class AgentTunnel:
             try:
                 frame = parse_frame(raw)
             except ValidationError:
-                # Malformed/adversarial frame from an already-authenticated agent
-                # (bad JSON, unknown discriminator, missing/extra fields): drop +
-                # log, exactly like an oversized frame above, rather than let a
-                # wire-format bug tear down the whole connection with an unhandled
-                # traceback (an agent that has authenticated is still untrusted
-                # input past this point).
+                # Malformed JSON or a frame that doesn't match any known shape
+                # (pydantic wraps JSON decode errors into ValidationError too,
+                # since this goes through validate_json). An already-authenticated
+                # agent can push arbitrary frames at will, so — like the size caps
+                # above — drop the one bad frame and keep the tunnel open rather
+                # than let the exception tear down the connection.
                 logger.warning(
-                    "dropping unparsable frame from %s (%d bytes)", agent_id, len(raw)
+                    "dropping unparseable frame from %s (%d bytes)", agent_id, len(raw)
                 )
                 continue
 
@@ -572,6 +575,3 @@ class AgentTunnel:
             if not future.done():
                 future.set_exception(ToolError("internal", "agent disconnected"))
 
-    @staticmethod
-    def _is_open(websocket: WebSocket) -> bool:
-        return websocket.client_state == WebSocketState.CONNECTED

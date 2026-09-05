@@ -1,14 +1,13 @@
-"""A malformed/adversarial frame must never crash the tunnel (fuzzing sweep).
+"""A malformed frame must be rejected/dropped, never crash the tunnel.
 
-``protocol.parse_frame`` raises ``pydantic.ValidationError`` for anything that
-doesn't match one of the seven frame shapes -- bad JSON, an unknown ``type``
-discriminator, missing required fields, or an extra field (every frame model is
-``extra="forbid"``). Before this fix, both call sites in ``tunnel.py`` let that
-exception escape unhandled: one malformed frame from an unauthenticated peer
-(the first frame of the handshake) or from an already-authenticated agent (any
-frame in the serve loop) took down that connection's handling coroutine with an
-uncaught traceback instead of the same graceful drop the module already applies
-to an oversized frame.
+``parse_frame`` raises ``pydantic.ValidationError`` for anything that isn't
+valid JSON or doesn't match one of the known frame shapes -- including for the
+first (pre-auth) frame on ``/agent/ws``, reachable by anyone who can open a
+socket, and for every later frame an already-authenticated agent can push at
+will. Neither path may let that exception propagate: the handshake closes
+4400 (same as "first frame was not register"); ``_serve`` logs and drops the
+one bad frame, keeping the tunnel open, the same way it already drops an
+oversized frame.
 """
 
 from __future__ import annotations
@@ -23,7 +22,7 @@ from kenny_server.tunnel import AgentTunnel
 
 
 class _FakeWebSocket:
-    """Yields queued frames, then records the close code / sent payloads."""
+    """Yields queued frames, then records the close code."""
 
     def __init__(self, frames: list[str]) -> None:
         self._frames = list(frames)
@@ -42,22 +41,34 @@ class _FakeWebSocket:
         self.sent.append(payload)
 
 
-@pytest.mark.asyncio
-async def test_handshake_rejects_malformed_first_frame(tmp_path) -> None:
-    """A first frame that fails to parse closes 4400, instead of raising."""
-
+async def _make_tunnel(tmp_path):
     store = TelemetryStore(str(tmp_path / "t.sqlite"))
     events = EventStore(str(tmp_path / "t.sqlite"))
     await store.connect()
     await events.connect()
-    registry = AgentRegistry(tokens={})
+    registry = AgentRegistry(tokens={"pc1": "tok"})
     tunnel = AgentTunnel(registry, store, events)
+    return tunnel, registry, store, events
 
-    ws = _FakeWebSocket(["{not even json"])
 
-    result = await tunnel._handshake(ws)
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "not json",
+        "{",
+        "null",
+        '{"type": "unknown_type"}',
+        '{"type": "register"}',  # valid JSON, but missing required fields
+    ],
+)
+async def test_handshake_rejects_malformed_first_frame(tmp_path, raw: str) -> None:
+    tunnel, registry, store, events = await _make_tunnel(tmp_path)
+    ws = _FakeWebSocket([raw])
 
-    assert result is None
+    agent_id = await tunnel._handshake(ws)
+
+    assert agent_id is None
     assert ws.closed_code == 4400
 
     await store.close()
@@ -65,33 +76,42 @@ async def test_handshake_rejects_malformed_first_frame(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_serve_drops_malformed_frame_and_keeps_connection(tmp_path) -> None:
-    """A malformed frame mid-session is dropped + logged, not raised.
-
-    The next, well-formed frame (a ``ping``) is still processed on the same
-    connection -- proof the malformed frame did not tear down the tunnel.
-    """
-
-    store = TelemetryStore(str(tmp_path / "t.sqlite"))
-    events = EventStore(str(tmp_path / "t.sqlite"))
-    await store.connect()
-    await events.connect()
-    registry = AgentRegistry(tokens={"pc1": "tok"})
-    registry.register(
-        "pc1", "tok", {"hostname": "h", "os": "windows", "version": "1"}, lambda payload: None
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "not json",
+        "{",
+        '{"type": "telemetry"}',  # missing required fields
+        '{"type": "telemetry", "agent_id": "pc1", "collected_at": "x", "snapshot": null}',
+        '{"type": "unknown_type"}',
+    ],
+)
+async def test_serve_drops_malformed_frame_and_keeps_the_tunnel_open(
+    tmp_path, raw: str
+) -> None:
+    tunnel, registry, store, events = await _make_tunnel(tmp_path)
+    await registry.register_async(
+        "pc1", "tok", {"hostname": "h", "os": "windows", "version": "1"}, lambda p: None
     )
-    tunnel = AgentTunnel(registry, store, events)
 
-    ws = _FakeWebSocket(["{not even json", json.dumps({"type": "ping"})])
+    good_frame = json.dumps(
+        {
+            "type": "telemetry",
+            "agent_id": "pc1",
+            "collected_at": "2026-07-01T00:00:00+00:00",
+            "snapshot": {},
+        }
+    )
+    ws = _FakeWebSocket([raw, good_frame])
 
-    with pytest.raises(AssertionError, match="receive_text called after"):
-        # `_serve` loops forever; it only stops once the fake socket runs out
-        # of queued frames, which is the expected way to end this test.
+    # A malformed frame must not raise out of _serve; the loop keeps going and
+    # processes the next (valid) frame, which then exhausts the fake socket's
+    # queue and raises the sentinel AssertionError -- proof the loop survived.
+    with pytest.raises(AssertionError, match="receive_text called"):
         await tunnel._serve(ws, "pc1")
 
-    # The malformed frame was dropped (no crash) and the following `ping` was
-    # still served with a `pong` on the same connection.
-    assert ws.sent == [{"type": "pong"}]
+    assert ws.closed_code is None
+    assert await store.latest("pc1") is not None
 
     await store.close()
     await events.close()

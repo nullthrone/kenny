@@ -624,7 +624,6 @@ mod windows_impl {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     fn sample() -> Vec<String> {
         vec![
@@ -842,6 +841,91 @@ mod tests {
 
         let c = clear(json!({})).await.unwrap_err();
         assert_eq!(c.0, ErrorCode::Unsupported);
+    }
+
+    /// Randomized adversarial hosts-file content (including partial/duplicated/malformed
+    /// BEGIN/END markers, multi-byte UTF-8 near the markers, and embedded NULs) fed through
+    /// the splice/strip/count/hash core must never panic — a corrupted or hand-edited hosts
+    /// file is untrusted input the same as any parsed file format.
+    #[test]
+    fn hosts_core_never_panics_on_random_adversarial_content() {
+        struct Rng(u64);
+        impl Rng {
+            fn next(&mut self) -> u64 {
+                self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
+                let mut z = self.0;
+                z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+                z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+                z ^ (z >> 31)
+            }
+        }
+        let mut rng = Rng(0xBADC0FFEE0DDF00D);
+        let fragments = [
+            BEGIN,
+            END,
+            "\n",
+            "0.0.0.0 ",
+            "héllo.exämple.cöm\u{0}",
+            "\u{1F600}",
+            "\r\n",
+            "# kenny-webfilter begin",
+            "end (managed",
+            "",
+        ];
+        for iter in 0..3000u32 {
+            let mut s = String::new();
+            let parts = 1 + (rng.next() % 12) as usize;
+            for _ in 0..parts {
+                s.push_str(fragments[(rng.next() as usize) % fragments.len()]);
+            }
+            let result = std::panic::catch_unwind(|| {
+                let stripped = strip_block(&s);
+                let _ = block_entry_count(&s);
+                let domains = block_domains(&s);
+                let _ = list_hash(&domains);
+                let block = render_block(&domains);
+                let _ = splice_block(&s, Some(&block));
+                let _ = splice_block(&s, None);
+                let _ = normalize_tail(&stripped);
+            });
+            if result.is_err() {
+                panic!("iter {iter}: panic on input {s:?}");
+            }
+        }
+    }
+
+    /// Randomized domain strings (arbitrary bytes-as-UTF8, unicode, empty, huge) through
+    /// `validate_domains` must only ever return `Err`, never panic.
+    #[test]
+    fn validate_domains_never_panics_on_random_input() {
+        struct Rng(u64);
+        impl Rng {
+            fn next(&mut self) -> u64 {
+                self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
+                let mut z = self.0;
+                z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+                z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+                z ^ (z >> 31)
+            }
+        }
+        let mut rng = Rng(0x1234_5678_9ABC_DEF0);
+        for iter in 0..3000u32 {
+            let n = (rng.next() % 5) as usize;
+            let mut domains = Vec::new();
+            for _ in 0..n {
+                let len = (rng.next() % 300) as usize;
+                let s: String = (0..len)
+                    .map(|_| char::from_u32((rng.next() % 0x11_0000) as u32).unwrap_or('?'))
+                    .collect();
+                domains.push(s);
+            }
+            let result = std::panic::catch_unwind(|| {
+                let _ = validate_domains(&domains);
+            });
+            if result.is_err() {
+                panic!("iter {iter}: panic on input {domains:?}");
+            }
+        }
     }
 
     #[cfg(not(windows))]

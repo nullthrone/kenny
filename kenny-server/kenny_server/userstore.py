@@ -381,10 +381,6 @@ class UserStore:
         )
         await self._conn.commit()
 
-    async def get_theme(self, user_id: int) -> str | None:
-        row = await self._get_row(user_id)
-        return row["theme"] if row else None
-
     async def get_capability_profile(self, user_id: int) -> str | None:
         row = await self._get_row(user_id)
         return row["capability_profile"] if row else None
@@ -584,13 +580,3 @@ class UserStore:
             "DELETE FROM sessions WHERE user_id = ?", (user_id,)
         )
         await self._conn.commit()
-
-    async def prune_sessions(self) -> int:
-        """Delete expired sessions; return how many were removed."""
-
-        cur = await self._conn.execute(
-            "DELETE FROM sessions WHERE expires_at <= ?",
-            (_now_iso(),),
-        )
-        await self._conn.commit()
-        return cur.rowcount
