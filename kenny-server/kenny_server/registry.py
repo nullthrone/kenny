@@ -294,10 +294,6 @@ class AgentRegistry:
 
     # -- active-agent selection -------------------------------------------
 
-    @property
-    def active_agent(self) -> str | None:
-        return self._active_agent
-
     def active_for(self, key: str | None) -> str | None:
         """The active agent for ``key`` (per-caller slot), else the global one."""
 
@@ -317,18 +313,6 @@ class AgentRegistry:
         else:
             self._active_by_key[key] = agent_id
         return agent
-
-    def require_active(self, key: str | None = None) -> str:
-        """The active agent for ``key`` (or the global slot when ``key`` is None).
-
-        Keyed callers are isolated: a key with no selection raises rather than
-        falling back to another caller's global selection.
-        """
-
-        active = self._active_agent if key is None else self._active_by_key.get(key)
-        if active is None:
-            raise RuntimeError("no active agent selected; call select_agent first")
-        return active
 
     def clear(self, key: str) -> None:
         """Drop a per-caller selection (e.g. on logout / session end)."""

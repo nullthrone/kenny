@@ -69,6 +69,9 @@ class Principal:
     pat_id: str | None = None
     oauth_token_id: str | None = None
     oauth_client_id: str | None = None
+    # POSSIBLY DEAD: set on the env-token principal but never read by any
+    # caller — kept rather than removed since it is the one marker that lets
+    # future code distinguish the back-compat superuser from a real account.
     is_env_token: bool = False
 
     @property
