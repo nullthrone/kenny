@@ -13,6 +13,7 @@ health via worst-of.
 
 from __future__ import annotations
 
+import math
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -198,9 +199,23 @@ def _rule_os_support(payload: dict[str, Any], now: datetime) -> "tuple[Status, s
 
 
 def _number(value: Any) -> float | None:
-    """Coerce a JSON number to float, rejecting bools and non-numerics."""
+    """Coerce a JSON number to float, rejecting bools, non-numerics, and non-finite floats.
 
-    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+    Every caller either compares the result or feeds it to ``int()`` (a count, a
+    threshold check). Python's ``json`` module accepts the ``NaN``/``Infinity``/
+    ``-Infinity`` extension on decode, so a telemetry section field like
+    ``recent_crashes`` or an event's ``count`` -- unvalidated ``dict[str, Any]``
+    fields on the ``telemetry_collect`` round trip, same threat model as
+    :func:`_valid_status` -- can carry one of those. ``int(float("inf"))`` raises
+    ``OverflowError`` and ``int(float("nan"))`` raises ``ValueError``, so treating
+    them as "not a usable number" here (like a bool or a string) keeps that crash
+    out of every caller instead of guarding each ``int()`` call site individually.
+    """
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    result = float(value)
+    return result if math.isfinite(result) else None
 
 
 # -- reliability: volume-based fallback (no severity annotation present) ----
