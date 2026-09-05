@@ -138,7 +138,9 @@ def _rule_win_update(payload: dict[str, Any], now: datetime) -> "tuple[Status, s
 
 def _rule_reboot_pending(payload: dict[str, Any], now: datetime) -> "tuple[Status, str] | None":
     if payload.get("pending") is True:
-        reasons = payload.get("reasons") or []
+        # A truthy non-list (e.g. a string) would otherwise iterate char-by-char below.
+        reasons = payload.get("reasons")
+        reasons = reasons if isinstance(reasons, list) else []
         why = ", ".join(str(r) for r in reasons) if reasons else "unknown"
         return "warn", f"Reboot pending ({why})"
     return "ok", "No reboot pending"

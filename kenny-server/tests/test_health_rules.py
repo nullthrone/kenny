@@ -6,6 +6,8 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from kenny_server import health_rules
 
 FIXTURES_DIR = Path(__file__).resolve().parents[2] / "docs" / "fixtures"
@@ -742,3 +744,38 @@ def test_reliability_existing_tests_unaffected_by_suppression_support() -> None:
     )
     assert result["status"] == "warn"
     assert "suppressed" not in result["reason"]
+
+
+# -- malformed nested telemetry fields must never raise (fuzzing sweep) ------
+#
+# `Section.model_config` allows arbitrary extra fields (`docs/protocol.md`), so
+# the wire contract never guarantees that a nested field a rule expects to be a
+# dict/list of dicts actually is one -- a buggy or compromised agent can send a
+# section whose own `status`/`summary` validate fine but whose extra fields
+# don't match a rule's assumed shape. Every one of these previously raised
+# AttributeError/TypeError out of `evaluate_section`, which crashes the caller
+# (`fleet_overview`/`list_agents`/`agent_health` iterate all agents in one
+# comprehension with no per-agent guard, so one malformed host's telemetry took
+# the whole read down for every host).
+@pytest.mark.parametrize(
+    "section, payload",
+    [
+        ("disk", {"volumes": ["not-a-dict"]}),
+        ("win_update", {"recent": ["not-a-dict"]}),
+        ("thermals", {"sensors": [123]}),
+        ("web_activity", {"flagged": ["not-a-dict"]}),
+        ("listening_ports", {"ports": ["not-a-dict"]}),
+        ("local_accounts", {"accounts": ["not-a-dict"]}),
+        ("logon_failures", {"accounts": ["not-a-dict"]}),
+        ("logon_failures", {"unmatched_count": [None]}),
+        ("backup_status", {
+            "restore_points": "oops", "file_history": "oops", "onedrive": "oops",
+        }),
+        ("net_quality", {"reference": "oops", "gateway": "oops"}),
+        ("reboot_pending", {"pending": True, "reasons": 123}),
+    ],
+)
+def test_malformed_nested_field_never_crashes(section: str, payload: dict) -> None:
+    full_payload = {"status": "ok", "summary": "x", **payload}
+    result = health_rules.evaluate_section(section, full_payload, now=NOW)
+    assert result["status"] in ("ok", "warn", "crit")
