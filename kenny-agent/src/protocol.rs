@@ -408,6 +408,72 @@ mod tests {
         assert_eq!(back, without);
     }
 
+    /// Randomized-mutation smoke test: mutated JSON derived from real frame shapes must
+    /// never panic `Frame` deserialization, only return `Err`. A fixed seed keeps this
+    /// deterministic; kept small (5k iterations, hand-rolled PRNG, no new dependency) as a
+    /// permanent guard against a panicking `unwrap`/index creeping into `serde` derives or
+    /// custom (de)serialization here.
+    #[test]
+    fn frame_from_random_bytes_never_panics() {
+        // splitmix64
+        struct Rng(u64);
+        impl Rng {
+            fn next(&mut self) -> u64 {
+                self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
+                let mut z = self.0;
+                z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+                z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+                z ^ (z >> 31)
+            }
+        }
+        let mut rng = Rng(0xC0FFEE);
+        let seeds = [
+            r#"{"type":"register"}"#,
+            r#"{"type":"request","id":"1","tool":"x","args":{}}"#,
+            r#"{"type":"response","id":"1","ok":true,"result":{}}"#,
+            r#"{"type":"telemetry","agent_id":"a","collected_at":"x","snapshot":{}}"#,
+            r#"{"type":"log","agent_id":"a","at":"x","level":"info","target":"t","message":"m"}"#,
+            r#"{"type":"policy","rules":[{"id":"1","applies_to":"path","pattern":"p","reason":"r"}]}"#,
+            r#"{"type":"challenge","server_nonce":"","server_sig":""}"#,
+            r#"{"type":"auth","agent_sig":""}"#,
+            "null",
+            "{}",
+            "[]",
+            "1e999999",
+            "-99999999999999999999999999999999",
+            "\"\\ud800\"",
+        ];
+        for iter in 0..5000u32 {
+            let base = seeds[(rng.next() as usize) % seeds.len()];
+            let mut bytes: Vec<u8> = base.as_bytes().to_vec();
+            // Mutate: flip/insert/delete a handful of random bytes.
+            let mutations = 1 + (rng.next() % 6) as usize;
+            for _ in 0..mutations {
+                if bytes.is_empty() {
+                    break;
+                }
+                let op = rng.next() % 3;
+                let idx = (rng.next() as usize) % bytes.len();
+                match op {
+                    0 => bytes[idx] = (rng.next() % 256) as u8,
+                    1 => bytes.insert(idx, (rng.next() % 256) as u8),
+                    _ => {
+                        bytes.remove(idx);
+                    }
+                }
+            }
+            let result = std::panic::catch_unwind(|| {
+                let _: Result<Frame, _> = serde_json::from_slice(&bytes);
+            });
+            if result.is_err() {
+                panic!(
+                    "iter {iter}: panic on input {:?}",
+                    String::from_utf8_lossy(&bytes)
+                );
+            }
+        }
+    }
+
     #[test]
     fn response_helpers() {
         let ok = Response::ok("abc", serde_json::json!({"x": 1}));
