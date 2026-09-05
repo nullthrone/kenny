@@ -10,6 +10,10 @@ one — ``ChangelogResult.ok`` is False and ``error`` names the remedy — becau
 the alternative, an empty release list, is a statement the operator cannot tell
 apart from "this repo has published nothing", and one they cannot check without
 reading this file.
+
+Like the agent-binary fetch beside it, this read is anonymous (ADR-0057): the
+release list of a public repo needs no credential, and demanding one only adds a
+way for it to fail.
 """
 
 from __future__ import annotations
@@ -64,33 +68,17 @@ class ChangelogResult:
         }
 
 
-def _headers() -> dict[str, str]:
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-    tok = agent_release.github_token()
-    if tok:
-        headers["Authorization"] = f"Bearer {tok}"
-    return headers
-
-
 def _describe(exc: Exception, repo: str) -> str:
-    """An operator-readable reason that names the remedy, never the token value."""
+    """An operator-readable reason for a failed read.
+
+    HTTP statuses are classified by ``agent_release.describe_http_error`` rather
+    than here: the agent-binary fetch hits the same API and used to word the same
+    response differently, which left an operator comparing two texts for one
+    fault. This module keeps only the transport-level cases, which are its own.
+    """
 
     if isinstance(exc, httpx.HTTPStatusError):
-        code = exc.response.status_code
-        if code == 401:
-            return (
-                "GitHub rejected the credentials (401) — KENNY_GITHUB_TOKEN is "
-                "invalid or expired. An invalid token is rejected even on a "
-                "public repo; clearing it restores anonymous reads."
-            )
-        if code in (403, 429):
-            return f"GitHub API {code} (rate limited, or the token lacks access to {repo})"
-        if code == 404:
-            return f"{repo} not found, or not visible to the configured token"
-        return f"GitHub returned HTTP {code} for {repo}"
+        return agent_release.describe_http_error(exc, repo)
     if isinstance(exc, httpx.TimeoutException):
         return f"GitHub timed out after {FETCH_TIMEOUT_S:g}s"
     if isinstance(exc, httpx.RequestError):
@@ -150,7 +138,9 @@ async def fetch_releases(repo: str, *, include_prerelease: bool = False) -> Chan
         return ChangelogResult(releases=cached[2], fetched_at=cached[1])
     try:
         async with httpx.AsyncClient(
-            timeout=FETCH_TIMEOUT_S, headers=_headers(), follow_redirects=True
+            timeout=FETCH_TIMEOUT_S,
+            headers=dict(agent_release.GITHUB_HEADERS),
+            follow_redirects=True,
         ) as client:
             resp = await client.get(
                 f"{agent_release.GITHUB_API}/repos/{repo}/releases",

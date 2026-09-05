@@ -101,8 +101,6 @@ export default function AboutModal({ open, onClose }: AboutModalProps) {
   function stagedHelp(): string | undefined {
     if (binary.isError) return 'binary status unavailable'
     if (refreshFailed) return `last refresh failed — ${refreshMessage}`
-    if (binary.data?.github_configured === false)
-      return 'auto-fetch is off — set KENNY_GITHUB_TOKEN, or place a binary on the server'
     if (stagedIsBehind) return `expected ${running} — this binary is from an older release`
     if (lastCheck?.ok) return `refreshed ${formatRelativeTime(lastCheck.checked_at)}`
     return undefined

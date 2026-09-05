@@ -205,7 +205,7 @@ def test_agent_binary_status_unavailable(tmp_path, monkeypatch):
         body = r.json()
         assert body["available"] is False
         assert body["source"] == "none"
-        assert body["github_configured"] is False
+        assert "github_configured" not in body  # the gate it reported is gone (ADR-0057)
         assert "releases/latest" in body["message"]
 
 
@@ -663,12 +663,25 @@ def test_agent_binary_status_requires_auth(tmp_path, binary):
         assert c.get("/api/agent-binary").status_code == 401
 
 
-def test_agent_binary_fetch_without_token_400(tmp_path, monkeypatch):
+def test_agent_binary_fetch_attempts_without_a_token(tmp_path, monkeypatch):
+    """No credential is a precondition any more (ADR-0057), so nothing refuses up front.
+
+    This route used to 400 without KENNY_GITHUB_TOKEN. Reads are anonymous now, so
+    the attempt is always worth making; whether it succeeds is the network's answer,
+    not a configuration check's.
+    """
+
     monkeypatch.delenv("KENNY_GITHUB_TOKEN", raising=False)
+
+    def fake_fetch(**_kwargs):
+        return agent_release.FetchResult(ok=True, source="github", message="fetched", version="9.9.9")
+
+    monkeypatch.setattr(agent_release, "fetch_latest_agent_binary", fake_fetch)
     app = _app(tmp_path)
     with TestClient(app) as c:
         r = c.post("/api/agent-binary/fetch", headers=_bearer(app))
-        assert r.status_code == 400
+        assert r.status_code == 200
+        assert r.json()["ok"] is True
 
 
 def test_cache_served_when_no_explicit_binary(tmp_path, monkeypatch):
@@ -737,8 +750,13 @@ def test_agent_binary_status_carries_the_durable_last_check(tmp_path, monkeypatc
         assert body["last_check"]["checked_at"]
 
 
-def test_agent_binary_status_startup_records_why_it_did_not_fetch(tmp_path, monkeypatch):
-    """The skip branch is an outcome too, not silence."""
+def test_agent_binary_status_records_the_startup_attempt(tmp_path, monkeypatch):
+    """Startup fetches without a credential now, and records how it went.
+
+    There is no "skipped, not configured" branch left to assert (ADR-0057): the
+    attempt always happens. Here it is the suite's network guard that fails it,
+    which is exactly the shape a real unreachable GitHub would take.
+    """
 
     monkeypatch.delenv("KENNY_AGENT_BINARY", raising=False)
     monkeypatch.delenv("KENNY_GITHUB_TOKEN", raising=False)
@@ -747,7 +765,8 @@ def test_agent_binary_status_startup_records_why_it_did_not_fetch(tmp_path, monk
         body = c.get("/api/agent-binary", headers=_bearer(app)).json()
         assert body["last_check"] is not None
         assert body["last_check"]["ok"] is False
-        assert "KENNY_GITHUB_TOKEN" in body["last_check"]["message"]
+        assert body["last_check"]["message"]  # the reason, whatever it was
+        assert body["last_check"]["checked_at"]
 
 
 def test_agent_binary_status_survives_a_missing_update_store(tmp_path, monkeypatch):

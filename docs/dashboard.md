@@ -141,8 +141,8 @@ telemetry push. Cards are sorted worst-first. **Click a card to open [the host
 page](#the-host-page)** — Fleet itself never shows a second pane or an inline detail; the
 whole page is the grid.
 
-If no installer binary is available on the server yet, a banner explains why and, when a
-GitHub token is configured, offers **retry GitHub fetch** (see
+If no installer binary is available on the server yet, a banner explains why and offers
+**retry GitHub fetch** to any operator (see
 [Auto-fetch from GitHub](setup.md#auto-fetch-from-github-no-manual-binary-placement)).
 
 ### Add a PC
@@ -728,15 +728,17 @@ notes render as markdown.
 Only `/api/about` is load-bearing: if GitHub is unreachable or no agent binary is
 staged, the dialog still opens and the rest of it still fills in — **and says
 which it is**. A changelog that comes back empty because GitHub could not be read
-shows the reason (an expired `KENNY_GITHUB_TOKEN`, a rate limit, an unreachable
-host), never "no releases published"; that wording is reserved for a read that
-succeeded and found nothing. When a refresh fails but earlier notes are still
+shows the reason (a rate limit with the time it resets, a refusal in GitHub's own
+words, an unreachable host), never "no releases published"; that wording is
+reserved for a read that succeeded and found nothing. When a refresh fails but earlier notes are still
 cached, they are shown and labelled as cached.
 
 The **staged agent version** is the binary currently on the server's data volume,
-not a live query — so the row also carries why it last stood still: a failed
-refresh with its reason, or `auto-fetch is off` when no `KENNY_GITHUB_TOKEN` is
-set. That reason survives a server restart. Because a release stamps the same git
+not a live query — so the row also carries why it last stood still: the last
+refresh and, if it failed, its reason. That reason survives a server restart.
+There is no "switched off" state to report: releases are read anonymously
+([ADR-0057](adr/0057-anonymous-github-reads-for-agent-distribution.md)), so the
+fetch is always attempted and always has an outcome. Because a release stamps the same git
 tag into the server and the agent, a staged version behind the running server is
 flagged as such (`expected 2.2.1 — this binary is from an older release`); nothing
 is claimed when either side is a dev build, whose versions legitimately differ.

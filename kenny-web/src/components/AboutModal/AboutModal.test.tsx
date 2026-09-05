@@ -103,7 +103,6 @@ describe('AboutModal', () => {
     mockApi({
       '/api/agent-binary': {
         ...BINARY,
-        github_configured: true,
         last_check: {
           ok: false,
           message: 'GitHub API 401 (token expired)',
@@ -120,11 +119,10 @@ describe('AboutModal', () => {
     expect(valueOf('staged agent version')).toBe('2.1.0')
   })
 
-  it('names the missing setting when auto-fetch is switched off', async () => {
-    mockApi({ '/api/agent-binary': { ...BINARY, github_configured: false } })
-    renderModal()
-    await waitFor(() => expect(screen.getByText(/KENNY_GITHUB_TOKEN/)).toBeInTheDocument())
-  })
+  // A test named 'names the missing setting when auto-fetch is switched off' stood
+  // here. There is no such setting any more: releases are read anonymously
+  // (ADR-0057), so there is no configuration that can switch the fetch off and
+  // nothing for the row to name.
 
   it('offers an operator the refresh right there', async () => {
     mockApi({ '/api/me': { user_id: 'u1', username: 'op', role: 'operator' } })

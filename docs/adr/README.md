@@ -74,3 +74,4 @@ kind of record kenny keeps. What qualifies: *When (not) to write an ADR* in the 
 | [0054](0054-alert-channels-as-live-settings.md) | Alert delivery channels are live settings, resolved per dispatch | accepted |
 | [0055](0055-scheduled-web-filter-enforcement.md) | Scheduled web-filter enforcement: a standing rule the server enacts on a clock | accepted |
 | [0056](0056-unprompted-ticket-triage.md) | Unprompted ticket triage, and what may let it act | accepted |
+| [0057](0057-anonymous-github-reads-for-agent-distribution.md) | Read GitHub releases anonymously for agent distribution | accepted |

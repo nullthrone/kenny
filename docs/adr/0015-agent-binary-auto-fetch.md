@@ -1,6 +1,7 @@
 # 0015. Server auto-fetch of the prebuilt agent binary from GitHub Releases
 
 - Status: accepted
+- Amended by: [ADR-0057](0057-anonymous-github-reads-for-agent-distribution.md)
 - Date: 2026-06-05
 
 ## Context and Problem Statement

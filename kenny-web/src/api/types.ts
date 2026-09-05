@@ -151,8 +151,6 @@ export interface AgentBinaryStatus {
   available: boolean
   by_os?: Record<'windows' | 'linux', boolean>
   targets?: AgentBinaryTarget[]
-  /** True when a GitHub token is configured, i.e. a re-fetch is worth offering. */
-  github_configured?: boolean
   repo?: string
   /** Null until a fetch has been attempted this process. */
   last_fetch?: AgentBinaryFetch | null

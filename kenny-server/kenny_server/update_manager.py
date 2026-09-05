@@ -51,7 +51,9 @@ logger = logging.getLogger("kenny.update")
 ON_CONNECT_DELAY_S = 3.0
 
 
-async def record_agent_fetch(store: UpdateStore, result: agent_release.FetchResult) -> None:
+async def record_agent_fetch(
+    store: UpdateStore, result: agent_release.FetchResult, *, channel: str = "stable"
+) -> None:
     """Persist one agent-binary fetch outcome to the durable availability row.
 
     Three code paths attempt (or deliberately skip) that fetch — startup
@@ -70,9 +72,11 @@ async def record_agent_fetch(store: UpdateStore, result: agent_release.FetchResu
         # disk, so they stay right when the fetch failed and the previous binary
         # is still what a new PC would receive. `ok`/`message` describe the
         # attempt. Both meanings, kept apart.
-        staged = agent_release.binary_status(manual_path=agent_binary_path())
+        staged = agent_release.binary_status(
+            manual_path=agent_binary_path(channel=channel), channel=channel
+        )
         await store.set_availability(
-            "agent",
+            _availability_key("agent", channel),
             version=staged.version or "",
             sha256=staged.sha256,
             ok=result.ok,
@@ -120,14 +124,7 @@ class UpdateManager:
         # `ok` from the on-disk probe and `message` from the fetch, so a failed
         # refresh could read as ok=True next to its own error text. Whether a
         # binary is present is already in `available`/`targets`.
-        if agent_release.github_configured():
-            agent_fetch = await asyncio.to_thread(agent_release.fetch_latest_agent_binary)
-        else:
-            agent_fetch = agent_release.FetchResult(
-                ok=False,
-                source="none",
-                message="GitHub fetch not configured (set KENNY_GITHUB_TOKEN)",
-            )
+        agent_fetch = await asyncio.to_thread(agent_release.fetch_latest_agent_binary)
         await record_agent_fetch(self.store, agent_fetch)
         status = agent_release.binary_status(manual_path=agent_binary_path())
 
@@ -148,12 +145,11 @@ class UpdateManager:
                 await self.store.set_availability(
                     "server", version=__version__, ok=True, message="up to date"
                 )
-        elif agent_release.github_configured():
-            # With GitHub access configured, an unreachable image ref is a
-            # misconfiguration the operator should see, not routine noise.
-            logger.warning("server image check failed: %s", server_result.message)
         else:
-            logger.info("server image check skipped: %s", server_result.message)
+            # An unreachable image ref is a misconfiguration the operator should
+            # see, not routine noise. GHCR reads anonymously for a public
+            # package, so there is no "not configured" case left to excuse it.
+            logger.warning("server image check failed: %s", server_result.message)
 
         status_dev = await self._check_agent_dev()
         server_result_dev = await self._check_server_dev(image_ref)
@@ -173,20 +169,12 @@ class UpdateManager:
         """
 
         try:
-            agent_fetch_dev = None
-            if agent_release.github_configured():
-                agent_fetch_dev = await asyncio.to_thread(
-                    agent_release.fetch_latest_agent_binary, channel="dev"
-                )
+            agent_fetch_dev = await asyncio.to_thread(
+                agent_release.fetch_latest_agent_binary, channel="dev"
+            )
+            await record_agent_fetch(self.store, agent_fetch_dev, channel="dev")
             status_dev = agent_release.binary_status(
                 manual_path=agent_binary_path(channel="dev"), channel="dev"
-            )
-            await self.store.set_availability(
-                _availability_key("agent", "dev"),
-                version=status_dev.version or "",
-                sha256=status_dev.sha256,
-                ok=status_dev.ok,
-                message=(agent_fetch_dev.message if agent_fetch_dev is not None else status_dev.message),
             )
             return status_dev
         except Exception as exc:  # noqa: BLE001 - a dev-poll failure must never affect the stable result

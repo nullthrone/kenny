@@ -765,7 +765,6 @@ def build_download_routes(
             {"os": os_name, "arch": arch, "available": agent_binary_path(os_name, arch) is not None}
             for os_name, arch in agent_release.SUPPORTED_TARGETS
         ]
-        body["github_configured"] = agent_release.github_configured()
         body["repo"] = agent_release.github_repo()
         last = getattr(request.app.state, "last_fetch", None)
         body["last_fetch"] = last.to_public() if last is not None else None
@@ -798,13 +797,12 @@ def build_download_routes(
         return JSONResponse(body)
 
     async def agent_binary_fetch(request: Request) -> Response:
-        """Manually (re)trigger the GitHub fetch so no restart is needed."""
+        """Manually (re)trigger the GitHub fetch so no restart is needed.
 
-        if not agent_release.github_configured():
-            return JSONResponse(
-                {"ok": False, "error": "GitHub fetch not configured (set KENNY_GITHUB_TOKEN)"},
-                status_code=400,
-            )
+        Always attempts: the read is anonymous (ADR-0057), so there is no
+        configuration left that could make the attempt pointless in advance.
+        """
+
         result = await asyncio.to_thread(agent_release.fetch_latest_agent_binary)
         request.app.state.last_fetch = result
         # Same outcome, durably: an operator's retry that fails is exactly the

@@ -77,7 +77,7 @@ clients share one bucket). The bundled TLS profile sets this for you.
 | `KENNY_AGENT_BINARY` | server | — | Path to the prebuilt `kenny-agent.exe` the server serves for **Windows** installer download + self-update. Overrides the GitHub auto-fetch when set. |
 | `KENNY_AGENT_BINARY_LINUX` | server | — | Path to the prebuilt **Linux** `x86_64` agent binary (static musl) the server serves for the Linux install script + self-update. Overrides the GitHub auto-fetch when set. |
 | `KENNY_AGENT_BINARY_LINUX_AARCH64` | server | — | As above for **Linux `aarch64`** (Raspberry Pi / ARM NAS). |
-| `KENNY_GITHUB_TOKEN` | server | — | GitHub token enabling auto-fetch of the agent binary from Releases (ADR-0015). When set (and `KENNY_AGENT_BINARY` is not), the server fetches `kenny-agent.exe` on startup. |
+| `KENNY_GITHUB_TOKEN` | server | — | Token for polling a **private** `kenny-server` package on GHCR (ADR-0040). The agent binary and the changelog are read from GitHub anonymously (ADR-0057) and ignore it. |
 | `KENNY_GITHUB_REPO` | server | `nullthrone/kenny` | Repo to fetch the agent binary release from. |
 | `KENNY_AGENT_BINARY_CACHE` | server | `<dir of KENNY_DB_PATH>/kenny-agent.exe` | Where the auto-fetched binary is cached (the `/data` volume in the container). |
 | `KENNY_AGENT_VERSION` | server | `0.2.0` | **Fallback** version label only — the GitHub release tag of the fetched binary leads (ADR-0015). Used when no tag is known (e.g. a manually-placed binary without a `.version` sidecar). |
@@ -227,11 +227,10 @@ environment:
 
 To avoid the first-agent chicken-and-egg (hand-placing the `.exe` into the volume before any
 installer can be downloaded), the server can fetch the binary itself when a GitHub token is
-configured (ADR-0015):
+configured (ADR-0015). No credential is involved — releases are read anonymously (ADR-0057):
 
 ```yaml
 environment:
-  KENNY_GITHUB_TOKEN: ${KENNY_GITHUB_TOKEN}   # a token with read access to releases
   KENNY_GITHUB_REPO: nullthrone/kenny         # default
 ```
 
@@ -239,17 +238,20 @@ On startup (and via the dashboard's **retry GitHub fetch** button) the server do
 release's agent binaries — `kenny-agent-<tag>-x86_64-pc-windows-msvc.exe` and the Linux
 `…-<arch>-unknown-linux-musl` variants — verifies each against its published `.sha256`, and caches
 them on the `/data` volume. The fetch is **best-effort** and per-asset — if the repo is unreachable
-or no token is set, the dashboard shows a banner with manual instructions instead. Operator-placed
+the dashboard shows a banner with manual instructions instead. Operator-placed
 `KENNY_AGENT_BINARY` / `KENNY_AGENT_BINARY_LINUX` always win over the fetched cache. The dashboard's
 **Add a PC** wizard lets you onboard the very first machine without a pre-existing agent.
 
-Best-effort does not mean quiet. Every attempt is recorded, including the two that decide not to
-fetch at all (no token, or an operator-placed binary taking precedence), and the outcome survives a
-restart. **About kenny** shows it on the *staged agent version* row and Fleet's banner repeats it, so
-a stale staged version always comes with the reason it stopped moving. An expired token is the case
-worth knowing: GitHub answers an invalid `Authorization` header with **401 even on a public repo**,
-which stops both the binary fetch and the About dialog's changelog at once. Renew the token, or
-unset `KENNY_GITHUB_TOKEN` to fall back to anonymous reads of a public repo.
+Best-effort does not mean quiet. Every attempt is recorded, including the one branch that decides not
+to fetch at all (an operator-placed binary taking precedence), and the outcome survives a restart.
+**About kenny** shows it on the *staged agent version* row and Fleet's banner repeats it, so a stale
+staged version always comes with the reason it stopped moving.
+
+Two failures are worth recognising by name. A **403** is either GitHub's rate limiter or a refusal;
+the dashboard says which, and for the limiter it names the reset time. Because reads are anonymous
+the limit is 60 requests per hour **per IP**, shared with anything else behind the same address —
+kenny's own draw is a fraction of that. A **404** means the repo is not public: auto-fetch cannot
+reach a private release repo at all, and that deployment needs `KENNY_AGENT_BINARY` placed by hand.
 
 ## Installing the agent on Windows
 
@@ -356,8 +358,8 @@ flowchart LR
   attached to the Release. The x86_64 build is e2e-gated before publish.
 - Pull the release binaries to the host and point `KENNY_AGENT_BINARY` (Windows) and
   `KENNY_AGENT_BINARY_LINUX` / `KENNY_AGENT_BINARY_LINUX_AARCH64` (Linux) at them to enable GUI
-  downloads/updates against that version. When `KENNY_GITHUB_TOKEN` is set the server auto-fetches
-  all of them.
+  downloads/updates against that version — only needed for a private repo, since the server
+  auto-fetches all of them from a public one on its own.
 
 ### Dev channel (ADR-0048)
 

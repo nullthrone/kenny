@@ -83,16 +83,10 @@ def test_fetch_sha256_mismatch_fails(tmp_path, token):
     assert list(tmp_path.glob("*.part")) == []
 
 
-def test_fetch_no_token_returns_none(tmp_path, monkeypatch):
-    monkeypatch.delenv("KENNY_GITHUB_TOKEN", raising=False)
-
-    def boom() -> httpx.Client:  # must not be called
-        raise AssertionError("network must not be touched without a token")
-
-    res = agent_release.fetch_latest_agent_binary(client_factory=boom, dest=str(tmp_path / "x.exe"))
-    assert not res.ok
-    assert res.source == "none"
-    assert "KENNY_GITHUB_TOKEN" in res.message
+# ``test_fetch_no_token_returns_none`` stood here and asserted the opposite of what
+# kenny now does: that without KENNY_GITHUB_TOKEN the network must not be touched at
+# all. ADR-0057 reversed that decision, and its replacement is
+# ``test_fetches_without_any_token_configured`` further down.
 
 
 def test_fetch_network_error_is_non_fatal(tmp_path, token):
@@ -431,3 +425,116 @@ def test_fetch_linux_only_release_returns_success(tmp_path, token, monkeypatch):
     assert (tmp_path / "kenny-agent-linux-x86_64").read_bytes() == LINUX_X64_BYTES
     # no windows binary was produced
     assert not (tmp_path / "kenny-agent.exe").exists()
+
+
+# -- ADR-0057: releases are read anonymously ----------------------------------
+
+
+def _captured_requests(handler_response):
+    """A client factory that records every request it is asked to make."""
+
+    seen: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return handler_response(request)
+
+    def factory() -> httpx.Client:
+        return httpx.Client(transport=httpx.MockTransport(handle), follow_redirects=True)
+
+    return seen, factory
+
+
+def test_never_sends_a_credential_even_when_one_is_configured(tmp_path, monkeypatch):
+    """The decision itself, pinned.
+
+    Everything read here is public, so no ``Authorization`` header goes out under
+    any configuration (ADR-0057). Without this test the header slips back in on
+    the next refactor and the failure mode it caused returns with it.
+    """
+
+    monkeypatch.setenv("KENNY_GITHUB_TOKEN", "ghp_should_never_be_sent")
+    monkeypatch.setenv("KENNY_DB_PATH", str(tmp_path / "k.sqlite"))
+
+    seen, factory = _captured_requests(lambda _r: httpx.Response(404, json={"message": "nope"}))
+    agent_release.fetch_latest_agent_binary(client_factory=factory)
+
+    assert seen, "no request was attempted at all"
+    for request in seen:
+        assert "authorization" not in {k.lower() for k in request.headers}
+    # and the token never leaks into the outgoing bytes some other way
+    assert "ghp_should_never_be_sent" not in str(seen[0].headers)
+
+
+def test_fetches_without_any_token_configured(tmp_path, monkeypatch):
+    """No credential is a precondition any more — the attempt is simply made."""
+
+    monkeypatch.delenv("KENNY_GITHUB_TOKEN", raising=False)
+    monkeypatch.setenv("KENNY_DB_PATH", str(tmp_path / "k.sqlite"))
+
+    seen, factory = _captured_requests(lambda _r: httpx.Response(404, json={"message": "nope"}))
+    result = agent_release.fetch_latest_agent_binary(client_factory=factory)
+
+    assert seen, "the fetch refused to try without a token"
+    assert result.ok is False  # a 404 from the stub, not a configuration refusal
+    assert "not configured" not in result.message
+
+
+# -- 403: rate limit and refusal are different problems -----------------------
+
+
+def _status_error(status: int, *, headers=None, body=None) -> httpx.HTTPStatusError:
+    request = httpx.Request("GET", "https://api.github.com/repos/x/y/releases")
+    response = httpx.Response(status, headers=headers or {}, json=body or {}, request=request)
+    return httpx.HTTPStatusError("boom", request=request, response=response)
+
+
+def test_403_rate_limited_names_the_reset_time():
+    exc = _status_error(
+        403,
+        headers={"x-ratelimit-remaining": "0", "x-ratelimit-reset": "1788000000"},
+        body={"message": "API rate limit exceeded"},
+    )
+    text = agent_release.describe_http_error(exc, "nullthrone/kenny")
+    assert "rate limit" in text.lower()
+    assert "2026-" in text  # the reset instant, not just "some time later"
+    assert "per IP" in text
+
+
+def test_403_without_the_rate_limit_header_reads_as_a_refusal():
+    """Remaining quota means the limiter is not what refused this."""
+
+    exc = _status_error(
+        403,
+        headers={"x-ratelimit-remaining": "4999"},
+        body={"message": "Resource protected by organization SAML enforcement"},
+    )
+    text = agent_release.describe_http_error(exc, "nullthrone/kenny")
+    assert "rate limit" not in text.lower()
+    assert "refused" in text.lower()
+    assert "SAML enforcement" in text  # GitHub's own words carry the real cause
+
+
+def test_403_with_no_rate_limit_headers_at_all_falls_back_to_refusal():
+    text = agent_release.describe_http_error(_status_error(403), "nullthrone/kenny")
+    assert "refused" in text.lower()
+
+
+def test_429_is_classified_like_403():
+    exc = _status_error(429, headers={"x-ratelimit-remaining": "0"})
+    assert "rate limit" in agent_release.describe_http_error(exc, "r/k").lower()
+
+
+def test_404_points_at_the_manual_path_for_a_private_repo():
+    """Anonymously, a private repo is indistinguishable from a missing one."""
+
+    text = agent_release.describe_http_error(_status_error(404), "nullthrone/kenny")
+    assert "not public" in text
+    assert "KENNY_AGENT_BINARY" in text
+
+
+def test_a_non_json_error_body_does_not_break_the_description():
+    request = httpx.Request("GET", "https://api.github.com/repos/x/y/releases")
+    response = httpx.Response(403, text="<html>gateway</html>", request=request)
+    exc = httpx.HTTPStatusError("boom", request=request, response=response)
+    assert "refused" in agent_release.describe_http_error(exc, "r/k").lower()

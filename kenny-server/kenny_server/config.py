@@ -321,7 +321,10 @@ _SPECS: list[SettingSpec] = [
     _spec("KENNY_GITHUB_REPO", "Agent distribution", "str", "nullthrone/kenny",
           "Agent GitHub repo", lifecycle="env_only"),
     _spec("KENNY_GITHUB_TOKEN", "Agent distribution", "secret", "",
-          "GitHub API token", lifecycle="env_only", sensitive=True),
+          "GHCR token", lifecycle="env_only", sensitive=True,
+          help="Only for polling a private kenny-server package on GHCR (ADR-0040). "
+               "The agent binary and the changelog are read from GitHub anonymously "
+               "(ADR-0057) and ignore this entirely."),
     _spec("KENNY_AGENT_VERSION", "Agent distribution", "str", "0.2.0",
           "Agent version", lifecycle="env_only"),
     _spec("KENNY_SERVER_VERSION", "Agent distribution", "str", "0.0.0-dev",
