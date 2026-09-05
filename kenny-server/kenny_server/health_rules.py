@@ -210,6 +210,9 @@ def _number(value: Any) -> float | None:
     ``OverflowError`` and ``int(float("nan"))`` raises ``ValueError``, so treating
     them as "not a usable number" here (like a bool or a string) keeps that crash
     out of every caller instead of guarding each ``int()`` call site individually.
+
+    No threshold or status semantics change here — a non-finite value now takes
+    the same "field absent/unusable" path a missing field already took.
     """
 
     if isinstance(value, bool) or not isinstance(value, (int, float)):
