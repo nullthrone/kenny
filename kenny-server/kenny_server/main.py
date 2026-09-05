@@ -712,13 +712,14 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         # Attach to root only: `kenny.*` records propagate up to root, so this one
         # handler captures them once (no duplicate persisted events).
         logging.getLogger().addHandler(log_handler)
-        # Best-effort: fetch the prebuilt agent binary from GitHub when configured
-        # and not overridden by an operator-placed binary (ADR-0015). Non-fatal.
+        # Best-effort: fetch the prebuilt agent binary from GitHub unless an
+        # operator-placed binary overrides it (ADR-0015). Non-fatal, and needs no
+        # credential — the read is anonymous (ADR-0057).
         #
-        # Every branch records an outcome, including the two that decide not to
-        # fetch at all. A silent skip is what let a server run for weeks handing
-        # out a months-old agent with the dashboard showing only the stale
-        # version and no reason for it.
+        # Both branches record an outcome, the one that decides not to fetch
+        # included. A silent skip is what let a server run for weeks handing out
+        # a months-old agent with the dashboard showing only the stale version
+        # and no reason for it.
         release_log = logging.getLogger("kenny.release")
         try:
             if os.environ.get("KENNY_AGENT_BINARY", "").strip():
@@ -731,13 +732,6 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
                     ),
                 )
                 release_log.info("agent binary fetch: %s", result.message)
-            elif not agent_release.github_configured():
-                result = agent_release.FetchResult(
-                    ok=False,
-                    source="none",
-                    message="GitHub fetch not configured (set KENNY_GITHUB_TOKEN)",
-                )
-                release_log.warning("agent binary fetch skipped: %s", result.message)
             else:
                 result = await asyncio.to_thread(agent_release.fetch_latest_agent_binary)
                 log = release_log.info if result.ok else release_log.warning

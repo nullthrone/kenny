@@ -22,9 +22,11 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       KENNY_DB_PATH: /data/kenny.sqlite
       # Optional: let the server fetch the prebuilt agent binary from GitHub Releases
-      # (ADR-0015). With a token set, on startup the latest kenny-agent.exe is
-      # downloaded, sha256-verified, and cached at /data/kenny-agent.exe (on the
-      # kenny-data volume). Placing a binary at KENNY_AGENT_BINARY overrides the fetch.
+      # (ADR-0015), reading GitHub anonymously (ADR-0057): on startup the latest
+      # kenny-agent.exe is downloaded, sha256-verified, and cached at
+      # /data/kenny-agent.exe (on the kenny-data volume). Placing a binary at
+      # KENNY_AGENT_BINARY overrides the fetch. The token below is needed only to
+      # poll a *private* server image on GHCR (ADR-0040), never for the agent.
       KENNY_GITHUB_TOKEN: ${KENNY_GITHUB_TOKEN:-}
       KENNY_GITHUB_REPO: ${KENNY_GITHUB_REPO:-nullthrone/kenny}
     ports:

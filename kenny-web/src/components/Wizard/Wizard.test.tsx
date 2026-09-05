@@ -26,7 +26,6 @@ const BINARY_OK: AgentBinaryStatus = {
     { os: 'linux', arch: 'x86_64', available: true },
     { os: 'linux', arch: 'aarch64', available: true },
   ],
-  github_configured: true,
   repo: 'nullthrone/kenny',
   last_fetch: { ok: true, message: 'fetched 2.2.0' },
 }

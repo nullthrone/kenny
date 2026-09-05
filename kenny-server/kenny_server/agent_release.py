@@ -2,12 +2,18 @@
 
 The server serves a **prebuilt** ``kenny-agent.exe`` (ADR-0012). To avoid the
 first-agent chicken-and-egg (operator must hand-place the binary into the data
-volume before any installer can be downloaded), the server can fetch the latest
-release asset itself **when it can** — i.e. a GitHub token is configured and the
-repo is reachable. The fetch is gated on the token (avoids anonymous rate limits
-and unlocks private repos), best-effort, non-fatal, and sha256-verified; the
-result is cached on the data volume. An operator-placed ``KENNY_AGENT_BINARY``
-always wins over the cache (see ``distribution.agent_binary_path``).
+volume before any installer can be downloaded), the server fetches the latest
+release asset itself. Best-effort, non-fatal, sha256-verified; the result is
+cached on the data volume, and an operator-placed ``KENNY_AGENT_BINARY`` always
+wins over that cache (see ``distribution.agent_binary_path``).
+
+The fetch is **unauthenticated** (ADR-0057, amending ADR-0015). Everything read
+here — the release list and its assets — is public, so kenny reads it the way
+the public does. Sending a credential for public data bought private-repo
+support the canonical deployment never used, and charged a single point of
+failure for it: an authorization problem that had nothing to do with the data
+being read once held a whole fleet on a month-old agent. A private release repo
+answers 404 anonymously and needs a hand-placed ``KENNY_AGENT_BINARY`` instead.
 
 This module imports nothing from ``distribution`` to keep the dependency one-way.
 """
@@ -19,6 +25,7 @@ import os
 import re
 import tempfile
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 import httpx
@@ -56,16 +63,17 @@ def github_repo() -> str:
 
 
 def github_token() -> str | None:
-    """The GitHub token enabling auto-fetch, or None if unset."""
+    """The GitHub token, or None if unset.
+
+    **Not** used for anything in this module: the release reads here are
+    anonymous (ADR-0057). Its one remaining consumer is the GHCR poll in
+    ``server_release`` (ADR-0040), where a private container package does still
+    need a credential. It lives here because that is where the environment
+    variable has always been read.
+    """
 
     tok = os.environ.get("KENNY_GITHUB_TOKEN", "").strip()
     return tok or None
-
-
-def github_configured() -> bool:
-    """Whether auto-fetch is enabled (a token is present)."""
-
-    return github_token() is not None
 
 
 def cache_path(os_name: str = "windows", arch: str = "x86_64", channel: str = "stable") -> str:
@@ -179,15 +187,87 @@ class FetchResult:
         }
 
 
+#: No ``Authorization`` header, deliberately and unconditionally (ADR-0057).
+#: ``tests/test_agent_release.py`` fails if one reappears.
+GITHUB_HEADERS = {
+    "Accept": "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28",
+}
+
+
 def _default_client() -> httpx.Client:
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-    tok = github_token()
-    if tok:
-        headers["Authorization"] = f"Bearer {tok}"
-    return httpx.Client(timeout=FETCH_TIMEOUT_S, headers=headers, follow_redirects=True)
+    return httpx.Client(
+        timeout=FETCH_TIMEOUT_S, headers=dict(GITHUB_HEADERS), follow_redirects=True
+    )
+
+
+def is_rate_limited(response: httpx.Response) -> bool:
+    """Whether a 403/429 is GitHub's rate limiter rather than an authorization refusal.
+
+    The two arrive under the same status code and need opposite remedies — wait
+    versus fix access — so the header is the only thing that tells them apart.
+    """
+
+    return response.headers.get("x-ratelimit-remaining") == "0"
+
+
+def _rate_limit_reset(response: httpx.Response) -> str:
+    """``x-ratelimit-reset`` (a Unix timestamp) as a readable UTC time, or ""."""
+
+    raw = response.headers.get("x-ratelimit-reset", "")
+    try:
+        when = datetime.fromtimestamp(int(raw), tz=timezone.utc)
+    except (TypeError, ValueError, OSError, OverflowError):
+        return ""
+    return when.strftime("%Y-%m-%d %H:%M UTC")
+
+
+def _github_message(response: httpx.Response) -> str:
+    """GitHub's own explanation from the response body, bounded and flattened.
+
+    Worth carrying because it usually names the exact cause (an IP allow list, a
+    secondary rate limit). It is third-party text: treat it as data, keep it
+    short, and never let it reach a markup renderer.
+    """
+
+    try:
+        body = response.json()
+    except Exception:  # noqa: BLE001 - a non-JSON error body is not itself an error
+        return ""
+    if not isinstance(body, dict):
+        return ""
+    message = str(body.get("message") or "").strip()
+    message = " ".join(message.split())
+    return message[:200]
+
+
+def describe_http_error(exc: httpx.HTTPStatusError, repo: str) -> str:
+    """One operator-readable reason for a failed GitHub read, for both callers.
+
+    Shared with ``changelog`` so the same response never gets two differently
+    worded explanations — it used to, and the two drifted. Names no credential:
+    these reads are anonymous (ADR-0057), so there is none to blame.
+    """
+
+    response = exc.response
+    code = response.status_code
+    if code in (403, 429):
+        if is_rate_limited(response):
+            reset = _rate_limit_reset(response)
+            when = f", resets at {reset}" if reset else ""
+            return (
+                f"GitHub rate limit exhausted{when}. Reads are anonymous and the "
+                "limit is per IP, so anything else sharing this address counts "
+                "against it too."
+            )
+        detail = _github_message(response)
+        return f"GitHub refused the request ({code})" + (f": {detail}" if detail else "")
+    if code == 404:
+        return (
+            f"{repo} not found, or not public — releases are read anonymously, so a "
+            "private repo needs a hand-placed KENNY_AGENT_BINARY instead."
+        )
+    return f"GitHub returned HTTP {code} for {repo}"
 
 
 def _match_asset(
@@ -322,31 +402,27 @@ def _select_release(client: httpx.Client, repo: str, channel: str) -> dict[str, 
 
 def fetch_latest_agent_binary(
     *,
-    client_factory: Callable[[], httpx.Client] = _default_client,
+    client_factory: Callable[[], httpx.Client] | None = None,
     dest: str | None = None,
     channel: str = "stable",
 ) -> FetchResult:
     """Resolve the latest release, then download+verify+cache **every** known
     asset it can match: the Windows exe plus each Linux musl arch present.
 
+    Reads GitHub anonymously (ADR-0057); no credential is required or sent.
     Each asset is best-effort/non-fatal, cached to its own ``cache_path`` with a
     ``.version`` sidecar. The Windows result (to ``dest`` if given) leads the
     return value for back-compat; when there is no Windows asset but a Linux one
     cached, the first successful Linux result is returned instead. Best-effort:
     **never raises** — any failure surfaces as ``FetchResult(ok=False)``.
-    ``client_factory`` is injected so tests use ``httpx.MockTransport`` (no network).
+    ``client_factory`` is injected so tests use ``httpx.MockTransport`` (no network);
+    it is resolved on call, not bound at definition, so the default is patchable too.
     """
 
-    if not github_configured():
-        return FetchResult(
-            ok=False,
-            source="none",
-            message="GitHub fetch not configured (set KENNY_GITHUB_TOKEN)",
-        )
-
+    factory = client_factory or _default_client
     repo = github_repo()
     try:
-        with client_factory() as client:
+        with factory() as client:
             release = _select_release(client, repo, channel)
             if release is None:
                 return FetchResult(
@@ -369,13 +445,7 @@ def fetch_latest_agent_binary(
                 if lres is not None and lres.ok:
                     linux_ok.append(lres)
     except httpx.HTTPStatusError as exc:
-        if exc.response.status_code == 403:
-            return FetchResult(
-                ok=False,
-                source="none",
-                message="GitHub API 403 (rate limited or token lacks access)",
-            )
-        return FetchResult(ok=False, source="none", message=f"fetch failed: {exc}")
+        return FetchResult(ok=False, source="none", message=describe_http_error(exc, repo))
     except Exception as exc:  # noqa: BLE001 - best-effort, surface as a result
         return FetchResult(ok=False, source="none", message=f"fetch failed: {exc}")
 

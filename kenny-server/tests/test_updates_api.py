@@ -46,13 +46,14 @@ def test_updates_shape_empty(tmp_path) -> None:
         r = c.get("/api/updates", headers=_bearer(app))
         assert r.status_code == 200
         body = r.json()
-        # Not empty: startup records why it did not fetch an agent binary. A
-        # server with no GitHub token can hand out no installer, and the reason
-        # belongs on a durable row rather than in a log line that scrolls away.
+        # Not empty: startup records how the agent-binary fetch went, and the
+        # reason belongs on a durable row rather than in a log line that scrolls
+        # away. Here the suite's network guard fails it (tests/conftest.py); on a
+        # real server this row is how a stale staged version explains itself.
         # Nothing has been detected as *available*, though.
         assert set(body["available"]) == {"agent"}
         assert body["available"]["agent"]["ok"] is False
-        assert "KENNY_GITHUB_TOKEN" in body["available"]["agent"]["message"]
+        assert body["available"]["agent"]["message"]
         assert body["active_campaign"] is None
         assert body["campaigns"] == []
         assert body["agents"] == []
