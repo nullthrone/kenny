@@ -146,7 +146,6 @@ class PolicyEngine:
     def __init__(self) -> None:
         self._builtin_raw: list[dict[str, Any]] = _load_catalog_rules()
         self._builtin = _compile_group(self._builtin_raw)
-        self._operator_raw: list[dict[str, Any]] = []
         self._operator = _compile_group([])
 
     # -- rule management ---------------------------------------------------
@@ -165,7 +164,6 @@ class PolicyEngine:
                 normalised.append(r.model_dump())
             else:
                 normalised.append(dict(r))
-        self._operator_raw = normalised
         self._operator = _compile_group(normalised)
 
     # -- mirror ------------------------------------------------------------
