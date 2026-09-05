@@ -27,6 +27,24 @@ def worst(*statuses: Status) -> Status:
     return max((s for s in statuses if s), key=lambda s: _ORDER.get(s, 0), default="ok")
 
 
+def _valid_status(value: Any) -> Status:
+    """Coerce an untrusted ``status`` value to one of ``ok``/``warn``/``crit``.
+
+    The wire ``Section.status`` field is ``Literal["ok", "warn", "crit"]``, so a
+    pushed ``telemetry`` frame can never carry anything else. But the
+    ``telemetry_collect`` **request/response** round trip (an agent replying to
+    a server-initiated tool call) carries its result as an unvalidated
+    ``dict[str, Any]`` (``protocol.Response.result``) that is stored and later
+    read the same way as a pushed snapshot -- so a compromised/buggy agent can
+    make ``status`` anything JSON allows, including an unhashable list/dict.
+    :func:`worst` needs a hashable known literal; treat anything else as
+    ``warn`` (a malformed status is itself worth a look) rather than let it
+    propagate into a `TypeError` on read.
+    """
+
+    return value if value in ("ok", "warn", "crit") else "warn"
+
+
 def _parse_ts(value: Any) -> datetime | None:
     if not isinstance(value, str):
         return None
@@ -35,6 +53,29 @@ def _parse_ts(value: Any) -> datetime | None:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+
+
+def _dicts(value: Any) -> list[dict[str, Any]]:
+    """Return only the dict entries of a list-like telemetry field.
+
+    Every list field scored below (``volumes``, ``recent``, ``sensors``,
+    ``accounts``, ``ports``, ...) comes straight from an agent-reported
+    telemetry section, whose extra fields are accepted as-is (``Section``
+    uses ``extra="allow"``) with no shape validation. A buggy or compromised
+    agent can put anything JSON allows in there -- e.g. a list of strings
+    instead of objects -- and a rule must not crash the caller (the alert
+    loop, or an operator's ``agent_health``/``agent_snapshot`` MCP call) just
+    because one entry is not a dict. Non-dict entries are silently dropped
+    rather than scored.
+    """
+
+    return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+
+def _as_dict(value: Any) -> dict[str, Any]:
+    """Return ``value`` if it is a dict, else ``{}`` (see :func:`_dicts`)."""
+
+    return value if isinstance(value, dict) else {}
 
 
 def _age_days(value: Any, *, now: datetime) -> float | None:
@@ -57,7 +98,7 @@ OsAwareRule = Callable[[dict[str, Any], datetime, str], "tuple[Status, str] | No
 def _rule_disk(payload: dict[str, Any], now: datetime) -> "tuple[Status, str] | None":
     worst_pct = -1.0
     worst_mount = ""
-    for vol in payload.get("volumes", []) or []:
+    for vol in _dicts(payload.get("volumes")):
         pct = vol.get("percent_used")
         if isinstance(pct, (int, float)) and pct > worst_pct:
             worst_pct = float(pct)
@@ -88,7 +129,7 @@ def _rule_defender(payload: dict[str, Any], now: datetime) -> "tuple[Status, str
 
 
 def _rule_win_update(payload: dict[str, Any], now: datetime) -> "tuple[Status, str] | None":
-    recent = payload.get("recent", []) or []
+    recent = _dicts(payload.get("recent"))
     failed = [u for u in recent if str(u.get("result", "")).lower() == "failed"]
     if failed:
         return "warn", f"{len(failed)} update(s) failed"
@@ -125,7 +166,7 @@ def _rule_memory(payload: dict[str, Any], now: datetime) -> "tuple[Status, str] 
 
 
 def _rule_thermals(payload: dict[str, Any], now: datetime) -> "tuple[Status, str] | None":
-    sensors = payload.get("sensors") or []
+    sensors = _dicts(payload.get("sensors"))
     temps = [
         s.get("temperature_c")
         for s in sensors
@@ -406,7 +447,7 @@ def _rule_web_activity(payload: dict[str, Any], now: datetime) -> "tuple[Status,
         return None
     recent = [
         f
-        for f in flagged
+        for f in _dicts(flagged)
         if (age := _age_days(f.get("last_seen"), now=now)) is not None and age <= 1.0
     ]
     serious = [f for f in recent if f.get("category") in _WEB_ACTIVITY_SERIOUS]
@@ -428,7 +469,7 @@ _REMOTE_ACCESS_PORTS = {22, 3389, 5900, 5985, 5986}
 def _rule_listening_ports(payload: dict[str, Any], now: datetime) -> "tuple[Status, str] | None":
     exposed = [
         p
-        for p in payload.get("ports") or []
+        for p in _dicts(payload.get("ports"))
         if p.get("port") in _REMOTE_ACCESS_PORTS
         and not str(p.get("address", "")).startswith(("127.", "::1"))
     ]
@@ -444,7 +485,7 @@ def _rule_local_accounts(
 ) -> "tuple[Status, str] | None":
     is_windows = _is_windows(agent_os)
     warns: list[str] = []
-    for account in payload.get("accounts") or []:
+    for account in _dicts(payload.get("accounts")):
         if not account.get("enabled"):
             continue
         # `password_required is False` reflects the Windows UF_PASSWD_NOTREQD flag
@@ -499,8 +540,8 @@ def _rule_logon_failures(payload: dict[str, Any], now: datetime) -> "tuple[Statu
     """
     hours = payload.get("window_hours") or 24
     worst: dict[str, Any] | None = None
-    for account in payload.get("accounts") or []:
-        count = account.get("count") or 0
+    for account in _dicts(payload.get("accounts")):
+        count = _number(account.get("count")) or 0
         if count >= LOGON_FAILURES_WARN and (worst is None or count > worst["count"]):
             worst = {"name": account.get("name", "?"), "count": count}
     if worst:
@@ -510,16 +551,16 @@ def _rule_logon_failures(payload: dict[str, Any], now: datetime) -> "tuple[Statu
         )
     # Attempts against names that are not accounts here: password spraying or a
     # scanner, never a household member mistyping their own name.
-    unmatched = payload.get("unmatched_count") or 0
+    unmatched = _number(payload.get("unmatched_count")) or 0
     if unmatched >= LOGON_FAILURES_WARN:
         return "warn", f"{unmatched} failed sign-ins for unknown usernames in {hours}h"
     return None
 
 
 def _rule_backup_status(payload: dict[str, Any], now: datetime) -> "tuple[Status, str] | None":
-    restore = payload.get("restore_points") or {}
-    file_history = payload.get("file_history") or {}
-    onedrive = payload.get("onedrive") or {}
+    restore = _as_dict(payload.get("restore_points"))
+    file_history = _as_dict(payload.get("file_history"))
+    onedrive = _as_dict(payload.get("onedrive"))
     # An all-null stub (e.g. the "n/a on this platform" shape a non-Windows agent
     # emits) carries no backup evidence at all — that is *absence of data*, not a
     # missing backup. Defer rather than warn against it.
@@ -540,11 +581,11 @@ def _rule_backup_status(payload: dict[str, Any], now: datetime) -> "tuple[Status
 
 
 def _rule_net_quality(payload: dict[str, Any], now: datetime) -> "tuple[Status, str] | None":
-    reference = payload.get("reference") or {}
+    reference = _as_dict(payload.get("reference"))
     ref_loss = reference.get("loss_percent")
     if isinstance(ref_loss, (int, float)) and ref_loss >= 60:
         return "crit", f"internet degraded ({ref_loss:.0f}% loss to {reference.get('host', '?')})"
-    gateway = payload.get("gateway") or {}
+    gateway = _as_dict(payload.get("gateway"))
     latency = gateway.get("latency_ms")
     loss = gateway.get("loss_percent")
     slow = isinstance(latency, (int, float)) and latency > 100
@@ -639,7 +680,7 @@ def evaluate_section(
     """
 
     now = now or datetime.now(timezone.utc)
-    reported = payload.get("status", "ok")
+    reported = _valid_status(payload.get("status", "ok"))
     summary = payload.get("summary", "")
     rule = RULES.get(name)
     if rule is None:
