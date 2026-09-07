@@ -463,7 +463,19 @@ def register_tools(
                     await call_log.record(agent_id, tool_name, args, ok=False, error=message)
                     raise ToolError("unsupported", message)
 
-            timeout_s = max(float(args.get("timeout_s", 30)), min_timeout_s)
+            # timeout_s is unvalidated client input (like every other key in
+            # args): a non-numeric value must fail closed with the same
+            # ToolError("bad_args", ...) + audit-log treatment every other
+            # rejected call gets here, not an unhandled TypeError/ValueError
+            # out of float().
+            try:
+                timeout_s = max(float(args.get("timeout_s", 30)), min_timeout_s)
+            except (TypeError, ValueError):
+                message = f"timeout_s must be a number, got {args.get('timeout_s')!r}"
+                forward_logger.info("refused %s -> %s: %s", tool_name, agent_id, message)
+                await call_log.record(agent_id, tool_name, args, ok=False, error=message)
+                raise ToolError("bad_args", message)
+
             forward_logger.info("forward %s -> %s", tool_name, agent_id)
             try:
                 result = await tunnel.send_request(agent_id, tool_name, args, timeout_s)

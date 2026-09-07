@@ -16,11 +16,13 @@ structurally impossible: routing is decided per call, from an explicit
 from __future__ import annotations
 
 import pytest
+from fastmcp import Client, FastMCP
 
 from kenny_server.auth import Principal
 from kenny_server.registry import AgentRegistry
-from kenny_server.tools import _resolve_target
-from kenny_server.tunnel import ToolError
+from kenny_server.store import TelemetryStore
+from kenny_server.tools import CallLog, register_tools, _resolve_target
+from kenny_server.tunnel import AgentTunnel, ToolError
 
 
 async def _noop(_frame: object) -> None:
@@ -122,3 +124,40 @@ def test_resolve_target_works_without_a_principal() -> None:
     with pytest.raises(ToolError) as excinfo:
         _resolve_target(None, {})
     assert excinfo.value.code == "no_agent"
+
+
+@pytest.mark.asyncio
+async def test_forwarder_rejects_non_numeric_timeout_s_instead_of_crashing(tmp_path) -> None:
+    """A forwarded call's ``timeout_s`` is unvalidated client input like every
+    other key in ``args`` (ADR-0038's own point about ``agent_id``). Before this
+    fix, ``float(args["timeout_s"])`` raised an unhandled ``TypeError``/
+    ``ValueError`` straight out of the tool instead of the ``ToolError(
+    "bad_args", ...)`` every other rejected call gets, and skipped the audit
+    log entry that failure should have left behind."""
+
+    registry = AgentRegistry()
+    store = TelemetryStore(str(tmp_path / "t.sqlite"))
+    await store.connect()
+    tunnel = AgentTunnel(registry, store, event_store=None)
+    call_log = CallLog(event_store=None)
+
+    mcp = FastMCP("test")
+    register_tools(mcp, registry=registry, store=store, tunnel=tunnel, call_log=call_log)
+    try:
+        async with Client(mcp) as client:
+            from fastmcp.exceptions import ToolError as ClientToolError
+
+            with pytest.raises(ClientToolError, match="timeout_s"):
+                await client.call_tool(
+                    "fs_list",
+                    {"args": {"agent_id": "ghost", "path": "C:\\", "timeout_s": "not-a-number"}},
+                )
+
+        # The rejected call still leaves an audit entry, like every other
+        # ToolError path in `forward` (unsupported OS, forwarding failure).
+        entries = await call_log.list()
+        assert len(entries) == 1
+        assert entries[0]["ok"] is False
+        assert "timeout_s" in entries[0]["error"]
+    finally:
+        await store.close()

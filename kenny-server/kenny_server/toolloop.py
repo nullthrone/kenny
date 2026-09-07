@@ -530,7 +530,18 @@ class ToolExecutor:
 
         if not agent_id:
             raise ToolError("no_agent", "no target agent for this call")
-        timeout_s = float(args.get("timeout_s", 30))
+        # timeout_s is unvalidated input (an LLM tool-call argument, not
+        # schema-checked before it gets here): a non-numeric value must fail
+        # closed as ToolError("bad_args", ...), not an unhandled TypeError/
+        # ValueError out of float() that would propagate out of the
+        # `drive_events` generator instead of becoming a normal tool_result
+        # error event.
+        try:
+            timeout_s = float(args.get("timeout_s", 30))
+        except (TypeError, ValueError):
+            message = f"timeout_s must be a number, got {args.get('timeout_s')!r}"
+            await self.call_log.record(agent_id, tool, args, ok=False, error=message)
+            raise ToolError("bad_args", message)
         try:
             result = await self.tunnel.send_request(agent_id, tool, args, timeout_s)
             await self.call_log.record(agent_id, tool, args, ok=True)
