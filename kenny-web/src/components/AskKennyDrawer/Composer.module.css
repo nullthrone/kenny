@@ -53,4 +53,7 @@
   min-height: 44px;
   flex: none;
   white-space: nowrap;
+  max-width: 100%;
+  overflow: clip;
+  text-overflow: ellipsis;
 }

@@ -59,6 +59,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  max-width: 100%;
 }
 
 /* Online/offline, next to the name: the status column reports rollout
@@ -76,6 +77,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  max-width: 100%;
 }
 
 .bar {
@@ -97,6 +99,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  max-width: 100%;
 }
 
 /* Soll/ist pair (ADR-0048): the badge is what the connected binary reports

@@ -47,6 +47,9 @@
   color: var(--brass-600);
   padding: 1px 6px;
   white-space: nowrap;
+  max-width: 100%;
+  overflow: clip;
+  text-overflow: ellipsis;
 }
 
 .offTag {
@@ -57,6 +60,9 @@
   border: 1px solid var(--border-mid);
   padding: 1px 6px;
   white-space: nowrap;
+  max-width: 100%;
+  overflow: clip;
+  text-overflow: ellipsis;
 }
 
 .windowDetail {
@@ -178,6 +184,9 @@
   letter-spacing: var(--track-caps);
   color: var(--text-body);
   white-space: nowrap;
+  max-width: 100%;
+  overflow: clip;
+  text-overflow: ellipsis;
   flex-shrink: 0;
 }
 .addButton:disabled {

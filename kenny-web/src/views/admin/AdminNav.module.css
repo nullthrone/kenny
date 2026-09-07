@@ -17,6 +17,9 @@
   text-decoration: none;
   min-height: 20px;
   white-space: nowrap;
+  max-width: 100%;
+  overflow: clip;
+  text-overflow: ellipsis;
 }
 .item:hover {
   background: var(--surface-inset);

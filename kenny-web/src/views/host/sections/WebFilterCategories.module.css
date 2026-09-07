@@ -33,6 +33,9 @@
   color: var(--text-muted);
   padding: 1px 6px;
   white-space: nowrap;
+  max-width: 100%;
+  overflow: clip;
+  text-overflow: ellipsis;
   flex-shrink: 0;
 }
 
@@ -47,6 +50,9 @@
   font-size: 11px;
   color: var(--text-faint);
   white-space: nowrap;
+  max-width: 100%;
+  overflow: clip;
+  text-overflow: ellipsis;
 }
 
 .error {

@@ -1,10 +1,16 @@
-# Dashboard screenshot generation
+# Rendering the dashboard headlessly
 
-Regenerate the figures in `docs/assets/screenshots/` by rendering the **real**
-web dashboard (`kenny-web/`, the React/TypeScript console) against a **mock**
-demo fleet of ~6 family PCs, using kenny's real fonts (Jost + Public Sans +
-JetBrains Mono — Nullthrone's display/body/mono stack). One command seeds an
-in-process server, drives headless Chromium, and writes the PNGs.
+Two tools that look at the same thing: the **real** web dashboard (`kenny-web/`,
+the React/TypeScript console) rendered against a **mock** demo fleet of ~6
+family PCs, in kenny's real fonts (Jost + Public Sans + JetBrains Mono —
+Nullthrone's display/body/mono stack), served in-process and driven by headless
+Chromium.
+
+- `capture.py` writes the figures in `docs/assets/screenshots/`.
+- `overflow_audit.py` asserts that no box paints outside the box containing it.
+
+They share `harness.py` — the same env, server, seed and browser — so a figure
+and an audit are statements about the same dashboard.
 
 ## Quick start
 
@@ -17,6 +23,9 @@ cd ..
 python scripts/screenshots/capture.py                 # -> docs/assets/screenshots/
 python scripts/screenshots/capture.py --only today,fleet
 python scripts/screenshots/capture.py --out /tmp/shots # render elsewhere first
+
+python scripts/screenshots/overflow_audit.py          # every view x 3 widths
+python scripts/screenshots/overflow_audit.py --route '#/fleet/grandpa-pc' --width 402
 ```
 
 The tool prints a per-shot `[ok]`/`[FAIL]` line and a final summary; it exits
@@ -24,8 +33,8 @@ non-zero if any shot failed. It never runs `playwright install`.
 
 ## How it works
 
-`capture.py` does everything in one event loop so the state it seeds is the
-state the browser sees:
+`harness.demo_dashboard()` does steps 1-3 in one event loop, so the state it
+seeds is the state the browser sees:
 
 1. **build** — `kenny_server.main.build_app(db_path=<tempfile>)` with the demo
    env applied first (see *Env knobs*). The prebuilt `kenny-web` output must
@@ -37,8 +46,8 @@ state the browser sees:
    as. In-memory state (the `ScreenshotStore`, registry online flags) *must*
    be seeded in-process — a "write SQLite then start server" approach would
    miss it. See `seed.py`.
-4. **drive** — Playwright Chromium loads each shot's view, runs its actions,
-   asserts the fonts, and captures.
+4. **drive** — Playwright Chromium loads each view, asserts the fonts, and then
+   either captures it (`capture.py`) or measures it (`overflow_audit.py`).
 
 ### Modules
 
@@ -48,7 +57,9 @@ state the browser sees:
 | `desktop_image.py` | Pure-Python PNG of a mock desktop for the screenshot card (no Pillow). |
 | `seed.py` | Seeds a *running* app's stores in-process (telemetry, registry, webfilter, screenshots, activity, chat history, tickets, Discord identities, reliability category cache, the browser's own login session). |
 | `shots.py` | The **manifest** — one `Shot` per figure. |
+| `harness.py` | Env, in-process server, demo seed, Chromium launch, font assertion — everything both entrypoints share. |
 | `capture.py` | Entrypoint: seed → serve → drive → write PNGs. |
+| `overflow_audit.py` + `.js` | Entrypoint: seed → serve → measure every box against the box containing it. |
 
 ### The demo fleet (documented health mix)
 
@@ -123,4 +134,21 @@ PNGs. If fonts fail, check `HTTPS_PROXY` and the proxy CA (see
 
 ## Viewport
 
-`1500×950`, `deviceScaleFactor: 2` (crisp 2× PNGs).
+`1500×950`, `deviceScaleFactor: 2` (crisp 2× PNGs). The audit re-renders at
+`1500`, `900` and `402` — the capture width, the awkward middle where the
+sidebar is still shown, and the narrowest phone the 760px mobile breakpoint is
+written for.
+
+## The overflow audit
+
+`overflow_audit.py` asserts one rule: an element's border box never crosses the
+border box of the nearest ancestor that draws one (a border or a background) —
+the box an operator reads as "the card". It reports the element, the box it
+broke out of, the pixels, and the text it was carrying, and exits non-zero.
+
+It is the half of the invariant that `kenny-web/src/styles/containment.test.ts`
+cannot see. That test reads the stylesheets and catches the *generator* of these
+bugs — an unshrinkable, unwrappable label with no width bound — and runs in CI
+with the rest of the frontend suite. This one needs a browser, so it runs on
+demand: after a layout change, and whenever a string that comes from a host
+(a health `reason`, a path, a hostname) starts being rendered somewhere new.

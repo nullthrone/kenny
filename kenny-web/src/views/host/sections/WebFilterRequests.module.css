@@ -5,6 +5,7 @@
 }
 
 .row {
+  composes: kc-box from global;
   border: 1px solid var(--border-line);
   padding: 10px 12px;
 }
@@ -28,6 +29,9 @@
   font-size: 10px;
   color: var(--text-faint);
   white-space: nowrap;
+  max-width: 100%;
+  overflow: clip;
+  text-overflow: ellipsis;
 }
 
 .summary {

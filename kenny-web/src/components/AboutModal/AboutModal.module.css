@@ -127,6 +127,9 @@
   font-size: 12px;
   color: var(--text-muted);
   white-space: nowrap;
+  max-width: 100%;
+  overflow: clip;
+  text-overflow: ellipsis;
 }
 
 /* Markdown deliberately sets no type scale of its own — the call site supplies

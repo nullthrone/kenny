@@ -20,6 +20,7 @@
 }
 
 .eventCard {
+  composes: kc-box from global;
   border: 1px solid var(--border-line);
   padding: 12px 14px;
 }
@@ -128,6 +129,9 @@
   padding: 1px 6px;
   color: var(--text-muted);
   white-space: nowrap;
+  max-width: 100%;
+  overflow: clip;
+  text-overflow: ellipsis;
 }
 
 .ruleText {
@@ -237,6 +241,9 @@
   width: 1px;
 }
 
+/* containment-exempt: a column header of the heatmap table, which scrolls
+   sideways inside .heatmapWrap. Capping the cells would collapse that
+   scroll rather than contain anything. */
 .heatmapDay {
   padding: 0 2px;
   font-weight: 400;
@@ -244,6 +251,7 @@
   white-space: nowrap;
 }
 
+/* containment-exempt: a row header of the same sideways-scrolling table. */
 .heatmapRowLabel {
   padding-right: 8px;
   text-align: left;
@@ -276,6 +284,7 @@
 }
 
 .group {
+  composes: kc-box from global;
   border: 1px solid var(--border-line);
   border-radius: 2px;
 }
@@ -304,6 +313,9 @@
   padding: 0 12px 12px;
 }
 
+/* containment-exempt: the visually-hidden pattern. The element is 1px, out of
+   flow and already clipped; nowrap is what keeps a screen reader reading the
+   text as one line. */
 .srOnly {
   position: absolute;
   width: 1px;

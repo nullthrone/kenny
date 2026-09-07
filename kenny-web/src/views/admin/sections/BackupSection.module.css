@@ -30,6 +30,9 @@
   min-height: 40px;
   text-decoration: none;
   white-space: nowrap;
+  max-width: 100%;
+  overflow: clip;
+  text-overflow: ellipsis;
   flex-shrink: 0;
 }
 .download:hover {

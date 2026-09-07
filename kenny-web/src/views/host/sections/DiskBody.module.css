@@ -36,6 +36,9 @@
   font-family: var(--font-mono);
   font-size: 11px;
   white-space: nowrap;
+  max-width: 100%;
+  overflow: clip;
+  text-overflow: ellipsis;
 }
 
 .smart {

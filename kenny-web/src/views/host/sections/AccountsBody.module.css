@@ -20,6 +20,7 @@
 }
 
 .card {
+  composes: kc-box from global;
   border: 1px solid var(--border-line);
   padding: 14px 16px;
 }

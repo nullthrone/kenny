@@ -164,6 +164,9 @@
   letter-spacing: var(--track-caps);
   min-height: 40px;
   white-space: nowrap;
+  max-width: 100%;
+  overflow: clip;
+  text-overflow: ellipsis;
   color: var(--text-body);
 }
 .copyButton:hover {

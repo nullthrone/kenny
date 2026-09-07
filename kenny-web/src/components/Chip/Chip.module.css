@@ -8,6 +8,9 @@
   color: var(--text-body);
   min-height: 40px;
   white-space: nowrap;
+  max-width: 100%;
+  overflow: clip;
+  text-overflow: ellipsis;
   flex-shrink: 0;
 }
 
