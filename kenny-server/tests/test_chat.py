@@ -758,6 +758,41 @@ async def test_run_capability_fails_closed_without_a_target(
     assert excinfo.value.code == "no_agent"
 
 
+async def test_run_capability_rejects_non_numeric_timeout_s(
+    store: TelemetryStore,
+) -> None:
+    """``timeout_s`` is an LLM-supplied tool-call argument, not schema-checked
+    before it reaches here. Before this fix, ``float(args["timeout_s"])``
+    raised an unhandled ``ValueError``/``TypeError`` straight out of
+    ``run_capability`` instead of the ``ToolError("bad_args", ...)`` every
+    other rejected call gets — which would have propagated out of the
+    ``drive_events`` generator (dashboard chat SSE, the ticket assistant loop)
+    instead of becoming a normal ``tool_result`` error event."""
+
+    executor, _registry, tunnel = _executor(store)
+
+    called = False
+
+    async def fake_send_request(agent_id, tool, args, timeout_s):  # type: ignore[no-untyped-def]
+        nonlocal called
+        called = True
+        return {}
+
+    tunnel.send_request = fake_send_request  # type: ignore[assignment]
+
+    with pytest.raises(ToolError) as excinfo:
+        await executor.run_capability(
+            "diag_processes", {"timeout_s": "not-a-number"}, agent_id="alpha"
+        )
+    assert excinfo.value.code == "bad_args"
+    assert not called
+
+    entries = await executor.call_log.list()
+    assert len(entries) == 1
+    assert entries[0]["ok"] is False
+    assert "timeout_s" in entries[0]["error"]
+
+
 def test_resolve_chat_target_prefers_explicit_override_over_session() -> None:
     session = FleetSession(id="s", agent_id="alpha")
     args = {"agent_id": "beta", "path": "C:\\"}
