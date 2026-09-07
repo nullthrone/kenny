@@ -87,6 +87,9 @@
   letter-spacing: var(--track-caps);
   min-height: 44px;
   white-space: nowrap;
+  max-width: 100%;
+  overflow: clip;
+  text-overflow: ellipsis;
   flex-shrink: 0;
 }
 .btn:hover:not(:disabled) {
@@ -114,6 +117,7 @@
 }
 
 .errorBox {
+  composes: kc-box from global;
   padding: 10px 12px;
   border: 1px solid var(--danger);
   background: var(--danger-bg);
@@ -122,6 +126,7 @@
 }
 
 .okBox {
+  composes: kc-box from global;
   padding: 10px 12px;
   border: 1px solid var(--ok);
   background: var(--ok-bg);

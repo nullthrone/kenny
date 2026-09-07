@@ -9,6 +9,7 @@
 }
 
 .userBubble {
+  composes: kc-box from global;
   align-self: flex-end;
   max-width: 85%;
   background: var(--surface-inset);
@@ -48,6 +49,7 @@
 }
 
 .gateTrace {
+  composes: kc-box from global;
   align-self: flex-start;
   max-width: 92%;
   font-family: var(--font-mono);

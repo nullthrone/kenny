@@ -37,6 +37,9 @@
   letter-spacing: var(--track-caps);
   min-height: 44px;
   white-space: nowrap;
+  max-width: 100%;
+  overflow: clip;
+  text-overflow: ellipsis;
   flex-shrink: 0;
 }
 .action:hover {

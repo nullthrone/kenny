@@ -1,4 +1,5 @@
 .panel {
+  composes: kc-box from global;
   background: var(--kc-inv-bg);
   color: var(--kc-inv-fg);
   padding: 22px 24px;

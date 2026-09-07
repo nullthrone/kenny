@@ -11,6 +11,7 @@
 }
 
 .card {
+  composes: kc-box from global;
   background: var(--surface-card);
   border: 1px solid var(--border-line);
   box-shadow: var(--shadow-1);
@@ -42,6 +43,9 @@
   letter-spacing: var(--track-caps);
   min-height: 44px;
   white-space: nowrap;
+  max-width: 100%;
+  overflow: clip;
+  text-overflow: ellipsis;
   flex-shrink: 0;
 }
 .btn:hover:not(:disabled) {
@@ -78,6 +82,7 @@
 }
 
 .errorBox {
+  composes: kc-box from global;
   padding: 10px 12px;
   border: 1px solid var(--danger);
   background: var(--danger-bg);
@@ -87,6 +92,7 @@
 }
 
 .warnBox {
+  composes: kc-box from global;
   padding: 10px 12px;
   border: 1px solid var(--warn);
   background: var(--warn-bg);
@@ -96,6 +102,7 @@
 }
 
 .okBox {
+  composes: kc-box from global;
   padding: 10px 12px;
   border: 1px solid var(--ok);
   background: var(--ok-bg);

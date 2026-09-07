@@ -14,6 +14,7 @@
 }
 
 .problemCard {
+  composes: kc-box from global;
   display: block;
   width: 100%;
   text-align: left;
@@ -42,13 +43,20 @@
   min-width: 0;
 }
 
+/* Carries the health rule's `reason` verbatim, and that string has no length
+   the dashboard can count on: reliability's reason (health_rules.py's
+   `_reliability_reason`) is a full sentence, Windows Update's lists every
+   failing KB. It WRAPS instead of truncating — the verdict is at the end of
+   the string ("… ⇒ crit"), which is exactly what an ellipsis would eat.
+   kc-evidence supplies the cap that makes the wrapping bite; as an
+   unshrinkable nowrap chip this reason used to be laid out at its
+   max-content width and painted straight out through the card's border. */
 .rule {
+  composes: kc-evidence from global;
   font-family: var(--font-mono);
   font-size: 11px;
   border: 1px solid currentColor;
   padding: 2px 8px;
-  white-space: nowrap;
-  flex-shrink: 0;
 }
 
 .problemSummary {
@@ -66,6 +74,7 @@
 }
 
 .healthyCell {
+  composes: kc-box from global;
   display: flex;
   align-items: center;
   gap: 9px;
@@ -87,6 +96,7 @@
 }
 
 .postureRow {
+  composes: kc-box from global;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -116,6 +126,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  max-width: 100%;
 }
 
 .postureSince {

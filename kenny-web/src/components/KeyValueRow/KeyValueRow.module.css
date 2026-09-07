@@ -1,4 +1,5 @@
 .row {
+  composes: kc-box from global;
   display: flex;
   gap: 16px;
   align-items: center;
@@ -38,6 +39,9 @@
   letter-spacing: var(--track-caps);
   min-height: 40px;
   white-space: nowrap;
+  max-width: 100%;
+  overflow: clip;
+  text-overflow: ellipsis;
   flex-shrink: 0;
 }
 .action:hover {

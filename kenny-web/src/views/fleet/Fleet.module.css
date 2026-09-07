@@ -36,6 +36,7 @@
 }
 
 .card {
+  composes: kc-box from global;
   display: block;
   background: var(--surface-card);
   box-shadow: var(--shadow-1);
@@ -71,6 +72,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  max-width: 100%;
 }
 
 .sevLabel {

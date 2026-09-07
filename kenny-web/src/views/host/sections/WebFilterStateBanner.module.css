@@ -1,4 +1,5 @@
 .banner {
+  composes: kc-box from global;
   border: 1px solid var(--border-mid);
   padding: 14px 16px;
   margin-bottom: 20px;

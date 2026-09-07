@@ -125,11 +125,68 @@ a {
 }
 
 /* UI labels — buttons and uppercase caps labels — never wrap and never
- * shrink to nothing in a flex row. */
+ * shrink to nothing in a flex row. The cap and the clip are what keep that
+ * from turning into overflow when a label carries server text after all
+ * (SeverityChip renders the API's own `severity_label`): see "Containment"
+ * below. */
 .kc-btn,
 .kc-caps {
   white-space: nowrap;
   flex-shrink: 0;
+  max-width: 100%;
+  overflow: clip;
+  text-overflow: ellipsis;
+}
+
+/* ── Containment: an inner box never crosses its parent's border ──────────
+ * Overflow in this console has one recurring shape. A child that cannot wrap
+ * (`white-space: nowrap`) and cannot shrink (`flex-shrink: 0`, or a flex
+ * item's default `min-width: auto`) is laid out at its max-content width.
+ * When the string is server-supplied — a health `reason`, a failing-update
+ * list, a path, a hostname — that width is unbounded, so the child paints
+ * past the card's border instead of the card growing to fit it.
+ *
+ * Two rules close that off, and `src/styles/containment.test.ts` enforces
+ * them across every stylesheet in this app:
+ *
+ * 1. `white-space: nowrap` is only allowed with BOTH halves of its
+ *    containment — a width bound (`max-width`) so the box stays inside its
+ *    parent, and a clip (`overflow: clip|hidden`) so the text stays inside
+ *    the box. Either half alone still overflows. A rule that genuinely needs
+ *    an unbounded nowrap (a cell inside a horizontal scroller) opts out with
+ *    a `containment-exempt: <reason>` comment.
+ *
+ * 2. A surface that draws a border or a background composes `.kc-box`, so a
+ *    layout mistake that survives rule 1 — several unshrinkable siblings in
+ *    one row, a fixed `min-width`, a negative margin — is clipped at the
+ *    border rather than painted across the page.
+ *
+ * `.kc-evidence` is the third piece: the treatment for a label whose text
+ * comes from the server and must stay readable rather than be truncated.
+ */
+
+/* Any bordered or filled surface: cards, panels, list rows, modal shells.
+ * `clip`, not `hidden` — `hidden` makes the box a scroll container (and an
+ * anchor for `position: sticky` descendants), `clip` only clips.
+ * `overflow-clip-margin` leaves room for the 4px focus ring (--focus-ring) of
+ * a child sitting flush against the padding edge. */
+.kc-box {
+  overflow: clip;
+  overflow-clip-margin: 4px;
+}
+
+/* A label or chip whose text comes from the server — a health `reason`, a
+ * list of failing KBs, a path. It WRAPS rather than truncating: the verdict
+ * these strings carry sits at their end ("… ⇒ crit"), which is exactly what
+ * an ellipsis would cut off. The cap is what makes the wrapping bite —
+ * `overflow-wrap: break-word` does not lower an element's min-content width,
+ * so without it a flex item is still laid out at max-content and escapes its
+ * parent regardless of how freely its text may wrap. */
+.kc-evidence {
+  max-width: 100%;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: break-word;
 }
 
 /* Every gate/action button row. Without flex-wrap a third button escapes
@@ -146,11 +203,15 @@ a {
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
+  max-width: 100%;
 }
 
 /* Value spans like `enabled` or `thomas#1121` must not break mid-token. */
 .kc-value {
   white-space: nowrap;
+  max-width: 100%;
+  overflow: clip;
+  text-overflow: ellipsis;
 }
 
 /* ── Motion ─────────────────────────────────────────────────────────────
@@ -324,6 +385,8 @@ a {
     border-bottom: 1px solid var(--border-line);
     padding-bottom: 8px;
   }
+  /* containment-exempt: .kc-adminnav is the horizontal scroller these tabs
+     are meant to scroll inside; capping them would collapse the scroll. */
   .kc-adminnav a {
     white-space: nowrap;
     border-left: none !important;

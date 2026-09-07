@@ -11,6 +11,7 @@
 }
 
 .identity {
+  composes: kc-box from global;
   display: flex;
   align-items: center;
   gap: 16px;
@@ -68,6 +69,9 @@
   letter-spacing: var(--track-caps);
   min-height: 44px;
   white-space: nowrap;
+  max-width: 100%;
+  overflow: clip;
+  text-overflow: ellipsis;
   flex-shrink: 0;
 }
 .editBtn:hover {
@@ -79,6 +83,7 @@
 }
 
 .sharedNotice {
+  composes: kc-box from global;
   padding: 18px 20px;
   border: 1px solid var(--border-line);
   background: var(--surface-card);

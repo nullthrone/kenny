@@ -55,6 +55,7 @@
   padding: 2px 0;
   text-align: center;
   white-space: nowrap;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -97,6 +98,9 @@
   letter-spacing: var(--track-caps);
   min-height: 44px;
   white-space: nowrap;
+  max-width: 100%;
+  overflow: clip;
+  text-overflow: ellipsis;
 }
 .olderBtn:hover:not(:disabled) {
   background: var(--surface-inset);
