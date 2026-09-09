@@ -22,6 +22,9 @@ kenny-server/*.sqlite*
 .idea/
 .vscode/
 
+# Claude Code agent worktrees (isolated subagent working copies)
+.claude/worktrees/
+
 # Python build artifacts
 /kenny-server/build/
 /kenny-server/dist/
