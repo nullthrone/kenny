@@ -81,6 +81,8 @@ def disk_forecast(daily: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Days-until-full estimate per volume from the daily ``percent_used`` series."""
 
     def volumes(payload: dict[str, Any]):
+        # `disk.volumes` is an unvalidated wire extra (protocol.Section allows any
+        # extra field) -- a malfunctioning/malicious agent can push a non-list value.
         raw = payload.get("volumes")
         for vol in raw if isinstance(raw, list) else []:
             if isinstance(vol, dict) and vol.get("mount"):
