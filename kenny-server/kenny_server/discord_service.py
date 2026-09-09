@@ -1213,7 +1213,18 @@ class DiscordService:
             if binding is not None:
                 ticket = await self.store.get(binding.ticket_id)
         elif ref.isdigit():
-            ticket = await self.store.get_by_number(int(ref))
+            # ``str.isdigit()`` is True for Unicode digit-like characters
+            # (e.g. superscript "²") that ``int()`` refuses to parse, and
+            # for digit strings past Python's int-string conversion length
+            # limit -- both raise ``ValueError`` on an attacker-controlled
+            # Discord ``ticket`` option. Treat either as "not a ticket
+            # number" rather than letting the interaction crash.
+            try:
+                number = int(ref)
+            except ValueError:
+                number = None
+            if number is not None:
+                ticket = await self.store.get_by_number(number)
         if ticket is None:
             ticket = await self.store.get(ticket_ref.strip())
         if ticket is None:

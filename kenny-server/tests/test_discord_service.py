@@ -1646,6 +1646,26 @@ async def test_status_and_close_are_owner_scoped(world: World) -> None:
     assert world.gateway.archived == [world.gateway.threads[0].thread_id]
 
 
+async def test_close_ticket_with_a_unicode_digit_ref_is_a_plain_miss(world: World) -> None:
+    """A ``ticket`` option ``str.isdigit()`` accepts but ``int()`` rejects
+    (e.g. the superscript "²") must resolve to "not found", not crash the
+    interaction -- ``ticket_ref`` is free text typed by any Discord user."""
+
+    service = world.build(text_turn("on it"))
+    await service.handle_event(mention("my pc is slow"))
+    await only_ticket(world)
+
+    assert "could not find" in await service.close_ticket(
+        discord_user_id=D_LENA, guild_id=GUILD, ticket_ref="KEN-²"
+    )
+    # A digit string past Python's int-string conversion limit raises the
+    # same ValueError as the Unicode-digit case above; both must degrade
+    # the same way.
+    assert "could not find" in await service.close_ticket(
+        discord_user_id=D_LENA, guild_id=GUILD, ticket_ref="9" * 5000
+    )
+
+
 async def test_close_this_resolves_the_ticket_bound_to_the_calling_thread(
     world: World,
 ) -> None:
