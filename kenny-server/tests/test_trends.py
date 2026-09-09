@@ -84,3 +84,15 @@ def test_battery_trend_reports_drift_per_30d() -> None:
 
 def test_battery_trend_none_without_battery_section() -> None:
     assert battery_trend([{"collected_at": "2026-06-10T20:00:00+00:00", "snapshot": {}}]) is None
+
+
+def test_non_list_volumes_field_is_ignored_not_a_crash() -> None:
+    # `disk.volumes` is an unvalidated wire extra (protocol.Section allows any extra
+    # field), so a malfunctioning/malicious agent can push a non-list value here.
+    daily = [
+        {
+            "collected_at": "2026-06-10T20:00:00+00:00",
+            "snapshot": {"disk": {"status": "ok", "summary": "", "volumes": 5}},
+        }
+    ]
+    assert disk_forecast(daily) == []

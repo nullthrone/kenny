@@ -81,7 +81,8 @@ def disk_forecast(daily: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Days-until-full estimate per volume from the daily ``percent_used`` series."""
 
     def volumes(payload: dict[str, Any]):
-        for vol in payload.get("volumes") or []:
+        raw = payload.get("volumes")
+        for vol in raw if isinstance(raw, list) else []:
             if isinstance(vol, dict) and vol.get("mount"):
                 yield str(vol["mount"]), vol.get("percent_used")
 
