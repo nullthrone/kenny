@@ -739,3 +739,88 @@ def test_an_alert_that_opens_no_ticket_is_linked_to_nothing(tmp_path) -> None:
         assert len(tickets) == 1
         alerts = asyncio.run(app.state.event_store.alerts_for_ticket(tickets[0].id))
         assert [a["title"] for a in alerts] == ["up"]
+
+
+def test_a_forecast_and_an_acute_disk_finding_share_one_ticket(tmp_path) -> None:
+    """One filling volume is one case, whichever producer noticed it.
+
+    The forecast ("~11 days until full") and the health rule ("96% used") are
+    two views of the same condition. Keyed by producer they opened two tickets;
+    keyed by subject the second attaches to the first.
+    """
+
+    app = build_app(db_path=str(tmp_path / "subject.sqlite"))
+    with TestClient(app):
+        open_ticket = app.state.alert_engine._open_ticket
+
+        forecast = Notification(
+            title="pc1: disk filling up",
+            body="C: ~11d until full",
+            agent_id="pc1",
+            kind="alert",
+            event_type="disk_forecast",
+            sections={"disk": "warn"},
+        )
+        asyncio.run(open_ticket(forecast))
+        asyncio.run(open_ticket(_alert("pc1", title="pc1: disk is crit", sections={"disk": "crit"})))
+
+        tickets = asyncio.run(app.state.ticket_store.list(limit=50))
+        assert len(tickets) == 1
+        events = asyncio.run(app.state.ticket_store.list_events(tickets[0].id))
+        assert any("alerted again" in (e.summary or "") for e in events)
+
+
+def test_a_change_and_a_finding_on_one_section_stay_separate(tmp_path) -> None:
+    """The space axis, doing its job.
+
+    "a service appeared" and "a service is down" both name ``services``, but
+    only the second can ever come back to ok. Merging them would produce a
+    ticket whose linked findings are answerable for half its alerts.
+    """
+
+    app = build_app(db_path=str(tmp_path / "space.sqlite"))
+    with TestClient(app):
+        open_ticket = app.state.alert_engine._open_ticket
+
+        change = Notification(
+            title="pc1: a new service appeared",
+            body="Foo",
+            agent_id="pc1",
+            kind="alert",
+            event_type="change",
+            sections={"services": ""},
+        )
+        asyncio.run(open_ticket(change))
+        asyncio.run(open_ticket(_alert("pc1", title="pc1: services crit", sections={"services": "crit"})))
+
+        assert len(asyncio.run(app.state.ticket_store.list(limit=50))) == 2
+
+
+def test_offline_and_a_forecast_on_one_host_stay_separate(tmp_path) -> None:
+    """Neither names a section it can be keyed on before the forecast declares
+    ``disk``; without the event_type fallback both collapse into one subject and
+    "the PC is unreachable" absorbs "the disk is filling up"."""
+
+    app = build_app(db_path=str(tmp_path / "fallback.sqlite"))
+    with TestClient(app):
+        open_ticket = app.state.alert_engine._open_ticket
+
+        offline = Notification(
+            title="pc1 is offline",
+            body="No telemetry for 1.2h",
+            agent_id="pc1",
+            kind="alert",
+            event_type="offline",
+        )
+        forecast = Notification(
+            title="pc1: disk filling up",
+            body="C: ~11d until full",
+            agent_id="pc1",
+            kind="alert",
+            event_type="disk_forecast",
+            sections={"disk": "warn"},
+        )
+        asyncio.run(open_ticket(offline))
+        asyncio.run(open_ticket(forecast))
+
+        assert len(asyncio.run(app.state.ticket_store.list(limit=50))) == 2

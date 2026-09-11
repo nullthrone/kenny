@@ -24,6 +24,7 @@ from typing import Any
 
 import aiosqlite
 
+from . import alert_subject
 from .store import DEFAULT_DB_PATH, _begin_immediate, _configure_connection, write_lock
 
 __all__ = [
@@ -583,6 +584,31 @@ class TicketStore:
         await self._conn.execute(
             "UPDATE ticket_events SET actor = 'assistant' WHERE actor = 'kenny'"
         )
+        await self._migrate_dedup_keys()
+
+    async def _migrate_dedup_keys(self) -> None:
+        """Rewrite alert dedup keys into the current format (``alert_subject``).
+
+        Over *every* alert ticket, not only the open ones: a resolved ticket's
+        key stays comparable to a live one, which is what a reader asking "has
+        this subject been dealt with before?" needs.
+
+        Row by row in Python rather than as SQL string surgery, because the
+        mapping is not a substitution — ``disk_forecast`` changes subject, not
+        just position. Idempotent by content: ``alert_subject.migrate`` is a
+        fixed point on its own output, so the next boot finds nothing to do.
+        """
+
+        async with self._conn.execute(
+            "SELECT id, dedup_key FROM tickets WHERE dedup_key LIKE 'alert|%'"
+        ) as cur:
+            rows = await cur.fetchall()
+        for row in rows:
+            new_key = alert_subject.migrate(row["dedup_key"])
+            if new_key != row["dedup_key"]:
+                await self._conn.execute(
+                    "UPDATE tickets SET dedup_key = ? WHERE id = ?", (new_key, row["id"])
+                )
 
     async def close(self) -> None:
         if self._db is not None:

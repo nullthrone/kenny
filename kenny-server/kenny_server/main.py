@@ -27,7 +27,7 @@ from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.routing import Mount, Route, WebSocketRoute
 
-from . import agent_release, event_categories
+from . import agent_release, alert_subject, event_categories
 from .alerting import AlertEngine
 from .config import Settings
 from .auth import (
@@ -385,19 +385,19 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         """Name what an alert notification is *about*, for ticket deduplication.
 
         Built from the structured discriminators the notification already
-        carries for the auto-ticket rules (``notify.Notification``) -- the host,
-        which producer raised it, and which sections it is about -- never from
-        the free-text title, which is a display string and would silently change
-        this identity whenever its wording did.
+        carries for the auto-ticket rules (``notify.Notification``) -- never
+        from the free-text title, which is a display string and would silently
+        change this identity whenever its wording did. The format and its
+        inverse live together in :mod:`kenny_server.alert_subject`.
 
-        Sorted, so the same set of sections yields the same key whatever order
-        the evaluation happened to visit them in. A notification with no
-        sections (offline, disk forecast) keys on its ``event_type`` alone,
-        which is exactly its subject.
+        ``note.kind`` stands in for a missing ``event_type``: every
+        construction site that predates that field still resolves to a subject
+        rather than to the empty string.
         """
 
-        subject = "+".join(sorted(note.sections)) if note.sections else ""
-        return f"alert|{note.agent_id or ''}|{note.event_type or note.kind}|{subject}"
+        return alert_subject.dedup_key(
+            note.agent_id or "", note.event_type or note.kind, note.sections
+        )
 
     async def open_alert_ticket(note: Notification) -> str:
         """Open the ticket an alert asks for (ADR-0027 stays best-effort).

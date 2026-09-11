@@ -313,3 +313,74 @@ def test_events_created_before_ticket_id_gain_the_column_and_keep_their_rows(tmp
         await store.close()
 
     asyncio.run(reopen())
+
+
+def test_an_open_alert_ticket_keeps_deduplicating_across_the_key_change(tmp_path) -> None:
+    """A ticket opened before the key format changed still absorbs its next alert.
+
+    Joined on purpose: the assertion is "no second ticket appeared", driven
+    through the real alert -> ticket hook, not a string comparison of the
+    migrated key against an expected one. A migration that produced a
+    plausible-looking key the live producer never mints would pass the latter
+    and silently double every alert ticket on the first upgraded server.
+
+    The forecast is the hard case — its key had no subject at all before the
+    producer named the ``disk`` section.
+    """
+
+    from kenny_server.notify import Notification
+
+    db_path = str(tmp_path / "old-keys.sqlite")
+
+    async def seed() -> None:
+        from kenny_server import ticketstore
+
+        store = ticketstore.TicketStore(db_path)
+        await store.connect()
+        await store.create(
+            title="pc1: disk filling up",
+            origin="alert",
+            priority="normal",
+            category="alert",
+            summary="",
+            agent_id="pc1",
+            dedup_key="alert|pc1|disk_forecast|",
+        )
+        await store.create(
+            title="pc1: reliability",
+            origin="alert",
+            priority="high",
+            category="alert",
+            summary="",
+            agent_id="pc1",
+            dedup_key="alert|pc1|health|reliability",
+        )
+        await store.close()
+
+    asyncio.run(seed())
+
+    app = build_app(db_path=db_path)  # boots, so _migrate rewrites the keys
+    with TestClient(app):
+        open_ticket = app.state.alert_engine._open_ticket
+
+        forecast = Notification(
+            title="pc1: disk filling up",
+            body="C: ~11d until full",
+            agent_id="pc1",
+            kind="alert",
+            event_type="disk_forecast",
+            sections={"disk": "warn"},
+        )
+        health = Notification(
+            title="pc1: reliability is crit",
+            body="12 crashes",
+            agent_id="pc1",
+            kind="alert",
+            event_type="health",
+            sections={"reliability": "crit"},
+        )
+        asyncio.run(open_ticket(forecast))
+        asyncio.run(open_ticket(health))
+
+        tickets = asyncio.run(app.state.ticket_store.list(limit=50))
+        assert len(tickets) == 2  # both recurrences attached; nothing was minted
