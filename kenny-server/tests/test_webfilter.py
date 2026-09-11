@@ -744,6 +744,18 @@ async def test_service_build_apply_follows_the_schedule(service) -> None:
     assert set(args) == {"domains", "doh_policy", "list_hash"}
 
 
+async def test_service_activity_clamps_an_unbounded_hours_argument(service) -> None:
+    """``hours`` reaches ``WebFilterService.activity`` straight from the
+    ``web_activity_query`` MCP tool with no upper bound of its own (unlike the
+    dashboard's own route, which clamps before calling in). An oversized value
+    used to overflow ``timedelta``'s C-int microseconds field and crash the call;
+    it must instead clamp to the same range the dashboard uses.
+    """
+
+    events = await service.activity("pc1", hours=10**18)
+    assert events == []
+
+
 async def test_schedule_due_only_returns_changed_enabled_hosts(service) -> None:
     await service.set_config("pc1", enabled=True, block_mode=True, categories=[])
     await service.add_domain("pc1", "chat.example", "block", None, "chat")

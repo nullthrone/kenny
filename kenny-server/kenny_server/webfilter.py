@@ -1080,6 +1080,10 @@ class WebFilterService:
     async def activity(
         self, agent_id: str, hours: int = 24, flagged_only: bool = False
     ) -> list[dict[str, Any]]:
+        # hours reaches here straight from the web_activity_query MCP tool with no
+        # upper bound of its own; an oversized value overflows timedelta's C-int
+        # microseconds field, so clamp to the same range the dashboard route uses.
+        hours = max(1, min(hours, 24 * 30))
         since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
         return await self.store.activity(agent_id, since, flagged_only)
 
