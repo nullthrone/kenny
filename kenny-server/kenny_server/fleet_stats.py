@@ -195,7 +195,9 @@ def _kpis(
 
         rb = _section(snap, "reboot_pending")
         if rb and rb.get("pending") is True:
-            reasons = ", ".join(str(r) for r in (rb.get("reasons") or [])) or "unknown"
+            raw_reasons = rb.get("reasons")
+            raw_reasons = raw_reasons if isinstance(raw_reasons, list) else []
+            reasons = ", ".join(str(r) for r in raw_reasons) or "unknown"
             reboot_members.append(_member(aid, True, f"reboot pending ({reasons})"))
 
         au = _section(snap, "app_updates")
@@ -215,7 +217,8 @@ def _kpis(
 
         dq = _section(snap, "defender_quarantine")
         if dq:
-            items = dq.get("items") or []
+            items = dq.get("items")
+            items = items if isinstance(items, list) else []
             if items:
                 quarantine_total += len(items)
                 quarantine_members.append(_member(aid, len(items), f"{len(items)} quarantined item(s)"))

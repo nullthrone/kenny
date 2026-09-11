@@ -223,12 +223,14 @@ def test_overview_handles_agent_without_snapshot():
 
 def test_overview_tolerates_malformed_list_entries_and_non_finite_numbers():
     """Every list field below (``encryption.volumes``, ``firewall.profiles``,
-    ``disk.volumes``, ``win_update.recent``) is an unvalidated agent-reported list
+    ``disk.volumes``, ``win_update.recent``, ``reboot_pending.reasons``,
+    ``defender_quarantine.items``) is an unvalidated agent-reported field
     (``Section`` allows extra fields with no shape check) -- a compromised or buggy
-    agent putting a non-dict entry there, or a huge/non-finite number in a numeric
-    field, previously crashed the whole-fleet Overview aggregation (AttributeError
-    on `.get()` of a non-dict entry, OverflowError from `_num`/`float()`), not just
-    the offending host's own read.
+    agent putting a non-dict entry in a list, a non-list value where a list is
+    expected, or a huge/non-finite number in a numeric field, previously crashed the
+    whole-fleet Overview aggregation (AttributeError on `.get()` of a non-dict entry,
+    OverflowError from `_num`/`float()`, TypeError from iterating/`len()`-ing a
+    non-list ``reasons``/``items``), not just the offending host's own read.
     """
 
     # NB: recent_crashes/stability_index are deliberately not exercised for the
@@ -242,6 +244,8 @@ def test_overview_tolerates_malformed_list_entries_and_non_finite_numbers():
         "disk": {"status": "warn", "summary": "", "volumes": [123, {"mount": "C:", "percent_used": 50}]},
         "win_update": {"status": "warn", "summary": "", "recent": ["not-a-dict", {"kb": "KB1", "result": "failed"}]},
         "memory": {"status": "ok", "summary": "", "percent_used": int("9" * 320)},
+        "reboot_pending": {"status": "warn", "summary": "", "pending": True, "reasons": 5},
+        "defender_quarantine": {"status": "warn", "summary": "", "items": 5},
     }
     agents = [_agent("bogus-1", bogus, meta={"os": "windows"})]
 
@@ -256,6 +260,10 @@ def test_overview_tolerates_malformed_list_entries_and_non_finite_numbers():
     assert [e["value"] for e in top["disk"]["entries"]] == [50]
     kpis = {k["key"]: k for k in out["kpis"]}
     assert kpis["failed_updates"]["value"] == 1
+    # A non-list reasons/items falls back to empty rather than crashing.
+    assert kpis["quarantine"]["value"] == 0
+    reboot_member = next(m for m in kpis["reboot"]["members"] if m["agent_id"] == "bogus-1")
+    assert "unknown" in reboot_member["detail"]
 
 
 def test_trend_buckets_by_day():
