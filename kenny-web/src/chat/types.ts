@@ -14,6 +14,16 @@ export interface ChatConfirmRequest {
   approve: boolean
 }
 
+/**
+ * `POST /api/tickets/{id}/chat/stream` body. No `agent_id` and no `scope`:
+ * the ticket's target is frozen server-side and a caller cannot move it
+ * (ADR-0038), so there is nothing here to get wrong.
+ */
+export interface TicketChatRequest {
+  message: string
+  mirror_to_discord: boolean
+}
+
 /** One row of `GET /api/chat/history`. */
 export interface ConversationSummary {
   id: string
@@ -70,6 +80,30 @@ export interface PendingGate {
   toolClass?: string
 }
 
+/**
+ * The ticket a conversation is bound to, when it is bound to one.
+ *
+ * Seeded by the ticket page (`InboxTicket`), which is the only place that
+ * knows a ticket's number, its frozen host, whether it has a Discord thread
+ * and whether it is currently parked on an approval. The drawer reads it and
+ * never fetches it, so the drawer stays renderable without a query client.
+ *
+ * Its presence changes three things and nothing else: which endpoint a turn
+ * posts to, that the gate belongs to the ticket page rather than the drawer,
+ * and that the conversation has no `/api/chat/history` of its own — the
+ * ticket's timeline is its history.
+ */
+export interface TicketChatTarget {
+  id: string
+  number: number
+  /** The ticket's frozen `agent_id`. Nothing in the conversation can move it. */
+  agentId: string
+  discordThread: boolean
+  assistantAvailable: boolean
+  /** `blocked_on === 'approval'`: the decision is on the ticket, next to the frozen call. */
+  blockedOnApproval: boolean
+}
+
 export interface ChatSessionState {
   /** The scope this conversation is committed to. Never changes mid-conversation
    * (ADR-0045 in the frozen contract's comment: the tier is a tool property,
@@ -99,11 +133,17 @@ export interface ChatSessionState {
   openAssistantId: string | null
   /** Monotonic counter backing transcript item ids — keeps id generation pure/deterministic. */
   seq: number
+  /** Non-null when this conversation is a ticket's own (ADR-0050). */
+  ticket: TicketChatTarget | null
 }
 
-export function makeInitialState(agentId: string): ChatSessionState {
+export function makeInitialState(
+  agentId: string,
+  ticket: TicketChatTarget | null = null,
+): ChatSessionState {
   return {
     agentId,
+    ticket,
     sessionId: null,
     items: [],
     pendingGate: null,

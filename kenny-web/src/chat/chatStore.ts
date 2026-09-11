@@ -24,12 +24,15 @@ import { api } from '../api/client'
 import { streamChatEvents } from '../api/sse'
 import type { ChatStreamRequest } from '../api/types'
 import { applyChatEvent, startUserTurn } from './reducer'
+import { announceTicketTurn } from './ticketTurn'
 import type {
   ChatConfirmRequest,
   ChatHistoryDetailResponse,
   ChatHistoryListResponse,
   ChatSessionState,
   ConversationSummary,
+  TicketChatRequest,
+  TicketChatTarget,
 } from './types'
 import { makeInitialState } from './types'
 
@@ -75,18 +78,60 @@ class ChatStore {
 
   openForScope = (agentId: string): void => {
     const s = this.state
-    if (s.agentId !== agentId && !s.pendingGate && !s.streaming) {
+    if ((s.agentId !== agentId || s.ticket !== null) && !s.pendingGate && !s.streaming) {
       this.set(makeInitialState(agentId))
     }
   }
 
-  sendMessage = async (message: string): Promise<void> => {
+  /**
+   * Point the conversation at a ticket, or refresh what it knows about the
+   * one it is already on.
+   *
+   * Called by the ticket page on every change to the ticket it is showing, so
+   * "is this parked on an approval right now" stays true without the drawer
+   * fetching anything. Switching to a *different* ticket starts clean, for
+   * the same reason `openForScope` does: the chip must never name a ticket
+   * this conversation did not run against. Rebinding the same ticket only
+   * updates the details — a live transcript is not thrown away because the
+   * ticket's state moved underneath it.
+   */
+  openForTicket = (ticket: TicketChatTarget): void => {
+    const s = this.state
+    if (s.ticket?.id === ticket.id) {
+      this.update((st) => ({ ...st, agentId: ticket.agentId, ticket }))
+      return
+    }
+    if (s.pendingGate || s.streaming) return
+    this.set(makeInitialState(ticket.agentId, ticket))
+  }
+
+  /**
+   * `mirrorToDiscord` applies to a ticket turn only, and is a per-send choice
+   * rather than session state: the ticket's own trail is the record either
+   * way, and whether this particular answer should also land in the family's
+   * thread is decided per answer.
+   */
+  sendMessage = async (message: string, mirrorToDiscord = false): Promise<void> => {
     const s = this.state
     if (s.streaming || s.pendingGate) return // never overlap turns
     this.update((st) => startUserTurn(st, message))
 
     const controller = new AbortController()
     this.controller = controller
+    if (s.ticket) {
+      // The ticket's own surface: a different endpoint, a different gate
+      // (`TicketPolicy` — read-only runs, a standard change runs and says so,
+      // a consequential one holds for an operator), and a host that is the
+      // ticket's frozen `agent_id` and is never sent from here at all
+      // (ADR-0050). The event vocabulary is deliberately the same one, which
+      // is why the reducer below does not know the difference.
+      await this.runStream(
+        `/api/tickets/${encodeURIComponent(s.ticket.id)}/chat/stream`,
+        { message, mirror_to_discord: mirrorToDiscord },
+        controller,
+      )
+      return
+    }
     // agent_id is ALWAYS sent, even as ''. Omitting the key would leave the
     // server-side session pointed at whatever host was last selected, and
     // the drawer's scope chip would then be lying about what the model can
@@ -103,6 +148,12 @@ class ChatStore {
   resolveGate = async (approve: boolean): Promise<void> => {
     const gate = this.state.pendingGate
     if (!gate || this.state.deciding) return
+    // A ticket's gate is durable and belongs to the ticket: it is decided on
+    // the ticket page beside the frozen call, it survives a reload, and it may
+    // legitimately wait for a different operator (ADR-0046, ADR-0050). There
+    // is no confirm/stream to resume it with from here, and offering a second
+    // place to decide it would be offering a decision without its evidence.
+    if (this.state.ticket) return
     // pendingGate stays set — the modal stays open with its buttons disabled
     // (`deciding`) through the whole round-trip. It's cleared only once the
     // reducer sees the matching tool_result/denied land (reducer.ts).
@@ -114,10 +165,21 @@ class ChatStore {
     await this.runStream('/api/chat/confirm/stream', body, controller)
   }
 
-  private runStream = async (url: string, body: ChatStreamRequest | ChatConfirmRequest, controller: AbortController): Promise<void> => {
+  private runStream = async (
+    url: string,
+    body: ChatStreamRequest | ChatConfirmRequest | TicketChatRequest,
+    controller: AbortController,
+  ): Promise<void> => {
+    const ticketId = this.state.ticket?.id ?? null
     try {
       for await (const event of streamChatEvents(url, body, { signal: controller.signal })) {
         this.update((st) => applyChatEvent(st, event))
+        // A ticket turn writes to the ticket's trail as it goes: its message,
+        // kenny's reply, every call. Tell the page at the two moments its own
+        // view is now behind — a gate opening, and the turn ending.
+        if (ticketId && (event.type === 'pending' || event.type === 'done')) {
+          announceTicketTurn(ticketId)
+        }
       }
     } catch (err) {
       if (controller.signal.aborted) {
@@ -125,6 +187,7 @@ class ChatStore {
       } else {
         const message = err instanceof Error ? err.message : String(err)
         this.update((st) => applyChatEvent(st, { type: 'error', error: message }))
+        if (ticketId) announceTicketTurn(ticketId)
       }
     } finally {
       if (this.controller === controller) this.controller = null

@@ -31,10 +31,10 @@ export type ComposerKeyAction = 'send' | 'newline'
 /**
  * The one place that decides whether an Enter press sends.
  *
- * Both composers — the Ask kenny drawer's and the ticket's — call this, because
- * they honour a single preference and previously disagreed about it: the drawer
- * read the setting while the ticket composer always sent on Enter, so the same
- * key did different things two clicks apart.
+ * Every composer calls this — the Ask kenny drawer's, in fleet scope and in a
+ * ticket's, and the ticket's note field — because they honour a single
+ * preference and have twice drifted from it: the same key did different things
+ * two clicks apart.
  *
  * With the preference OFF (the default) Enter inserts a newline and Cmd/Ctrl+Enter
  * sends; with it ON, Enter sends and Shift+Enter inserts a newline. Shift+Enter is

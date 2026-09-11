@@ -351,8 +351,8 @@ ticket is and its lifecycle.
 ## Ticket detail
 
 <figure markdown>
-  ![A ticket's detail view: the paraphrase and the full event timeline.](assets/screenshots/ticket-detail.png)
-  <figcaption>Ticket detail: metadata, the paraphrase and resolution, the event timeline, and the composer.</figcaption>
+  ![A ticket's detail view: the paraphrase and what happened on the ticket.](assets/screenshots/ticket-detail.png)
+  <figcaption>Ticket detail: metadata, the paraphrase and resolution, what happened, and the note field.</figcaption>
 </figure>
 
 Reached by clicking a row in the Inbox, or `#/inbox/ticket/{id}` directly — this is the
@@ -379,8 +379,8 @@ from a cold load, not just from clicking through the queue. It shows:
   everything below it should be read. Disagreeing with it needs nothing special: the
   ordinary reopen button is right there, and the chip disappears the moment somebody uses
   it, because it describes the ticket's state now and not one it used to be in.
-- A **triage verdict** on the timeline, where an investigation left one. This is the one
-  row that is a finding rather than a line of history, so it gets a frame: the verdict
+- A **triage verdict** in the analysis tab, where an investigation left one. This is the
+  one entry that is a finding rather than a line of history, so it gets a frame: the verdict
   itself (*phantom*, *benign known*, *resolved itself*, *actionable*, *inconclusive* —
   coloured by whether it needs you, not by which of the five it is), what kenny concluded
   in a sentence, and **what it checked to conclude that**. The evidence sits next to the
@@ -390,41 +390,64 @@ from a cold load, not just from clicking through the queue. It shows:
   the page, since it says exactly what would have happened with it on. Where the verdict
   proposes muting a recurring event pattern, the row carries a one-click **MUTE ON THIS PC**
   button that creates the suppression rule for that host.
-- The **timeline**, above the composer — every event in order, oldest first, scrolling
-  inside its own bounded panel: state changes, block/unblock changes, messages (tagged by
-  who sent them), tool calls (with their arguments, tagged by [tier](tools.md)),
-  approval/consent requests and their decisions, assignment changes, and reassignment
-  handoffs. A **message** row renders its actual content where the trail has it: kenny's
-  replies through the same markdown renderer Ask kenny uses, a human's dashboard message
-  as plain escaped text. A Discord-origin family message still shows only its existing
-  one-line summary — no verbatim text is stored for it. A **held gate** gets inline
-  **Approve**/**Deny** buttons directly on its timeline row for an operator+, and — the
-  instant it's held, or on opening a ticket that's already waiting — a wide confirm-gate
-  dialog showing the exact tool and frozen arguments. **This ticket-scoped gate is
-  dismissible**: it gets a **"Decide later"** button rather than a deny, since it can
-  legitimately wait for a different operator than whoever has it open right now. The
-  [Ask kenny overlay](#ask-kenny)'s confirm-gate is deliberately **not** dismissible — that
-  asymmetry is on purpose, so dismissing a ticket's gate can never be confused with denying
-  a fleet-chat action.
-- A **composer** below the timeline, with a mode toggle between **Ask kenny** and **add a
-  note** (operator+ only sees the toggle at all — a scoped `user` only ever gets "Ask
-  kenny"). This composer is the ticket's **own** chat, distinct from the global
-  [Ask kenny overlay](#ask-kenny) — it has no host to leave, since it is permanently scoped
-  to the ticket's one target PC. "Add a note" keeps its operator+ gating; "Ask kenny" does
-  not — any `user` may chat on their own ticket the same way they always could over
-  Discord. Every turn opens with kenny already briefed on the ticket: its title, state,
-  priority and category, the target machine's current health, who it belongs to and who is
-  working it, and a digest of the trail (notes, state moves, consent/approval decisions) —
-  so kenny picks up where the ticket actually is instead of starting from nothing. Sending
-  streams `POST /api/tickets/{id}/chat/stream` through the same SSE event
-  vocabulary the overlay renders, so a reply appears token-by-token in the timeline. An
-  **"Enter to send"** checkbox (off by default, remembered per browser) controls whether
-  Enter sends the message or inserts a newline. A checkbox — **"also post in the Discord
+- **What happened**, in two tabs over the same rows.
+
+    **ANALYSIS** (the default) is the ticket read as a story, oldest first: findings, what
+    people wrote, what kenny changed, and the moves somebody decided. Each line is already
+    a sentence — kenny's own replies through the same markdown renderer Ask kenny uses, a
+    person's own words as plain escaped text, and everything kenny did as plain prose
+    written from the trail: *"I looked at the agent's health, the event log (System, Setup,
+    Application) and disk usage."* A change kenny made without anyone deciding says so —
+    *"I flushed the DNS cache without being asked — that is a routine change"* — because
+    that is the one class of thing nobody was consulted about. What failed or was refused
+    stays too, since it explains a gap. Lifecycle moves are kept but set quietly, as time
+    anchors. A Discord-origin family message still shows only its existing one-line
+    summary — no verbatim text is stored for it.
+
+    **AUDIT** is the trail itself: every row the server stores, in order, with the
+    arguments each call ran with and the row's own id. It is what `#`-numbered evidence
+    means, and it is where machine bookkeeping lives — the `work started` transition, the
+    `waiting for a reply` block, a stall reminder, the verdict tool's own calls. Nothing
+    is dropped here and nothing is parsed: an audit shows what is stored. Both tabs answer
+    to the same ownership check; the analysis tab is a reading, never a permission.
+
+- A **held gate** gets inline **Approve**/**Deny** buttons directly on the ticket for an
+  operator+, and — the instant it's held, or on opening a ticket that's already waiting —
+  a wide confirm-gate dialog showing the exact tool and frozen arguments. **This
+  ticket-scoped gate is dismissible**: it gets a **"Decide later"** button rather than a
+  deny, since it can legitimately wait for a different operator than whoever has it open
+  right now. The [Ask kenny overlay](#ask-kenny)'s own fleet confirm-gate is deliberately
+  **not** dismissible — that asymmetry is on purpose, so dismissing a ticket's gate can
+  never be confused with denying a fleet-chat action. A ticket gate is never decided from
+  inside the drawer: if one opens mid-conversation the drawer says so and points back at
+  the ticket, because a confirmation shown without the call it confirms is a decision made
+  without its evidence.
+- **ASK KENNY ABOUT THIS TICKET**, which opens the [Ask kenny](#ask-kenny) drawer already
+  bound to this ticket, and — for an operator+ — a **note** field, the page's only
+  composer. A note is something you write *onto* a ticket; asking kenny is a conversation
+  *about* one, and it belongs in the drawer with every other conversation. Enter follows
+  the same `Enter to send` preference here as everywhere else.
+
+  In the drawer, a ticket is a second context rather than a second chat: the scope chip
+  reads `ticket #76 · linus-pc`, there is no conversation history to browse because the
+  ticket's own timeline is its history, and the turn runs against the ticket's frozen PC
+  under the ticket's gate. There is no host to leave: the target PC is the ticket's and
+  nothing said in the conversation can move it.
+
+  The note keeps its operator+ gating; chatting does not — any `user` may talk about their
+  own ticket the same way they always could over Discord. Every turn opens with kenny
+  already briefed on the ticket: its title, state, priority and category, the target
+  machine's current health, who it belongs to and who is working it, and a digest of the
+  trail (notes, state moves, consent/approval decisions) — so kenny picks up where the
+  ticket actually is instead of starting from nothing. Sending streams
+  `POST /api/tickets/{id}/chat/stream` through the same SSE event vocabulary the drawer
+  already renders, and the durable record of the turn — your message and kenny's reply —
+  lands on the ticket's timeline behind it. A checkbox — **"Also send to the Discord
   thread"** — appears only when the ticket has a bound thread, defaults off, and applies
-  the same redaction a Discord-bound reply has always gone through. The composer's "Ask
-  kenny" side is disabled with a visible reason when it can't be used right now: *"Ask
-  kenny is not configured."*, *"This ticket has no target machine."*, *"This ticket is
-  closed."*, or, while a gate is open, *"Waiting on a decision above."*
+  the same redaction a Discord-bound reply has always gone through. The composer is
+  disabled with a visible reason when it can't be used right now: *"The AI assistant is not
+  configured on this server."*, *"This ticket has no target machine."*, or, while a gate is
+  open, *"Waiting on the decision on this ticket…"*
 - Every action button below is rendered from the ticket's own `allowed_transitions`/
   `allowed_blocks`/`can_unblock` — an option only ever appears if the API would actually
   accept it for the account looking at it.

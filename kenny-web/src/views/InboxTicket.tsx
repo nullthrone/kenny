@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
@@ -6,17 +6,33 @@ import type { FleetResponse, Me } from '../api/types'
 import EmptyState from '../components/EmptyState/EmptyState'
 import { ScrollText } from '../components/icons'
 import ApprovalGate, { type DecisionOutcome } from './ticket/ApprovalGate'
+import AuditTrail from './ticket/AuditTrail'
 import InlineEditField from './ticket/InlineEditField'
 import LinkedAlerts, { type TicketAlertsResponse } from './ticket/LinkedAlerts'
 import NoteComposer from './ticket/NoteComposer'
 import TicketActions from './ticket/TicketActions'
-import TicketChat from './ticket/TicketChat'
 import Timeline from './ticket/Timeline'
 import { formatAge } from './inbox/age'
 import { actorLabel } from './ticket/eventFormat'
-import { ticketAlertsKey, ticketApprovalKey, ticketEventsKey, ticketKey } from './ticket/queries'
+import { chatStore } from '../chat/chatStore'
+import { ASK_KENNY_OPEN_EVENT } from './host/askKenny'
+import { TICKET_TURN_EVENT } from '../chat/ticketTurn'
+import {
+  ticketAlertsKey,
+  ticketApprovalKey,
+  ticketEventsKey,
+  ticketKey,
+  ticketTimelineKey,
+} from './ticket/queries'
 import { ticketStatusChip } from './ticket/statusChip'
-import type { DirectoryUser, Ticket, TicketEvent, TicketVocabulary, TicketApproval } from './ticket/types'
+import type {
+  DirectoryUser,
+  Ticket,
+  TicketEvent,
+  TicketVocabulary,
+  TicketApproval,
+  TimelineEntry,
+} from './ticket/types'
 import styles from './ticket/InboxTicket.module.css'
 
 interface ApprovalsListResponse {
@@ -28,8 +44,21 @@ interface DirectoryResponse {
 
 /**
  * `#/inbox/ticket/:id` — status, origin, the alerts this ticket is about and
- * whether they still hold, the timeline, the gate, every lifecycle action, and
- * the ticket's own Ask-kenny composer.
+ * whether they still hold, what happened on it, the gate, every lifecycle
+ * action, and a note field.
+ *
+ * What happened is shown twice over, and the difference is the point.
+ * *Analysis* is the ticket read as a story: findings, what people said, what
+ * kenny changed — each already a sentence, composed by the server
+ * (`ticket_timeline.py`). *Audit* is the trail itself, every row with the
+ * arguments a call ran with (ADR-0046). Neither is a permission boundary; the
+ * server applies the same ownership check to both.
+ *
+ * Talking to kenny about the ticket happens in the Ask kenny drawer, which
+ * binds to this ticket while the page is open (`chatStore.openForTicket`) and
+ * runs under the ticket's own gate (ADR-0050). The only composer here is the
+ * note, because a note is a thing you write *onto* a ticket rather than a
+ * conversation you have about it.
  *
  * This is the only surface that offers an approval decision: the queue shows
  * that a ticket waits for one, and the frozen call it would run is here
@@ -39,6 +68,7 @@ export default function InboxTicket() {
   const { id } = useParams<{ id: string }>()
   const queryClient = useQueryClient()
   const [banner, setBanner] = useState<{ text: string; warn: boolean } | null>(null)
+  const [tab, setTab] = useState<'analysis' | 'audit'>('analysis')
 
   const me = useQuery({ queryKey: ['me'], queryFn: () => api.get<Me>('/api/me') })
   const isOperator = me.data ? me.data.role !== 'user' : false
@@ -70,10 +100,18 @@ export default function InboxTicket() {
     enabled: !!id,
   })
 
+  const timeline = useQuery({
+    queryKey: id ? ticketTimelineKey(id) : ['ticket', 'missing', 'timeline'],
+    queryFn: () => api.get<{ entries: TimelineEntry[] }>(`/api/tickets/${id}/timeline`),
+    enabled: !!id,
+  })
+
+  // The raw trail is fetched only when somebody asks for it: it is the larger
+  // of the two and the one nobody reads by default.
   const events = useQuery({
     queryKey: id ? ticketEventsKey(id) : ['ticket', 'missing', 'events'],
     queryFn: () => api.get<{ events: TicketEvent[] }>(`/api/tickets/${id}/events`),
-    enabled: !!id,
+    enabled: !!id && tab === 'audit',
   })
 
   const isBlockedOnApproval = ticket.data?.blocked_on === 'approval'
@@ -93,6 +131,7 @@ export default function InboxTicket() {
   function refetchTicket() {
     if (!id) return
     void queryClient.invalidateQueries({ queryKey: ticketKey(id) })
+    void queryClient.invalidateQueries({ queryKey: ticketTimelineKey(id) })
     void queryClient.invalidateQueries({ queryKey: ticketEventsKey(id) })
   }
 
@@ -107,14 +146,40 @@ export default function InboxTicket() {
     refetchApproval()
   }
 
-  function handleTurnDone() {
-    refetchTicket()
-  }
+  const loaded = ticket.data
 
-  function handleNeedsApprovalRefetch() {
-    refetchTicket()
-    refetchApproval()
-  }
+  // Hand the drawer everything it needs to be *this ticket's* chat: which
+  // endpoint, which host the turn is frozen to, whether there is a thread to
+  // mirror into, and whether a decision is outstanding. Re-bound on every
+  // change so the drawer is never working from a stale answer to the last
+  // question; binding the same ticket again keeps a live transcript.
+  useEffect(() => {
+    if (!loaded) return
+    chatStore.openForTicket({
+      id: loaded.id,
+      number: loaded.number,
+      agentId: loaded.agent_id ?? '',
+      discordThread: !!loaded.discord_thread,
+      assistantAvailable: loaded.assistant_available,
+      blockedOnApproval: isBlockedOnApproval,
+    })
+  }, [loaded, isBlockedOnApproval])
+
+  // A turn run from the drawer writes to this ticket's trail as it goes. The
+  // drawer cannot reach this page's query client, so it says which ticket
+  // moved and the page reads the durable record back — the transcript in the
+  // drawer is the live view, the timeline below is the record.
+  useEffect(() => {
+    function onTurn(event: Event) {
+      const detail = (event as CustomEvent<{ ticketId: string }>).detail
+      if (!id || detail?.ticketId !== id) return
+      refetchTicket()
+      refetchApproval()
+    }
+    window.addEventListener(TICKET_TURN_EVENT, onTurn)
+    return () => window.removeEventListener(TICKET_TURN_EVENT, onTurn)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id])
 
   if (!id) return null
 
@@ -220,15 +285,40 @@ export default function InboxTicket() {
 
       {alerts.data && <LinkedAlerts data={alerts.data} />}
 
-      {events.data && (
-        <div className={styles.sectionGap}>
-          <Timeline
-            events={events.data.events}
-            directory={directory.data?.users}
-            agentId={t.agent_id}
-          />
+      <div className={styles.sectionGap}>
+        <div className={styles.tabs} role="tablist" aria-label="What happened on this ticket">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === 'analysis'}
+            className={`${styles.tab}${tab === 'analysis' ? ` ${styles.tabActive}` : ''}`}
+            onClick={() => setTab('analysis')}
+          >
+            ANALYSIS
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === 'audit'}
+            className={`${styles.tab}${tab === 'audit' ? ` ${styles.tabActive}` : ''}`}
+            onClick={() => setTab('audit')}
+          >
+            AUDIT
+          </button>
+          {tab === 'audit' && (
+            <span className={styles.tabNote}>every row, with the arguments it ran with</span>
+          )}
         </div>
-      )}
+        {tab === 'analysis'
+          ? timeline.data && (
+              <Timeline
+                entries={timeline.data.entries}
+                directory={directory.data?.users}
+                agentId={t.agent_id}
+              />
+            )
+          : events.data && <AuditTrail events={events.data.events} directory={directory.data?.users} />}
+      </div>
 
       {openApproval && (
         <div className={styles.gateWrap}>
@@ -243,16 +333,18 @@ export default function InboxTicket() {
         </div>
       )}
 
-      <TicketChat
-        ticketId={id}
-        discordThread={!!t.discord_thread}
-        assistantAvailable={t.assistant_available}
-        blockedOnApproval={isBlockedOnApproval}
-        openApproval={openApproval}
-        onNeedsApprovalRefetch={handleNeedsApprovalRefetch}
-        onTurnDone={handleTurnDone}
-        onDecided={handleDecided}
-      />
+      {t.assistant_available && (
+        // The conversation itself is in the drawer, already bound to this
+        // ticket by the effect above — this only opens it, so that "talk to
+        // kenny about this" stays one click from the ticket it is about.
+        <button
+          type="button"
+          className={styles.askButton}
+          onClick={() => window.dispatchEvent(new CustomEvent(ASK_KENNY_OPEN_EVENT))}
+        >
+          ASK KENNY ABOUT THIS TICKET
+        </button>
+      )}
 
       {isOperator && <NoteComposer ticketId={id} requesterLabel={requesterDisplayName} onPosted={refetchTicket} />}
     </div>

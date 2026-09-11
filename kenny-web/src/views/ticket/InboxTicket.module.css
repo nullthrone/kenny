@@ -97,3 +97,68 @@
   border: 1px solid var(--border-line);
   padding: 2px 8px;
 }
+
+/*
+ * Two readings of the same rows. "Analysis" is the default because it is what
+ * the ticket is about; "Audit" is one click away because "why did this run?"
+ * has to stay answerable (ADR-0046). Neither is a permission boundary — the
+ * server applies the same ownership check to both.
+ */
+.tabs {
+  display: flex;
+  gap: 18px;
+  align-items: baseline;
+  margin-bottom: 14px;
+  border-bottom: 1px solid var(--border-line);
+}
+
+.tab {
+  font-family: var(--font-display);
+  font-size: 10px;
+  letter-spacing: var(--track-caps);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-faint);
+  padding: 0 0 8px;
+  cursor: pointer;
+}
+
+.tab:hover {
+  color: var(--text-muted);
+}
+
+.tabActive {
+  color: var(--text-body);
+  border-bottom-color: var(--brass-400);
+}
+
+.tabNote {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-faint);
+  padding-bottom: 8px;
+}
+
+/*
+ * Opens the Ask kenny drawer, which the effect above has already bound to
+ * this ticket. Not a composer: a second permanent input under the timeline
+ * was half of what made this page read as a machine log.
+ */
+.askButton {
+  font-family: var(--font-display);
+  font-size: 10px;
+  letter-spacing: var(--track-caps);
+  background: none;
+  border: 1px solid var(--border-line);
+  color: var(--text-muted);
+  padding: 10px 16px;
+  margin-bottom: 16px;
+  cursor: pointer;
+}
+
+.askButton:hover {
+  color: var(--text-body);
+  border-color: var(--ink-300);
+}

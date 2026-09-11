@@ -51,12 +51,14 @@ every row there is a ticket, and every row opens its ticket. A standing critical
 finding that no rule turned into a ticket is read on
 [Fleet](dashboard.md#the-host-page) and [Today](dashboard.md#today) instead.
 
-The dashboard is no longer just where you read, note, reassign and close a ticket — the
-ticket detail view has its own **chat with kenny**, gated the same way Discord always was,
-so a ticket opened without a Discord thread at all (or worked by an operator who isn't the
-requester) is just as fully workable as one that came in over `@kenny`. See
-[Ticket detail](dashboard.md#ticket-detail) and
-[ADR-0050](adr/0050-the-ticket-is-its-own-chat-surface.md).
+The dashboard is not just where you read, note, reassign and close a ticket — a ticket has
+its own **chat with kenny**, gated the same way Discord always was, so a ticket opened
+without a Discord thread at all (or worked by an operator who isn't the requester) is just
+as fully workable as one that came in over `@kenny`. It lives in the Ask kenny drawer,
+bound to whichever ticket you have open. See
+[Ticket detail](dashboard.md#ticket-detail),
+[ADR-0050](adr/0050-the-ticket-is-its-own-chat-surface.md) and
+[ADR-0060](adr/0060-the-ticket-shows-findings-the-trail-stays-the-audit.md).
 
 <figure markdown>
   ![The Inbox page, grouped by who a ticket is waiting on.](assets/screenshots/inbox.png)
@@ -113,8 +115,8 @@ done. The requester can cancel their own ticket from `new` or `in_progress` at a
 (withdrawing it), and close it themselves once it is `resolved`.
 
 <figure markdown>
-  ![A ticket's detail view: the paraphrase, and the full event timeline.](assets/screenshots/ticket-detail.png)
-  <figcaption>Ticket detail: the summary/resolution, and the timeline — messages, autonomous tool calls, a held approval, its decision, and the resolution, in order.</figcaption>
+  ![A ticket's detail view: the paraphrase, and what happened on the ticket.](assets/screenshots/ticket-detail.png)
+  <figcaption>Ticket detail: the summary/resolution, and what happened — findings, what people wrote, what kenny changed, and the moves somebody decided, in order.</figcaption>
 </figure>
 
 ## What kenny may do on its own, and what waits for you
@@ -136,10 +138,12 @@ which host it targets — the target PC stays exactly as frozen as it always was
   installing or removing software, touching who may sign in to a PC — **always stop and
   wait for an operator**, no matter who is asking or what PC it is on.
 
-This is a **property of the ticket's chat**, not of the tools themselves — and it is
-distinct from the dashboard's separate **Ask kenny** overlay (the operator-only global
-assistant, not tied to any one ticket), which still confirms *both* change tiers exactly
-as it always has.
+This is a **property of the ticket's chat**, not of the tools themselves. Talking about a
+ticket in the dashboard happens in the **Ask kenny** drawer, which binds to the ticket you
+have open and says so in its scope chip — that is the surface these rules apply to. The
+same drawer on any other page is the global assistant, tied to no ticket, and it still
+confirms *both* change tiers exactly as it always has. One panel, two contexts, and the
+chip is how you tell which one is in force.
 See [Tool reference § the confirm-gate](tools.md#three-tiers-and-who-enforces-what) for the
 surface-by-surface table, [ADR-0045](adr/0045-tiered-tool-classification.md) for why the
 tier and the gate are kept apart on purpose, and
@@ -153,8 +157,9 @@ and the header's **Inbox badge** counts it from anywhere in the dashboard. Appro
 **persistent**: they survive a server restart, and they expire after
 `KENNY_TICKET_APPROVAL_TTL_SECS` (default 24 h) — an expiry counts as a denial, and kenny
 tells the requester so. See [`dashboard.md`](dashboard.md#approval-gates) for the Inbox's
-inline decision and [Ticket detail](dashboard.md#ticket-detail) for the same gate on a
-ticket's own timeline.
+inline decision and [Ticket detail](dashboard.md#ticket-detail) for the same gate on the
+ticket itself — which is the only place it is ever decided, because a confirmation shown
+without the call it confirms is a decision made without its evidence.
 
 ## kenny looks first, before you are asked to
 
@@ -350,8 +355,17 @@ fourth role.
 Every ticket keeps two things: a **paraphrase** — the running summary and resolution you
 read in the dashboard — and a **machine-readable event trail**: every message, tool call
 (with its arguments), approval, consent and state change, in order, timestamped and
-attributed. That trail is what the [ticket detail timeline](#the-lifecycle-in-plain-language)
-shows you, and it is never pruned.
+attributed. It is never pruned.
+
+The trail is the audit, not the page. Ticket detail reads it two ways: **Analysis**, the
+default, is what happened put into sentences — findings, what people wrote, what kenny
+looked at and changed — and **Audit** is the trail itself, every row with the arguments
+each call ran with. What the analysis view leaves out is machine bookkeeping (the
+`work started` transition, the `waiting for a reply` block, a stall reminder) and the
+individual read-only calls, which are condensed into one plain sentence naming what was
+checked. Nothing is lost: every line in the analysis view knows which trail rows it stands
+for, and a row it does not show is one the server named as bookkeeping — see
+[ADR-0060](adr/0060-the-ticket-shows-findings-the-trail-stays-the-audit.md).
 
 **Whether a `message` row carries the actual wording depends on where it came from.** A
 message you type into the ticket's own chat in the dashboard, and every reply kenny sends —
@@ -530,3 +544,5 @@ for why Discord roles are never read as authorization, however tempting that sho
   auto-ticket rules.
 - [ADR-0050](adr/0050-the-ticket-is-its-own-chat-surface.md) — the ticket detail view as a
   second chat surface, verbatim trail wording, and the closed lifecycle-notification gap.
+- [ADR-0060](adr/0060-the-ticket-shows-findings-the-trail-stays-the-audit.md) — why the
+  ticket shows findings while the trail, complete and one tab away, stays the audit.

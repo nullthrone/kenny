@@ -1,11 +1,15 @@
 /**
  * The markdown every kenny dialog surface must render the same way.
  *
- * Three surfaces show kenny's prose — the ticket timeline, the ticket's live
- * stream, and the Ask kenny drawer — and they once disagreed: the drawer
- * parsed markdown while the timeline printed the asterisks. Each surface's
- * test renders THIS text, so a surface that stops rendering markdown fails
- * while the others still pass, which is the divergence itself.
+ * Two surfaces show kenny's prose — the ticket timeline and the Ask kenny
+ * drawer, in fleet scope and in a ticket's — and they once disagreed: the
+ * drawer parsed markdown while the timeline printed the asterisks. Each
+ * surface's test renders THIS text, so a surface that stops rendering
+ * markdown fails while the others still pass, which is the divergence itself.
+ *
+ * The ticket's audit trail (`views/ticket/AuditTrail.tsx`) is deliberately
+ * NOT one of them and has its own test saying so: an audit shows what is
+ * stored, asterisks included.
  *
  * The About dialog's changelog is a fourth consumer of the same renderer. Its
  * text is not kenny's — it is release notes written on GitHub — so it shares

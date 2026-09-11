@@ -245,6 +245,18 @@ def test_user_reads_own_ticket_not_others(tmp_path) -> None:
                   ).status_code == 200
         )
 
+        # The presented timeline is the same rows seen differently, so it is
+        # the same ownership rule: filtering there is presentation, never
+        # access control.
+        assert (
+            c.get(f"/api/tickets/{s['kid_ticket_id']}/timeline", headers=_hdr(s["sib_pat"])
+                  ).status_code == 403
+        )
+        assert (
+            c.get(f"/api/tickets/{s['kid_ticket_id']}/timeline", headers=_hdr(s["kid_pat"])
+                  ).status_code == 200
+        )
+
 
 def test_list_returns_only_own_rows_for_user(tmp_path) -> None:
     async def seed(users: UserStore, _store: TicketStore, svc: TicketService) -> dict:

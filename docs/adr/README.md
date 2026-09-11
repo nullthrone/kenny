@@ -77,3 +77,4 @@ kind of record kenny keeps. What qualifies: *When (not) to write an ADR* in the 
 | [0057](0057-anonymous-github-reads-for-agent-distribution.md) | Read GitHub releases anonymously for agent distribution | accepted |
 | [0058](0058-time-aware-findings-and-incident-posture-split.md) | Time-aware findings with an incident/posture split | accepted |
 | [0059](0059-the-inbox-is-the-ticket-queue.md) | The inbox is the ticket queue | proposed |
+| [0060](0060-the-ticket-shows-findings-the-trail-stays-the-audit.md) | The ticket shows findings; the trail stays the audit | accepted |
