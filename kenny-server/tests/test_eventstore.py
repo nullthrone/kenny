@@ -121,3 +121,52 @@ async def test_prune_retention(events: EventStore) -> None:
     rows = await events.query()
     assert len(rows) == 1
     assert rows[0]["message"] == "recent"
+
+
+async def test_alerts_for_ticket_is_chronological(events: EventStore) -> None:
+    """Oldest-first — the opening transition, then each recurrence after it."""
+
+    for i, at in enumerate(["2026-09-03T10:00:00Z", "2026-09-01T10:00:00Z", "2026-09-02T10:00:00Z"]):
+        eid = await events.insert_alert(
+            agent_id="pc1", message=f"alert {i}\nbody", level="warn", at=at
+        )
+        await events.link_alert_to_ticket(eid, "t1")
+    assert [a["at"] for a in await events.alerts_for_ticket("t1")] == [
+        "2026-09-01T10:00:00Z",
+        "2026-09-02T10:00:00Z",
+        "2026-09-03T10:00:00Z",
+    ]
+
+
+async def test_an_unlinked_alert_belongs_to_no_ticket(events: EventStore) -> None:
+    await events.insert_alert(agent_id="pc1", message="nobody's alert\nbody", level="warn")
+    assert await events.alerts_for_ticket("t1") == []
+    assert await events.alerts_for_ticket("") == []
+
+
+async def test_a_title_with_a_newline_survives_the_round_trip(events: EventStore) -> None:
+    """``fields['title']`` is why: splitting ``message`` alone would cut the
+    title in half and move its tail into the body."""
+
+    title = "pc1: disk is filling up\nand so is the second volume"
+    eid = await events.insert_alert(
+        agent_id="pc1",
+        message=f"{title}\nC: 97% used",
+        level="crit",
+        fields={"title": title, "priority": "high", "event_type": "health"},
+    )
+    await events.link_alert_to_ticket(eid, "t1")
+    alert = (await events.alerts_for_ticket("t1"))[0]
+    assert alert["title"] == title
+    assert alert["body"] == "C: 97% used"
+    assert alert["priority"] == "high"
+    assert alert["event_type"] == "health"
+
+
+async def test_linking_ignores_events_that_are_not_alerts(events: EventStore) -> None:
+    """Every other event kind reaches this table through a different writer and
+    has no ticket to belong to."""
+
+    await events.insert_audit(agent_id="pc1", tool="shell_exec", ok=True)
+    await events.link_alert_to_ticket(1, "t1")
+    assert await events.alerts_for_ticket("t1") == []

@@ -243,3 +243,73 @@ def test_tickets_created_before_dedup_key_gain_the_column_and_keep_their_rows(tm
         await store.close()
 
     asyncio.run(reopen())
+
+
+def _events_schema_without(column: str) -> str:
+    """``store._EVENTS_SCHEMA`` as it looked before ``column`` was added.
+
+    Derived from the live schema rather than copied, for the same reason
+    :func:`_tickets_schema_without` is: it stays honest as the table grows.
+    """
+
+    from kenny_server import store as store_mod
+
+    out: list[str] = []
+    for line in store_mod._EVENTS_SCHEMA.splitlines():
+        if column in line:
+            continue
+        out.append(line)
+    end = next(i for i, line in enumerate(out) if line.strip() == ");")
+    for i in range(end - 1, -1, -1):
+        stripped = out[i].strip()
+        if not stripped or stripped.startswith("--"):
+            continue
+        out[i] = out[i].rstrip().rstrip(",")
+        break
+    return "\n".join(out)
+
+
+def test_events_created_before_ticket_id_gain_the_column_and_keep_their_rows(tmp_path) -> None:
+    """An existing ``events`` table gains ``ticket_id`` without losing a row.
+
+    ``EventStore``'s schema script is ``CREATE TABLE IF NOT EXISTS``, a no-op on
+    a live deployment, so the column only reaches one through ``_migrate``. This
+    is the test that catches forgetting that method entirely: every
+    fresh-database test passes either way.
+
+    The backfilled value is NULL — an alert recorded before the relation existed
+    belongs to no ticket, and must not start claiming one.
+    """
+
+    from kenny_server.store import EventStore
+
+    db_path = str(tmp_path / "old-events.sqlite")
+
+    con = sqlite3.connect(db_path)
+    con.executescript(_events_schema_without("ticket_id"))
+    con.execute(
+        "INSERT INTO events (at, agent_id, source, level, kind, target, message, fields) "
+        "VALUES ('2026-08-01T00:00:00Z', 'OLD-PC', 'server', 'warn', 'alert', "
+        "'kenny.alert', 'OLD-PC: disk is filling up\nC: 91% used', '{\"priority\": \"high\"}')"
+    )
+    con.commit()
+    assert "ticket_id" not in {r[1] for r in con.execute("PRAGMA table_info(events)")}
+    con.close()
+
+    async def reopen() -> None:
+        store = EventStore(db_path)
+        await store.connect()  # runs _migrate
+        rows = await store.query(kind="alert")
+        assert len(rows) == 1
+        assert rows[0]["agent_id"] == "OLD-PC"
+        # A row without fields["title"] still splits into title and body, so an
+        # alert older than that field renders in the panel like any other.
+        alerts = await store.alerts_for_ticket("t1")
+        assert alerts == []  # nothing is linked yet
+        await store.link_alert_to_ticket(1, "t1")
+        alerts = await store.alerts_for_ticket("t1")
+        assert [a["title"] for a in alerts] == ["OLD-PC: disk is filling up"]
+        assert alerts[0]["body"] == "C: 91% used"
+        await store.close()
+
+    asyncio.run(reopen())
