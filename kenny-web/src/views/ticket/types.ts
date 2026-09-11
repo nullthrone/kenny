@@ -80,6 +80,32 @@ export interface TicketEvent {
   fields: Record<string, unknown> | null
 }
 
+/**
+ * One row of the ticket's *presented* timeline, `GET /api/tickets/{id}/timeline`.
+ *
+ * The projection twin of `TicketEvent`, composed server-side
+ * (`kenny_server/ticket_timeline.py`). It is deliberately not derived here:
+ * how a trail row reads — condensed, dropped, or turned into a sentence — is
+ * one decision, and the server is where the ticket's other surfaces can reach
+ * it too. The client's job is to render `text` according to `body`.
+ */
+export interface TimelineEntry {
+  at: string
+  actor: string
+  /** `message` | `finding` | `activity` | `action` | `lifecycle` | `problem`. */
+  kind: string
+  text: string
+  /** `markdown` (kenny's own prose) | `verbatim` (a person's typing) | `status` (composed). */
+  body: string
+  /**
+   * The trail rows this entry stands for. Renderable proof that the
+   * presentation invented nothing — and the way back into the audit tab.
+   */
+  source_event_ids: number[]
+  /** Only a `finding` carries these: the verdict payload, unchanged. */
+  fields: Record<string, unknown>
+}
+
 /** A durable gate row — `GET /api/approvals`, and embedded in `POST /api/approvals/{id}`'s response. */
 export interface TicketApproval {
   id: string

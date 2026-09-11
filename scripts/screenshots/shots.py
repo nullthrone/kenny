@@ -214,7 +214,7 @@ MANIFEST: list[Shot] = [
         hash="#/inbox/ticket/demo-tkt-flush",
         mode="full_page",
         theme="light",
-        note="the grandpa-pc Wi-Fi ticket — full lifecycle: message, tool calls, a held+approved gate, resolution.",
+        note="the grandpa-pc Wi-Fi ticket, read as a story: what was asked, what kenny looked at and changed, the gate somebody answered, the resolution.",
         actions=[{"wait_for": "[data-shot=ticket-timeline]"}, {"sleep": SETTLE_MS}],
     ),
     Shot(

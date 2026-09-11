@@ -6,6 +6,9 @@
 
 .input {
   flex: 1;
+  resize: vertical;
+  min-height: 44px;
+  line-height: var(--leading-body);
   padding: 12px;
   border: 1px solid var(--border-line);
   background: var(--surface-card);

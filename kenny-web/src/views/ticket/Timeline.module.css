@@ -180,3 +180,31 @@
 .verbatim {
   white-space: pre-wrap;
 }
+
+/*
+ * A lifecycle move — opened, resolved, parked on somebody, a gate decided.
+ * Kept because a reader needs the time anchors, taken back visually because
+ * they are not what the ticket is about. No dot: the rail's own line is
+ * enough to place them.
+ */
+.lifecycle {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+/* Something that failed or was refused. Named, not coloured like an alarm:
+ * it explains a gap in the story, it is not itself the finding. */
+.problem {
+  color: var(--text-muted);
+}
+
+/*
+ * The trail rows an audit line is. Shown only in the audit tab, where "which
+ * row is this" is the question being asked.
+ */
+.sourceId {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-faint);
+  margin-left: auto;
+}

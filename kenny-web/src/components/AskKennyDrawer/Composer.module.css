@@ -57,3 +57,13 @@
   overflow: clip;
   text-overflow: ellipsis;
 }
+
+.mirror {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 11px;
+  color: var(--text-faint);
+  margin-top: 8px;
+  cursor: pointer;
+}

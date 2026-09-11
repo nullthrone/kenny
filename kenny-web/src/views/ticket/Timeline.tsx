@@ -1,12 +1,13 @@
-import type { DirectoryUser, TicketEvent } from './types'
-import type { TriageFinding } from './eventFormat'
-import { formatEvent, formatEventTime, triageFinding, verdictLabel, verdictTone } from './eventFormat'
+import type { DirectoryUser, TimelineEntry } from './types'
+import type { TriageFinding } from './entryFormat'
+import { actorColor, actorDot, actorLabel, formatEventTime } from './eventFormat'
+import { findingOf, verdictLabel, verdictTone } from './entryFormat'
 import { useAddSuppression } from '../host/api'
 import Markdown from '../../components/Markdown/Markdown'
 import styles from './Timeline.module.css'
 
 export interface TimelineProps {
-  events: TicketEvent[]
+  entries: TimelineEntry[]
   directory?: DirectoryUser[]
   /** The ticket's frozen host, for a suppression a verdict proposes. */
   agentId?: string | null
@@ -78,44 +79,55 @@ function Verdict({ finding, agentId }: { finding: TriageFinding; agentId?: strin
 }
 
 /**
- * The hairline timeline: a dot per event on a left rail, who/when, the
- * event's text, and — for tool/approval/error rows that carry one — a mono
- * block underneath. Tool args in a `mono` line are rendered exactly as
- * `formatEvent` produced them (verbatim `JSON.stringify`, same discipline
- * as a gate's frozen args): this is a historical trail entry, not an
- * editable value.
+ * What happened on this ticket, read as a story: findings, what people said,
+ * and what kenny changed — each already a sentence by the time it gets here.
  *
- * How a row's text reads is `formatEvent`'s call, not this component's:
- * `f.body` says whether it is kenny's markdown, a person's verbatim message,
- * or a status line this UI composed.
+ * The reading is the server's (`kenny_server/ticket_timeline.py`), not this
+ * component's: which trail rows condense into one line, which are dropped as
+ * machine bookkeeping, and how each line is worded are one decision, made in
+ * one place, so the ticket's other surfaces can reach the same words. This
+ * renders `text` the way `body` says to, and nothing else.
  *
- * One row is not history: a triage verdict (see `Verdict`).
+ * The raw rows are still there and still complete — `AuditTrail`, one tab
+ * across. Nothing here is access control: both tabs answer to the same
+ * ownership check.
  */
-export default function Timeline({ events, directory, agentId }: TimelineProps) {
+export default function Timeline({ entries, directory, agentId }: TimelineProps) {
   return (
     <div className={styles.rail} data-shot="ticket-timeline">
-      {events.map((event) => {
-        const f = formatEvent(event, directory)
-        const finding = triageFinding(event)
+      {entries.map((entry) => {
+        const finding = findingOf(entry)
+        const muted = entry.kind === 'lifecycle'
+        const key = entry.source_event_ids.join('-')
         return (
-          <div key={event.id} className={styles.entry}>
-            <span className={styles.dot} style={{ background: f.dot }} />
+          <div key={key} className={styles.entry}>
+            {!muted && (
+              <span className={styles.dot} style={{ background: actorDot(entry.actor) }} />
+            )}
             <div className={styles.headRow}>
-              <span className={styles.who} style={{ color: f.whoColor }}>
-                {f.who}
+              <span className={styles.who} style={{ color: actorColor(entry.actor) }}>
+                {actorLabel(entry.actor, directory)}
               </span>
-              <span className={styles.time}>{formatEventTime(event.at)}</span>
+              <span className={styles.time}>{formatEventTime(entry.at)}</span>
             </div>
-            {!finding &&
-              (f.body === 'markdown' ? (
-                <Markdown className={styles.text} text={f.text} />
-              ) : (
-                <div className={`${styles.text}${f.body === 'verbatim' ? ` ${styles.verbatim}` : ''}`}>
-                  {f.text}
-                </div>
-              ))}
-            {f.mono && <div className={styles.mono}>{f.mono}</div>}
-            {finding && <Verdict finding={finding} agentId={agentId} />}
+            {finding ? (
+              <Verdict finding={finding} agentId={agentId} />
+            ) : entry.body === 'markdown' ? (
+              <Markdown className={styles.text} text={entry.text} />
+            ) : (
+              <div
+                className={[
+                  styles.text,
+                  entry.body === 'verbatim' ? styles.verbatim : '',
+                  muted ? styles.lifecycle : '',
+                  entry.kind === 'problem' ? styles.problem : '',
+                ]
+                  .filter(Boolean)
+                  .join(' ')}
+              >
+                {entry.text}
+              </div>
+            )}
           </div>
         )
       })}

@@ -61,6 +61,7 @@ from ..auth import Principal
 from ..discord_identity import DiscordIdentityStore, IdentityConflict
 from ..ticket_alerts import TicketAlertReader
 from ..ticket_rules import DECISIONS, EVENT_TYPES, KNOWN_SECTIONS, TicketRuleList
+from ..ticket_timeline import project
 from ..ticketstore import Ticket, TicketApproval, TicketStore
 from ..tickets import (
     BLOCKED_REASONS,
@@ -483,6 +484,27 @@ def build_ticket_routes(
             limit = 500
         events = await tickets.events(ticket.id, limit=limit)
         return JSONResponse({"events": [e.as_dict() for e in events]})
+
+    async def api_ticket_timeline(request: Request) -> JSONResponse:
+        """This ticket's presented timeline: findings, people, and what kenny did.
+
+        The projection twin of ``/events``, which stays the raw trail and is
+        what the detail view's audit tab reads. Same authorization, because it
+        is the same rows seen differently: the filtering here is presentation,
+        never access control, and a caller who may not read the trail may not
+        read this either.
+        """
+
+        principal = require_user(request)
+        ticket = await tickets.get(request.path_params["tid"])
+        _owned_or_operator(principal, ticket)
+        q = request.query_params
+        try:
+            limit = int(q.get("limit", "500"))
+        except ValueError:
+            limit = 500
+        events = await tickets.events(ticket.id, limit=limit)
+        return JSONResponse({"entries": [e.as_dict() for e in project(events)]})
 
     async def api_ticket_alerts(request: Request) -> JSONResponse:
         """This ticket's alerts, and whether what they reported still holds.
@@ -1183,6 +1205,7 @@ def build_ticket_routes(
             methods=["POST"],
         ),
         Route("/api/tickets/{tid}/events", g(api_ticket_events, min_role="user")),
+        Route("/api/tickets/{tid}/timeline", g(api_ticket_timeline, min_role="user")),
         Route("/api/tickets/{tid}/alerts", g(api_ticket_alerts, min_role="user")),
         Route(
             "/api/tickets/{tid}/note",

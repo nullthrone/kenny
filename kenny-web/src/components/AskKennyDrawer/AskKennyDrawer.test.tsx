@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 // `vi.mock` factories are hoisted above every other statement in the file,
@@ -150,5 +150,101 @@ describe('AskKennyDrawer — the confirm gate is non-dismissible', () => {
     await waitFor(() => expect(screen.queryByText('CONFIRM & RUN')).not.toBeInTheDocument())
     const confirmCall = streamChatEventsMock.mock.calls.find(([url]) => url === '/api/chat/confirm/stream')
     expect(confirmCall?.[1]).toMatchObject({ approve: false })
+  })
+})
+
+describe('AskKennyDrawer — a ticket is the second context, not a second drawer', () => {
+  const TICKET = {
+    id: 't-42',
+    number: 76,
+    agentId: 'linus-pc',
+    discordThread: false,
+    assistantAvailable: true,
+    blockedOnApproval: false,
+  }
+
+  function openOnTicket(over: Partial<typeof TICKET> = {}) {
+    window.location.hash = '#/inbox/ticket/t-42'
+    // The ticket page binds the target before the drawer is ever opened; the
+    // drawer reads it and never fetches, which is why it needs no client.
+    chatStore.openForTicket({ ...TICKET, ...over })
+    return render(<AskKennyDrawer />)
+  }
+
+  it('posts to the ticket, and sends no agent_id at all', async () => {
+    // The host is the ticket's frozen `agent_id` and nothing said in the
+    // conversation may move it (ADR-0038), so there is nothing to send.
+    streamChatEventsMock.mockImplementation(async function* () {
+      yield { type: 'done' }
+    })
+
+    openOnTicket()
+    sendMessage('what is filling the disk?')
+
+    await waitFor(() => expect(streamChatEventsMock).toHaveBeenCalled())
+    const [url, body] = streamChatEventsMock.mock.calls[0] as [string, Record<string, unknown>]
+    expect(url).toBe('/api/tickets/t-42/chat/stream')
+    expect(body).toEqual({ message: 'what is filling the disk?', mirror_to_discord: false })
+  })
+
+  it('names the ticket it is talking about, so the gate in force is readable', () => {
+    openOnTicket()
+    expect(screen.getByText('ticket #76 · linus-pc')).toBeInTheDocument()
+  })
+
+  it('offers no conversation history — the ticket timeline is its history', () => {
+    openOnTicket()
+    expect(screen.queryByTitle('History')).not.toBeInTheDocument()
+    expect(screen.queryByTitle('New conversation')).not.toBeInTheDocument()
+  })
+
+  it('does not decide a ticket gate here; it points at where the evidence is', async () => {
+    // A ticket's gate is durable and is answered beside the frozen call it
+    // would run (ADR-0050). A second CONFIRM in this drawer would be a
+    // decision offered without what it decides.
+    streamChatEventsMock.mockImplementation(async function* () {
+      yield { type: 'pending', tool: 'powershell_exec', args: {}, agent_id: 'linus-pc' }
+    })
+
+    openOnTicket()
+    sendMessage('clean it up')
+
+    const textarea = await screen.findByLabelText<HTMLTextAreaElement>('Message kenny')
+    await waitFor(() => expect(textarea).toBeDisabled())
+    expect(screen.queryByText('CONFIRM & RUN')).not.toBeInTheDocument()
+    expect(document.body.textContent).toContain('It is on the ticket')
+  })
+
+  it('offers the Discord mirror only when the ticket has a thread', () => {
+    const label = 'Also send to the Discord thread'
+    openOnTicket()
+    expect(screen.queryByLabelText(label)).not.toBeInTheDocument()
+
+    cleanup()
+    chatStore.reset('')
+    openOnTicket({ discordThread: true })
+    expect(screen.getByLabelText(label)).toBeInTheDocument()
+  })
+
+  it('says why it cannot be used rather than failing on send', () => {
+    cleanup()
+    chatStore.reset('')
+    openOnTicket({ assistantAvailable: false })
+    expect(screen.getByLabelText<HTMLTextAreaElement>('Message kenny').placeholder).toBe(
+      'The AI assistant is not configured on this server.',
+    )
+  })
+
+  it('never falls back to fleet chat on a ticket route it is not bound to', () => {
+    // The failure this guards against is silent: a turn would run on the
+    // copilot's endpoint, under the copilot's gate, while the reader believed
+    // they were talking about the ticket.
+    cleanup()
+    chatStore.reset('')
+    window.location.hash = '#/inbox/ticket/t-99'
+    render(<AskKennyDrawer />)
+
+    expect(screen.queryByLabelText('Message kenny')).not.toBeInTheDocument()
+    expect(screen.getByText('opening this ticket…')).toBeInTheDocument()
   })
 })

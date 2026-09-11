@@ -55,3 +55,18 @@
 .iconButtonActive {
   color: var(--brass-600);
 }
+
+/*
+ * A ticket's gate is not decided from here. The notice points at where it is
+ * rather than repeating it, because a confirmation shown without the frozen
+ * call it confirms is a decision made without its evidence (ADR-0045).
+ */
+.gateNotice {
+  font-size: 11px;
+  line-height: var(--leading-body);
+  color: var(--warn);
+  border: 1px solid var(--border-line);
+  background: var(--surface-inset);
+  padding: 10px 12px;
+  margin: 0 0 10px;
+}
