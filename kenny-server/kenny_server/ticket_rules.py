@@ -270,6 +270,9 @@ class TicketRuleList:
             return rules
         return [r for r in rules if r["agent_id"] in ("", agent_id)]
 
+    # POSSIBLY DEAD: alerting._dispatch calls `decide()` directly against
+    # `mapping()` (see that method's docstring) instead of going through this
+    # wrapper. Only tests call should_open directly.
     def should_open(self, note: Notification) -> bool:
         """Whether ``note`` should open a ticket, per the current rule set."""
 

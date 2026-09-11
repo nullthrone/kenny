@@ -348,6 +348,9 @@ class DiscordIdentityStore:
         await self._conn.commit()
         return cur.rowcount or 0
 
+    # POSSIBLY DEAD: no webui route or bot command flips a binding's disabled
+    # flag today — the only production revoke path is delete_by_user_id
+    # (a hard delete). Only tests call set_disabled directly.
     async def set_disabled(self, discord_user_id: str, *, disabled: bool) -> bool:
         """Flip a binding's ``disabled`` flag. Returns True if the row existed.
 

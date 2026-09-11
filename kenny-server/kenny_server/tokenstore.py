@@ -190,6 +190,9 @@ class AgentTokenStore:
         await self._conn.commit()
         return token
 
+    # POSSIBLY DEAD: no webui route or MCP tool lists agent-token records today
+    # — production code only calls create_or_rotate/verify/connect/close on
+    # this store. Only tests call this directly.
     async def list_agents(self) -> list[dict[str, str | None]]:
         """Return stored agents with timestamps (no token material)."""
 
