@@ -308,38 +308,35 @@ machine rather than what was requested. See
 
 <figure markdown>
   ![The Inbox page](assets/screenshots/inbox.png)
-  <figcaption>Inbox: approvals, flagged sections, and tickets — one queue, grouped by who it waits on.</figcaption>
+  <figcaption>Inbox: every ticket you can see, grouped by who it waits on.</figcaption>
 </figure>
 
-Approvals, flagged sections, and tickets, merged into **one queue** grouped by **who it
-waits on**:
+**Every row is a ticket**, grouped by **who the ball is with**:
 
 | Group | Meaning |
 |---|---|
-| **NEEDS YOU** | A held approval, an unaddressed critical or warning section, or anything else waiting on an operator's decision right now. |
+| **NEEDS YOU** | A ticket blocked on an approval or on an operator, or an alert-opened ticket nobody has looked at yet. |
 | **WAITING** | A ticket blocked on a reply — from the requester or from telemetry — that isn't yours to unblock yet. |
 | **WORKING** | Kenny (or an operator) is actively working it. |
-| **NEW** | Just opened — often auto-opened from an alert — and nobody has looked yet. |
+| **NEW** | Just opened by a person, and not started. |
 | **DONE** | Resolved; still visible until it auto-closes. |
 
 Each group is a chip with a live count; clicking one filters the list (`#/inbox/{group}`).
 The header's Inbox badge mirrors NEEDS YOU's count.
 
-A row shows a **kind** tag (`APPROVAL`, `CRITICAL`, `WARNING`, `TICKET`, or `ALERT`), a
-title, a one-line meta description, and an age. Clicking a ticket or approval row opens
-[ticket detail](#ticket-detail); clicking a flagged-section row opens **that section's
-detail** on its [host page](#the-host-page) (`#/fleet/{host}?section={name}`) — the
-finding the row is about, not just the machine it sits on.
+A row shows the ticket's **priority** (`URGENT`, `HIGH`, `NORMAL`, `LOW`), its title, a
+one-line meta description — the ticket's ref, where it came from, and what it is waiting
+for — and an age. **Every row opens [ticket detail](#ticket-detail)**; no row in this
+queue leads anywhere else.
 
-### Approval gates
+A ticket waiting for an approval says so, and the decision itself is on the ticket, next
+to the frozen call it would run.
 
-A row that is a held approval renders **inline**, right in the queue: the exact tool, its
-**frozen arguments**, and **Approve & run** / **Deny** / **Decide later**. This is the
-same decision surface as [ticket detail](#ticket-detail)'s inline gate — deciding one from
-either place resolves the same held call
-(`POST /api/approvals/{id}`). When the response comes back `resumed: false`, kenny is
-telling you the decision was recorded but the ticket could not be continued
-automatically — that is reported plainly, not as a bare success.
+A standing critical or warning finding reaches this queue only as the ticket an
+[auto-ticket rule](#auto-ticket-rules) opened from it. A finding with no ticket — a rule
+set to `never`, or a ticket somebody cancelled — is read where it is derived, on
+[Fleet](#the-host-page) and [Today](#today). The queue carries cases, not conditions
+(ADR-0059).
 
 ### New ticket
 
@@ -367,6 +364,15 @@ from a cold load, not just from clicking through the queue. It shows:
   requester, assignee (both shown by username, not a bare id), target PC, and the
   created/updated timestamps.
 - Kenny's running **summary**, and the **resolution** once one is set.
+- For a ticket an alert opened: **what fired and whether it still holds**. *Current state*
+  is the live verdict of the sections the ticket is about — re-evaluated from the newest
+  telemetry snapshot, so it answers the question standing between you and closing the
+  case: *is the problem still there?* A section that recovered while the ticket stayed
+  open says so. *Alert history* is the alert that opened the ticket plus every later
+  recurrence that was [deduplicated](alerting.md#an-alert-can-open-a-ticket) onto it.
+  Clicking either expands it **in place** — nothing here navigates away from the ticket.
+  The history is bounded by event retention (~30 days) while tickets are not, so an old
+  ticket can show current state with no history left; that is expected, not an error.
 - A **RESOLVED BY KENNY** chip next to the status, when an unprompted
   [investigation](itsm.md#kenny-looks-first-before-you-are-asked-to) — not a person — put
   the ticket in the state it is in. It is a chip and not a footnote because it changes how

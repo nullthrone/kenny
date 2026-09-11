@@ -108,6 +108,7 @@ async def seed_app(app: Any, base: datetime | None = None) -> SeedResult:
     await _seed_chat_history(state.chat_history_store, base)
     if getattr(state, "tickets", None) is not None:
         await _seed_tickets(state.tickets, base, user_ids)
+        await _seed_ticket_alerts(state.event_store, base)
     if getattr(state, "discord_identities", None) is not None:
         await _seed_discord_identities(state.discord_identities, base, user_ids)
 
@@ -252,6 +253,49 @@ async def _seed_activity(event_store: Any, base: datetime) -> None:
             message=message,
             target=f"kenny.{source}",
         )
+
+
+async def _seed_ticket_alerts(event_store: Any, base: datetime) -> None:
+    """The alerts an alert-origin ticket is about, linked to it.
+
+    Runs after the tickets exist: `link_alert_to_ticket` needs the ticket id,
+    and in production the same ordering holds -- `AlertEngine._dispatch` writes
+    the alert, decides, opens the ticket, and only then hangs one on the other.
+
+    Two alerts on one subject, so the ticket shows what production shows: the
+    transition that opened it, and a recurrence deduplication attached rather
+    than minting a second ticket.
+    """
+
+    # Both land between the ticket's creation (12 min ago) and its resolution:
+    # a recurrence never attaches to a ticket that is already resolved
+    # (`find_open_by_dedup_key` matches new/in_progress only), so demo data
+    # that showed one would be showing something production cannot produce.
+    for minutes, title, body in (
+        (
+            12,
+            "grandpa-pc health: crit",
+            "reliability: ok -> crit (disk/7 ×650 (~93/day) — bad block reported on a storage device)",
+        ),
+        (
+            10,
+            "grandpa-pc health: crit",
+            "reliability: still crit (disk/7 ×712 (~95/day))",
+        ),
+    ):
+        event_id = await event_store.insert_alert(
+            agent_id="grandpa-pc",
+            message=f"{title}\n{body}",
+            level="crit",
+            fields={
+                "kind": "alert",
+                "priority": "high",
+                "title": title,
+                "event_type": "health",
+            },
+            at=_iso(base - timedelta(minutes=minutes)),
+        )
+        await event_store.link_alert_to_ticket(event_id, "demo-tkt-phantom")
 
 
 async def _seed_chat_history(store: Any, base: datetime) -> None:
@@ -491,6 +535,9 @@ async def _seed_tickets(tickets: Any, base: datetime, user_ids: dict[str, int]) 
             ),
             actor="system",
             reason="opened from an alert",
+            # What this case is about, the way `alert_dedup_key` writes it --
+            # without it the ticket has no subject and shows no current state.
+            dedup_key="alert|grandpa-pc|state|reliability",
         )
         await tickets.append_event(
             phantom.id, kind="note", actor="triage",

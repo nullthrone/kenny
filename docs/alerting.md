@@ -77,6 +77,27 @@ is operator-only in the [Inbox](dashboard.md#inbox): a scoped `user` never sees 
 starts life pinned to the alerting agent, at `high` priority for a `high`/`urgent`
 notification and `normal` otherwise, with the alert's own message as its opening summary.
 
+### One open ticket per subject
+
+A condition that keeps re-crossing its threshold would otherwise mint a fresh ticket every
+time it did. Instead, an alert is keyed by its **subject** — the host, plus the sections it
+is about (or the producer's name, for `offline`, which is about the host itself). While a
+ticket for that subject is still open, the alert is recorded **on that ticket** rather than
+opening a second one, and it shows up in the ticket's own
+[alert history](dashboard.md#ticket-detail).
+
+Two consequences worth knowing:
+
+- A health finding and a disk-fill forecast about the same volume are **one** case. Both
+  name the `disk` section, so the forecast attaches to the ticket the acute finding opened,
+  or the other way round.
+- An **inventory change** never shares a ticket with a health finding, even on the same
+  section. "a new service appeared" and "a service is failing" are different kinds of fact:
+  only the second can come back to `ok`, so only the second has a current state to check.
+
+A `resolved` ticket does **not** suppress a new one: once somebody has dealt with the
+condition, its return is news again.
+
 ### Which events open a ticket is configurable
 
 By default, every genuine alert — a health escalation, an agent going offline, a disk-fill
@@ -133,7 +154,9 @@ rather than a scary made-up number:
 
 - **Disk-fill forecast** — *days until full* per volume. Under **~14 days** raises an
   alert (re-firing at most every 24 h); under **~30 days** shows as a Today KPI and in
-  the weekly digest.
+  the weekly digest. The forecast names the `disk` section, so it shares a ticket with an
+  acute disk finding on the same host, and an auto-ticket rule can target
+  `disk_forecast` + `disk`.
 - **Battery drift** — health change as **percent per 30 days**; a meaningful decline
   appears in the digest.
 
