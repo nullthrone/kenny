@@ -45,15 +45,6 @@ export function actorDot(actor: string): string {
   return 'var(--ink-300)'
 }
 
-/** The five verdicts `ticket_triage_verdict` may report (`toolloop.TRIAGE_VERDICTS`). */
-export const TRIAGE_VERDICTS = [
-  'phantom',
-  'benign_known',
-  'resolved_itself',
-  'actionable',
-  'inconclusive',
-] as const
-
 /**
  * How a verdict reads at a glance. Three colours, not five: the only
  * distinction the reader acts on is "nothing to do" / "your turn" / "nobody
