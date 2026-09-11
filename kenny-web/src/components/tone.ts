@@ -1,4 +1,4 @@
-import type { InboxKind, Severity } from '../api/types'
+import type { Severity, TicketPriority } from '../api/types'
 
 /** `Severity` → the CSS custom property that colours it, matching the prototype's palette. */
 export function severityColor(severity: Severity): string {
@@ -32,27 +32,27 @@ export function severityLabel(severity: Severity): string {
 }
 
 /**
- * `InboxKind` → default caps label + colour, matching the prototype's
- * kindColor mapping (APPROVAL=brass, TICKET=muted, ALERT=warn).
+ * `TicketPriority` → the CSS custom property that colours its badge.
  *
- * GAP: the prototype's mock data shows a `section`-kind row with its label
- * as the section's actual severity ("CRITICAL"/"WARNING"), not the literal
- * word "SECTION" — but `InboxItem` (types.ts, frozen) carries no severity
- * field, only `kind`. There's nowhere to source that distinction from
- * honestly. The default below reads "SECTION" in `--danger`; pass
- * `label`/`tone` overrides on `<SourceBadge>` if/when the view wiring
- * this up has the real section severity from elsewhere (e.g. the
- * corresponding `HostSection`).
+ * Deliberately not exhaustive over the union: `tickets.PRIORITIES` is server
+ * vocabulary, and a value added there must render dully rather than crash the
+ * queue. The same applies to `priorityLabel`.
  */
-export function inboxKindDefault(kind: InboxKind): { label: string; color: string } {
-  switch (kind) {
-    case 'approval':
-      return { label: 'APPROVAL', color: 'var(--brass-600)' }
-    case 'ticket':
-      return { label: 'TICKET', color: 'var(--text-muted)' }
-    case 'alert':
-      return { label: 'ALERT', color: 'var(--warn)' }
-    case 'section':
-      return { label: 'SECTION', color: 'var(--danger)' }
+export function priorityColor(priority: string): string {
+  switch (priority) {
+    case 'urgent':
+      return 'var(--danger)'
+    case 'high':
+      return 'var(--warn)'
+    case 'low':
+      return 'var(--text-faint)'
+    default:
+      return 'var(--text-muted)'
   }
 }
+
+export function priorityLabel(priority: string): string {
+  return (priority || 'normal').toUpperCase()
+}
+
+export type { TicketPriority }

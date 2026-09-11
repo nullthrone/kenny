@@ -128,7 +128,7 @@ def test_open_crit_only_fires_on_crit_severity() -> None:
 
 
 def test_open_crit_reads_offline_severity_from_priority() -> None:
-    """Offline/disk_forecast have no section axis -- severity comes from
+    """Offline has no section axis -- severity comes from
     ``Notification.priority`` (high/urgent -> crit), matched against the
     section-less subject slot ("")."""
 
@@ -552,3 +552,31 @@ def test_event_types_the_engine_can_emit_are_exactly_the_validated_ones() -> Non
 
     emitted_by_producers = {"health", "offline", "disk_forecast", "change"}
     assert emitted_by_producers == set(EVENT_TYPES)
+
+
+def test_a_disk_forecast_rule_can_name_the_disk_section() -> None:
+    """The forecast reports on ``disk`` and says so, so a rule may target it.
+
+    A rule with a named section matches only when the notification carries that
+    section as a subject: while the forecast declared none, such a rule could
+    be written and would silently never fire.
+    """
+
+    rules = {
+        ("", "disk_forecast", "disk"): {
+            "id": rule_id("", "disk_forecast", "disk"),
+            "decision": "never",
+        }
+    }
+    assert (
+        _decide(
+            rules, kind="alert", event_type="disk_forecast", sections={"disk": "warn"}
+        ).open
+        is False
+    )
+
+
+def test_the_disk_section_is_advertised_for_a_forecast_rule() -> None:
+    """The admin UI offers the sections a rule can name per event type."""
+
+    assert "disk" in KNOWN_SECTIONS["disk_forecast"]

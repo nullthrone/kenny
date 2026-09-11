@@ -27,7 +27,7 @@ from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.routing import Mount, Route, WebSocketRoute
 
-from . import agent_release, event_categories
+from . import agent_release, alert_subject, event_categories
 from .alerting import AlertEngine
 from .config import Settings
 from .auth import (
@@ -64,6 +64,7 @@ from .store import (
     UpdateStore,
     WebFilterStore,
 )
+from .ticket_alerts import TicketAlertReader
 from .ticket_assistant import TicketAssistant
 from .ticket_rules import TicketRuleList
 from .ticketstore import TicketStore
@@ -385,21 +386,21 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         """Name what an alert notification is *about*, for ticket deduplication.
 
         Built from the structured discriminators the notification already
-        carries for the auto-ticket rules (``notify.Notification``) -- the host,
-        which producer raised it, and which sections it is about -- never from
-        the free-text title, which is a display string and would silently change
-        this identity whenever its wording did.
+        carries for the auto-ticket rules (``notify.Notification``) -- never
+        from the free-text title, which is a display string and would silently
+        change this identity whenever its wording did. The format and its
+        inverse live together in :mod:`kenny_server.alert_subject`.
 
-        Sorted, so the same set of sections yields the same key whatever order
-        the evaluation happened to visit them in. A notification with no
-        sections (offline, disk forecast) keys on its ``event_type`` alone,
-        which is exactly its subject.
+        ``note.kind`` stands in for a missing ``event_type``: every
+        construction site that predates that field still resolves to a subject
+        rather than to the empty string.
         """
 
-        subject = "+".join(sorted(note.sections)) if note.sections else ""
-        return f"alert|{note.agent_id or ''}|{note.event_type or note.kind}|{subject}"
+        return alert_subject.dedup_key(
+            note.agent_id or "", note.event_type or note.kind, note.sections
+        )
 
-    async def open_alert_ticket(note: Notification) -> None:
+    async def open_alert_ticket(note: Notification) -> str:
         """Open the ticket an alert asks for (ADR-0027 stays best-effort).
 
         ``origin='alert'`` and no requester: nobody asked for it, so it has no
@@ -415,6 +416,11 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         the information is kept, the second ticket is not. A ``resolved`` ticket
         does not suppress a new one (see ``find_open_by_dedup_key``): once
         somebody has dealt with the condition, its return is news again.
+
+        Returns the id of the ticket this alert belongs to -- the new one, or
+        the open one that absorbed it. ``AlertEngine._dispatch`` hangs the
+        alert's own event row on it, so a recurrence is readable *as an alert*
+        on the ticket rather than only as a line of prose on its trail.
         """
 
         key = alert_dedup_key(note)
@@ -426,8 +432,8 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
                 actor="system",
                 summary=f"the same condition alerted again: {note.title}",
             )
-            return
-        await ticket_service.create(
+            return existing.id
+        ticket = await ticket_service.create(
             title=note.title,
             origin="alert",
             requester_user_id=None,
@@ -439,6 +445,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
             reason="opened from an alert",
             dedup_key=key,
         )
+        return ticket.id
 
     # Push alerting (ADR-0027): transition detection over the health rules,
     # delivered best-effort on the configured channels (possibly none).
@@ -878,6 +885,12 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
     # Ticket/approval/Discord-identity/tool-class routes. Registered on every
     # server: the Discord collaborators are optional and only the two routes that
     # genuinely need a gateway answer 503 without one.
+    ticket_alert_reader = TicketAlertReader(
+        event_store=event_store,
+        store=store,
+        registry=registry,
+        alert_state=alert_state,
+    )
     ticket_routes = build_ticket_routes(
         tickets=ticket_service,
         store=ticket_store,
@@ -886,6 +899,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         discord=discord_service,
         ticket_rules=ticket_rules,
         assistant=ticket_assistant,
+        alert_reader=ticket_alert_reader,
     )
     download_routes = build_download_routes(
         registry=registry,
@@ -894,15 +908,11 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         share_links=share_links,
         key_store=key_store,
     )
-    # The merged ticket/approval/flagged-section inbox (webui/inbox.py) --
-    # deliberately its own module and route builder, not folded into
-    # build_ticket_routes, so it stays out of webui/tickets.py entirely.
-    inbox_routes = build_inbox_routes(
-        tickets=ticket_service,
-        ticket_store=ticket_store,
-        registry=registry,
-        telemetry_store=store,
-    )
+    # The ticket queue (webui/inbox.py) -- deliberately its own module and
+    # route builder, not folded into build_ticket_routes, so it stays out of
+    # webui/tickets.py entirely. It reads the ticket store and nothing else:
+    # a queue row is a ticket (ADR-0059).
+    inbox_routes = build_inbox_routes(ticket_store=ticket_store)
 
     # `operator_token` is the canonical single token (cookie value, tests);
     # `operator_tokens` is the full accepted set (supports KENNY_OPERATOR_TOKENS).

@@ -1,8 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { MemoryRouter, Route, Routes } from 'react-router'
+import { Link, MemoryRouter, Route, Routes } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { InboxItem } from '../api/types'
 import { toRoutePath } from './inbox/age'
 
 const { apiGetMock } = vi.hoisted(() => ({ apiGetMock: vi.fn() }))
@@ -15,7 +14,6 @@ vi.mock('../api/client', () => ({
 vi.mock('../api/sse', () => ({ streamChatEvents: vi.fn(() => () => {}) }))
 
 const { default: FleetHost } = await import('./FleetHost')
-const { default: InboxRow } = await import('./inbox/InboxRow')
 
 const AGENT_DETAIL = {
   agent_id: 'crit-pc',
@@ -51,28 +49,25 @@ const AGENT_DETAIL = {
 }
 
 /**
- * The exact `target` the server puts on a flagged-section inbox row
+ * The exact `target` the server puts on a flagged-section row on Today
  * (`section_target()` in `kenny_server/webui/__init__.py`; pinned from the
- * other side by `test_inbox_section_target_opens_the_section_not_the_machine`).
+ * other side by `test_a_flagged_section_opens_the_section_not_the_machine`).
  * The point of the tests below is that following it lands on the *section*,
  * not on the machine — so it is written out here as the server writes it,
  * rather than assembled from the constant this view reads.
+ *
+ * Today is the only surface that emits it: the Inbox carries tickets only
+ * (ADR-0059), so no queue row links here any more.
  */
 const SECTION_TARGET = '#/fleet/crit-pc?section=disk'
 
-function sectionItem(target: string): InboxItem {
-  return {
-    id: 'section:crit-pc:disk',
-    kind: 'section',
-    waits_on: 'attention',
-    severity: 'crit',
-    title: 'C: 97% full (>=95%)',
-    meta: 'disk',
-    host: 'crit-pc',
-    age_seconds: 120,
-    gate: null,
-    target,
-  }
+const SECTION_TITLE = 'C: 97% full (>=95%)'
+
+/** A Today row, reduced to the one thing these tests drive: its link. */
+function sectionLink(target: string) {
+  return (
+    <Link to={toRoutePath(target)}>{SECTION_TITLE}</Link>
+  )
 }
 
 function renderAt(initialEntry: string, element: React.ReactNode) {
@@ -81,7 +76,7 @@ function renderAt(initialEntry: string, element: React.ReactNode) {
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[initialEntry]}>
         <Routes>
-          <Route path="/inbox" element={element} />
+          <Route path="/today" element={element} />
           <Route path="/fleet/:host" element={<FleetHost />} />
         </Routes>
       </MemoryRouter>
@@ -97,18 +92,18 @@ beforeEach(() => {
 })
 
 /**
- * Joined seam: an inbox row's link (`InboxRow`) and the host page's reading of
- * `?section=` (`FleetHost`) have to agree, or a click on a flagged section
- * lands the reader on the machine and leaves them to find the finding again
- * among every other section. Driven through the router the way a click really
- * is, so it fails if either half moves — the row linking to a bare
- * `#/fleet/{host}` again, or the page ignoring the param.
+ * Joined seam: the `target` the server puts on a flagged-section row and the
+ * host page's reading of `?section=` (`FleetHost`) have to agree, or a click
+ * on a flagged section lands the reader on the machine and leaves them to find
+ * the finding again among every other section. Driven through the router the
+ * way a click really is, so it fails if either half moves — the target
+ * regressing to a bare `#/fleet/{host}`, or the page ignoring the param.
  */
-describe('a flagged-section inbox row opens the section, not the machine', () => {
+describe('a flagged-section row opens the section, not the machine', () => {
   it('follows the row link straight to that section’s detail', async () => {
-    renderAt('/inbox', <InboxRow item={sectionItem(SECTION_TARGET)} onDecided={vi.fn()} />)
+    renderAt('/today', sectionLink(SECTION_TARGET))
 
-    const link = screen.getByRole('link', { name: 'C: 97% full (>=95%)' })
+    const link = screen.getByRole('link', { name: SECTION_TITLE })
     expect(link).toHaveAttribute('href', expect.stringContaining(toRoutePath(SECTION_TARGET)))
 
     fireEvent.click(link)
@@ -119,9 +114,9 @@ describe('a flagged-section inbox row opens the section, not the machine', () =>
   })
 
   it('closes back to the plain host page, leaving no section pinned in the URL', async () => {
-    renderAt('/inbox', <InboxRow item={sectionItem(SECTION_TARGET)} onDecided={vi.fn()} />)
+    renderAt('/today', sectionLink(SECTION_TARGET))
 
-    fireEvent.click(screen.getByRole('link', { name: 'C: 97% full (>=95%)' }))
+    fireEvent.click(screen.getByRole('link', { name: SECTION_TITLE }))
     const title = await screen.findByText('DISK & SMART · CRIT-PC')
 
     fireEvent.click(title.closest('div')!.querySelector('button')!)

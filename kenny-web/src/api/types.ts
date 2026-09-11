@@ -314,58 +314,36 @@ export interface TodayResponse {
 
 /* ── Inbox ───────────────────────────────────────────────────────────────── */
 
+/** `tickets.PRIORITIES`, closed and enforced server-side. */
+export type TicketPriority = 'low' | 'normal' | 'high' | 'urgent'
+
 /**
- * Who the item waits on. The five groups already exist server-side for tickets
- * (`TicketStore.counts`) and carry that module's rule:
+ * Who the item waits on. The five groups come from `TicketStore.counts`
+ * server-side and carry that module's rule:
  *   needs_you = blocked on approval/operator, or a `new` alert-origin ticket
  *   waiting   = blocked on the requesting user
  *   working   = in progress, unblocked
  *   new       = not started, has a requester
  *   done      = resolved/closed/cancelled, collapsed
- * The merge extends the vocabulary to flagged sections and held approvals.
  */
 export type InboxGroup = 'needs_you' | 'waiting' | 'working' | 'new' | 'done'
 
-/** Which source a row came from. Drives the row's caps chip. */
-export type InboxKind = 'approval' | 'ticket' | 'section' | 'alert'
-
 /**
- * A held state-changing tool call, rendered inline in the row.
- *
- * `args` are frozen at hold time (`toolloop.PendingCall`) and the resolved target
- * is fixed before the gate runs, so a later host switch cannot retarget the call
- * (ADR-0038). The console renders these arguments verbatim: they are the operator's
- * only evidence of what approving will actually execute. Never reformat, truncate
- * or re-serialise them for display.
+ * One queue row. Every row is a ticket (ADR-0059): the queue carries only
+ * things with a lifecycle, so there is no kind to distinguish. What a row is
+ * about beyond its title — where it came from, what it is waiting for — is
+ * pre-formatted server-side into `meta`.
  */
-export interface InboxGate {
-  approval_id: string
-  ticket_id: string
-  tool: string
-  args: Record<string, unknown>
-  agent_id: string
-  tool_class: string
-  held_since: string
-}
-
 export interface InboxItem {
   id: string
-  kind: InboxKind
   /** `''` when nothing is blocking, mirroring `Ticket.blocked_on`. */
-  waits_on: 'operator' | 'user' | 'approval' | 'attention' | ''
-  /**
-   * Health severity, for rows that have one. A flagged section renders its own
-   * severity as the row chip (`CRITICAL`, `WARNING`) rather than the generic kind,
-   * which is how the design distinguishes a critical host from a routine ticket at
-   * a glance. Null for kinds that carry no health status.
-   */
-  severity: Severity | null
+  waits_on: 'operator' | 'user' | 'approval' | ''
+  /** Drives the row's badge. Server vocabulary (`tickets.PRIORITIES`). */
+  priority: TicketPriority
   title: string
   meta: string
   host: string | null
   age_seconds: number
-  /** Present only on `kind: 'approval'`. */
-  gate: InboxGate | null
   /** Console route for the row's title link. */
   target: string
 }

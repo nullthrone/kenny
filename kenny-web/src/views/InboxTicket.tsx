@@ -7,13 +7,14 @@ import EmptyState from '../components/EmptyState/EmptyState'
 import { ScrollText } from '../components/icons'
 import ApprovalGate, { type DecisionOutcome } from './ticket/ApprovalGate'
 import InlineEditField from './ticket/InlineEditField'
+import LinkedAlerts, { type TicketAlertsResponse } from './ticket/LinkedAlerts'
 import NoteComposer from './ticket/NoteComposer'
 import TicketActions from './ticket/TicketActions'
 import TicketChat from './ticket/TicketChat'
 import Timeline from './ticket/Timeline'
 import { formatAge } from './inbox/age'
 import { actorLabel } from './ticket/eventFormat'
-import { ticketApprovalKey, ticketEventsKey, ticketKey } from './ticket/queries'
+import { ticketAlertsKey, ticketApprovalKey, ticketEventsKey, ticketKey } from './ticket/queries'
 import { ticketStatusChip } from './ticket/statusChip'
 import type { DirectoryUser, Ticket, TicketEvent, TicketVocabulary, TicketApproval } from './ticket/types'
 import styles from './ticket/InboxTicket.module.css'
@@ -25,7 +26,15 @@ interface DirectoryResponse {
   users: DirectoryUser[]
 }
 
-/** `#/inbox/ticket/:id` — status, origin, the timeline, the gate, every lifecycle action, and the ticket's own Ask-kenny composer. */
+/**
+ * `#/inbox/ticket/:id` — status, origin, the alerts this ticket is about and
+ * whether they still hold, the timeline, the gate, every lifecycle action, and
+ * the ticket's own Ask-kenny composer.
+ *
+ * This is the only surface that offers an approval decision: the queue shows
+ * that a ticket waits for one, and the frozen call it would run is here
+ * (ADR-0059).
+ */
 export default function InboxTicket() {
   const { id } = useParams<{ id: string }>()
   const queryClient = useQueryClient()
@@ -52,6 +61,12 @@ export default function InboxTicket() {
   const ticket = useQuery({
     queryKey: id ? ticketKey(id) : ['ticket', 'missing'],
     queryFn: () => api.get<Ticket>(`/api/tickets/${id}`),
+    enabled: !!id,
+  })
+
+  const alerts = useQuery({
+    queryKey: id ? ticketAlertsKey(id) : ['ticket', 'missing', 'alerts'],
+    queryFn: () => api.get<TicketAlertsResponse>(`/api/tickets/${id}/alerts`),
     enabled: !!id,
   })
 
@@ -202,6 +217,8 @@ export default function InboxTicket() {
         fleetAgents={fleet.data?.agents ?? []}
         onMutated={refetchTicket}
       />
+
+      {alerts.data && <LinkedAlerts data={alerts.data} />}
 
       {events.data && (
         <div className={styles.sectionGap}>

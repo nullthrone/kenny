@@ -57,7 +57,8 @@ class Notification:
     event_type: str = ""  # "health" | "offline" | "disk_forecast" | "change" | "digest"
     # section name -> the severity this notification is about ("warn"/"crit"),
     # or "" for a producer with no severity axis (e.g. an inventory change).
-    # Empty dict means "no per-section subject" (offline, disk_forecast, digest).
+    # Empty dict means "no per-section subject": the notification is about
+    # the host rather than any section of it (offline, digest).
     sections: dict[str, str] = field(default_factory=dict)
 
 

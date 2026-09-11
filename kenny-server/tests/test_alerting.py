@@ -928,3 +928,39 @@ async def test_posture_to_incident_escalates_like_ok(stores) -> None:
     sent = await engine.evaluate_once(NOW + timedelta(minutes=6))
     assert [n.body for n in sent] == ["[CRIT] disk: C: 96% full (>=95%)"]
     assert sent[0].sections == {"disk": "crit"}
+
+
+async def test_disk_forecast_declares_the_disk_section(stores) -> None:
+    """The forecast is a statement about ``disk`` and says so structurally.
+
+    Two things depend on it: an auto-ticket rule can target
+    ``disk_forecast``/``disk`` at all (``ticket_rules.decide`` derives its
+    subject from ``sections``), and the forecast shares a ticket subject with
+    an acute disk finding instead of opening a second ticket for one filling
+    volume (``alert_subject.dedup_key``).
+    """
+
+    store, _, _ = stores
+    engine = make_engine(stores, FakeNotifier())
+    base = NOW - timedelta(days=5)
+    for i in range(6):
+        await insert(store, snapshot(68.0 + 2.0 * i), base + timedelta(days=i))
+
+    sent = await engine.evaluate_once(NOW)
+    forecast = next(n for n in sent if n.event_type == "disk_forecast")
+    assert forecast.sections == {"disk": "warn"}
+
+
+async def test_the_stored_alert_carries_its_title_and_producer(stores) -> None:
+    """``message`` joins title and body with a newline, so a title that
+    contains one cannot be recovered by splitting it back apart."""
+
+    store, events, _ = stores
+    engine = make_engine(stores, FakeNotifier())
+    await insert(store, snapshot(96.0), NOW - timedelta(minutes=5))
+    sent = await engine.evaluate_once(NOW)
+    assert len(sent) == 1
+
+    rows = await events.query(kind="alert")
+    assert rows[0]["fields"]["title"] == sent[0].title
+    assert rows[0]["fields"]["event_type"] == sent[0].event_type

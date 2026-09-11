@@ -397,7 +397,8 @@ CREATE TABLE IF NOT EXISTS events (
     error     TEXT,
     target    TEXT,
     message   TEXT,
-    fields    TEXT
+    fields    TEXT,
+    ticket_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_events_time
     ON events (at DESC);
@@ -406,6 +407,42 @@ CREATE INDEX IF NOT EXISTS idx_events_agent_time
 CREATE INDEX IF NOT EXISTS idx_events_kind_time
     ON events (kind, at DESC);
 """
+
+
+def _alert_row(row: Any) -> dict[str, Any]:
+    """Shape one ``kind='alert'`` row for a reader that wants title and body apart.
+
+    ``message`` is the notification's title and body joined by a newline (see
+    ``AlertEngine._dispatch``). The title is also carried verbatim in ``fields``
+    so a title that itself contains a newline survives the round trip; splitting
+    ``message`` is the fallback for rows written before that field existed.
+    """
+
+    fields: dict[str, Any] = {}
+    raw = row["fields"]
+    if raw:
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError):
+            parsed = None
+        if isinstance(parsed, dict):
+            fields = parsed
+    message = row["message"] or ""
+    title = fields.get("title")
+    if isinstance(title, str) and title:
+        body = message[len(title) :].lstrip("\n") if message.startswith(title) else message
+    else:
+        title, _, body = message.partition("\n")
+    return {
+        "id": row["id"],
+        "at": row["at"],
+        "agent_id": row["agent_id"],
+        "level": row["level"],
+        "title": title,
+        "body": body,
+        "priority": fields.get("priority", ""),
+        "event_type": fields.get("event_type", ""),
+    }
 
 
 class EventStore:
@@ -427,7 +464,24 @@ class EventStore:
         self._db = await aiosqlite.connect(self.db_path)
         await _configure_connection(self._db)
         await self._db.executescript(_EVENTS_SCHEMA)
+        await self._migrate()
         await self._db.commit()
+
+    async def _migrate(self) -> None:
+        """Add ``ticket_id`` to ``events`` for DBs created before it existed."""
+
+        async with self._conn.execute("PRAGMA table_info(events)") as cur:
+            cols = {row["name"] for row in await cur.fetchall()}
+        if "ticket_id" not in cols:
+            await self._conn.execute("ALTER TABLE events ADD COLUMN ticket_id TEXT")
+        # An index over a migrated column belongs here, not in ``_EVENTS_SCHEMA``:
+        # the schema script runs first, so on a database whose ``events`` table
+        # predates the column a CREATE INDEX there fails with "no such column"
+        # and takes the whole boot with it. Fresh databases reach this line too,
+        # so the index is created exactly once either way.
+        await self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_events_ticket ON events (ticket_id, at)"
+        )
 
     async def close(self) -> None:
         if self._db is not None:
@@ -497,16 +551,21 @@ class EventStore:
         level: str,
         fields: dict[str, Any] | None = None,
         at: str | None = None,
-    ) -> None:
+    ) -> int:
         """Store an emitted operator alert (kind='alert', source='server').
 
         Alert history reuses the events table (ADR-0027): the Activity view and
         the weekly digest read these back via ``query(kind='alert')``.
+
+        Returns the row's id so the caller can link it to the ticket it opened
+        (:meth:`link_alert_to_ticket`). The alert is recorded before that
+        decision is made and is never delayed by it, so the back-reference is
+        filled in afterwards rather than written with the row.
         """
 
         at = at or datetime.now(timezone.utc).isoformat()
         async with write_lock():
-            await self._conn.execute(
+            cur = await self._conn.execute(
                 "INSERT INTO events (at, agent_id, source, level, kind, target, message, fields) "
                 "VALUES (?, ?, 'server', ?, 'alert', 'kenny.alert', ?, ?)",
                 (
@@ -517,7 +576,45 @@ class EventStore:
                     json.dumps(fields) if fields is not None else None,
                 ),
             )
+            event_id = cur.lastrowid
             await self._conn.commit()
+        return int(event_id or 0)
+
+    async def link_alert_to_ticket(self, event_id: int, ticket_id: str) -> None:
+        """Record that ``event_id`` is one of ``ticket_id``'s alerts.
+
+        Scoped to ``kind='alert'``: every other event kind reaches this table
+        through a different writer and has no ticket to belong to.
+        """
+
+        async with write_lock():
+            await self._conn.execute(
+                "UPDATE events SET ticket_id = ? WHERE id = ? AND kind = 'alert'",
+                (ticket_id, event_id),
+            )
+            await self._conn.commit()
+
+    async def alerts_for_ticket(self, ticket_id: str, *, limit: int = 200) -> list[dict[str, Any]]:
+        """Return this ticket's alerts oldest-first.
+
+        Chronological, unlike :meth:`query` — the opening transition first and
+        every recurrence deduplication attached to the ticket after it, which
+        is the order the story happened in.
+
+        The list is bounded by event retention (~30 days), not by the ticket's
+        lifetime: an old ticket's opening alert can already be pruned away, and
+        a caller must render that as an empty history rather than an error.
+        """
+
+        if not ticket_id:
+            return []
+        async with self._conn.execute(
+            "SELECT id, at, agent_id, level, message, fields FROM events "
+            "WHERE ticket_id = ? AND kind = 'alert' ORDER BY at ASC, id ASC LIMIT ?",
+            (ticket_id, limit),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [_alert_row(row) for row in rows]
 
     async def query(
         self,

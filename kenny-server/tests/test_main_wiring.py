@@ -669,3 +669,158 @@ def test_boot_warms_the_classifier_from_stored_snapshots(tmp_path, monkeypatch) 
             assert [(r["source"], r["event_id"]) for r in rows] == [("Warm", 7)]
     finally:
         event_categories.reset_state()
+
+
+def test_the_alert_event_is_linked_to_the_ticket_it_opened(tmp_path) -> None:
+    """Dispatch writes the alert, decides, opens the ticket, and hangs the
+    alert on it — so the ticket can show what it is about.
+
+    Driven through ``_dispatch`` on the wired engine rather than a stub
+    ``open_ticket``: a stub returning a made-up id would prove the call shape
+    and nothing about whether the two halves agree on which ticket that is.
+    """
+
+    app = build_app(db_path=str(tmp_path / "link.sqlite"))
+    with TestClient(app):
+        engine = app.state.alert_engine
+        note = _alert("pc1", title="pc1: disk is full", sections={"disk": "crit"})
+
+        asyncio.run(engine._dispatch(note, datetime(2026, 9, 1, 8, 0, tzinfo=timezone.utc)))
+
+        tickets = asyncio.run(app.state.ticket_store.list(limit=50))
+        assert len(tickets) == 1
+        alerts = asyncio.run(app.state.event_store.alerts_for_ticket(tickets[0].id))
+        assert [a["title"] for a in alerts] == ["pc1: disk is full"]
+
+
+def test_a_deduplicated_recurrence_links_to_the_same_ticket(tmp_path) -> None:
+    """The recurrence opens no second ticket, and its alert is still readable
+    on the one that absorbed it — that is what makes "alerted again" more than
+    a line of prose on the trail."""
+
+    app = build_app(db_path=str(tmp_path / "link2.sqlite"))
+    with TestClient(app):
+        engine = app.state.alert_engine
+        at = datetime(2026, 9, 1, 8, 0, tzinfo=timezone.utc)
+        for i in range(3):
+            note = _alert("pc1", title=f"pc1: disk is full ({i})", sections={"disk": "crit"})
+            asyncio.run(engine._dispatch(note, at + timedelta(hours=i)))
+
+        tickets = asyncio.run(app.state.ticket_store.list(limit=50))
+        assert len(tickets) == 1
+        alerts = asyncio.run(app.state.event_store.alerts_for_ticket(tickets[0].id))
+        assert [a["title"] for a in alerts] == [
+            "pc1: disk is full (0)",
+            "pc1: disk is full (1)",
+            "pc1: disk is full (2)",
+        ]
+
+
+def test_an_alert_that_opens_no_ticket_is_linked_to_nothing(tmp_path) -> None:
+    """A recovery can never open a ticket (``NEVER_TICKETED_KINDS``), so its
+    event row stays unowned rather than attaching itself to a nearby ticket."""
+
+    app = build_app(db_path=str(tmp_path / "link3.sqlite"))
+    with TestClient(app):
+        engine = app.state.alert_engine
+        at = datetime(2026, 9, 1, 8, 0, tzinfo=timezone.utc)
+        asyncio.run(engine._dispatch(_alert("pc1", title="up", sections={"disk": "crit"}), at))
+        recovery = Notification(
+            title="pc1 recovered",
+            body="body",
+            agent_id="pc1",
+            kind="recovery",
+            event_type="health",
+            sections={"disk": "ok"},
+        )
+        asyncio.run(engine._dispatch(recovery, at + timedelta(hours=1)))
+
+        tickets = asyncio.run(app.state.ticket_store.list(limit=50))
+        assert len(tickets) == 1
+        alerts = asyncio.run(app.state.event_store.alerts_for_ticket(tickets[0].id))
+        assert [a["title"] for a in alerts] == ["up"]
+
+
+def test_a_forecast_and_an_acute_disk_finding_share_one_ticket(tmp_path) -> None:
+    """One filling volume is one case, whichever producer noticed it.
+
+    The forecast ("~11 days until full") and the health rule ("96% used") are
+    two views of the same condition. Keyed by producer they opened two tickets;
+    keyed by subject the second attaches to the first.
+    """
+
+    app = build_app(db_path=str(tmp_path / "subject.sqlite"))
+    with TestClient(app):
+        open_ticket = app.state.alert_engine._open_ticket
+
+        forecast = Notification(
+            title="pc1: disk filling up",
+            body="C: ~11d until full",
+            agent_id="pc1",
+            kind="alert",
+            event_type="disk_forecast",
+            sections={"disk": "warn"},
+        )
+        asyncio.run(open_ticket(forecast))
+        asyncio.run(open_ticket(_alert("pc1", title="pc1: disk is crit", sections={"disk": "crit"})))
+
+        tickets = asyncio.run(app.state.ticket_store.list(limit=50))
+        assert len(tickets) == 1
+        events = asyncio.run(app.state.ticket_store.list_events(tickets[0].id))
+        assert any("alerted again" in (e.summary or "") for e in events)
+
+
+def test_a_change_and_a_finding_on_one_section_stay_separate(tmp_path) -> None:
+    """The space axis, doing its job.
+
+    "a service appeared" and "a service is down" both name ``services``, but
+    only the second can ever come back to ok. Merging them would produce a
+    ticket whose linked findings are answerable for half its alerts.
+    """
+
+    app = build_app(db_path=str(tmp_path / "space.sqlite"))
+    with TestClient(app):
+        open_ticket = app.state.alert_engine._open_ticket
+
+        change = Notification(
+            title="pc1: a new service appeared",
+            body="Foo",
+            agent_id="pc1",
+            kind="alert",
+            event_type="change",
+            sections={"services": ""},
+        )
+        asyncio.run(open_ticket(change))
+        asyncio.run(open_ticket(_alert("pc1", title="pc1: services crit", sections={"services": "crit"})))
+
+        assert len(asyncio.run(app.state.ticket_store.list(limit=50))) == 2
+
+
+def test_offline_and_a_forecast_on_one_host_stay_separate(tmp_path) -> None:
+    """Neither names a section it can be keyed on before the forecast declares
+    ``disk``; without the event_type fallback both collapse into one subject and
+    "the PC is unreachable" absorbs "the disk is filling up"."""
+
+    app = build_app(db_path=str(tmp_path / "fallback.sqlite"))
+    with TestClient(app):
+        open_ticket = app.state.alert_engine._open_ticket
+
+        offline = Notification(
+            title="pc1 is offline",
+            body="No telemetry for 1.2h",
+            agent_id="pc1",
+            kind="alert",
+            event_type="offline",
+        )
+        forecast = Notification(
+            title="pc1: disk filling up",
+            body="C: ~11d until full",
+            agent_id="pc1",
+            kind="alert",
+            event_type="disk_forecast",
+            sections={"disk": "warn"},
+        )
+        asyncio.run(open_ticket(offline))
+        asyncio.run(open_ticket(forecast))
+
+        assert len(asyncio.run(app.state.ticket_store.list(limit=50))) == 2

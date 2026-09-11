@@ -42,6 +42,14 @@ approval and state change underneath it. Three things can open one:
   opening tickets) or widen it (e.g. promote an inventory change, like a new local admin
   account, into one). See
   [Alerting → which events open a ticket](alerting.md#which-events-open-a-ticket-is-configurable).
+  While a ticket for the same subject is still open, a repeat alert is recorded **on that
+  ticket** instead of opening a second one, and is readable there — see
+  [one open ticket per subject](alerting.md#one-open-ticket-per-subject).
+
+The [Inbox](dashboard.md#inbox) is the queue of these tickets, and only of these tickets:
+every row there is a ticket, and every row opens its ticket. A standing critical or warning
+finding that no rule turned into a ticket is read on
+[Fleet](dashboard.md#the-host-page) and [Today](dashboard.md#today) instead.
 
 The dashboard is no longer just where you read, note, reassign and close a ticket — the
 ticket detail view has its own **chat with kenny**, gated the same way Discord always was,

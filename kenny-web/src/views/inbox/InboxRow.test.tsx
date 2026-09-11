@@ -1,100 +1,41 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import type { InboxItem } from '../../api/types'
 import InboxRow from './InboxRow'
 
-/**
- * SECURITY-CRITICAL: a gate's `args` are the operator's only evidence of
- * what approving will actually execute (types.ts's `InboxGate` doc
- * comment). This asserts that guarantee survives the whole path from a raw
- * `InboxItem` through `InboxRow` → `ApprovalGate` → `GateCard`, not just
- * `GateCard` in isolation (already covered by
- * `components/GateCard/GateCard.test.tsx`) — including characters that
- * would be mangled by truncation, HTML-escaping, or re-serialisation:
- * backslashes (a Windows path), embedded quotes, and angle brackets.
- */
 function renderRow(item: InboxItem) {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(
-    <QueryClientProvider client={queryClient}>
-      <MemoryRouter>
-        <InboxRow item={item} onDecided={vi.fn()} />
-      </MemoryRouter>
-    </QueryClientProvider>,
+    <MemoryRouter>
+      <InboxRow item={item} />
+    </MemoryRouter>,
   )
 }
 
-describe('InboxRow gate rendering', () => {
-  it('renders a Windows path and a JSON-ish string, with quotes and backslashes, byte-for-byte', () => {
-    const dangerousArgs = {
-      path: 'C:\\Users\\oma\\Videos\\Family "Backup" <2026>\\',
-      note: '{"already":"json-like","script":"<img src=x onerror=alert(1)>"}',
-    }
-
-    const item: InboxItem = {
-      id: 'appr-1',
-      kind: 'approval',
-      waits_on: 'approval',
-      severity: null,
-      title: 'Ticket #41 — winget_update on mia-desktop',
-      meta: 'Requested by mia via Discord · held 38 min',
-      host: 'mia-desktop',
-      age_seconds: 2280,
-      gate: {
-        approval_id: 'appr-1',
-        ticket_id: '41',
-        tool: 'fs_move',
-        args: dangerousArgs,
-        agent_id: 'mia-desktop',
-        tool_class: 'standard_change',
-        held_since: '2026-08-17T10:00:00Z',
-      },
-      target: '#/inbox/ticket/ae73db26ad3e4c078c93050f63395873',
-    }
-
-    renderRow(item)
-
-    // Exactly what `GateCard`'s own formatter produces — un-truncated,
-    // un-reformatted, keys in server order — must be present as literal text.
-    const expected = JSON.stringify(dangerousArgs)
-    expect(screen.getByText(expected)).toBeInTheDocument()
-
-    // ...and never parsed as markup: the embedded `<img onerror=...>` must
-    // not become a real element, and no literal backslash was stripped.
-    expect(document.querySelector('img')).toBeNull()
-    expect(expected).toContain('\\\\Users\\\\oma')
-    expect(expected).toContain('\\"Backup\\"')
-  })
-})
+const base: InboxItem = {
+  id: 'ae73db26ad3e4c078c93050f63395873',
+  waits_on: '',
+  priority: 'normal',
+  title: 'oma-pc: real-time protection off',
+  meta: '#41 · alert',
+  host: 'oma-pc',
+  age_seconds: 2280,
+  target: '#/inbox/ticket/ae73db26ad3e4c078c93050f63395873',
+}
 
 /**
- * Every row's title is the way into the thing the row is about, so it must
- * either go somewhere or not look clickable. A `<Link to="">` does neither: it
+ * Every row's title is the way into the ticket it is about, so it must either
+ * go somewhere or not look clickable. A `<Link to="">` does neither: it
  * renders as a link and then navigates back to the inbox the reader is already
  * on, which reads as a click that did nothing.
  */
 describe('InboxRow title link', () => {
-  const base: InboxItem = {
-    id: 'section:oma-pc:defender',
-    kind: 'section',
-    waits_on: 'attention',
-    severity: 'crit',
-    title: 'real-time protection off',
-    meta: 'defender',
-    host: 'oma-pc',
-    age_seconds: 60,
-    gate: null,
-    target: '#/fleet/oma-pc?section=defender',
-  }
-
-  it('links a flagged section to that section, not to the bare host page', () => {
+  it('links a row to its ticket', () => {
     renderRow(base)
 
     expect(screen.getByRole('link', { name: base.title })).toHaveAttribute(
       'href',
-      expect.stringContaining('/fleet/oma-pc?section=defender'),
+      expect.stringContaining('/inbox/ticket/ae73db26ad3e4c078c93050f63395873'),
     )
   })
 
@@ -103,5 +44,41 @@ describe('InboxRow title link', () => {
 
     expect(screen.queryByRole('link')).toBeNull()
     expect(screen.getByText(base.title)).toBeInTheDocument()
+  })
+})
+
+/**
+ * The queue says what a ticket is waiting for; it does not offer the decision.
+ * Approving belongs on the ticket, where the frozen call it would run is
+ * shown — deciding from a list, next to a title, is deciding without the
+ * evidence (`views/ticket/ApprovalGate.test.tsx` pins that surface).
+ */
+describe('InboxRow offers no decision', () => {
+  it('shows that a ticket waits for an approval without offering one', () => {
+    renderRow({ ...base, waits_on: 'approval', meta: '#41 · alert · waiting for approval' })
+
+    expect(screen.getByText('#41 · alert · waiting for approval')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /approve|deny/i })).toBeNull()
+    expect(screen.queryByRole('button')).toBeNull()
+  })
+})
+
+/** The badge is the row's priority, and an unknown value must render dully. */
+describe('InboxRow priority badge', () => {
+  it.each([
+    ['urgent', 'URGENT'],
+    ['high', 'HIGH'],
+    ['normal', 'NORMAL'],
+    ['low', 'LOW'],
+  ])('renders %s as %s', (priority, label) => {
+    renderRow({ ...base, priority: priority as InboxItem['priority'] })
+
+    expect(screen.getByText(label)).toBeInTheDocument()
+  })
+
+  it('renders a priority the console has no colour for rather than crashing', () => {
+    renderRow({ ...base, priority: 'catastrophic' as InboxItem['priority'] })
+
+    expect(screen.getByText('CATASTROPHIC')).toBeInTheDocument()
   })
 })

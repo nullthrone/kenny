@@ -206,8 +206,8 @@ MANIFEST: list[Shot] = [
         hash="#/inbox",
         mode="full_page",
         theme="light",
-        note="default NEEDS YOU group — the printer-driver ticket's held approval gate.",
-        actions=[{"wait_for": ".kc-actions"}, {"sleep": SETTLE_MS}],
+        note="default NEEDS YOU group — one row per ticket, badged by priority.",
+        actions=[{"wait_for": "[data-shot=inbox-row]"}, {"sleep": SETTLE_MS}],
     ),
     Shot(
         name="ticket-detail",
@@ -223,8 +223,9 @@ MANIFEST: list[Shot] = [
         mode="full_page",
         theme="light",
         note=(
-            "an alert kenny investigated unprompted and closed out: the verdict, what it "
-            "checked, and the one-click mute it proposes (ADR-0056)."
+            "an alert kenny investigated unprompted and closed out: the linked alerts "
+            "and whether they still hold, the verdict, what it checked, and the "
+            "one-click mute it proposes (ADR-0056)."
         ),
         actions=[{"wait_for": "[data-shot=triage-verdict]"}, {"sleep": SETTLE_MS}],
     ),
