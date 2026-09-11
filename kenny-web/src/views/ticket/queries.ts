@@ -8,3 +8,4 @@
 export const ticketKey = (id: string) => ['ticket', id] as const
 export const ticketEventsKey = (id: string) => ['ticket', id, 'events'] as const
 export const ticketApprovalKey = (id: string) => ['approvals', id] as const
+export const ticketAlertsKey = (id: string) => ['ticket', id, 'alerts'] as const

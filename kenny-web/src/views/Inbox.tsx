@@ -10,14 +10,14 @@ import InboxRow from './inbox/InboxRow'
 import NewTicketModal from './inbox/NewTicketModal'
 import { DEFAULT_INBOX_GROUP, INBOX_GROUPS, isInboxGroup } from './inbox/groups'
 import type { Ticket, TicketVocabulary } from './ticket/types'
-import type { DecisionOutcome } from './ticket/ApprovalGate'
 import styles from './inbox/Inbox.module.css'
 
 /**
- * `#/inbox`, `#/inbox/:group` — the merged queue: approvals, flagged
- * sections, and tickets, ranked by who it waits on. Every row's shape
- * (kind, gate, legality) is entirely server-computed (`GET /api/inbox`) —
- * this view renders it, it does not re-derive it.
+ * `#/inbox`, `#/inbox/:group` — the ticket queue, grouped by who the ball is
+ * with. Every row is a ticket (ADR-0059), and every row opens its ticket: no
+ * row in this list leads anywhere else. Each row's shape is entirely
+ * server-computed (`GET /api/inbox`) — this view renders it, it does not
+ * re-derive it.
  */
 export default function Inbox() {
   const { group: groupParam } = useParams<{ group?: string }>()
@@ -26,7 +26,6 @@ export default function Inbox() {
   const queryClient = useQueryClient()
 
   const [newTicketOpen, setNewTicketOpen] = useState(false)
-  const [banner, setBanner] = useState<{ text: string; warn: boolean } | null>(null)
 
   const inbox = useQuery({
     queryKey: ['inbox', group],
@@ -42,11 +41,6 @@ export default function Inbox() {
     queryFn: () => api.get<TicketVocabulary>('/api/tickets/vocabulary'),
     staleTime: Infinity,
   })
-
-  function handleDecided(_item: unknown, outcome: DecisionOutcome) {
-    setBanner({ text: outcome.message, warn: !outcome.resumed })
-    void queryClient.invalidateQueries({ queryKey: ['inbox'] })
-  }
 
   function handleCreated(ticket: Ticket) {
     setNewTicketOpen(false)
@@ -64,16 +58,7 @@ export default function Inbox() {
           NEW TICKET
         </button>
       </div>
-      <p className={styles.lede}>Approvals, flagged sections, and tickets — one queue, ranked by who it waits on.</p>
-
-      {banner && (
-        <div className={`${styles.banner}${banner.warn ? ` ${styles.bannerWarn}` : ''}`}>
-          <span>{banner.text}</span>
-          <button type="button" className={styles.bannerDismiss} onClick={() => setBanner(null)}>
-            DISMISS
-          </button>
-        </div>
-      )}
+      <p className={styles.lede}>Every ticket you can see, grouped by who it waits on.</p>
 
       <div className={styles.groups}>
         {INBOX_GROUPS.map((g) => (
@@ -103,7 +88,7 @@ export default function Inbox() {
       {inbox.data && inbox.data.items.length > 0 && (
         <div className={styles.list}>
           {inbox.data.items.map((item) => (
-            <InboxRow key={item.id} item={item} onDecided={handleDecided} />
+            <InboxRow key={item.id} item={item} />
           ))}
         </div>
       )}
