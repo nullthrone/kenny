@@ -908,15 +908,11 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         share_links=share_links,
         key_store=key_store,
     )
-    # The merged ticket/approval/flagged-section inbox (webui/inbox.py) --
-    # deliberately its own module and route builder, not folded into
-    # build_ticket_routes, so it stays out of webui/tickets.py entirely.
-    inbox_routes = build_inbox_routes(
-        tickets=ticket_service,
-        ticket_store=ticket_store,
-        registry=registry,
-        telemetry_store=store,
-    )
+    # The ticket queue (webui/inbox.py) -- deliberately its own module and
+    # route builder, not folded into build_ticket_routes, so it stays out of
+    # webui/tickets.py entirely. It reads the ticket store and nothing else:
+    # a queue row is a ticket (ADR-0059).
+    inbox_routes = build_inbox_routes(ticket_store=ticket_store)
 
     # `operator_token` is the canonical single token (cookie value, tests);
     # `operator_tokens` is the full accepted set (supports KENNY_OPERATOR_TOKENS).

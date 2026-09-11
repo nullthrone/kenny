@@ -1,32 +1,27 @@
-"""`GET /api/inbox` -- the merged ticket/approval/flagged-section inbox.
+"""``GET /api/inbox`` -- the ticket queue, grouped by who the ball is with.
+
+Every row is a ticket. That is the membership rule (ADR-0059): the queue
+carries only things with a lifecycle -- something that can be claimed, worked,
+blocked and closed, and that a person can be finished with. A flagged health
+section is none of those; it is a verdict recomputed from the newest snapshot
+on every request, so it is read where it is derived (Fleet, Today) and reaches
+this queue only when a rule turns it into a ticket (``ticket_rules.py``). A
+held approval is not a second thing either: it is a state of the ticket that
+holds it (``blocked_on='approval'``), and that ticket is already in
+``needs_you``.
 
 Deliberately its own module, not a fifth thing bolted onto
 :mod:`kenny_server.webui.tickets` (another surface is actively changing that
 file) or reshaped inside :mod:`kenny_server.webui`: this route only reads.
-Lifecycle rules and approval authorization stay exactly where they already
-live --
+Lifecycle rules stay where they live --
+:class:`~kenny_server.ticketstore.TicketStore` owns the ``needs_you`` /
+``waiting`` / ``working`` / ``new`` / ``done`` bucket rule (see its
+``counts()`` docstring); this module reuses that rule to fetch the *rows*
+behind each bucket's count, it does not restate it.
 
-* :class:`~kenny_server.ticketstore.TicketStore` owns the ``needs_you`` /
-  ``waiting`` / ``working`` / ``new`` / ``done`` bucket rule (see its
-  ``counts()`` docstring) -- this module reuses that rule to fetch the *rows*
-  behind each bucket's count, it does not restate the rule.
-* :class:`~kenny_server.tickets.TicketService` owns who may decide an
-  approval (``decide_approval``) -- this module only surfaces enough of a
-  held gate (``InboxGate``) for the console to call the existing
-  ``POST /api/approvals/{aid}`` route; it never decides anything itself.
-
-The merge extends the ticket bucket vocabulary to two more sources, both
-folded into ``needs_you`` (the only bucket a flagged section or a held
-approval can belong to -- neither has a ``waiting``/``working``/``new``/
-``done`` state of its own):
-
-* flagged (crit/warn) telemetry sections, reusing
-  :func:`kenny_server.webui._overview` (the same per-host summary
-  ``/api/fleet`` already builds) rather than re-deriving health;
-* held approvals (:meth:`TicketStore.list_open_approvals`), kept **at least
-  as strict as** ``GET /api/approvals`` itself (operator-only) even though
-  ``/api/inbox`` is reachable by a scoped ``user`` for the ticket/section
-  slices.
+Because the counts are now exactly ``TicketStore.counts()``, the header badge
+(which reads ``/api/tickets/summary``) and this route's ``needs_you`` are the
+same number by construction rather than by coincidence.
 """
 
 from __future__ import annotations
@@ -38,18 +33,13 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from ..registry import AgentRegistry
-from ..store import TelemetryStore
-from ..ticketstore import Ticket, TicketApproval, TicketStore
-from ..tickets import TicketService
-from . import _known_ids, _overview, section_target
-from .authz import guard, principal_of, visible_ids
+from ..ticketstore import Ticket, TicketStore
+from .authz import guard, principal_of
 
 __all__ = ["build_inbox_routes"]
 
-# The five groups TicketStore.counts() already buckets tickets into (see its
-# docstring for the rule). This module extends the vocabulary; it does not
-# add a new group.
+# The five groups TicketStore.counts() buckets tickets into (see its docstring
+# for the rule).
 _GROUPS = ("needs_you", "waiting", "working", "new", "done")
 
 # A household fleet's open-ticket count is small (TicketStore.counts()'s own
@@ -70,29 +60,41 @@ def _age_seconds(iso: str | None, *, now: datetime) -> int:
     return max(0, int((now - ts).total_seconds()))
 
 
+def _meta(ticket: Ticket) -> str:
+    """The row's secondary line: the display ref, then what else is true of it.
+
+    ``origin`` lives here because the row's badge is the priority now, and a
+    reader still needs to tell a case kenny opened from one a person did. The
+    display ref (#42) belongs in text and never in ``target``.
+    """
+
+    parts = [f"#{ticket.number}", ticket.origin]
+    if ticket.blocked_on == "approval":
+        parts.append("waiting for approval")
+    elif ticket.blocked_on == "user":
+        parts.append("waiting for an answer")
+    elif ticket.blocked_on == "operator":
+        parts.append("waiting for an operator")
+    # A ticket kenny resolved by itself says so in the row, not only on its own
+    # page: the DONE list is where the hit rate gets read, and that is only
+    # possible if kenny's decisions are distinguishable from a person's without
+    # opening each one.
+    if ticket.resolved_by == "triage":
+        parts.append("resolved by kenny")
+    return " · ".join(parts)
+
+
 def _ticket_item(ticket: Ticket, *, now: datetime) -> dict[str, Any]:
     return {
         "id": ticket.id,
-        "kind": "alert" if ticket.origin == "alert" else "ticket",
         # Ticket.blocked_on is already '' | 'user' | 'approval' | 'operator' --
-        # exactly InboxItem.waits_on's vocabulary for a ticket row, no mapping.
+        # exactly InboxItem.waits_on's vocabulary, no mapping.
         "waits_on": ticket.blocked_on or "",
-        "severity": None,
+        "priority": ticket.priority,
         "title": ticket.title,
-        # The display ref (#42) belongs here, in text -- never in `target` below.
-        # A ticket kenny resolved by itself says so in the row, not only on its
-        # own page: the DONE list is where the hit rate gets read, and that is
-        # only possible if kenny's decisions are distinguishable from a
-        # person's without opening each one. Appended to `meta` rather than
-        # given its own field — the row already has a place for "what else is
-        # true about this ticket".
-        "meta": (
-            f"#{ticket.number} · {ticket.priority}"
-            + (" · resolved by kenny" if ticket.resolved_by == "triage" else "")
-        ),
+        "meta": _meta(ticket),
         "host": ticket.agent_id,
         "age_seconds": _age_seconds(ticket.blocked_since or ticket.updated_at, now=now),
-        "gate": None,
         # A ticket has two ids: `id` (uuid, what every /api/tickets/{tid} route
         # resolves) and `number` (the display ref, routable only through
         # TicketStore.get_by_number(), which no HTTP route calls). `target` must
@@ -101,75 +103,8 @@ def _ticket_item(ticket: Ticket, *, now: datetime) -> dict[str, Any]:
     }
 
 
-def _approval_item(approval: TicketApproval, *, now: datetime) -> dict[str, Any]:
-    return {
-        "id": approval.id,
-        "kind": "approval",
-        "waits_on": "approval",
-        "severity": None,
-        "title": f"{approval.tool} needs approval",
-        "meta": approval.tool_class,
-        "host": approval.agent_id,
-        "age_seconds": _age_seconds(approval.requested_at, now=now),
-        "gate": {
-            "approval_id": approval.id,
-            "ticket_id": approval.ticket_id,
-            "tool": approval.tool,
-            "args": approval.args,
-            "agent_id": approval.agent_id or "",
-            "tool_class": approval.tool_class,
-            "held_since": approval.requested_at,
-        },
-        # The gate's own ticket, always -- `approval.ticket_id` is the row's
-        # foreign key and is the same uuid `id` #/inbox/ticket/{id} resolves.
-        # Deriving it from a separately fetched Ticket meant a row whose ticket
-        # failed to load rendered a link to "", which navigates nowhere; a
-        # ticket that really is gone should say so on the ticket page.
-        "target": f"#/inbox/ticket/{approval.ticket_id}",
-    }
-
-
-def _section_item(
-    agent_id: str,
-    section: dict[str, Any],
-    severity: str,
-    *,
-    collected_at: str | None,
-    now: datetime,
-) -> dict[str, Any]:
-    name = section["name"]
-    return {
-        "id": f"section:{agent_id}:{name}",
-        "kind": "section",
-        "waits_on": "attention",
-        "severity": severity,
-        "title": section.get("reason") or section.get("summary") or name,
-        "meta": name.replace("_", " "),
-        "host": agent_id,
-        "age_seconds": _age_seconds(collected_at, now=now),
-        "gate": None,
-        # The flagged section itself, not the machine it sits on -- see
-        # `section_target`.
-        "target": section_target(agent_id, name),
-    }
-
-
-def build_inbox_routes(
-    *,
-    tickets: TicketService,
-    ticket_store: TicketStore,
-    registry: AgentRegistry,
-    telemetry_store: TelemetryStore,
-) -> list[Route]:
-    """Build the ``/api/inbox`` route.
-
-    ``tickets``/``ticket_store`` are the ticket lifecycle service and its
-    backing store (approve/deny decisions stay a separate call,
-    ``POST /api/approvals/{aid}``, per the module docstring); ``registry``/
-    ``telemetry_store`` are the same fleet collaborators ``/api/fleet`` reads,
-    needed here only to reuse :func:`kenny_server.webui._overview` for the
-    flagged-section slice.
-    """
+def build_inbox_routes(*, ticket_store: TicketStore) -> list[Route]:
+    """Build the ``/api/inbox`` route over the ticket store alone."""
 
     async def _bucket_tickets(requester_user_id: int | None) -> dict[str, list[Ticket]]:
         async def fetch(**kw: Any) -> list[Ticket]:
@@ -185,43 +120,18 @@ def build_inbox_routes(
         new_needs_you = [t for t in new_all if t.requester_user_id is None]
         new_only = [t for t in new_all if t.requester_user_id is not None]
         needs_you_blocked = await fetch(blocked_on_in=("operator", "approval"))
+        # Deduplicated by id: TicketService.block() only ever blocks an
+        # `in_progress` ticket, so the two halves cannot overlap through the
+        # service -- but the rows-must-equal-the-count test is only honest if a
+        # direct store write cannot make it double-count.
+        seen = {t.id for t in needs_you_blocked}
         return {
-            "needs_you": needs_you_blocked + new_needs_you,
+            "needs_you": needs_you_blocked + [t for t in new_needs_you if t.id not in seen],
             "waiting": await fetch(blocked_on="user"),
             "working": await fetch(state="in_progress", blocked_on=""),
             "new": new_only,
             "done": await fetch(states=("resolved", "closed", "cancelled")),
         }
-
-    async def _flagged_section_items(request: Request, *, now: datetime) -> list[dict[str, Any]]:
-        principal = principal_of(request)
-        ids = await _known_ids(registry, telemetry_store)
-        if principal is not None:
-            ids = visible_ids(principal, ids)
-        crit_items: list[dict[str, Any]] = []
-        warn_items: list[dict[str, Any]] = []
-        for agent_id in ids:
-            overview = await _overview(agent_id, registry, telemetry_store)
-            collected_at = overview["collected_at"]
-            for section in overview["crit_sections"]:
-                crit_items.append(
-                    _section_item(agent_id, section, "crit", collected_at=collected_at, now=now)
-                )
-            for section in overview["warn_sections"]:
-                warn_items.append(
-                    _section_item(agent_id, section, "warn", collected_at=collected_at, now=now)
-                )
-        return crit_items + warn_items
-
-    async def _approval_items(request: Request, *, now: datetime) -> list[dict[str, Any]]:
-        principal = principal_of(request)
-        # See module docstring: at least as strict as GET /api/approvals.
-        if principal is not None and not principal.at_least("operator"):
-            return []
-        items: list[dict[str, Any]] = []
-        for approval in await ticket_store.list_open_approvals():
-            items.append(_approval_item(approval, now=now))
-        return items
 
     async def api_inbox(request: Request) -> JSONResponse:
         principal = principal_of(request)
@@ -236,23 +146,8 @@ def build_inbox_routes(
         )
 
         buckets = await _bucket_tickets(requester_user_id)
-        section_items = await _flagged_section_items(request, now=now)
-        approval_items = await _approval_items(request, now=now)
-
         counts = await ticket_store.counts(requester_user_id=requester_user_id)
-        counts["needs_you"] += len(section_items) + len(approval_items)
-
-        if group == "needs_you":
-            # Same ranking `/api/today` uses for its capped list: crit sections,
-            # warn sections, held approvals, then tickets -- here the full set,
-            # not capped, since this is the actual inbox list.
-            items = (
-                section_items
-                + approval_items
-                + [_ticket_item(t, now=now) for t in buckets["needs_you"]]
-            )
-        else:
-            items = [_ticket_item(t, now=now) for t in buckets[group]]
+        items = [_ticket_item(t, now=now) for t in buckets[group]]
 
         return JSONResponse({"group": group, "counts": counts, "items": items})
 

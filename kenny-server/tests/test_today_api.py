@@ -242,3 +242,58 @@ def test_today_ranks_newest_incident_first_and_counts_posture(tmp_path) -> None:
         # A posture-only host is a quiet host in the verdict and the donut.
         assert "One machine needs attention" not in body["verdict_sentence"]
         assert {s["key"]: s["value"] for s in body["donut"]["segments"]} == {"crit": 2, "ok": 1}
+
+
+_TARGET_SECTION_RE = re.compile(r"^#/fleet/(?P<host>[^?]+)\?section=(?P<section>[^&]+)$")
+
+
+def _health_section_names(detail: dict) -> dict[str, dict]:
+    """`/api/agent/{id}`'s health sections, keyed by name.
+
+    Accepts both shapes the console's `normalizeSections` accepts (a dict keyed
+    by section name, or an array of sections carrying their own `name`), so
+    this test pins the *link*, not which of the two the handler happens to
+    return today.
+    """
+
+    sections = detail["health"]["sections"]
+    if isinstance(sections, list):
+        return {s["name"]: s for s in sections}
+    return dict(sections)
+
+
+def test_a_flagged_section_opens_the_section_not_the_machine(tmp_path) -> None:
+    """Today is where a standing finding is read, so its row links to the
+    finding, not to the host.
+
+    Joined seam between `section_target()` and the console's `FleetHost.tsx`:
+    the target is followed the way the console follows it -- the path names a
+    host `/api/agent/{id}` resolves, and `?section=` carries a raw section
+    name that host really reports as needing attention, which is the key
+    `FleetHost.tsx` matches against `HostSection.name` to open the detail. It
+    fails on a regression to a bare `#/fleet/{host}` (the reader lands on the
+    machine and has to find the section again) and on a param carrying a
+    humanised label ("Disk") instead of the stored name ("disk").
+    """
+
+    from urllib.parse import unquote
+
+    app = build_app(db_path=str(tmp_path / "today-section-target.sqlite"))
+    with TestClient(app) as c:
+        h = _bearer(app)
+        store = app.state.store
+        c.portal.call(partial(store.insert, "crit-pc", "2026-08-01T00:00:00+00:00", _CRIT_SNAPSHOT))
+
+        row = next(i for i in c.get("/api/today", headers=h).json()["items"] if i["severity"] == "crit")
+
+        match = _TARGET_SECTION_RE.match(row["target"])
+        assert match, row["target"]
+        host = unquote(match["host"])
+        section = unquote(match["section"])
+        assert host == row["host"] == "crit-pc"
+
+        detail = c.get(f"/api/agent/{host}", headers=h)
+        assert detail.status_code == 200
+        sections = _health_section_names(detail.json())
+        assert section in sections, sorted(sections)
+        assert sections[section]["status"] in ("warn", "crit")

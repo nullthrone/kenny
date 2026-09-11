@@ -1,6 +1,15 @@
-"""`GET /api/inbox` -- grouping, the ticket/section/approval merge, and scoping.
+"""`GET /api/inbox` -- the ticket queue: grouping, row shape, and scoping.
 
-`webui/inbox.py` is a new, standalone route builder (not folded into
+Every row is a ticket (ADR-0059). The tests that used to pin the flagged-section
+and standalone-approval rows are gone with those rows; the guarantees they
+carried did not go with them:
+
+* `section_target()` is still what Today links a standing finding by, and is
+  pinned there (`tests/test_today_api.py`).
+* a scoped user's ownership boundary is pinned below on the alert-origin
+  ticket, which is the row that now carries a host name into this aggregate.
+
+`webui/inbox.py` is a standalone route builder (not folded into
 `webui/tickets.py` -- another surface owns that file). Tests go through the
 composed app (`build_app`) the same way `tests/test_today_api.py` does.
 """
@@ -9,11 +18,22 @@ from __future__ import annotations
 
 import re
 from functools import partial
-from urllib.parse import unquote
 
 from starlette.testclient import TestClient
 
 from kenny_server.main import build_app
+
+# Every key `kenny-web/src/api/types.ts`'s `InboxItem` declares.
+INBOX_ITEM_KEYS = {
+    "id",
+    "waits_on",
+    "priority",
+    "title",
+    "meta",
+    "host",
+    "age_seconds",
+    "target",
+}
 
 
 def _bearer(app):
@@ -26,110 +46,161 @@ def _hdr(token: str):
 
 _CRIT_SNAPSHOT = {"disk": {"status": "ok", "summary": "", "volumes": [{"mount": "C:", "percent_used": 97}]}}
 
+_GROUPS = ("needs_you", "waiting", "working", "new", "done")
 
-def test_inbox_groups_tickets_and_merges_sections_and_approvals(tmp_path) -> None:
-    app = build_app(db_path=str(tmp_path / "inbox.sqlite"))
+
+async def _seed_one_of_each(app):
+    """One ticket per group, plus a crit host and a held gate.
+
+    The crit host is seeded deliberately: it is the case that used to add a
+    row and a count of its own, and the queue must now be indifferent to it.
+    """
+
+    tickets = app.state.tickets
+    users = app.state.user_store
+
+    working = await tickets.create(title="reinstall driver", origin="dashboard", actor="system")
+    await tickets.transition(working.id, "in_progress", actor="system")
+
+    waiting = await tickets.create(title="need a screenshot", origin="dashboard", actor="system")
+    await tickets.transition(waiting.id, "in_progress", actor="system")
+    await tickets.block(waiting.id, "user", actor="system")
+
+    needs_you = await tickets.create(title="confirm risky change", origin="dashboard", actor="system")
+    await tickets.transition(needs_you.id, "in_progress", actor="system")
+    await tickets.block(needs_you.id, "operator", actor="system")
+
+    # `new` with a requester. A `new` ticket with NO requester is alert-origin
+    # and counts as needs_you instead -- see TicketStore.counts()'s docstring.
+    requester = await users.create_user("req", "pw-123456", "user")
+    await tickets.create(
+        title="slow laptop", origin="dashboard", actor="system",
+        requester_user_id=requester["id"],
+    )
+
+    done = await tickets.create(title="fixed already", origin="dashboard", actor="system")
+    await tickets.transition(done.id, "in_progress", actor="system")
+    await tickets.transition(done.id, "resolved", actor="system")
+
+    gate_ticket = await tickets.create(
+        title="apply update", origin="dashboard", agent_id="gate-pc", actor="system"
+    )
+    await tickets.transition(gate_ticket.id, "in_progress", actor="system")
+    approval = await tickets.open_approval(
+        gate_ticket.id,
+        tool_use_id="tu-1",
+        tool="winget_update",
+        tool_class="standard_change",
+        args={"id": "Some.App"},
+        agent_id="gate-pc",
+        actor="system",
+    )
+    # Mirrors TicketAssistant.on_hold: opening a gate and blocking the ticket
+    # on it are two calls in production too.
+    await tickets.block(gate_ticket.id, "approval", actor="system", ref=approval.id)
+    return {"gate_ticket_id": gate_ticket.id, "approval_id": approval.id}
+
+
+def test_the_inbox_lists_only_tickets(tmp_path) -> None:
+    """Every id in every group resolves as a ticket.
+
+    Driven against a fleet that has both of the things the queue used to also
+    carry -- a crit section and a held approval -- so the assertion is "they
+    are not rows", not "the fixture happened not to produce any".
+    """
+
+    app = build_app(db_path=str(tmp_path / "inbox-only-tickets.sqlite"))
     with TestClient(app) as c:
         h = _bearer(app)
-        tickets = app.state.tickets
-        store = app.state.store
-        users = app.state.user_store
+        c.portal.call(partial(app.state.store.insert, "crit-pc", "2026-08-01T00:00:00+00:00", _CRIT_SNAPSHOT))
+        seeded = c.portal.call(partial(_seed_one_of_each, app))
 
-        c.portal.call(partial(store.insert, "crit-pc", "2026-08-01T00:00:00+00:00", _CRIT_SNAPSHOT))
+        ids: list[str] = []
+        for group in _GROUPS:
+            for item in c.get(f"/api/inbox?group={group}", headers=h).json()["items"]:
+                assert set(item) == INBOX_ITEM_KEYS, (group, sorted(item))
+                ids.append(item["id"])
 
-        async def seed():
-            # working: in_progress, unblocked.
-            working = await tickets.create(title="reinstall driver", origin="dashboard", actor="system")
-            await tickets.transition(working.id, "in_progress", actor="system")
+        for tid in ids:
+            assert c.get(f"/api/tickets/{tid}", headers=h).status_code == 200, tid
 
-            # waiting: blocked on the requester.
-            waiting = await tickets.create(title="need a screenshot", origin="dashboard", actor="system")
-            await tickets.transition(waiting.id, "in_progress", actor="system")
-            await tickets.block(waiting.id, "user", actor="system")
-
-            # needs_you (operator-blocked ticket).
-            needs_you = await tickets.create(title="confirm risky change", origin="dashboard", actor="system")
-            await tickets.transition(needs_you.id, "in_progress", actor="system")
-            await tickets.block(needs_you.id, "operator", actor="system")
-
-            # new: not started, has a requester (a `new` ticket with NO
-            # requester is alert-origin and would count as needs_you instead --
-            # see TicketStore.counts()'s docstring).
-            requester = await users.create_user("req", "pw-123456", "user")
-            await tickets.create(
-                title="slow laptop", origin="dashboard", actor="system",
-                requester_user_id=requester["id"],
-            )
-
-            # done: resolved then closed.
-            done = await tickets.create(title="fixed already", origin="dashboard", actor="system")
-            await tickets.transition(done.id, "in_progress", actor="system")
-            await tickets.transition(done.id, "resolved", actor="system")
-
-            # A held approval -- a `needs_you` row of its own, distinct from any
-            # ticket, carrying enough of the gate for the console to decide it.
-            gate_ticket = await tickets.create(
-                title="apply update", origin="dashboard", agent_id="gate-pc", actor="system"
-            )
-            await tickets.transition(gate_ticket.id, "in_progress", actor="system")
-            approval = await tickets.open_approval(
-                gate_ticket.id,
-                tool_use_id="tu-1",
-                tool="winget_update",
-                tool_class="standard_change",
-                args={"id": "Some.App"},
-                agent_id="gate-pc",
-                actor="system",
-            )
-            # Mirrors TicketAssistant.on_hold: opening a gate and blocking the
-            # ticket on it are two calls in production too.
-            await tickets.block(gate_ticket.id, "approval", actor="system", ref=approval.id)
-
-        c.portal.call(seed)
-
-        counts = c.get("/api/inbox?group=needs_you", headers=h).json()["counts"]
-        # 2 tickets (blocked on operator, and blocked on approval -- both count
-        # per TicketStore.counts()'s rule) + 1 flagged section + 1 standalone
-        # held-approval row.
-        assert counts["needs_you"] == 4
-        assert counts["waiting"] == 1
-        assert counts["working"] == 1
-        assert counts["new"] == 1
-        assert counts["done"] == 1
-
-        needs_you = c.get("/api/inbox?group=needs_you", headers=h).json()
-        assert needs_you["group"] == "needs_you"
-        kinds = {i["kind"] for i in needs_you["items"]}
-        assert kinds == {"section", "approval", "ticket"}
-        section_item = next(i for i in needs_you["items"] if i["kind"] == "section")
-        assert section_item["severity"] == "crit"
-        assert section_item["waits_on"] == "attention"
-        approval_item = next(i for i in needs_you["items"] if i["kind"] == "approval")
-        assert approval_item["waits_on"] == "approval"
-        assert approval_item["gate"]["tool"] == "winget_update"
-        assert approval_item["gate"]["args"] == {"id": "Some.App"}
-        ticket_titles = {
-            i["title"] for i in needs_you["items"] if i["kind"] == "ticket"
+        # The approval's own id is not among them: it is a state of its ticket,
+        # not a row of its own.
+        assert seeded["approval_id"] not in ids
+        assert seeded["gate_ticket_id"] in ids
+        # And the crit host contributed nothing at all.
+        assert "crit-pc" not in {
+            i["host"] for i in c.get("/api/inbox?group=needs_you", headers=h).json()["items"]
         }
-        assert ticket_titles == {"confirm risky change", "apply update"}
-        blocked_ticket = next(
-            i for i in needs_you["items"]
-            if i["kind"] == "ticket" and i["title"] == "confirm risky change"
-        )
-        assert blocked_ticket["waits_on"] == "operator"
 
-        waiting = c.get("/api/inbox?group=waiting", headers=h).json()
-        assert [i["title"] for i in waiting["items"]] == ["need a screenshot"]
-        assert waiting["items"][0]["waits_on"] == "user"
 
-        working = c.get("/api/inbox?group=working", headers=h).json()
-        assert [i["title"] for i in working["items"]] == ["reinstall driver"]
+def test_the_rows_in_a_group_are_exactly_its_count(tmp_path) -> None:
+    """The chip numbers and the list are one fact.
 
-        new = c.get("/api/inbox?group=new", headers=h).json()
-        assert [i["title"] for i in new["items"]] == ["slow laptop"]
+    Only assertable now that the counts are exactly `TicketStore.counts()`:
+    while the route added flagged sections and approvals to `needs_you`, the
+    count and the rows came from two different rules.
+    """
 
-        done = c.get("/api/inbox?group=done", headers=h).json()
-        assert [i["title"] for i in done["items"]] == ["fixed already"]
+    app = build_app(db_path=str(tmp_path / "inbox-counts.sqlite"))
+    with TestClient(app) as c:
+        h = _bearer(app)
+        c.portal.call(partial(app.state.store.insert, "crit-pc", "2026-08-01T00:00:00+00:00", _CRIT_SNAPSHOT))
+        c.portal.call(partial(_seed_one_of_each, app))
+
+        for group in _GROUPS:
+            body = c.get(f"/api/inbox?group={group}", headers=h).json()
+            assert len(body["items"]) == body["counts"][group], group
+
+
+def test_the_header_badge_and_the_needs_you_chip_are_the_same_number(tmp_path) -> None:
+    """`Shell.tsx` reads `/api/tickets/summary` for the nav badge while the
+    Inbox reads `/api/inbox`. Two sources for one number, which the queue's
+    own docs already claimed were the same."""
+
+    app = build_app(db_path=str(tmp_path / "inbox-badge.sqlite"))
+    with TestClient(app) as c:
+        h = _bearer(app)
+        c.portal.call(partial(app.state.store.insert, "crit-pc", "2026-08-01T00:00:00+00:00", _CRIT_SNAPSHOT))
+        c.portal.call(partial(_seed_one_of_each, app))
+
+        summary = c.get("/api/tickets/summary", headers=h).json()
+        counts = c.get("/api/inbox?group=needs_you", headers=h).json()["counts"]
+        assert counts == {k: summary[k] for k in counts}
+
+
+def test_a_ticket_blocked_on_an_approval_is_an_ordinary_row(tmp_path) -> None:
+    """It waits for an approval, and it says so -- but the queue offers no
+    decision: approving happens on the ticket, where the frozen call is."""
+
+    app = build_app(db_path=str(tmp_path / "inbox-gate.sqlite"))
+    with TestClient(app) as c:
+        h = _bearer(app)
+        seeded = c.portal.call(partial(_seed_one_of_each, app))
+
+        items = c.get("/api/inbox?group=needs_you", headers=h).json()["items"]
+        row = next(i for i in items if i["id"] == seeded["gate_ticket_id"])
+        assert row["waits_on"] == "approval"
+        assert "waiting for approval" in row["meta"]
+        assert "gate" not in row
+
+
+def test_every_row_carries_a_priority_the_vocabulary_declares(tmp_path) -> None:
+    """The row's badge is the priority, so it is never absent and never a
+    value the console has no colour for."""
+
+    from kenny_server import tickets as tickets_module
+
+    app = build_app(db_path=str(tmp_path / "inbox-priority.sqlite"))
+    with TestClient(app) as c:
+        h = _bearer(app)
+        c.portal.call(partial(_seed_one_of_each, app))
+
+        vocabulary = c.get("/api/tickets/vocabulary", headers=h).json()["priorities"]
+        assert set(vocabulary) == set(tickets_module.PRIORITIES)
+        for group in _GROUPS:
+            for item in c.get(f"/api/inbox?group={group}", headers=h).json()["items"]:
+                assert item["priority"] in vocabulary, item
 
 
 _TARGET_TICKET_ID_RE = re.compile(r"^#/inbox/ticket/[0-9a-f]{32}$")
@@ -173,45 +244,20 @@ def test_inbox_ticket_target_is_fetchable_by_the_route_it_names(tmp_path) -> Non
         assert detail.json()["id"] == ticket.id
 
 
-def test_inbox_approval_target_is_fetchable_by_the_route_it_names(tmp_path) -> None:
-    """Same seam as above, for the standalone `needs_you` approval row: its
-    `target` must be the *ticket's* uuid `id`, not the ticket's `number`.
-    """
-
-    app = build_app(db_path=str(tmp_path / "inbox-approval-target.sqlite"))
+def test_every_group_puts_its_tickets_where_they_belong(tmp_path) -> None:
+    app = build_app(db_path=str(tmp_path / "inbox-groups.sqlite"))
     with TestClient(app) as c:
         h = _bearer(app)
-        tickets = app.state.tickets
+        c.portal.call(partial(_seed_one_of_each, app))
 
-        async def seed():
-            t = await tickets.create(
-                title="apply update", origin="dashboard", agent_id="gate-pc", actor="system"
-            )
-            await tickets.transition(t.id, "in_progress", actor="system")
-            approval = await tickets.open_approval(
-                t.id,
-                tool_use_id="tu-target",
-                tool="winget_update",
-                tool_class="standard_change",
-                args={"id": "Some.App"},
-                agent_id="gate-pc",
-                actor="system",
-            )
-            await tickets.block(t.id, "approval", actor="system", ref=approval.id)
-            return t
+        def titles(group: str) -> set[str]:
+            return {i["title"] for i in c.get(f"/api/inbox?group={group}", headers=h).json()["items"]}
 
-        ticket = c.portal.call(seed)
-
-        needs_you = c.get("/api/inbox?group=needs_you", headers=h).json()
-        approval_item = next(i for i in needs_you["items"] if i["kind"] == "approval")
-        target = approval_item["target"]
-
-        assert _TARGET_TICKET_ID_RE.match(target), target
-
-        tid = target.removeprefix("#/inbox/ticket/")
-        detail = c.get(f"/api/tickets/{tid}", headers=h)
-        assert detail.status_code == 200
-        assert detail.json()["id"] == ticket.id
+        assert titles("needs_you") == {"confirm risky change", "apply update"}
+        assert titles("waiting") == {"need a screenshot"}
+        assert titles("working") == {"reinstall driver"}
+        assert titles("new") == {"slow laptop"}
+        assert titles("done") == {"fixed already"}
 
 
 def test_inbox_rejects_unknown_group(tmp_path) -> None:
@@ -221,65 +267,37 @@ def test_inbox_rejects_unknown_group(tmp_path) -> None:
         assert r.status_code == 400
 
 
-def test_inbox_approvals_stay_operator_only_for_a_scoped_user(tmp_path) -> None:
-    app = build_app(db_path=str(tmp_path / "inbox-approvals-scope.sqlite"))
+def test_a_scoped_user_never_sees_an_alert_origin_ticket(tmp_path) -> None:
+    """An alert-origin ticket has no requester -- it belongs to the fleet, not
+    to a person -- and its title and host name another user's machine. It is
+    the row that now carries a host into this aggregate, so it is where the
+    ownership boundary is pinned."""
+
+    app = build_app(db_path=str(tmp_path / "inbox-scope.sqlite"))
     with TestClient(app) as c:
         users = app.state.user_store
         tickets = app.state.tickets
 
         async def seed():
-            kid = await users.create_user("kid", "pw-123456", "user")
-            await users.set_user_hosts(kid["id"], ["kid-pc"])
-            gate_ticket = await tickets.create(
-                title="apply update", origin="dashboard", agent_id="kid-pc",
-                requester_user_id=kid["id"], actor="system",
-            )
-            await tickets.transition(gate_ticket.id, "in_progress", actor="system")
-            approval = await tickets.open_approval(
-                gate_ticket.id,
-                tool_use_id="tu-2",
-                tool="winget_update",
-                tool_class="standard_change",
-                args={},
-                agent_id="kid-pc",
-                actor="system",
-            )
-            await tickets.block(gate_ticket.id, "approval", actor="system", ref=approval.id)
-            return await users.create_pat(kid["id"], "t")
-
-        kid_pat = c.portal.call(seed)
-
-        body = c.get("/api/inbox?group=needs_you", headers=_hdr(kid_pat)).json()
-        # The ticket itself (blocked on approval) is visible -- it's the kid's
-        # own ticket -- but the approval row (the gate's args) is not: that
-        # stays at least as strict as GET /api/approvals (operator-only).
-        assert all(i["kind"] != "approval" for i in body["items"])
-        assert any(i["kind"] == "ticket" for i in body["items"])
-
-
-def test_inbox_scopes_flagged_sections_to_a_users_own_hosts(tmp_path) -> None:
-    """A host-scoped `user` must not see another user's host through this
-    aggregate: not as a flagged-section row, and not in the needs_you count."""
-
-    app = build_app(db_path=str(tmp_path / "inbox-section-scope.sqlite"))
-    with TestClient(app) as c:
-        users = app.state.user_store
-        store = app.state.store
-
-        c.portal.call(partial(store.insert, "alice-pc", "2026-08-01T00:00:00+00:00", _CRIT_SNAPSHOT))
-        c.portal.call(partial(store.insert, "bob-pc", "2026-08-01T00:00:00+00:00", _CRIT_SNAPSHOT))
-
-        async def seed():
             alice = await users.create_user("alice", "pw-123456", "user")
             await users.set_user_hosts(alice["id"], ["alice-pc"])
+            await tickets.create(
+                title="bob-pc: disk is full", origin="alert", agent_id="bob-pc",
+                requester_user_id=None, actor="system",
+            )
+            own = await tickets.create(
+                title="my laptop is slow", origin="dashboard", agent_id="alice-pc",
+                requester_user_id=alice["id"], actor="system",
+            )
+            await tickets.transition(own.id, "in_progress", actor="system")
+            await tickets.block(own.id, "operator", actor="system")
             return await users.create_pat(alice["id"], "t")
 
         alice_pat = c.portal.call(seed)
 
         body = c.get("/api/inbox?group=needs_you", headers=_hdr(alice_pat)).json()
-        hosts = {i["host"] for i in body["items"]}
-        assert "bob-pc" not in hosts
-        assert "alice-pc" in hosts
+        assert {i["title"] for i in body["items"]} == {"my laptop is slow"}
+        assert "bob-pc" not in {i["host"] for i in body["items"]}
         assert body["counts"]["needs_you"] == 1
 
 
@@ -318,77 +336,21 @@ def test_the_done_list_says_which_tickets_kenny_resolved_itself(tmp_path) -> Non
         assert "resolved by kenny" not in by_title["printer jam"]
 
 
-_TARGET_SECTION_RE = re.compile(r"^#/fleet/(?P<host>[^?]+)\?section=(?P<section>[^&]+)$")
+def test_a_row_says_where_its_ticket_came_from(tmp_path) -> None:
+    """The badge is the priority now, so the row still has to let a reader tell
+    a case kenny opened from one a person did."""
 
-
-def _health_section_names(detail: dict) -> dict[str, dict]:
-    """`/api/agent/{id}`'s health sections, keyed by name.
-
-    Accepts both shapes the console's `normalizeSections` accepts (a dict keyed
-    by section name, or an array of sections carrying their own `name`), so
-    this test pins the *link*, not which of the two the handler happens to
-    return today.
-    """
-
-    sections = detail["health"]["sections"]
-    if isinstance(sections, list):
-        return {s["name"]: s for s in sections}
-    return dict(sections)
-
-
-def test_inbox_section_target_opens_the_section_not_the_machine(tmp_path) -> None:
-    """A flagged-section row links to the finding it is about, not to the host.
-
-    Joined seam between `section_target()` and the console's `FleetHost.tsx`:
-    the target is followed the way the console follows it -- the path names a
-    host `/api/agent/{id}` resolves, and `?section=` carries a raw section
-    name that host really reports as needing attention, which is the key
-    `FleetHost.tsx` matches against `HostSection.name` to open the detail. It
-    fails on a regression to a bare `#/fleet/{host}` (the reader lands on the
-    machine and has to find the section again) and on a param carrying a
-    humanised label ("Disk") instead of the stored name ("disk").
-    """
-
-    app = build_app(db_path=str(tmp_path / "inbox-section-target.sqlite"))
+    app = build_app(db_path=str(tmp_path / "inbox-origin.sqlite"))
     with TestClient(app) as c:
         h = _bearer(app)
-        store = app.state.store
-        c.portal.call(partial(store.insert, "crit-pc", "2026-08-01T00:00:00+00:00", _CRIT_SNAPSHOT))
+        tickets = app.state.tickets
 
-        needs_you = c.get("/api/inbox?group=needs_you", headers=h).json()
-        row = next(i for i in needs_you["items"] if i["kind"] == "section")
+        async def seed():
+            await tickets.create(
+                title="pc1: disk is full", origin="alert", agent_id="pc1", actor="system"
+            )
 
-        match = _TARGET_SECTION_RE.match(row["target"])
-        assert match, row["target"]
-        host = unquote(match["host"])
-        section = unquote(match["section"])
-        assert host == row["host"] == "crit-pc"
+        c.portal.call(seed)
 
-        detail = c.get(f"/api/agent/{host}", headers=h)
-        assert detail.status_code == 200
-        sections = _health_section_names(detail.json())
-        assert section in sections, sorted(sections)
-        assert sections[section]["status"] in ("warn", "crit")
-
-
-def test_today_and_inbox_agree_on_a_flagged_section_target(tmp_path) -> None:
-    """The two queues render the same finding, so they must link to the same
-    place: `/api/today`'s capped preview and `/api/inbox`'s full list both go
-    through `section_target()`. A divergence here means clicking one row opens
-    the section and clicking its twin opens the machine.
-    """
-
-    app = build_app(db_path=str(tmp_path / "inbox-today-section.sqlite"))
-    with TestClient(app) as c:
-        h = _bearer(app)
-        store = app.state.store
-        c.portal.call(partial(store.insert, "crit-pc", "2026-08-01T00:00:00+00:00", _CRIT_SNAPSHOT))
-
-        inbox_row = next(
-            i for i in c.get("/api/inbox?group=needs_you", headers=h).json()["items"]
-            if i["kind"] == "section"
-        )
-        today_item = next(
-            i for i in c.get("/api/today", headers=h).json()["items"] if i["severity"] == "crit"
-        )
-        assert today_item["target"] == inbox_row["target"]
+        row = c.get("/api/inbox?group=needs_you", headers=h).json()["items"][0]
+        assert "alert" in row["meta"]
