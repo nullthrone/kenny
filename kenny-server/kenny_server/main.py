@@ -64,6 +64,7 @@ from .store import (
     UpdateStore,
     WebFilterStore,
 )
+from .ticket_alerts import TicketAlertReader
 from .ticket_assistant import TicketAssistant
 from .ticket_rules import TicketRuleList
 from .ticketstore import TicketStore
@@ -884,6 +885,12 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
     # Ticket/approval/Discord-identity/tool-class routes. Registered on every
     # server: the Discord collaborators are optional and only the two routes that
     # genuinely need a gateway answer 503 without one.
+    ticket_alert_reader = TicketAlertReader(
+        event_store=event_store,
+        store=store,
+        registry=registry,
+        alert_state=alert_state,
+    )
     ticket_routes = build_ticket_routes(
         tickets=ticket_service,
         store=ticket_store,
@@ -892,6 +899,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         discord=discord_service,
         ticket_rules=ticket_rules,
         assistant=ticket_assistant,
+        alert_reader=ticket_alert_reader,
     )
     download_routes = build_download_routes(
         registry=registry,

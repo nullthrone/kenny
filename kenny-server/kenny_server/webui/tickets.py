@@ -59,6 +59,7 @@ from starlette.routing import Route
 from .. import tool_classes
 from ..auth import Principal
 from ..discord_identity import DiscordIdentityStore, IdentityConflict
+from ..ticket_alerts import TicketAlertReader
 from ..ticket_rules import DECISIONS, EVENT_TYPES, KNOWN_SECTIONS, TicketRuleList
 from ..ticketstore import Ticket, TicketApproval, TicketStore
 from ..tickets import (
@@ -238,13 +239,15 @@ def build_ticket_routes(
     discord: DiscordService | None = None,
     ticket_rules: TicketRuleList | None = None,
     assistant: TicketAssistant | None = None,
+    alert_reader: TicketAlertReader | None = None,
 ) -> list[Route]:
     """Ticket/approval/Discord/tool-class routes. See module docstring.
 
-    ``assistant`` is optional exactly like ``discord``: a server with no usable
-    Anthropic client has none, and only the one route that genuinely needs it
-    (``/chat/stream``) answers ``503`` without it — every other ticket route
-    works whether or not an assistant is configured.
+    ``assistant`` and ``alert_reader`` are optional exactly like ``discord``: a
+    server with no usable Anthropic client has no assistant, one without a
+    telemetry surface has no alert reader, and only the route that genuinely
+    needs each (``/chat/stream``, ``/alerts``) answers ``503`` without it —
+    every other ticket route works whether or not they are configured.
     """
 
     # -- tickets -------------------------------------------------------------
@@ -480,6 +483,20 @@ def build_ticket_routes(
             limit = 500
         events = await tickets.events(ticket.id, limit=limit)
         return JSONResponse({"events": [e.as_dict() for e in events]})
+
+    async def api_ticket_alerts(request: Request) -> JSONResponse:
+        """This ticket's alerts, and whether what they reported still holds.
+
+        Same authorization as ``/events``: ``_owned_or_operator`` makes an
+        alert-origin ticket operator-only, because it has no requester to own it.
+        """
+
+        principal = require_user(request)
+        ticket = await tickets.get(request.path_params["tid"])
+        _owned_or_operator(principal, ticket)
+        if alert_reader is None:
+            return _err("no telemetry surface is configured", 503)
+        return JSONResponse(await alert_reader.for_ticket(ticket))
 
     async def api_ticket_note(request: Request) -> JSONResponse:
         principal = require_user(request)
@@ -1166,6 +1183,7 @@ def build_ticket_routes(
             methods=["POST"],
         ),
         Route("/api/tickets/{tid}/events", g(api_ticket_events, min_role="user")),
+        Route("/api/tickets/{tid}/alerts", g(api_ticket_alerts, min_role="user")),
         Route(
             "/api/tickets/{tid}/note",
             g(api_ticket_note, min_role="operator"),

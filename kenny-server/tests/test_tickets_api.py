@@ -2024,3 +2024,51 @@ def test_ticket_with_an_open_gate_reports_blocked_on_approval_and_an_approval_ev
         row = approval_rows[-1]
         assert row["fields"]["approval_id"] == s["approval_id"]
         assert row["ok"] is None
+
+
+def test_the_alerts_route_carries_the_same_ownership_rule_as_events(tmp_path) -> None:
+    """An alert-origin ticket has no requester, so it is operator-only — and
+    its alert history, which names hosts, must not be the one route that leaks
+    past that."""
+
+    async def seed(users: UserStore, _store: TicketStore, svc: TicketService) -> dict:
+        kid = await users.create_user("kid", "pw-123456", "user")
+        op = await users.create_user("op", "pw-123456", "operator")
+        alert = await svc.create(title="disk full", origin="alert", requester_user_id=None)
+        return {
+            "kid_pat": await users.create_pat(kid["id"], "t"),
+            "op_pat": await users.create_pat(op["id"], "t"),
+            "alert_id": alert.id,
+        }
+
+    app = _build_app(tmp_path, seed)
+    with TestClient(app) as c:
+        s = app.state.seed
+        for route in ("events", "alerts"):
+            assert (
+                c.get(
+                    f"/api/tickets/{s['alert_id']}/{route}", headers=_hdr(s["kid_pat"])
+                ).status_code
+                == 403
+            ), route
+
+
+def test_the_alerts_route_says_so_when_no_telemetry_surface_is_wired(tmp_path) -> None:
+    """``alert_reader`` is optional exactly like ``discord`` and ``assistant``:
+    the one route that needs it answers 503, every other ticket route works."""
+
+    async def seed(users: UserStore, _store: TicketStore, svc: TicketService) -> dict:
+        op = await users.create_user("op", "pw-123456", "operator")
+        alert = await svc.create(title="disk full", origin="alert", requester_user_id=None)
+        return {"op_pat": await users.create_pat(op["id"], "t"), "alert_id": alert.id}
+
+    app = _build_app(tmp_path, seed)  # built without an alert_reader
+    with TestClient(app) as c:
+        s = app.state.seed
+        r = c.get(f"/api/tickets/{s['alert_id']}/alerts", headers=_hdr(s["op_pat"]))
+        assert r.status_code == 503
+        assert r.json()["error"] == "unavailable"
+        # ... and the rest of the ticket API is unaffected.
+        assert (
+            c.get(f"/api/tickets/{s['alert_id']}", headers=_hdr(s["op_pat"])).status_code == 200
+        )
