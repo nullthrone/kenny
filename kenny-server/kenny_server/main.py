@@ -399,7 +399,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         subject = "+".join(sorted(note.sections)) if note.sections else ""
         return f"alert|{note.agent_id or ''}|{note.event_type or note.kind}|{subject}"
 
-    async def open_alert_ticket(note: Notification) -> None:
+    async def open_alert_ticket(note: Notification) -> str:
         """Open the ticket an alert asks for (ADR-0027 stays best-effort).
 
         ``origin='alert'`` and no requester: nobody asked for it, so it has no
@@ -415,6 +415,11 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         the information is kept, the second ticket is not. A ``resolved`` ticket
         does not suppress a new one (see ``find_open_by_dedup_key``): once
         somebody has dealt with the condition, its return is news again.
+
+        Returns the id of the ticket this alert belongs to -- the new one, or
+        the open one that absorbed it. ``AlertEngine._dispatch`` hangs the
+        alert's own event row on it, so a recurrence is readable *as an alert*
+        on the ticket rather than only as a line of prose on its trail.
         """
 
         key = alert_dedup_key(note)
@@ -426,8 +431,8 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
                 actor="system",
                 summary=f"the same condition alerted again: {note.title}",
             )
-            return
-        await ticket_service.create(
+            return existing.id
+        ticket = await ticket_service.create(
             title=note.title,
             origin="alert",
             requester_user_id=None,
@@ -439,6 +444,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
             reason="opened from an alert",
             dedup_key=key,
         )
+        return ticket.id
 
     # Push alerting (ADR-0027): transition detection over the health rules,
     # delivered best-effort on the configured channels (possibly none).

@@ -115,7 +115,7 @@ class AlertEngine:
         digest_enabled: bool = True,
         digest_day: str = "mon",
         digest_hour: int = 8,
-        open_ticket: Callable[[Notification], Awaitable[Any]] | None = None,
+        open_ticket: Callable[[Notification], Awaitable[str | None]] | None = None,
         ticket_rules: Any = None,
     ) -> None:
         self._store = store
@@ -528,6 +528,14 @@ class AlertEngine:
             agent_id=agent_id,
             kind="alert",
             event_type="disk_forecast",
+            # The forecast is a statement about the ``disk`` section, so it
+            # names it: that is what puts it on the same ticket subject as an
+            # acute disk finding instead of a second ticket for one filling
+            # volume, and what lets an auto-ticket rule target it at all
+            # (``ticket_rules.decide`` derives its subject from ``sections``).
+            # ``warn`` matches the severity the priority already implied, so no
+            # existing ``open_crit`` rule starts firing because of this.
+            sections={"disk": "warn"},
         )
 
     # -- helpers ----------------------------------------------------------------
@@ -551,11 +559,18 @@ class AlertEngine:
             level = "info"
         else:
             level = "crit" if note.priority in ("high", "urgent") else "warn"
-        await self._event_store.insert_alert(
+        event_id = await self._event_store.insert_alert(
             agent_id=note.agent_id,
             message=f"{note.title}\n{note.body}",
             level=level,
-            fields={"kind": note.kind, "priority": note.priority},
+            # ``title`` verbatim so a reader never has to re-split ``message``;
+            # ``event_type`` so it can say which producer raised this.
+            fields={
+                "kind": note.kind,
+                "priority": note.priority,
+                "title": note.title,
+                "event_type": note.event_type,
+            },
             at=now.isoformat(),
         )
         # Each channel is isolated: ``Notifier.send`` swallows its own transport
@@ -587,7 +602,13 @@ class AlertEngine:
                     sections=note.sections,
                 )
                 if decision.open:
-                    await self._open_ticket(note)
+                    ticket_id = await self._open_ticket(note)
+                    # The alert row is already written; this hangs it on the
+                    # ticket it opened (or, for a recurrence, on the open
+                    # ticket that absorbed it) so the ticket can show what it
+                    # is about without re-deriving anything.
+                    if ticket_id:
+                        await self._event_store.link_alert_to_ticket(event_id, ticket_id)
             except Exception:  # noqa: BLE001 - alerting stays best-effort
                 logger.exception("the ticket decision for %r failed", note.title)
 

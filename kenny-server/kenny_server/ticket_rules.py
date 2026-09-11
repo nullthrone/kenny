@@ -108,8 +108,11 @@ _EXTRA_HEALTH_SECTIONS: frozenset[str] = frozenset(
 KNOWN_SECTIONS: dict[str, frozenset[str]] = {
     "health": frozenset(health_rules.RULES) | _EXTRA_HEALTH_SECTIONS,
     "change": frozenset(diffs.SPECS),
+    # Offline is about the host, not about any section of it.
     "offline": frozenset(),
-    "disk_forecast": frozenset(),
+    # The forecast reports on one section (``AlertEngine._forecast_alert``), so
+    # a rule may name it: `ticket_rule_set disk_forecast open_crit --section disk`.
+    "disk_forecast": frozenset({"disk"}),
 }
 
 
@@ -169,7 +172,7 @@ def decide(
        first and unconditionally: no rule can override it.
     2. One *subject* per ``(section, severity)`` pair in ``sections``, or a
        single subject with an empty section when ``sections`` is empty
-       (offline, disk_forecast). Subjects are visited in a deterministic,
+       (offline, digest). Subjects are visited in a deterministic,
        sorted-by-section order.
     3. For each subject, look up the most specific matching rule (host beats
        fleet, section beats any-section). Its ``decision`` is one of
