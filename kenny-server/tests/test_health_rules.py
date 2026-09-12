@@ -39,6 +39,19 @@ def test_snapshot_overall_is_crit() -> None:
     assert result["overall"] == "crit"
 
 
+def test_non_dict_section_value_is_treated_as_unusable() -> None:
+    """A pushed `telemetry` frame's `Section` is pydantic-validated (always a
+    dict), but a `telemetry_collect` request/response round trip stores its
+    `Response.result` (`dict[str, Any]`, unvalidated) the same way -- so a
+    compromised/buggy agent can make a top-level section value anything JSON
+    allows. That must defer to the agent-reported status (like any other
+    unusable field on this module), not raise."""
+
+    for bad_value in (None, "not a dict", 123, True, ["a", "b"], 1e400):
+        result = health_rules.evaluate_snapshot({"disk": bad_value}, now=NOW)
+        assert result["sections"]["disk"]["status"] == "ok"
+
+
 def test_attention_flag_matches_status() -> None:
     """`attention` and `tier` are computed alongside `status` in
     evaluate_section itself (kenny-server/CLAUDE.md: thresholds live only

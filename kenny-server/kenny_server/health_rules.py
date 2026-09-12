@@ -1036,8 +1036,16 @@ def evaluate_snapshot(
     for name, payload in snapshot.items():
         if not is_windows and name in WINDOWS_ONLY_SECTIONS:
             continue
+        # `payload` comes straight off an unvalidated stored snapshot -- a pushed
+        # `telemetry` frame's `Section` is pydantic-validated (always a dict), but a
+        # `telemetry_collect` request/response round trip stores its
+        # `Response.result` (`dict[str, Any]`, unvalidated) the same way, so a
+        # compromised/buggy agent can make a top-level section value anything JSON
+        # allows -- a string, a list, `None`. `dict(payload)` raised `TypeError`/
+        # `ValueError` on all of those instead of the "treat as unusable" path every
+        # other field on this module already takes (see `_as_dict`/`_dicts`).
         sections[name] = evaluate_section(
-            name, dict(payload), now=now, agent_os=agent_os
+            name, _as_dict(payload), now=now, agent_os=agent_os
         )
     overall = worst(*(s["status"] for s in sections.values())) if sections else "ok"
     return {"overall": overall, "sections": sections}

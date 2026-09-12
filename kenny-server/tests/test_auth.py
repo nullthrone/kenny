@@ -30,6 +30,20 @@ def test_bad_bearer_rejected(tmp_path) -> None:
         assert r.status_code == 401
 
 
+def test_malformed_cookie_header_does_not_500(tmp_path) -> None:
+    """A `Cookie` header is attacker/client controlled and is parsed on every
+    request before ``_is_public`` is even checked. ``http.cookies.SimpleCookie``
+    raises ``CookieError`` on a header like ``==`` (an illegal key) -- that must
+    resolve to "no cookie", not an unhandled 500."""
+
+    app = _app(tmp_path)
+    with TestClient(app) as c:
+        r = c.get("/api/fleet", headers={"Cookie": "==;;=="})
+        assert r.status_code == 401
+        r = c.get("/login", headers={"Cookie": "==;;=="})
+        assert r.status_code == 200
+
+
 def _create_first_user(c, username="admin", password="pw-123456", **data):
     """Bootstrap the first (superuser) account via the first-run setup flow."""
 
