@@ -1,7 +1,9 @@
 import { useEffect, useRef } from 'react'
 import type { TranscriptItem } from '../../chat/types'
+import type { TicketDraftCardProps } from './TicketDraftCard'
 import { Check, X, ICON_STROKE_WIDTH } from '../icons'
 import Markdown from '../Markdown/Markdown'
+import TicketDraftCard from './TicketDraftCard'
 import styles from './Transcript.module.css'
 
 export interface TranscriptProps {
@@ -13,6 +15,10 @@ export interface TranscriptProps {
   /** The gate row whose card is being rendered below this transcript. Skipped
    * here: an undecided gate is shown once, on the card that can decide it. */
   pendingGateItemId?: string | null
+  /** Opens the ticket a draft row is proposing, with the operator's edits. */
+  onCreateDraft?: TicketDraftCardProps['onCreate']
+  /** Puts a draft away unfiled. */
+  onDismissDraft?: TicketDraftCardProps['onDismiss']
 }
 
 /**
@@ -30,6 +36,8 @@ export default function Transcript({
   items,
   openThinkingId = null,
   pendingGateItemId = null,
+  onCreateDraft,
+  onDismissDraft,
 }: TranscriptProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -127,6 +135,25 @@ export default function Transcript({
               </div>
             )
           }
+
+          case 'draft':
+            // Unlike a gate, this card belongs *in* the transcript: it is not
+            // holding a turn open, and the conversation it came out of is the
+            // context the operator is editing it against.
+            return (
+              <TicketDraftCard
+                key={item.id}
+                itemId={item.id}
+                title={item.title}
+                summary={item.summary}
+                agentId={item.agentId}
+                resolution={item.resolution}
+                ticketId={item.ticketId}
+                ticketNumber={item.ticketNumber}
+                onCreate={onCreateDraft ?? (async () => undefined)}
+                onDismiss={onDismissDraft ?? (() => undefined)}
+              />
+            )
 
           case 'denied':
             return (

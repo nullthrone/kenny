@@ -145,6 +145,7 @@ def _build_app(
     with_assistant: bool = False,
     scripted: list[_Response] | None = None,
     with_executor: bool = False,
+    evidence_reader: Any = None,
 ) -> Starlette:
     """Build the standalone ticket API app.
 
@@ -193,6 +194,7 @@ def _build_app(
         user_store=user_store,
         discord=discord,
         assistant=assistant,
+        evidence_reader=evidence_reader,
     )
 
     @contextlib.asynccontextmanager
@@ -2216,3 +2218,86 @@ def test_decide_stream_is_unavailable_without_an_assistant(tmp_path) -> None:
         )
         assert r.status_code == 503
         assert c.portal.call(app.state.ticket_store.get_approval, s["approval_id"]).status == "pending"
+
+
+# -- a ticket drafted out of an Ask kenny conversation -----------------------
+
+
+def test_a_drafted_ticket_records_what_the_conversation_already_checked(tmp_path) -> None:
+    """The evidence row is the server's sentence, not the caller's.
+
+    ``chat_session_id`` names a conversation; what the note says is derived from
+    that conversation on the server, so the trail keeps reporting what happened.
+    The genesis row names the origin the same way an alert's does.
+    """
+
+    async def seed(users: UserStore, _store: TicketStore, _svc: TicketService) -> dict:
+        op = await users.create_user("op", "pw-123456", "operator")
+        return {"op_pat": await users.create_pat(op["id"], "t")}
+
+    seen: list[str] = []
+
+    async def reader(session_id: str) -> list[dict[str, str]]:
+        seen.append(session_id)
+        if session_id != "sess-1":
+            return []
+        return [
+            {"tool": "diag_services", "agent_id": "pc-kid"},
+            {"tool": "fs_disk_usage", "agent_id": ""},
+        ]
+
+    app = _build_app(tmp_path, seed, evidence_reader=reader)
+    with TestClient(app) as c:
+        h = _hdr(app.state.seed["op_pat"])
+        r = c.post(
+            "/api/tickets",
+            json={
+                "title": "Updates fail",
+                "summary": "0x80070422 since Tuesday.",
+                "origin": "copilot",
+                "chat_session_id": "sess-1",
+            },
+            headers=h,
+        )
+        assert r.status_code == 201
+        tid = r.json()["id"]
+
+        events = c.get(f"/api/tickets/{tid}/events", headers=h).json()["events"]
+        genesis = next(e for e in events if e["kind"] == "state")
+        assert genesis["summary"] == "opened from an Ask kenny conversation"
+
+        notes = [e for e in events if e["kind"] == "note"]
+        assert len(notes) == 1
+        assert notes[0]["summary"] == (
+            "already checked in the conversation this came from: "
+            "`diag_services` on pc-kid, `fs_disk_usage`"
+        )
+        assert seen == ["sess-1"]
+
+
+def test_a_ticket_with_no_conversation_gets_no_evidence_row(tmp_path) -> None:
+    """A dashboard ticket, an unknown session and a reader that blows up all
+    land in the same place: the ticket exists and carries no note it cannot
+    stand behind."""
+
+    async def seed(users: UserStore, _store: TicketStore, _svc: TicketService) -> dict:
+        op = await users.create_user("op", "pw-123456", "operator")
+        return {"op_pat": await users.create_pat(op["id"], "t")}
+
+    async def reader(session_id: str) -> list[dict[str, str]]:
+        if session_id == "boom":
+            raise RuntimeError("session registry is having a day")
+        return []
+
+    app = _build_app(tmp_path, seed, evidence_reader=reader)
+    with TestClient(app) as c:
+        h = _hdr(app.state.seed["op_pat"])
+        for body in (
+            {"title": "typed by hand"},
+            {"title": "stale drawer", "chat_session_id": "gone"},
+            {"title": "reader fails", "chat_session_id": "boom"},
+        ):
+            r = c.post("/api/tickets", json=body, headers=h)
+            assert r.status_code == 201
+            events = c.get(f"/api/tickets/{r.json()['id']}/events", headers=h).json()["events"]
+            assert [e for e in events if e["kind"] == "note"] == []

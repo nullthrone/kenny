@@ -3,6 +3,9 @@ import { useMutation, useQuery } from '@tanstack/react-query'
 import { api } from '../../api/client'
 import type { FleetResponse } from '../../api/types'
 import Modal from '../../components/Modal/Modal'
+import TicketDraftForm, {
+  type TicketDraftValue,
+} from '../../components/TicketDraftForm/TicketDraftForm'
 import { X, ICON_STROKE_WIDTH } from '../../components/icons'
 import type { Ticket } from '../ticket/types'
 import styles from './NewTicketModal.module.css'
@@ -16,7 +19,7 @@ export interface NewTicketModalProps {
 const TITLE_MAX = 80
 
 /** The description's first line, capped — `POST /api/tickets` requires a `title` the design's textarea-only form doesn't collect. */
-function deriveTitle(description: string): string {
+export function deriveTitle(description: string): string {
   const firstLine = description.trim().split('\n', 1)[0] ?? ''
   return firstLine.length > TITLE_MAX ? `${firstLine.slice(0, TITLE_MAX - 1)}…` : firstLine
 }
@@ -26,6 +29,10 @@ function deriveTitle(description: string): string {
  * immediately" checkbox. `agent_id: null` (the "no PC yet" pill) is kept —
  * the old dashboard allowed triage tickets with no target host, and
  * nothing here should drop that.
+ *
+ * The fields themselves are `TicketDraftForm`, shared with the draft card in
+ * the Ask kenny drawer so both ways of opening a ticket ask the same
+ * questions. The title stays derived here: this form asks one question.
  */
 export default function NewTicketModal({ open, onClose, onCreated }: NewTicketModalProps) {
   const [selectedHost, setSelectedHost] = useState<string | null | undefined>(undefined)
@@ -62,6 +69,8 @@ export default function NewTicketModal({ open, onClose, onCreated }: NewTicketMo
     onClose()
   }
 
+  const value: TicketDraftValue = { title: '', description, host, startImmediately }
+
   const canCreate = description.trim().length > 0 && !create.isPending
 
   return (
@@ -75,50 +84,16 @@ export default function NewTicketModal({ open, onClose, onCreated }: NewTicketMo
         </button>
       </div>
       <div className={styles.body}>
-        <label className={styles.label} htmlFor="new-ticket-host-group">
-          Which PC?
-        </label>
-        <div className={styles.hosts} id="new-ticket-host-group" role="group" aria-label="Which PC?">
-          {(fleet.data?.agents ?? []).map((agent) => (
-            <button
-              key={agent.agent_id}
-              type="button"
-              aria-pressed={host === agent.agent_id}
-              className={`${styles.hostPill} kc-btn${host === agent.agent_id ? ` ${styles.hostPillActive}` : ''}`}
-              onClick={() => setSelectedHost(agent.agent_id)}
-            >
-              {agent.agent_id}
-            </button>
-          ))}
-          <button
-            type="button"
-            aria-pressed={host === null}
-            className={`${styles.hostPill} kc-btn${host === null ? ` ${styles.hostPillActive}` : ''}`}
-            onClick={() => setSelectedHost(null)}
-          >
-            No PC yet
-          </button>
-        </div>
-
-        <label className={styles.label} htmlFor="new-ticket-description">
-          What should kenny do?
-        </label>
-        <textarea
-          id="new-ticket-description"
-          className={styles.textarea}
-          placeholder="Describe the problem or task — kenny plans the steps and asks before changing anything."
-          value={description}
-          onChange={(e) => setDescription(e.target.value)}
+        <TicketDraftForm
+          idPrefix="new-ticket"
+          hosts={(fleet.data?.agents ?? []).map((a) => a.agent_id)}
+          value={value}
+          onChange={(next) => {
+            setSelectedHost(next.host)
+            setDescription(next.description)
+            setStartImmediately(next.startImmediately)
+          }}
         />
-        <label className={styles.checkboxRow}>
-          <input
-            type="checkbox"
-            className={styles.checkbox}
-            checked={startImmediately}
-            onChange={(e) => setStartImmediately(e.target.checked)}
-          />
-          Start working immediately (read-only steps only until I approve)
-        </label>
 
         {create.isError && <p className={styles.error}>{(create.error as Error).message}</p>}
 

@@ -134,6 +134,14 @@ TOOL_CLASSES: dict[str, str] = {
     # confirmation in front of *summarising*, which would park the ticket on a
     # gate for the privilege of saying what already happened.
     "ticket_summary": READ_ONLY,
+    # -- how the dashboard copilot gets a ticket out of a conversation ------
+    # Both READ_ONLY, and the draft tool has to be: it creates no ticket. What
+    # it returns is a form the operator edits and submits through the ordinary
+    # create route, so consent is given there, once. Holding the proposal at a
+    # confirm dialog as well would ask the same operator twice for the same
+    # ticket -- and would hold a call that changes nothing if they said no.
+    "ticket_draft": READ_ONLY,
+    "ticket_find": READ_ONLY,
 }
 
 #: Every tool that only observes. Derived, never hand-listed, so a tool added to

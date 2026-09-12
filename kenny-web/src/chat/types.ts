@@ -105,6 +105,26 @@ export type TranscriptItem =
       /** Set once resolution is 'approved' and the tool_result for it has arrived. */
       ok?: boolean
     }
+  /**
+   * A ticket kenny proposed, as an editable form. Shaped after `gate`: a card
+   * that carries a decision and stays in the transcript once it is made, so a
+   * reader can see the ticket came out of this conversation.
+   *
+   * `resolution` is the operator's, never the model's — nothing about this item
+   * changes until they submit or dismiss the form, because until then the
+   * ticket does not exist.
+   */
+  | {
+      kind: 'draft'
+      id: string
+      title: string
+      summary: string
+      agentId: string
+      resolution: 'pending' | 'created' | 'dismissed'
+      /** Set once `resolution` is 'created': what the form actually opened. */
+      ticketId?: string
+      ticketNumber?: number
+    }
   | { kind: 'error'; id: string; error: string }
 
 export interface PendingGate {

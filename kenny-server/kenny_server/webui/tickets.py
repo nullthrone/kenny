@@ -58,6 +58,7 @@ from starlette.routing import Route
 
 from .. import tool_classes
 from ..auth import Principal
+from ..copilot_tickets import EvidenceReader
 from ..discord_identity import DiscordIdentityStore, IdentityConflict
 from ..ticket_alerts import TicketAlertReader
 from ..ticket_rules import DECISIONS, EVENT_TYPES, KNOWN_SECTIONS, TicketRuleList
@@ -232,6 +233,15 @@ def _warn_if_unknown_category(category: Any) -> None:
         logger.info("ticket category %r is outside the advertised vocabulary", category)
 
 
+#: What a ticket's genesis row says, by origin. The timeline renders a creation
+#: event's reason as its line (``ticket_timeline._state_text``), which is where
+#: "opened from an alert" and "opened from Discord" already come from; an origin
+#: with no entry keeps the store's own "ticket created".
+_CREATION_REASONS: dict[str, str] = {
+    "copilot": "opened from an Ask kenny conversation",
+}
+
+
 def build_ticket_routes(
     *,
     tickets: TicketService,
@@ -242,6 +252,7 @@ def build_ticket_routes(
     ticket_rules: TicketRuleList | None = None,
     assistant: TicketAssistant | None = None,
     alert_reader: TicketAlertReader | None = None,
+    evidence_reader: EvidenceReader | None = None,
 ) -> list[Route]:
     """Ticket/approval/Discord/tool-class routes. See module docstring.
 
@@ -250,7 +261,46 @@ def build_ticket_routes(
     telemetry surface has no alert reader, and only the route that genuinely
     needs each (``/chat/stream``, ``/alerts``) answers ``503`` without it —
     every other ticket route works whether or not they are configured.
+
+    ``evidence_reader`` resolves a copilot chat session to the read-only calls
+    that ran in it, so a ticket drafted out of a conversation can record what had
+    already been checked. It is a callable rather than the session registry
+    itself: this module must not learn about ``chat.py``, and what it needs from
+    there is one answer, not an object.
     """
+
+    async def _record_prior_checks(
+        ticket: Ticket, session_id: Any, principal: Principal
+    ) -> None:
+        """Note the read-only calls a drafting conversation had already run.
+
+        Best-effort and deliberately server-composed: the list is derived from
+        the chat session itself, not taken from the request, so the trail keeps
+        saying what happened rather than what a caller typed. A session that has
+        expired, or no ``evidence_reader`` at all, simply means no row — the
+        ticket was still opened, and a missing note is not a failed creation.
+        """
+
+        if evidence_reader is None or not session_id:
+            return
+        try:
+            calls = await evidence_reader(str(session_id))
+        except Exception:  # noqa: BLE001 - a note is never worth losing a ticket over
+            logger.warning("could not read prior checks for %s", ticket.id, exc_info=True)
+            return
+        if not calls:
+            return
+        await tickets.append_event(
+            ticket.id,
+            kind="note",
+            actor=_actor(principal),
+            summary="already checked in the conversation this came from: "
+            + ", ".join(
+                f"`{c['tool']}`" + (f" on {c['agent_id']}" if c.get("agent_id") else "")
+                for c in calls
+            ),
+            fields={"prior_checks": calls},
+        )
 
     # -- tickets -------------------------------------------------------------
 
@@ -370,16 +420,19 @@ def build_ticket_routes(
             # the host is in the body, so it is checked by hand. A no-op for
             # operator+, which is never host-scoped.
             require_host(principal, str(agent_id))
+        origin = str(body.get("origin", "dashboard"))
         ticket = await tickets.create(
             title=title,
-            origin=str(body.get("origin", "dashboard")),
+            origin=origin,
             requester_user_id=requester_user_id,
             agent_id=body.get("agent_id"),
             priority=priority,
             category=category,
             summary=str(body.get("summary", "")),
             actor=_actor(principal),
+            reason=_CREATION_REASONS.get(origin, ""),
         )
+        await _record_prior_checks(ticket, body.get("chat_session_id"), principal)
         started = False
         start_error: str | None = None
         if bool(body.get("start_immediately")):

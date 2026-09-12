@@ -210,6 +210,59 @@ class ChatStore {
     await this.runStream('/api/chat/confirm/stream', body, controller)
   }
 
+  /**
+   * Open the ticket a draft card is showing, with whatever the operator edited
+   * into it.
+   *
+   * The POST is the inbox's own — the only route that opens a ticket — and the
+   * values are the form's, never the model's: kenny proposed, the operator is
+   * filing. `chat_session_id` lets the server note what this conversation had
+   * already checked; it derives that itself, so nothing here can claim a check
+   * that did not happen.
+   */
+  createFromDraft = async (
+    itemId: string,
+    draft: { title: string; summary: string; agentId: string | null; startImmediately: boolean },
+  ): Promise<void> => {
+    const body = {
+      title: draft.title.trim(),
+      summary: draft.summary.trim(),
+      agent_id: draft.agentId,
+      origin: 'copilot',
+      start_immediately: draft.startImmediately,
+      chat_session_id: this.state.sessionId,
+    }
+    const ticket = await api.post<{ id: string; number: number }>('/api/tickets', body)
+    this.update((st) => ({
+      ...st,
+      items: st.items.map((it) =>
+        it.kind === 'draft' && it.id === itemId
+          ? {
+              ...it,
+              title: body.title,
+              summary: body.summary,
+              agentId: draft.agentId ?? '',
+              resolution: 'created' as const,
+              ticketId: ticket.id,
+              ticketNumber: ticket.number,
+            }
+          : it,
+      ),
+    }))
+  }
+
+  /** Put a draft away unfiled. The row stays: the offer was made and declined. */
+  dismissDraft = (itemId: string): void => {
+    this.update((st) => ({
+      ...st,
+      items: st.items.map((it) =>
+        it.kind === 'draft' && it.id === itemId
+          ? { ...it, resolution: 'dismissed' as const }
+          : it,
+      ),
+    }))
+  }
+
   private runStream = async (
     url: string,
     body: ChatStreamRequest | ChatConfirmRequest | TicketChatRequest | TicketDecisionRequest,

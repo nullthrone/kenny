@@ -148,3 +148,28 @@ describe('applyChatEvent — thinking_delta', () => {
     }
   })
 })
+
+describe('applyChatEvent — ticket_draft', () => {
+  it('pushes an undecided draft card and nothing else — a draft is not a ticket', () => {
+    const s = applyChatEvent(makeInitialState('pc-kid'), {
+      type: 'ticket_draft',
+      title: 'Windows updates fail',
+      summary: 'Error 0x80070422 since Tuesday; the update service is disabled.',
+      agent_id: 'pc-kid',
+    })
+    expect(s.items).toEqual([
+      {
+        kind: 'draft',
+        id: 'item-0',
+        title: 'Windows updates fail',
+        summary: 'Error 0x80070422 since Tuesday; the update service is disabled.',
+        agentId: 'pc-kid',
+        resolution: 'pending',
+      },
+    ])
+    // It holds nothing: the turn carries on and the composer stays open. Only
+    // a `pending` gate stops a conversation.
+    expect(s.pendingGate).toBeNull()
+    expect(s.streaming).toBe(makeInitialState('pc-kid').streaming)
+  })
+})
