@@ -74,7 +74,17 @@ CREATE TABLE IF NOT EXISTS tickets (
     blocked_since     TEXT,
     blocked_ref       TEXT NOT NULL DEFAULT '',  -- opaque pointer (e.g. an approval id)
     blocked_nudged_at TEXT,
-    assignee_user_id  INTEGER,                   -- the operator working it, if claimed
+    -- Retired by ADR-0062: nothing writes this any more. The column stays
+    -- because rows written before it carry a value and the assign events in
+    -- ticket_events are the authority on who ever held a ticket.
+    assignee_user_id  INTEGER,
+    -- When a *person* last did anything to this ticket -- an operator or the
+    -- requester, never 'system'/'assistant'/'triage'. Distinct from
+    -- updated_at, which any write bumps (including the sweeper's own
+    -- escalation) and which a note does not bump at all. This is the clock
+    -- TicketService.abandon_stale measures, and the only one that answers
+    -- "is anybody working on this".
+    last_human_at     TEXT NOT NULL DEFAULT '',
     -- What a ticket is about, for suppressing a duplicate while one is open.
     -- '' means "never deduplicated" and is what every human-opened ticket has.
     -- Comment above, not trailing: SQLite rewrites this CREATE statement on
@@ -225,6 +235,11 @@ class Ticket:
     #: "what did kenny decide" is a query rather than a read-through of every
     #: ticket's history.
     resolved_by: str = ""
+    #: When a person -- an operator or the requester -- last touched this
+    #: ticket, as an ISO stamp; empty when none ever has. Written from
+    #: :meth:`TicketStore._insert_event`, so every human action that leaves a
+    #: trail row moves it and nothing a machine does moves it at all.
+    last_human_at: str = ""
 
     @classmethod
     def from_row(cls, row: aiosqlite.Row) -> Ticket:
@@ -256,6 +271,7 @@ class Ticket:
             ),
             dedup_key=row["dedup_key"] or "",
             resolved_by=row["resolved_by"] or "",
+            last_human_at=row["last_human_at"] or "",
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -274,6 +290,14 @@ ASSISTANT_ACTOR = "assistant"
 #: line and a denied call can all say *which* assistant did this: the one a
 #: person is talking to, or the one that let itself in.
 TRIAGE_ACTOR = "triage"
+
+#: The ``resolved_by`` value a ticket carries when the sweeper dropped it for
+#: want of anyone working on it (``TicketService.abandon_stale``). Like
+#: ``TRIAGE_ACTOR`` this is a stored column value, and the second value that
+#: column has ever held: it is what lets a reader tell "nobody came back to
+#: this" apart from "the requester withdrew it", which are the two ways a
+#: ticket reaches ``cancelled``.
+ABANDONED_BY = "inactivity"
 
 
 @dataclass(slots=True)
@@ -466,7 +490,7 @@ _TICKET_COLUMNS = (
     "agent_id, role_snapshot, profile_snapshot, summary, resolution, "
     "created_at, updated_at, closed_at, "
     "blocked_on, blocked_since, blocked_ref, blocked_nudged_at, assignee_user_id, "
-    "dedup_key, resolved_by"
+    "dedup_key, resolved_by, last_human_at"
 )
 _EVENT_COLUMNS = (
     "id, ticket_id, at, kind, actor, tool, tool_class, ok, from_state, to_state, "
@@ -492,12 +516,32 @@ _CLOSING_STATES = frozenset({"closed", "cancelled"})
 # DB files the same way ``UpdateStore._migrate`` adds its channel column
 # (ADR-0048) — ``PRAGMA table_info`` + ``ALTER TABLE ADD COLUMN`` for whatever
 # is missing.
+#: What counts as a person in ``ticket_events.actor``. ``webui/tickets.py``'s
+#: ``_actor`` is the only producer of these strings ("operator:<uid>",
+#: "user:<uid>", or a bare "operator" for the legacy shared-token superuser);
+#: everything else the trail records -- "system", "assistant", "triage" -- is a
+#: machine. Used both to seed and to maintain ``tickets.last_human_at``.
+_HUMAN_ACTOR_SQL = (
+    "e.actor LIKE 'user:%' OR e.actor LIKE 'operator:%' OR e.actor = 'operator'"
+)
+
+def _is_human_actor(actor: str) -> bool:
+    """Whether a trail ``actor`` names a person rather than a machine.
+
+    The Python twin of :data:`_HUMAN_ACTOR_SQL`; the two must agree, because one
+    seeds ``last_human_at`` at migration time and the other maintains it.
+    """
+
+    return actor.startswith(("user:", "operator:")) or actor == "operator"
+
+
 _TICKET_MIGRATED_COLUMNS: dict[str, str] = {
     "blocked_on": "TEXT NOT NULL DEFAULT ''",
     "blocked_since": "TEXT",
     "blocked_ref": "TEXT NOT NULL DEFAULT ''",
     "blocked_nudged_at": "TEXT",
     "assignee_user_id": "INTEGER",
+    "last_human_at": "TEXT NOT NULL DEFAULT ''",
     "dedup_key": "TEXT NOT NULL DEFAULT ''",
     "resolved_by": "TEXT NOT NULL DEFAULT ''",
 }
@@ -556,6 +600,22 @@ class TicketStore:
         # exactly once either way.
         await self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_tickets_dedup ON tickets (dedup_key, state)"
+        )
+        await self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tickets_idle ON tickets (state, last_human_at)"
+        )
+        # Seed the human-activity clock from the trail rather than from
+        # updated_at: updated_at is bumped by every machine write, so seeding
+        # from it would tell the abandon sweep that kenny's own churn counted as
+        # somebody working the ticket. A ticket no person ever touched falls
+        # back to created_at, which is when its clock legitimately starts.
+        # Idempotent by content: a row that has been seeded is no longer empty.
+        await self._conn.execute(
+            "UPDATE tickets SET last_human_at = COALESCE("
+            "  (SELECT MAX(at) FROM ticket_events e"
+            f"    WHERE e.ticket_id = tickets.id AND ({_HUMAN_ACTOR_SQL})),"
+            "  created_at) "
+            "WHERE last_human_at = ''"
         )
         # blocked_since best-approximates "since when" as the row's last
         # updated_at (the moment the old awaiting_* state was entered) — the
@@ -660,7 +720,12 @@ class TicketStore:
         await self._conn.execute(
             f"INSERT INTO tickets ({_TICKET_COLUMNS}) "
             "SELECT ?, COALESCE(MAX(number), 0) + 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
-            "NULL, ?, ?, NULL, '', NULL, '', NULL, NULL, ?, '' FROM tickets",
+            # The trailing ? is last_human_at, seeded to created_at. Not left
+            # empty: '' sorts before every ISO stamp, so an untouched ticket
+            # would read as infinitely idle and be dropped by the first abandon
+            # sweep it met. Seeding it to creation says the true thing -- the
+            # clock on "has anyone worked on this" starts when the ticket does.
+            "NULL, ?, ?, NULL, '', NULL, '', NULL, NULL, ?, '', ? FROM tickets",
             (
                 ticket_id,
                 title,
@@ -676,6 +741,7 @@ class TicketStore:
                 stamp,
                 stamp,
                 dedup_key,
+                stamp,
             ),
         )
         await self._conn.commit()
@@ -734,12 +800,12 @@ class TicketStore:
         states: Sequence[str] | None = None,
         requester_user_id: int | None = None,
         agent_id: str | None = None,
-        assignee_user_id: int | None = None,
         blocked_on: str | None = None,
         blocked_on_in: Sequence[str] | None = None,
         blocked_before: str | None = None,
         nudged: bool | None = None,
         updated_before: str | None = None,
+        human_before: str | None = None,
         limit: int = 50,
     ) -> list[Ticket]:
         """Return tickets newest-updated first, filtered and capped by ``limit``.
@@ -748,6 +814,9 @@ class TicketStore:
         ``blocked_before`` narrows to tickets blocked since before a cutoff
         (paired with ``blocked_on_in`` this is what the stall sweep queries);
         ``nudged`` narrows to whether ``blocked_nudged_at`` has been stamped.
+        ``human_before`` narrows to tickets no person has touched since a cutoff
+        -- what the abandon sweep queries, and deliberately not the same
+        question as ``updated_before``.
         """
 
         clauses: list[str] = []
@@ -764,9 +833,6 @@ class TicketStore:
         if agent_id is not None:
             clauses.append("agent_id = ?")
             params.append(agent_id)
-        if assignee_user_id is not None:
-            clauses.append("assignee_user_id = ?")
-            params.append(assignee_user_id)
         if blocked_on is not None:
             clauses.append("blocked_on = ?")
             params.append(blocked_on)
@@ -781,6 +847,9 @@ class TicketStore:
         if updated_before is not None:
             clauses.append("updated_at < ?")
             params.append(updated_before)
+        if human_before is not None:
+            clauses.append("last_human_at < ?")
+            params.append(human_before)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         params.append(limit)
         async with self._conn.execute(
@@ -922,42 +991,6 @@ class TicketStore:
             await self._conn.commit()
         return await self.get(ticket_id)
 
-    async def set_agent_id(
-        self,
-        ticket_id: str,
-        agent_id: str | None,
-        *,
-        actor: str,
-        reason: str = "",
-        now: datetime | str | None = None,
-    ) -> Ticket | None:
-        """Low-level retarget of the frozen routing target. Do not call directly.
-
-        The only sanctioned caller is
-        :meth:`kenny_server.tickets.TicketService.reassign`. Writes the
-        ``kind='handoff'`` event in the same transaction as the column change.
-        """
-
-        stamp = _stamp(now)
-        current = await self.get(ticket_id)
-        if current is None:
-            return None
-        async with write_lock():
-            await self._conn.execute(
-                "UPDATE tickets SET agent_id = ?, updated_at = ? WHERE id = ?",
-                (agent_id, stamp, ticket_id),
-            )
-            await self._insert_event(
-                ticket_id=ticket_id,
-                at=stamp,
-                kind="handoff",
-                actor=actor,
-                summary=reason,
-                fields={"from_agent_id": current.agent_id, "to_agent_id": agent_id},
-            )
-            await self._conn.commit()
-        return await self.get(ticket_id)
-
     async def set_blocked(
         self,
         ticket_id: str,
@@ -975,7 +1008,7 @@ class TicketStore:
         which owns legality and authorization. Empty ``blocked_on`` clears the
         axis (unblock). Writes the UPDATE and the ``kind='block'``
         ``ticket_events`` row on the same connection and commits together,
-        mirroring :meth:`set_state`/:meth:`set_agent_id` — a block that left no
+        mirroring :meth:`set_state` — a block that left no
         trace must not be representable either. Re-blocking an already-blocked
         ticket resets ``blocked_since`` and clears any prior nudge stamp — this
         is how the stall sweep's escalation (a stale ``user`` block becoming an
@@ -1003,45 +1036,6 @@ class TicketStore:
                     "from_blocked_on": current.blocked_on,
                     "to_blocked_on": blocked_on,
                     "ref": ref,
-                },
-            )
-            await self._conn.commit()
-        return await self.get(ticket_id)
-
-    async def set_assignee(
-        self,
-        ticket_id: str,
-        assignee_user_id: int | None,
-        *,
-        actor: str,
-        reason: str = "",
-        now: datetime | str | None = None,
-    ) -> Ticket | None:
-        """Low-level operator-assignment write. Do not call this directly.
-
-        The only sanctioned caller is
-        :meth:`kenny_server.tickets.TicketService.assign`. Writes the
-        ``kind='assign'`` event in the same transaction as the column change.
-        """
-
-        stamp = _stamp(now)
-        current = await self.get(ticket_id)
-        if current is None:
-            return None
-        async with write_lock():
-            await self._conn.execute(
-                "UPDATE tickets SET assignee_user_id = ?, updated_at = ? WHERE id = ?",
-                (assignee_user_id, stamp, ticket_id),
-            )
-            await self._insert_event(
-                ticket_id=ticket_id,
-                at=stamp,
-                kind="assign",
-                actor=actor,
-                summary=reason,
-                fields={
-                    "from_assignee_user_id": current.assignee_user_id,
-                    "to_assignee_user_id": assignee_user_id,
                 },
             )
             await self._conn.commit()
@@ -1197,6 +1191,16 @@ class TicketStore:
                     json.dumps(fields, default=str) if fields is not None else None,
                 ),
             )
+            # The one place ``last_human_at`` is written. Every human action on
+            # a ticket -- a state change, a note, an edit, an answered gate --
+            # lands here, so the clock needs no second write site and cannot be
+            # bypassed by adding a route. Deliberately *not* an updated_at bump:
+            # the two are different questions and conflating them is what made
+            # updated_at useless for "is anybody working on this".
+            if _is_human_actor(actor):
+                await self._conn.execute(
+                    "UPDATE tickets SET last_human_at = ? WHERE id = ?", (at, ticket_id)
+                )
 
     async def append_event(
         self,

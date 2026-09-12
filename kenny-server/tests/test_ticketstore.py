@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import asyncio
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -161,20 +162,6 @@ async def test_set_state_clears_the_block_when_leaving_in_progress(tmp_path) -> 
         await store.close()
 
 
-async def test_set_agent_id_records_handoff(tmp_path) -> None:
-    store = await _store(tmp_path)
-    try:
-        ticket = await store.create(title="a", origin="alert", agent_id="pc-a", now=NOW)
-        moved = await store.set_agent_id(
-            ticket.id, "pc-b", actor="operator:1", reason="wrong host", now=NOW
-        )
-        assert moved is not None and moved.agent_id == "pc-b"
-        (event,) = await store.list_events(ticket.id, kind="handoff")
-        assert event.fields == {"from_agent_id": "pc-a", "to_agent_id": "pc-b"}
-    finally:
-        await store.close()
-
-
 async def test_set_blocked_records_block_event_and_resets_nudge(tmp_path) -> None:
     store = await _store(tmp_path)
     try:
@@ -220,24 +207,6 @@ async def test_set_blocked_records_block_event_and_resets_nudge(tmp_path) -> Non
         assert unblocked.blocked_since is None
 
         assert await store.set_blocked("nope", "user", actor="system") is None
-    finally:
-        await store.close()
-
-
-async def test_set_assignee_records_assign_event(tmp_path) -> None:
-    store = await _store(tmp_path)
-    try:
-        ticket = await store.create(title="a", origin="dashboard", now=NOW)
-        claimed = await store.set_assignee(ticket.id, 3, actor="operator:3", now=NOW)
-        assert claimed is not None and claimed.assignee_user_id == 3
-        unclaimed = await store.set_assignee(
-            ticket.id, None, actor="operator:3", now=NOW + timedelta(minutes=1)
-        )
-        assert unclaimed is not None and unclaimed.assignee_user_id is None
-        (e1, e2) = await store.list_events(ticket.id, kind="assign")
-        assert e1.fields == {"from_assignee_user_id": None, "to_assignee_user_id": 3}
-        assert e2.fields == {"from_assignee_user_id": 3, "to_assignee_user_id": None}
-        assert await store.set_assignee("nope", 1, actor="operator:3") is None
     finally:
         await store.close()
 
@@ -305,6 +274,81 @@ async def test_counts_buckets_by_state_and_blocked_on(tmp_path) -> None:
         assert scoped == {"needs_you": 0, "waiting": 1, "working": 1, "new": 1, "done": 0}
     finally:
         await store.close()
+
+
+async def test_migration_seeds_the_activity_clock_from_the_trail(tmp_path) -> None:
+    """A DB file written before ``last_human_at`` existed must come up seeded.
+
+    Drops the column to reproduce the real pre-upgrade shape, so the
+    ``PRAGMA table_info`` + ``ALTER TABLE ADD COLUMN`` path is what runs -- not
+    just the backfill over a column that was already there. The seed has to come
+    from the trail rather than from ``updated_at``: seeding from the latter
+    would tell the abandon sweep that a machine's last write counted as somebody
+    working the ticket, which is the entire distinction the column exists for.
+    """
+
+    import aiosqlite
+
+    from kenny_server.ticketstore import _SCHEMA
+    from kenny_server.store import _configure_connection
+
+    db_path = str(tmp_path / "preclock.sqlite")
+    worked_at = to_iso(NOW + timedelta(hours=5))
+    machine_at = to_iso(NOW + timedelta(hours=9))
+
+    raw = await aiosqlite.connect(db_path)
+    try:
+        await _configure_connection(raw)
+        await raw.executescript(_SCHEMA)
+        await raw.execute("ALTER TABLE tickets DROP COLUMN last_human_at")
+        rows = [
+            # (id, number, the trail it carries)
+            ("touched", 1, [("operator:3", worked_at), ("assistant", machine_at)]),
+            ("untouched", 2, [("system", machine_at), ("triage", machine_at)]),
+        ]
+        for ticket_id, number, events in rows:
+            await raw.execute(
+                "INSERT INTO tickets (id, number, title, state, origin, priority, "
+                "requester_user_id, summary, created_at, updated_at) "
+                "VALUES (?, ?, 'x', 'in_progress', 'discord', 'normal', 1, '', ?, ?)",
+                (ticket_id, number, to_iso(NOW), machine_at),
+            )
+            for actor, at in events:
+                await raw.execute(
+                    "INSERT INTO ticket_events (ticket_id, at, kind, actor, summary) "
+                    "VALUES (?, ?, 'note', ?, '')",
+                    (ticket_id, at, actor),
+                )
+        await raw.commit()
+    finally:
+        await raw.close()
+
+    store = TicketStore(db_path)
+    await store.connect()
+    try:
+        touched = await store.get("touched")
+        assert touched is not None
+        assert touched.last_human_at == worked_at
+        # The machine wrote later, and that is deliberately not what counts.
+        assert touched.updated_at == machine_at
+
+        untouched = await store.get("untouched")
+        assert untouched is not None
+        assert untouched.last_human_at == to_iso(NOW), "no person ever: the clock runs from creation"
+
+        # Idempotent by content: a second connect finds nothing left to seed and
+        # must not move a clock it already set.
+        await store.close()
+        store2 = TicketStore(db_path)
+        await store2.connect()
+        try:
+            again = await store2.get("touched")
+            assert again is not None and again.last_human_at == worked_at
+        finally:
+            await store2.close()
+    finally:
+        with contextlib.suppress(Exception):
+            await store.close()
 
 
 async def test_migration_folds_legacy_states_into_the_two_axis_model(tmp_path) -> None:

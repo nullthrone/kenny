@@ -59,10 +59,12 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 }
 
 /**
- * Renders one `TicketEvent` for the audit trail. `kind` is one of the ten the
- * server writes (`state`, `block`, `handoff`, `assign`, `approval`,
- * `consent`, `tool_call`, `message`, `note`, `error` —
- * `kenny_server/tickets.py`'s `EVENT_KINDS` plus the four chokepoint kinds).
+ * Renders one `TicketEvent` for the audit trail. `kind` is one the server
+ * writes (`state`, `block`, `approval`, `consent`, `tool_call`, `message`,
+ * `note`, `patch`, `error` — `kenny_server/tickets.py`'s `EVENT_KINDS` plus the
+ * two chokepoint kinds) or one it used to (`handoff`, `assign`, retired with
+ * the actions that wrote them; a trail is never rewritten, so old rows keep
+ * theirs and still have to render).
  * Text is composed only from fields the server actually sent — never
  * inferred from `kind` alone — falling back to the server's own `summary`
  * wherever a kind carries no more specific field to read.
@@ -96,6 +98,10 @@ export function formatEvent(event: TicketEvent, directory: DirectoryUser[] | und
     case 'handoff':
     case 'assign':
     case 'note':
+    // `patch` carries the changed field names in `fields.changed`; the
+    // server's summary already names them, so it reads the same way a note
+    // does and the field list stays for anything that wants to query it.
+    case 'patch':
       return { ...base, text: event.summary || event.kind, mono: null }
     case 'message': {
       const text = typeof fields?.text === 'string' ? fields.text : event.summary || 'message'

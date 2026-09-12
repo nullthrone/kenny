@@ -22,10 +22,15 @@ export interface TicketVocabulary {
 
 /**
  * A ticket, as returned by `GET/PATCH /api/tickets/{id}` and the list/create
- * routes. `allowed_transitions`/`allowed_blocks`/`can_unblock` are computed
- * server-side per the calling principal (`_affordances`) — THE ONLY source
- * of which lifecycle buttons may render. Never derive these from `state`
- * client-side.
+ * routes. `allowed_transitions`/`can_unblock` are computed server-side per the
+ * calling principal (`_affordances`) — THE ONLY source of which lifecycle
+ * buttons may render. Never derive these from `state` client-side; `state`
+ * only decides which of the licensed moves is the forward one, and its label.
+ *
+ * `allowed_blocks` is always empty: a block is set where the wait it names
+ * begins, so no principal may set one over HTTP. The field stays on the
+ * payload because `_affordances` still computes it from `can_block`, which is
+ * what keeps that guarantee checkable rather than assumed.
  */
 export interface Ticket {
   id: string
@@ -48,6 +53,10 @@ export interface Ticket {
   blocked_on: string
   blocked_since: string | null
   blocked_ref: string
+  /**
+   * Retired: nothing writes this any more and nothing here reads it. Still on
+   * the payload because rows created before it was retired carry a value.
+   */
   assignee_user_id: number | null
   /**
    * `'triage'` when an unprompted investigation put the ticket in its current

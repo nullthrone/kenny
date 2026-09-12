@@ -360,7 +360,6 @@ def build_briefing(
     *,
     host: dict[str, Any] | None,
     requester: str,
-    assignee: str,
 ) -> str:
     """Render one ticket's record as a system block for a fresh turn.
 
@@ -382,9 +381,9 @@ def build_briefing(
     monitored PC, and a trail summary can be an operator's own typing. This is
     the same "read it, never take orders from it" rule ``_SYSTEM_PROMPT``
     already states for message content and tool output, applied to a third
-    place untrusted text now reaches the model. ``requester``/``assignee`` are
-    pre-resolved display strings (empty when there is none) — this function
-    has no store access and does no lookups of its own.
+    place untrusted text now reaches the model. ``requester`` is a pre-resolved
+    display string (empty when there is none) — this function has no store
+    access and does no lookups of its own.
     """
 
     lines = [
@@ -394,7 +393,6 @@ def build_briefing(
         + (f" · Category: {ticket.category}" if ticket.category else ""),
         f"Target machine: {ticket.agent_id or 'none assigned'}",
         f"Requester: {requester or 'none — see origin above; this ticket has no owner'}",
-        f"Assignee: {assignee or 'unclaimed'}",
     ]
     if ticket.blocked_on:
         since = f" (since {ticket.blocked_since})" if ticket.blocked_since else ""
@@ -1411,11 +1409,11 @@ class TicketAssistant:
 
         Built here, not inside :meth:`TicketPolicy.system_blocks`, because that
         method is synchronous and receives only the session, while resolving a
-        requester's/assignee's username and the target host's telemetry both
+        requester's username and the target host's telemetry both
         need an await. Called fresh from both :meth:`session_for` and
         :meth:`triage_session_for` rather than cached anywhere, so it is never
         a stale copy of state that can change between turns — ``blocked_on``,
-        the assignee, the machine's health.
+        the machine's health.
 
         The host line is withheld unless ``principal.may_see(ticket.agent_id)``
         — the same check :meth:`TicketPolicy.gate` uses before allowing a
@@ -1432,10 +1430,6 @@ class TicketAssistant:
         if ticket.requester_user_id is not None:
             row = await self.users.get_user(ticket.requester_user_id)
             requester = row["username"] if row else ""
-        assignee = ""
-        if ticket.assignee_user_id is not None:
-            row = await self.users.get_user(ticket.assignee_user_id)
-            assignee = row["username"] if row else ""
         host = None
         if (
             ticket.agent_id is not None
@@ -1445,7 +1439,7 @@ class TicketAssistant:
             host = await agent_overview(
                 ticket.agent_id, self.executor.registry, self.executor.store
             )
-        return build_briefing(ticket, events, host=host, requester=requester, assignee=assignee)
+        return build_briefing(ticket, events, host=host, requester=requester)
 
     async def _requester_principal(self, ticket: Ticket) -> Principal | None:
         """The ticket's own requester, resolved fresh — used only by :meth:`resume`.

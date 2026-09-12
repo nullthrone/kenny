@@ -33,7 +33,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from ..ticketstore import Ticket, TicketStore
+from ..ticketstore import ABANDONED_BY, Ticket, TicketStore
 from .authz import guard, principal_of
 
 __all__ = ["build_inbox_routes"]
@@ -81,6 +81,11 @@ def _meta(ticket: Ticket) -> str:
     # opening each one.
     if ticket.resolved_by == "triage":
         parts.append("resolved by kenny")
+    # The second way a ticket reaches a terminal state without anyone deciding
+    # it: nobody came back to it. A reader has to be able to tell that from a
+    # requester withdrawing, which is the other route to `cancelled`.
+    elif ticket.resolved_by == ABANDONED_BY:
+        parts.append("dropped, nobody worked on it")
     return " · ".join(parts)
 
 

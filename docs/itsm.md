@@ -51,7 +51,7 @@ every row there is a ticket, and every row opens its ticket. A standing critical
 finding that no rule turned into a ticket is read on
 [Fleet](dashboard.md#the-host-page) and [Today](dashboard.md#today) instead.
 
-The dashboard is not just where you read, note, reassign and close a ticket — a ticket has
+The dashboard is not just where you read, note and close a ticket — a ticket has
 its own **chat with kenny**, gated the same way Discord always was, so a ticket opened
 without a Discord thread at all (or worked by an operator who isn't the requester) is just
 as fully workable as one that came in over `@kenny`. It lives in the Ask kenny drawer,
@@ -66,9 +66,11 @@ bound to whichever ticket you have open. See
 </figure>
 
 Every ticket is pinned to **exactly one PC**, decided the moment it is created and never
-moved by anything the requester or the assistant says afterward — only an operator can
-**reassign** it, from the dashboard. That is deliberate: a ticket that could be quietly
-retargeted mid-conversation would undercut every other guarantee on this page. See
+moved afterward — not by the requester, not by the assistant, and not by an operator
+either: there is no route, no button and no tool that retargets a ticket. That is
+deliberate: a ticket that could be quietly retargeted mid-conversation would undercut every
+other guarantee on this page, and a problem worth a ticket is a problem on one machine. If
+the wrong host was picked, cancel the ticket and open the right one. See
 [ADR-0046](adr/0046-ticket-as-entity-chat-thread-as-binding.md) for why the ticket, not the
 chat thread, is the thing that actually exists.
 
@@ -96,13 +98,30 @@ Who the ball is with, while `in_progress` — a ticket can be **blocked on**:
 | `approval` | A step needs **your** sign-off before it can continue. |
 | `operator` | Kenny has done what it can on its own and is waiting on an operator to pick it up (including once it hits its per-ticket turn limit). |
 
+**Nobody sets a block by hand.** Kenny blocks a ticket when it asks the requester
+something or opens an approval gate, and the housekeeping sweep blocks one on `operator`
+when it escalates. What an operator *can* do is clear a block — when the answer reached you
+in the kitchen rather than in Discord, or when you are picking up an escalated ticket. An
+`approval` block is the exception on both sides: it ends with the decision or with the
+gate's own timeout, never by someone declaring the wait over.
+
 A ticket blocked on `user` or `operator` for a while gets one reminder
 (`KENNY_TICKET_STALL_NUDGE_SECS`, default 2 days), and a `user` block still unanswered after
 longer (`KENNY_TICKET_STALL_GIVEUP_SECS`, default 7 days) is re-blocked on `operator` — the
 person it was waiting on did not answer, so a human needs to pick it up. `approval` never
 gets nudged by this: it has its own clock, the approval TTL below.
 
-A `resolved` ticket auto-closes after a while if nobody touches it (`KENNY_TICKET_AUTOCLOSE_SECS`,
+**A ticket nobody works is eventually dropped.** If neither an operator nor the requester
+touches a `new` or `in_progress` ticket for `KENNY_TICKET_ABANDON_SECS` (default 14 days),
+the sweep cancels it and records *why* — the ticket reads "dropped, nobody worked on it"
+rather than looking like somebody withdrew it, and the Discord thread is told in as many
+words. This is the last rung of the same ladder: remind, escalate, give up. Only people
+count — kenny working away on a ticket by itself does not keep it alive — and a ticket
+sitting on an approval gate is never dropped this way, because that wait has its own
+timeout and ending the ticket would deny a live request as a side effect. Set the value to
+`0` to switch it off.
+
+A `resolved` ticket auto-closes after a while if nobody reopens it (`KENNY_TICKET_AUTOCLOSE_SECS`,
 default 2 days) — a housekeeping sweep that runs alongside the alert and backup loops, not
 anything the requester has to do. `closed` is final: reopening it is not possible, only the
 `resolved` window before auto-close is the undo window.

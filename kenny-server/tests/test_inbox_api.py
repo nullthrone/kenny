@@ -21,6 +21,7 @@ from functools import partial
 
 from starlette.testclient import TestClient
 
+from kenny_server.ticketstore import ABANDONED_BY
 from kenny_server.main import build_app
 
 # Every key `kenny-web/src/api/types.ts`'s `InboxItem` declares.
@@ -334,6 +335,45 @@ def test_the_done_list_says_which_tickets_kenny_resolved_itself(tmp_path) -> Non
         by_title = {r["title"]: r["meta"] for r in rows}
         assert "resolved by kenny" in by_title["phantom disk"]
         assert "resolved by kenny" not in by_title["printer jam"]
+
+
+def test_the_done_list_tells_dropped_apart_from_withdrawn(tmp_path) -> None:
+    """Two tickets reach ``cancelled``, and they do not mean the same thing.
+
+    One was withdrawn -- somebody decided it was not needed. The other was
+    dropped by the sweeper because nobody came back to it for
+    ``KENNY_TICKET_ABANDON_SECS``. Reading DONE to judge whether the queue is
+    being worked only means anything if the row says which happened.
+    """
+
+    app = build_app(db_path=str(tmp_path / "dropped.sqlite"))
+    with TestClient(app) as c:
+        h = _bearer(app)
+        tickets = app.state.tickets
+
+        async def seed():
+            forgotten = await tickets.create(
+                title="airpods will not pair", origin="alert", agent_id="pc1", actor="system"
+            )
+            # The window the sweeper would have applied, forced by hand: the
+            # point here is the row's wording, not the clock (that is
+            # test_tickets.py's).
+            await tickets.transition(
+                forgotten.id, "cancelled", actor="system",
+                reason="no operator or requester activity in over 1209600s",
+                resolved_by=ABANDONED_BY,
+            )
+            withdrawn = await tickets.create(
+                title="sorted itself out", origin="dashboard", agent_id="pc1", actor="system"
+            )
+            await tickets.transition(withdrawn.id, "cancelled", actor="operator")
+
+        c.portal.call(seed)
+
+        rows = c.get("/api/inbox?group=done", headers=h).json()["items"]
+        by_title = {r["title"]: r["meta"] for r in rows}
+        assert "dropped, nobody worked on it" in by_title["airpods will not pair"]
+        assert "dropped" not in by_title["sorted itself out"]
 
 
 def test_a_row_says_where_its_ticket_came_from(tmp_path) -> None:

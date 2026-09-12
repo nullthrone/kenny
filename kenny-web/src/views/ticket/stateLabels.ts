@@ -1,36 +1,46 @@
 /**
- * Display-only labels for a lifecycle state. Which states may even be
- * offered as buttons comes entirely from `Ticket.allowed_transitions` —
- * this only decides what word appears on the button once the server has
- * already licensed it.
+ * Display-only labels for a lifecycle move. Which moves may even be offered
+ * comes entirely from `Ticket.allowed_transitions` — this only decides what
+ * word appears on the button once the server has already licensed it.
+ *
+ * The label needs the state being left, not just the one being entered:
+ * `resolved -> in_progress` and `new -> in_progress` share a destination and
+ * mean opposite things. Keying on the destination alone is what had a resolved
+ * ticket's reopen button reading "START WORK".
  */
 const TRANSITION_VERBS: Record<string, string> = {
-  new: 'REOPEN',
-  in_progress: 'START WORK',
+  'new>in_progress': 'START WORK',
+  'resolved>in_progress': 'REOPEN',
   resolved: 'MARK RESOLVED',
-  closed: 'CLOSE TICKET',
+  closed: 'CLOSE NOW',
   cancelled: 'CANCEL TICKET',
 }
 
-export function transitionLabel(state: string): string {
-  return TRANSITION_VERBS[state] ?? state.toUpperCase().replace(/_/g, ' ')
+export function transitionLabel(from: string, to: string): string {
+  return (
+    TRANSITION_VERBS[`${from}>${to}`] ??
+    TRANSITION_VERBS[to] ??
+    to.toUpperCase().replace(/_/g, ' ')
+  )
 }
 
 /**
- * Display-only labels for a block reason (`tickets.py`'s `BLOCKED_REASONS`).
- * As with transitions, which of them may be offered comes entirely from
- * `Ticket.allowed_blocks`; this only names the button.
+ * The label for clearing a block, which is the operator's half of a
+ * conversation the machine started: kenny asked the requester something, or
+ * the stall sweep handed the ticket to a human. Each label says what the click
+ * asserts, because that is what the reader has to be sure of before clicking —
+ * "UNBLOCK" named the column, not the claim.
  *
- * Each label says who the ticket ends up waiting on, because that is what the
- * Inbox's WAITING group then groups it by — "WAIT ON REQUESTER" reads as the
- * consequence, "user" would only read as a category.
+ * There is deliberately no entry for `approval`: a ticket waiting on a gate
+ * leaves that state by the gate being answered or expiring, never by someone
+ * declaring the wait over. The server agrees — `_UNBLOCK_CLEARERS["approval"]`
+ * is `{"system"}` — so `can_unblock` is false there and this is never asked.
  */
-const BLOCK_VERBS: Record<string, string> = {
-  user: 'WAIT ON REQUESTER',
-  operator: 'WAIT ON OPERATOR',
-  approval: 'WAIT ON APPROVAL',
+const UNBLOCK_VERBS: Record<string, string> = {
+  user: 'GOT AN ANSWER',
+  operator: 'PICK THIS UP',
 }
 
-export function blockLabel(reason: string): string {
-  return BLOCK_VERBS[reason] ?? `WAIT ON ${reason.toUpperCase().replace(/_/g, ' ')}`
+export function unblockLabel(blockedOn: string): string {
+  return UNBLOCK_VERBS[blockedOn] ?? 'RESUME'
 }

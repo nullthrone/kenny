@@ -466,6 +466,14 @@ _SPECS: list[SettingSpec] = [
                "going to answer, so a human needs to pick it up. Never applies "
                "to a ticket already waiting on an operator. 0 disables "
                "escalation."),
+    _spec("KENNY_TICKET_ABANDON_SECS", "Discord & Tickets", "int", "1209600",
+          "Give up on an untouched ticket after (s)", lifecycle="live", min=0,
+          help="A new or in-progress ticket that neither an operator nor its "
+               "requester has touched for this long is cancelled by the "
+               "sweeper. Machine activity does not count, so a ticket kenny is "
+               "working on its own still ages out. Never applies to a ticket "
+               "waiting on an approval gate — that has its own timeout. "
+               "0 disables it."),
     _spec("KENNY_TICKET_SWEEP_INTERVAL_SECS", "Discord & Tickets", "int", "300",
           "Ticket sweep interval (s)", lifecycle="live", min=0,
           help="Cadence of the housekeeping pass that expires overdue gates and "

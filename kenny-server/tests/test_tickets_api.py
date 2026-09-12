@@ -359,7 +359,7 @@ def test_alert_origin_ticket_invisible_to_user_and_operator_can_see_it(tmp_path)
 # -- action gating: user cannot approve/reassign/note; operator can ------------
 
 
-def test_user_cannot_reassign_note_or_approve(tmp_path) -> None:
+def test_user_cannot_note_or_approve(tmp_path) -> None:
     async def seed(users: UserStore, store: TicketStore, svc: TicketService) -> dict:
         kid = await users.create_user("kid", "pw-123456", "user")
         op = await users.create_user("op", "pw-123456", "operator")
@@ -390,12 +390,6 @@ def test_user_cannot_reassign_note_or_approve(tmp_path) -> None:
 
         assert (
             c.post(
-                f"/api/tickets/{s['ticket_id']}/reassign", json={"agent_id": "PC-2"},
-                headers=kid_h,
-            ).status_code == 403
-        )
-        assert (
-            c.post(
                 f"/api/tickets/{s['ticket_id']}/note", json={"summary": "hi"}, headers=kid_h
             ).status_code == 403
         )
@@ -404,13 +398,7 @@ def test_user_cannot_reassign_note_or_approve(tmp_path) -> None:
                 f"/api/approvals/{s['approval_id']}", json={"approve": True}, headers=kid_h
             ).status_code == 403
         )
-        # ... and operator can do all three.
-        assert (
-            c.post(
-                f"/api/tickets/{s['ticket_id']}/reassign", json={"agent_id": "PC-2"},
-                headers=op_h,
-            ).status_code == 200
-        )
+        # ... and an operator can do both.
         assert (
             c.post(
                 f"/api/tickets/{s['ticket_id']}/note", json={"summary": "hi"}, headers=op_h
@@ -985,7 +973,19 @@ def test_summary_counts_are_narrowed_for_a_scoped_user(tmp_path) -> None:
         assert op_summary["needs_you"] == 1  # the alert-origin ticket
 
 
-def test_block_is_operator_only_and_reachable(tmp_path) -> None:
+def test_block_is_reachable_by_nobody_over_http(tmp_path) -> None:
+    """Not even an operator may declare a ticket to be waiting on something.
+
+    A block says something is being waited *for*, and is written where that
+    wait begins, carrying the ``ref`` that identifies it -- the assistant
+    opening a gate, asking the requester a question, or the stall sweep
+    escalating. Set by hand over HTTP it produced a wait with no referent: an
+    ``approval`` block with no approval row, which the header chip, the inbox
+    row and the timeline all described as a pending decision, whose banner
+    rendered nothing, and which neither ``expire_due`` (no row to find) nor
+    ``nudge_stalled`` (approval is excluded) could ever clear.
+    """
+
     async def seed(users: UserStore, _store: TicketStore, svc: TicketService) -> dict:
         kid = await users.create_user("kid", "pw-123456", "user")
         op = await users.create_user("op", "pw-123456", "operator")
@@ -1000,22 +1000,17 @@ def test_block_is_operator_only_and_reachable(tmp_path) -> None:
     app = _build_app(tmp_path, seed)
     with TestClient(app) as c:
         s = app.state.seed
-        assert (
-            c.post(
-                f"/api/tickets/{s['ticket_id']}/block",
-                json={"blocked_on": "user"},
-                headers=_hdr(s["kid_pat"]),
-            ).status_code
-            == 403
-        )
-        r = c.post(
-            f"/api/tickets/{s['ticket_id']}/block",
-            json={"blocked_on": "user", "reason": "need the model number"},
-            headers=_hdr(s["op_pat"]),
-        )
-        assert r.status_code == 200
-        assert r.json()["blocked_on"] == "user"
-        assert r.json()["can_unblock"] is True
+        for pat in (s["kid_pat"], s["op_pat"]):
+            for reason in ("user", "operator", "approval"):
+                r = c.post(
+                    f"/api/tickets/{s['ticket_id']}/block",
+                    json={"blocked_on": reason},
+                    headers=_hdr(pat),
+                )
+                assert r.status_code == 403, (pat, reason, r.status_code)
+        # And the payload says so, so the console never offers what would fail.
+        body = c.get(f"/api/tickets/{s['ticket_id']}", headers=_hdr(s["op_pat"])).json()
+        assert body["allowed_blocks"] == []
 
 
 def test_unblock_lets_the_requester_answer_their_own_user_block(tmp_path) -> None:
@@ -1045,43 +1040,6 @@ def test_unblock_lets_the_requester_answer_their_own_user_block(tmp_path) -> Non
         )
         assert r.status_code == 200
         assert r.json()["blocked_on"] == ""
-
-
-def test_assign_claims_and_unclaims_operator_only(tmp_path) -> None:
-    async def seed(users: UserStore, _store: TicketStore, svc: TicketService) -> dict:
-        kid = await users.create_user("kid", "pw-123456", "user")
-        op = await users.create_user("op", "pw-123456", "operator")
-        kid_pat = await users.create_pat(kid["id"], "t")
-        op_pat = await users.create_pat(op["id"], "t")
-        ticket = await svc.create(title="claim me", origin="dashboard")
-        return {"kid_pat": kid_pat, "op_pat": op_pat, "op_id": op["id"], "ticket_id": ticket.id}
-
-    app = _build_app(tmp_path, seed)
-    with TestClient(app) as c:
-        s = app.state.seed
-        assert (
-            c.post(
-                f"/api/tickets/{s['ticket_id']}/assign",
-                json={"assignee_user_id": s["op_id"]},
-                headers=_hdr(s["kid_pat"]),
-            ).status_code
-            == 403
-        )
-        r = c.post(
-            f"/api/tickets/{s['ticket_id']}/assign",
-            json={"assignee_user_id": s["op_id"]},
-            headers=_hdr(s["op_pat"]),
-        )
-        assert r.status_code == 200
-        assert r.json()["assignee_user_id"] == s["op_id"]
-
-        r = c.post(
-            f"/api/tickets/{s['ticket_id']}/assign",
-            json={"assignee_user_id": None},
-            headers=_hdr(s["op_pat"]),
-        )
-        assert r.status_code == 200
-        assert r.json()["assignee_user_id"] is None
 
 
 def test_create_rejects_unknown_priority(tmp_path) -> None:
@@ -1149,32 +1107,29 @@ def test_create_rejects_a_host_outside_the_requesters_scope(tmp_path) -> None:
         assert r.json()["agent_id"] is None
 
 
-def test_reassign_is_operator_only_so_host_scope_never_applies(tmp_path) -> None:
-    """The same class of bug as ``api_tickets_create``'s missing host check,
-    checked and found *not* present: ``/api/tickets/{tid}/reassign`` floors at
-    ``operator`` (see ``build_ticket_routes``), and only the ``user`` role is
-    host-scoped (``Principal.scoped``) -- an operator's ``hosts`` is always
-    empty and ``may_see`` always ``True`` for it. So nobody who can reach this
-    handler is ever host-scoped in the first place, and there is nothing here
-    to widen.
+def test_claiming_and_retargeting_have_no_http_surface(tmp_path) -> None:
+    """``/assign`` and ``/reassign`` are gone, for an operator too.
+
+    404 rather than 403 is the assertion that matters: the routes are not
+    registered at all, so there is no handler left whose authorization could
+    later be loosened by accident.
     """
 
     async def seed(users: UserStore, _store: TicketStore, svc: TicketService) -> dict:
         op = await users.create_user("op", "pw-123456", "operator")
         op_pat = await users.create_pat(op["id"], "t")
         ticket = await svc.create(title="retarget me", origin="dashboard", agent_id="pc-a")
-        return {"op_pat": op_pat, "ticket_id": ticket.id}
+        return {"op_pat": op_pat, "op_id": op["id"], "ticket_id": ticket.id}
 
     app = _build_app(tmp_path, seed)
     with TestClient(app) as c:
         s = app.state.seed
-        r = c.post(
-            f"/api/tickets/{s['ticket_id']}/reassign",
-            json={"agent_id": "pc-anywhere"},
-            headers=_hdr(s["op_pat"]),
-        )
-        assert r.status_code == 200
-        assert r.json()["agent_id"] == "pc-anywhere"
+        h = _hdr(s["op_pat"])
+        tid = s["ticket_id"]
+        assert c.post(f"/api/tickets/{tid}/reassign", json={"agent_id": "pc-b"}, headers=h).status_code == 404
+        assert c.post(f"/api/tickets/{tid}/assign", json={"assignee_user_id": s["op_id"]}, headers=h).status_code == 404
+        # The host the ticket was opened against is untouched by either attempt.
+        assert c.get(f"/api/tickets/{tid}", headers=h).json()["agent_id"] == "pc-a"
 
 
 def test_ticket_payload_carries_only_legal_affordances(tmp_path) -> None:
