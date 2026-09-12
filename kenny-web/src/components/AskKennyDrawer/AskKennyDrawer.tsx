@@ -115,7 +115,7 @@ export default function AskKennyDrawer() {
         />
       ) : (
         <>
-          <Transcript items={state.items} />
+          <Transcript items={state.items} openThinkingId={state.openThinkingId} />
           {ticket && gateOpen && (
             // The gate is the ticket's, not this drawer's: durable, decided
             // beside the frozen call it would run, and free to wait for a

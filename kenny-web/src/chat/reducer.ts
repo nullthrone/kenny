@@ -29,6 +29,7 @@ export function startUserTurn(state: ChatSessionState, message: string): ChatSes
     ...pushItem(s1, { kind: 'user', id, text: message }),
     streaming: true,
     openAssistantId: null,
+    openThinkingId: null,
   }
 }
 
@@ -42,7 +43,11 @@ export function applyChatEvent(state: ChatSessionState, event: ChatEvent): ChatS
   switch (event.type) {
     case 'user_text': {
       const [id, s1] = nextId(state)
-      return { ...pushItem(s1, { kind: 'user', id, text: event.text }), openAssistantId: null }
+      return {
+        ...pushItem(s1, { kind: 'user', id, text: event.text }),
+        openAssistantId: null,
+        openThinkingId: null,
+      }
     }
 
     case 'text_delta': {
@@ -54,6 +59,7 @@ export function applyChatEvent(state: ChatSessionState, event: ChatEvent): ChatS
       if (state.openAssistantId) {
         return {
           ...state,
+          openThinkingId: null,
           items: state.items.map((it) =>
             it.kind === 'assistant' && it.id === state.openAssistantId
               ? { ...it, text: it.text + event.text }
@@ -62,7 +68,35 @@ export function applyChatEvent(state: ChatSessionState, event: ChatEvent): ChatS
         }
       }
       const [id, s1] = nextId(state)
-      return { ...pushItem(s1, { kind: 'assistant', id, text: event.text }), openAssistantId: id }
+      return {
+        ...pushItem(s1, { kind: 'assistant', id, text: event.text }),
+        openAssistantId: id,
+        // The answer starting is what ends the reasoning above it: a later
+        // `thinking_delta` opens a new block rather than reopening that one.
+        openThinkingId: null,
+      }
+    }
+
+    case 'thinking_delta': {
+      // Reasoning, on its own channel. Accumulated exactly like assistant text
+      // — whole buffer, re-rendered — and never merged into it: the folded
+      // block a reader can open must contain what kenny reasoned and nothing
+      // it actually said.
+      if (state.openThinkingId) {
+        const openId = state.openThinkingId
+        return {
+          ...state,
+          items: state.items.map((it) =>
+            it.kind === 'thinking' && it.id === openId ? { ...it, text: it.text + event.text } : it,
+          ),
+        }
+      }
+      const [id, s1] = nextId(state)
+      return {
+        ...pushItem(s1, { kind: 'thinking', id, text: event.text }),
+        openThinkingId: id,
+        openAssistantId: null,
+      }
     }
 
     case 'tool_result': {
@@ -76,6 +110,7 @@ export function applyChatEvent(state: ChatSessionState, event: ChatEvent): ChatS
           pendingGate: null,
           deciding: false,
           openAssistantId: null,
+          openThinkingId: null,
           items: state.items.map((it) =>
             it.kind === 'gate' && it.id === gateId ? { ...it, resolution: 'approved', ok: event.ok } : it,
           ),
@@ -92,6 +127,7 @@ export function applyChatEvent(state: ChatSessionState, event: ChatEvent): ChatS
           format: event.format,
         }),
         openAssistantId: null,
+        openThinkingId: null,
       }
     }
 
@@ -112,6 +148,7 @@ export function applyChatEvent(state: ChatSessionState, event: ChatEvent): ChatS
         ...pushItem(s1, item),
         pendingGate: { itemId: id, tool: event.tool, args: event.args, agentId: event.agent_id, toolClass: event.tool_class },
         openAssistantId: null,
+        openThinkingId: null,
         // The server closes the initial stream here — nothing is in flight
         // again until a separate POST to /api/chat/confirm/stream. The
         // composer stays locked regardless, because `pendingGate` is set.
@@ -128,6 +165,7 @@ export function applyChatEvent(state: ChatSessionState, event: ChatEvent): ChatS
           pendingGate: null,
           deciding: false,
           openAssistantId: null,
+          openThinkingId: null,
           items: state.items.map((it) => (it.kind === 'gate' && it.id === gateId ? { ...it, resolution: 'denied' } : it)),
         }
       }
@@ -135,7 +173,11 @@ export function applyChatEvent(state: ChatSessionState, event: ChatEvent): ChatS
       // confirm(false), but if it ever arrives unmatched, still surface it
       // rather than silently dropping a denial.
       const [id, s1] = nextId(state)
-      return { ...pushItem(s1, { kind: 'denied', id, tool: event.tool, message: event.message }), openAssistantId: null }
+      return {
+        ...pushItem(s1, { kind: 'denied', id, tool: event.tool, message: event.message }),
+        openAssistantId: null,
+        openThinkingId: null,
+      }
     }
 
     case 'done': {
@@ -143,6 +185,7 @@ export function applyChatEvent(state: ChatSessionState, event: ChatEvent): ChatS
         ...state,
         streaming: false,
         openAssistantId: null,
+        openThinkingId: null,
         sessionId: event.session_id ?? state.sessionId,
       }
     }
@@ -156,6 +199,7 @@ export function applyChatEvent(state: ChatSessionState, event: ChatEvent): ChatS
         deciding: false,
         resolvingGateItemId: null,
         openAssistantId: null,
+        openThinkingId: null,
         sessionId: event.session_id ?? state.sessionId,
       }
     }

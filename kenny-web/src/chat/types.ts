@@ -51,6 +51,12 @@ export interface ChatHistoryDetailResponse {
 export type TranscriptItem =
   | { kind: 'user'; id: string; text: string }
   | { kind: 'assistant'; id: string; text: string }
+  /**
+   * Kenny's reasoning, kept apart from its answer and rendered folded. It is a
+   * live view only: the server stores none of it, so a replayed conversation
+   * and a ticket's timeline never show one of these.
+   */
+  | { kind: 'thinking'; id: string; text: string }
   | { kind: 'auto_run'; id: string; tool: string; ok: boolean; imageB64?: string; format?: string }
   | { kind: 'denied'; id: string; tool: string; message?: string }
   | {
@@ -131,6 +137,10 @@ export interface ChatSessionState {
   streaming: boolean
   /** id of the assistant transcript item currently accumulating `text_delta`s, if any. */
   openAssistantId: string | null
+  /** id of the thinking item currently accumulating `thinking_delta`s, if any.
+   * Non-null means kenny is still reasoning — which is what the folded block's
+   * own label says, so it is never inferred from `streaming` alone. */
+  openThinkingId: string | null
   /** Monotonic counter backing transcript item ids — keeps id generation pure/deterministic. */
   seq: number
   /** Non-null when this conversation is a ticket's own (ADR-0050). */
@@ -151,6 +161,7 @@ export function makeInitialState(
     resolvingGateItemId: null,
     streaming: false,
     openAssistantId: null,
+    openThinkingId: null,
     seq: 0,
   }
 }

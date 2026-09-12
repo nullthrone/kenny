@@ -20,8 +20,10 @@ imports ``chat.py``, so the dependency runs one way: ``chat`` -> ``toolloop``.
 from __future__ import annotations
 
 import json
+import logging
+import re
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable, Collection
+from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Iterator
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -35,6 +37,8 @@ from .tools import (
     build_health,
 )
 from .tunnel import AgentTunnel, ToolError
+
+logger = logging.getLogger("kenny.toolloop")
 
 #: How many model round-trips one drive may take before it stops and returns
 #: what it has. A ceiling on a runaway loop, not a budget anyone spends
@@ -342,6 +346,19 @@ def _block_to_dict(block: Any) -> dict[str, Any]:
             "name": getattr(block, "name", ""),
             "input": getattr(block, "input", {}) or {},
         }
+    if btype == "thinking":
+        # Kept whole, signature included. A thinking block replayed to the same
+        # model must come back byte-identical — it is signed, and the model
+        # rejects an edited one — so this normalizes the shape and changes
+        # nothing inside it. The text is for the model, never for the trail
+        # (:func:`_text_of` is what a reader gets).
+        return {
+            "type": "thinking",
+            "thinking": getattr(block, "thinking", ""),
+            "signature": getattr(block, "signature", ""),
+        }
+    if btype == "redacted_thinking":
+        return {"type": "redacted_thinking", "data": getattr(block, "data", "")}
     # Fall back to a best-effort serialization.
     if hasattr(block, "model_dump"):
         return block.model_dump()
@@ -366,7 +383,16 @@ def _tool_result_image(content: Any) -> tuple[str, str] | None:
 
 
 def _text_of(content: list[dict[str, Any]]) -> str:
-    return "".join(b.get("text", "") for b in content if b.get("type") == "text")
+    """The assistant's words, with any narrated reasoning folded out.
+
+    Every durable reader of a turn goes through here — the trail, a Discord
+    reply, a replayed conversation — so a model that writes its reasoning as
+    tagged prose cannot leak it into the record (:func:`strip_thinking_prose`).
+    """
+
+    return strip_thinking_prose(
+        "".join(b.get("text", "") for b in content if b.get("type") == "text")
+    )
 
 
 def _latest_text(session: Any) -> str:
@@ -700,6 +726,196 @@ async def _execute_one(
         return {"error": {"code": exc.code, "message": exc.message}}, True
 
 
+# -- thinking ---------------------------------------------------------------
+#
+# Reasoning is a third channel, alongside the assistant's words and its tool
+# calls. It is streamed so a surface can show that kenny is working, and it
+# enters no record anyone reads: not the trail, not a ticket's timeline, not
+# Discord, not a replayed conversation. What kenny *concluded* is the record;
+# how it got there is scaffolding.
+#
+# The one place it does persist is the session's own ``messages`` — a signed
+# thinking block has to be replayed to the model verbatim on the next
+# round-trip, so the resumable transcript keeps it for the model's benefit
+# alone. Nothing projects that back to a person.
+
+#: How the loop asks for reasoning. ``adaptive`` is the mode current models
+#: take — the fixed ``budget_tokens`` ceiling is gone from them — and
+#: ``display`` is not optional: without it the newer models stream thinking
+#: blocks whose text is empty, which looks exactly like a long silent pause.
+THINKING_REQUEST: dict[str, Any] = {"type": "adaptive", "display": "summarized"}
+
+#: Output ceiling per model call. Reasoning is billed and capped as output, so
+#: a thinking turn needs the larger one — at 4096 the reasoning would eat the
+#: budget and truncate the answer it was supposed to improve.
+_MAX_TOKENS = 4096
+_MAX_TOKENS_THINKING = 16_000
+
+#: Models that answered a thinking request with a 400, remembered so the
+#: rejection is paid once per process rather than once per turn.
+#:
+#: ``KENNY_CHAT_MODEL`` is a live setting (``config.py``): an operator can point
+#: this loop at a model old enough to predate adaptive thinking, and on a
+#: self-hosted server nobody is watching the logs. Degrading to a chat with no
+#: visible reasoning is the correct failure; refusing to answer is not.
+_MODELS_WITHOUT_THINKING: set[str] = set()
+
+
+def _rejects_thinking(exc: Exception) -> bool:
+    """Whether ``exc`` is the API refusing the ``thinking`` parameter itself.
+
+    Matched on the request being invalid *and* naming the parameter, so a 400
+    about anything else (a malformed tool schema, an oversized request) still
+    raises — a retry that silently dropped reasoning on every bad request would
+    hide the real error behind a quieter one.
+    """
+
+    status = getattr(exc, "status_code", None)
+    if status != 400:
+        return False
+    return "thinking" in str(getattr(exc, "message", "") or exc).lower()
+
+
+class _ThinkingTags:
+    """Folds pseudo-``<thinking>`` prose out of a text stream.
+
+    A model can narrate its reasoning as ordinary text wrapped in literal
+    ``<thinking>`` tags, and that text is not a thinking block: left alone it
+    lands in the reply, in the trail and in the family's Discord thread, tags
+    and all. This routes it to the same channel the real blocks use.
+
+    Stateful because a tag can be split across two deltas (``<thin`` / ``king>``
+    is one token boundary away): a suffix that could still become a tag is held
+    back rather than emitted, and :meth:`flush` releases whatever is left when
+    the block ends.
+    """
+
+    OPEN = "<thinking>"
+    CLOSE = "</thinking>"
+
+    def __init__(self) -> None:
+        self._buf = ""
+        self._inside = False
+
+    def feed(self, text: str) -> list[tuple[str, str]]:
+        """Absorb one delta, returning ``(channel, chunk)`` pairs ready to send."""
+
+        self._buf += text
+        out: list[tuple[str, str]] = []
+        while self._buf:
+            tag = self.CLOSE if self._inside else self.OPEN
+            channel = "thinking" if self._inside else "text"
+            idx = self._buf.find(tag)
+            if idx == -1:
+                held = _partial_tag_tail(self._buf, tag)
+                ready = self._buf[: len(self._buf) - held]
+                if ready:
+                    out.append((channel, ready))
+                self._buf = self._buf[len(self._buf) - held :]
+                break
+            if idx:
+                out.append((channel, self._buf[:idx]))
+            self._buf = self._buf[idx + len(tag) :]
+            self._inside = not self._inside
+        return out
+
+    def flush(self) -> list[tuple[str, str]]:
+        """Release the held-back tail. An unclosed tag stays folded, not printed."""
+
+        if not self._buf:
+            return []
+        out = [("thinking" if self._inside else "text", self._buf)]
+        self._buf = ""
+        return out
+
+
+def _partial_tag_tail(buf: str, tag: str) -> int:
+    """Length of the longest suffix of ``buf`` that could still grow into ``tag``."""
+
+    for size in range(min(len(buf), len(tag) - 1), 0, -1):
+        if buf.endswith(tag[:size]):
+            return size
+    return 0
+
+
+def strip_thinking_prose(text: str) -> str:
+    """``text`` with any pseudo-``<thinking>`` passage removed.
+
+    The streaming path routes those passages to the thinking channel as they
+    arrive, but the final message still carries them — and that is the text
+    every durable reader takes (:func:`_text_of`). One function, so the words
+    a surface shows and the words the trail keeps cannot disagree.
+    """
+
+    tags = _ThinkingTags()
+    kept = "".join(
+        chunk for channel, chunk in [*tags.feed(text), *tags.flush()] if channel == "text"
+    )
+    return kept if kept == text else kept.strip()
+
+
+def _stream_deltas(stream: Any) -> Iterator[tuple[str, str]]:
+    """Yield ``(channel, chunk)`` for every delta on a live model stream."""
+
+    for event in stream:
+        if getattr(event, "type", None) != "content_block_delta":
+            continue
+        delta = getattr(event, "delta", None)
+        kind = getattr(delta, "type", None)
+        if kind == "text_delta":
+            yield "text", getattr(delta, "text", "") or ""
+        elif kind == "thinking_delta":
+            yield "thinking", getattr(delta, "thinking", "") or ""
+
+
+def _stream_turn(client: Any, request: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    """Run one model call, yielding its deltas and finally its message.
+
+    Yields ``{"type": "thinking_delta"|"text_delta", "text": ...}`` in arrival
+    order, then exactly one ``{"type": "final", "message": ...}``.
+
+    The retry below only ever fires *before* the first delta is handed out: once
+    a caller has seen output, a failure is a failure of this turn, not evidence
+    that the model cannot think.
+    """
+
+    model = str(request.get("model", ""))
+    with_thinking = model not in _MODELS_WITHOUT_THINKING
+    while True:
+        emitted = False
+        try:
+            kwargs = dict(request)
+            if with_thinking:
+                kwargs["thinking"] = THINKING_REQUEST
+                kwargs["max_tokens"] = _MAX_TOKENS_THINKING
+            with client.messages.stream(**kwargs) as stream:
+                tags = _ThinkingTags()
+                for channel, chunk in _stream_deltas(stream):
+                    pairs = tags.feed(chunk) if channel == "text" else [(channel, chunk)]
+                    for out_channel, out_chunk in pairs:
+                        emitted = True
+                        yield {
+                            "type": "thinking_delta" if out_channel == "thinking" else "text_delta",
+                            "text": out_chunk,
+                        }
+                for out_channel, out_chunk in tags.flush():
+                    emitted = True
+                    yield {
+                        "type": "thinking_delta" if out_channel == "thinking" else "text_delta",
+                        "text": out_chunk,
+                    }
+                yield {"type": "final", "message": stream.get_final_message()}
+            return
+        except Exception as exc:  # noqa: BLE001 - re-raised unless it is the thinking 400
+            if emitted or not with_thinking or not _rejects_thinking(exc):
+                raise
+            logger.info(
+                "model %s rejected extended thinking (%s); continuing without it", model, exc
+            )
+            _MODELS_WITHOUT_THINKING.add(model)
+            with_thinking = False
+
+
 # -- the loop ---------------------------------------------------------------
 
 
@@ -851,17 +1067,23 @@ async def drive_events(
         if session._staged_results:
             _fold_staged_results(session)
 
-        # Ask the model for the next step, streaming the assistant text token by token.
-        with client.messages.stream(
-            model=model,
-            max_tokens=4096,
-            system=policy.system_blocks(session),
-            tools=policy.tool_schemas(),
-            messages=session.messages,
-        ) as stream:
-            for text in stream.text_stream:
-                yield {"type": "text_delta", "text": text}
-            response = stream.get_final_message()
+        # Ask the model for the next step, streaming what it says — and what it
+        # reasons, on its own channel — token by token.
+        response = None
+        for event in _stream_turn(
+            client,
+            {
+                "model": model,
+                "max_tokens": _MAX_TOKENS,
+                "system": policy.system_blocks(session),
+                "tools": policy.tool_schemas(),
+                "messages": session.messages,
+            },
+        ):
+            if event["type"] == "final":
+                response = event["message"]
+            else:
+                yield event
         content = _assistant_content(response)
         session.messages.append({"role": "assistant", "content": content})
 

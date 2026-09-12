@@ -86,12 +86,23 @@ def _chunks(text: str) -> list[str]:
 class _StreamCtx:
     def __init__(self, response: _Response) -> None:
         self._response = response
-        self.text_stream = [
-            chunk
-            for b in response.content
-            if getattr(b, "type", None) == "text"
-            for chunk in _chunks(b.text)
-        ]
+
+    def __iter__(self) -> Any:
+        # The ``content_block_delta`` shape the loop reads: a text block streams
+        # as several ``text_delta``s, a thinking block as a ``thinking_delta``.
+        for block in self._response.content:
+            kind = getattr(block, "type", None)
+            if kind == "text":
+                for chunk in re.findall(r"\S+\s*", block.text) or [block.text]:
+                    yield _Block(
+                        type="content_block_delta",
+                        delta=_Block(type="text_delta", text=chunk),
+                    )
+            elif kind == "thinking":
+                yield _Block(
+                    type="content_block_delta",
+                    delta=_Block(type="thinking_delta", thinking=getattr(block, "thinking", "")),
+                )
 
     def __enter__(self) -> _StreamCtx:
         return self

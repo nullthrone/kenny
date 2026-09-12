@@ -108,3 +108,43 @@ describe('applyChatEvent — done/error', () => {
     expect(s.items.some((i) => i.kind === 'error' && i.error === 'agent unreachable')).toBe(true)
   })
 })
+
+describe('applyChatEvent — thinking_delta', () => {
+  it('accumulates reasoning into its own item, never into the answer', () => {
+    let s = makeInitialState('')
+    s = applyChatEvent(s, { type: 'thinking_delta', text: 'bthserv runs, ' })
+    s = applyChatEvent(s, { type: 'thinking_delta', text: 'so check the radio' })
+    s = applyChatEvent(s, { type: 'text_delta', text: 'No Bluetooth radio is installed.' })
+
+    expect(s.items).toEqual([
+      { kind: 'thinking', id: 'item-0', text: 'bthserv runs, so check the radio' },
+      { kind: 'assistant', id: 'item-1', text: 'No Bluetooth radio is installed.' },
+    ])
+  })
+
+  it('closes the open reasoning block once the answer starts', () => {
+    let s = makeInitialState('')
+    s = applyChatEvent(s, { type: 'thinking_delta', text: 'first thought' })
+    expect(s.openThinkingId).toBe('item-0')
+
+    s = applyChatEvent(s, { type: 'text_delta', text: 'the answer' })
+    expect(s.openThinkingId).toBeNull()
+
+    // A second round of reasoning opens a second block rather than reopening
+    // the first — otherwise the fold a reader opened would grow under them.
+    s = applyChatEvent(s, { type: 'thinking_delta', text: 'second thought' })
+    expect(s.items.filter((i) => i.kind === 'thinking')).toHaveLength(2)
+  })
+
+  it('is ended by a tool call, a gate and the turn itself', () => {
+    for (const event of [
+      { type: 'tool_result', tool: 'diag_services', ok: true, auto_run: true },
+      { type: 'pending', tool: 'powershell_exec', args: {}, agent_id: 'linus-pc' },
+      { type: 'done' },
+    ] as const) {
+      let s = applyChatEvent(makeInitialState(''), { type: 'thinking_delta', text: 'reasoning' })
+      s = applyChatEvent(s, event)
+      expect(s.openThinkingId).toBeNull()
+    }
+  })
+})

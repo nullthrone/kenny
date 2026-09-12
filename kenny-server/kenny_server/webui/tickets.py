@@ -547,10 +547,10 @@ def build_ticket_routes(
         thing that can still fail, in-band.
 
         The event vocabulary is exactly ``toolloop.drive_events``'s:
-        ``text_delta``, ``tool_result``, ``pending``, ``denied``, ``done``,
-        ``error`` — the same one ``handleChatEvent`` already renders for the
-        copilot, so the dashboard's ticket chat needs no new client-side event
-        handling, only a new place to point ``streamSSE`` at.
+        ``thinking_delta``, ``text_delta``, ``tool_result``, ``pending``,
+        ``denied``, ``done``, ``error`` — the same one the copilot's transcript
+        already renders, so the dashboard's ticket chat needs no client-side
+        event handling of its own, only a new place to point ``streamSSE`` at.
         """
 
         principal = require_user(request)

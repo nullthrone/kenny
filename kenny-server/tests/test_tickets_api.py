@@ -71,7 +71,22 @@ def text_turn(text: str) -> _Response:
 class _StreamCtx:
     def __init__(self, response: _Response) -> None:
         self._response = response
-        self.text_stream = [b.text for b in response.content if getattr(b, "type", None) == "text"]
+
+    def __iter__(self) -> Any:
+        # The ``content_block_delta`` shape the loop reads: one delta per block,
+        # text and thinking on their own channels.
+        for block in self._response.content:
+            kind = getattr(block, "type", None)
+            if kind == "text":
+                yield _Block(
+                    type="content_block_delta",
+                    delta=_Block(type="text_delta", text=block.text),
+                )
+            elif kind == "thinking":
+                yield _Block(
+                    type="content_block_delta",
+                    delta=_Block(type="thinking_delta", thinking=getattr(block, "thinking", "")),
+                )
 
     def __enter__(self) -> _StreamCtx:
         return self

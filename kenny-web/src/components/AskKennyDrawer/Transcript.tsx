@@ -6,6 +6,10 @@ import styles from './Transcript.module.css'
 
 export interface TranscriptProps {
   items: TranscriptItem[]
+  /** The reasoning block still being written, if any — it is the only one whose
+   * label says kenny is still at it. Absent on a replayed conversation, which
+   * carries no reasoning at all. */
+  openThinkingId?: string | null
 }
 
 /**
@@ -14,8 +18,12 @@ export interface TranscriptProps {
  * `gate` row is a trace of what the confirm gate did, not the gate itself:
  * the actual CONFIRM & RUN / CANCEL decision only ever happens in
  * `PendingGateModal`, so this never renders a second set of action buttons.
+ *
+ * Reasoning is rendered as a closed disclosure. It is shown because a reader
+ * who disagrees with an answer wants to see how it was reached; it is closed
+ * because the answer is what they came for.
  */
-export default function Transcript({ items }: TranscriptProps) {
+export default function Transcript({ items, openThinkingId = null }: TranscriptProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -45,6 +53,21 @@ export default function Transcript({ items }: TranscriptProps) {
           case 'assistant':
             return (
               <Markdown key={item.id} className={styles.assistant} text={item.text} />
+            )
+
+          case 'thinking':
+            return (
+              // Folded, and folded by default: reasoning is context for the
+              // answer, not the answer. `<details>` and nothing else — the
+              // browser already owns open/closed state, keyboard access and
+              // the disclosure affordance, and a reader who opens one while
+              // the next delta lands must not have it snapped shut again.
+              <details key={item.id} className={styles.thinking}>
+                <summary className={styles.thinkingSummary}>
+                  {item.id === openThinkingId ? 'Kenny is thinking…' : 'Kenny thought about this'}
+                </summary>
+                <div className={styles.thinkingBody}>{item.text}</div>
+              </details>
             )
 
           case 'auto_run':

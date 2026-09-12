@@ -93,3 +93,43 @@
   margin: auto 0;
   text-align: center;
 }
+
+/* Kenny's reasoning: present, closed, and quieter than anything it said. The
+   body is pre-wrapped rather than parsed as markdown — reasoning is a draft,
+   and half-formed `*`s in it are not emphasis. */
+.thinking {
+  align-self: flex-start;
+  max-width: 92%;
+  border: 1px solid var(--border-line);
+  background: var(--surface-inset);
+}
+
+.thinkingSummary {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--text-faint);
+  padding: 6px 10px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.thinkingSummary::-webkit-details-marker {
+  display: none;
+}
+
+.thinkingSummary::before {
+  content: '▸ ';
+}
+
+.thinking[open] .thinkingSummary::before {
+  content: '▾ ';
+}
+
+.thinkingBody {
+  padding: 0 10px 8px;
+  font-size: var(--text-sm);
+  line-height: var(--leading-body);
+  color: var(--text-muted);
+  white-space: pre-wrap;
+}

@@ -471,6 +471,14 @@ export type ChatEvent =
    */
   | { type: 'text_delta'; text: string }
   /**
+   * Incremental reasoning, on its own channel so it is never mistaken for the
+   * answer. It is shown folded and it is never stored: no transcript replay
+   * emits it, and no ticket timeline or trail row carries it. A surface that
+   * ignored this event entirely would still be correct — it would simply show
+   * a pause where kenny was working.
+   */
+  | { type: 'thinking_delta'; text: string }
+  /**
    * A tool call that HAS ALREADY RUN. Read-only calls reach the client only in
    * this form — there is no "about to run" event for them.
    * `auto_run` is NEW and additive: true when the tier was read-only.
