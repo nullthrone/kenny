@@ -506,8 +506,9 @@ async def test_an_expired_approval_denies_and_does_not_park_the_ticket(
     from ``handle_component``. So an approval nobody answers leaves the ticket
     blocked on ``approval`` for good — the requester is never told, and the
     requester cannot clear that block themselves (``_UNBLOCK_CLEARERS``
-    allows only ``system``/``operator`` to clear an ``approval`` block, by
-    design).
+    allows only ``system`` to clear an ``approval`` block, by design: the ways
+    out of a gate are answering it and its TTL, both of which settle the held
+    call).
 
     Worse than parked: the stored transcript still ends with an unanswered
     ``tool_use`` block. The next message the requester sends appends a plain user
@@ -523,8 +524,11 @@ async def test_an_expired_approval_denies_and_does_not_park_the_ticket(
     approval = await bench.ticket_store.get_open_approval(ticket_id)
     assert approval is not None
 
-    # The sweeper runs, long after the TTL.
-    await bench.tickets.sweep(bench.tickets.now() + timedelta(days=30))
+    # The sweeper runs, long after the TTL (an hour) but well inside the
+    # abandon window (14 days) -- this test is about what an expired gate does
+    # to the ticket, and a jump past that window would additionally have the
+    # abandon pass cancel the ticket out from under the assertions below.
+    await bench.tickets.sweep(bench.tickets.now() + timedelta(days=2))
     expired = await bench.ticket_store.get_approval(approval.id)
     assert expired is not None and expired.status == "expired"
     assert bench.forwarded == []
@@ -556,7 +560,9 @@ async def test_an_expired_approval_is_gone_from_the_dashboard_queue(benches) -> 
     assert approval is not None
     operator_pat = await bench.users.create_pat(bench.root["id"], "dash")
 
-    await bench.tickets.sweep(bench.tickets.now() + timedelta(days=30))
+    # Long after the gate TTL (an hour), inside the abandon window (14 days):
+    # this test is about the expired gate, not about the ticket ageing out.
+    await bench.tickets.sweep(bench.tickets.now() + timedelta(days=2))
 
     dash = Dashboard(bench, bench.service())
     try:
@@ -661,7 +667,9 @@ async def test_every_decision_route_leaves_issued_equal_to_answered(
         await service.handle_event(button(approval.id, by=ROOT, approve=True))
     else:
         bench.service(says("(the sweeper resumed this)"))
-        await bench.tickets.sweep(bench.tickets.now() + timedelta(days=30))
+        # Long after the gate TTL (an hour), inside the abandon window (14 days):
+        # this test is about the expired gate, not about the ticket ageing out.
+        await bench.tickets.sweep(bench.tickets.now() + timedelta(days=2))
 
     run = await bench.ticket_store.load_run(ticket_id)
     issued, answered = run_pairs(run)
@@ -685,7 +693,9 @@ async def test_an_alert_origin_gate_expiring_with_no_decider_degrades_cleanly(
         bench, use("t1", "winget_install", {"id": "Git.Git"})
     )
 
-    await bench.tickets.sweep(bench.tickets.now() + timedelta(days=30))
+    # Long after the gate TTL (an hour), inside the abandon window (14 days):
+    # this test is about the expired gate, not about the ticket ageing out.
+    await bench.tickets.sweep(bench.tickets.now() + timedelta(days=2))
 
     run = await bench.ticket_store.load_run(ticket_id)
     issued, answered = run_pairs(run)

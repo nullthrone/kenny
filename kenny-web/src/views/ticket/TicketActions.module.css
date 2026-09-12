@@ -30,30 +30,36 @@
   cursor: default;
 }
 
+/* The one forward move. Filled, not merely outlined: on a page where every
+   other control is a correction or an exit, the difference has to be visible
+   without reading the labels. */
 .primary {
-  border-color: var(--border-strong);
+  background: var(--brass-600);
+  border-color: var(--brass-600);
+  color: var(--surface-page);
+}
+.primary:hover:not(:disabled) {
+  filter: brightness(1.12);
 }
 
+/* Clearing a block: answering for the machine, not moving the ticket on. */
+.resume {
+  border-color: var(--amber-600);
+  color: var(--amber-600);
+}
+.resume:hover:not(:disabled) {
+  background: var(--warn-bg);
+}
+
+/* Cancelling is rare and irreversible, so it is quiet until reached for. */
 .danger {
+  border-color: transparent;
+  color: var(--text-muted);
+}
+.danger:hover:not(:disabled) {
+  background: transparent;
   border-color: var(--danger);
   color: var(--danger);
-}
-
-.reassignGroup {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  flex-wrap: wrap;
-}
-
-.select {
-  padding: 8px 10px;
-  border: 1px solid var(--border-line);
-  background: var(--surface-card);
-  font-family: var(--font-mono);
-  font-size: 12px;
-  color: var(--text-body);
-  min-height: 40px;
 }
 
 .error {

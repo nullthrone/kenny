@@ -91,7 +91,7 @@ async def _configure_connection(db: aiosqlite.Connection) -> None:
 #
 # * **Re-entrant per task.** ``ticketstore._insert_event`` writes on its
 #   caller's transaction and is called *inside* other write methods
-#   (``set_state``, ``set_agent_id``, ``append_event``). A plain
+#   (``set_state``, ``set_blocked``, ``append_event``). A plain
 #   ``asyncio.Lock`` taken at both levels self-deadlocks. Re-entrancy is keyed
 #   on ``asyncio.current_task()`` identity, not a ``ContextVar`` — a task
 #   spawned *while* the lock is held inherits the parent's context, and a

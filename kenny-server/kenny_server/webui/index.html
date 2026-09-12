@@ -2203,9 +2203,10 @@
     }
 
     async function openCreateTicketModal() {
-      // A host picker, sourced the same way openReassignModal's is: without a
-      // target here a dashboard-created ticket starts with agent_id = null and
-      // its chat composer is permanently disabled (no target machine).
+      // The host picker. This is the only place a ticket's target is ever set:
+      // without one here a dashboard-created ticket starts with agent_id = null
+      // and its chat composer is permanently disabled (no target machine), and
+      // nothing can move it afterwards.
       if (!state.fleet) state.fleet = await getJSON("/api/fleet").catch(() => ({ agents: [] }));
       const agentOpts = (state.fleet.agents || []).map(a =>
         `<option value="${esc(a.agent_id)}">${esc(a.agent_id)}</option>`).join("");
@@ -2295,8 +2296,6 @@
           <div class="k-deflist__k">category</div><div class="k-deflist__v">${categoryField}</div>
           <div class="k-deflist__k">requester</div>
           <div class="k-deflist__v">${t.requester_user_id != null ? esc(userLabel(t.requester_user_id)) : "alert (no requester)"}</div>
-          <div class="k-deflist__k">assignee</div>
-          <div class="k-deflist__v">${t.assignee_user_id != null ? esc(userLabel(t.assignee_user_id)) : '<span class="k-muted">unclaimed</span>'}</div>
           <div class="k-deflist__k">agent</div><div class="k-deflist__v k-mono">${t.agent_id ? esc(t.agent_id) : "—"}</div>
           <div class="k-deflist__k">created</div><div class="k-deflist__v">${esc(fmtValue("at", t.created_at))}</div>
           <div class="k-deflist__k">updated</div><div class="k-deflist__v">${esc(fmtValue("at", t.updated_at))}</div>
@@ -2328,14 +2327,6 @@
     function ticketActionsHtml(t) {
       const allowed = t.allowed_transitions || [];
       const btns = [];
-      if (canOperate()) {
-        btns.push(`<button class="k-btn k-btn--ghost k-btn--sm"
-          onclick="openReassignModal(${jsArg(t.id)}, ${jsArg(t.agent_id || "")})">${icon('network', 13)}Reassign host</button>`);
-        const mine = state.me && state.me.id != null && t.assignee_user_id === state.me.id;
-        const claimTarget = mine ? "null" : jsArg(state.me && state.me.id);
-        btns.push(`<button class="k-btn k-btn--ghost k-btn--sm"
-          onclick="submitAssign(${jsArg(t.id)}, ${claimTarget})">${icon('user-round', 13)}${mine ? "Unclaim" : "Claim"}</button>`);
-      }
       if (allowed.includes("resolved")) {
         btns.push(`<button class="k-btn k-btn--primary k-btn--sm"
           onclick="openResolveModal(${jsArg(t.id)}, ${jsArg(t.blocked_on || "")})">${icon('check', 13)}Resolve</button>`);
@@ -2398,6 +2389,9 @@
         body = `state: <b>${esc(e.from_state || "—")}</b> → <b>${esc(e.to_state || "—")}</b>` +
           (e.summary ? " — " + esc(e.summary) : "");
       } else if (e.kind === "handoff") {
+        // "handoff" and "assign" below are retired kinds: nothing writes either
+        // any more, but a trail is never rewritten, so rows recorded before
+        // they were retired still have to render.
         const f = e.fields || {};
         body = `reassigned <b>${esc(f.from_agent_id || "—")}</b> → <b>${esc(f.to_agent_id || "—")}</b>`;
       } else if (e.kind === "block") {
@@ -2475,31 +2469,6 @@
         <span>${body}</span>
       </div>`;
     }
-    async function openReassignModal(id, current) {
-      if (!state.fleet) state.fleet = await getJSON("/api/fleet").catch(() => ({ agents: [] }));
-      const opts = (state.fleet.agents || []).map(a =>
-        `<option value="${esc(a.agent_id)}" ${a.agent_id === current ? "selected" : ""}>${esc(a.agent_id)}</option>`).join("");
-      // No "(unassigned)" option here, deliberately: unlike ticket creation,
-      // POST /api/tickets/{tid}/reassign rejects an empty/absent agent_id with
-      // 400 ("agent_id is required") — reassign literally cannot unassign.
-      const body = `<div class="kfield"><span class="kfield__lbl">Host</span>
-          <select class="k-input" id="tk-reassign-agent">${opts}</select></div>
-        <div class="k-modal__actions">
-          <button class="k-btn k-btn--ghost" onclick="closeModal()">Cancel</button>
-          <button class="k-btn k-btn--primary" onclick="submitReassign(${jsArg(id)})">${icon('check', 14)}Reassign</button>
-        </div>`;
-      openModal(`${icon('network', 20)}<span>Reassign ticket</span>`, body);
-    }
-    async function submitReassign(id) {
-      const el = document.getElementById("tk-reassign-agent");
-      const agent_id = el && el.value ? el.value : null;
-      try {
-        await api("/api/tickets/" + encodeURIComponent(id) + "/reassign", "POST", { agent_id });
-        closeModal();
-        notify("ticket reassigned");
-        await renderTicketDetail(id);
-      } catch (e) { notify(e.message, "err"); }
-    }
     function openResolveModal(id, currentBlockedOn) {
       const gateWarning = currentBlockedOn === "approval"
         ? `<div class="k-muted" style="margin-bottom:8px">This ticket has a pending approval
@@ -2567,13 +2536,6 @@
       try {
         await api("/api/tickets/" + encodeURIComponent(id) + "/unblock", "POST", {});
         notify("unblocked");
-      } catch (e) { notify(e.message, "err"); }
-      await renderTicketDetail(id);
-    }
-    async function submitAssign(id, assignee_user_id) {
-      try {
-        await api("/api/tickets/" + encodeURIComponent(id) + "/assign", "POST", { assignee_user_id });
-        notify(assignee_user_id != null ? "claimed" : "unclaimed");
       } catch (e) { notify(e.message, "err"); }
       await renderTicketDetail(id);
     }

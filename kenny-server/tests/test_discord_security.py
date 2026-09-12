@@ -697,10 +697,14 @@ async def test_an_unassigned_ticket_cannot_read_a_foreign_host(bench: Bench) -> 
     ``id`` ``if ... and frozen``, and ``TicketPolicy.gate`` only runs the
     ``may_see`` check ``if agent_id``. With ``tickets.agent_id`` NULL both are
     skipped, so the model's ``id`` argument survives and a scoped requester reads
-    another household member's full telemetry snapshot. Reaching the NULL needs
-    one operator action (``POST /api/tickets/{id}/reassign`` with no
-    ``agent_id`` — the handler passes ``body.get("agent_id")`` straight through),
-    but no further cooperation.
+    another household member's full telemetry snapshot.
+
+    Since ADR-0062 a ticket's host cannot be moved at all, so the NULL is no
+    longer something an operator can be talked into producing — but it is still
+    reachable, because a ticket may be *created* without a host (the dashboard
+    shows those as "no host yet"). The guard therefore still has to hold, and
+    the state is reached below by writing the column directly: there is
+    deliberately no API left that does it.
     """
 
     await bench.telemetry.insert(
@@ -711,8 +715,13 @@ async def test_an_unassigned_ticket_cannot_read_a_foreign_host(bench: Bench) -> 
     ticket = await bench.the_ticket()
     thread = bench.gateway.threads[0].thread_id
 
-    # An operator unassigns the ticket (the one sanctioned way agent_id moves).
-    await bench.tickets.reassign(ticket.id, None, actor=f"operator:{bench.root['id']}")
+    # A ticket that never had a host. Written straight to the column because no
+    # route or service method can put a ticket into this state any more; the
+    # point of the test is what the policy does once it is in it.
+    await bench.ticket_store._conn.execute(
+        "UPDATE tickets SET agent_id = NULL WHERE id = ?", (ticket.id,)
+    )
+    await bench.ticket_store._conn.commit()
 
     service = bench.service(
         calls(use("t9", "agent_snapshot", {"id": NOAH_PC})),

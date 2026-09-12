@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
-import type { FleetResponse, Me } from '../api/types'
+import type { Me } from '../api/types'
 import EmptyState from '../components/EmptyState/EmptyState'
 import { ScrollText } from '../components/icons'
 import AuditTrail from './ticket/AuditTrail'
@@ -72,7 +72,6 @@ export default function InboxTicket() {
 
   const me = useQuery({ queryKey: ['me'], queryFn: () => api.get<Me>('/api/me') })
   const isOperator = me.data ? me.data.role !== 'user' : false
-  const meUserId = me.data ? Number(me.data.user_id) : NaN
 
   const directory = useQuery({
     queryKey: ['users', 'directory'],
@@ -85,8 +84,6 @@ export default function InboxTicket() {
     queryFn: () => api.get<TicketVocabulary>('/api/tickets/vocabulary'),
     staleTime: Infinity,
   })
-
-  const fleet = useQuery({ queryKey: ['fleet'], queryFn: () => api.get<FleetResponse>('/api/fleet') })
 
   const ticket = useQuery({
     queryKey: id ? ticketKey(id) : ['ticket', 'missing'],
@@ -239,8 +236,7 @@ export default function InboxTicket() {
         )}
       </div>
       <div className={styles.meta}>
-        {t.agent_id ?? 'no host yet'} · opened {formatAge(createdAgeSeconds)} ago by {requesterLabel} via {t.origin} ·{' '}
-        {t.priority} priority
+        opened {formatAge(createdAgeSeconds)} ago by {requesterLabel} via {t.origin}
       </div>
 
       <div className={styles.fields}>
@@ -259,6 +255,13 @@ export default function InboxTicket() {
           onSave={(value) => patch.mutate({ priority: value })}
         />
         <InlineEditField
+          label="HOST"
+          value={t.agent_id ?? ''}
+          displayValue={t.agent_id ?? 'no host yet'}
+          saving={false}
+          readOnly
+        />
+        <InlineEditField
           label="CATEGORY"
           value={t.category ?? ''}
           displayValue={t.category ?? 'uncategorised'}
@@ -268,13 +271,7 @@ export default function InboxTicket() {
         />
       </div>
 
-      <TicketActions
-        ticket={t}
-        isOperator={isOperator}
-        meUserId={Number.isFinite(meUserId) ? meUserId : null}
-        fleetAgents={fleet.data?.agents ?? []}
-        onMutated={refetchTicket}
-      />
+      <TicketActions ticket={t} onMutated={refetchTicket} />
 
       {alerts.data && <LinkedAlerts data={alerts.data} />}
 

@@ -431,46 +431,12 @@ def build_ticket_routes(
             _warn_if_unknown_category(category)
         updated = await tickets.update(
             ticket.id,
+            actor=_actor(principal),
             title=body.get("title"),
             summary=body.get("summary"),
             resolution=body.get("resolution"),
             priority=priority,
             category=category,
-        )
-        return JSONResponse(_affordances(tickets, updated, principal))
-
-    async def api_ticket_reassign(request: Request) -> JSONResponse:
-        principal = require_user(request)
-        body = await _body(request)
-        agent_id = str(body.get("agent_id") or "").strip()
-        if not agent_id:
-            # A ticket's frozen target is an authorization control, not a field
-            # an empty body may clear: a target-less ticket is the one shape in
-            # which a host argument has nothing to be pinned to. Unassigning is
-            # deliberate work, not the default of a missing key.
-            return _err("agent_id is required")
-        updated = await tickets.reassign(
-            request.path_params["tid"], agent_id, actor=_actor(principal)
-        )
-        return JSONResponse(_affordances(tickets, updated, principal))
-
-    async def api_ticket_assign(request: Request) -> JSONResponse:
-        """Claim (or unclaim) which operator owns working this ticket.
-
-        The dashboard's "Claim" button sends ``{"assignee_user_id":
-        <principal.user_id>}``; a ``null`` unclaims. Distinct from
-        ``reassign``, which retargets the *host* a ticket is about.
-        """
-
-        principal = require_user(request)
-        body = await _body(request)
-        has_key = "assignee_user_id" in body
-        if not has_key:
-            return _err("assignee_user_id is required (null to unclaim)")
-        raw = body.get("assignee_user_id")
-        assignee_user_id = int(raw) if raw is not None else None
-        updated = await tickets.assign(
-            request.path_params["tid"], assignee_user_id, actor=_actor(principal)
         )
         return JSONResponse(_affordances(tickets, updated, principal))
 
@@ -1288,16 +1254,6 @@ def build_ticket_routes(
         Route("/api/tickets/{tid}", g(api_ticket_get, min_role="user")),
         Route(
             "/api/tickets/{tid}", g(api_ticket_patch, min_role="user"), methods=["PATCH"]
-        ),
-        Route(
-            "/api/tickets/{tid}/reassign",
-            g(api_ticket_reassign, min_role="operator"),
-            methods=["POST"],
-        ),
-        Route(
-            "/api/tickets/{tid}/assign",
-            g(api_ticket_assign, min_role="operator"),
-            methods=["POST"],
         ),
         Route("/api/tickets/{tid}/events", g(api_ticket_events, min_role="user")),
         Route("/api/tickets/{tid}/timeline", g(api_ticket_timeline, min_role="user")),

@@ -361,8 +361,8 @@ from a cold load, not just from clicking through the queue. It shows:
 
 - The **metadata** block — number, origin (`discord` / `dashboard` / `alert`), priority
   and category (editable dropdowns, sourced from `GET /api/tickets/vocabulary`),
-  requester, assignee (both shown by username, not a bare id), target PC, and the
-  created/updated timestamps.
+  requester (shown by username, not a bare id), target PC — fixed when the ticket is
+  opened — and the created/updated timestamps.
 - Kenny's running **summary**, and the **resolution** once one is set.
 - For a ticket an alert opened: **what fired and whether it still holds**. *Current state*
   is the live verdict of the sections the ticket is about — re-evaluated from the newest
@@ -463,29 +463,27 @@ from a cold load, not just from clicking through the queue. It shows:
   configured on this server."*, *"This ticket has no target machine."*, or, while a gate is
   open, *"Waiting on the decision on this ticket…"*
 - Every action button below is rendered from the ticket's own `allowed_transitions`/
-  `allowed_blocks`/`can_unblock` — an option only ever appears if the API would actually
-  accept it for the account looking at it.
-- **Reassign host** (operator+) — point the ticket at a different PC; the only path that
-  ever changes a ticket's target.
-- **Claim** / **Unclaim** (operator+) — set or clear yourself as the operator working the
-  ticket, independent of its state.
-- **Resolve** — mark the ticket done, from `new` or `in_progress` (including one blocked
-  on approval; resolving denies the pending request rather than leaving it open). An
-  optional reason and an "also close now" checkbox chains straight into `closed`.
-- **Reopen** (operator+) — while still `resolved`, move it back to `in_progress`.
-- **Close ticket** — once `resolved`, close it outright rather than waiting for the
-  auto-close window.
-- **Cancel** — withdraw the ticket. Available to the ticket's own requester as well as an
+  `can_unblock` — an option only ever appears if the API would actually accept it for the
+  account looking at it. There are at most three, and usually two: the one move that
+  carries the ticket onward, whatever its current situation asks of a person, and the exit.
+- **Mark resolved** / **Start work** / **Close now** — the forward move, whichever it is
+  from where the ticket stands. Resolving works from `new` or `in_progress`; it denies a
+  pending approval rather than leaving it open. Closing is available once `resolved`, for
+  when you would rather not wait out the auto-close window.
+- **Reopen** — while still `resolved`, move it back to `in_progress`.
+- **Cancel ticket** — withdraw it. Available to the ticket's own requester as well as an
   operator+, from `new` or `in_progress`.
-- **Wait on …** — park the ticket on whatever it is waiting for (`user`, `operator`, or
-  `approval`), which is what moves it into the Inbox's **WAITING** group. One button per
-  reason the ticket's `allowed_blocks` names for the account looking at it.
-- **Unblock** — clear whatever the ticket is currently blocked on. The requester sees this
-  for their own `user` block; an operator sees it for any block.
+- **Got an answer** / **Pick this up** — clear the block kenny put the ticket under, when
+  the answer reached you some other way or you are taking over an escalated ticket. A
+  ticket waiting on an *approval* has no such button: that wait ends with the decision,
+  made in the drawer beside the frozen call, or with the gate's own timeout.
 
-Resolving, cancelling or closing a ticket here — and the auto-close sweeper doing the
-same — also posts a short message into the ticket's Discord thread (if it has one) and
-archives it at a terminal state.
+Nothing here sets a block, claims a ticket or moves it to another PC — see
+[the ticket lifecycle](itsm.md#the-lifecycle-in-plain-language) for why.
+
+Resolving, cancelling or closing a ticket here — and the sweeper doing the same, whether
+auto-closing a resolved ticket or dropping one nobody worked — also posts a short message
+into the ticket's Discord thread (if it has one) and archives it at a terminal state.
 
 The **New ticket** modal (opened from [Inbox](#inbox)) includes a host picker, so a ticket
 opened from the dashboard can start with a real target machine — without one, the

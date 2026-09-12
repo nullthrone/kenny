@@ -157,7 +157,10 @@ connected, install the optional dependency first: `pip install -e ".[discord]"`.
 | `KENNY_DISCORD_WEBHOOK_URL` | — | Discord incoming-webhook URL for the alert push channel — independent of the bot. Also editable in Admin → Alerting & Digest; see [Alerting & digests](alerting.md#notification-channels). |
 | `KENNY_TICKET_APPROVAL_TTL_SECS` | `86400` | How long a held approval/consent waits for a decision before the sweeper expires it (an expiry counts as a denial); `0` never expires. |
 | `KENNY_TICKET_AUTOCLOSE_SECS` | `172800` | Reopen window: a `resolved` ticket untouched this long is auto-closed; `0` disables. |
-| `KENNY_TICKET_SWEEP_INTERVAL_SECS` | `300` | Ticket housekeeping loop interval (expires gates, auto-closes); `0` disables (restart to re-enable). Re-read live. |
+| `KENNY_TICKET_STALL_NUDGE_SECS` | `172800` | A ticket blocked on a reply (from the requester or an operator) this long gets one reminder; `0` disables reminders. |
+| `KENNY_TICKET_STALL_GIVEUP_SECS` | `604800` | A ticket still waiting on the requester after this long is re-blocked on an operator instead; `0` disables escalation. |
+| `KENNY_TICKET_ABANDON_SECS` | `1209600` | A `new`/`in_progress` ticket neither an operator nor its requester has touched this long is cancelled, recorded as dropped rather than withdrawn. Machine activity does not count; a ticket on an approval gate is never dropped this way. `0` disables. See [Tickets → the lifecycle](itsm.md#the-lifecycle-in-plain-language). |
+| `KENNY_TICKET_SWEEP_INTERVAL_SECS` | `300` | Ticket housekeeping loop interval (expires gates, nudges and escalates stalls, auto-closes, drops untouched tickets); `0` disables (restart to re-enable). Re-read live. |
 | `KENNY_TICKET_SWEEP_INITIAL_DELAY` | `30` | Delay before the first sweep after startup. |
 | `KENNY_TICKET_RETENTION_DAYS` | `30` | How long a **closed** ticket keeps its raw working transcript. The ticket, its summary and its audit trail are never pruned. |
 | `KENNY_TRIAGE_ENABLED` | `1` | On a new ticket, run one read-only investigation on its PC and write the finding into the ticket before anyone is asked to look. Needs `ANTHROPIC_API_KEY`; without one it stays off whatever this says. See [Tickets → kenny looks first](itsm.md#kenny-looks-first-before-you-are-asked-to). |

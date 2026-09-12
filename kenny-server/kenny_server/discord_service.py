@@ -81,7 +81,7 @@ from .ticket_assistant import (
     envelope,
     redacted_payloads,
 )
-from .ticketstore import Ticket, TicketApproval, TicketChannel
+from .ticketstore import ABANDONED_BY, Ticket, TicketApproval, TicketChannel
 from .tickets import TicketError, TicketService, redact_args
 from .toolloop import ToolExecutor
 from .userstore import UserStore
@@ -755,11 +755,19 @@ class DiscordService:
             target = channel.thread_id or channel.channel_id
             if not target:
                 return
-            message = {
-                "resolved": f"KEN-{ticket.number:06d} was marked resolved.",
-                "closed": f"KEN-{ticket.number:06d} is closed.",
-                "cancelled": f"KEN-{ticket.number:06d} was cancelled.",
-            }[to_state]
+            if to_state == "cancelled" and ticket.resolved_by == ABANDONED_BY:
+                # Say why, because this is the one terminal state nobody chose:
+                # "was cancelled" would read as a decision somebody made.
+                message = (
+                    f"KEN-{ticket.number:06d} was closed because nobody came back to it. "
+                    "Open a new ticket if you still need this."
+                )
+            else:
+                message = {
+                    "resolved": f"KEN-{ticket.number:06d} was marked resolved.",
+                    "closed": f"KEN-{ticket.number:06d} is closed.",
+                    "cancelled": f"KEN-{ticket.number:06d} was cancelled.",
+                }[to_state]
             for chunk in chunk_message(message):
                 await self.gateway.post_message(channel_id=target, content=chunk)
             if to_state in ("closed", "cancelled"):

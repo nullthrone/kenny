@@ -379,6 +379,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         autoclose_secs=int(settings.get("KENNY_TICKET_AUTOCLOSE_SECS")),
         stall_nudge_secs=int(settings.get("KENNY_TICKET_STALL_NUDGE_SECS")),
         stall_giveup_secs=int(settings.get("KENNY_TICKET_STALL_GIVEUP_SECS")),
+        abandon_secs=int(settings.get("KENNY_TICKET_ABANDON_SECS")),
     )
     discord_identities = DiscordIdentityStore(db_path)
 
@@ -627,6 +628,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         ticket_service.autoclose_secs = int(settings.get("KENNY_TICKET_AUTOCLOSE_SECS"))
         ticket_service.stall_nudge_secs = int(settings.get("KENNY_TICKET_STALL_NUDGE_SECS"))
         ticket_service.stall_giveup_secs = int(settings.get("KENNY_TICKET_STALL_GIVEUP_SECS"))
+        ticket_service.abandon_secs = int(settings.get("KENNY_TICKET_ABANDON_SECS"))
         ticket_store.run_retention_days = int(settings.get("KENNY_TICKET_RETENTION_DAYS"))
         # Same reasoning for telemetry retention (ADR-0051): re-read before the
         # boot-time prune below, so a dashboard override applies from this

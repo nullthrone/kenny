@@ -13,26 +13,20 @@ const { default: TicketActions } = await import('./TicketActions')
 function ticket(over: Partial<Ticket> = {}): Ticket {
   return {
     id: 'tkt_1',
+    state: 'in_progress',
+    blocked_on: '',
     allowed_transitions: [],
-    allowed_blocks: [],
     can_unblock: false,
-    assignee_user_id: null,
     agent_id: 'oma-pc',
     ...over,
   } as Ticket
 }
 
-function renderActions(over: Partial<Ticket> = {}, isOperator = true) {
+function renderActions(over: Partial<Ticket> = {}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={queryClient}>
-      <TicketActions
-        ticket={ticket(over)}
-        isOperator={isOperator}
-        meUserId={7}
-        fleetAgents={[]}
-        onMutated={vi.fn()}
-      />
+      <TicketActions ticket={ticket(over)} onMutated={vi.fn()} />
     </QueryClientProvider>,
   )
 }
@@ -43,63 +37,94 @@ beforeEach(() => {
 })
 
 /**
- * Blocking is what puts a ticket into the Inbox's WAITING group. Through 2.2.0
- * the console could unblock but never block: `allowed_blocks` arrived on every
- * ticket payload, was declared on the `Ticket` type, and was never rendered — so
- * WAITING had no entrance from the dashboard at all.
- *
- * As with transitions, the server decides. `_affordances` computes
- * `allowed_blocks` per principal, so a button appearing here means the API would
- * accept it from the account looking at it; nothing below infers it from `state`.
+ * The server decides what may render: `_affordances` computes
+ * `allowed_transitions`/`can_unblock` per principal, so a button appearing here
+ * means the API would accept it from the account looking at it. Nothing in the
+ * component infers legality from `state` — `state` only chooses *which* of the
+ * licensed moves is the forward one, and what to call it.
  */
-describe('TicketActions — blocking', () => {
-  it('renders one button per reason the server allows', async () => {
-    renderActions({ allowed_blocks: ['user', 'operator'] })
-
-    expect(screen.getByText('WAIT ON REQUESTER')).toBeInTheDocument()
-    expect(screen.getByText('WAIT ON OPERATOR')).toBeInTheDocument()
-  })
-
-  it('posts the reason the button stands for', async () => {
-    renderActions({ allowed_blocks: ['user'] })
-
-    fireEvent.click(screen.getByText('WAIT ON REQUESTER'))
-
-    await waitFor(() =>
-      expect(apiPostMock).toHaveBeenCalledWith('/api/tickets/tkt_1/block', { blocked_on: 'user' }),
-    )
-  })
-
-  it('renders no block button when the server allows none', () => {
-    renderActions({ allowed_blocks: [], allowed_transitions: ['resolved'] })
-
-    expect(screen.queryByText(/^WAIT ON/)).not.toBeInTheDocument()
+describe('TicketActions — one forward move', () => {
+  it('promotes the move that carries the ticket onward, and names it for the state it leaves', () => {
+    renderActions({ state: 'in_progress', allowed_transitions: ['resolved', 'cancelled'] })
     expect(screen.getByText('MARK RESOLVED')).toBeInTheDocument()
   })
 
-  it('names an unknown reason rather than hiding it — the server owns the vocabulary', () => {
-    renderActions({ allowed_blocks: ['third_party'] })
-
-    expect(screen.getByText('WAIT ON THIRD PARTY')).toBeInTheDocument()
+  it('calls a resolved ticket’s return to work REOPEN, not START WORK', () => {
+    // Same destination as `new -> in_progress`, opposite meaning. Keying the
+    // label on the destination alone is what had this button reading "START
+    // WORK" on a ticket that had already been resolved once.
+    renderActions({ state: 'resolved', allowed_transitions: ['closed', 'in_progress'] })
+    expect(screen.getByText('CLOSE NOW')).toBeInTheDocument()
+    expect(screen.getByText('REOPEN')).toBeInTheDocument()
+    expect(screen.queryByText('START WORK')).not.toBeInTheDocument()
   })
 
-  it('still renders for a scoped user whose only affordance is a block', () => {
-    renderActions({ allowed_blocks: ['user'] }, false)
+  it('posts the transition the button stands for', async () => {
+    renderActions({ state: 'new', allowed_transitions: ['in_progress'] })
 
-    expect(screen.getByText('WAIT ON REQUESTER')).toBeInTheDocument()
-    // Operator-only controls stay hidden.
-    expect(screen.queryByText('CLAIM')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByText('START WORK'))
+
+    await waitFor(() =>
+      expect(apiPostMock).toHaveBeenCalledWith('/api/tickets/tkt_1/transition', {
+        to: 'in_progress',
+        reason: '',
+      }),
+    )
+  })
+
+  it('closes through its own route, because closing settles the record', async () => {
+    renderActions({ state: 'resolved', allowed_transitions: ['closed'] })
+
+    fireEvent.click(screen.getByText('CLOSE NOW'))
+
+    await waitFor(() => expect(apiPostMock).toHaveBeenCalledWith('/api/tickets/tkt_1/close', {}))
+  })
+
+  it('renders nothing at all when the server licenses nothing', () => {
+    const { container } = renderActions({ state: 'closed', allowed_transitions: [] })
+    expect(container).toBeEmptyDOMElement()
   })
 })
 
-describe('TicketActions — unblocking', () => {
-  it('offers UNBLOCK only when the server says this principal may', () => {
-    renderActions({ can_unblock: true })
-    expect(screen.getByText('UNBLOCK')).toBeInTheDocument()
+describe('TicketActions — clearing a block', () => {
+  it('says what the click asserts, per reason', () => {
+    renderActions({ blocked_on: 'user', can_unblock: true })
+    expect(screen.getByText('GOT AN ANSWER')).toBeInTheDocument()
   })
 
-  it('hides UNBLOCK otherwise', () => {
-    renderActions({ can_unblock: false, allowed_transitions: ['resolved'] })
-    expect(screen.queryByText('UNBLOCK')).not.toBeInTheDocument()
+  it('offers to pick up an escalated ticket', () => {
+    renderActions({ blocked_on: 'operator', can_unblock: true })
+    expect(screen.getByText('PICK THIS UP')).toBeInTheDocument()
+  })
+
+  it('offers nothing when the server says this principal may not', () => {
+    // Including a ticket on a live gate: `_UNBLOCK_CLEARERS["approval"]` is
+    // `{"system"}`, so `can_unblock` is false and the way out is the decision
+    // itself, made in the drawer beside the frozen call.
+    renderActions({ blocked_on: 'approval', can_unblock: false, allowed_transitions: ['resolved'] })
+    expect(screen.queryByText('GOT AN ANSWER')).not.toBeInTheDocument()
+    expect(screen.queryByText('PICK THIS UP')).not.toBeInTheDocument()
+  })
+})
+
+describe('TicketActions — what this surface no longer offers', () => {
+  it('never lets a person declare a ticket to be waiting on something', () => {
+    // Blocks are written where the wait begins, carrying the ref that
+    // identifies it. Set by hand they produced a wait with no referent — an
+    // `approval` block with no approval behind it, which no clock could clear.
+    renderActions({ allowed_transitions: ['resolved', 'cancelled'] })
+    expect(screen.queryByText(/WAIT ON/)).not.toBeInTheDocument()
+  })
+
+  it('offers no claim and no host change', () => {
+    renderActions({ allowed_transitions: ['resolved', 'cancelled'] })
+    expect(screen.queryByText(/CLAIM/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/REASSIGN/i)).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Reassign to host')).not.toBeInTheDocument()
+  })
+
+  it('keeps the whole surface to the forward move and one quiet exit', () => {
+    renderActions({ state: 'in_progress', allowed_transitions: ['resolved', 'cancelled'] })
+    expect(screen.getAllByRole('button')).toHaveLength(2)
   })
 })

@@ -11,6 +11,7 @@ import pytest
 
 from kenny_server.ticketstore import TicketStore, to_iso
 from kenny_server.tickets import (
+    ABANDONED_BY,
     _ACTORS,
     _ALLOWED,
     _BLOCK_SETTERS,
@@ -609,13 +610,18 @@ async def test_can_block_and_can_unblock_mirror_block_and_unblock(
     service: TicketService,
 ) -> None:
     ticket = await _ticket_in(service, "in_progress")
-    assert service.can_block(ticket, "user", "operator:3") is True
+    assert service.can_block(ticket, "user", "system") is True
+    assert service.can_block(ticket, "user", "operator:3") is False
     assert service.can_block(ticket, "user", f"user:{REQUESTER_ID}") is False
     assert service.can_unblock(ticket, "operator:3") is False  # nothing to unblock yet
 
     blocked = await service.block(ticket.id, "user", actor="system")
     assert service.can_unblock(blocked, f"user:{REQUESTER_ID}") is True
     assert service.can_unblock(blocked, "operator:3") is True
+
+    gated = await service.block(ticket.id, "approval", actor="system", ref="apr_1")
+    assert service.can_unblock(gated, "operator:3") is False
+    assert service.can_unblock(gated, "system") is True
 
 
 async def test_leaving_in_progress_clears_the_block(service: TicketService) -> None:
@@ -625,29 +631,6 @@ async def test_leaving_in_progress_clears_the_block(service: TicketService) -> N
     assert resolved.blocked_since is None
     assert resolved.blocked_ref == ""
     assert resolved.blocked_nudged_at is None
-
-
-# -- assignment (claiming a ticket) ----------------------------------------------
-
-
-async def test_only_an_operator_may_assign(service: TicketService) -> None:
-    ticket = await _new_ticket(service)
-    for actor in ("system", f"user:{REQUESTER_ID}", "bot:1"):
-        with pytest.raises(TransitionError) as exc:
-            await service.assign(ticket.id, 3, actor=actor)
-        assert exc.value.code == "forbidden_actor"
-    assert (await service.get(ticket.id)).assignee_user_id is None
-
-    claimed = await service.assign(ticket.id, 3, actor="operator:3")
-    assert claimed.assignee_user_id == 3
-    (event,) = [e for e in await service.events(ticket.id) if e.kind == "assign"]
-    assert event.actor == "operator:3"
-    assert event.fields == {"from_assignee_user_id": None, "to_assignee_user_id": 3}
-
-    unclaimed = await service.assign(ticket.id, None, actor="operator:3")
-    assert unclaimed.assignee_user_id is None
-    # Assignment is orthogonal to state.
-    assert unclaimed.state == "new"
 
 
 # -- the frozen routing target -------------------------------------------------
@@ -667,22 +650,20 @@ def test_transition_has_no_agent_id_parameter() -> None:
     assert set(params) == {"self", "ticket_id", "to_state", "actor", "reason", "resolved_by"}
 
 
-async def test_only_an_operator_may_reassign(service: TicketService) -> None:
-    ticket = await _new_ticket(service)
-    for actor in ("system", f"user:{REQUESTER_ID}", "bot:1"):
-        with pytest.raises(TransitionError) as exc:
-            await service.reassign(ticket.id, "pc-other", actor=actor)
-        assert exc.value.code == "forbidden_actor"
-        assert exc.value.status_code == 403
-    assert (await service.get(ticket.id)).agent_id == "pc-lena"
+def test_a_tickets_host_and_owner_cannot_be_changed_at_all() -> None:
+    """No caller anywhere may retarget a ticket or hand it to someone.
 
-    moved = await service.reassign(ticket.id, "pc-other", actor="superuser:1")
-    assert moved.agent_id == "pc-other"
-    (handoff,) = [e for e in await service.events(ticket.id) if e.kind == "handoff"]
-    assert handoff.actor == "superuser:1"
-    assert handoff.fields == {"from_agent_id": "pc-lena", "to_agent_id": "pc-other"}
-    # The state is untouched by a handoff.
-    assert (await service.get(ticket.id)).state == "new"
+    A ticket is about one machine, decided when it is opened, and this
+    installation has no handover of responsibility to model -- the trail
+    already records who did what, when. Asserting the *methods are absent*
+    rather than that they refuse is the point: a method that refuses invites a
+    caller to go looking for the actor that gets past it.
+    """
+
+    assert not hasattr(TicketService, "reassign")
+    assert not hasattr(TicketService, "assign")
+    assert not hasattr(TicketStore, "set_agent_id")
+    assert not hasattr(TicketStore, "set_assignee")
 
 
 # -- the audit trail -----------------------------------------------------------
@@ -998,6 +979,196 @@ async def test_nudge_stalled_escalates_an_unanswered_user_block(tmp_path) -> Non
         await store.close()
 
 
+# -- giving up on a ticket nobody works ----------------------------------------
+
+
+async def test_abandon_stale_cancels_a_ticket_no_person_touched(tmp_path) -> None:
+    store = TicketStore(str(tmp_path / "tickets.sqlite"))
+    await store.connect()
+    clock = Clock()
+    svc = TicketService(store, now=clock, abandon_secs=7200)
+    try:
+        ticket = await _ticket_in(svc, "in_progress")
+        clock.advance(7199)
+        assert await svc.abandon_stale() == []
+
+        clock.advance(2)
+        (dropped,) = await svc.abandon_stale()
+        assert dropped.id == ticket.id
+        assert dropped.state == "cancelled"
+        # The record says *why* it ended, because nobody decided it did.
+        assert dropped.resolved_by == ABANDONED_BY
+
+        (event,) = [e for e in await svc.events(ticket.id) if e.kind == "state"][-1:]
+        assert event.actor == "system"
+        assert event.to_state == "cancelled"
+
+        # Terminal: a second pass finds nothing left.
+        clock.advance(100000)
+        assert await svc.abandon_stale() == []
+    finally:
+        await store.close()
+
+
+async def test_abandon_stale_counts_people_not_writes(tmp_path) -> None:
+    """REGRESSION GUARD — the clock is ``last_human_at``, never ``updated_at``.
+
+    ``updated_at`` is wrong in both directions for this question, and this test
+    pins both. A note by an operator does not bump ``updated_at`` at all (it
+    goes through ``_insert_event``, which never touches the tickets row), so a
+    ticket somebody is actively annotating looks untouched by that column --
+    and would be cancelled out from under them. Meanwhile every machine write
+    *does* bump it, including this module's own escalation pass, so a ticket
+    nobody has looked at for months looks freshly handled.
+
+    If someone ever swaps the query back to ``updated_before``, the first half
+    of this test fails and the second half passes; today it is the other way
+    round. That is the whole point of asserting both.
+    """
+
+    store = TicketStore(str(tmp_path / "tickets.sqlite"))
+    await store.connect()
+    clock = Clock()
+    svc = TicketService(store, now=clock, abandon_secs=7200)
+    try:
+        worked = await _ticket_in(svc, "in_progress")
+        ignored = await _ticket_in(svc, "in_progress")
+
+        clock.advance(7000)
+        # A person looks at one of them and writes down what they found.
+        await svc.append_event(
+            worked.id, kind="note", actor="operator:3", summary="checked the driver"
+        )
+        # A machine churns on the other one.
+        await svc.append_event(
+            ignored.id, kind="message", actor="assistant", summary="still looking"
+        )
+        await svc.block(ignored.id, "operator", actor="system")
+
+        clock.advance(7000)
+        dropped = await svc.abandon_stale()
+        assert [t.id for t in dropped] == [ignored.id]
+
+        reloaded = await svc.get(worked.id)
+        assert reloaded.state == "in_progress"
+        # ... and the column the naive version would have used says the
+        # opposite of the truth for both tickets.
+        assert reloaded.updated_at < (await svc.get(ignored.id)).updated_at
+    finally:
+        await store.close()
+
+
+async def test_abandon_stale_never_drops_a_ticket_waiting_on_a_gate(tmp_path) -> None:
+    """A live approval is settled by a decision or its TTL, never by ageing.
+
+    Ending the ticket here would deny the held call as a side effect of a
+    lifecycle move -- exactly what the hand-authored guard in
+    ``_check_transition`` refuses for ``system``. Excluding the state from the
+    query says it once, rather than relying on an exception being raised.
+    """
+
+    store = TicketStore(str(tmp_path / "tickets.sqlite"))
+    await store.connect()
+    clock = Clock()
+    svc = TicketService(store, now=clock, abandon_secs=7200)
+    try:
+        gated = await _ticket_in(svc, "in_progress", blocked_on="approval")
+        clock.advance(100000)
+        assert await svc.abandon_stale() == []
+        assert (await svc.get(gated.id)).state == "in_progress"
+    finally:
+        await store.close()
+
+
+async def test_a_freshly_escalated_ticket_survives_the_same_sweep(tmp_path) -> None:
+    """Ordering seam: ``nudge_stalled`` runs before ``abandon_stale``.
+
+    The escalation pass hands a stalled ticket to a human. Dropping it in the
+    same pass would mean the handover never had a moment to be acted on -- and
+    with the windows configured the other way round it is exactly what would
+    happen, since both passes read the ticket fresh from the store.
+    """
+
+    store = TicketStore(str(tmp_path / "tickets.sqlite"))
+    await store.connect()
+    clock = Clock()
+    svc = TicketService(
+        store, now=clock, stall_nudge_secs=0, stall_giveup_secs=3600, abandon_secs=7200
+    )
+    try:
+        ticket = await _ticket_in(svc, "in_progress", blocked_on="user")
+        clock.advance(100000)
+        await svc.sweep()
+        reloaded = await svc.get(ticket.id)
+        assert reloaded.state == "cancelled"
+        assert reloaded.resolved_by == ABANDONED_BY
+
+        # And with the abandon pass disabled, the escalation still stands on
+        # its own -- the two are independent rungs, not one compound rule.
+        other = await _ticket_in(svc, "in_progress", blocked_on="user")
+        clock.advance(100000)
+        await svc.sweep(abandon_secs=0)
+        assert (await svc.get(other.id)).blocked_on == "operator"
+    finally:
+        await store.close()
+
+
+async def test_abandon_stale_is_disabled_by_a_zero_window(tmp_path) -> None:
+    store = TicketStore(str(tmp_path / "tickets.sqlite"))
+    await store.connect()
+    clock = Clock()
+    svc = TicketService(store, now=clock, abandon_secs=0)
+    try:
+        ticket = await _ticket_in(svc, "in_progress")
+        clock.advance(10_000_000)
+        assert await svc.abandon_stale() == []
+        assert (await svc.get(ticket.id)).state == "in_progress"
+    finally:
+        await store.close()
+
+
+async def test_a_patch_leaves_a_trail_row_naming_who_edited_what(tmp_path) -> None:
+    """Editing a ticket's fields is auditable, and counts as human activity.
+
+    Before this, ``PATCH /api/tickets/{id}`` wrote nothing to the trail at all:
+    a title or priority could be rewritten with no record of by whom. The same
+    row is what moves ``last_human_at``, so the audit gap and the activity
+    clock are closed by one write.
+    """
+
+    store = TicketStore(str(tmp_path / "tickets.sqlite"))
+    await store.connect()
+    clock = Clock()
+    service = TicketService(store, now=clock)
+    try:
+        ticket = await _ticket_in(service, "in_progress")
+        before = (await service.get(ticket.id)).last_human_at
+        clock.advance(3600)
+
+        await service.update(ticket.id, actor="operator:3", title="Printer still offline")
+
+        (event,) = [e for e in await service.events(ticket.id) if e.kind == "patch"]
+        assert event.actor == "operator:3"
+        assert event.fields == {"changed": ["title"]}
+        assert (await service.get(ticket.id)).last_human_at > before
+    finally:
+        await store.close()
+
+
+async def test_only_a_person_moves_the_activity_clock(service: TicketService) -> None:
+    ticket = await _ticket_in(service, "in_progress")
+    at_creation = (await service.get(ticket.id)).last_human_at
+    assert at_creation, "the clock starts when the ticket does, never empty"
+
+    for actor in ("system", "assistant", "triage"):
+        await service.append_event(ticket.id, kind="message", actor=actor, summary="x")
+        assert (await service.get(ticket.id)).last_human_at == at_creation
+
+    for actor in ("operator:3", f"user:{REQUESTER_ID}", "operator"):
+        await service.append_event(ticket.id, kind="note", actor=actor, summary="x")
+        assert (await service.get(ticket.id)).last_human_at >= at_creation
+
+
 async def test_nudge_stalled_never_touches_an_approval_block(tmp_path) -> None:
     """``approval`` has its own clock (the gate TTL) — the stall sweep must
     leave it alone entirely, or a ticket could be nudged/escalated twice by
@@ -1101,14 +1272,18 @@ async def test_update_patches_fields_without_touching_state(
 ) -> None:
     ticket = await _ticket_in(service, "in_progress")
     patched = await service.update(
-        ticket.id, summary="spooler stuck", resolution="restarted", priority="high"
+        ticket.id,
+        actor="operator:3",
+        summary="spooler stuck",
+        resolution="restarted",
+        priority="high",
     )
     assert patched.summary == "spooler stuck"
     assert patched.resolution == "restarted"
     assert patched.priority == "high"
     assert patched.state == "in_progress"
     with pytest.raises(TicketNotFoundError):
-        await service.update("nope", summary="x")
+        await service.update("nope", actor="operator:3", summary="x")
 
 
 # -- the triage trigger --------------------------------------------------------

@@ -9,13 +9,37 @@ export interface InlineEditFieldProps {
   /** A closed vocabulary (from `GET /api/tickets/vocabulary`) renders a `<select>`; omit for free text (title). */
   options?: string[]
   saving: boolean
-  onSave: (value: string) => void
+  /**
+   * A field that is shown here but not settable here — the host a ticket is
+   * about, fixed when it is opened. Rendered as a row rather than left out, so
+   * the reader sees the value where they look for the ticket's attributes
+   * instead of having to infer it; the EDIT affordance is simply absent.
+   */
+  readOnly?: boolean
+  onSave?: (value: string) => void
 }
 
 /** One `PATCH /api/tickets/{id}` field — label, current value, an EDIT toggle. */
-export default function InlineEditField({ label, value, displayValue, options, saving, onSave }: InlineEditFieldProps) {
+export default function InlineEditField({
+  label,
+  value,
+  displayValue,
+  options,
+  saving,
+  readOnly = false,
+  onSave,
+}: InlineEditFieldProps) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(value)
+
+  if (readOnly) {
+    return (
+      <div className={styles.row}>
+        <span className={styles.label}>{label}</span>
+        <span className={styles.value}>{displayValue ?? value}</span>
+      </div>
+    )
+  }
 
   if (!editing) {
     return (
@@ -37,7 +61,7 @@ export default function InlineEditField({ label, value, displayValue, options, s
   }
 
   function commit() {
-    onSave(draft)
+    onSave?.(draft)
     setEditing(false)
   }
 

@@ -38,7 +38,7 @@ of **Discord identities** plus one pending link claim (``DiscordIdentityStore``,
 still no gateway) so the Settings Discord panel has real rows instead of the
 "nothing linked yet" empty state.
 
-A handful of ``UserStore`` accounts back the requester/assignee/decided-by ids
+A handful of ``UserStore`` accounts back the requester/decided-by ids
 the tickets and identities above reference (``_seed_users``) — without them,
 every id shown in a screenshot would fall back to its bare ``#id`` form
 (``GET /api/users/directory`` returning nothing to resolve against), which
@@ -122,7 +122,7 @@ async def _seed_users(user_store: Any) -> tuple[dict[str, int], str]:
 
     Real rows (not just numbers) matter here: ``GET /api/users/directory`` — the
     dashboard's id -> username resolver — has nothing to resolve against
-    otherwise, and every requester/assignee/actor in the captured screenshots
+    otherwise, and every requester/actor in the captured screenshots
     would show its bare ``#id`` fallback instead of demonstrating the feature.
     IDs are whatever ``UserStore`` assigns (autoincrement from an empty demo
     DB); callers thread the returned dict through rather than assuming 1/2/3.
@@ -448,6 +448,9 @@ async def _seed_tickets(tickets: Any, base: datetime, user_ids: dict[str, int]) 
         await tickets.transition(flush.id, "resolved", actor="system", reason="issue fixed")
         await tickets.update(
             flush.id,
+            # The assistant wrote this resolution, so the patch row says so --
+            # and a machine actor deliberately does not move last_human_at.
+            actor=ASSISTANT_ACTOR,
             resolution="Updated the Wi-Fi driver; grandpa-pc now holds a stable connection.",
         )
 
