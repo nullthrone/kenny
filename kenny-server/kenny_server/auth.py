@@ -24,7 +24,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass, field
-from http.cookies import SimpleCookie
+from http.cookies import CookieError, SimpleCookie
 from typing import TYPE_CHECKING
 
 from starlette.requests import Request
@@ -189,7 +189,14 @@ def _cookie_token(scope: dict, cookie_name: str) -> str | None:
     for key, value in scope.get("headers", []):
         if key == b"cookie":
             jar: SimpleCookie = SimpleCookie()
-            jar.load(value.decode("latin-1"))
+            try:
+                jar.load(value.decode("latin-1"))
+            except CookieError:
+                # A malformed `Cookie` header (e.g. a bare "=") is attacker/
+                # client controlled and arrives on every request before
+                # `_is_public` is even checked -- treat it the same as "no
+                # cookie" rather than let it 500 the request.
+                continue
             morsel = jar.get(cookie_name)
             if morsel is not None:
                 return morsel.value
