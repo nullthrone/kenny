@@ -33,6 +33,7 @@ import type {
   ConversationSummary,
   TicketChatRequest,
   TicketChatTarget,
+  TicketDecisionRequest,
 } from './types'
 import { makeInitialState } from './types'
 
@@ -98,6 +99,10 @@ class ChatStore {
   openForTicket = (ticket: TicketChatTarget): void => {
     const s = this.state
     if (s.ticket?.id === ticket.id) {
+      // Rebinding the same ticket only refreshes what the drawer knows —
+      // including whether a gate is open, which is why a decision made from
+      // Discord or by another operator quietly takes the card away here, and
+      // why one made here stops offering itself the moment the server agrees.
       this.update((st) => ({ ...st, agentId: ticket.agentId, ticket }))
       return
     }
@@ -113,7 +118,9 @@ class ChatStore {
    */
   sendMessage = async (message: string, mirrorToDiscord = false): Promise<void> => {
     const s = this.state
-    if (s.streaming || s.pendingGate) return // never overlap turns
+    // Never overlap turns — and a ticket's durable gate counts, whoever raised
+    // it: kenny is waiting on that answer before it can do anything else.
+    if (s.streaming || s.pendingGate || s.ticket?.gate) return
     this.update((st) => startUserTurn(st, message))
 
     const controller = new AbortController()
@@ -145,18 +152,56 @@ class ChatStore {
     await this.runStream('/api/chat/stream', body, controller)
   }
 
+  /**
+   * Decide the open gate — the copilot's transient one, or the ticket's durable
+   * one — and stream what the decision releases straight back into this
+   * transcript.
+   *
+   * A ticket's gate is still durable, still the ticket's, and may still be
+   * decided by a different operator or from Discord (ADR-0046, ADR-0050);
+   * what changed is where *this* operator answers it. Deciding it here is not
+   * deciding without evidence — the frozen call and its arguments are on the
+   * card being clicked — and it is the only way the conversation that raised
+   * the gate can carry on without a reload: the server ends the turn's stream
+   * at `pending`, so the continuation belongs to whichever request resolves it.
+   */
   resolveGate = async (approve: boolean): Promise<void> => {
-    const gate = this.state.pendingGate
-    if (!gate || this.state.deciding) return
-    // A ticket's gate is durable and belongs to the ticket: it is decided on
-    // the ticket page beside the frozen call, it survives a reload, and it may
-    // legitimately wait for a different operator (ADR-0046, ADR-0050). There
-    // is no confirm/stream to resume it with from here, and offering a second
-    // place to decide it would be offering a decision without its evidence.
-    if (this.state.ticket) return
-    // pendingGate stays set — the modal stays open with its buttons disabled
-    // (`deciding`) through the whole round-trip. It's cleared only once the
-    // reducer sees the matching tool_result/denied land (reducer.ts).
+    const s = this.state
+    if (s.deciding) return
+    // pendingGate/gate stays set — the card stays up with its buttons disabled
+    // (`deciding`) through the whole round-trip. It is cleared only once the
+    // reducer sees the matching tool_result/denied land (reducer.ts), or, for a
+    // ticket, once the resumed turn ends.
+    const ticketGate = s.ticket?.gate ?? null
+    if (ticketGate) {
+      this.update((st) => ({
+        ...st,
+        deciding: true,
+        // Only if this session is the one that raised it: a gate opened by an
+        // investigation nobody started has no row here to resolve in place.
+        resolvingGateItemId: st.pendingGate?.itemId ?? null,
+        streaming: true,
+      }))
+      const controller = new AbortController()
+      this.controller = controller
+      const body: TicketDecisionRequest = { approve }
+      await this.runStream(
+        `/api/tickets/${encodeURIComponent(s.ticket!.id)}/approvals/${encodeURIComponent(ticketGate.id)}/decide/stream`,
+        body,
+        controller,
+      )
+      // The ticket page re-reads the durable state and re-binds (`openForTicket`);
+      // this only stops the card being offered a second time in the meantime.
+      this.update((st) =>
+        st.ticket && st.ticket.gate?.id === ticketGate.id
+          ? { ...st, deciding: false, ticket: { ...st.ticket, gate: null } }
+          : { ...st, deciding: false },
+      )
+      return
+    }
+
+    const gate = s.pendingGate
+    if (!gate) return
     this.update((st) => ({ ...st, deciding: true, resolvingGateItemId: gate.itemId, streaming: true }))
 
     const controller = new AbortController()
@@ -167,7 +212,7 @@ class ChatStore {
 
   private runStream = async (
     url: string,
-    body: ChatStreamRequest | ChatConfirmRequest | TicketChatRequest,
+    body: ChatStreamRequest | ChatConfirmRequest | TicketChatRequest | TicketDecisionRequest,
     controller: AbortController,
   ): Promise<void> => {
     const ticketId = this.state.ticket?.id ?? null

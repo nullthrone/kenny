@@ -22,7 +22,10 @@ import pytest
 from kenny_server.registry import AgentRegistry
 from kenny_server.store import EventStore, TelemetryStore
 from kenny_server.toolloop import (
+    _MAX_TOKENS,
     _MAX_TOOL_RESULT_CHARS,
+    _MODELS_WITHOUT_THINKING,
+    _ThinkingTags,
     _resolve_chat_target,
     SERVER_TOOLS,
     SURFACE_ONLY_TOOLS,
@@ -36,11 +39,12 @@ from kenny_server.toolloop import (
     build_tool_schemas,
     drive_events,
     stage_missing_tool_results,
+    strip_thinking_prose,
 )
 from kenny_server.tools import CAPABILITY_TOOLS, CallLog, ScreenshotStore
 from kenny_server.tunnel import AgentTunnel, ToolError
 
-from test_chat import FakeAnthropic, _Response, text_block, tool_use_block
+from test_chat import FakeAnthropic, _Response, text_block, thinking_block, tool_use_block
 
 
 # -- duck-typed session + stub policy --------------------------------------
@@ -671,3 +675,201 @@ def test_stage_missing_tool_results_diverges_from_chat_heal_session() -> None:
     assert len(dropped_session.messages) == 1
     assert dropped_session.messages[-1]["role"] == "user"
     assert dropped_session._staged_results == []
+
+
+# -- thinking ---------------------------------------------------------------
+#
+# Reasoning is a third channel: it streams so a surface can show that kenny is
+# working, and it never reaches the words a reader keeps. Two shapes produce it
+# — a real (signed) thinking block, and a model that narrates inside literal
+# ``<thinking>`` tags in ordinary text — and both have to land on that channel
+# and nowhere else.
+
+
+@pytest.fixture(autouse=True)
+def _forget_thinking_rejections() -> Any:
+    """``_MODELS_WITHOUT_THINKING`` is process-wide (one 400 per model, not per
+    turn), so a test that poisons it would silently disarm the next one."""
+
+    _MODELS_WITHOUT_THINKING.clear()
+    yield
+    _MODELS_WITHOUT_THINKING.clear()
+
+
+def _channel(events: list[dict[str, Any]], kind: str) -> str:
+    return "".join(ev["text"] for ev in events if ev["type"] == kind)
+
+
+async def test_the_turn_asks_for_adaptive_summarized_thinking(store: TelemetryStore) -> None:
+    executor, _registry, _tunnel = _executor(store)
+    client = FakeAnthropic([_Response([text_block("done")], "end_turn")])
+
+    await _drive(FakeSession(id="s"), executor, client, StubPolicy())
+
+    request = client.messages.calls[0]
+    assert request["thinking"] == {"type": "adaptive", "display": "summarized"}
+    # Reasoning is billed as output: at the non-thinking ceiling it would eat
+    # the budget the answer needs.
+    assert request["max_tokens"] > _MAX_TOKENS
+
+
+async def test_a_thinking_block_streams_apart_from_the_answer(store: TelemetryStore) -> None:
+    executor, _registry, _tunnel = _executor(store)
+    client = FakeAnthropic(
+        [_Response([thinking_block("bthserv runs, so check the radio"), text_block("No radio.")], "end_turn")]
+    )
+
+    events = await _drive(FakeSession(id="s"), executor, client, StubPolicy())
+
+    assert _channel(events, "thinking_delta") == "bthserv runs, so check the radio"
+    assert _channel(events, "text_delta") == "No radio."
+    done = events[-1]
+    assert done["assistant_text"] == "No radio."
+    assert "bthserv runs" not in done["assistant_text"]
+
+
+async def test_narrated_reasoning_is_folded_out_of_the_words_that_are_kept(
+    store: TelemetryStore,
+) -> None:
+    """A model writing its reasoning as tagged prose must not put it in the record."""
+
+    executor, _registry, _tunnel = _executor(store)
+    client = FakeAnthropic(
+        [
+            _Response(
+                [text_block("<thinking>The operator is pushing back. </thinking>You are right.")],
+                "end_turn",
+            )
+        ]
+    )
+
+    events = await _drive(FakeSession(id="s"), executor, client, StubPolicy())
+
+    assert _channel(events, "thinking_delta") == "The operator is pushing back. "
+    assert _channel(events, "text_delta") == "You are right."
+    # The tag itself is never emitted on either channel.
+    assert "<thinking>" not in _channel(events, "text_delta")
+    assert events[-1]["assistant_text"] == "You are right."
+
+
+def test_a_tag_split_across_two_deltas_is_still_folded() -> None:
+    """``<thin`` / ``king>`` is one token boundary — the splitter holds back a
+    suffix that could still become a tag rather than emitting it as words."""
+
+    tags = _ThinkingTags()
+    out = [*tags.feed("Hello <thin"), *tags.feed("king>why</thin"), *tags.feed("king>done"), *tags.flush()]
+
+    assert [c for kind, c in out if kind == "text"] == ["Hello ", "done"]
+    assert [c for kind, c in out if kind == "thinking"] == ["why"]
+
+
+def test_an_unclosed_tag_stays_folded_rather_than_printed() -> None:
+    tags = _ThinkingTags()
+    out = [*tags.feed("answer<thinking>still reasoning"), *tags.flush()]
+
+    assert [c for kind, c in out if kind == "text"] == ["answer"]
+    assert [c for kind, c in out if kind == "thinking"] == ["still reasoning"]
+
+
+def test_strip_thinking_prose_leaves_ordinary_text_untouched() -> None:
+    assert strip_thinking_prose("  a reply with < and > in it  ") == "  a reply with < and > in it  "
+    assert strip_thinking_prose("<thinking>x</thinking>\n\nthe answer") == "the answer"
+
+
+async def test_a_thinking_block_is_replayed_to_the_model_verbatim(store: TelemetryStore) -> None:
+    """Signed and unmodified, or the next round-trip is rejected."""
+
+    executor, _registry, _tunnel = _executor(store)
+    client = FakeAnthropic(
+        [
+            _Response(
+                [
+                    thinking_block("which host is this?", signature="sig-xyz"),
+                    tool_use_block("tu1", "list_agents", {}),
+                ],
+                "tool_use",
+            ),
+            _Response([text_block("one host")], "end_turn"),
+        ]
+    )
+
+    await _drive(FakeSession(id="s"), executor, client, StubPolicy())
+
+    replayed = [
+        block
+        for message in client.messages.calls[1]["messages"]
+        if isinstance(message.get("content"), list)
+        for block in message["content"]
+        if isinstance(block, dict) and block.get("type") == "thinking"
+    ]
+    assert replayed == [
+        {"type": "thinking", "thinking": "which host is this?", "signature": "sig-xyz"}
+    ]
+
+
+class _RejectsThinking:
+    """A model old enough to refuse the parameter — ``KENNY_CHAT_MODEL`` is a
+    live setting, so this is a configuration an operator can really produce."""
+
+    def __init__(self, scripted: list[_Response], *, message: str, status: int = 400) -> None:
+        self._inner = FakeAnthropic(scripted)
+        self.messages = self
+        self.calls: list[dict[str, Any]] = []
+        self._message = message
+        self._status = status
+
+    def stream(self, **kwargs: Any) -> Any:
+        self.calls.append(kwargs)
+        if "thinking" in kwargs:
+            error = Exception(self._message)
+            error.status_code = self._status
+            error.message = self._message
+            raise error
+        return self._inner.messages.stream(**kwargs)
+
+
+async def test_a_model_that_refuses_thinking_still_answers(store: TelemetryStore) -> None:
+    executor, _registry, _tunnel = _executor(store)
+    client = _RejectsThinking(
+        [_Response([text_block("still answered")], "end_turn")],
+        message="thinking: unexpected parameter for this model",
+    )
+
+    events = await _drive(FakeSession(id="s"), executor, client, StubPolicy())
+
+    assert events[-1]["assistant_text"] == "still answered"
+    assert "thinking" in client.calls[0]
+    assert "thinking" not in client.calls[1]
+
+
+async def test_the_refusal_is_remembered_for_the_rest_of_the_process(
+    store: TelemetryStore,
+) -> None:
+    executor, _registry, _tunnel = _executor(store)
+    client = _RejectsThinking(
+        [
+            _Response([text_block("first")], "end_turn"),
+            _Response([text_block("second")], "end_turn"),
+        ],
+        message="thinking is not supported",
+    )
+
+    await _drive(FakeSession(id="s"), executor, client, StubPolicy())
+    await _drive(FakeSession(id="s2"), executor, client, StubPolicy())
+
+    # Three calls, not four: the second turn never asks again.
+    assert len(client.calls) == 3
+    assert "thinking" not in client.calls[2]
+
+
+async def test_an_unrelated_bad_request_is_not_swallowed(store: TelemetryStore) -> None:
+    """Retrying without thinking on every 400 would hide the real error."""
+
+    executor, _registry, _tunnel = _executor(store)
+    client = _RejectsThinking(
+        [_Response([text_block("never reached")], "end_turn")],
+        message="tools.0.input_schema: invalid schema",
+    )
+
+    with pytest.raises(Exception, match="input_schema"):
+        await _drive(FakeSession(id="s"), executor, client, StubPolicy())

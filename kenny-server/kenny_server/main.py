@@ -510,6 +510,10 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
             max_turns_per_ticket=int(settings.get("KENNY_DISCORD_MAX_TURNS_PER_TICKET")),
             approval_ttl_secs=int(settings.get("KENNY_TICKET_APPROVAL_TTL_SECS")),
         )
+        # The assistant's own tool — how a turn leaves a record on the ticket —
+        # registered through the same seam triage uses below, so the executor
+        # goes on knowing nothing about tickets.
+        ticket_assistant.register_tools(ticket_executor)
         # Unprompted triage rides on the same assistant and the same executor —
         # one investigation is an ordinary ticket turn with a narrower tool set
         # and its own prompt, not a second engine. It registers its verdict tool

@@ -15,6 +15,36 @@ export interface ChatConfirmRequest {
 }
 
 /**
+ * `POST /api/tickets/{id}/approvals/{aid}/decide/stream` body.
+ *
+ * A ticket's gate is durable and belongs to the ticket, so the decision is
+ * addressed by approval id rather than by session — and the response is the
+ * turn the decision releases, streamed in the same event vocabulary a chat turn
+ * uses, so the conversation carries on where it stopped.
+ */
+export interface TicketDecisionRequest {
+  approve: boolean
+}
+
+/**
+ * The gate a ticket is holding, as the ticket page read it from
+ * `/api/approvals?ticket_id=…`.
+ *
+ * Present whoever raised it: a turn driven from this drawer, a Discord message,
+ * or an unprompted investigation nobody started. That is the point — the panel
+ * is where a decision is made, so it has to be able to show one it has no
+ * transcript for.
+ */
+export interface TicketGate {
+  id: string
+  tool: string
+  /** Frozen at hold time. Rendered verbatim by `GateCard`; never touched here. */
+  args: Record<string, unknown>
+  agentId?: string | null
+  toolClass?: string
+}
+
+/**
  * `POST /api/tickets/{id}/chat/stream` body. No `agent_id` and no `scope`:
  * the ticket's target is frozen server-side and a caller cannot move it
  * (ADR-0038), so there is nothing here to get wrong.
@@ -51,6 +81,12 @@ export interface ChatHistoryDetailResponse {
 export type TranscriptItem =
   | { kind: 'user'; id: string; text: string }
   | { kind: 'assistant'; id: string; text: string }
+  /**
+   * Kenny's reasoning, kept apart from its answer and rendered folded. It is a
+   * live view only: the server stores none of it, so a replayed conversation
+   * and a ticket's timeline never show one of these.
+   */
+  | { kind: 'thinking'; id: string; text: string }
   | { kind: 'auto_run'; id: string; tool: string; ok: boolean; imageB64?: string; format?: string }
   | { kind: 'denied'; id: string; tool: string; message?: string }
   | {
@@ -89,9 +125,10 @@ export interface PendingGate {
  * never fetches it, so the drawer stays renderable without a query client.
  *
  * Its presence changes three things and nothing else: which endpoint a turn
- * posts to, that the gate belongs to the ticket page rather than the drawer,
- * and that the conversation has no `/api/chat/history` of its own — the
- * ticket's timeline is its history.
+ * posts to, which endpoint a decision posts to (the ticket's durable gate, by
+ * approval id, rather than the copilot's session-scoped confirm), and that the
+ * conversation has no `/api/chat/history` of its own — the ticket's timeline is
+ * its history.
  */
 export interface TicketChatTarget {
   id: string
@@ -100,8 +137,9 @@ export interface TicketChatTarget {
   agentId: string
   discordThread: boolean
   assistantAvailable: boolean
-  /** `blocked_on === 'approval'`: the decision is on the ticket, next to the frozen call. */
-  blockedOnApproval: boolean
+  /** The open gate, or null. Non-null locks the composer: kenny is waiting on
+   * this answer and nothing else can be asked of it until it has one. */
+  gate: TicketGate | null
 }
 
 export interface ChatSessionState {
@@ -131,6 +169,10 @@ export interface ChatSessionState {
   streaming: boolean
   /** id of the assistant transcript item currently accumulating `text_delta`s, if any. */
   openAssistantId: string | null
+  /** id of the thinking item currently accumulating `thinking_delta`s, if any.
+   * Non-null means kenny is still reasoning — which is what the folded block's
+   * own label says, so it is never inferred from `streaming` alone. */
+  openThinkingId: string | null
   /** Monotonic counter backing transcript item ids — keeps id generation pure/deterministic. */
   seq: number
   /** Non-null when this conversation is a ticket's own (ADR-0050). */
@@ -151,6 +193,7 @@ export function makeInitialState(
     resolvingGateItemId: null,
     streaming: false,
     openAssistantId: null,
+    openThinkingId: null,
     seq: 0,
   }
 }

@@ -329,8 +329,8 @@ one-line meta description — the ticket's ref, where it came from, and what it 
 for — and an age. **Every row opens [ticket detail](#ticket-detail)**; no row in this
 queue leads anywhere else.
 
-A ticket waiting for an approval says so, and the decision itself is on the ticket, next
-to the frozen call it would run.
+A ticket waiting for an approval says so; answering it is one click further on, in the
+drawer, beside the frozen call it would run.
 
 A standing critical or warning finding reaches this queue only as the ticket an
 [auto-ticket rule](#auto-ticket-rules) opened from it. A finding with no ticket — a rule
@@ -381,28 +381,37 @@ from a cold load, not just from clicking through the queue. It shows:
   it, because it describes the ticket's state now and not one it used to be in.
 - A **triage verdict** in the analysis tab, where an investigation left one. This is the
   one entry that is a finding rather than a line of history, so it gets a frame: the verdict
-  itself (*phantom*, *benign known*, *resolved itself*, *actionable*, *inconclusive* —
-  coloured by whether it needs you, not by which of the five it is), what kenny concluded
-  in a sentence, and **what it checked to conclude that**. The evidence sits next to the
-  verdict rather than behind a click, because it is the reason to believe it. If the server
-  declined to act on a closing verdict, the row says why — while
-  [`KENNY_TRIAGE_RESOLVE`](setup.md) is still off that line is the most informative one on
-  the page, since it says exactly what would have happened with it on. Where the verdict
-  proposes muting a recurring event pattern, the row carries a one-click **MUTE ON THIS PC**
-  button that creates the suppression rule for that host.
+  itself (**NO PROBLEM FOUND**, **KNOWN AND HARMLESS**, **ALREADY OVER**, **NEEDS ACTION**,
+  **UNCLEAR** — coloured by whether it needs you, not by which of the five it is), what
+  kenny concluded in a sentence, and **what it checked to conclude that**. The evidence sits
+  next to the verdict rather than behind a click, because it is the reason to believe it.
+  The card says what was found about the machine and nothing about kenny's own machinery:
+  whether the server is configured to close a ticket on a verdict like this one
+  ([`KENNY_TRIAGE_RESOLVE`](setup.md)) is answered by the ticket's state in the header, and
+  the trail records the rest. Where the verdict proposes muting a recurring event pattern,
+  the row carries a one-click **MUTE ON THIS PC** button that creates the suppression rule
+  for that host.
 - **What happened**, in two tabs over the same rows.
 
     **ANALYSIS** (the default) is the ticket read as a story, oldest first: findings, what
-    people wrote, what kenny changed, and the moves somebody decided. Each line is already
-    a sentence — kenny's own replies through the same markdown renderer Ask kenny uses, a
-    person's own words as plain escaped text, and everything kenny did as plain prose
-    written from the trail: *"I looked at the agent's health, the event log (System, Setup,
-    Application) and disk usage."* A change kenny made without anyone deciding says so —
-    *"I flushed the DNS cache without being asked — that is a routine change"* — because
-    that is the one class of thing nobody was consulted about. What failed or was refused
-    stays too, since it explains a gap. Lifecycle moves are kept but set quietly, as time
-    anchors. A Discord-origin family message still shows only its existing one-line
-    summary — no verbatim text is stored for it.
+    people wrote, what kenny found or changed, and the moves somebody decided. Each line is
+    already a sentence — a person's own words as plain escaped text, and everything kenny
+    did as plain prose written from the trail: *"I looked at the agent's health, the event
+    log (System, Setup, Application) and disk usage."* A change kenny made without anyone
+    deciding says so — *"I flushed the DNS cache without being asked — that is a routine
+    change"* — because that is the one class of thing nobody was consulted about. What
+    failed or was refused stays too, since it explains a gap. Lifecycle moves are kept but
+    set quietly, as time anchors. A Discord-origin family message still shows only its
+    existing one-line summary — no verbatim text is stored for it.
+
+    What kenny *said* is not here. A conversation belongs to the surface it was had on —
+    the [Ask kenny](#ask-kenny) drawer, or the Discord thread — and the ticket keeps the
+    outcome instead: at the end of a turn that found something out, changed something, or
+    reached a conclusion, kenny writes one or two sentences onto the ticket saying what is
+    now true. That line is rendered through the same markdown renderer Ask kenny uses, and
+    it is the one line on this tab kenny composed rather than the server
+    ([ADR-0061](adr/0061-the-ticket-keeps-a-record-not-a-transcript.md)). The replies
+    themselves are still stored, and the AUDIT tab shows them verbatim.
 
     **AUDIT** is the trail itself: every row the server stores, in order, with the
     arguments each call ran with and the row's own id. It is what `#`-numbered evidence
@@ -411,21 +420,26 @@ from a cold load, not just from clicking through the queue. It shows:
     is dropped here and nothing is parsed: an audit shows what is stored. Both tabs answer
     to the same ownership check; the analysis tab is a reading, never a permission.
 
-- A **held gate** gets inline **Approve**/**Deny** buttons directly on the ticket for an
-  operator+, and — the instant it's held, or on opening a ticket that's already waiting —
-  a wide confirm-gate dialog showing the exact tool and frozen arguments. **This
-  ticket-scoped gate is dismissible**: it gets a **"Decide later"** button rather than a
-  deny, since it can legitimately wait for a different operator than whoever has it open
-  right now. The [Ask kenny overlay](#ask-kenny)'s own fleet confirm-gate is deliberately
-  **not** dismissible — that asymmetry is on purpose, so dismissing a ticket's gate can
-  never be confused with denying a fleet-chat action. A ticket gate is never decided from
-  inside the drawer: if one opens mid-conversation the drawer says so and points back at
-  the ticket, because a confirmation shown without the call it confirms is a decision made
-  without its evidence.
-- **ASK KENNY ABOUT THIS TICKET**, which opens the [Ask kenny](#ask-kenny) drawer already
-  bound to this ticket, and — for an operator+ — a **note** field, the page's only
-  composer. A note is something you write *onto* a ticket; asking kenny is a conversation
-  *about* one, and it belongs in the drawer with every other conversation. Enter follows
+- A **held gate** shows on the ticket as one line — what kenny is waiting to run, on which
+  PC — and a button that opens the [Ask kenny](#ask-kenny) drawer, where the decision is
+  made. Nothing on the ticket page decides it: every exchange with kenny, the gate
+  included, happens in the drawer, so there is one place in the console where kenny asks
+  and one place where it is answered. What the decision must not lose is unchanged — the
+  card in the drawer shows the exact tool and its frozen arguments, and deciding beside a
+  bare title in a list is still refused (ADR-0059).
+
+  **The ticket's gate is dismissible**; the fleet copilot's is not. Closing the drawer on a
+  ticket gate is a legitimate "not yet": the gate is durable, the ticket goes on saying it
+  is waiting, and a different operator may answer it. The copilot's own confirm-gate is a
+  modal whose only exits are CONFIRM & RUN and CANCEL, because nothing there is durable —
+  that asymmetry is on purpose, so closing a ticket's gate can never be confused with
+  denying a fleet-chat action. Answering a gate in the drawer streams the work it releases
+  straight back into the same conversation, rather than leaving the transcript frozen at
+  the question.
+- A **note** field, for an operator+, is the page's only composer. A note is something you
+  write *onto* a ticket; asking kenny is a conversation *about* one, and it belongs in the
+  drawer with every other conversation — which is why there is no second "ask about this
+  ticket" button here: ⌘K on a ticket opens the drawer already bound to it. Enter follows
   the same `Enter to send` preference here as everywhere else.
 
   In the drawer, a ticket is a second context rather than a second chat: the scope chip

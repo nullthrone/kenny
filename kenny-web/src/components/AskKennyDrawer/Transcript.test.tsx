@@ -24,3 +24,28 @@ describe('Transcript', () => {
     expect(container.textContent).toContain('**Was ich tun kann:**')
   })
 })
+
+describe('Transcript — reasoning', () => {
+  it('folds reasoning away by default and never prints it as the answer', () => {
+    const items: TranscriptItem[] = [
+      { kind: 'thinking', id: 't1', text: 'the operator is pushing back' },
+      { kind: 'assistant', id: 'a1', text: 'You are right.' },
+    ]
+    const { container } = render(<Transcript items={items} />)
+
+    const fold = container.querySelector('details')
+    expect(fold).not.toBeNull()
+    expect(fold!.hasAttribute('open')).toBe(false)
+    expect(container.querySelector('summary')!.textContent).toContain('thought about this')
+  })
+
+  it('says kenny is still at it only for the block still being written', () => {
+    const items: TranscriptItem[] = [
+      { kind: 'thinking', id: 't1', text: 'still going' },
+    ]
+    const { container } = render(<Transcript items={items} openThinkingId="t1" />)
+
+    expect(container.querySelector('summary')!.textContent).toContain('is thinking')
+  })
+})
+

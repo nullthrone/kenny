@@ -25,9 +25,11 @@ from kenny_server.store import EventStore, TelemetryStore
 from kenny_server.ticket_assistant import (
     _MAX_TRAIL_ERROR_CHARS,
     _MAX_TRAIL_TEXT_CHARS,
+    TRIAGE_TOOLS,
     TicketAssistant,
     TicketPolicy,
 )
+from kenny_server.ticket_timeline import project
 from kenny_server.ticketstore import ASSISTANT_ACTOR, TicketStore
 from kenny_server.tickets import TicketService
 from kenny_server.tool_classes import STANDARD_CHANGE, classify
@@ -68,12 +70,23 @@ def _chunks(text: str) -> list[str]:
 class _StreamCtx:
     def __init__(self, response: _Response) -> None:
         self._response = response
-        self.text_stream = [
-            chunk
-            for b in response.content
-            if getattr(b, "type", None) == "text"
-            for chunk in _chunks(b.text)
-        ]
+
+    def __iter__(self) -> Any:
+        # The ``content_block_delta`` shape the loop reads: a text block streams
+        # as several ``text_delta``s, a thinking block as a ``thinking_delta``.
+        for block in self._response.content:
+            kind = getattr(block, "type", None)
+            if kind == "text":
+                for chunk in re.findall(r"\S+\s*", block.text) or [block.text]:
+                    yield _Block(
+                        type="content_block_delta",
+                        delta=_Block(type="text_delta", text=chunk),
+                    )
+            elif kind == "thinking":
+                yield _Block(
+                    type="content_block_delta",
+                    delta=_Block(type="thinking_delta", thinking=getattr(block, "thinking", "")),
+                )
 
     def __enter__(self) -> _StreamCtx:
         return self
@@ -1007,3 +1020,100 @@ def test_dashboard_agrees_with_the_stored_actor_names() -> None:
     assert f"actor === '{TRIAGE_ACTOR}'" in source
     # The pre-migration value must not be what the dashboard keys off.
     assert "actor === 'kenny'" not in source
+
+
+# -- what the ticket keeps of a turn -------------------------------------------
+#
+# The conversation belongs to the surface it happened on. What the ticket shows
+# is a record, and `ticket_summary` is how a turn writes one.
+
+
+async def test_a_summary_is_recorded_as_kennys_own_line_on_the_ticket(world: World) -> None:
+    ticket = await _open_alert_ticket(world)
+    assistant = world.assistant(
+        tool_turn(
+            tool_use_block(
+                "t1", "ticket_summary", {"summary": "Drive C: was full of update leftovers; they are gone."}
+            )
+        ),
+        text_turn("Done."),
+    )
+    assistant.register_tools(world.executor)
+    session = await assistant.session_for(ticket, actor=world.root_principal())
+    assert session is not None
+
+    session.messages.append({"role": "user", "content": "clean up the disk"})
+    async for _event in assistant.run_turn(session, ticket):
+        pass
+
+    notes = [
+        e
+        for e in await world.tickets.events(ticket.id)
+        if e.kind == "note" and (e.fields or {}).get("turn_summary")
+    ]
+    assert len(notes) == 1
+    assert notes[0].actor == "assistant"
+    assert notes[0].summary == "Drive C: was full of update leftovers; they are gone."
+
+    # And it is what the ticket *shows* of the turn — kenny's reply is not.
+    entries = project(await world.tickets.events(ticket.id))
+    shown = [e.text for e in entries if e.kind == "message"]
+    assert "Drive C: was full of update leftovers; they are gone." in shown
+    assert "Done." not in shown
+
+
+async def test_a_summary_the_model_left_empty_is_refused_not_recorded(world: World) -> None:
+    """An empty record is worse than none: it would read as a turn that found
+    nothing, which is a claim the model did not make."""
+
+    ticket = await _open_alert_ticket(world)
+    assistant = world.assistant(
+        tool_turn(tool_use_block("t1", "ticket_summary", {"summary": "   "})),
+        text_turn("ok"),
+    )
+    assistant.register_tools(world.executor)
+    session = await assistant.session_for(ticket, actor=world.root_principal())
+    assert session is not None
+
+    session.messages.append({"role": "user", "content": "anything?"})
+    events = [e async for e in assistant.run_turn(session, ticket)]
+
+    failed = [e for e in events if e["type"] == "tool_result" and e["tool"] == "ticket_summary"]
+    assert failed and failed[0]["ok"] is False
+    assert not [
+        e
+        for e in await world.tickets.events(ticket.id)
+        if e.kind == "note" and (e.fields or {}).get("turn_summary")
+    ]
+
+
+async def test_a_runaway_summary_is_clipped_rather_than_kept_whole(world: World) -> None:
+    """The ticket's record must not become the transcript again by the back door."""
+
+    ticket = await _open_alert_ticket(world)
+    assistant = world.assistant(
+        tool_turn(tool_use_block("t1", "ticket_summary", {"summary": "x" * 5000})),
+        text_turn("ok"),
+    )
+    assistant.register_tools(world.executor)
+    session = await assistant.session_for(ticket, actor=world.root_principal())
+    assert session is not None
+
+    session.messages.append({"role": "user", "content": "go"})
+    async for _event in assistant.run_turn(session, ticket):
+        pass
+
+    note = [
+        e
+        for e in await world.tickets.events(ticket.id)
+        if e.kind == "note" and (e.fields or {}).get("turn_summary")
+    ][0]
+    assert len(note.summary) < 5000
+    assert note.summary.endswith("…")
+
+
+async def test_an_investigation_has_no_summary_tool_it_has_a_verdict(world: World) -> None:
+    """Two ways to write the same conclusion would be two records of one thing."""
+
+    assert "ticket_summary" not in TRIAGE_TOOLS
+    assert "ticket_triage_verdict" in TRIAGE_TOOLS

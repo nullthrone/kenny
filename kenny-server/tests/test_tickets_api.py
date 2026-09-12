@@ -71,7 +71,22 @@ def text_turn(text: str) -> _Response:
 class _StreamCtx:
     def __init__(self, response: _Response) -> None:
         self._response = response
-        self.text_stream = [b.text for b in response.content if getattr(b, "type", None) == "text"]
+
+    def __iter__(self) -> Any:
+        # The ``content_block_delta`` shape the loop reads: one delta per block,
+        # text and thinking on their own channels.
+        for block in self._response.content:
+            kind = getattr(block, "type", None)
+            if kind == "text":
+                yield _Block(
+                    type="content_block_delta",
+                    delta=_Block(type="text_delta", text=block.text),
+                )
+            elif kind == "thinking":
+                yield _Block(
+                    type="content_block_delta",
+                    delta=_Block(type="thinking_delta", thinking=getattr(block, "thinking", "")),
+                )
 
     def __enter__(self) -> _StreamCtx:
         return self
@@ -98,6 +113,30 @@ class _FakeAnthropic:
         self.messages = _FakeMessages(scripted)
 
 
+class _FakeExecutor:
+    """Runs a capability call without an agent, recording what it was asked to run.
+
+    Only the approval routes need one: approving an ``operator_approval``
+    *executes* the frozen call, so a test that stops at the decision would be
+    asserting half of what the route does."""
+
+    def __init__(self) -> None:
+        self.ran: list[tuple[str, dict[str, Any], str | None]] = []
+        self.server_tool_handlers: dict[str, Any] = {}
+
+    async def run_capability(
+        self, tool: str, args: dict[str, Any], *, agent_id: str | None = None
+    ) -> dict[str, Any]:
+        self.ran.append((tool, dict(args), agent_id))
+        return {"ok": True, "stdout": "hi"}
+
+    async def run_server_tool(
+        self, tool: str, args: dict[str, Any], session: Any = None
+    ) -> dict[str, Any]:
+        self.ran.append((tool, dict(args), None))
+        return {"ok": True}
+
+
 def _build_app(
     tmp_path,
     seed: Seed,
@@ -105,6 +144,7 @@ def _build_app(
     with_discord: bool = False,
     with_assistant: bool = False,
     scripted: list[_Response] | None = None,
+    with_executor: bool = False,
 ) -> Starlette:
     """Build the standalone ticket API app.
 
@@ -123,11 +163,12 @@ def _build_app(
     discord: DiscordService | None = None
     assistant: TicketAssistant | None = None
     client = _FakeAnthropic(list(scripted)) if scripted is not None else None
+    executor = _FakeExecutor() if with_executor else None
     if with_assistant or with_discord:
         assistant = TicketAssistant(
             tickets=service,
             users=user_store,
-            executor=None,  # type: ignore[arg-type] - no test here drives a tool call
+            executor=executor,  # type: ignore[arg-type] - None unless a test runs a call
             client=client,
             model="scripted",
         )
@@ -184,6 +225,7 @@ def _build_app(
     app.state.gateway = discord.gateway if discord is not None else None
     app.state.tickets = service
     app.state.ticket_store = ticket_store
+    app.state.executor = executor
     return app
 
 
@@ -2084,3 +2126,138 @@ def test_the_alerts_route_says_so_when_no_telemetry_surface_is_wired(tmp_path) -
         assert (
             c.get(f"/api/tickets/{s['alert_id']}", headers=_hdr(s["op_pat"])).status_code == 200
         )
+
+
+# -- POST /api/tickets/{tid}/approvals/{aid}/decide/stream -----------------------
+#
+# The decision, answered where it was asked. Same durable gate and same
+# authorization as ``POST /api/approvals/{aid}``; what it adds is that the
+# operator who clicked watches the turn the decision releases instead of
+# reloading the page to find out what happened.
+
+
+def _gated_ticket_seed(*, tool: str = "shell_exec", tool_class: str = "normal_change") -> Seed:
+    async def seed(users: UserStore, _store: TicketStore, svc: TicketService) -> dict:
+        kid = await users.create_user("kid", "pw-123456", "user")
+        op = await users.create_user("op", "pw-123456", "operator")
+        ticket = await svc.create(
+            title="slow pc", origin="dashboard", requester_user_id=kid["id"], agent_id="pc-1"
+        )
+        approval = await svc.open_approval(
+            ticket.id,
+            tool_use_id="tu-1",
+            tool=tool,
+            tool_class=tool_class,
+            args={"cmd": "echo hi"},
+        )
+        other = await svc.create(
+            title="other pc", origin="dashboard", requester_user_id=kid["id"], agent_id="pc-2"
+        )
+        other_approval = await svc.open_approval(
+            other.id,
+            tool_use_id="tu-2",
+            tool="winget_install",
+            tool_class="normal_change",
+            args={},
+        )
+        return {
+            "kid_pat": await users.create_pat(kid["id"], "t"),
+            "op_pat": await users.create_pat(op["id"], "t"),
+            "ticket_id": ticket.id,
+            "approval_id": approval.id,
+            "other_ticket_id": other.id,
+            "other_approval_id": other_approval.id,
+        }
+
+    return seed
+
+
+def test_decide_stream_runs_the_decision_and_streams_what_follows(tmp_path) -> None:
+    app = _build_app(
+        tmp_path,
+        _gated_ticket_seed(),
+        with_assistant=True,
+        with_executor=True,
+        scripted=[text_turn("Done — the command ran.")],
+    )
+    with TestClient(app) as c:
+        s = app.state.seed
+        r = c.post(
+            f"/api/tickets/{s['ticket_id']}/approvals/{s['approval_id']}/decide/stream",
+            json={"approve": True},
+            headers=_hdr(s["op_pat"]),
+        )
+
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("text/event-stream")
+        events = _sse_events(r.text)
+        # Exactly one terminal event, and it says how the resume went — the
+        # caller never has to tell "finished" from "never started".
+        assert [e["type"] for e in events].count("done") == 1
+        assert events[-1]["type"] == "done"
+        assert events[-1]["resume_status"] == "resumed"
+
+        # What the operator was actually deciding about ran, with the arguments
+        # frozen when the gate opened — and its result is in the same stream.
+        assert app.state.executor.ran == [("shell_exec", {"cmd": "echo hi"}, "pc-1")]
+        assert any(e["type"] == "tool_result" and e["tool"] == "shell_exec" for e in events)
+        assert events[-1]["assistant_text"] == "Done — the command ran."
+
+        # The decision is durable, whatever the stream did.
+        approval = c.portal.call(app.state.ticket_store.get_approval, s["approval_id"])
+        assert approval.status == "approved"
+
+
+def test_decide_stream_will_not_decide_another_ticket_s_gate(tmp_path) -> None:
+    """The route is authorized through the ticket in its path, so an approval
+    belonging to a different ticket must not be reachable through it — even for
+    an operator, who could decide that same gate on its own ticket."""
+
+    app = _build_app(tmp_path, _gated_ticket_seed(), with_assistant=True)
+    with TestClient(app) as c:
+        s = app.state.seed
+        r = c.post(
+            f"/api/tickets/{s['ticket_id']}/approvals/{s['other_approval_id']}/decide/stream",
+            json={"approve": True},
+            headers=_hdr(s["op_pat"]),
+        )
+        assert r.status_code == 404
+
+        untouched = c.portal.call(app.state.ticket_store.get_approval, s["other_approval_id"])
+        assert untouched.status == "pending"
+
+
+def test_decide_stream_keeps_every_control_the_json_route_has(tmp_path) -> None:
+    app = _build_app(tmp_path, _gated_ticket_seed(), with_assistant=True)
+    with TestClient(app) as c:
+        s = app.state.seed
+        url = f"/api/tickets/{s['ticket_id']}/approvals/{s['approval_id']}/decide/stream"
+
+        # A scoped user may not decide an operator_approval on their own ticket:
+        # owning the ticket is not deciding rights, and the gate is still open
+        # afterwards.
+        assert c.post(url, json={"approve": True}, headers=_hdr(s["kid_pat"])).status_code == 403
+        assert c.post(url, json={"approve": False}, headers=_hdr(s["kid_pat"])).status_code == 403
+        assert c.portal.call(app.state.ticket_store.get_approval, s["approval_id"]).status == "pending"
+
+        # A missing/garbled decision is a pre-stream 400, never a stream that
+        # says "error" with a 200 on it.
+        assert c.post(url, json={}, headers=_hdr(s["op_pat"])).status_code == 400
+        assert c.post(url, json={"approve": "yes"}, headers=_hdr(s["op_pat"])).status_code == 400
+
+
+def test_decide_stream_is_unavailable_without_an_assistant(tmp_path) -> None:
+    """503 before the gate is touched: without an assistant there is no turn to
+    stream, and a decision that silently did not resume is the bug this whole
+    route exists to remove."""
+
+    app = _build_app(tmp_path, _gated_ticket_seed())
+    with TestClient(app) as c:
+        s = app.state.seed
+        r = c.post(
+            f"/api/tickets/{s['ticket_id']}/approvals/{s['approval_id']}/decide/stream",
+            json={"approve": True},
+            headers=_hdr(s["op_pat"]),
+        )
+        assert r.status_code == 503
+        assert c.portal.call(app.state.ticket_store.get_approval, s["approval_id"]).status == "pending"

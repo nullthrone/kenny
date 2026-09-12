@@ -24,6 +24,7 @@ import pytest
 from kenny_server import ticket_timeline as tl
 from kenny_server.ticketstore import TicketEvent, TicketStore
 from kenny_server.tool_classes import READ_ONLY, TOOL_CLASSES
+from kenny_server.toolloop import SURFACE_ONLY_TOOLS
 from kenny_server.triage import may_resolve
 
 
@@ -150,6 +151,13 @@ def full_trail() -> list[TicketEvent]:
             summary="reply",
             fields={"text": "I freed **12 GB**.", "surface": "dashboard"},
         ),
+        ev(
+            28,
+            "note",
+            "assistant",
+            summary="Drive C: had **12 GB** of update leftovers; they are gone.",
+            fields={"turn_summary": True},
+        ),
         ev(24, "note", "operator:3", summary="Watched it overnight; stable."),
         ev(25, "assign", "operator:3", summary="claimed by thomas"),
         ev(26, "state", "operator:3", from_state="in_progress", to_state="resolved"),
@@ -205,8 +213,20 @@ def test_presented_kinds_are_the_declared_ones():
 # -- seam 2: the prose tables track the tool catalog ------------------------
 
 
-@pytest.mark.parametrize("tool,tier", sorted(TOOL_CLASSES.items()))
+@pytest.mark.parametrize(
+    "tool,tier",
+    sorted((t, c) for t, c in TOOL_CLASSES.items() if t not in SURFACE_ONLY_TOOLS),
+)
 def test_every_tool_has_a_phrase(tool: str, tier: str):
+    """Every tool that runs *on a machine* composes into a sentence.
+
+    A surface-only tool is exempt because it is not a call on a machine at all —
+    it is how kenny speaks to the ticket, and the projection drops its rows under
+    a named rule (`surface_only_tool`) rather than describing them. The verdict
+    tool keeps its phrase from when that was not yet true; an unused phrase is
+    harmless, a missing one would print a raw tool name.
+    """
+
     table = tl.OBSERVED_PHRASES if tier == READ_ONLY else tl.CHANGED_PHRASES
     assert tool in table, (
         f"{tool} has no phrase in ticket_timeline; a timeline sentence would "
@@ -291,10 +311,34 @@ def test_a_persons_words_are_verbatim_and_kennys_are_markdown():
     assert by_source[14].kind == tl.MESSAGE
     assert by_source[14].body == tl.VERBATIM
     assert by_source[14].text == "Can you free some space?"
-    assert by_source[23].body == tl.MARKDOWN
-    assert by_source[23].text == "I freed **12 GB**."
+    # Kenny's own prose is markdown where it is shown — and what is shown of a
+    # turn is the summary it wrote for the ticket, not the reply it gave in the
+    # conversation (see the drop rule test below).
+    assert by_source[28].body == tl.MARKDOWN
+    assert by_source[28].text == "Drive C: had **12 GB** of update leftovers; they are gone."
     # An operator's note is their own typing too, and is never parsed as markup.
     assert by_source[24].body == tl.VERBATIM
+
+
+def test_the_ticket_shows_what_a_turn_came_to_not_what_was_said():
+    """The conversation belongs to the surface it happened on; the ticket keeps
+    the record. Nothing is lost — the reply is still in the trail, which the
+    audit tab renders verbatim."""
+
+    reply = ev(
+        1, "message", "assistant", summary="reply",
+        fields={"text": "I freed **12 GB**.", "surface": "dashboard"},
+    )
+    assert tl._drop_reason(reply) == "assistant_prose"
+    # A Discord-driven reply is kenny's too, and goes the same way.
+    assert tl._drop_reason(
+        ev(2, "message", "assistant", summary="reply",
+           fields={"text": "done", "surface": "discord"})
+    ) == "assistant_prose"
+    # A person's message is not kenny's to drop.
+    assert tl._drop_reason(
+        ev(3, "message", "user:7", summary="msg", fields={"text": "hi"})
+    ) is None
 
 
 def test_lifecycle_reads_as_a_decision_somebody_made():

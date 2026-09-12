@@ -39,23 +39,6 @@ describe('findingOf', () => {
     expect(findingOf({ ...entry({}), kind: 'message', actor: 'operator:3' })).toBeNull()
   })
 
-  it('carries the reason the server declined to act on a verdict', () => {
-    // The most informative row on the page while auto-resolve is still off:
-    // it says what would have happened with it on.
-    const found = findingOf(
-      entry({
-        ...VERDICT_FIELDS,
-        resolvable: false,
-        not_resolved_because: 'no read-only check actually ran',
-      }),
-    )
-    expect(found?.notResolvedBecause).toBe('no read-only check actually ran')
-  })
-
-  it('leaves notResolvedBecause null when the verdict was acted on', () => {
-    expect(findingOf(entry(VERDICT_FIELDS))?.notResolvedBecause).toBeNull()
-  })
-
   it('reads a well-formed suppression suggestion', () => {
     const found = findingOf(
       entry({
@@ -106,7 +89,19 @@ describe('verdictTone', () => {
     expect(verdictTone('')).toBe('unclear')
   })
 
-  it('renders a verdict word as a label', () => {
-    expect(verdictLabel('benign_known')).toBe('BENIGN KNOWN')
+  it('says what a verdict means, never what the server calls it', () => {
+    // "PHANTOM" is this repository's word for it, and a reader who has to look
+    // it up is reading the platform instead of their problem.
+    expect(verdictLabel('phantom')).toBe('NO PROBLEM FOUND')
+    expect(verdictLabel('benign_known')).toBe('KNOWN AND HARMLESS')
+    expect(verdictLabel('resolved_itself')).toBe('ALREADY OVER')
+    expect(verdictLabel('actionable')).toBe('NEEDS ACTION')
+    expect(verdictLabel('inconclusive')).toBe('UNCLEAR')
+  })
+
+  it('never leaks a verdict word this build has not heard of', () => {
+    // Same direction `verdictTone` errs in: a newer server's vocabulary is not
+    // dressed up as a conclusion, and it is not printed raw either.
+    expect(verdictLabel('something_new')).toBe('UNCLEAR')
   })
 })

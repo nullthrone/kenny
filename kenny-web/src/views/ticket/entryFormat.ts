@@ -19,8 +19,28 @@ export function verdictTone(verdict: string): 'settled' | 'attention' | 'unclear
   return 'unclear'
 }
 
+/**
+ * What each verdict says, in the words a person would use for it.
+ *
+ * The keys are the server's vocabulary (`toolloop.TRIAGE_VERDICTS`) and the
+ * values are the reader's. Nobody outside this repository knows what a
+ * "phantom" is, and a label that has to be learned before the finding under it
+ * can be read is a label that teaches the machinery instead of the problem.
+ */
+const VERDICT_LABELS: Record<string, string> = {
+  phantom: 'NO PROBLEM FOUND',
+  benign_known: 'KNOWN AND HARMLESS',
+  resolved_itself: 'ALREADY OVER',
+  actionable: 'NEEDS ACTION',
+  inconclusive: 'UNCLEAR',
+}
+
 export function verdictLabel(verdict: string): string {
-  return verdict.replace(/_/g, ' ').toUpperCase()
+  // A verdict this build has never heard of reads as unclear — the same
+  // direction `verdictTone` errs in, and for the same reason: a word from a
+  // newer server must not be dressed up as a conclusion by this one. Never the
+  // raw token, which would put the vocabulary back on screen.
+  return VERDICT_LABELS[verdict] ?? 'UNCLEAR'
 }
 
 /** A suppression an investigation proposed — a suggestion, never a rule. */
@@ -29,13 +49,18 @@ export interface SuppressionSuggestion {
   event_id: number
 }
 
-/** The parts of a triage verdict the timeline renders. */
+/**
+ * The parts of a triage verdict the timeline renders.
+ *
+ * Deliberately not all of them: the trail also records *why* the server did or
+ * did not act on a verdict (`not_resolved_because`), which is a fact about
+ * kenny's own machinery rather than about the machine the ticket is for. It
+ * stays in the trail, where an operator asking that question will find it.
+ */
 export interface TriageFinding {
   verdict: string
   finding: string
   evidence: string
-  /** Present only when the server declined to act on the verdict, and says why. */
-  notResolvedBecause: string | null
   suggestion: SuppressionSuggestion | null
 }
 
@@ -62,12 +87,10 @@ export function findingOf(entry: TimelineEntry): TriageFinding | null {
   const fields = asRecord(entry.fields)
   const verdict = typeof fields?.verdict === 'string' ? fields.verdict : ''
   if (!verdict) return null
-  const why = typeof fields?.not_resolved_because === 'string' ? fields.not_resolved_because : ''
   return {
     verdict,
     finding: typeof fields?.finding === 'string' ? fields.finding : '',
     evidence: typeof fields?.evidence === 'string' ? fields.evidence : '',
-    notResolvedBecause: why || null,
     suggestion: asSuggestion(fields?.suppression_suggestion),
   }
 }

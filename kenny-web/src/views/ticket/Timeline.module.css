@@ -115,13 +115,6 @@
   overflow-wrap: break-word;
 }
 
-.withheld {
-  font-size: 11px;
-  color: var(--text-faint);
-  margin-top: 8px;
-  overflow-wrap: break-word;
-}
-
 .suggestion {
   display: flex;
   gap: 10px;

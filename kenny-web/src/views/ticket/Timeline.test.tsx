@@ -101,7 +101,9 @@ describe('Timeline', () => {
       />,
     )
 
-    expect(container.textContent).toContain('PHANTOM')
+    // The verdict reads as its meaning, not as the server's token for it.
+    expect(container.textContent).toContain('NO PROBLEM FOUND')
+    expect(container.textContent).not.toContain('PHANTOM')
     expect(container.textContent).toContain('The device this names is not on this PC.')
     expect(container.textContent).toContain('checked: diag_services lists only Harddisk0.')
     // The summary line is the verdict's own row text; the framed card replaces

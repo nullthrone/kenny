@@ -56,6 +56,7 @@ from .tool_classes import (
 )
 from .toolloop import (
     SERVER_TOOLS,
+    TICKET_SUMMARY_TOOL,
     TRIAGE_VERDICT_TOOL,
     Allow,
     Deny,
@@ -70,6 +71,7 @@ from .toolloop import (
 )
 from .toolloop import _tool_result_block
 from .tools import CAPABILITY_TOOLS, agent_overview
+from .tunnel import ToolError
 from .userstore import UserStore
 
 __all__ = [
@@ -113,6 +115,11 @@ _RATE_WINDOW_SECS = 3600.0
 #: still lives in ``ticket_runs`` — this only bounds what one SQLite row in the
 #: (never-pruned, per ADR-0046's amendment) trail holds.
 _MAX_TRAIL_TEXT_CHARS = 20_000
+
+#: Ceiling on one ``ticket_summary`` row. A summary is one or two sentences by
+#: instruction; this is the ceiling that holds when it is not, so the ticket's
+#: record cannot become the conversation again by the back door.
+_MAX_SUMMARY_CHARS = 600
 
 #: Ceiling on an exception's ``str()`` carried on a failed-turn trail row (see
 #: :meth:`TicketAssistant.run_turn`). An exception repr is not curated prose
@@ -206,7 +213,19 @@ _SYSTEM_PROMPT = (
     "links, or raw HTML — they are not part of what gets rendered.\n"
     "- Reply in the same language the requester's own messages are written in "
     "(German, English, whatever it is) — never default to English just because "
-    "these instructions are in English."
+    "these instructions are in English.\n\n"
+    "What the ticket keeps:\n"
+    "- Your reply belongs to the conversation you are having. What the ticket "
+    "shows is a record, and you write it by calling " + TICKET_SUMMARY_TOOL + " "
+    "once at the end of a turn in which you found something out about the "
+    "machine, changed something on it, or reached a conclusion. One or two "
+    "plain sentences, the outcome first, in the requester's language.\n"
+    "- Do not call it for a turn that answered a question from what you already "
+    "knew, asked something back, or only chatted. Nothing happened to the "
+    "machine, so the ticket has nothing to record.\n"
+    "- Summarise what is now true, never what you are about to do. If a check "
+    "contradicted something you said earlier in the ticket, the summary is where "
+    "that correction goes."
 )
 
 
@@ -238,6 +257,30 @@ def _neutralize(text: str) -> str:
     for tag in ("message", "MESSAGE", "report", "REPORT"):
         out = out.replace(f"<{tag}", f"&lt;{tag}").replace(f"</{tag}", f"&lt;/{tag}")
     return out
+
+
+def _resume_done(
+    status: ResumeStatus, *, session_id: str = "", done: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """The one terminal event a resume yields, carrying how the resume went.
+
+    Shaped exactly like the ``done`` that
+    :func:`~kenny_server.toolloop.drive_events` yields so a streaming surface needs no second code path — ``resume_status``
+    is additive, and a client that ignores it simply sees the turn end.
+    """
+
+    event = dict(done or {})
+    event.update(
+        {
+            "type": "done",
+            "session_id": event.get("session_id") or session_id,
+            "assistant_text": event.get("assistant_text", ""),
+            "pending": event.get("pending"),
+            "done": True,
+            "resume_status": status,
+        }
+    )
+    return event
 
 
 def envelope(
@@ -436,7 +479,14 @@ def _narrower_role(a: str | None, b: str | None) -> str:
 #: Dropping the sensitive ones is independently right. A background
 #: investigation nobody asked for must not look at somebody's screen, read
 #: their files, or list the sites they visited.
-TRIAGE_TOOLS: frozenset[str] = (READ_ONLY_TOOLS - SENSITIVE_TOOLS) | {TRIAGE_VERDICT_TOOL}
+#:
+#: :data:`~kenny_server.toolloop.TICKET_SUMMARY_TOOL` is taken out for the same
+#: reason the verdict tool is put in: an investigation says what it found *once*,
+#: in a verdict that carries its evidence and can resolve the ticket. A second,
+#: weaker way to write the same thing would be two records of one conclusion.
+TRIAGE_TOOLS: frozenset[str] = (
+    READ_ONLY_TOOLS - SENSITIVE_TOOLS - {TICKET_SUMMARY_TOOL}
+) | {TRIAGE_VERDICT_TOOL}
 
 
 def allowed_tools_for(
@@ -1118,6 +1168,55 @@ class TicketAssistant:
         """Add a surface to the default set (see ``_default_surfaces`` above)."""
 
         self._default_surfaces.append(surface)
+
+    def register_tools(self, executor: ToolExecutor) -> None:
+        """Route this surface's own tools to this assistant.
+
+        The same registration seam ``TriageService`` uses, and for the same
+        reason: the executor is shared by every surface and knows nothing about
+        tickets, which is a property worth keeping rather than a gap to close
+        with another constructor argument.
+        """
+
+        executor.register_server_tool(TICKET_SUMMARY_TOOL, self.record_summary)
+
+    async def record_summary(
+        self, args: dict[str, Any], *, session: Any = None
+    ) -> dict[str, Any]:
+        """Handle ``ticket_summary``: write what this turn came to on the ticket.
+
+        A conversation belongs to the surface it happened on — the drawer, the
+        Discord thread — and stays there. The ticket keeps a record instead, and
+        this is the one row in it that kenny composed rather than the server:
+        every other presented line is deterministic prose over the trail
+        (``ticket_timeline.py``), and this one is a model's sentence, marked as
+        such by being a message from kenny rather than a status line.
+
+        Bounded like any other model-supplied text and returned as a normal tool
+        result, so the loop, the trail and the audit treat it like every other
+        call.
+        """
+
+        ticket_id = getattr(session, "id", None)
+        if not ticket_id:
+            raise ToolError("no_ticket", "no ticket in this session")
+        summary = str(args.get("summary") or "").strip()
+        if not summary:
+            # Refused, not recorded as an empty line: a blank summary on the
+            # ticket would read as a turn that found nothing, which is a claim
+            # the model did not make. Raised rather than returned so the trail
+            # says the call failed instead of saying it succeeded.
+            raise ToolError("empty_summary", "summary must say what you found or changed")
+        if len(summary) > _MAX_SUMMARY_CHARS:
+            summary = summary[:_MAX_SUMMARY_CHARS].rstrip() + "…"
+        await self.tickets.append_event(
+            ticket_id,
+            kind="note",
+            actor=ASSISTANT_ACTOR,
+            summary=summary,
+            fields={"turn_summary": True},
+        )
+        return {"recorded": True}
 
     async def notify_transition(self, ticket: Ticket, to_state: str) -> None:
         """The registered ``TransitionNotifier`` — fan out to every default surface.
@@ -1851,7 +1950,51 @@ class TicketAssistant:
         surfaces: Sequence[TicketSurface] = (),
         model_override: str | None = None,
     ) -> ResumeStatus:
-        """Continue a ticket after its open gate was decided.
+        """Continue a ticket after its open gate was decided, discarding the events.
+
+        The draining half of :meth:`resume_events`, for every caller that only
+        needs to know whether the ticket moved: Discord's button, the sweeper,
+        the plain JSON decision route. A caller that wants to *watch* the turn
+        it released — the dashboard, whose operator is looking at the
+        conversation this gate interrupted — iterates the generator instead.
+        """
+
+        status: ResumeStatus = "no_decision"
+        async for event in self.resume_events(
+            ticket_id,
+            approval=approval,
+            decided_by=decided_by,
+            surfaces=surfaces,
+            model_override=model_override,
+        ):
+            reported = event.get("resume_status")
+            if isinstance(reported, str):
+                status = reported  # type: ignore[assignment]
+        return status
+
+    async def resume_events(
+        self,
+        ticket_id: str,
+        *,
+        approval: TicketApproval | None = None,
+        decided_by: Principal | None = None,
+        surfaces: Sequence[TicketSurface] = (),
+        model_override: str | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Continue a ticket after its open gate was decided, yielding the turn.
+
+        An async generator for the same reason :meth:`run_turn` is one: the
+        decision and the work it releases are one continuous thing, and the
+        surface where the decision was made is where the operator is watching.
+        Before this existed, a dashboard decision resumed the ticket *behind*
+        the conversation that raised the gate — the trail moved, Discord was
+        told, and the browser that had just clicked CONFIRM sat on a transcript
+        frozen at "awaiting your decision" until it was reloaded.
+
+        Exactly one terminal event is yielded on every path, always a ``done``
+        carrying ``resume_status`` (:data:`ResumeStatus`) — including on the
+        paths where no model turn runs at all, so a streaming caller never has
+        to distinguish "finished" from "never started".
 
         Rebuilds the session from SQLite — transcript, queue, staged results,
         turn count and the frozen call from ``ticket_approvals`` — so this works
@@ -1881,28 +2024,32 @@ class TicketAssistant:
         call is put back at the head of the queue and re-enters the gate, so a
         tool that also needs an operator still gets one.
 
-        Returns a :data:`ResumeStatus` rather than silently doing nothing —
-        the historical bug this closes is exactly a caller reading a hardcoded
-        "resumed" while the ticket sat wedged.
+        The status is reported rather than silently swallowed — the historical
+        bug this closes is exactly a caller reading a hardcoded "resumed" while
+        the ticket sat wedged.
         """
 
         ticket = await self.store.get(ticket_id)
         if ticket is None:
-            return "no_ticket"
+            yield _resume_done("no_ticket")
+            return
         approval = approval or await self._last_decision(ticket_id)
         if approval is None or approval.status == "pending":
-            return "no_decision"
+            yield _resume_done("no_decision")
+            return
         actor = await self._requester_principal(ticket)
         if actor is None and decided_by is not None and decided_by.at_least("operator"):
             actor = decided_by
         if actor is None:
-            return await self._resume_degraded(ticket, approval)
+            yield _resume_done(await self._resume_degraded(ticket, approval))
+            return
 
         session = await self.session_for(
             ticket, actor=actor, spare_tool_use_ids=(approval.tool_use_id,)
         )
         if session is None:
-            return "no_session"
+            yield _resume_done("no_session")
+            return
         approved = approval.status == "approved"
 
         try:
@@ -1937,7 +2084,11 @@ class TicketAssistant:
                 )
                 seed.append(resume_event)
 
-            async for _ in self.run_turn(
+            # The loop's own terminal event is held back and re-yielded below
+            # with the status attached: one terminal event per resume, whichever
+            # path got here.
+            terminal: dict[str, Any] | None = None
+            async for event in self.run_turn(
                 session,
                 ticket,
                 seed_events=seed,
@@ -1945,7 +2096,10 @@ class TicketAssistant:
                 surfaces=surfaces,
                 model_override=model_override,
             ):
-                pass
+                if event.get("type") == "done":
+                    terminal = event
+                    continue
+                yield event
         except Exception as exc:  # noqa: BLE001 - never leave the ticket silently wedged
             logger.exception(
                 "ticket %s: resuming after gate %s was decided failed",
@@ -1970,9 +2124,10 @@ class TicketAssistant:
             await self._block(
                 ticket_id, "operator", actor="system", reason="resume did not complete"
             )
-            return "degraded"
+            yield _resume_done("degraded", session_id=session.id)
+            return
 
-        return "resumed"
+        yield _resume_done("resumed", session_id=session.id, done=terminal)
 
     async def resume_expired(self, approval: TicketApproval) -> None:
         """Answer a gate the sweeper timed out, exactly as a denial is answered.

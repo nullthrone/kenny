@@ -152,14 +152,17 @@ qualifies for the same autonomy Discord always had.
 
 When a step needs you, kenny posts an **approval card** — in the operator channel if you
 configured one, otherwise in the ticket's own thread — with the exact tool and arguments.
-The same held call renders inline in the [Inbox](dashboard.md#inbox)'s NEEDS YOU group,
-and the header's **Inbox badge** counts it from anywhere in the dashboard. Approvals are
-**persistent**: they survive a server restart, and they expire after
-`KENNY_TICKET_APPROVAL_TTL_SECS` (default 24 h) — an expiry counts as a denial, and kenny
-tells the requester so. See [`dashboard.md`](dashboard.md#approval-gates) for the Inbox's
-inline decision and [Ticket detail](dashboard.md#ticket-detail) for the same gate on the
-ticket itself — which is the only place it is ever decided, because a confirmation shown
-without the call it confirms is a decision made without its evidence.
+The [Inbox](dashboard.md#inbox) says which ticket is waiting for one and the header's
+**Inbox badge** counts it from anywhere in the dashboard. Approvals are **persistent**:
+they survive a server restart, and they expire after `KENNY_TICKET_APPROVAL_TTL_SECS`
+(default 24 h) — an expiry counts as a denial, and kenny tells the requester so.
+
+In the dashboard a gate is answered in the **Ask kenny** drawer, the one place kenny asks
+for anything, and answering it carries the conversation on from where the gate stopped it
+(see [Ticket detail](dashboard.md#ticket-detail)). Wherever it is answered, the card being
+decided carries the exact tool and its frozen arguments: a confirmation shown without the
+call it confirms is a decision made without its evidence, and that rule is what fixes
+*how* a gate may be presented, not which screen presents it.
 
 ## kenny looks first, before you are asked to
 
@@ -184,9 +187,10 @@ Whether it does is not in the event. It is only on the machine.
   investigation that runs out does not guess: it produces no verdict, and the ticket
   stays open with whatever it did find.
 
-It ends with a **verdict**: *phantom* (the report names something that is not on this
-PC), *benign known* (real but harmless, confirmed), *resolved itself*, *actionable* (a
-real problem — this always stays open for you), or *inconclusive* (it could not tell, and
+It ends with a **verdict**, shown as what it means rather than as the word the server
+files it under: **NO PROBLEM FOUND** (the report names something that is not on this PC),
+**KNOWN AND HARMLESS** (real but harmless, confirmed), **ALREADY OVER**, **NEEDS ACTION**
+(a real problem — this always stays open for you), or **UNCLEAR** (it could not tell, and
 says what was missing). On a recurring reliability pattern it may also **suggest a
 suppression rule** — a suggestion only; creating one stays yours.
 
@@ -381,6 +385,12 @@ went out, so they are always kept in full. See
 amends [ADR-0046](adr/0046-ticket-as-entity-chat-thread-as-binding.md) on this point. One
 practical consequence: the trail was already never pruned, and it now grows with how much a
 ticket's chat is actually used — there is still no knob to bound that.
+
+**Stored is not the same as shown.** Kenny's replies live in the trail and are read in the
+Audit tab; what the ticket *shows* of a turn is a line kenny writes for it — one or two
+sentences saying what it found or changed — because the conversation itself is legible on
+the surface it was had on and the ticket is a record, not a second transcript of it
+([ADR-0061](adr/0061-the-ticket-keeps-a-record-not-a-transcript.md)).
 
 The **raw transcript** — the verbatim back-and-forth kenny needs only to resume a ticket
 after a restart — is working state, not the record. It is pruned after

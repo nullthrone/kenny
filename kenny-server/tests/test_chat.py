@@ -57,6 +57,13 @@ def text_block(text: str) -> _Block:
     return _Block(type="text", text=text)
 
 
+def thinking_block(thinking: str, signature: str = "sig-abc") -> _Block:
+    """A real reasoning block, as the API returns it — signed, so a replay of it
+    has to come back byte-identical."""
+
+    return _Block(type="thinking", thinking=thinking, signature=signature)
+
+
 def tool_use_block(tool_id: str, name: str, inp: dict[str, Any]) -> _Block:
     return _Block(type="tool_use", id=tool_id, name=name, input=inp)
 
@@ -69,16 +76,40 @@ def _chunks(text: str) -> list[str]:
 
 class _StreamCtx:
     """Mimics ``anthropic`` ``messages.stream()``: a sync context manager that
-    exposes ``text_stream`` (token chunks) and ``get_final_message()``."""
+    iterates ``content_block_delta`` events and exposes ``get_final_message()``.
+
+    The event shape is the one the loop actually reads, so a text block streams
+    as several ``text_delta``s and a thinking block as a ``thinking_delta`` —
+    the two channels the loop has to keep apart."""
 
     def __init__(self, response: _Response) -> None:
         self._response = response
+        # The real stream object exposes both: raw events (what the tool loop
+        # reads, so it can tell reasoning from words) and the text-only
+        # shortcut (what the one-shot generators in ``recommend``/``forecast``
+        # read, having no reasoning to separate). A fake that dropped either
+        # would make one of those paths untestable rather than correct.
         self.text_stream = [
             chunk
             for b in response.content
             if getattr(b, "type", None) == "text"
             for chunk in _chunks(b.text)
         ]
+
+    def __iter__(self) -> Any:
+        for block in self._response.content:
+            kind = getattr(block, "type", None)
+            if kind == "text":
+                for chunk in _chunks(block.text):
+                    yield _Block(
+                        type="content_block_delta",
+                        delta=_Block(type="text_delta", text=chunk),
+                    )
+            elif kind == "thinking":
+                yield _Block(
+                    type="content_block_delta",
+                    delta=_Block(type="thinking_delta", thinking=getattr(block, "thinking", "")),
+                )
 
     def __enter__(self) -> _StreamCtx:
         return self

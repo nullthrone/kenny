@@ -243,11 +243,22 @@ DROP_RULES: tuple[tuple[str, Any], ...] = (
         lambda e: e.kind == "handoff" and (e.fields or {}).get("applied") is False,
     ),
     (
-        # `ticket_triage_verdict` is not a call on a machine, it is how the
-        # investigation speaks (`toolloop.SURFACE_ONLY_TOOLS`). Its two
-        # tool_call rows would restate the finding card word for word.
+        # `ticket_triage_verdict` and `ticket_summary` are not calls on a
+        # machine, they are how kenny speaks to the ticket
+        # (`toolloop.SURFACE_ONLY_TOOLS`). Their tool_call rows would restate
+        # the card or the summary word for word.
         "surface_only_tool",
         lambda e: e.kind == "tool_call" and (e.tool or "") in SURFACE_ONLY_TOOLS,
+    ),
+    (
+        # Kenny's own reply, in full. It belongs to the conversation it was said
+        # in — the drawer, the Discord thread — and it is in the trail, which
+        # the audit tab shows verbatim. What the ticket *shows* of a turn is the
+        # summary kenny wrote for it (`ticket_summary`) plus the deterministic
+        # lines this module composes. The alternative is a ticket that is a
+        # second, worse transcript of a conversation held elsewhere.
+        "assistant_prose",
+        lambda e: e.kind == "message" and e.actor in (ASSISTANT_ACTOR, TRIAGE_ACTOR),
     ),
     (
         # The request half of a gate. The decision is kept; while the request
@@ -556,6 +567,11 @@ def _single(event: TicketEvent) -> TimelineEntry | None:
     if event.kind == "note":
         if fields.get("verdict"):
             return made(FINDING, event.summary, STATUS, dict(fields))
+        if fields.get("turn_summary"):
+            # The one presented line kenny composed rather than this module.
+            # Rendered as markdown for the same reason a reply is: it is kenny's
+            # prose, written to the same light-markdown instruction.
+            return made(MESSAGE, event.summary, MARKDOWN)
         return made(MESSAGE, event.summary, VERBATIM)
 
     if event.kind == "state":

@@ -21,10 +21,10 @@ export interface TimelineProps {
  * reader either takes on trust or re-derives themselves — both of which are
  * the work this feature exists to remove.
  *
- * `notResolvedBecause` is the other half of that. A verdict the server
- * declined to act on is not a failure to report; it is the most informative
- * row on the page while `KENNY_TRIAGE_RESOLVE` is still off, because it says
- * exactly what would have happened with it on.
+ * What the card does not carry is kenny's own bookkeeping — which verdicts the
+ * server is configured to act on, and why it left this ticket open. The reader
+ * came for their problem; the ticket's state is already in the header, and the
+ * machinery behind it is in the trail.
  */
 function Verdict({ finding, agentId }: { finding: TriageFinding; agentId?: string | null }) {
   const addSuppression = useAddSuppression()
@@ -38,9 +38,6 @@ function Verdict({ finding, agentId }: { finding: TriageFinding; agentId?: strin
       </div>
       {finding.finding && <p className={styles.finding}>{finding.finding}</p>}
       {finding.evidence && <div className={styles.evidence}>checked: {finding.evidence}</div>}
-      {finding.notResolvedBecause && (
-        <div className={styles.withheld}>Not resolved: {finding.notResolvedBecause}</div>
-      )}
       {suggestion && (
         <div className={styles.suggestion}>
           <span className={styles.suggestionText}>

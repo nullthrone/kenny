@@ -62,10 +62,12 @@ re-raises what was just dismissed teaches people to ignore it. Standing findings
 on Fleet and Today, which is where they are derived.
 
 **An approval is shown, not offered, in the queue.** A row says its ticket waits for an
-approval; the decision lives on the ticket, next to the frozen call it would run. Deciding
-from a list, beside a title, is deciding without the evidence — and ADR-0045's rule that a
-tier is never permission to skip a confirmation is worth little if the confirmation is
-shown without what it confirms.
+approval; the decision is made where the frozen call it would run is shown beside it.
+Deciding from a list, beside a title, is deciding without the evidence — and ADR-0045's
+rule that a tier is never permission to skip a confirmation is worth little if the
+confirmation is shown without what it confirms. What this fixes is the *form* a decision
+must take, not which screen takes it: which surface carries the card is a UI question and
+is answered in the code, not here.
 
 **An emitted alert records its ticket.** `events` gains a nullable `ticket_id`, written
 after the ticket decision and inside alerting's existing swallow, so the link can never

@@ -61,12 +61,9 @@
  * rather than repeating it, because a confirmation shown without the frozen
  * call it confirms is a decision made without its evidence (ADR-0045).
  */
-.gateNotice {
-  font-size: 11px;
-  line-height: var(--leading-body);
-  color: var(--warn);
-  border: 1px solid var(--border-line);
-  background: var(--surface-inset);
-  padding: 10px 12px;
-  margin: 0 0 10px;
+/* The ticket's own gate, decided here. Sits directly above the composer it
+   locks, so what kenny is waiting for and the field it will not let you use
+   are one glance apart. */
+.ticketGate {
+  margin: 0 14px 10px;
 }
