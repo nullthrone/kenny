@@ -381,15 +381,16 @@ from a cold load, not just from clicking through the queue. It shows:
   it, because it describes the ticket's state now and not one it used to be in.
 - A **triage verdict** in the analysis tab, where an investigation left one. This is the
   one entry that is a finding rather than a line of history, so it gets a frame: the verdict
-  itself (*phantom*, *benign known*, *resolved itself*, *actionable*, *inconclusive* —
-  coloured by whether it needs you, not by which of the five it is), what kenny concluded
-  in a sentence, and **what it checked to conclude that**. The evidence sits next to the
-  verdict rather than behind a click, because it is the reason to believe it. If the server
-  declined to act on a closing verdict, the row says why — while
-  [`KENNY_TRIAGE_RESOLVE`](setup.md) is still off that line is the most informative one on
-  the page, since it says exactly what would have happened with it on. Where the verdict
-  proposes muting a recurring event pattern, the row carries a one-click **MUTE ON THIS PC**
-  button that creates the suppression rule for that host.
+  itself (**NO PROBLEM FOUND**, **KNOWN AND HARMLESS**, **ALREADY OVER**, **NEEDS ACTION**,
+  **UNCLEAR** — coloured by whether it needs you, not by which of the five it is), what
+  kenny concluded in a sentence, and **what it checked to conclude that**. The evidence sits
+  next to the verdict rather than behind a click, because it is the reason to believe it.
+  The card says what was found about the machine and nothing about kenny's own machinery:
+  whether the server is configured to close a ticket on a verdict like this one
+  ([`KENNY_TRIAGE_RESOLVE`](setup.md)) is answered by the ticket's state in the header, and
+  the trail records the rest. Where the verdict proposes muting a recurring event pattern,
+  the row carries a one-click **MUTE ON THIS PC** button that creates the suppression rule
+  for that host.
 - **What happened**, in two tabs over the same rows.
 
     **ANALYSIS** (the default) is the ticket read as a story, oldest first: findings, what

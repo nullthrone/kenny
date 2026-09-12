@@ -184,9 +184,10 @@ Whether it does is not in the event. It is only on the machine.
   investigation that runs out does not guess: it produces no verdict, and the ticket
   stays open with whatever it did find.
 
-It ends with a **verdict**: *phantom* (the report names something that is not on this
-PC), *benign known* (real but harmless, confirmed), *resolved itself*, *actionable* (a
-real problem — this always stays open for you), or *inconclusive* (it could not tell, and
+It ends with a **verdict**, shown as what it means rather than as the word the server
+files it under: **NO PROBLEM FOUND** (the report names something that is not on this PC),
+**KNOWN AND HARMLESS** (real but harmless, confirmed), **ALREADY OVER**, **NEEDS ACTION**
+(a real problem — this always stays open for you), or **UNCLEAR** (it could not tell, and
 says what was missing). On a recurring reliability pattern it may also **suggest a
 suppression rule** — a suggestion only; creating one stays yours.
 
