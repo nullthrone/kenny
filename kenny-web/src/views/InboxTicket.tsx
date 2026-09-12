@@ -5,7 +5,6 @@ import { api } from '../api/client'
 import type { FleetResponse, Me } from '../api/types'
 import EmptyState from '../components/EmptyState/EmptyState'
 import { ScrollText } from '../components/icons'
-import ApprovalGate, { type DecisionOutcome } from './ticket/ApprovalGate'
 import AuditTrail from './ticket/AuditTrail'
 import InlineEditField from './ticket/InlineEditField'
 import LinkedAlerts, { type TicketAlertsResponse } from './ticket/LinkedAlerts'
@@ -60,14 +59,15 @@ interface DirectoryResponse {
  * note, because a note is a thing you write *onto* a ticket rather than a
  * conversation you have about it.
  *
- * This is the only surface that offers an approval decision: the queue shows
- * that a ticket waits for one, and the frozen call it would run is here
- * (ADR-0059).
+ * Nothing on this page talks back to kenny — not the gate either. A ticket
+ * waiting on an approval says so, and the decision is made in the drawer,
+ * beside the frozen call and in the conversation the gate interrupted. What
+ * ADR-0059 requires of that decision is unchanged and is still met: it is made
+ * next to the call it would run, never beside a title in a list.
  */
 export default function InboxTicket() {
   const { id } = useParams<{ id: string }>()
   const queryClient = useQueryClient()
-  const [banner, setBanner] = useState<{ text: string; warn: boolean } | null>(null)
   const [tab, setTab] = useState<'analysis' | 'audit'>('analysis')
 
   const me = useQuery({ queryKey: ['me'], queryFn: () => api.get<Me>('/api/me') })
@@ -140,12 +140,6 @@ export default function InboxTicket() {
     void queryClient.invalidateQueries({ queryKey: ticketApprovalKey(id) })
   }
 
-  function handleDecided(outcome: DecisionOutcome) {
-    setBanner({ text: outcome.message, warn: !outcome.resumed })
-    refetchTicket()
-    refetchApproval()
-  }
-
   const loaded = ticket.data
 
   // Hand the drawer everything it needs to be *this ticket's* chat: which
@@ -161,9 +155,17 @@ export default function InboxTicket() {
       agentId: loaded.agent_id ?? '',
       discordThread: !!loaded.discord_thread,
       assistantAvailable: loaded.assistant_available,
-      blockedOnApproval: isBlockedOnApproval,
+      gate: openApproval
+        ? {
+            id: openApproval.id,
+            tool: openApproval.tool,
+            args: openApproval.args,
+            agentId: openApproval.agent_id,
+            toolClass: openApproval.tool_class,
+          }
+        : null,
     })
-  }, [loaded, isBlockedOnApproval])
+  }, [loaded, openApproval])
 
   // A turn run from the drawer writes to this ticket's trail as it goes. The
   // drawer cannot reach this page's query client, so it says which ticket
@@ -241,15 +243,6 @@ export default function InboxTicket() {
         {t.priority} priority
       </div>
 
-      {banner && (
-        <div className={`${styles.banner}${banner.warn ? ` ${styles.bannerWarn}` : ''}`}>
-          <span>{banner.text}</span>
-          <button type="button" className={styles.bannerDismiss} onClick={() => setBanner(null)}>
-            DISMISS
-          </button>
-        </div>
-      )}
-
       <div className={styles.fields}>
         <InlineEditField
           label="TITLE"
@@ -321,29 +314,24 @@ export default function InboxTicket() {
       </div>
 
       {openApproval && (
+        // Said, not offered. The card that can answer this is in the drawer,
+        // bound to this ticket by the effect above; this button only opens it,
+        // which is why it is the one thing on the page that still points there.
         <div className={styles.gateWrap}>
-          <ApprovalGate
-            approvalId={openApproval.id}
-            tool={openApproval.tool}
-            args={openApproval.args}
-            agentId={openApproval.agent_id}
-            toolClass={openApproval.tool_class}
-            onDecided={handleDecided}
-          />
+          <div className={styles.waiting}>
+            <span>
+              Kenny is waiting on a decision before it can go on: <code>{openApproval.tool}</code>
+              {openApproval.agent_id ? ` on ${openApproval.agent_id}` : ''}.
+            </span>
+            <button
+              type="button"
+              className={styles.askButton}
+              onClick={() => window.dispatchEvent(new CustomEvent(ASK_KENNY_OPEN_EVENT))}
+            >
+              ANSWER IN ASK KENNY
+            </button>
+          </div>
         </div>
-      )}
-
-      {t.assistant_available && (
-        // The conversation itself is in the drawer, already bound to this
-        // ticket by the effect above — this only opens it, so that "talk to
-        // kenny about this" stays one click from the ticket it is about.
-        <button
-          type="button"
-          className={styles.askButton}
-          onClick={() => window.dispatchEvent(new CustomEvent(ASK_KENNY_OPEN_EVENT))}
-        >
-          ASK KENNY ABOUT THIS TICKET
-        </button>
       )}
 
       {isOperator && <NoteComposer ticketId={id} requesterLabel={requesterDisplayName} onPosted={refetchTicket} />}

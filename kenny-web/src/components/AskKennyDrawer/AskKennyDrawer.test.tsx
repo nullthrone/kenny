@@ -160,7 +160,7 @@ describe('AskKennyDrawer — a ticket is the second context, not a second drawer
     agentId: 'linus-pc',
     discordThread: false,
     assistantAvailable: true,
-    blockedOnApproval: false,
+    gate: null as { id: string; tool: string; args: Record<string, unknown>; agentId?: string | null; toolClass?: string } | null,
   }
 
   function openOnTicket(over: Partial<typeof TICKET> = {}) {
@@ -198,10 +198,61 @@ describe('AskKennyDrawer — a ticket is the second context, not a second drawer
     expect(screen.queryByTitle('New conversation')).not.toBeInTheDocument()
   })
 
-  it('does not decide a ticket gate here; it points at where the evidence is', async () => {
-    // A ticket's gate is durable and is answered beside the frozen call it
-    // would run (ADR-0050). A second CONFIRM in this drawer would be a
-    // decision offered without what it decides.
+  const GATE = {
+    id: 'ap-1',
+    tool: 'powershell_exec',
+    args: { command: 'Get-PnpDevice -Class Bluetooth' },
+    agentId: 'linus-pc',
+    toolClass: 'standard_change',
+  }
+
+  it('decides the ticket gate here, beside the frozen call it would run', async () => {
+    streamChatEventsMock.mockImplementation(async function* () {
+      yield { type: 'tool_result', tool: 'powershell_exec', ok: true, auto_run: false }
+      yield { type: 'text_delta', text: 'The adapter is not connected.' }
+      yield { type: 'done' }
+    })
+
+    openOnTicket({ gate: GATE })
+
+    // The card carries what is being decided — the arguments, verbatim.
+    expect(screen.getByText('CONFIRM & RUN')).toBeInTheDocument()
+    expect(document.body.textContent).toContain('Get-PnpDevice -Class Bluetooth')
+
+    fireEvent.click(screen.getByText('CONFIRM & RUN'))
+
+    await waitFor(() => expect(streamChatEventsMock).toHaveBeenCalled())
+    const [url, body] = streamChatEventsMock.mock.calls[0] as [string, Record<string, unknown>]
+    // The ticket's durable gate, addressed by approval id — not the copilot's
+    // session-scoped confirm.
+    expect(url).toBe('/api/tickets/t-42/approvals/ap-1/decide/stream')
+    expect(body).toEqual({ approve: true })
+
+    // And the turn the decision released continues in this same transcript,
+    // rather than leaving it frozen at the gate until somebody reloads.
+    await waitFor(() =>
+      expect(document.body.textContent).toContain('The adapter is not connected.'),
+    )
+  })
+
+  it('shows a gate it has no transcript for — an investigation nobody started', () => {
+    // The panel is the one place a decision is made, so it must be able to
+    // present one that arrived from triage or from Discord.
+    openOnTicket({ gate: GATE })
+
+    expect(screen.getByText('CONFIRM & RUN')).toBeInTheDocument()
+    expect(screen.getByText('CANCEL')).toBeInTheDocument()
+  })
+
+  it('asks nothing else of kenny while a decision is outstanding', () => {
+    openOnTicket({ gate: GATE })
+
+    const textarea = screen.getByLabelText<HTMLTextAreaElement>('Message kenny')
+    expect(textarea).toBeDisabled()
+    expect(textarea.placeholder).toContain('Answer the decision above')
+  })
+
+  it('shows an undecided gate once, on the card that can answer it', async () => {
     streamChatEventsMock.mockImplementation(async function* () {
       yield { type: 'pending', tool: 'powershell_exec', args: {}, agent_id: 'linus-pc' }
     })
@@ -209,10 +260,14 @@ describe('AskKennyDrawer — a ticket is the second context, not a second drawer
     openOnTicket()
     sendMessage('clean it up')
 
-    const textarea = await screen.findByLabelText<HTMLTextAreaElement>('Message kenny')
-    await waitFor(() => expect(textarea).toBeDisabled())
-    expect(screen.queryByText('CONFIRM & RUN')).not.toBeInTheDocument()
-    expect(document.body.textContent).toContain('It is on the ticket')
+    await waitFor(() => expect(document.body.textContent).toContain('awaiting your decision'))
+    // The row above is the live turn's own trace; the page rebinds with the
+    // durable gate a moment later, and then the card is the only copy.
+    cleanup()
+    chatStore.openForTicket({ ...TICKET, gate: GATE })
+    render(<AskKennyDrawer />)
+    expect(document.body.textContent).not.toContain('awaiting your decision')
+    expect(screen.getByText('CONFIRM & RUN')).toBeInTheDocument()
   })
 
   it('offers the Discord mirror only when the ticket has a thread', () => {

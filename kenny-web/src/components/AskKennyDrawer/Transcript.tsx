@@ -10,6 +10,9 @@ export interface TranscriptProps {
    * label says kenny is still at it. Absent on a replayed conversation, which
    * carries no reasoning at all. */
   openThinkingId?: string | null
+  /** The gate row whose card is being rendered below this transcript. Skipped
+   * here: an undecided gate is shown once, on the card that can decide it. */
+  pendingGateItemId?: string | null
 }
 
 /**
@@ -23,7 +26,11 @@ export interface TranscriptProps {
  * who disagrees with an answer wants to see how it was reached; it is closed
  * because the answer is what they came for.
  */
-export default function Transcript({ items, openThinkingId = null }: TranscriptProps) {
+export default function Transcript({
+  items,
+  openThinkingId = null,
+  pendingGateItemId = null,
+}: TranscriptProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -92,6 +99,10 @@ export default function Transcript({ items, openThinkingId = null }: TranscriptP
             )
 
           case 'gate': {
+            // The undecided gate is on the card below, which is the only thing
+            // that can answer it. Once decided this row comes back, as the
+            // trace of what was decided and how it went.
+            if (item.id === pendingGateItemId && item.resolution === 'pending') return null
             const cls =
               item.resolution === 'approved'
                 ? `${styles.gateTrace} ${styles.gateTraceApproved}`

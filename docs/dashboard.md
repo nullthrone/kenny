@@ -329,8 +329,8 @@ one-line meta description — the ticket's ref, where it came from, and what it 
 for — and an age. **Every row opens [ticket detail](#ticket-detail)**; no row in this
 queue leads anywhere else.
 
-A ticket waiting for an approval says so, and the decision itself is on the ticket, next
-to the frozen call it would run.
+A ticket waiting for an approval says so; answering it is one click further on, in the
+drawer, beside the frozen call it would run.
 
 A standing critical or warning finding reaches this queue only as the ticket an
 [auto-ticket rule](#auto-ticket-rules) opened from it. A finding with no ticket — a rule
@@ -412,21 +412,26 @@ from a cold load, not just from clicking through the queue. It shows:
     is dropped here and nothing is parsed: an audit shows what is stored. Both tabs answer
     to the same ownership check; the analysis tab is a reading, never a permission.
 
-- A **held gate** gets inline **Approve**/**Deny** buttons directly on the ticket for an
-  operator+, and — the instant it's held, or on opening a ticket that's already waiting —
-  a wide confirm-gate dialog showing the exact tool and frozen arguments. **This
-  ticket-scoped gate is dismissible**: it gets a **"Decide later"** button rather than a
-  deny, since it can legitimately wait for a different operator than whoever has it open
-  right now. The [Ask kenny overlay](#ask-kenny)'s own fleet confirm-gate is deliberately
-  **not** dismissible — that asymmetry is on purpose, so dismissing a ticket's gate can
-  never be confused with denying a fleet-chat action. A ticket gate is never decided from
-  inside the drawer: if one opens mid-conversation the drawer says so and points back at
-  the ticket, because a confirmation shown without the call it confirms is a decision made
-  without its evidence.
-- **ASK KENNY ABOUT THIS TICKET**, which opens the [Ask kenny](#ask-kenny) drawer already
-  bound to this ticket, and — for an operator+ — a **note** field, the page's only
-  composer. A note is something you write *onto* a ticket; asking kenny is a conversation
-  *about* one, and it belongs in the drawer with every other conversation. Enter follows
+- A **held gate** shows on the ticket as one line — what kenny is waiting to run, on which
+  PC — and a button that opens the [Ask kenny](#ask-kenny) drawer, where the decision is
+  made. Nothing on the ticket page decides it: every exchange with kenny, the gate
+  included, happens in the drawer, so there is one place in the console where kenny asks
+  and one place where it is answered. What the decision must not lose is unchanged — the
+  card in the drawer shows the exact tool and its frozen arguments, and deciding beside a
+  bare title in a list is still refused (ADR-0059).
+
+  **The ticket's gate is dismissible**; the fleet copilot's is not. Closing the drawer on a
+  ticket gate is a legitimate "not yet": the gate is durable, the ticket goes on saying it
+  is waiting, and a different operator may answer it. The copilot's own confirm-gate is a
+  modal whose only exits are CONFIRM & RUN and CANCEL, because nothing there is durable —
+  that asymmetry is on purpose, so closing a ticket's gate can never be confused with
+  denying a fleet-chat action. Answering a gate in the drawer streams the work it releases
+  straight back into the same conversation, rather than leaving the transcript frozen at
+  the question.
+- A **note** field, for an operator+, is the page's only composer. A note is something you
+  write *onto* a ticket; asking kenny is a conversation *about* one, and it belongs in the
+  drawer with every other conversation — which is why there is no second "ask about this
+  ticket" button here: ⌘K on a ticket opens the drawer already bound to it. Enter follows
   the same `Enter to send` preference here as everywhere else.
 
   In the drawer, a ticket is a second context rather than a second chat: the scope chip

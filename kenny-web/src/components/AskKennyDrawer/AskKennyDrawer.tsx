@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { hostFromHash, ticketFromHash } from '../../chat/scope'
 import { useChatSession } from '../../chat/useChatSession'
 import { Plus, ScrollText, ICON_STROKE_WIDTH } from '../icons'
+import GateCard from '../GateCard/GateCard'
 import Composer from './Composer'
 import HistoryPanel from './HistoryPanel'
 import PendingGateModal from './PendingGateModal'
@@ -24,10 +25,18 @@ import styles from './AskKennyDrawer.module.css'
  * **Two contexts, one surface.** On a host page this is the fleet copilot.
  * On a ticket it is that ticket's own chat (ADR-0050): the same transcript
  * and the same composer, posting to the ticket's endpoint, under the
- * ticket's gate, against the ticket's frozen host. Three things change with
- * it, and each is visible rather than inferred — the scope chip names the
- * ticket, there is no conversation history to browse because the ticket's
- * timeline *is* its history, and a gate is not decided here.
+ * ticket's gate, against the ticket's frozen host. Two things change with it,
+ * and each is visible rather than inferred — the scope chip names the ticket,
+ * and there is no conversation history to browse because the ticket's timeline
+ * *is* its history.
+ *
+ * **Every decision kenny needs is made here**, on either surface. The copilot's
+ * transient gate is a modal (its only exits are CONFIRM & RUN and CANCEL); a
+ * ticket's gate is durable, so it sits inline and closing the drawer leaves it
+ * open for later or for somebody else. What the two have in common is the part
+ * that matters: the frozen call and its arguments are on the card being
+ * decided, and there is exactly one place in the console where that decision
+ * can be made.
  */
 export default function AskKennyDrawer() {
   const [route] = useState(() => ({
@@ -45,13 +54,14 @@ export default function AskKennyDrawer() {
   // endpoint would run it under the wrong gate against no ticket at all.
   const notReady = !!route.ticketId && ticket?.id !== route.ticketId
 
+  const ticketGate = ticket?.gate ?? null
   const unavailable = ticket
     ? !ticket.assistantAvailable
       ? 'The AI assistant is not configured on this server.'
       : !ticket.agentId
         ? 'This ticket has no target machine.'
-        : ticket.blockedOnApproval
-          ? 'Waiting on the decision on this ticket…'
+        : ticketGate
+          ? 'Answer the decision above before asking anything else.'
           : undefined
     : undefined
 
@@ -115,20 +125,31 @@ export default function AskKennyDrawer() {
         />
       ) : (
         <>
-          <Transcript items={state.items} openThinkingId={state.openThinkingId} />
-          {ticket && gateOpen && (
-            // The gate is the ticket's, not this drawer's: durable, decided
-            // beside the frozen call it would run, and free to wait for a
-            // different operator than whoever has this open (ADR-0050).
-            // Offering a second CONFIRM here would be offering the decision
-            // without the evidence it is a decision about.
-            <p className={styles.gateNotice}>
-              Kenny needs a decision. It is on the ticket, next to the call it would run —
-              close this drawer to answer it.
-            </p>
+          <Transcript
+            items={state.items}
+            openThinkingId={state.openThinkingId}
+            pendingGateItemId={ticketGate ? state.pendingGate?.itemId ?? null : null}
+          />
+          {ticketGate && (
+            // Inline rather than modal: this gate is durable. It may be
+            // answered now, or minutes from now, or by a different operator on
+            // another screen — closing the drawer is a legitimate "not yet",
+            // and the ticket goes on saying it is waiting.
+            <GateCard
+              className={styles.ticketGate}
+              tool={ticketGate.tool}
+              args={ticketGate.args}
+              agentId={ticketGate.agentId}
+              toolClass={ticketGate.toolClass}
+              approveLabel="CONFIRM & RUN"
+              denyLabel="CANCEL"
+              onApprove={() => void chat.resolveGate(true)}
+              onDeny={() => void chat.resolveGate(false)}
+              busy={state.deciding}
+            />
           )}
           <Composer
-            gateLocked={gateOpen}
+            gateLocked={gateOpen || !!ticketGate}
             streaming={state.streaming}
             unavailable={unavailable}
             offerDiscordMirror={!!ticket?.discordThread}

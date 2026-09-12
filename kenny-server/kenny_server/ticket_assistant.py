@@ -240,6 +240,30 @@ def _neutralize(text: str) -> str:
     return out
 
 
+def _resume_done(
+    status: ResumeStatus, *, session_id: str = "", done: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """The one terminal event a resume yields, carrying how the resume went.
+
+    Shaped exactly like :func:`~kenny_server.toolloop.drive_events`\ 's own
+    ``done`` so a streaming surface needs no second code path — ``resume_status``
+    is additive, and a client that ignores it simply sees the turn end.
+    """
+
+    event = dict(done or {})
+    event.update(
+        {
+            "type": "done",
+            "session_id": event.get("session_id") or session_id,
+            "assistant_text": event.get("assistant_text", ""),
+            "pending": event.get("pending"),
+            "done": True,
+            "resume_status": status,
+        }
+    )
+    return event
+
+
 def envelope(
     *, discord_id: str, kenny_user: str, role: str, actionable: bool, content: str
 ) -> str:
@@ -1851,7 +1875,51 @@ class TicketAssistant:
         surfaces: Sequence[TicketSurface] = (),
         model_override: str | None = None,
     ) -> ResumeStatus:
-        """Continue a ticket after its open gate was decided.
+        """Continue a ticket after its open gate was decided, discarding the events.
+
+        The draining half of :meth:`resume_events`, for every caller that only
+        needs to know whether the ticket moved: Discord's button, the sweeper,
+        the plain JSON decision route. A caller that wants to *watch* the turn
+        it released — the dashboard, whose operator is looking at the
+        conversation this gate interrupted — iterates the generator instead.
+        """
+
+        status: ResumeStatus = "no_decision"
+        async for event in self.resume_events(
+            ticket_id,
+            approval=approval,
+            decided_by=decided_by,
+            surfaces=surfaces,
+            model_override=model_override,
+        ):
+            reported = event.get("resume_status")
+            if isinstance(reported, str):
+                status = reported  # type: ignore[assignment]
+        return status
+
+    async def resume_events(
+        self,
+        ticket_id: str,
+        *,
+        approval: TicketApproval | None = None,
+        decided_by: Principal | None = None,
+        surfaces: Sequence[TicketSurface] = (),
+        model_override: str | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Continue a ticket after its open gate was decided, yielding the turn.
+
+        An async generator for the same reason :meth:`run_turn` is one: the
+        decision and the work it releases are one continuous thing, and the
+        surface where the decision was made is where the operator is watching.
+        Before this existed, a dashboard decision resumed the ticket *behind*
+        the conversation that raised the gate — the trail moved, Discord was
+        told, and the browser that had just clicked CONFIRM sat on a transcript
+        frozen at "awaiting your decision" until it was reloaded.
+
+        Exactly one terminal event is yielded on every path, always a ``done``
+        carrying ``resume_status`` (:data:`ResumeStatus`) — including on the
+        paths where no model turn runs at all, so a streaming caller never has
+        to distinguish "finished" from "never started".
 
         Rebuilds the session from SQLite — transcript, queue, staged results,
         turn count and the frozen call from ``ticket_approvals`` — so this works
@@ -1881,28 +1949,32 @@ class TicketAssistant:
         call is put back at the head of the queue and re-enters the gate, so a
         tool that also needs an operator still gets one.
 
-        Returns a :data:`ResumeStatus` rather than silently doing nothing —
-        the historical bug this closes is exactly a caller reading a hardcoded
-        "resumed" while the ticket sat wedged.
+        The status is reported rather than silently swallowed — the historical
+        bug this closes is exactly a caller reading a hardcoded "resumed" while
+        the ticket sat wedged.
         """
 
         ticket = await self.store.get(ticket_id)
         if ticket is None:
-            return "no_ticket"
+            yield _resume_done("no_ticket")
+            return
         approval = approval or await self._last_decision(ticket_id)
         if approval is None or approval.status == "pending":
-            return "no_decision"
+            yield _resume_done("no_decision")
+            return
         actor = await self._requester_principal(ticket)
         if actor is None and decided_by is not None and decided_by.at_least("operator"):
             actor = decided_by
         if actor is None:
-            return await self._resume_degraded(ticket, approval)
+            yield _resume_done(await self._resume_degraded(ticket, approval))
+            return
 
         session = await self.session_for(
             ticket, actor=actor, spare_tool_use_ids=(approval.tool_use_id,)
         )
         if session is None:
-            return "no_session"
+            yield _resume_done("no_session")
+            return
         approved = approval.status == "approved"
 
         try:
@@ -1937,7 +2009,11 @@ class TicketAssistant:
                 )
                 seed.append(resume_event)
 
-            async for _ in self.run_turn(
+            # The loop's own terminal event is held back and re-yielded below
+            # with the status attached: one terminal event per resume, whichever
+            # path got here.
+            terminal: dict[str, Any] | None = None
+            async for event in self.run_turn(
                 session,
                 ticket,
                 seed_events=seed,
@@ -1945,7 +2021,10 @@ class TicketAssistant:
                 surfaces=surfaces,
                 model_override=model_override,
             ):
-                pass
+                if event.get("type") == "done":
+                    terminal = event
+                    continue
+                yield event
         except Exception as exc:  # noqa: BLE001 - never leave the ticket silently wedged
             logger.exception(
                 "ticket %s: resuming after gate %s was decided failed",
@@ -1970,9 +2049,10 @@ class TicketAssistant:
             await self._block(
                 ticket_id, "operator", actor="system", reason="resume did not complete"
             )
-            return "degraded"
+            yield _resume_done("degraded", session_id=session.id)
+            return
 
-        return "resumed"
+        yield _resume_done("resumed", session_id=session.id, done=terminal)
 
     async def resume_expired(self, approval: TicketApproval) -> None:
         """Answer a gate the sweeper timed out, exactly as a denial is answered.

@@ -64,6 +64,7 @@ from ..ticket_rules import DECISIONS, EVENT_TYPES, KNOWN_SECTIONS, TicketRuleLis
 from ..ticket_timeline import project
 from ..ticketstore import Ticket, TicketApproval, TicketStore
 from ..tickets import (
+    ApprovalNotFoundError,
     BLOCKED_REASONS,
     KNOWN_CATEGORIES,
     PRIORITIES,
@@ -717,6 +718,47 @@ def build_ticket_routes(
 
     # -- approvals -------------------------------------------------------------
 
+    async def _check_may_decide(
+        principal: Principal, approval_id: str, *, ticket_id: str | None = None
+    ) -> TicketApproval | None:
+        """Refuse a decision this principal may not make, before anything is written.
+
+        ``TicketService.decide_approval`` enforces who may *approve* a gate
+        (only an operator for ``operator_approval``, only the ticket's own
+        requester for ``user_consent``), but it explicitly leaves *denial* open
+        to any actor ("Denying stays open to every actor" — the sweeper's expiry
+        and a requester's own withdrawal both rely on that). Left alone, that
+        would let a scoped `user` deny anyone's pending gate over these routes,
+        not just their own — a real widening, not the neutral floor-lower it
+        looks like. So this runs the same pre-check ``handle_component`` already
+        runs before reaching the service for the Discord button
+        (``discord_service.py``): a `user` may reach only a ``user_consent``
+        gate on a ticket they themselves requested; everything else (another
+        user's consent gate, any ``operator_approval``) is refused here, before
+        either ``approve=True`` or ``approve=False`` gets near the service.
+
+        ``ticket_id`` is passed by the route that is addressed *through* a
+        ticket, and it is not a formality: that route authorizes the caller
+        against the ticket in its own path, so a gate belonging to some other
+        ticket must not be reachable through it whatever the caller's role.
+
+        Returns the approval when it could be read, ``None`` when there is
+        nothing to pre-check — ``decide_approval`` itself raises
+        ``ApprovalNotFoundError`` for a gate that does not exist, which the
+        routes already translate to a 404.
+        """
+
+        approval = await store.get_approval(approval_id)
+        if approval is None:
+            return None
+        if ticket_id is not None and approval.ticket_id != ticket_id:
+            raise ApprovalNotFoundError(approval_id)
+        if not principal.at_least("operator"):
+            if approval.kind != "user_consent":
+                raise Forbidden(403, "only an operator can decide this step")
+            _owned_or_operator(principal, await tickets.get(approval.ticket_id))
+        return approval
+
     async def api_approvals_list(request: Request) -> JSONResponse:
         """Pending approval gates.
 
@@ -775,30 +817,7 @@ def build_ticket_routes(
         approve = body.get("approve")
         if not isinstance(approve, bool):
             return _err("approve must be a boolean")
-        if not principal.at_least("operator"):
-            # ``TicketService.decide_approval`` enforces who may *approve* a
-            # gate (only an operator for ``operator_approval``, only the
-            # ticket's own requester for ``user_consent``), but it explicitly
-            # leaves *denial* open to any actor ("Denying stays open to every
-            # actor" — the sweeper's expiry and a requester's own withdrawal
-            # both rely on that). Left alone, that would let a scoped `user`
-            # deny anyone's pending gate over this route, not just their own —
-            # a real widening, not the neutral floor-lower it looks like. So
-            # this route adds the same pre-check ``handle_component`` already
-            # runs before ever reaching the service for the Discord button
-            # (``discord_service.py``): a `user` may reach only a
-            # ``user_consent`` gate on a ticket they themselves requested;
-            # everything else (another user's consent gate, any
-            # ``operator_approval``) is refused here, before either
-            # `approve=True` or `approve=False` gets near the service.
-            approval = await store.get_approval(request.path_params["aid"])
-            if approval is not None:
-                if approval.kind != "user_consent":
-                    raise Forbidden(403, "only an operator can decide this step")
-                ticket = await tickets.get(approval.ticket_id)
-                _owned_or_operator(principal, ticket)
-            # else: no pre-check to run — decide_approval itself raises
-            # ApprovalNotFoundError, translated to the usual 404 below.
+        await _check_may_decide(principal, request.path_params["aid"])
         decided = await tickets.decide_approval(
             request.path_params["aid"],
             approve=approve,
@@ -824,26 +843,102 @@ def build_ticket_routes(
                     decided.ticket_id,
                     decided.id,
                 )
-        if discord is not None and decided.discord_channel_id and decided.discord_message_id:
-            try:
-                await discord.gateway.resolve_card(
-                    channel_id=decided.discord_channel_id,
-                    message_id=decided.discord_message_id,
-                    outcome="approved" if approve else "denied",
-                    decided_by=str(principal.user_id),
-                )
-            except Exception:  # noqa: BLE001 - the decision already happened
-                logger.exception(
-                    "ticket %s: resolving the Discord approval card for %s failed",
-                    decided.ticket_id,
-                    decided.id,
-                )
+        await _resolve_discord_card(decided, principal, approve)
         return JSONResponse(
             {
                 **decided.as_dict(),
                 "resumed": resume_status == "resumed",
                 "resume_status": resume_status,
             }
+        )
+
+    async def _resolve_discord_card(decided: TicketApproval, principal: Principal, approve: bool) -> None:
+        """Make a Discord approval card non-clickable once it was decided elsewhere.
+
+        Best-effort and deliberately independent of whether the resume worked:
+        a card left looking like it still awaits a click invites a second
+        decision on a gate that is already closed.
+        """
+
+        if discord is None or not decided.discord_channel_id or not decided.discord_message_id:
+            return
+        try:
+            await discord.gateway.resolve_card(
+                channel_id=decided.discord_channel_id,
+                message_id=decided.discord_message_id,
+                outcome="approved" if approve else "denied",
+                decided_by=str(principal.user_id),
+            )
+        except Exception:  # noqa: BLE001 - the decision already happened
+            logger.exception(
+                "ticket %s: resolving the Discord approval card for %s failed",
+                decided.ticket_id,
+                decided.id,
+            )
+
+    async def api_ticket_approval_decide_stream(request: Request) -> Response:
+        """Decide this ticket's held call and stream the turn the decision releases.
+
+        The same decision as ``POST /api/approvals/{aid}``, answered where it
+        was asked. A gate is durable and may be decided minutes later, by
+        somebody else, on another surface — that has not changed — but when it
+        *is* decided from the conversation it interrupted, the operator who
+        clicked should watch the work continue instead of reloading a page to
+        find out what happened (ADR-0050's own reason for the ticket having a
+        chat at all).
+
+        Addressed through the ticket, and authorized through it: the caller must
+        pass ``_owned_or_operator`` for *this* ticket, and ``_check_may_decide``
+        refuses an approval id belonging to any other one. Every check that can
+        fail runs before the first byte, as a plain JSON error, so the caller
+        never has to tell a 4xx from a stream that merely said ``error`` — the
+        same contract ``api_ticket_chat_stream`` states above.
+
+        The decision is durable before the stream opens. A client that hangs up
+        mid-stream therefore loses the *view* of the turn, never the decision,
+        and never the run: the loop is driven by this handler, not by the
+        browser's attention span.
+        """
+
+        principal = require_user(request)
+        ticket = await tickets.get(request.path_params["tid"])
+        _owned_or_operator(principal, ticket)
+        body = await _body(request)
+        approve = body.get("approve")
+        if not isinstance(approve, bool):
+            return _err("approve must be a boolean")
+        if assistant is None:
+            return _err("the AI assistant is not configured", 503)
+        await _check_may_decide(principal, request.path_params["aid"], ticket_id=ticket.id)
+
+        decided = await tickets.decide_approval(
+            request.path_params["aid"],
+            approve=approve,
+            decided_by=principal.user_id,
+            decided_via="dashboard",
+            actor=_actor(principal),
+        )
+        await _resolve_discord_card(decided, principal, approve)
+
+        async def gen() -> Any:
+            try:
+                async for event in assistant.resume_events(
+                    decided.ticket_id,
+                    approval=decided,
+                    decided_by=principal,
+                    surfaces=(discord,) if discord is not None else (),
+                ):
+                    yield _sse(event)
+            except Exception as exc:  # noqa: BLE001 - the decision already happened
+                logger.exception(
+                    "ticket %s: resuming after a dashboard decision on %s failed",
+                    decided.ticket_id,
+                    decided.id,
+                )
+                yield _sse({"type": "error", "error": str(exc)})
+
+        return StreamingResponse(
+            gen(), media_type="text/event-stream", headers=_STREAM_HEADERS
         )
 
     # -- Discord (self-service: see/remove the caller's own binding) -----------
@@ -1235,6 +1330,11 @@ def build_ticket_routes(
         Route(
             "/api/tickets/{tid}/unblock",
             g(api_ticket_unblock, min_role="user"),
+            methods=["POST"],
+        ),
+        Route(
+            "/api/tickets/{tid}/approvals/{aid}/decide/stream",
+            g(api_ticket_approval_decide_stream, min_role="user"),
             methods=["POST"],
         ),
         Route("/api/approvals", g(api_approvals_list, min_role="user")),

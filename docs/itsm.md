@@ -152,14 +152,17 @@ qualifies for the same autonomy Discord always had.
 
 When a step needs you, kenny posts an **approval card** — in the operator channel if you
 configured one, otherwise in the ticket's own thread — with the exact tool and arguments.
-The same held call renders inline in the [Inbox](dashboard.md#inbox)'s NEEDS YOU group,
-and the header's **Inbox badge** counts it from anywhere in the dashboard. Approvals are
-**persistent**: they survive a server restart, and they expire after
-`KENNY_TICKET_APPROVAL_TTL_SECS` (default 24 h) — an expiry counts as a denial, and kenny
-tells the requester so. See [`dashboard.md`](dashboard.md#approval-gates) for the Inbox's
-inline decision and [Ticket detail](dashboard.md#ticket-detail) for the same gate on the
-ticket itself — which is the only place it is ever decided, because a confirmation shown
-without the call it confirms is a decision made without its evidence.
+The [Inbox](dashboard.md#inbox) says which ticket is waiting for one and the header's
+**Inbox badge** counts it from anywhere in the dashboard. Approvals are **persistent**:
+they survive a server restart, and they expire after `KENNY_TICKET_APPROVAL_TTL_SECS`
+(default 24 h) — an expiry counts as a denial, and kenny tells the requester so.
+
+In the dashboard a gate is answered in the **Ask kenny** drawer, the one place kenny asks
+for anything, and answering it carries the conversation on from where the gate stopped it
+(see [Ticket detail](dashboard.md#ticket-detail)). Wherever it is answered, the card being
+decided carries the exact tool and its frozen arguments: a confirmation shown without the
+call it confirms is a decision made without its evidence, and that rule is what fixes
+*how* a gate may be presented, not which screen presents it.
 
 ## kenny looks first, before you are asked to
 
