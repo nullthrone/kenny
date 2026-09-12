@@ -448,6 +448,9 @@ async def _seed_tickets(tickets: Any, base: datetime, user_ids: dict[str, int]) 
         await tickets.transition(flush.id, "resolved", actor="system", reason="issue fixed")
         await tickets.update(
             flush.id,
+            # The assistant wrote this resolution, so the patch row says so --
+            # and a machine actor deliberately does not move last_human_at.
+            actor=ASSISTANT_ACTOR,
             resolution="Updated the Wi-Fi driver; grandpa-pc now holds a stable connection.",
         )
 
