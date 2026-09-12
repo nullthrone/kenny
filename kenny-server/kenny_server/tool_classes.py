@@ -127,6 +127,13 @@ TOOL_CLASSES: dict[str, str] = {
     # window (``tickets.auto_close_resolved``) plus a ``resolved -> in_progress``
     # transition any requester or operator may make.
     "ticket_triage_verdict": STANDARD_CHANGE,
+    # -- what a ticket-bound turn leaves on the ticket ----------------------
+    # Records, in kenny's own sentence, what the turn found or changed. READ_ONLY
+    # and it has to be: it touches no machine and moves no ticket, it only writes
+    # the trail row every other call writes anyway. Any change tier would put a
+    # confirmation in front of *summarising*, which would park the ticket on a
+    # gate for the privilege of saying what already happened.
+    "ticket_summary": READ_ONLY,
 }
 
 #: Every tool that only observes. Derived, never hand-listed, so a tool added to
@@ -189,6 +196,10 @@ _SELF_SERVICE_BASIC: frozenset[str] = frozenset(
         "remotehelp_start",
         "remotehelp_stop",
         "net_dns_flush",
+        # Not a capability: how a turn tells the ticket what came of it. Withheld
+        # from a profile, a scoped user's ticket would record the work and not
+        # the outcome.
+        "ticket_summary",
     }
 )
 

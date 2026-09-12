@@ -56,6 +56,7 @@ from .tool_classes import (
 )
 from .toolloop import (
     SERVER_TOOLS,
+    TICKET_SUMMARY_TOOL,
     TRIAGE_VERDICT_TOOL,
     Allow,
     Deny,
@@ -70,6 +71,7 @@ from .toolloop import (
 )
 from .toolloop import _tool_result_block
 from .tools import CAPABILITY_TOOLS, agent_overview
+from .tunnel import ToolError
 from .userstore import UserStore
 
 __all__ = [
@@ -113,6 +115,11 @@ _RATE_WINDOW_SECS = 3600.0
 #: still lives in ``ticket_runs`` — this only bounds what one SQLite row in the
 #: (never-pruned, per ADR-0046's amendment) trail holds.
 _MAX_TRAIL_TEXT_CHARS = 20_000
+
+#: Ceiling on one ``ticket_summary`` row. A summary is one or two sentences by
+#: instruction; this is the ceiling that holds when it is not, so the ticket's
+#: record cannot become the conversation again by the back door.
+_MAX_SUMMARY_CHARS = 600
 
 #: Ceiling on an exception's ``str()`` carried on a failed-turn trail row (see
 #: :meth:`TicketAssistant.run_turn`). An exception repr is not curated prose
@@ -206,7 +213,19 @@ _SYSTEM_PROMPT = (
     "links, or raw HTML — they are not part of what gets rendered.\n"
     "- Reply in the same language the requester's own messages are written in "
     "(German, English, whatever it is) — never default to English just because "
-    "these instructions are in English."
+    "these instructions are in English.\n\n"
+    "What the ticket keeps:\n"
+    "- Your reply belongs to the conversation you are having. What the ticket "
+    "shows is a record, and you write it by calling " + TICKET_SUMMARY_TOOL + " "
+    "once at the end of a turn in which you found something out about the "
+    "machine, changed something on it, or reached a conclusion. One or two "
+    "plain sentences, the outcome first, in the requester's language.\n"
+    "- Do not call it for a turn that answered a question from what you already "
+    "knew, asked something back, or only chatted. Nothing happened to the "
+    "machine, so the ticket has nothing to record.\n"
+    "- Summarise what is now true, never what you are about to do. If a check "
+    "contradicted something you said earlier in the ticket, the summary is where "
+    "that correction goes."
 )
 
 
@@ -245,8 +264,8 @@ def _resume_done(
 ) -> dict[str, Any]:
     """The one terminal event a resume yields, carrying how the resume went.
 
-    Shaped exactly like :func:`~kenny_server.toolloop.drive_events`\ 's own
-    ``done`` so a streaming surface needs no second code path — ``resume_status``
+    Shaped exactly like the ``done`` that
+    :func:`~kenny_server.toolloop.drive_events` yields so a streaming surface needs no second code path — ``resume_status``
     is additive, and a client that ignores it simply sees the turn end.
     """
 
@@ -460,7 +479,14 @@ def _narrower_role(a: str | None, b: str | None) -> str:
 #: Dropping the sensitive ones is independently right. A background
 #: investigation nobody asked for must not look at somebody's screen, read
 #: their files, or list the sites they visited.
-TRIAGE_TOOLS: frozenset[str] = (READ_ONLY_TOOLS - SENSITIVE_TOOLS) | {TRIAGE_VERDICT_TOOL}
+#:
+#: :data:`~kenny_server.toolloop.TICKET_SUMMARY_TOOL` is taken out for the same
+#: reason the verdict tool is put in: an investigation says what it found *once*,
+#: in a verdict that carries its evidence and can resolve the ticket. A second,
+#: weaker way to write the same thing would be two records of one conclusion.
+TRIAGE_TOOLS: frozenset[str] = (
+    READ_ONLY_TOOLS - SENSITIVE_TOOLS - {TICKET_SUMMARY_TOOL}
+) | {TRIAGE_VERDICT_TOOL}
 
 
 def allowed_tools_for(
@@ -1142,6 +1168,55 @@ class TicketAssistant:
         """Add a surface to the default set (see ``_default_surfaces`` above)."""
 
         self._default_surfaces.append(surface)
+
+    def register_tools(self, executor: ToolExecutor) -> None:
+        """Route this surface's own tools to this assistant.
+
+        The same registration seam ``TriageService`` uses, and for the same
+        reason: the executor is shared by every surface and knows nothing about
+        tickets, which is a property worth keeping rather than a gap to close
+        with another constructor argument.
+        """
+
+        executor.register_server_tool(TICKET_SUMMARY_TOOL, self.record_summary)
+
+    async def record_summary(
+        self, args: dict[str, Any], *, session: Any = None
+    ) -> dict[str, Any]:
+        """Handle ``ticket_summary``: write what this turn came to on the ticket.
+
+        A conversation belongs to the surface it happened on — the drawer, the
+        Discord thread — and stays there. The ticket keeps a record instead, and
+        this is the one row in it that kenny composed rather than the server:
+        every other presented line is deterministic prose over the trail
+        (``ticket_timeline.py``), and this one is a model's sentence, marked as
+        such by being a message from kenny rather than a status line.
+
+        Bounded like any other model-supplied text and returned as a normal tool
+        result, so the loop, the trail and the audit treat it like every other
+        call.
+        """
+
+        ticket_id = getattr(session, "id", None)
+        if not ticket_id:
+            raise ToolError("no_ticket", "no ticket in this session")
+        summary = str(args.get("summary") or "").strip()
+        if not summary:
+            # Refused, not recorded as an empty line: a blank summary on the
+            # ticket would read as a turn that found nothing, which is a claim
+            # the model did not make. Raised rather than returned so the trail
+            # says the call failed instead of saying it succeeded.
+            raise ToolError("empty_summary", "summary must say what you found or changed")
+        if len(summary) > _MAX_SUMMARY_CHARS:
+            summary = summary[:_MAX_SUMMARY_CHARS].rstrip() + "…"
+        await self.tickets.append_event(
+            ticket_id,
+            kind="note",
+            actor=ASSISTANT_ACTOR,
+            summary=summary,
+            fields={"turn_summary": True},
+        )
+        return {"recorded": True}
 
     async def notify_transition(self, ticket: Ticket, to_state: str) -> None:
         """The registered ``TransitionNotifier`` — fan out to every default surface.

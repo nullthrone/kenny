@@ -394,16 +394,24 @@ from a cold load, not just from clicking through the queue. It shows:
 - **What happened**, in two tabs over the same rows.
 
     **ANALYSIS** (the default) is the ticket read as a story, oldest first: findings, what
-    people wrote, what kenny changed, and the moves somebody decided. Each line is already
-    a sentence — kenny's own replies through the same markdown renderer Ask kenny uses, a
-    person's own words as plain escaped text, and everything kenny did as plain prose
-    written from the trail: *"I looked at the agent's health, the event log (System, Setup,
-    Application) and disk usage."* A change kenny made without anyone deciding says so —
-    *"I flushed the DNS cache without being asked — that is a routine change"* — because
-    that is the one class of thing nobody was consulted about. What failed or was refused
-    stays too, since it explains a gap. Lifecycle moves are kept but set quietly, as time
-    anchors. A Discord-origin family message still shows only its existing one-line
-    summary — no verbatim text is stored for it.
+    people wrote, what kenny found or changed, and the moves somebody decided. Each line is
+    already a sentence — a person's own words as plain escaped text, and everything kenny
+    did as plain prose written from the trail: *"I looked at the agent's health, the event
+    log (System, Setup, Application) and disk usage."* A change kenny made without anyone
+    deciding says so — *"I flushed the DNS cache without being asked — that is a routine
+    change"* — because that is the one class of thing nobody was consulted about. What
+    failed or was refused stays too, since it explains a gap. Lifecycle moves are kept but
+    set quietly, as time anchors. A Discord-origin family message still shows only its
+    existing one-line summary — no verbatim text is stored for it.
+
+    What kenny *said* is not here. A conversation belongs to the surface it was had on —
+    the [Ask kenny](#ask-kenny) drawer, or the Discord thread — and the ticket keeps the
+    outcome instead: at the end of a turn that found something out, changed something, or
+    reached a conclusion, kenny writes one or two sentences onto the ticket saying what is
+    now true. That line is rendered through the same markdown renderer Ask kenny uses, and
+    it is the one line on this tab kenny composed rather than the server
+    ([ADR-0061](adr/0061-the-ticket-keeps-a-record-not-a-transcript.md)). The replies
+    themselves are still stored, and the AUDIT tab shows them verbatim.
 
     **AUDIT** is the trail itself: every row the server stores, in order, with the
     arguments each call ran with and the row's own id. It is what `#`-numbered evidence

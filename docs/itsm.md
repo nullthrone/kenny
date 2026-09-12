@@ -386,6 +386,12 @@ amends [ADR-0046](adr/0046-ticket-as-entity-chat-thread-as-binding.md) on this p
 practical consequence: the trail was already never pruned, and it now grows with how much a
 ticket's chat is actually used — there is still no knob to bound that.
 
+**Stored is not the same as shown.** Kenny's replies live in the trail and are read in the
+Audit tab; what the ticket *shows* of a turn is a line kenny writes for it — one or two
+sentences saying what it found or changed — because the conversation itself is legible on
+the surface it was had on and the ticket is a record, not a second transcript of it
+([ADR-0061](adr/0061-the-ticket-keeps-a-record-not-a-transcript.md)).
+
 The **raw transcript** — the verbatim back-and-forth kenny needs only to resume a ticket
 after a restart — is working state, not the record. It is pruned after
 `KENNY_TICKET_RETENTION_DAYS` (default 30 days) once a ticket is closed. Nothing about the

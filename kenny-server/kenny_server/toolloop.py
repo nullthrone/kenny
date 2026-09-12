@@ -56,6 +56,12 @@ _MAX_TOOL_RESULT_CHARS = 100_000
 #: The tool an unprompted triage turn ends with (see ``kenny_server/triage.py``).
 TRIAGE_VERDICT_TOOL = "ticket_triage_verdict"
 
+#: The tool a ticket-bound turn ends with when it found or changed something
+#: (see :meth:`~kenny_server.ticket_assistant.TicketAssistant.record_summary`).
+#: A conversation belongs to the surface it happened on; what came of it belongs
+#: to the ticket, and this is how it gets there.
+TICKET_SUMMARY_TOOL = "ticket_summary"
+
 #: The verdicts it may report, and the subset the server will act on. Fixed, so
 #: the model cannot invent a category, and validated server-side: an unknown
 #: value is not a new kind of answer, it is a malformed one.
@@ -77,7 +83,7 @@ TRIAGE_CLOSING_VERDICTS: frozenset[str] = frozenset(
 #: emits the whole catalog when a caller passes no allowlist (the dashboard
 #: copilot does exactly that, ``chat.py``), so a tool that belongs to one
 #: surface alone has to be withheld from that default rather than added to it.
-SURFACE_ONLY_TOOLS: frozenset[str] = frozenset({TRIAGE_VERDICT_TOOL})
+SURFACE_ONLY_TOOLS: frozenset[str] = frozenset({TRIAGE_VERDICT_TOOL, TICKET_SUMMARY_TOOL})
 
 #: Server tools :class:`ToolExecutor` dispatches itself. Guards
 #: :meth:`ToolExecutor.register_server_tool` against shadowing one of them.
@@ -164,6 +170,28 @@ SERVER_TOOLS: dict[str, dict[str, Any]] = {
             },
         },
         "required": ["verdict", "finding", "evidence"],
+    },
+    TICKET_SUMMARY_TOOL: {
+        "description": (
+            "Record on the ticket what this turn found or changed, in one or two "
+            "sentences. Call this once, at the end of a turn where you learned "
+            "something about the machine, changed something on it, or reached a "
+            "conclusion -- and not at all for a turn that was only small talk or a "
+            "question back to the person. This is what somebody reading the ticket "
+            "later sees; the conversation itself stays where it was had."
+        ),
+        "properties": {
+            "summary": {
+                "type": "string",
+                "description": (
+                    "What you found or did, for the household's admin: plain "
+                    "sentences, the outcome first, no tool names and no jargon. Not a "
+                    "recap of the conversation and not a promise about what you will "
+                    "do next -- only what is now true."
+                ),
+            },
+        },
+        "required": ["summary"],
     },
 }
 
