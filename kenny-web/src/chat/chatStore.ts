@@ -101,13 +101,8 @@ class ChatStore {
     if (s.ticket?.id === ticket.id) {
       // Rebinding the same ticket only refreshes what the drawer knows —
       // including whether a gate is open, which is why a decision made from
-      // Discord or by another operator quietly takes the card away here.
-      // A decision of our own is in flight: its own stream owns the gate until
-      // it lands, so a refetch racing it must not put the card back.
-      if (s.deciding && ticket.gate?.id === s.ticket.gate?.id) {
-        this.update((st) => ({ ...st, agentId: ticket.agentId, ticket: { ...ticket, gate: st.ticket?.gate ?? null } }))
-        return
-      }
+      // Discord or by another operator quietly takes the card away here, and
+      // why one made here stops offering itself the moment the server agrees.
       this.update((st) => ({ ...st, agentId: ticket.agentId, ticket }))
       return
     }
