@@ -55,6 +55,16 @@ _MAX_TOOL_RESULT_CHARS = 100_000
 #: The tool an unprompted triage turn ends with (see ``kenny_server/triage.py``).
 TRIAGE_VERDICT_TOOL = "ticket_triage_verdict"
 
+#: The two tools the dashboard copilot uses to get a ticket out of a
+#: conversation. Both are READ_ONLY and neither writes a ticket: ``ticket_draft``
+#: proposes one for the operator to correct and submit through the ordinary
+#: create route, and ``ticket_find`` looks for one that already exists. The
+#: copilot proposes; the ticket's own surface works the lifecycle (ADR-0050).
+#: They are withheld from every ticket-bound and triage turn by
+#: ``ticket_assistant.EXCLUDED_TOOLS``, not by this module.
+TICKET_DRAFT_TOOL = "ticket_draft"
+TICKET_FIND_TOOL = "ticket_find"
+
 #: The tool a ticket-bound turn ends with when it found or changed something
 #: (see :meth:`~kenny_server.ticket_assistant.TicketAssistant.record_summary`).
 #: A conversation belongs to the surface it happened on; what came of it belongs
@@ -191,6 +201,55 @@ SERVER_TOOLS: dict[str, dict[str, Any]] = {
             },
         },
         "required": ["summary"],
+    },
+    TICKET_DRAFT_TOOL: {
+        "description": (
+            "Propose a ticket for what this conversation established, so the "
+            "operator can open one without retyping it. This creates NOTHING: the "
+            "draft is shown to the operator as an editable form, and only they can "
+            "turn it into a ticket. Call it when the operator asks for a ticket out "
+            "of this conversation, or when what you just found plainly needs one. "
+            "Do not repeat the draft in your reply and never say a ticket exists."
+        ),
+        "properties": {
+            "title": {
+                "type": "string",
+                "description": (
+                    "One short line naming the problem, as a person would file it. "
+                    "Not a sentence about what you did."
+                ),
+            },
+            "summary": {
+                "type": "string",
+                "description": (
+                    "What the ticket is about, in plain sentences: the symptom, what "
+                    "you established so far, and what is still open. Write it for "
+                    "somebody who was not in this conversation. No tool names."
+                ),
+            },
+            "agent_id": {
+                "type": "string",
+                "description": (
+                    "The host the ticket is about. Leave empty only when the problem "
+                    "genuinely does not belong to one machine yet."
+                ),
+            },
+        },
+        "required": ["title", "summary"],
+    },
+    TICKET_FIND_TOOL: {
+        "description": (
+            "List open tickets, optionally for one host. Use it before proposing a "
+            "draft so a problem that is already on the queue is pointed at rather "
+            "than filed twice."
+        ),
+        "properties": {
+            "agent_id": {
+                "type": "string",
+                "description": "Optional host to narrow to.",
+            },
+        },
+        "required": [],
     },
 }
 

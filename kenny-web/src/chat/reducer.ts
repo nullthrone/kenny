@@ -213,6 +213,24 @@ export function applyChatEvent(state: ChatSessionState, event: ChatEvent): ChatS
     case 'remediation':
       return state
 
+    /**
+     * A proposal, not a ticket. The card it pushes is the only thing that can
+     * create one, and it does so through `POST /api/tickets` like the inbox's
+     * own form — this reducer never learns what a ticket is beyond the three
+     * strings it was handed.
+     */
+    case 'ticket_draft': {
+      const [id, s1] = nextId(state)
+      return pushItem(s1, {
+        kind: 'draft',
+        id,
+        title: event.title,
+        summary: event.summary,
+        agentId: event.agent_id,
+        resolution: 'pending',
+      })
+    }
+
     default: {
       const _exhaustive: never = event
       return _exhaustive

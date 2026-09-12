@@ -1,32 +1,28 @@
-.header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 18px 24px;
-  border-bottom: 1px solid var(--border-line);
+.card {
+  border: 1px solid var(--border-strong);
+  background: var(--surface-inset);
+  padding: 16px;
+  margin: 12px 0;
 }
 
-.headerTitle {
+.heading {
   font-family: var(--font-display);
-  font-size: 12px;
+  font-size: 10px;
   letter-spacing: var(--track-caps);
-}
-
-.close {
-  background: none;
-  border: none;
   color: var(--text-muted);
-  min-width: 44px;
-  min-height: 44px;
-  display: grid;
-  place-items: center;
-}
-.close:hover {
-  color: var(--text-body);
+  margin: 0 0 16px;
 }
 
-.body {
-  padding: 24px;
+.done {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  border-left: 2px solid var(--border-mid);
+  padding-left: 10px;
+  margin: 12px 0;
+}
+
+.link {
+  color: var(--accent);
 }
 
 .error {
@@ -39,11 +35,9 @@
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-  border-top: 1px solid var(--border-line);
-  padding-top: 16px;
 }
 
-.cancel {
+.dismiss {
   padding: 10px 16px;
   background: transparent;
   border: 1px solid var(--border-mid);
@@ -52,8 +46,8 @@
   letter-spacing: var(--track-caps);
   min-height: 44px;
 }
-.cancel:hover {
-  background: var(--surface-inset);
+.dismiss:hover {
+  background: var(--paper-white);
 }
 
 .create {

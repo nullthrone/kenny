@@ -80,3 +80,4 @@ kind of record kenny keeps. What qualifies: *When (not) to write an ADR* in the 
 | [0060](0060-the-ticket-shows-findings-the-trail-stays-the-audit.md) | The ticket shows findings; the trail stays the audit | accepted |
 | [0061](0061-the-ticket-keeps-a-record-not-a-transcript.md) | The ticket keeps a record, not a transcript | proposed |
 | [0062](0062-machine-written-blocks-and-death-by-neglect.md) | A block is machine-written, and a ticket nobody works dies of neglect | accepted |
+| [0063](0063-the-copilot-proposes-a-ticket-it-does-not-open-one.md) | The copilot proposes a ticket; it does not open one | proposed |

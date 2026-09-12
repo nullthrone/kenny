@@ -739,6 +739,15 @@ not navigate away from wherever you were.
   the [ticket-scoped gate](#ticket-detail), there is no "decide later" here, so closing the
   overlay never reads as a decision. See
   [Tool reference](tools.md#three-tiers-and-who-enforces-what).
+- **Draft ticket card** — ask kenny to make a ticket out of the conversation and it fills
+  in the same fields the Inbox's [New ticket](#inbox) form uses, from what the
+  conversation established. Nothing is filed until you press **OPEN TICKET**, and what is
+  filed is what is in the fields — edit the title, the description or the PC first if
+  kenny got them wrong, or **DISCARD** it. The opened ticket links straight from the card,
+  and records separately which read-only checks had already run here. Kenny can propose a
+  ticket and look for one already open; it cannot move one — that happens on the
+  [ticket itself](#ticket-detail). See
+  [ITSM: where a ticket comes from](itsm.md#what-a-ticket-is-and-where-it-comes-from).
 - **Composer** — type and **send**; while a turn streams the button becomes **stop**.
   Suggestion chips ("Why is this PC flagged?", "Free up disk space", "Update all
   packages") pre-fill the box. A section modal's **Fix via Ask kenny** button opens the

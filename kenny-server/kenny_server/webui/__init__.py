@@ -1934,6 +1934,7 @@ def build_chat_routes(
     screenshots: ScreenshotStore,
     history_store: ChatHistoryStore,
     client_factory: Any = _anthropic_client,
+    copilot_tickets: Any = None,
 ) -> list[Route]:
     """Build the server-hosted Claude chat routes.
 
@@ -1948,6 +1949,11 @@ def build_chat_routes(
 
     All inherit operator auth from ``OperatorAuthMiddleware`` (``/api/*``).
     ``client_factory`` is injected so tests pass a fake Anthropic client.
+
+    ``copilot_tickets`` registers ``ticket_draft``/``ticket_find`` on the
+    executor. Optional the way ``tools.py`` treats an unconfigured service: a
+    server without it simply never offers those two names, and nothing else
+    about the copilot changes.
     """
 
     executor = ChatExecutor(
@@ -1957,6 +1963,8 @@ def build_chat_routes(
         call_log=call_log,
         screenshots=screenshots,
     )
+    if copilot_tickets is not None:
+        copilot_tickets.register_tools(executor)
 
     async def api_chat(request: Request) -> JSONResponse:
         body = await request.json()

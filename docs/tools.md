@@ -260,11 +260,28 @@ These read server state and are never forwarded. All are read-only.
 | `agent_health` | `id` | Per-section health for one agent: `status`, `summary`, `reason`, `attention`, `tier` (`incident` / `posture` / `none`), `since` and `age_seconds` (how long the section has held its current status, from the alert loop's state; null until it has seen it) and, where a rule has structured evidence, `details` (the reliability rule's per-pattern activity record, `win_update`'s per-KB failures). |
 | `agent_snapshot` | `id`, `section?` | Latest stored telemetry snapshot (optionally one section). |
 
-!!! note "`select_agent` is withheld from the Discord ticket surface"
-    Every other server-only tool above is available wherever a Discord ticket's profile
-    allows it; `select_agent` alone is filtered out there, because its only job is
-    changing the target — exactly what a ticket freezes at creation. See
+!!! note "`select_agent` is withheld from the ticket surface"
+    Every other server-only tool above is available wherever a ticket's profile allows
+    it; `select_agent` alone is filtered out there, because its only job is changing the
+    target — exactly what a ticket freezes at creation. See
     [ITSM: the lifecycle](itsm.md#what-a-ticket-is-and-where-it-comes-from).
+
+The Ask kenny overlay has two ticket tools of its own
+([ADR-0063](adr/0063-the-copilot-proposes-a-ticket-it-does-not-open-one.md)). Both are
+`read_only` and neither writes a ticket: `ticket_draft` proposes one for the operator to
+correct and open through the ordinary create route, which stays the only path that opens
+a ticket, and `ticket_find` looks for one already on the queue. They are withheld from
+every ticket-bound and unprompted-triage turn, and are not registered over MCP — a remote
+client has no form for a draft to appear in.
+
+| Tool | Arguments | Tier |
+|------|-----------|------|
+| `ticket_draft` | `title`, `summary`, `agent_id?` | `read_only` (creates nothing) |
+| `ticket_find` | `agent_id?` | `read_only` |
+
+A ticket opened from a draft records what the conversation had already checked: one
+`note` row naming the successful read-only calls from that chat session, composed on the
+server from the session itself rather than sent by the browser.
 
 The server-side web-filter tools are also server-only. `webfilter_get` and
 `web_activity_query` are `read_only`; `webfilter_set` and `webfilter_push` change state,

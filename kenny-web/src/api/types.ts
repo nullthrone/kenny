@@ -500,6 +500,18 @@ export type ChatEvent =
    * the union rather than in a per-caller superset.
    */
   | { type: 'remediation'; available: boolean; prompt: string }
+  /**
+   * Kenny proposed a ticket for what this conversation established. NOTHING has
+   * been created: this is a filled-in form for the operator to correct and
+   * submit through the ordinary `POST /api/tickets`, which is the only place a
+   * ticket is ever opened from here.
+   *
+   * Emitted by the chat stream after a successful `ticket_draft` call, and by
+   * that stream alone — history replay never re-emits it. Re-offering the form
+   * when a conversation is reopened would invite a second ticket for the case
+   * the first one already covers.
+   */
+  | { type: 'ticket_draft'; title: string; summary: string; agent_id: string }
 
 /**
  * `POST /api/chat/stream`.

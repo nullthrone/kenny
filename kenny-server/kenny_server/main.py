@@ -78,6 +78,7 @@ from .tunnel import AgentTunnel
 from .update_manager import UpdateManager, record_agent_fetch, update_check_loop
 from .userstore import UserStore
 from .webfilter import ExternalListCache, WebFilterService
+from .copilot_tickets import CopilotTickets, evidence_from_session
 from .webui import _anthropic_client, build_api_routes, build_chat_routes
 from .webui.authz import guard
 from .webui.inbox import build_inbox_routes
@@ -269,6 +270,21 @@ async def _discord_loop(service: DiscordService) -> None:
         raise
     except Exception:  # noqa: BLE001 - never take the server down with the bot
         log.exception("Discord event loop stopped")
+
+
+def _prior_checks_reader(sessions: ChatSessions) -> Any:
+    """Bind the copilot's session registry into the ticket routes' one question.
+
+    ``webui/tickets.py`` needs to know what a drafting conversation had already
+    checked, and nothing else about the copilot. Handing it this closure keeps
+    the dependency one-directional and one question wide.
+    """
+
+    async def read(session_id: str) -> list[dict[str, str]]:
+        session = await sessions.get(session_id)
+        return evidence_from_session(session) if session is not None else []
+
+    return read
 
 
 def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_client) -> Starlette:
@@ -866,6 +882,12 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
     user_routes = build_user_routes(
         user_store=user_store, registry=registry, store=store, oauth_store=oauth_store
     )
+    # The copilot's two ticket tools. Read-only both: the drawer proposes a
+    # ticket and looks for one that already exists, and the operator opens it
+    # through the ordinary create route.
+    copilot_tickets = CopilotTickets(
+        tickets=ticket_store, registry=registry, store=store
+    )
     chat_routes = build_chat_routes(
         registry=registry,
         store=store,
@@ -875,6 +897,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         screenshots=screenshots,
         history_store=chat_history_store,
         client_factory=client_factory,
+        copilot_tickets=copilot_tickets,
     )
     # The server-hosted copilot drives arbitrary capability tools over the
     # process-global active agent, so it is gated to operator+ (ADR-0033). The
@@ -906,6 +929,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         ticket_rules=ticket_rules,
         assistant=ticket_assistant,
         alert_reader=ticket_alert_reader,
+        evidence_reader=_prior_checks_reader(chat_sessions),
     )
     download_routes = build_download_routes(
         registry=registry,

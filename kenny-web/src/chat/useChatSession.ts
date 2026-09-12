@@ -6,6 +6,8 @@ export interface ChatSession {
   state: ChatSessionState
   sendMessage: typeof chatStore.sendMessage
   resolveGate: typeof chatStore.resolveGate
+  createFromDraft: typeof chatStore.createFromDraft
+  dismissDraft: typeof chatStore.dismissDraft
   stop: typeof chatStore.stop
   startNew: () => void
   loadConversation: typeof chatStore.loadConversation
@@ -45,6 +47,8 @@ export function useChatSession(agentId: string, ticketId = ''): ChatSession {
     state,
     sendMessage: chatStore.sendMessage,
     resolveGate: chatStore.resolveGate,
+    createFromDraft: chatStore.createFromDraft,
+    dismissDraft: chatStore.dismissDraft,
     stop: chatStore.stop,
     startNew: () => chatStore.reset(agentId),
     loadConversation: chatStore.loadConversation,

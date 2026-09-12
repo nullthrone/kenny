@@ -56,6 +56,8 @@ from .tool_classes import (
 )
 from .toolloop import (
     SERVER_TOOLS,
+    TICKET_DRAFT_TOOL,
+    TICKET_FIND_TOOL,
     TICKET_SUMMARY_TOOL,
     TRIAGE_VERDICT_TOOL,
     Allow,
@@ -94,7 +96,19 @@ logger = logging.getLogger("kenny.tickets.assistant")
 #: only job is to change which machine the conversation acts on — precisely the
 #: thing a ticket freezes at creation. The profile is also the dashboard's, so
 #: the exclusion belongs here rather than in the profile.
-EXCLUDED_TOOLS: frozenset[str] = frozenset({"select_agent"})
+#:
+#: The copilot's two ticket tools are excluded for their own reasons.
+#: ``ticket_draft`` proposes a *new* ticket, which is the dashboard's question
+#: and never this ticket's — a turn working a case must record what it came to
+#: (``ticket_summary``), not file another case. ``ticket_find`` lists tickets
+#: across requesters, and this surface is reachable by a host-scoped household
+#: member: leaving it open would be the one place they could read what everyone
+#: else has open, the same objection :data:`FLEET_WIDE_TOOLS` already carries.
+#: Subtracted before the triage intersection in :func:`allowed_tools_for`, so
+#: this one line covers an unprompted investigation too.
+EXCLUDED_TOOLS: frozenset[str] = frozenset(
+    {"select_agent", TICKET_DRAFT_TOOL, TICKET_FIND_TOOL}
+)
 
 #: Tools that report on the whole fleet rather than one host. Withheld from a
 #: host-scoped principal: a ticket is about one machine, and ``tools.py`` filters

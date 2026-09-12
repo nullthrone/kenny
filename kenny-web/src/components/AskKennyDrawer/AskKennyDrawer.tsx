@@ -46,7 +46,7 @@ export default function AskKennyDrawer() {
   const chat = useChatSession(route.agentId, route.ticketId)
   const [view, setView] = useState<'transcript' | 'history'>('transcript')
 
-  const { state } = chat
+  const { state, createFromDraft, dismissDraft } = chat
   const gateOpen = state.pendingGate !== null
   const ticket = state.ticket
   // A ticket route whose target the ticket page has not bound yet. Never
@@ -129,6 +129,8 @@ export default function AskKennyDrawer() {
             items={state.items}
             openThinkingId={state.openThinkingId}
             pendingGateItemId={ticketGate ? state.pendingGate?.itemId ?? null : null}
+            onCreateDraft={createFromDraft}
+            onDismissDraft={dismissDraft}
           />
           {ticketGate && (
             // Inline rather than modal: this gate is durable. It may be

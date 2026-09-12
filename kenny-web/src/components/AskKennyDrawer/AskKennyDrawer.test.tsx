@@ -11,10 +11,12 @@ vi.mock('../../api/sse', () => ({
   streamChatEvents: (...args: unknown[]) => streamChatEventsMock(...args),
 }))
 
+const { apiPostMock } = vi.hoisted(() => ({ apiPostMock: vi.fn() }))
+
 vi.mock('../../api/client', () => ({
   api: {
-    get: vi.fn(() => Promise.resolve({ conversations: [] })),
-    post: vi.fn(),
+    get: vi.fn(() => Promise.resolve({ conversations: [], agents: [] })),
+    post: (...args: unknown[]) => apiPostMock(...args),
     put: vi.fn(),
     patch: vi.fn(),
     delete: vi.fn(),
@@ -34,6 +36,7 @@ beforeEach(() => {
   window.location.hash = ''
   chatStore.reset('')
   streamChatEventsMock.mockReset()
+  apiPostMock.mockReset()
 })
 
 describe('AskKennyDrawer — composer lock', () => {
@@ -301,5 +304,44 @@ describe('AskKennyDrawer — a ticket is the second context, not a second drawer
 
     expect(screen.queryByLabelText('Message kenny')).not.toBeInTheDocument()
     expect(screen.getByText('opening this ticket…')).toBeInTheDocument()
+  })
+})
+
+
+describe('AskKennyDrawer — a ticket drafted out of the conversation', () => {
+  it('shows an editable card that files nothing until the operator opens it', async () => {
+    streamChatEventsMock.mockImplementation(async function* () {
+      yield { type: 'tool_result', tool: 'diag_services', ok: true, auto_run: true }
+      yield {
+        type: 'ticket_draft',
+        title: 'Windows updates fail',
+        summary: 'Error 0x80070422 since Tuesday.',
+        agent_id: 'oma-pc',
+      }
+      yield { type: 'done', session_id: 'sess-7' }
+    })
+    apiPostMock.mockResolvedValue({ id: 'tk-9', number: 82 })
+
+    render(<AskKennyDrawer />)
+    sendMessage('make a ticket out of this')
+
+    const open = await screen.findByRole('button', { name: 'OPEN TICKET' })
+    // Drafting alone posts nothing: the conversation proposed, it did not file.
+    expect(apiPostMock).not.toHaveBeenCalled()
+
+    fireEvent.click(open)
+
+    await waitFor(() => expect(apiPostMock).toHaveBeenCalledTimes(1))
+    expect(apiPostMock).toHaveBeenCalledWith('/api/tickets', {
+      title: 'Windows updates fail',
+      summary: 'Error 0x80070422 since Tuesday.',
+      agent_id: 'oma-pc',
+      origin: 'copilot',
+      start_immediately: true,
+      // Names the conversation so the server can record what it had already
+      // checked -- it derives that itself; nothing here asserts a check.
+      chat_session_id: 'sess-7',
+    })
+    expect(await screen.findByRole('link', { name: 'ticket #82' })).toBeInTheDocument()
   })
 })

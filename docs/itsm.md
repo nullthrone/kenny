@@ -22,7 +22,7 @@ covered in the ADRs**, linked throughout; this page is about running it, not jus
 
 A ticket is one support conversation: a title, a state, the one PC it is about, a running
 paraphrase of what happened, and a machine-readable trail of every message, tool call,
-approval and state change underneath it. Three things can open one:
+approval and state change underneath it. Four things can open one:
 
 - **A Discord mention.** Someone `@kenny`s the bot in the support channel (or runs
   `/help-me`), kenny opens a private thread for it, and the ticket is born already
@@ -45,6 +45,15 @@ approval and state change underneath it. Three things can open one:
   While a ticket for the same subject is still open, a repeat alert is recorded **on that
   ticket** instead of opening a second one, and is readable there — see
   [one open ticket per subject](alerting.md#one-open-ticket-per-subject).
+- **An Ask kenny conversation.** While you are investigating in the drawer, ask kenny to
+  make a ticket out of it and it fills in the same form the Inbox's **New ticket** uses —
+  title, description and host already written from what the conversation established. You
+  correct it and press **OPEN TICKET**; nothing is filed until you do, and what gets filed
+  is what is in the fields, not what kenny first wrote. The ticket records, separately,
+  which read-only checks had already run in that conversation. Kenny can propose a ticket
+  and look for one that is already open; it cannot start, block, resolve or reassign one
+  — that happens on the ticket itself. See
+  [ADR-0063](adr/0063-the-copilot-proposes-a-ticket-it-does-not-open-one.md).
 
 The [Inbox](dashboard.md#inbox) is the queue of these tickets, and only of these tickets:
 every row there is a ticket, and every row opens its ticket. A standing critical or warning

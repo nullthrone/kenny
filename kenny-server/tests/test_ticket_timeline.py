@@ -22,6 +22,7 @@ from __future__ import annotations
 import pytest
 
 from kenny_server import ticket_timeline as tl
+from kenny_server.ticket_assistant import EXCLUDED_TOOLS
 from kenny_server.ticketstore import TicketEvent, TicketStore
 from kenny_server.tool_classes import READ_ONLY, TOOL_CLASSES
 from kenny_server.toolloop import SURFACE_ONLY_TOOLS
@@ -213,18 +214,30 @@ def test_presented_kinds_are_the_declared_ones():
 # -- seam 2: the prose tables track the tool catalog ------------------------
 
 
+#: The tools that can never put a ``tool_call`` row on a ticket's trail, and so
+#: need no phrase. Derived from the two sets that make it true, never listed by
+#: hand: a name taken back out of either immediately owes a phrase again.
+_NO_TICKET_ROW: frozenset[str] = SURFACE_ONLY_TOOLS | EXCLUDED_TOOLS
+
+
 @pytest.mark.parametrize(
     "tool,tier",
-    sorted((t, c) for t, c in TOOL_CLASSES.items() if t not in SURFACE_ONLY_TOOLS),
+    sorted((t, c) for t, c in TOOL_CLASSES.items() if t not in _NO_TICKET_ROW),
 )
 def test_every_tool_has_a_phrase(tool: str, tier: str):
-    """Every tool that runs *on a machine* composes into a sentence.
+    """Every tool a ticket-bound turn can call composes into a sentence.
 
-    A surface-only tool is exempt because it is not a call on a machine at all —
-    it is how kenny speaks to the ticket, and the projection drops its rows under
-    a named rule (`surface_only_tool`) rather than describing them. The verdict
-    tool keeps its phrase from when that was not yet true; an unused phrase is
-    harmless, a missing one would print a raw tool name.
+    Exempt is everything no such turn can reach. A surface-only tool is not a
+    call on a machine at all — it is how kenny speaks to the ticket, and the
+    projection drops its rows under a named rule (`surface_only_tool`) rather
+    than describing them. An excluded tool is withheld from the ticket surface
+    outright (`ticket_assistant.EXCLUDED_TOOLS`): the copilot's `ticket_draft`
+    and `ticket_find`, and `select_agent`, which no ticket may call because its
+    target is frozen. A phrase for a row that cannot exist would describe
+    nothing; a missing one for a row that can would print a raw tool name.
+
+    The verdict tool and `select_agent` keep phrases from when that was not yet
+    true; an unused phrase is harmless.
     """
 
     table = tl.OBSERVED_PHRASES if tier == READ_ONLY else tl.CHANGED_PHRASES
