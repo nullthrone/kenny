@@ -66,8 +66,8 @@ from .toolloop import (
     Hold,
     PendingCall,
     ToolExecutor,
-    apply_confirmation,
     build_tool_schemas,
+    confirmation_events,
     drive_events,
     stage_missing_tool_results,
 )
@@ -2087,10 +2087,18 @@ class TicketAssistant:
                     tool_class=approval.tool_class,
                     gate_kind=approval.kind,
                 )
-                resume_event = await apply_confirmation(
+                # ``tool_started`` goes out the moment the approved call
+                # begins; the outcome is seeded into the resumed turn, which is
+                # what writes the trail. A minutes-long tool would otherwise
+                # leave whoever decided the gate looking at nothing until it
+                # finished.
+                async for event in confirmation_events(
                     session, approve=approved, executor=self.executor
-                )
-                seed.append(resume_event)
+                ):
+                    if event.get("type") == "tool_started":
+                        yield event
+                    else:
+                        seed.append(event)
 
             # The loop's own terminal event is held back and re-yielded below
             # with the status attached: one terminal event per resume, whichever

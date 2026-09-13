@@ -92,6 +92,70 @@ describe('applyChatEvent — resolving a gate', () => {
   })
 })
 
+describe('applyChatEvent — tool_started', () => {
+  it('opens one running row for an auto-run call, and the result settles that same row', () => {
+    let s = makeInitialState('linus-pc')
+    s = applyChatEvent(s, { type: 'tool_started', tool: 'fs_disk_usage', auto_run: true })
+    expect(s.items).toEqual([{ kind: 'auto_run', id: 'item-0', tool: 'fs_disk_usage', running: true }])
+    expect(s.openToolItemId).toBe('item-0')
+
+    s = applyChatEvent(s, { type: 'tool_result', tool: 'fs_disk_usage', ok: true, auto_run: true })
+    // One call, one row — the announcement and the outcome are the same row.
+    expect(s.items).toHaveLength(1)
+    expect(s.items[0]).toMatchObject({ kind: 'auto_run', running: false, ok: true })
+    expect(s.openToolItemId).toBeNull()
+  })
+
+  it('takes the confirm gate down and marks the row running — the wait is not still a decision', () => {
+    let s = makeInitialState('linus-pc')
+    s = applyChatEvent(s, {
+      type: 'pending',
+      tool: 'powershell_exec',
+      args: { script: 'Get-ChildItem C:\\ -Recurse', timeout_s: 300 },
+      agent_id: 'linus-pc',
+    })
+    s = { ...s, deciding: true, resolvingGateItemId: s.pendingGate!.itemId, streaming: true }
+
+    s = applyChatEvent(s, { type: 'tool_started', tool: 'powershell_exec', auto_run: false })
+    expect(s.items[0]).toMatchObject({ kind: 'gate', resolution: 'running' })
+    // The decision has demonstrably taken effect, so the card has nothing left
+    // to ask — but the row it opened is still the one the result must settle.
+    expect(s.pendingGate).toBeNull()
+    expect(s.deciding).toBe(false)
+    expect(s.resolvingGateItemId).toBe('item-0')
+    expect(s.openToolItemId).toBe('item-0')
+
+    s = applyChatEvent(s, { type: 'tool_result', tool: 'powershell_exec', ok: true, auto_run: false })
+    expect(s.items).toHaveLength(1)
+    expect(s.items[0]).toMatchObject({ kind: 'gate', resolution: 'approved', ok: true })
+    expect(s.openToolItemId).toBeNull()
+  })
+
+  it('leaves a stopped turn saying the outcome is unknown, never claiming one', () => {
+    let s = makeInitialState('linus-pc')
+    s = applyChatEvent(s, { type: 'tool_started', tool: 'powershell_exec', auto_run: true })
+    s = applyChatEvent(s, { type: 'done' })
+    expect(s.openToolItemId).toBeNull()
+    // `ok` is still absent: nothing came back, so nothing is asserted about it.
+    expect(s.items[0]).toMatchObject({ kind: 'auto_run', running: true })
+    expect((s.items[0] as { ok?: boolean }).ok).toBeUndefined()
+  })
+
+  it('a server that never sends it still renders exactly one row per result', () => {
+    // The event is additive: the pre-existing append path is what a replayed
+    // transcript and an older server take, and it must stay intact.
+    const s = applyChatEvent(makeInitialState(''), {
+      type: 'tool_result',
+      tool: 'fs_disk_usage',
+      ok: true,
+      auto_run: true,
+    })
+    expect(s.items).toEqual([
+      { kind: 'auto_run', id: 'item-0', tool: 'fs_disk_usage', ok: true, imageB64: undefined, format: undefined },
+    ])
+  })
+})
+
 describe('applyChatEvent — done/error', () => {
   it('done clears streaming and captures session_id', () => {
     const s = applyChatEvent({ ...makeInitialState(''), streaming: true }, { type: 'done', session_id: 'sess-1' })

@@ -557,8 +557,17 @@ async def test_stream_confirm_gate(store: TelemetryStore) -> None:
     resumed = await _collect(
         confirm_pending_events(session, approve=True, executor=executor, client=client)
     )
-    # resume_event (the executed tool_result) is yielded first.
-    assert resumed[0]["type"] == "tool_result" and resumed[0]["tool"] == "winget_install"
+    # The approved call announces itself before it runs, so the drawer has
+    # something to show for however long the tool takes ...
+    assert resumed[0] == {
+        "type": "tool_started",
+        "tool": "winget_install",
+        "args": {"id": "Git.Git"},
+        "agent_id": "dev",
+        "auto_run": False,
+    }
+    # ... and the resume_event (the executed tool_result) follows it.
+    assert resumed[1]["type"] == "tool_result" and resumed[1]["tool"] == "winget_install"
     deltas = "".join(e["text"] for e in resumed if e["type"] == "text_delta")
     assert deltas == "Git is installed."
     assert resumed[-1]["type"] == "done" and resumed[-1]["done"] is True

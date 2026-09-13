@@ -49,3 +49,41 @@ describe('Transcript — reasoning', () => {
   })
 })
 
+
+describe('Transcript — a call that is still running', () => {
+  it('spins and counts only on the live row; a confirmed call says so while it runs', () => {
+    const items: TranscriptItem[] = [
+      {
+        kind: 'gate',
+        id: 'g1',
+        tool: 'powershell_exec',
+        args: { script: 'Get-ChildItem C:\\ -Recurse', timeout_s: 300 },
+        agentId: 'linus-pc',
+        resolution: 'running',
+      },
+    ]
+    const { container } = render(<Transcript items={items} openToolItemId="g1" />)
+
+    // Confirmed, under way — never still "awaiting your decision".
+    expect(container.textContent).toContain('powershell_exec · confirmed · running…')
+    expect(container.textContent).not.toContain('awaiting your decision')
+    expect(container.querySelector('[class*="spinner"]')).not.toBeNull()
+  })
+
+  it('stops spinning and reports no result once the row is no longer live', () => {
+    const items: TranscriptItem[] = [{ kind: 'auto_run', id: 'r1', tool: 'fs_search', running: true }]
+    const { container } = render(<Transcript items={items} openToolItemId={null} />)
+
+    // A stopped turn: unknown, not failed — no cross, no spinner.
+    expect(container.textContent).toContain('fs_search · no result')
+    expect(container.querySelector('[class*="spinner"]')).toBeNull()
+  })
+
+  it('renders a settled auto-run call exactly as before', () => {
+    const items: TranscriptItem[] = [{ kind: 'auto_run', id: 'r1', tool: 'fs_disk_usage', ok: true }]
+    const { container } = render(<Transcript items={items} />)
+
+    expect(container.textContent).toContain('fs_disk_usage · auto-run')
+    expect(container.querySelector('[class*="spinner"]')).toBeNull()
+  })
+})

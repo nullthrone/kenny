@@ -479,8 +479,20 @@ export type ChatEvent =
    */
   | { type: 'thinking_delta'; text: string }
   /**
-   * A tool call that HAS ALREADY RUN. Read-only calls reach the client only in
-   * this form — there is no "about to run" event for them.
+   * A call that has STARTED and has not finished. Emitted the moment the server
+   * begins a tool — an auto-run read-only one, or a gated one the operator just
+   * confirmed — and always followed by exactly one `tool_result` for the same
+   * call.
+   *
+   * It exists because a tool is the one part of a turn that can take minutes: a
+   * `powershell_exec` runs until its own `timeout_s`, and `tool_result` by
+   * definition arrives only after the wait it was supposed to explain. Ignoring
+   * this event is safe (it reports no outcome and settles nothing); acting on it
+   * as if the call were finished is not.
+   */
+  | { type: 'tool_started'; tool: string; args?: Record<string, unknown>; agent_id?: string | null; auto_run: boolean }
+  /**
+   * A tool call that HAS ALREADY RUN, in the form every durable record takes.
    * `auto_run` is NEW and additive: true when the tier was read-only.
    */
   | { type: 'tool_result'; tool: string; ok: boolean; auto_run: boolean; image_b64?: string; format?: string }

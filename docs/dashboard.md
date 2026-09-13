@@ -739,6 +739,13 @@ not navigate away from wherever you were.
   the [ticket-scoped gate](#ticket-detail), there is no "decide later" here, so closing the
   overlay never reads as a decision. See
   [Tool reference](tools.md#three-tiers-and-who-enforces-what).
+- **A call that is still running** — a tool can take minutes: a PowerShell script runs
+  until it finishes or hits its own `timeout_s`. The moment one starts, its chip appears
+  with a spinner and a seconds counter, and stays there until the result replaces it —
+  a confirmed call reads *`powershell_exec` · confirmed · running… 47s*, so the wait is
+  visibly the tool working rather than a decision still outstanding. The composer stays
+  locked while a turn is in flight; **stop** ends the turn, and a call whose result never
+  arrived says *no result* rather than claiming one.
 - **Draft ticket card** — ask kenny to make a ticket out of the conversation and it fills
   in the same fields the Inbox's [New ticket](#inbox) form uses, from what the
   conversation established. Nothing is filed until you press **OPEN TICKET**, and what is

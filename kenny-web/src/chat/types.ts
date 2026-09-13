@@ -87,7 +87,24 @@ export type TranscriptItem =
    * and a ticket's timeline never show one of these.
    */
   | { kind: 'thinking'; id: string; text: string }
-  | { kind: 'auto_run'; id: string; tool: string; ok: boolean; imageB64?: string; format?: string }
+  /**
+   * A read-only call the loop ran without asking.
+   *
+   * One row per call, from the server's `tool_started` to its `tool_result` —
+   * `running` until the result lands, and `ok` undefined until then, because
+   * an outcome is not something to guess at while the tool is still working.
+   * `running` with no `ok` after the stream is over means the turn ended before
+   * the result reached us: unknown, which is what the row then says.
+   */
+  | {
+      kind: 'auto_run'
+      id: string
+      tool: string
+      ok?: boolean
+      running?: boolean
+      imageB64?: string
+      format?: string
+    }
   | { kind: 'denied'; id: string; tool: string; message?: string }
   | {
       kind: 'gate'
@@ -98,10 +115,12 @@ export type TranscriptItem =
       toolClass?: string
       /**
        * 'pending' while the decision is outstanding — that state is the
-       * gate. 'approved'/'denied' once a confirm round-trip resolved it;
-       * the item stays in the transcript as a record, it does not disappear.
+       * gate. 'running' from the server's `tool_started` until its result:
+       * approved, under way, outcome unknown. 'approved'/'denied' once the
+       * confirm round-trip resolved it; the item stays in the transcript as a
+       * record, it does not disappear.
        */
-      resolution: 'pending' | 'approved' | 'denied'
+      resolution: 'pending' | 'running' | 'approved' | 'denied'
       /** Set once resolution is 'approved' and the tool_result for it has arrived. */
       ok?: boolean
     }
@@ -172,11 +191,15 @@ export interface ChatSessionState {
   items: TranscriptItem[]
   /**
    * Non-null = the confirm gate is open OR a decision on it is in flight
-   * (`deciding`). The composer MUST be locked whenever this is set — it is
-   * cleared only once the confirm/stream round-trip actually resolves the
-   * call, not the moment CONFIRM/CANCEL is clicked, so the gate modal stays
-   * up (buttons disabled via `deciding`) through the whole round-trip
-   * instead of vanishing before anything has actually happened.
+   * (`deciding`). The composer MUST be locked whenever this is set.
+   *
+   * It is never cleared on the click: the gate modal stays up (buttons
+   * disabled via `deciding`) until the server says the decision took effect —
+   * `tool_started` for an approval, `denied` for a refusal. Clearing it on the
+   * click would take the card away before anything had actually happened;
+   * holding it until the *result* would leave the operator staring at a
+   * decision they already made for as long as the tool runs, which is the
+   * whole span this is meant to keep honest.
    */
   pendingGate: PendingGate | null
   /** True from the moment CONFIRM/CANCEL is clicked until its result lands. */
@@ -189,6 +212,17 @@ export interface ChatSessionState {
   streaming: boolean
   /** id of the assistant transcript item currently accumulating `text_delta`s, if any. */
   openAssistantId: string | null
+  /**
+   * id of the transcript row for a call the server has started and not yet
+   * reported on — an `auto_run` row, or the `gate` row of a confirmed call.
+   *
+   * Two jobs, both of which need it to be the *live* one: the matching
+   * `tool_result` settles that row instead of appending a second one, and the
+   * row spins only while this points at it. It is therefore cleared by anything
+   * that ends the stream, so an abandoned turn leaves a row that says the
+   * outcome is unknown rather than one that spins forever.
+   */
+  openToolItemId: string | null
   /** id of the thinking item currently accumulating `thinking_delta`s, if any.
    * Non-null means kenny is still reasoning — which is what the folded block's
    * own label says, so it is never inferred from `streaming` alone. */
@@ -214,6 +248,7 @@ export function makeInitialState(
     streaming: false,
     openAssistantId: null,
     openThinkingId: null,
+    openToolItemId: null,
     seq: 0,
   }
 }
