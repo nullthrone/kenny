@@ -129,6 +129,7 @@ export default function AskKennyDrawer() {
             items={state.items}
             openThinkingId={state.openThinkingId}
             pendingGateItemId={ticketGate ? state.pendingGate?.itemId ?? null : null}
+            openToolItemId={state.openToolItemId}
             onCreateDraft={createFromDraft}
             onDismissDraft={dismissDraft}
           />

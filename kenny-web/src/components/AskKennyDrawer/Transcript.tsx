@@ -1,10 +1,43 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { TranscriptItem } from '../../chat/types'
 import type { TicketDraftCardProps } from './TicketDraftCard'
 import { Check, X, ICON_STROKE_WIDTH } from '../icons'
 import Markdown from '../Markdown/Markdown'
 import TicketDraftCard from './TicketDraftCard'
 import styles from './Transcript.module.css'
+
+/**
+ * The spinner and elapsed-seconds counter on a call that is still running.
+ *
+ * A tool runs until it is done or until its own `timeout_s` — a PowerShell
+ * sweep of a whole disk is minutes — and for that entire span the server has
+ * nothing further to say. A spinner alone answers "is anything happening";
+ * the counter answers "how long has it been", which is the question an
+ * operator actually has by the second minute.
+ *
+ * It counts from its own mount rather than from a timestamp in state, which
+ * is the same moment: the row is created by the `tool_started` that mounts it,
+ * and keeping the clock here leaves the reducer pure.
+ */
+function Running() {
+  const [seconds, setSeconds] = useState(0)
+
+  useEffect(() => {
+    const started = Date.now()
+    const timer = window.setInterval(
+      () => setSeconds(Math.floor((Date.now() - started) / 1000)),
+      1000,
+    )
+    return () => window.clearInterval(timer)
+  }, [])
+
+  return (
+    <>
+      <span className={styles.spinner} aria-hidden="true" />
+      running…{seconds > 0 ? ` ${seconds}s` : ''}
+    </>
+  )
+}
 
 export interface TranscriptProps {
   items: TranscriptItem[]
@@ -15,6 +48,10 @@ export interface TranscriptProps {
   /** The gate row whose card is being rendered below this transcript. Skipped
    * here: an undecided gate is shown once, on the card that can decide it. */
   pendingGateItemId?: string | null
+  /** The row of the call that is running right now, if any — the only row that
+   * spins. A row left mid-flight by a Stop or a dropped stream is not this one
+   * any more, and says its outcome is unknown instead of spinning forever. */
+  openToolItemId?: string | null
   /** Opens the ticket a draft row is proposing, with the operator's edits. */
   onCreateDraft?: TicketDraftCardProps['onCreate']
   /** Puts a draft away unfiled. */
@@ -36,6 +73,7 @@ export default function Transcript({
   items,
   openThinkingId = null,
   pendingGateItemId = null,
+  openToolItemId = null,
   onCreateDraft,
   onDismissDraft,
 }: TranscriptProps) {
@@ -85,16 +123,23 @@ export default function Transcript({
               </details>
             )
 
-          case 'auto_run':
+          case 'auto_run': {
+            // Three states, and the third is not a failure: a call whose
+            // result never arrived (the turn was stopped, the stream dropped)
+            // is unknown, and saying so beats a red cross for something that
+            // may well have run.
+            const live = item.id === openToolItemId
+            const unresolved = item.ok === undefined
             return (
               <div key={item.id}>
                 <div className={styles.chip}>
-                  {item.ok ? (
+                  {unresolved ? null : item.ok ? (
                     <Check width={11} height={11} strokeWidth={ICON_STROKE_WIDTH} className={styles.chipOk} aria-hidden="true" />
                   ) : (
                     <X width={11} height={11} strokeWidth={ICON_STROKE_WIDTH} className={styles.chipFail} aria-hidden="true" />
                   )}
-                  {item.tool} · auto-run
+                  {item.tool} ·{' '}
+                  {live ? <Running /> : unresolved ? 'no result' : 'auto-run'}
                 </div>
                 {item.imageB64 && (
                   <img
@@ -105,6 +150,7 @@ export default function Transcript({
                 )}
               </div>
             )
+          }
 
           case 'gate': {
             // The undecided gate is on the card below, which is the only thing
@@ -117,12 +163,19 @@ export default function Transcript({
                 : item.resolution === 'denied'
                   ? `${styles.gateTrace} ${styles.gateTraceDenied}`
                   : styles.gateTrace
+            // 'running' is the answer to the operator's first question after
+            // clicking CONFIRM & RUN — the decision took effect and the call is
+            // under way. Without it the row still read "awaiting your decision"
+            // for as long as the tool ran.
+            const running = item.resolution === 'running'
             const label =
               item.resolution === 'pending'
                 ? `${item.tool} · awaiting your decision`
                 : item.resolution === 'approved'
                   ? `${item.tool} · confirmed & ${item.ok === false ? 'failed' : 'ran'}`
-                  : `${item.tool} · denied`
+                  : running
+                    ? `${item.tool} · confirmed · `
+                    : `${item.tool} · denied`
             return (
               <div key={item.id} className={cls}>
                 {item.resolution === 'approved' && item.ok !== false && (
@@ -132,6 +185,7 @@ export default function Transcript({
                   <X width={11} height={11} strokeWidth={ICON_STROKE_WIDTH} aria-hidden="true" />
                 )}
                 {label}
+                {running && (item.id === openToolItemId ? <Running /> : 'no result')}
               </div>
             )
           }

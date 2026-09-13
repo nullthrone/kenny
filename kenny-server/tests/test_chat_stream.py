@@ -151,7 +151,10 @@ def test_stream_confirm_gate_round_trip(tmp_path):
         f2 = _frames(
             c.post("/api/chat/confirm/stream", json={"session_id": sid, "approve": True}).text
         )
-        assert f2[0]["type"] == "tool_result" and f2[0]["tool"] == "winget_install"
+        # The confirmed call is announced on the wire before it runs — the
+        # frame that lets the console say a minutes-long tool is working.
+        assert f2[0]["type"] == "tool_started" and f2[0]["tool"] == "winget_install"
+        assert f2[1]["type"] == "tool_result" and f2[1]["tool"] == "winget_install"
         assert "".join(f["text"] for f in f2 if f["type"] == "text_delta") == "Git is installed."
         assert f2[-1]["type"] == "done" and f2[-1]["done"] is True
         assert sent == ["winget_install"]

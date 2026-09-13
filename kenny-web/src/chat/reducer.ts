@@ -30,6 +30,7 @@ export function startUserTurn(state: ChatSessionState, message: string): ChatSes
     streaming: true,
     openAssistantId: null,
     openThinkingId: null,
+    openToolItemId: null,
   }
 }
 
@@ -99,6 +100,39 @@ export function applyChatEvent(state: ChatSessionState, event: ChatEvent): ChatS
       }
     }
 
+    case 'tool_started': {
+      // The call has begun and nothing is known about how it went. This is the
+      // only event that can be shown *during* a tool, and a tool can run for
+      // minutes — so it is what turns that silence into a visible state.
+      //
+      // For a gate this session just decided, it is also the point the modal
+      // comes down: the decision has demonstrably taken effect, so the card has
+      // nothing left to ask. `resolvingGateItemId` stays set so the result that
+      // follows settles the same row.
+      if (state.resolvingGateItemId) {
+        const gateId = state.resolvingGateItemId
+        return {
+          ...state,
+          pendingGate: null,
+          deciding: false,
+          openToolItemId: gateId,
+          openAssistantId: null,
+          openThinkingId: null,
+          items: state.items.map((it) =>
+            it.kind === 'gate' && it.id === gateId ? { ...it, resolution: 'running' } : it,
+          ),
+        }
+      }
+      const [id, s1] = nextId(state)
+      return {
+        // No `ok`: the call is running, and there is nothing to report yet.
+        ...pushItem(s1, { kind: 'auto_run', id, tool: event.tool, running: true }),
+        openToolItemId: id,
+        openAssistantId: null,
+        openThinkingId: null,
+      }
+    }
+
     case 'tool_result': {
       // A gate this session is currently resolving closes here: update the
       // matching `gate` item in place instead of appending a second row.
@@ -109,10 +143,36 @@ export function applyChatEvent(state: ChatSessionState, event: ChatEvent): ChatS
           resolvingGateItemId: null,
           pendingGate: null,
           deciding: false,
+          openToolItemId: null,
           openAssistantId: null,
           openThinkingId: null,
           items: state.items.map((it) =>
             it.kind === 'gate' && it.id === gateId ? { ...it, resolution: 'approved', ok: event.ok } : it,
+          ),
+        }
+      }
+      // The row this result belongs to already exists when the server
+      // announced the call: settle it rather than appending a duplicate. A
+      // server (or a replayed transcript) that never sent `tool_started`
+      // leaves `openToolItemId` null and takes the append path below, which is
+      // what this always did.
+      if (state.openToolItemId) {
+        const toolId = state.openToolItemId
+        return {
+          ...state,
+          openToolItemId: null,
+          openAssistantId: null,
+          openThinkingId: null,
+          items: state.items.map((it) =>
+            it.kind === 'auto_run' && it.id === toolId
+              ? {
+                  ...it,
+                  running: false,
+                  ok: event.ok,
+                  imageB64: event.image_b64,
+                  format: event.format,
+                }
+              : it,
           ),
         }
       }
@@ -149,6 +209,7 @@ export function applyChatEvent(state: ChatSessionState, event: ChatEvent): ChatS
         pendingGate: { itemId: id, tool: event.tool, args: event.args, agentId: event.agent_id, toolClass: event.tool_class },
         openAssistantId: null,
         openThinkingId: null,
+        openToolItemId: null,
         // The server closes the initial stream here — nothing is in flight
         // again until a separate POST to /api/chat/confirm/stream. The
         // composer stays locked regardless, because `pendingGate` is set.
@@ -164,6 +225,7 @@ export function applyChatEvent(state: ChatSessionState, event: ChatEvent): ChatS
           resolvingGateItemId: null,
           pendingGate: null,
           deciding: false,
+          openToolItemId: null,
           openAssistantId: null,
           openThinkingId: null,
           items: state.items.map((it) => (it.kind === 'gate' && it.id === gateId ? { ...it, resolution: 'denied' } : it)),
@@ -177,6 +239,7 @@ export function applyChatEvent(state: ChatSessionState, event: ChatEvent): ChatS
         ...pushItem(s1, { kind: 'denied', id, tool: event.tool, message: event.message }),
         openAssistantId: null,
         openThinkingId: null,
+        openToolItemId: null,
       }
     }
 
@@ -186,6 +249,10 @@ export function applyChatEvent(state: ChatSessionState, event: ChatEvent): ChatS
         streaming: false,
         openAssistantId: null,
         openThinkingId: null,
+        // Nothing is running once the turn is over. A row still marked
+        // `running` here never got its result: it stops spinning and says the
+        // outcome is unknown, rather than claiming one.
+        openToolItemId: null,
         sessionId: event.session_id ?? state.sessionId,
       }
     }
@@ -200,6 +267,7 @@ export function applyChatEvent(state: ChatSessionState, event: ChatEvent): ChatS
         resolvingGateItemId: null,
         openAssistantId: null,
         openThinkingId: null,
+        openToolItemId: null,
         sessionId: event.session_id ?? state.sessionId,
       }
     }

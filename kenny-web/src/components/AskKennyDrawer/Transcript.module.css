@@ -133,3 +133,33 @@
   color: var(--text-muted);
   white-space: pre-wrap;
 }
+
+/* The running indicator on a call the server has started and not yet reported
+   on. A ring rather than a bar: it says "still going", never how far along —
+   a tool's progress is not something the server knows. */
+.spinner {
+  width: 9px;
+  height: 9px;
+  border: 1px solid var(--border-line);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  display: inline-block;
+  flex: none;
+  animation: kc-spin 800ms linear infinite;
+}
+
+@keyframes kc-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Reduced motion keeps the state, drops the movement: the row still reads
+   "running…" and the seconds still count, which is the part that carries the
+   information. */
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation: none;
+    border-color: currentColor;
+  }
+}

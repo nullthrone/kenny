@@ -13,6 +13,7 @@ tunnel stub come from ``test_chat``.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass, field
 from typing import Any
@@ -37,6 +38,7 @@ from kenny_server.toolloop import (
     ToolExecutor,
     apply_confirmation,
     build_tool_schemas,
+    confirmation_events,
     drive_events,
     stage_missing_tool_results,
     strip_thinking_prose,
@@ -378,6 +380,121 @@ async def test_apply_confirmation_approval_that_fails_reports_its_error(
 
     assert resume["type"] == "tool_result" and resume["ok"] is False
     assert resume["error"] == {"code": "exec_failed", "message": "powershell exited 1"}
+
+
+# -- tool_started -----------------------------------------------------------
+
+
+async def test_confirmation_announces_the_call_before_it_runs(store: TelemetryStore) -> None:
+    """``tool_started`` must reach the consumer *while* the tool is still running.
+
+    Emitting it after the await would look identical in a collected list of
+    events and be worthless: the minutes in between are the entire reason it
+    exists. So this drives the generator against a tool that does not return
+    until the test lets it, and pins both halves — the announcement arrives
+    before the agent is asked to do anything, and no outcome arrives while the
+    agent is still working on it.
+    """
+
+    executor, _registry, tunnel = _executor(store)
+    running = asyncio.Event()
+    release = asyncio.Event()
+
+    async def fake_send_request(agent_id, tool, args, timeout_s):  # type: ignore[no-untyped-def]
+        running.set()
+        await release.wait()
+        return {"stdout": "done"}
+
+    tunnel.send_request = fake_send_request  # type: ignore[assignment]
+
+    session = FakeSession(id="slow-confirm", agent_id="dev")
+    session.pending = PendingCall(
+        id="p3",
+        tool_use_id="tu10",
+        tool="powershell_exec",
+        args={"script": "Get-ChildItem C:\\ -Recurse", "timeout_s": 300},
+        agent_id="dev",
+    )
+
+    events = confirmation_events(session, approve=True, executor=executor)
+    first = await events.__anext__()
+    assert first == {
+        "type": "tool_started",
+        "tool": "powershell_exec",
+        "args": {"script": "Get-ChildItem C:\\ -Recurse", "timeout_s": 300},
+        "agent_id": "dev",
+        "auto_run": False,
+    }
+    assert not running.is_set()  # announced before the agent was asked anything
+
+    pump = asyncio.create_task(events.__anext__())
+    await asyncio.wait_for(running.wait(), 2)
+    await asyncio.sleep(0)
+    assert not pump.done()  # still running: nothing to report yet
+
+    release.set()
+    second = await asyncio.wait_for(pump, 2)
+    assert second["type"] == "tool_result" and second["ok"] is True
+    await events.aclose()
+
+
+async def test_denied_confirmation_announces_nothing(store: TelemetryStore) -> None:
+    """A denial has no wait to fill, so it emits its ``denied`` event and nothing else."""
+
+    executor, _registry, tunnel = _executor(store)
+
+    async def fake_send_request(agent_id, tool, args, timeout_s):  # type: ignore[no-untyped-def]
+        raise AssertionError("a denied call must never reach the agent")
+
+    tunnel.send_request = fake_send_request  # type: ignore[assignment]
+
+    session = FakeSession(id="deny-announce", agent_id="dev")
+    session.pending = PendingCall(
+        id="p4",
+        tool_use_id="tu11",
+        tool="powershell_exec",
+        args={"script": "whoami"},
+        agent_id="dev",
+    )
+
+    events = [
+        ev async for ev in confirmation_events(session, approve=False, executor=executor)
+    ]
+
+    assert [ev["type"] for ev in events] == ["denied"]
+
+
+async def test_auto_run_call_is_announced_then_reported(store: TelemetryStore) -> None:
+    """An allowed call gets the same pair, in the same order, with ``auto_run`` true."""
+
+    executor, _registry, tunnel = _executor(store)
+
+    async def fake_send_request(agent_id, tool, args, timeout_s):  # type: ignore[no-untyped-def]
+        return {"entries": []}
+
+    tunnel.send_request = fake_send_request  # type: ignore[assignment]
+
+    session = FakeSession(id="auto", agent_id="dev")
+    policy = StubPolicy({})  # everything allowed
+    client = FakeAnthropic(
+        [
+            _Response([tool_use_block("tu12", "fs_list", {"path": "C:\\"})], "tool_use"),
+            _Response([text_block("Empty.")], "end_turn"),
+        ]
+    )
+    session.messages.append({"role": "user", "content": "list it"})
+
+    events = await _drive(session, executor, client, policy)
+    types = [ev["type"] for ev in events]
+    assert types.index("tool_started") < types.index("tool_result")
+    started = next(ev for ev in events if ev["type"] == "tool_started")
+    assert started == {
+        "type": "tool_started",
+        "tool": "fs_list",
+        "args": {"path": "C:\\"},
+        "agent_id": "dev",
+        "auto_run": True,
+    }
 
 
 # -- Deny -------------------------------------------------------------------

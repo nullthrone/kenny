@@ -169,9 +169,10 @@ class ChatStore {
     const s = this.state
     if (s.deciding) return
     // pendingGate/gate stays set — the card stays up with its buttons disabled
-    // (`deciding`) through the whole round-trip. It is cleared only once the
-    // reducer sees the matching tool_result/denied land (reducer.ts), or, for a
-    // ticket, once the resumed turn ends.
+    // (`deciding`) until the server confirms the decision took effect: the
+    // reducer clears it on the `tool_started` that says the approved call is
+    // running, on a `denied`, or, for a ticket, once the resumed turn ends.
+    // Never on the click itself.
     const ticketGate = s.ticket?.gate ?? null
     if (ticketGate) {
       this.update((st) => ({
@@ -289,9 +290,14 @@ class ChatStore {
       }
     } finally {
       if (this.controller === controller) this.controller = null
-      // Belt-and-suspenders: guarantee the composer never gets stuck locked
-      // if the stream ends without an explicit `done`/`error` event.
-      this.update((st) => (st.streaming ? { ...st, streaming: false } : st))
+      // Belt-and-suspenders: guarantee the composer never gets stuck locked,
+      // and no tool row keeps spinning, if the stream ends without an explicit
+      // `done`/`error` event — a Stop being the ordinary way that happens.
+      this.update((st) =>
+        st.streaming || st.openToolItemId
+          ? { ...st, streaming: false, openToolItemId: null }
+          : st,
+      )
     }
   }
 

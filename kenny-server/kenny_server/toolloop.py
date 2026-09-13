@@ -88,6 +88,26 @@ TRIAGE_CLOSING_VERDICTS: frozenset[str] = frozenset(
     {"phantom", "benign_known", "resolved_itself"}
 )
 
+#: Every ``type`` :func:`drive_events` and :func:`confirmation_events` can yield.
+#:
+#: Declared rather than left implicit because the browser holds the other half
+#: of this vocabulary — the ``ChatEvent`` union in ``kenny-web/src/api/types.ts``
+#: — and an event only one side knows about is an event nothing renders.
+#: ``tests/test_chat_event_seam.py`` fails when the two drift, and asserts this
+#: set against what a real drive actually emits so it cannot rot into a list
+#: someone forgot to update.
+LOOP_EVENT_TYPES: frozenset[str] = frozenset(
+    {
+        "text_delta",
+        "thinking_delta",
+        "tool_started",
+        "tool_result",
+        "pending",
+        "denied",
+        "done",
+    }
+)
+
 #: Server tools no surface gets unless it names them. ``build_tool_schemas``
 #: emits the whole catalog when a caller passes no allowlist (the dashboard
 #: copilot does exactly that, ``chat.py``), so a tool that belongs to one
@@ -812,6 +832,33 @@ async def _execute_one(
         return {"error": {"code": exc.code, "message": exc.message}}, True
 
 
+def _tool_started_event(
+    tool: str, args: dict[str, Any], agent_id: str | None, *, auto_run: bool
+) -> dict[str, Any]:
+    """The "this call is running now" event, emitted before a tool executes.
+
+    A tool call is the one part of a turn that can take minutes — a PowerShell
+    script sweeping a disk runs until its own ``timeout_s`` — and until it
+    returns the loop has nothing to say. Announcing the call at its start turns
+    that silence into a state a surface can render, and it is the only event
+    that can: ``tool_result`` by definition arrives after the wait it was meant
+    to explain.
+
+    It reports no outcome and stages nothing. Exactly one ``tool_result`` (or
+    ``denied``) follows it per call, carrying everything a durable record takes,
+    which is why nothing that writes a trail reads this event.
+    """
+
+    return {
+        "type": "tool_started",
+        "tool": tool,
+        "args": args,
+        "agent_id": agent_id,
+        # Same meaning as on the matching ``tool_result``: nobody was asked.
+        "auto_run": auto_run,
+    }
+
+
 # -- thinking ---------------------------------------------------------------
 #
 # Reasoning is a third channel, alongside the assistant's words and its tool
@@ -1020,6 +1067,12 @@ async def drive_events(
 
     * ``{"type": "text_delta", "text": ...}`` — one per token as the assistant
       block streams;
+    * ``{"type": "tool_started", "tool": ..., "args": ..., "agent_id": ...,
+      "auto_run": bool}`` — emitted the moment a call begins, before it runs, so
+      a surface can say a minutes-long tool is working rather than showing
+      nothing until it finishes. Exactly one ``tool_result`` for the same call
+      follows it; it carries no outcome and stages nothing, so a surface that
+      ignores it renders exactly what it rendered before;
     * ``{"type": "tool_result", "tool": ..., "args": ..., "ok": bool,
       "auto_run": bool[, "error": {"code": ..., "message": ...}][, "image_b64",
       "format"]}`` — emitted the moment each tool executes (live); ``error`` is
@@ -1125,6 +1178,7 @@ async def drive_events(
                 }
                 return
 
+            yield _tool_started_event(tool, args, target, auto_run=True)
             payload, is_error = await _execute_one(
                 executor, tool, args, session=session, agent_id=target
             )
@@ -1291,14 +1345,19 @@ def stage_missing_tool_results(
     return healed
 
 
-async def apply_confirmation(
+async def confirmation_events(
     session: Any, *, approve: bool, executor: ToolExecutor
-) -> dict[str, Any]:
-    """Resolve the pending call (run on approve, feed a denial otherwise).
+) -> AsyncIterator[dict[str, Any]]:
+    """Resolve the pending call, yielding what the surface should show as it goes.
 
-    Clears ``session.pending``, stages the tool_result block for the resumed
-    loop, and returns the ``resume_event`` to surface first to the UI. Shared by
-    ``chat.confirm_pending`` and ``chat.confirm_pending_events``.
+    On approve this yields ``tool_started`` *before* running the tool and the
+    ``tool_result`` after it, which is the whole reason it is a generator: the
+    confirmed call is the one a surface has already made a person wait for, and
+    the wait can be minutes. A denial has nothing to wait for and yields only
+    its ``denied`` event.
+
+    The terminal event is the ``resume_event`` a non-streaming caller wants;
+    :func:`apply_confirmation` is that caller's view of this function.
     """
 
     pending = session.pending
@@ -1306,6 +1365,14 @@ async def apply_confirmation(
     session.pending = None
 
     if approve:
+        # Announced before the call, not after: this is the point of the split.
+        yield _tool_started_event(
+            pending.tool,
+            pending.args,
+            pending.agent_id,
+            # Held and explicitly decided — by construction not unattended.
+            auto_run=False,
+        )
         payload, is_error = await _execute_one(
             executor, pending.tool, pending.args, session=session, agent_id=pending.agent_id
         )
@@ -1326,17 +1393,36 @@ async def apply_confirmation(
         image = None if is_error else _image_of(payload)
         if image is not None:
             resume_event["image_b64"], resume_event["format"] = image
-    else:
-        payload = {"error": {"code": "denied", "message": "operator denied this action"}}
-        session._staged_results.append(
-            _tool_result_block(pending.tool_use_id, payload, is_error=True)
-        )
-        resume_event = {
-            "type": "denied",
-            "tool": pending.tool,
-            "args": pending.args,
-            "agent_id": pending.agent_id,
-            "code": "denied",
-            "message": "operator denied this action",
-        }
+        yield resume_event
+        return
+
+    payload = {"error": {"code": "denied", "message": "operator denied this action"}}
+    session._staged_results.append(
+        _tool_result_block(pending.tool_use_id, payload, is_error=True)
+    )
+    yield {
+        "type": "denied",
+        "tool": pending.tool,
+        "args": pending.args,
+        "agent_id": pending.agent_id,
+        "code": "denied",
+        "message": "operator denied this action",
+    }
+
+
+async def apply_confirmation(
+    session: Any, *, approve: bool, executor: ToolExecutor
+) -> dict[str, Any]:
+    """:func:`confirmation_events` for a caller that cannot stream.
+
+    Drains the generator and returns its terminal event — the ``tool_result``
+    or ``denied`` that a batch response carries. The ``tool_started`` in between
+    is dropped on purpose: it exists to fill a wait, and a caller that only ever
+    speaks once the tool has finished has no wait left to fill.
+    """
+
+    resume_event: dict[str, Any] | None = None
+    async for event in confirmation_events(session, approve=approve, executor=executor):
+        resume_event = event
+    assert resume_event is not None  # the generator always ends with one
     return resume_event

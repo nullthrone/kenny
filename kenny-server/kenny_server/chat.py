@@ -41,6 +41,7 @@ from .tool_classes import (
     is_state_changing,  # noqa: F401 (re-export)
 )
 from .toolloop import (
+    LOOP_EVENT_TYPES,
     _MAX_TOOL_RESULT_CHARS,  # noqa: F401 (re-export)
     _latest_text,  # noqa: F401 (re-export)
     _resolve_chat_target,
@@ -56,6 +57,7 @@ from .toolloop import (
     ToolExecutor as ChatExecutor,
     apply_confirmation,
     build_tool_schemas,
+    confirmation_events,
     drive_events,
 )
 from .tools import CAPABILITY_TOOLS  # noqa: F401 (re-export)
@@ -70,6 +72,22 @@ STATE_CHANGING_TOOLS: frozenset[str] = frozenset(
 )
 
 DEFAULT_MODEL = "claude-sonnet-4-6"
+
+#: The complete SSE vocabulary a browser parses off the chat streams: the loop's
+#: own events plus the four no surface-independent loop could produce.
+#:
+#: ``user_text`` comes from :func:`public_transcript` (history replay only),
+#: ``error`` from the stream endpoints in ``webui`` when a turn blows up mid-
+#: stream, ``ticket_draft`` from :func:`_surface_events` here, and
+#: ``remediation`` from ``recommend.py``, whose stream shares this vocabulary.
+#: One statement of the set, checked against the console's ``ChatEvent`` union
+#: by ``tests/test_chat_event_seam.py``.
+CHAT_EVENT_TYPES: frozenset[str] = LOOP_EVENT_TYPES | {
+    "user_text",
+    "error",
+    "ticket_draft",
+    "remediation",
+}
 
 
 _SYSTEM_PROMPT = (
@@ -680,17 +698,24 @@ async def confirm_pending_events(
 ) -> AsyncIterator[dict[str, Any]]:
     """Streaming variant of :func:`confirm_pending`.
 
-    Yields the ``resume_event`` first (reproducing the non-streaming
-    ``tool_events.insert(0, resume_event)`` ordering), then forwards the resumed
-    loop.
+    Yields the confirmation's own events first — reproducing the non-streaming
+    ``tool_events.insert(0, resume_event)`` ordering, and preceding it with the
+    ``tool_started`` that says the approved call is running — then forwards the
+    resumed loop.
+
+    That first event is the difference between the two variants beyond
+    buffering: a confirmed call is the one the operator is already sitting in
+    front of, and ``powershell_exec`` runs until its own ``timeout_s``. The
+    batch variant reports it when it is over because that is all a single
+    response can do; this one says it has begun.
     """
 
     if session.pending is None:
         raise RuntimeError("no pending confirmation for this session")
 
     model = model or os.environ.get("KENNY_CHAT_MODEL", DEFAULT_MODEL)
-    resume_event = await apply_confirmation(session, approve=approve, executor=executor)
-    yield resume_event
+    async for event in confirmation_events(session, approve=approve, executor=executor):
+        yield event
     async for ev in _surface_events(
         drive_events(session, executor, client=client, model=model, policy=_FLEET_POLICY)
     ):
