@@ -1,6 +1,6 @@
 # Rendering the dashboard headlessly
 
-Two tools that look at the same thing: the **real** web dashboard (`kenny-web/`,
+Three tools that look at the same thing: the **real** web dashboard (`kenny-web/`,
 the React/TypeScript console) rendered against a **mock** demo fleet of ~6
 family PCs, in kenny's real fonts (Jost + Public Sans + JetBrains Mono —
 Nullthrone's display/body/mono stack), served in-process and driven by headless
@@ -8,6 +8,7 @@ Chromium.
 
 - `capture.py` writes the figures in `docs/assets/screenshots/`.
 - `overflow_audit.py` asserts that no box paints outside the box containing it.
+- `zoom_audit.py` asserts that focusing a control never zooms the page.
 
 They share `harness.py` — the same env, server, seed and browser — so a figure
 and an audit are statements about the same dashboard.
@@ -26,6 +27,9 @@ python scripts/screenshots/capture.py --out /tmp/shots # render elsewhere first
 
 python scripts/screenshots/overflow_audit.py          # every view x 3 widths
 python scripts/screenshots/overflow_audit.py --route '#/fleet/grandpa-pc' --width 402
+
+python scripts/screenshots/zoom_audit.py                # every view, one phone
+python scripts/screenshots/zoom_audit.py --route '#/log'
 ```
 
 The tool prints a per-shot `[ok]`/`[FAIL]` line and a final summary; it exits
@@ -46,8 +50,10 @@ seeds is the state the browser sees:
    as. In-memory state (the `ScreenshotStore`, registry online flags) *must*
    be seeded in-process — a "write SQLite then start server" approach would
    miss it. See `seed.py`.
-4. **drive** — Playwright Chromium loads each view, asserts the fonts, and then
-   either captures it (`capture.py`) or measures it (`overflow_audit.py`).
+4. **drive** — Playwright Chromium loads each view and then either captures it
+   (`capture.py`) or measures it (`overflow_audit.py`, `zoom_audit.py`). The
+   first two assert the fonts first; `zoom_audit.py` does not need to, because
+   a computed font-size is the same number in a fallback face.
 
 ### Modules
 
@@ -60,6 +66,7 @@ seeds is the state the browser sees:
 | `harness.py` | Env, in-process server, demo seed, Chromium launch, font assertion — everything both entrypoints share. |
 | `capture.py` | Entrypoint: seed → serve → drive → write PNGs. |
 | `overflow_audit.py` + `.js` | Entrypoint: seed → serve → measure every box against the box containing it. |
+| `zoom_audit.py` + `.js` | Entrypoint: seed → serve → measure every control WebKit zooms for against the 16px floor, on a touch-emulated phone viewport. |
 
 ### The demo fleet (documented health mix)
 
@@ -134,10 +141,39 @@ PNGs. If fonts fail, check `HTTPS_PROXY` and the proxy CA (see
 
 ## Viewport
 
-`1500×950`, `deviceScaleFactor: 2` (crisp 2× PNGs). The audit re-renders at
-`1500`, `900` and `402` — the capture width, the awkward middle where the
-sidebar is still shown, and the narrowest phone the 760px mobile breakpoint is
-written for.
+`1500×950`, `deviceScaleFactor: 2` (crisp 2× PNGs). The overflow audit
+re-renders at `1500`, `900` and `402` — the capture width, the awkward middle
+where the sidebar is still shown, and the narrowest phone the 760px mobile
+breakpoint is written for. The zoom audit renders once, at `402×874` with
+touch emulation on, for the reason given below.
+
+## The zoom audit
+
+`zoom_audit.py` asserts one rule: every control WebKit zooms for — text entry
+of any kind, and `<select>` — computes at least **16px**. Below that, Safari on
+iOS zooms the whole page in when the control is focused and does not zoom back
+out. It reports the element, the route, the size it computed to and the label
+it carries, and exits non-zero.
+
+It renders once, at `402×874` with `is_mobile` and `has_touch` on, because the
+rule holding the floor (`kenny-web/src/styles/global.css`) is gated on
+`(hover: none) and (pointer: coarse)` — the pointer, not the viewport, since an
+iPhone in landscape is wider than the 760px breakpoint and still zooms. The
+audit checks that Chromium actually reports those two media features before it
+measures anything; if it ever stops, every measurement would be taken with the
+rule inactive, so that is a hard failure with the fix in its message.
+
+It is the half of the invariant that `kenny-web/src/styles/noZoom.test.ts`
+cannot see. That test reads the stylesheets and checks that the rule exists and
+that nothing outranks it, and runs in CI with the rest of the frontend suite.
+This one resolves inheritance, specificity and load order in a real browser.
+
+It opens the Ask Kenny drawer on every route (through the same
+`kenny:ask-kenny-open` event the app uses), because that is the field it was
+written for. Controls inside modals that are not open are not in the DOM and
+are not measured — the rule under test is a selector on element types and knows
+nothing about modals, so the rendered surface is evidence about all of them,
+but it is evidence, not proof.
 
 ## The overflow audit
 
