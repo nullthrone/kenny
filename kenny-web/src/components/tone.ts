@@ -1,4 +1,4 @@
-import type { Severity, TicketPriority } from '../api/types'
+import type { Severity } from '../api/types'
 
 /** `Severity` → the CSS custom property that colours it, matching the prototype's palette. */
 export function severityColor(severity: Severity): string {
@@ -54,5 +54,3 @@ export function priorityColor(priority: string): string {
 export function priorityLabel(priority: string): string {
   return (priority || 'normal').toUpperCase()
 }
-
-export type { TicketPriority }
