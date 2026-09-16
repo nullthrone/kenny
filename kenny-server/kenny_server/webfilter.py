@@ -37,6 +37,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import uuid
@@ -102,6 +103,29 @@ def matches(observed: str, entry: str) -> bool:
     """True when ``observed`` is ``entry`` or a subdomain of it (suffix match)."""
 
     return observed == entry or observed.endswith("." + entry)
+
+
+def _safe_hits(value: Any) -> int:
+    """Coerce a ``web_activity`` domain entry's ``hits`` count to ``int``, or ``0``.
+
+    ``value`` comes straight off an unvalidated agent-reported telemetry field
+    (``Section`` uses ``extra="allow"``, same threat model as
+    ``health_rules._number``), so a buggy or compromised agent can put anything
+    JSON allows there -- a non-numeric string, a list, a dict. ``int(value or 0)``
+    raised ``ValueError``/``TypeError`` on those, and because
+    :meth:`WebFilterService.record_activity` scores every domain in one push in a
+    single loop, one bad ``hits`` value used to abort the whole push's flagging
+    (caught only by the tunnel's blanket ``except Exception``) instead of just
+    that one entry.
+    """
+
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and math.isfinite(value):
+        return int(value)
+    return 0
 
 
 # Provenance precedence when a domain is contributed by several layers: a custom
@@ -1244,14 +1268,14 @@ class WebFilterService:
                     category, matched_entry = hit
             first_seen = item.get("first_seen")
             last_seen = item.get("last_seen")
-            sources = item.get("sources") or []
+            sources = item.get("sources")
             events.append(
                 {
                     "domain": domain,
                     "first_seen": first_seen,
                     "last_seen": last_seen,
-                    "hits": int(item.get("hits") or 0),
-                    "sources": [str(s) for s in sources],
+                    "hits": _safe_hits(item.get("hits")),
+                    "sources": [str(s) for s in sources] if isinstance(sources, list) else [],
                     "flagged": category is not None,
                     "category": category,
                 }
