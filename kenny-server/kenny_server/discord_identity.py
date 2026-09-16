@@ -165,6 +165,12 @@ class DiscordLinkClaim:
     created_at: str
     expires_at: str
     consumed_at: str | None = None
+    # POSSIBLY DEAD: written on consume and round-tripped through `from_row`,
+    # but no caller reads it back — `list_pending_claims` (the only place
+    # `as_dict()` reaches an API response) only ever returns unconsumed
+    # claims, where this is always `None`. Kept as the audit trail for who
+    # confirmed a `/link` claim, in case a "who linked this account" view is
+    # added later.
     consumed_by: int | None = None
 
     @classmethod
