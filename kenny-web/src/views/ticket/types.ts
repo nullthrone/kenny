@@ -133,16 +133,6 @@ export interface TicketApproval {
   decided_via: string | null
 }
 
-/**
- * `POST /api/approvals/{id}` response. `resumed === false` means the
- * decision was recorded but kenny could not continue the ticket
- * automatically — must be reported distinctly from plain success.
- */
-export interface ApprovalDecideResponse extends TicketApproval {
-  resumed: boolean
-  resume_status: string
-}
-
 /** `GET /api/users/directory` — operator+ only. Resolves actor ids to names. */
 export interface DirectoryUser {
   id: number
