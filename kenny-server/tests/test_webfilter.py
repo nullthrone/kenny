@@ -500,6 +500,42 @@ async def test_store_activity_flagged_only(wstore: WebFilterStore) -> None:
     assert [r["domain"] for r in flagged] == ["b.example"]
 
 
+async def test_upsert_events_bad_event_rolls_back_and_does_not_poison_the_connection(
+    wstore: WebFilterStore,
+) -> None:
+    """A batch SQLite can't bind must not leave the transaction open.
+
+    ``events`` ultimately comes from an agent's untrusted ``web_activity``
+    telemetry, so a field of a type SQLite refuses to bind (e.g. a dict where
+    a string/None was expected) can raise partway through the loop. Without a
+    rollback, the still-open ``BEGIN IMMEDIATE`` would poison this connection:
+    every later call would fail with "cannot start a transaction within a
+    transaction" instead of just the one bad batch.
+    """
+
+    with pytest.raises(Exception):
+        await wstore.upsert_events(
+            "pc1",
+            [
+                {"domain": "bad.example", "first_seen": {"not": "a string"},
+                 "last_seen": None, "hits": 1, "sources": [], "flagged": False,
+                 "category": None},
+            ],
+        )
+    # The connection must still accept writes -- proof the transaction was
+    # rolled back rather than left open.
+    await wstore.upsert_events(
+        "pc1",
+        [
+            {"domain": "good.example", "first_seen": "2026-07-01T10:00:00Z",
+             "last_seen": "2026-07-01T10:00:00Z", "hits": 1, "sources": [],
+             "flagged": False, "category": None},
+        ],
+    )
+    rows = await wstore.activity("pc1", "2026-07-01T00:00:00Z")
+    assert [r["domain"] for r in rows] == ["good.example"]
+
+
 async def test_store_prune(wstore: WebFilterStore) -> None:
     now = datetime(2026, 7, 2, tzinfo=timezone.utc)
     old = (now - timedelta(days=40)).isoformat()
@@ -729,6 +765,41 @@ async def service(tmp_path):
     await store.connect()
     yield WebFilterService(store, _StubCache())
     await store.close()
+
+
+@pytest.mark.parametrize(
+    "hits, sources",
+    [
+        ("not-a-number", ["dns_cache"]),   # non-numeric string
+        (float("nan"), ["dns_cache"]),     # non-finite float
+        ([1, 2], ["dns_cache"]),           # wrong type entirely
+        (10**30, ["dns_cache"]),           # valid Python int, too big for SQLite
+        (3, 5),                            # sources not a list
+    ],
+)
+async def test_record_activity_survives_malformed_hits_and_sources(
+    service, hits, sources
+) -> None:
+    """``web_activity.domains[].hits``/``sources`` are unvalidated wire extras.
+
+    A malfunctioning or malicious agent can send a non-numeric/oversized
+    ``hits`` or a non-list ``sources``; either used to reach ``int()`` or a
+    list comprehension over a non-iterable unguarded and crashed
+    ``record_activity`` (and, for an oversized-but-valid int, the later
+    SQLite bind in ``upsert_events``).
+    """
+
+    await service.set_config("pc1", enabled=True, block_mode=True, categories=[])
+    payload = {
+        "domains": [
+            {"domain": "example.com", "first_seen": "2026-07-01T10:00:00Z",
+             "last_seen": "2026-07-01T10:00:00Z", "hits": hits, "sources": sources}
+        ]
+    }
+    out = await service.record_activity("pc1", payload)
+    assert out["flagged"] == []  # not on any list, but no crash either
+    rows = await service.store.activity("pc1", "2026-07-01T00:00:00Z")
+    assert rows[0]["domain"] == "example.com"
 
 
 async def test_service_build_apply_follows_the_schedule(service) -> None:

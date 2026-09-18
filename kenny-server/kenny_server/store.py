@@ -2349,50 +2349,65 @@ class WebFilterStore:
         so it holds :func:`write_lock` for its whole duration (never released
         mid-loop) and opens with ``BEGIN IMMEDIATE`` to take the writer lock up
         front rather than partway through the loop.
+
+        ``events`` ultimately comes from an agent's ``web_activity`` telemetry
+        (an unvalidated wire extra), so a field of a type SQLite can't bind
+        (e.g. a ``first_seen`` that arrived as a dict) can raise partway
+        through the loop. Without a rollback here, the still-open ``BEGIN
+        IMMEDIATE`` transaction would poison this connection: every later
+        call would fail with "cannot start a transaction within a
+        transaction" until the process restarts, well past the one bad
+        event. Roll back and re-raise so a caller's existing try/except
+        (``tunnel.py`` already wraps this call) only ever loses the one
+        malformed batch, never every batch after it.
         """
 
         async with write_lock():
             await _begin_immediate(self._conn)
-            for event in events:
-                domain = event["domain"]
-                async with self._conn.execute(
-                    "SELECT first_seen, last_seen, hits, sources FROM web_activity_events "
-                    "WHERE agent_id = ? AND domain = ?",
-                    (agent_id, domain),
-                ) as cur:
-                    existing = await cur.fetchone()
-                first_seen = event.get("first_seen")
-                last_seen = event.get("last_seen")
-                hits = int(event.get("hits") or 0)
-                sources = set(event.get("sources") or [])
-                if existing is not None:
-                    firsts = [x for x in (existing["first_seen"], first_seen) if x]
-                    lasts = [x for x in (existing["last_seen"], last_seen) if x]
-                    first_seen = min(firsts) if firsts else None
-                    last_seen = max(lasts) if lasts else None
-                    hits += int(existing["hits"] or 0)
-                    if existing["sources"]:
-                        sources |= set(json.loads(existing["sources"]))
-                await self._conn.execute(
-                    "INSERT INTO web_activity_events "
-                    "(agent_id, domain, first_seen, last_seen, hits, sources, flagged, category) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
-                    "ON CONFLICT(agent_id, domain) DO UPDATE SET "
-                    "first_seen=excluded.first_seen, last_seen=excluded.last_seen, "
-                    "hits=excluded.hits, sources=excluded.sources, "
-                    "flagged=excluded.flagged, category=excluded.category",
-                    (
-                        agent_id,
-                        domain,
-                        first_seen,
-                        last_seen,
-                        hits,
-                        json.dumps(sorted(sources)),
-                        1 if event.get("flagged") else 0,
-                        event.get("category"),
-                    ),
-                )
-            await self._conn.commit()
+            try:
+                for event in events:
+                    domain = event["domain"]
+                    async with self._conn.execute(
+                        "SELECT first_seen, last_seen, hits, sources FROM web_activity_events "
+                        "WHERE agent_id = ? AND domain = ?",
+                        (agent_id, domain),
+                    ) as cur:
+                        existing = await cur.fetchone()
+                    first_seen = event.get("first_seen")
+                    last_seen = event.get("last_seen")
+                    hits = int(event.get("hits") or 0)
+                    sources = set(event.get("sources") or [])
+                    if existing is not None:
+                        firsts = [x for x in (existing["first_seen"], first_seen) if x]
+                        lasts = [x for x in (existing["last_seen"], last_seen) if x]
+                        first_seen = min(firsts) if firsts else None
+                        last_seen = max(lasts) if lasts else None
+                        hits += int(existing["hits"] or 0)
+                        if existing["sources"]:
+                            sources |= set(json.loads(existing["sources"]))
+                    await self._conn.execute(
+                        "INSERT INTO web_activity_events "
+                        "(agent_id, domain, first_seen, last_seen, hits, sources, flagged, category) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                        "ON CONFLICT(agent_id, domain) DO UPDATE SET "
+                        "first_seen=excluded.first_seen, last_seen=excluded.last_seen, "
+                        "hits=excluded.hits, sources=excluded.sources, "
+                        "flagged=excluded.flagged, category=excluded.category",
+                        (
+                            agent_id,
+                            domain,
+                            first_seen,
+                            last_seen,
+                            hits,
+                            json.dumps(sorted(sources)),
+                            1 if event.get("flagged") else 0,
+                            event.get("category"),
+                        ),
+                    )
+                await self._conn.commit()
+            except BaseException:
+                await self._conn.rollback()
+                raise
 
     async def activity(
         self, agent_id: str, since_iso: str, flagged_only: bool = False

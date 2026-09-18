@@ -1038,6 +1038,33 @@ def _parse_ts(value: Any) -> datetime | None:
         return None
 
 
+# SQLite's INTEGER column is a signed 64-bit value; a ``hits`` count outside
+# this range round-trips through Python's own int() just fine (ints are
+# arbitrary precision) but raises OverflowError the moment it is bound as a
+# query parameter in ``WebFilterStore.upsert_events``.
+_MAX_SQLITE_INT = 2**63 - 1
+
+
+def _safe_hits(value: Any) -> int:
+    """Coerce an agent-reported ``hits`` count to a storable non-negative int.
+
+    ``web_activity.domains[].hits`` is an unvalidated wire extra (``Section``
+    allows any extra field), so a malfunctioning or malicious agent can send a
+    non-numeric string, NaN, a list/dict, or an int far outside SQLite's
+    64-bit range. Any of those used to reach ``int(...)`` (or, for an
+    oversized-but-valid Python int, the later SQLite bind) unguarded and
+    crashed the whole telemetry push. Treat anything that doesn't survive
+    becoming a storable count as zero, the same "unusable defers to a safe
+    default" pattern as ``health_rules._number``.
+    """
+
+    try:
+        n = int(value or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    return n if 0 <= n <= _MAX_SQLITE_INT else 0
+
+
 class WebFilterService:
     """Async facade over a :class:`WebFilterStore` + :class:`ExternalListCache`."""
 
@@ -1244,13 +1271,15 @@ class WebFilterService:
                     category, matched_entry = hit
             first_seen = item.get("first_seen")
             last_seen = item.get("last_seen")
-            sources = item.get("sources") or []
+            sources = item.get("sources")
+            if not isinstance(sources, list):
+                sources = []
             events.append(
                 {
                     "domain": domain,
                     "first_seen": first_seen,
                     "last_seen": last_seen,
-                    "hits": int(item.get("hits") or 0),
+                    "hits": _safe_hits(item.get("hits")),
                     "sources": [str(s) for s in sources],
                     "flagged": category is not None,
                     "category": category,
