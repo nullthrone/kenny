@@ -1,4 +1,4 @@
-import { HardDrive, RotateCw, ICON_STROKE_WIDTH, type LucideIcon } from '../../components/icons'
+import { HardDrive, RotateCw, type LucideIcon } from '../../components/icons'
 import {
   Cpu,
   MemoryStick,
@@ -28,8 +28,6 @@ import {
   ListTree,
   type LucideIcon as LucideIconType,
 } from 'lucide-react'
-
-export { ICON_STROKE_WIDTH }
 
 /**
  * Section icons beyond `HardDrive`/`RotateCw`, which are the only two icons.ts
