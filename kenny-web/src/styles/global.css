@@ -295,6 +295,43 @@ a {
   }
 }
 
+/* ── No zoom on focus ─────────────────────────────────────────────────────
+ * WebKit on iOS zooms the whole page in when a text-entry control is focused
+ * whose computed font-size is below 16px, and does not zoom back out. Every
+ * control in this app is below that line: form controls are drawn at
+ * --text-sm (13px) or smaller, and even the body default --text-md is 15px.
+ *
+ * The 16px below is WebKit's threshold, not a step on the type scale, and is
+ * deliberately NOT routed through a typography token — a token would let the
+ * scale move it, and the whole point is that it cannot move.
+ *
+ * Gated on the pointer, not the viewport: an iPhone in landscape is wider
+ * than the 760px breakpoint and still zooms, while a 1500px desktop window
+ * never does. `hover: none` keeps a touchscreen laptop — which has a mouse
+ * and does not zoom — on the designed size.
+ *
+ * `!important` because the ~20 CSS-Module rules that draw these controls are
+ * class selectors loaded after this file, and would otherwise win. That is
+ * also why no other stylesheet may raise `font-size` with an `!important` of
+ * its own: it is the one way to defeat this rule, and styles/noZoom.test.ts
+ * fails the build when one appears.
+ *
+ * Listed are only the controls WebKit actually zooms for — text entry of
+ * every kind, and <select>. Checkboxes, radios, range, color and file inputs
+ * keep their designed size. Single-argument :not() chained rather than one
+ * selector list, so the rule does not rest on Selectors-4 support.
+ *
+ * The legacy prototype page (kenny-server/kenny_server/webui/index.html,
+ * served only when no kenny-web build is present) carries the same block.
+ */
+@media (hover: none) and (pointer: coarse) {
+  input:not([type='checkbox']):not([type='radio']):not([type='button']):not([type='submit']):not([type='reset']):not([type='range']):not([type='color']):not([type='file']),
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+}
+
 /* ── Responsive — mobile breakpoint ───────────────────────────────────────
  * Transcribed exactly from the prototype's `@media (max-width:760px)` block
  * (lines 30-49). This is the ONE authoritative responsive spec: below

@@ -1050,14 +1050,18 @@ def _safe_hits(value: Any) -> int:
 
     ``web_activity.domains[].hits`` is an unvalidated wire extra (``Section``
     allows any extra field), so a malfunctioning or malicious agent can send a
-    non-numeric string, NaN, a list/dict, or an int far outside SQLite's
-    64-bit range. Any of those used to reach ``int(...)`` (or, for an
+    non-numeric string, NaN, a bool, a list/dict, or an int far outside
+    SQLite's 64-bit range. Any of those used to reach ``int(...)`` (or, for an
     oversized-but-valid Python int, the later SQLite bind) unguarded and
     crashed the whole telemetry push. Treat anything that doesn't survive
     becoming a storable count as zero, the same "unusable defers to a safe
-    default" pattern as ``health_rules._number``.
+    default" pattern as ``health_rules._number``. ``bool`` is excluded before
+    the cast since it is an ``int`` subclass and would otherwise round-trip as
+    ``0``/``1`` instead of the "unusable" default.
     """
 
+    if isinstance(value, bool):
+        return 0
     try:
         n = int(value or 0)
     except (TypeError, ValueError, OverflowError):

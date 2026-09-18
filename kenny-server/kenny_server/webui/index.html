@@ -816,6 +816,20 @@
       padding: 4px 6px; cursor: pointer; }
     .kacc-empty { color: var(--fg-muted); font-size: var(--text-sm); padding: 6px 2px; }
     .k-pill--role { background: var(--accent-wash); color: var(--accent); border-color: color-mix(in oklab, var(--accent) 35%, transparent); }
+
+    /* No zoom on focus. WebKit on iOS zooms the page in when a text-entry
+       control is focused whose computed font-size is below 16px, and does not
+       zoom back out. 16px is that threshold, not a step on this page's type
+       scale, so it is written as a literal and must not become a var().
+       Gated on the pointer rather than the viewport: an iPhone in landscape is
+       wider than any width breakpoint and still zooms. The active dashboard
+       carries the same block in kenny-web/src/styles/global.css; this page is
+       only served when no kenny-web build is present. */
+    @media (hover: none) and (pointer: coarse) {
+      input:not([type='checkbox']):not([type='radio']):not([type='button']):not([type='submit']):not([type='reset']):not([type='range']):not([type='color']):not([type='file']),
+      textarea,
+      select { font-size: 16px !important; }
+    }
   </style>
 </head>
 <body>

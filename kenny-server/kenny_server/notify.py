@@ -264,6 +264,8 @@ def build_notifiers(
     return notifiers
 
 
+# POSSIBLY DEAD: no production caller remains — main.py wires NotifierProvider
+# instead (ADR-0054). Only tests call this directly.
 def load_notifiers(
     *,
     settings: SettingsReader | None = None,
