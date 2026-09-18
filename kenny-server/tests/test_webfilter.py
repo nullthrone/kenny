@@ -756,6 +756,38 @@ async def test_service_activity_clamps_an_unbounded_hours_argument(service) -> N
     assert events == []
 
 
+async def test_service_record_activity_never_crashes_on_malformed_hits_or_sources(
+    service,
+) -> None:
+    """``hits``/``sources`` reach ``record_activity`` straight off an unvalidated
+    ``web_activity`` telemetry section (``Section`` uses ``extra="allow"``), so a
+    buggy or compromised agent can put anything JSON allows there. A non-numeric
+    ``hits`` used to raise out of ``int(... or 0)``, and a non-list ``sources``
+    used to raise out of iterating it -- either one aborted flagging for every
+    domain in the push, not just the malformed entry (tunnel.py's blanket
+    ``except Exception`` around this call only hid the failure).
+    """
+
+    last_seen = datetime.now(timezone.utc).isoformat()
+    await service.record_activity(
+        "pc1",
+        {
+            "domains": [
+                {"domain": "example.com", "hits": "many", "sources": 5,
+                 "last_seen": last_seen},
+                {"domain": "other.example", "hits": [1, 2], "sources": "chrome",
+                 "last_seen": last_seen},
+                {"domain": "fine.example", "hits": 3, "sources": ["chrome"],
+                 "last_seen": last_seen},
+            ]
+        },
+    )
+    events = {e["domain"]: e for e in await service.activity("pc1")}
+    assert events["example.com"]["hits"] == 0
+    assert events["other.example"]["hits"] == 0
+    assert events["fine.example"]["hits"] == 3
+
+
 async def test_schedule_due_only_returns_changed_enabled_hosts(service) -> None:
     await service.set_config("pc1", enabled=True, block_mode=True, categories=[])
     await service.add_domain("pc1", "chat.example", "block", None, "chat")
