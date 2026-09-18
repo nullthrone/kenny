@@ -94,6 +94,15 @@ pub mod core {
         intervals
     }
 
+    /// Hard cap on how many seconds of a single interval this function will ever
+    /// walk day-by-day (~10 years; the real reporting window is 7 days). `start`/
+    /// `end` are ultimately derived from a Winlogon event's `TimeCreated` field —
+    /// untrusted, corrupted-log-friendly input this function does not control — so
+    /// an interval spanning close to the full `i64` range (e.g. `i64::MIN..i64::MAX`)
+    /// must not turn the loop below into one that runs for a practical eternity
+    /// (~2*10^14 one-day iterations) instead of returning.
+    const MAX_INTERVAL_SECS: i64 = 3650 * DAY_SECS;
+
     /// Sum interval seconds into minutes per **local** calendar day
     /// (`offset_secs` = local UTC offset), splitting intervals at local
     /// midnights. Days come out sorted ascending, each clamped to [0, 1440].
@@ -102,13 +111,18 @@ pub mod core {
 
         let mut per_day: BTreeMap<String, i64> = BTreeMap::new();
         for &(start, end) in intervals {
+            // Clamp implausibly long intervals so the day-splitting loop below is
+            // always bounded, and use saturating arithmetic throughout so an
+            // extreme (near-`i64::MIN`/`MAX`) timestamp cannot overflow instead.
+            let end = end.min(start.saturating_add(MAX_INTERVAL_SECS));
             let mut cur = start;
             while cur < end {
-                let local = cur + i64::from(offset_secs);
+                let local = cur.saturating_add(i64::from(offset_secs));
                 // Next local midnight, expressed back in UTC seconds.
-                let next_midnight =
-                    (local.div_euclid(DAY_SECS) + 1) * DAY_SECS - i64::from(offset_secs);
-                let chunk_end = end.min(next_midnight);
+                let next_midnight = (local.div_euclid(DAY_SECS) + 1)
+                    .saturating_mul(DAY_SECS)
+                    .saturating_sub(i64::from(offset_secs));
+                let chunk_end = end.min(next_midnight).max(cur.saturating_add(1));
                 *per_day.entry(local_date(cur, offset_secs)).or_insert(0) += chunk_end - cur;
                 cur = chunk_end;
             }
@@ -122,7 +136,10 @@ pub mod core {
     /// The local calendar date (`yyyy-MM-dd`) of a UTC instant at `offset_secs`.
     pub fn local_date(unix_secs: i64, offset_secs: i32) -> String {
         // Shifting by the offset and formatting as UTC yields the local date.
-        chrono::DateTime::from_timestamp(unix_secs + i64::from(offset_secs), 0)
+        // Saturating: `unix_secs` can be an extreme, corrupted-input value (see
+        // `minutes_per_day`), and `from_timestamp` already falls back safely below
+        // for anything out of chrono's representable range.
+        chrono::DateTime::from_timestamp(unix_secs.saturating_add(i64::from(offset_secs)), 0)
             .unwrap_or_else(|| chrono::DateTime::from_timestamp(0, 0).expect("epoch is valid"))
             .format("%Y-%m-%d")
             .to_string()
@@ -233,6 +250,29 @@ pub mod core {
                 "3.4h today, 8.6h over 7 days"
             );
             assert_eq!(summarize(&[], "2026-06-04"), "0.0h today, 0.0h over 7 days");
+        }
+
+        /// Regression test: a corrupted/adversarial Winlogon event timestamp can hand
+        /// `minutes_per_day` an interval spanning almost the entire `i64` range (e.g.
+        /// `(i64::MIN, i64::MAX)`). The day-splitting loop used to advance one
+        /// calendar day (86,400s) per iteration with no bound on the interval's total
+        /// span, so that input made it iterate roughly `2^64 / 86_400` (~2*10^14)
+        /// times — effectively hanging forever rather than returning or panicking.
+        /// It must instead return promptly with a small, bounded number of days.
+        #[test]
+        fn minutes_per_day_never_hangs_on_an_interval_spanning_the_i64_range() {
+            let days = minutes_per_day(&[(i64::MIN, i64::MAX)], 0);
+            assert!(
+                days.len() <= 3652,
+                "interval must be clamped to a bounded span, got {} days",
+                days.len()
+            );
+
+            // A near-`i64::MAX` interval combined with a nonzero UTC offset used to be
+            // able to overflow the day-boundary arithmetic (`cur + offset_secs`,
+            // `(local / DAY_SECS + 1) * DAY_SECS`); it must not panic either.
+            let days = minutes_per_day(&[(i64::MAX - 10, i64::MAX)], 12 * 3600);
+            assert!(!days.is_empty());
         }
     }
 }
