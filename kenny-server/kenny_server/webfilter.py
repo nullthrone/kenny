@@ -37,7 +37,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import math
 import os
 import re
 import uuid
@@ -103,29 +102,6 @@ def matches(observed: str, entry: str) -> bool:
     """True when ``observed`` is ``entry`` or a subdomain of it (suffix match)."""
 
     return observed == entry or observed.endswith("." + entry)
-
-
-def _safe_hits(value: Any) -> int:
-    """Coerce a ``web_activity`` domain entry's ``hits`` count to ``int``, or ``0``.
-
-    ``value`` comes straight off an unvalidated agent-reported telemetry field
-    (``Section`` uses ``extra="allow"``, same threat model as
-    ``health_rules._number``), so a buggy or compromised agent can put anything
-    JSON allows there -- a non-numeric string, a list, a dict. ``int(value or 0)``
-    raised ``ValueError``/``TypeError`` on those, and because
-    :meth:`WebFilterService.record_activity` scores every domain in one push in a
-    single loop, one bad ``hits`` value used to abort the whole push's flagging
-    (caught only by the tunnel's blanket ``except Exception``) instead of just
-    that one entry.
-    """
-
-    if isinstance(value, bool):
-        return 0
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float) and math.isfinite(value):
-        return int(value)
-    return 0
 
 
 # Provenance precedence when a domain is contributed by several layers: a custom
@@ -1062,6 +1038,37 @@ def _parse_ts(value: Any) -> datetime | None:
         return None
 
 
+# SQLite's INTEGER column is a signed 64-bit value; a ``hits`` count outside
+# this range round-trips through Python's own int() just fine (ints are
+# arbitrary precision) but raises OverflowError the moment it is bound as a
+# query parameter in ``WebFilterStore.upsert_events``.
+_MAX_SQLITE_INT = 2**63 - 1
+
+
+def _safe_hits(value: Any) -> int:
+    """Coerce an agent-reported ``hits`` count to a storable non-negative int.
+
+    ``web_activity.domains[].hits`` is an unvalidated wire extra (``Section``
+    allows any extra field), so a malfunctioning or malicious agent can send a
+    non-numeric string, NaN, a bool, a list/dict, or an int far outside
+    SQLite's 64-bit range. Any of those used to reach ``int(...)`` (or, for an
+    oversized-but-valid Python int, the later SQLite bind) unguarded and
+    crashed the whole telemetry push. Treat anything that doesn't survive
+    becoming a storable count as zero, the same "unusable defers to a safe
+    default" pattern as ``health_rules._number``. ``bool`` is excluded before
+    the cast since it is an ``int`` subclass and would otherwise round-trip as
+    ``0``/``1`` instead of the "unusable" default.
+    """
+
+    if isinstance(value, bool):
+        return 0
+    try:
+        n = int(value or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    return n if 0 <= n <= _MAX_SQLITE_INT else 0
+
+
 class WebFilterService:
     """Async facade over a :class:`WebFilterStore` + :class:`ExternalListCache`."""
 
@@ -1269,13 +1276,15 @@ class WebFilterService:
             first_seen = item.get("first_seen")
             last_seen = item.get("last_seen")
             sources = item.get("sources")
+            if not isinstance(sources, list):
+                sources = []
             events.append(
                 {
                     "domain": domain,
                     "first_seen": first_seen,
                     "last_seen": last_seen,
                     "hits": _safe_hits(item.get("hits")),
-                    "sources": [str(s) for s in sources] if isinstance(sources, list) else [],
+                    "sources": [str(s) for s in sources],
                     "flagged": category is not None,
                     "category": category,
                 }
