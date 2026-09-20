@@ -726,14 +726,12 @@ def _rule_reliability(
     # person would have noticed -- from the ADR-0026 annotation (persisted
     # server-side, ADR-0058), so every consumer reaches the same verdict.
     #
-    # The shape of the verdict: data at risk is never made to wait for a second
-    # occurrence, because the second occurrence is the loss. Everything else
-    # needs to have happened more than once before it is critical -- one
-    # unexpected restart on an otherwise healthy machine is worth saying once,
-    # not worth paging about, and `warn` already notifies and opens a ticket
-    # exactly once (INCIDENT_STATUSES). Without any annotation nothing scores
-    # except the closed crash-marker set, and the reason says so rather than
-    # reporting silence as health.
+    # The shape of the verdict: an impact has to have happened more than once
+    # before it is critical -- one unexpected restart on an otherwise healthy
+    # machine is worth saying once, not worth paging about, and `warn` already
+    # notifies. Without any annotation nothing scores except the closed
+    # crash-marker set, and the reason says so rather than reporting silence
+    # as health.
     events_raw = payload.get("events")
     si = _number(payload.get("stability_index"))
     total = _number(payload.get("recent_crashes"))
@@ -746,13 +744,24 @@ def _rule_reliability(
     boots = len(boot_sessions) if isinstance(boot_sessions, list) else None
 
     scoring = _reliability_scoring(patterns)
-    # `degraded` never crits however long it persists: the machine works, and
-    # a standing annoyance that pages every day is how this section became
-    # ignorable in the first place. It stays a warn until someone fixes it.
+    # One rule for every impact: critical means it is *still happening*, which
+    # a single occurrence cannot establish. An earlier version of this exempted
+    # `data_at_risk` from recurrence, on the reasoning that the second
+    # occurrence of data loss is the loss. Replaying the live fleet through it
+    # turned one shadow-copy cleanup -- 33 hours old, already self-corrected,
+    # and caused by a disk the `disk` section was already reporting at 87% --
+    # into a red host. That is the exact failure this section was being
+    # rebuilt to remove, with a better sentence attached to it.
+    #
+    # What a single data-risk event still gets is a warn, which notifies. A
+    # disk that is actually failing logs again well inside one window, and
+    # `disk_smart` carries the hardware signal independently of the event log.
+    #
+    # `degraded` additionally never crits however long it persists: the
+    # machine works, and a standing annoyance that goes red every day is how
+    # this section became ignorable in the first place.
     crit_finding = any(
-        p["user_impact"] == "data_at_risk"
-        or (p["user_impact"] == "crashed" and p["recurring"])
-        for p in scoring
+        p["recurring"] and p["user_impact"] in ("crashed", "data_at_risk") for p in scoring
     )
 
     si_status: Status | None = None

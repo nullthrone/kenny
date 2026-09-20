@@ -84,10 +84,20 @@ Because the verdict is a function of the question as much as of the model, the s
 tag becomes `"<model>/<revision>"`, and `delete_model_except` invalidates on either changing.
 A prompt edit previously invalidated nothing at all.
 
-The verdict shape: `data_at_risk` never waits for a second occurrence, because the second
-occurrence is the loss; everything else must have happened more than once before it is
-critical. One unexpected restart on an otherwise healthy machine is worth saying once, and
-`warn` already notifies and opens a ticket exactly once (`INCIDENT_STATUSES`).
+The verdict shape: an impact must have happened more than once before it is critical. One
+unexpected restart on an otherwise healthy machine is worth saying once, and `warn` already
+notifies.
+
+This rule started with an exemption — `data_at_risk` would not wait, because the second
+occurrence of data loss is the loss. Replaying the live fleet through it removed the
+exemption: on `thomas-pc` the `Volsnap/25` shadow-copy cleanup reads as
+*"restore points were deleted because the drive is nearly full"*, which is a fair
+`data_at_risk`, and the exemption turned one such event — 33 hours old, already
+self-corrected, and caused by a disk the `disk` section was reporting at 87% — straight back
+into a red host. That is the failure this record exists to remove, with a better sentence
+attached. A single data-risk event still warns, and so notifies; a disk that is actually
+failing logs again well inside one window, with `disk_smart` carrying the hardware signal
+independently of the event log.
 
 Counts become usable again, which ADR-0041 and ADR-0058 had rejected them for. Their
 objection was that a count cannot tell "3439 identical harmless lines" from "3439
@@ -154,6 +164,10 @@ instants in the window, read in the same query and the same clock as the events 
   deliberately not in this record.
 - Bad / accepted, because confirmation-before-alarm costs `reliability` one push interval
   (~15 min) of latency on a genuine incident.
+- Bad / accepted, because the first occurrence of anything is only ever a `warn`, so a
+  single catastrophic event notifies without opening a ticket. The recurrence bar is what
+  keeps a self-correcting one-off from going red, and it cannot be had selectively without
+  reintroducing the exemption described above.
 - Deliberately not done: an operator override of a wrong `user_impact`. ADR-0041 rejected
   folding that into suppression, correctly — but rejecting the conflation is not the same as
   deciding the capability should not exist.

@@ -319,16 +319,32 @@ def test_reliability_one_crash_warns_and_a_second_crits() -> None:
     assert _eval_reliability(twice)["status"] == "crit"
 
 
-def test_reliability_data_at_risk_does_not_wait_for_a_second_time() -> None:
-    # The second occurrence of "your files may be gone" is the loss.
-    events = [
+def test_reliability_data_at_risk_still_needs_to_recur_to_crit() -> None:
+    """Critical means it is still happening, for every impact alike.
+
+    Exempting `data_at_risk` from recurrence looked right -- the second
+    occurrence of data loss is the loss -- until the live fleet was replayed
+    through it: one shadow-copy cleanup, 33 hours old and already
+    self-corrected, turned the host red again. A single data-risk event is
+    worth one notification; `disk_smart` carries the hardware signal
+    independently, and `disk` carries the cause.
+    """
+
+    once = [
         _pattern("disk", 51, days={0: 1}, severity="serious", impact="data_at_risk",
                  symptom="Files on the system drive may be unreadable",
                  last_seen_hours_ago=3),
     ]
-    result = _eval_reliability(events)
-    assert result["status"] == "crit"
+    result = _eval_reliability(once)
+    assert result["status"] == "warn"
     assert "Files on the system drive may be unreadable" in result["reason"]
+
+    twice = [
+        _pattern("disk", 51, days={1: 1, 0: 1}, severity="serious", impact="data_at_risk",
+                 symptom="Files on the system drive may be unreadable",
+                 last_seen_hours_ago=3),
+    ]
+    assert _eval_reliability(twice)["status"] == "crit"
 
 
 def test_reliability_degraded_warns_however_long_it_persists() -> None:
@@ -378,12 +394,17 @@ def test_reliability_crash_marker_floor_respects_suppression() -> None:
 
 
 def test_reliability_crash_marker_floor_never_lowers_a_worse_verdict() -> None:
+    # The floor raises an impact to `crashed`; it must not pull a classifier
+    # verdict that was already worse back down to it.
     events = [
-        _pattern("Microsoft-Windows-Kernel-Power", 41, days={0: 1}, level="critical",
+        _pattern("Microsoft-Windows-Kernel-Power", 41, days={1: 1, 0: 1}, level="critical",
                  impact="data_at_risk", symptom="The disk lost data during a crash",
                  last_seen_hours_ago=1),
     ]
-    assert _eval_reliability(events)["status"] == "crit"
+    result = _eval_reliability(events)
+    assert result["details"]["patterns"][0]["user_impact"] == "data_at_risk"
+    assert result["reason"].startswith("The disk lost data during a crash")
+    assert result["status"] == "crit"
 
 
 def test_reliability_unclassified_patterns_are_counted_not_scored() -> None:
