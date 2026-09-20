@@ -1,4 +1,4 @@
-# kenny Wire Protocol (v0.18)
+# kenny Wire Protocol (v0.19)
 
 > **Single source of truth.** This document and the JSON files in `docs/fixtures/`
 > define the contract between `kenny-server` (Python) and `kenny-agent` (Rust).
@@ -709,13 +709,12 @@ stub with empty `sources`/`domains`.
 The `reliability` section reports **what** is going wrong, not just how many errors there are:
 a breakdown of the Error/Critical entries in the System + Application event logs over a rolling
 window (default 7 days), grouped by Windows source + event id. Each group carries a real sample
-message, its level, a total count, when it was last seen, and a per-day histogram. The list is
-bounded (top ~20 groups by count, `truncated` beyond; `sample` capped ~200 chars). The section
+message, its level, a total count, when it was last seen, and a per-day histogram. The section
 payload the agent sends:
 
 ```json
 "reliability": {
-  "status": "warn",
+  "status": "ok",
   "summary": "192 error/critical events in 7d",
   "stability_index": 6.8,
   "recent_crashes": 192,
@@ -726,29 +725,58 @@ payload the agent sends:
       "last_seen": "2026-07-01T20:14:33Z",
       "by_day": { "2026-06-27": 10, "2026-06-28": 12 } }
   ],
-  "truncated": false
+  "boot_sessions": ["2026-06-27T06:12:04Z", "2026-06-29T07:41:55Z"],
+  "truncated": false,
+  "truncated_count": 0
 }
 ```
 
+Field rules a consumer may rely on:
+
+- **`by_day` keys are UTC calendar dates**, matching `last_seen`'s timezone. Both are derived
+  from the same event timestamps, so the number of distinct keys is a timezone-independent
+  measure of how many days a pattern spans.
+- **`last_seen` is the timestamp of the group's newest member**, and **`sample` is that same
+  newest member's first message line** (capped ~200 chars) — one representative of a
+  potentially heterogeneous group, not a summary of it. A generic event id (`Application
+  Error/1000`, `Service Control Manager/7024`) groups unrelated failures together, so the
+  sample names whichever one happened last.
+- **The group list is bounded**, but not by count alone: every `level: "critical"` group is
+  kept first (up to 8), then the largest groups by count, then the most recently seen, up to
+  40 groups total. `truncated` says whether anything was dropped and `truncated_count` says
+  how many groups — so `recent_crashes` can be reconciled against the sum of the reported
+  groups' counts. Ordering by count alone would drop a single bugcheck behind a chatty but
+  harmless pattern; the reserved critical slots exist so the rare events that matter always
+  arrive.
+- **`boot_sessions`** lists the UTC instants at which the host booted inside the window (from
+  `Kernel-Boot/20` and `EventLog/6005`, read in the same query and the same clock as the
+  events themselves), newest last and capped at 20. It lets the server tell a pattern that
+  recurred across several boots from one that fired once on the way down, and tell an
+  unexpected shutdown from an orderly one. Empty when unavailable.
+
 `stability_index` (Windows Reliability Index, 0–10, or `null`) and `recent_crashes` (the total
-count = sum of the groups' counts) are retained. The agent always reports `status: "ok"` — it
-reports what happened and does not grade it; the server's health rules are authoritative for
-this section (like `web_activity` above). A `status` an agent does send is not folded into the
-rule's verdict. On the read path the server annotates each
-group with a friendly `category`, a `severity` (`benign`/`notable`/`serious`/`unknown`), and a
-short `suspected_cause` (via the connected LLM, cached) — used both for the dashboard's
-reliability heatmaps and to drive the health rule's crit/warn scoring by pattern, not raw
-volume. If the operator has suppressed this exact `(source, event_id)` pattern (ADR-0041), the
-read path additionally stamps `suppressed: true` and a `suppressed_by` descriptor, excluding
-the group from severity scoring while leaving its count untouched; unlike the LLM annotation
-above, suppression needs no API key and so is stamped on every read path, including
-`agent_snapshot`. The server persists its `category`/`severity`/`suspected_cause` verdicts
-and stamps them on every read path too, and its health rule derives each group's activity
-(days active, age of `last_seen`, whether it is still happening) from the `by_day` and
-`last_seen` fields above — that derived record appears only in health output, never on the
-wire. These fields are all **server-internal and not part of this wire contract** — the
+count of matching entries in the window) are retained. The agent always reports `status: "ok"`
+— it reports what happened and does not grade it; the server's health rules are authoritative
+for this section (like `web_activity` above). A `status` an agent does send is not folded into
+the rule's verdict.
+
+On the read path the server annotates each group with a `user_impact`
+(`none`/`degraded`/`crashed`/`data_at_risk`) and a plain-language `symptom`, plus a friendly
+`category`, a `severity` (`benign`/`notable`/`serious`/`unknown`) and a short
+`suspected_cause` (via the connected LLM, persisted per pattern). **Only `user_impact` drives
+the health verdict** — the rest is diagnostic context for the dashboard and the heatmaps. A
+`classification_state` (`classified`/`pending`/`unavailable`) says whether that verdict is a
+judgement, still in flight, or structurally unavailable, so a missing verdict is never read
+as an all-clear. If the operator has suppressed this exact `(source, event_id)` pattern
+(ADR-0041), the read path additionally stamps `suppressed: true` and a `suppressed_by`
+descriptor, excluding the group from scoring while leaving its count untouched; unlike the LLM
+annotation above, suppression needs no API key and so is stamped on every read path, including
+`agent_snapshot`. The health rule derives each group's activity (days active, boot sessions
+spanned, age of `last_seen`, whether it is still happening) from the `by_day`, `last_seen` and
+`boot_sessions` fields above — that derived record appears only in health output, never on the
+wire. These annotations are all **server-internal and not part of this wire contract** — the
 agent never sends them (see ADR-0026, ADR-0041, ADR-0058). Off Windows the section is
-the `n/a on this platform` stub with `events: []`.
+the `n/a on this platform` stub with `events: []` and `boot_sessions: []`.
 
 ### Security-inventory, resilience, and parental-awareness sections (v0.10)
 
@@ -937,11 +965,24 @@ for fleet aggregation. These thresholds are illustrative of the data-driven rule
 
 ## Versioning
 
-`PROTOCOL_VERSION = "0.18"`. Both implementations expose this constant; from v0.8 the
+`PROTOCOL_VERSION = "0.19"`. Both implementations expose this constant; from v0.8 the
 agent puts it on the wire in `register.protocol` to select the mutual-auth handshake
 (compare versions **numerically per component**, not lexically — `"0.10"` is newer than
 `"0.9"`). Bump on any breaking change to a frame or tool schema.
 
+- `0.19` — the `reliability` section gains `boot_sessions` (the UTC boot instants inside the
+  window, read from `Kernel-Boot/20` and `EventLog/6005` in the same query and the same clock
+  as the events) and `truncated_count` (how many groups the cap dropped, so `recent_crashes`
+  can be reconciled against the reported groups). Group selection now reserves slots for
+  `level: "critical"` groups and for the most recently seen before filling by count, up to 40
+  groups: ordering by count alone dropped a single bugcheck behind a chatty harmless
+  provider, so the rarest and most consequential events never reached the server at all.
+  **`by_day` keys are now UTC** calendar dates, matching `last_seen`; they were local dates
+  while the server parsed them as UTC, which made the number of distinct days a pattern spans
+  depend on the host's timezone. That is the one non-additive change here: an agent predating
+  this version still sends local-date keys, and the server reads them exactly as it did
+  before — no worse, and correct once the agent updates. The rest is additive, and a server
+  predating this version ignores both new fields.
 - `0.18` — added `shell` to the `policy` frame (ADR-0064): the fleet's shell execution mode
   (`unrestricted` / `allowlist` / `off`) plus, under `allowlist`, the anchored allow rules that
   say what `powershell_exec` and `shell_exec` may run. Deny rules answer "what must never

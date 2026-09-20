@@ -1,11 +1,24 @@
-"""Server-side LLM categorization of reliability events (ADR-0026).
+"""Server-side LLM classification of reliability events (ADR-0026).
 
 The agent reports raw Windows event groups (``source`` + ``event_id`` + a sample
-message). To draw the reliability heatmaps — and to *score* health — the server
-needs a **friendly category**, a **severity**, and a short
-**suspected cause** per group. The space of Windows event sources is large and
-open-ended, so instead of a hand-maintained table we ask the connected LLM (the
-same Haiku model + API key the AI Recommendation uses, see ``recommend.py``).
+message). The server asks the connected LLM (the same Haiku model + API key the
+AI Recommendation uses, see ``recommend.py``) what each group *means* — the
+space of Windows event sources is large and open-ended, so a hand-maintained
+table was never an option.
+
+The load-bearing field is **``user_impact``**: what the person sitting at the
+machine would have noticed. Health is scored on that alone. The Windows
+Error/Critical log is a record of internal component failures, the
+overwhelming majority of which Windows tolerates or recovers from and none of
+which an operator can act on; treating every entry as a problem candidate and
+then scoring it down produces well-sorted false alarms, not findings. So the
+question asked here is the operator's question, and everything that answers
+"nothing was noticed" stops being a finding rather than becoming a quiet one.
+
+``category``, ``severity`` and ``cause`` are still asked for and still stamped:
+they drive the dashboard's heatmap rows and give a reader somewhere to start,
+and ADR-0041's guarantee that a suppressed pattern stays fully visible with its
+own verdict hangs off them. They no longer decide anything.
 
 Two things keep this cheap and safe, mirroring ``recommend.py``:
 
@@ -16,9 +29,12 @@ Two things keep this cheap and safe, mirroring ``recommend.py``:
 * the Anthropic client is **injected** (``categorize_events(client, groups)``) so
   tests pass a fake and no real key is required, and every result is validated
   against fixed enums (unknown / no key / API error -> ``category="Other"``,
-  ``severity="unknown"``), so categorization degrades gracefully and never
-  becomes a hard dependency — and "unknown" is scored as at least notable
-  rather than silently trusted as benign.
+  ``severity="unknown"``, ``user_impact="unknown"``), so classification
+  degrades gracefully and never becomes a hard dependency. An absent verdict
+  is never mistaken for a clean one: every group carries a
+  ``classification_state`` (``classified``/``pending``/``unavailable``), and
+  a deployment with no API key falls back to the event log's own evidence
+  rather than reporting silence as health.
 
 A third thing keeps a cold cache or a slow/broken API from turning into an
 unbounded dashboard read: classification never blocks a read beyond a bounded
@@ -57,8 +73,11 @@ from .recommend import ai_available  # re-exported for callers
 __all__ = [
     "CATEGORIES",
     "FALLBACK",
+    "IMPACTS",
+    "IMPACT_FALLBACK",
     "SEVERITIES",
     "SEVERITY_FALLBACK",
+    "VERDICT_MODEL_TAG",
     "ai_available",
     "categorize_events",
     "annotate_events",
@@ -74,7 +93,14 @@ __all__ = [
 logger = logging.getLogger("kenny.event_categories")
 
 CATEGORIZE_MODEL = "claude-haiku-4-5"
-_MAX_TOKENS = 512
+# Bumped whenever the *question* we ask changes, independently of the model.
+# A verdict is a function of both, so both belong in the stored ``model`` tag
+# that :meth:`EventClassificationStore.delete_model_except` invalidates on:
+# re-asking a changed question is exactly as necessary as re-asking a new
+# model, and a prompt edit used to invalidate nothing at all.
+_VERDICT_REVISION = "impact-1"
+VERDICT_MODEL_TAG = f"{CATEGORIZE_MODEL}/{_VERDICT_REVISION}"
+_MAX_TOKENS = 1024
 # Bounds the in-memory mirror of the persisted table. A real fleet has a few
 # hundred distinct (source, event_id) patterns at most.
 _CACHE_MAX = 4096
@@ -116,6 +142,21 @@ SEVERITIES: list[str] = ["benign", "notable", "serious"]
 _SEVERITY_SET = set(SEVERITIES)
 SEVERITY_FALLBACK = "unknown"
 
+# What the person sitting at the machine would have noticed. This — not
+# ``severity`` — is what the health rule scores on, because the Windows
+# Error/Critical log is a record of internal component failures, most of which
+# Windows tolerates or recovers from and none of which the operator can act on.
+# The ordering is display/severity order, least to most consequential.
+IMPACTS: list[str] = ["none", "degraded", "crashed", "data_at_risk"]
+_IMPACT_SET = set(IMPACTS)
+# The model saying "I cannot tell from this". Deliberately distinct from
+# ``none``: ``none`` is a judgement that nothing was noticed, ``unknown`` is
+# the absence of one. Neither raises a finding on its own -- under the impact
+# model the default is "not a finding" and only positive evidence promotes --
+# but the reason line counts them separately so an unclassified fleet is
+# visibly unclassified rather than silently healthy.
+IMPACT_FALLBACK = "unknown"
+
 
 _SYSTEM_TEXT = (
     "You are kenny's Windows event-log triage assistant. You are given a list of "
@@ -136,9 +177,33 @@ _SYSTEM_TEXT = (
     "this over guessing — never call something \"benign\" without real evidence.\n\n"
     "3. \"cause\" — a short (<=12 words) plain-language guess at what's actually "
     "happening, e.g. \"two apps colliding over a stale COM registration\".\n\n"
+    "4. \"user_impact\" — THE MOST IMPORTANT FIELD. What would the person sitting "
+    "at this PC actually have noticed? Judge the effect on a human being, not the "
+    "wording of the log entry. Exactly one of:\n"
+    "   - \"none\": nothing a person would notice. Windows logged an internal "
+    "component failure that it tolerated, retried, or that happened as a normal "
+    "part of shutting down, starting up, or a service restarting. THIS IS BY FAR "
+    "THE MOST COMMON ANSWER — the Windows Error/Critical log is full of internal "
+    "chatter with no user-visible effect. Anything reporting that an operation "
+    "failed *because the machine was shutting down* is \"none\".\n"
+    "   - \"degraded\": the machine still works, but something a person relies on "
+    "is visibly worse or needs manual intervention — a device that stopped "
+    "working, a prompt they have to answer on every boot, a feature that is no "
+    "longer available.\n"
+    "   - \"crashed\": something went down in front of them — the machine "
+    "restarted or froze unexpectedly, or a program they were using closed itself.\n"
+    "   - \"data_at_risk\": their files or backups are in danger — failing "
+    "storage, corrupted volumes, backups that are silently not happening.\n"
+    "   - \"unknown\": you genuinely cannot tell. Prefer this over guessing an "
+    "impact; do NOT use it as a soft \"none\".\n\n"
+    "5. \"symptom\" — how you would describe this to a non-technical person, in "
+    "one short sentence (<=15 words), phrased as what they experience. e.g. "
+    "\"The PC asks for the BitLocker recovery key on every restart.\" Never name "
+    "the event id, the provider, or an error code. Empty string when "
+    "\"user_impact\" is \"none\" or \"unknown\".\n\n"
     "Reply with ONLY a JSON array, one object per input in the same order, each "
-    "shaped exactly as {\"category\": ..., \"severity\": ..., \"cause\": ...}. No "
-    "prose, no markdown, no extra keys."
+    "shaped exactly as {\"category\": ..., \"severity\": ..., \"cause\": ..., "
+    "\"user_impact\": ..., \"symptom\": ...}. No prose, no markdown, no extra keys."
 )
 
 
@@ -150,8 +215,9 @@ def _cached_system() -> list[dict[str, Any]]:
 
 # -- result cache ---------------------------------------------------------
 
-# Each cached value is a small ``{"category", "severity", "cause"}`` dict — see
-# _parse_classifications / _default_classification for the shape.
+# Each cached value is a small ``{"category", "severity", "cause",
+# "user_impact", "symptom"}`` dict — see _parse_classifications /
+# _default_classification for the shape.
 Classification = dict[str, str]
 
 _cache: "OrderedDict[tuple[str, int], Classification]" = OrderedDict()
@@ -172,7 +238,13 @@ def _key(source: Any, event_id: Any) -> tuple[str, int]:
 
 
 def _default_classification() -> Classification:
-    return {"category": FALLBACK, "severity": SEVERITY_FALLBACK, "cause": ""}
+    return {
+        "category": FALLBACK,
+        "severity": SEVERITY_FALLBACK,
+        "cause": "",
+        "user_impact": IMPACT_FALLBACK,
+        "symptom": "",
+    }
 
 
 def _cache_put(key: tuple[str, int], value: Classification) -> None:
@@ -219,7 +291,7 @@ async def load_persisted() -> int:
 
     if _store is None:
         return 0
-    await _store.delete_model_except(CATEGORIZE_MODEL)
+    await _store.delete_model_except(VERDICT_MODEL_TAG)
     rows = await _store.list()
     for r in rows:
         _cache_put(
@@ -230,6 +302,10 @@ async def load_persisted() -> int:
                     r["severity"] if r.get("severity") in _SEVERITY_SET else SEVERITY_FALLBACK
                 ),
                 "cause": str(r.get("cause") or ""),
+                "user_impact": (
+                    r["user_impact"] if r.get("user_impact") in _IMPACT_SET else IMPACT_FALLBACK
+                ),
+                "symptom": str(r.get("symptom") or ""),
             },
         )
     return len(rows)
@@ -249,7 +325,9 @@ async def _persist(items: list[tuple[tuple[str, int], Classification]]) -> None:
                     "category": c["category"],
                     "severity": c["severity"],
                     "cause": c["cause"],
-                    "model": CATEGORIZE_MODEL,
+                    "user_impact": c["user_impact"],
+                    "symptom": c["symptom"],
+                    "model": VERDICT_MODEL_TAG,
                 }
                 for key, c in items
             ]
@@ -300,11 +378,23 @@ def _parse_classifications(text: str, expected: int) -> list[Classification] | N
         cat = item.get("category") if isinstance(item, dict) else None
         sev = item.get("severity") if isinstance(item, dict) else None
         cause = item.get("cause") if isinstance(item, dict) else None
+        impact = item.get("user_impact") if isinstance(item, dict) else None
+        symptom = item.get("symptom") if isinstance(item, dict) else None
+        impact = impact if impact in _IMPACT_SET else IMPACT_FALLBACK
         out.append(
             {
                 "category": cat if cat in _CATEGORY_SET else FALLBACK,
                 "severity": sev if sev in _SEVERITY_SET else SEVERITY_FALLBACK,
                 "cause": cause.strip()[:160] if isinstance(cause, str) else "",
+                "user_impact": impact,
+                # A symptom without an impact is a sentence with nothing behind
+                # it; the rule would never show it and the detail view would
+                # read as a finding. Drop it rather than carry it.
+                "symptom": (
+                    symptom.strip()[:160]
+                    if isinstance(symptom, str) and impact in ("degraded", "crashed", "data_at_risk")
+                    else ""
+                ),
             }
         )
     return out
@@ -437,19 +527,63 @@ async def categorize_events(
     return result
 
 
+def _unclassified_state() -> str:
+    """Why a group carries no verdict: the classifier has not reached it yet,
+    or it structurally cannot run here.
+
+    The health rule needs to tell these apart. ``pending`` resolves itself
+    within a push and means "no information yet"; ``unavailable`` means "no
+    information, ever, on this deployment" and is what makes the rule fall
+    back to the event log's own evidence instead of reporting a clean bill of
+    health it has no basis for.
+    """
+
+    return "pending" if ai_available() else "unavailable"
+
+
+def _stamp(e: dict[str, Any], info: Classification, state: str) -> None:
+    """Write one verdict onto one event group, in place.
+
+    Reads ``info`` defensively: a ``Classification`` is a plain dict that
+    crosses module and process boundaries (the durable table, a caller's own
+    mapping), so a row written before a field existed must degrade to that
+    field's fallback rather than raise.
+    """
+
+    e["category"] = info.get("category", FALLBACK)
+    e["severity"] = info.get("severity", SEVERITY_FALLBACK)
+    e["suspected_cause"] = info.get("cause", "")
+    e["user_impact"] = info.get("user_impact", IMPACT_FALLBACK)
+    e["symptom"] = info.get("symptom", "")
+    e["classification_state"] = state
+
+
 def annotate_events(
     events: list[dict[str, Any]], mapping: dict[tuple[str, int], Classification]
 ) -> None:
-    """Stamp ``category``, ``severity``, and ``suspected_cause`` onto each event
-    group in place from ``mapping`` (falling back to safe defaults for any group
-    not present in ``mapping``)."""
+    """Stamp ``category``, ``severity``, ``suspected_cause``, ``user_impact``,
+    ``symptom`` and ``classification_state`` onto each event group in place from
+    ``mapping`` (falling back to safe defaults for any group not present in
+    ``mapping``).
 
+    ``classification_state`` is decided by the cache, not by ``mapping``:
+    :func:`categorize_events` returns an entry for *every* group it was asked
+    about, filling safe defaults for the ones it could not classify, so
+    presence in the mapping cannot tell a verdict from a placeholder. The
+    cache holds real verdicts only, and is the same thing :func:`mark` reads —
+    which is what makes the dashboard path and the store path reach the same
+    state for the same pattern instead of disagreeing about whether it has
+    been looked at (ADR-0058).
+    """
+
+    missing_state = _unclassified_state()
     for e in events:
-        if isinstance(e, dict):
-            info = mapping.get(_key(e.get("source"), e.get("event_id"))) or _default_classification()
-            e["category"] = info["category"]
-            e["severity"] = info["severity"]
-            e["suspected_cause"] = info["cause"]
+        if not isinstance(e, dict):
+            continue
+        key = _key(e.get("source"), e.get("event_id"))
+        info = mapping.get(key)
+        state = "classified" if key in _cache else missing_state
+        _stamp(e, info or _default_classification(), state)
 
 
 def _reliability_events(snapshot: dict[str, Any] | None) -> list[dict[str, Any]]:
@@ -461,25 +595,27 @@ def _reliability_events(snapshot: dict[str, Any] | None) -> list[dict[str, Any]]
 
 
 def mark(agent_id: str, snapshot: dict[str, Any] | None) -> None:
-    """Stamp ``category``/``severity``/``suspected_cause`` onto each reliability
-    event group in ``snapshot`` from the cache alone -- synchronous, no LLM, no
-    API key -- for the ``TelemetryStore.annotate`` seam (ADR-0058).
+    """Stamp the verdict fields onto each reliability event group in
+    ``snapshot`` from the cache alone -- synchronous, no LLM, no API key --
+    for the ``TelemetryStore.annotate`` seam (ADR-0058).
 
-    A group whose pattern is not cached yet is left **unstamped** (the health
-    rule then treats it as ``unknown``), never stamped with the fallback: the
-    fallback would be indistinguishable from a real "unknown" verdict, and a
-    later :func:`annotate_snapshots` on the same dict must still see that the
-    pattern needs classifying. ``suppressed``/``suppressed_by`` (ADR-0041) are
-    never touched.
+    A group whose pattern is not cached yet keeps its verdict fields
+    **unstamped** — the fallback would be indistinguishable from a real
+    verdict, and a later :func:`annotate_snapshots` on the same dict must
+    still see that the pattern needs classifying — but always gets a
+    ``classification_state`` saying *why* there is no verdict. Without that,
+    "the model judged this harmless" and "nothing has looked at this" are the
+    same absence, and a deployment with no API key would read as a healthy
+    fleet. ``suppressed``/``suppressed_by`` (ADR-0041) are never touched.
     """
 
+    missing_state = _unclassified_state()
     for e in _reliability_events(snapshot):
         info = _cache.get(_key(e.get("source"), e.get("event_id")))
         if info is None:
+            e["classification_state"] = missing_state
             continue
-        e["category"] = info["category"]
-        e["severity"] = info["severity"]
-        e["suspected_cause"] = info["cause"]
+        _stamp(e, info, "classified")
 
 
 def schedule_classification(

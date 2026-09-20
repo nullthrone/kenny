@@ -204,6 +204,15 @@ export default function ReliabilityBody({ agentId, reliability, details }: Relia
   // A push whose probe failed carries no raw fields at all — only `status` and
   // `summary`. Distinguish that from a genuine reading of zero.
   const reading = reliability.recent_crashes !== undefined
+  // ADR-0041 is explicit that a suppressed pattern keeps its full raw count
+  // here, and it should: this is the detail view, and auditing the noise is
+  // the whole point of it. What it must not do is state a total that the
+  // verdict above has already excluded most of without saying so.
+  const suppressedEvents = useMemo(
+    () => events.filter((e) => e.suppressed).reduce((n, e) => n + (e.count ?? 0), 0),
+    [events],
+  )
+  const droppedGroups = reliability.truncated_count ?? 0
 
   function onAddRule(e: FormEvent<HTMLFormElement>) {
     e.preventDefault()
@@ -220,7 +229,11 @@ export default function ReliabilityBody({ agentId, reliability, details }: Relia
       {reading ? (
         <p className={styles.summary}>
           Stability index {reliability.stability_index ?? '—'}/10 · {reliability.recent_crashes} error/critical
-          events over {reliability.window_days} days.
+          events over {windowDays} days
+          {suppressedEvents > 0 && `, ${suppressedEvents} of them suppressed`}
+          {droppedGroups > 0 && `, ${droppedGroups} pattern(s) not reported`}. Most of what
+          Windows logs here has no effect anyone notices; the verdict above counts only what
+          does.
         </p>
       ) : (
         <p className={styles.summary}>

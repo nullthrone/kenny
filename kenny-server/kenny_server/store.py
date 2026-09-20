@@ -822,7 +822,7 @@ class AlertStateStore:
         *,
         status: str,
         since: str,
-        last_notified_at: str | None,
+        last_notified_at: str | None = None,
     ) -> None:
         async with write_lock():
             await self._conn.execute(
@@ -834,6 +834,22 @@ class AlertStateStore:
                 (agent_id, scope, status, since, last_notified_at),
             )
             await self._conn.commit()
+
+    async def remove(self, agent_id: str, scope: str) -> bool:
+        """Drop one ``(agent_id, scope)`` row; ``True`` if it existed.
+
+        Used for the transient ``pending:`` scopes the alert loop keeps while
+        an escalation waits for confirmation or for its cooldown -- those are
+        candidates, not state, and must not outlive the episode that produced
+        them.
+        """
+
+        async with write_lock():
+            cur = await self._conn.execute(
+                "DELETE FROM alert_state WHERE agent_id = ? AND scope = ?", (agent_id, scope)
+            )
+            await self._conn.commit()
+        return (cur.rowcount or 0) > 0
 
     async def delete_agent(self, agent_id: str) -> int:
         """Delete all alert state for ``agent_id`` (host removed from inventory)."""
@@ -1162,11 +1178,21 @@ CREATE TABLE IF NOT EXISTS event_classifications (
     category      TEXT    NOT NULL,
     severity      TEXT    NOT NULL,
     cause         TEXT    NOT NULL DEFAULT '',
+    user_impact   TEXT    NOT NULL DEFAULT 'unknown',
+    symptom       TEXT    NOT NULL DEFAULT '',
     model         TEXT    NOT NULL DEFAULT '',
     classified_at TEXT    NOT NULL,
     PRIMARY KEY (source, event_id)
 );
 """
+
+# Columns added after the table first shipped. A DB created before them keeps
+# its rows; they read as ``user_impact='unknown'`` until the classifier reaches
+# them again, which the model-string bump that introduced them forces anyway.
+_CLASSIFICATION_MIGRATED_COLUMNS = {
+    "user_impact": "TEXT NOT NULL DEFAULT 'unknown'",
+    "symptom": "TEXT NOT NULL DEFAULT ''",
+}
 
 
 class EventClassificationStore:
@@ -1193,7 +1219,19 @@ class EventClassificationStore:
         self._db = await aiosqlite.connect(self.db_path)
         await _configure_connection(self._db)
         await self._db.executescript(_EVENT_CLASSIFICATION_SCHEMA)
+        await self._migrate()
         await self._db.commit()
+
+    async def _migrate(self) -> None:
+        """Add the impact columns to DBs created before they existed."""
+
+        async with self._conn.execute("PRAGMA table_info(event_classifications)") as cur:
+            cols = {row["name"] for row in await cur.fetchall()}
+        for col, ddl in _CLASSIFICATION_MIGRATED_COLUMNS.items():
+            if col not in cols:
+                await self._conn.execute(
+                    f"ALTER TABLE event_classifications ADD COLUMN {col} {ddl}"
+                )
 
     async def close(self) -> None:
         if self._db is not None:
@@ -1210,16 +1248,16 @@ class EventClassificationStore:
         """Return every persisted classification."""
 
         async with self._conn.execute(
-            "SELECT source, event_id, category, severity, cause, model, classified_at "
-            "FROM event_classifications ORDER BY source, event_id"
+            "SELECT source, event_id, category, severity, cause, user_impact, symptom, "
+            "model, classified_at FROM event_classifications ORDER BY source, event_id"
         ) as cur:
             rows = await cur.fetchall()
         return [dict(r) for r in rows]
 
     async def upsert_many(self, rows: list[dict[str, Any]]) -> None:
         """Insert or replace classifications. Each row carries ``source``,
-        ``event_id``, ``category``, ``severity``, ``cause`` and ``model``;
-        ``classified_at`` is stamped here."""
+        ``event_id``, ``category``, ``severity``, ``cause``, ``user_impact``,
+        ``symptom`` and ``model``; ``classified_at`` is stamped here."""
 
         if not rows:
             return
@@ -1227,8 +1265,9 @@ class EventClassificationStore:
         async with write_lock():
             await self._conn.executemany(
                 "INSERT OR REPLACE INTO event_classifications "
-                "(source, event_id, category, severity, cause, model, classified_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "(source, event_id, category, severity, cause, user_impact, symptom, "
+                "model, classified_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     (
                         str(r.get("source") or ""),
@@ -1236,6 +1275,8 @@ class EventClassificationStore:
                         str(r["category"]),
                         str(r["severity"]),
                         str(r.get("cause") or ""),
+                        str(r.get("user_impact") or "unknown"),
+                        str(r.get("symptom") or ""),
                         str(r.get("model") or ""),
                         classified_at,
                     )

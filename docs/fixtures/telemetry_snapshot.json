@@ -107,7 +107,12 @@
           }
         }
       ],
-      "truncated": false
+      "boot_sessions": [
+        "2026-06-01T06:12:04Z",
+        "2026-06-03T07:41:55Z"
+      ],
+      "truncated": false,
+      "truncated_count": 0
     },
     "web_activity": {
       "status": "ok",

@@ -42,6 +42,7 @@ __all__ = [
     "EVENT_TYPES",
     "DECISIONS",
     "DEFAULT_DECISION",
+    "DEFAULT_SECTION_DECISION",
     "NEVER_TICKETED_KINDS",
     "DEFAULT_TICKET_KINDS",
     "KNOWN_SECTIONS",
@@ -72,6 +73,18 @@ DEFAULT_DECISION: dict[str, str] = {
     "offline": "open_all",
     "disk_forecast": "open_all",
     "change": "never",
+}
+
+# Per-(event_type, section) defaults, consulted before DEFAULT_DECISION and
+# overridden by any operator rule.
+#
+# `reliability` warns about things that are real but not urgent -- a PC that
+# asks for its BitLocker key on every restart, one unexpected restart on an
+# otherwise healthy machine. Those are worth seeing on the host page and worth
+# one notification; they are not worth a queue item each, and on a four-host
+# family fleet that is what buried the queue. A crit there still tickets.
+DEFAULT_SECTION_DECISION: dict[tuple[str, str], str] = {
+    ("health", "reliability"): "open_crit",
 }
 
 # Sections a health snapshot can report a status for but that carry no rule in
@@ -177,7 +190,9 @@ def decide(
     3. For each subject, look up the most specific matching rule (host beats
        fleet, section beats any-section). Its ``decision`` is one of
        ``open_all`` / ``open_crit`` / ``never``. With no match, the subject
-       falls back to :data:`DEFAULT_DECISION` for ``event_type`` -- except
+       falls back to :data:`DEFAULT_SECTION_DECISION` for its
+       ``(event_type, section)`` and then to :data:`DEFAULT_DECISION` for
+       ``event_type`` -- except
        that the true legacy default is keyed off ``kind``, not ``event_type``,
        so a notification with no ``event_type`` at all (back-compat: every
        existing construction site) still resolves via ``kind``.
@@ -204,7 +219,9 @@ def decide(
             # left event_type empty (back-compat notifications predating this
             # feature) -- those fall back to the kind-based legacy rule.
             rule_decision = (
-                DEFAULT_DECISION.get(event_type, "never")
+                DEFAULT_SECTION_DECISION.get(
+                    (event_type, section), DEFAULT_DECISION.get(event_type, "never")
+                )
                 if event_type
                 else ("open_all" if default_open else "never")
             )

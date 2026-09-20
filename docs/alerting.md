@@ -15,9 +15,21 @@ A background loop on the server re-runs the health rules over **every known agen
 latest snapshot on a short interval (default 60 s) and notifies on **transitions only** —
 not on every push:
 
-- **Escalations to `crit` always fire** (`ok→crit`, `warn→crit`).
+- **Escalations to `crit` bypass the cooldown** (`ok→crit`, `warn→crit`).
 - **`warn` transitions respect a per-scope cooldown** (default 1 h) so a flapping section
   is bounded to one alert plus one recovery per window — no reminder spam.
+- **An escalation that cannot be sent yet is held, not dropped.** A cooldown used to
+  swallow a warn outright: the stored status advanced to the new value while nothing was
+  sent, so the next pass saw no change and the warning was lost for the whole episode. A
+  candidate now waits in a `pending:section:<name>` scope and is delivered on the first
+  pass that may send it, without the condition having to change again.
+- **Some sections must be confirmed before they alarm.** A section listed in
+  `health_rules.CONFIRM_BEFORE_ALARM` — today `reliability` — has to report the same
+  incident on a **newer** `collected_at` before it notifies. The loop runs every 60 s over
+  a snapshot that changes every ~900 s, and `reliability` reads a rolling 7-day window
+  whose contents shift as events age out of it, so one evaluation over one snapshot was
+  enough to page someone and open a ticket for a finding that was gone by the next push.
+  The cost is one push interval of latency on a genuine incident.
 - **A recovery is only announced if the degrading episode was itself announced.** An
   improvement that nobody was told about stays silent, and `crit→warn` updates state
   quietly.
@@ -118,9 +130,29 @@ Two practical cases this solves:
   account is exactly the kind of thing worth a ticket. An `open_all` rule on `change` with
   section `local_accounts` promotes it.
 
+One section departs from the `open_all` default: **a `reliability` warn does not open a
+ticket**, only a `reliability` crit does. What that section warns about is real but not
+urgent — a PC that asks for its BitLocker recovery key on every restart, one unexpected
+restart on an otherwise healthy machine. Those are worth seeing on the host page and worth
+one notification; on a four-host family fleet, one queue item each is what buried the
+queue. Any operator rule still overrides this.
+
 Recoveries and the weekly digest can never open a ticket, no matter what rule is written — the
 rule engine only ever narrows or widens *genuine alerts*, and running the empty rule table
 through the same decision path reproduces this section's coded default exactly.
+
+### A ticket an alert opened closes when the condition goes
+
+A recovery **resolves** the ticket its alert opened, matched on the same subject key the
+ticket was opened with. Without it the surface only ever accumulated: a recovery is never
+itself ticketed, `crit→warn` is silent, and the ticket sweep does not read health — so an
+automatically opened ticket could only ever be closed by a person, even after the condition
+had cleared.
+
+This includes clearing it by decision rather than by repair: adding a reliability
+suppression rule re-evaluates the affected hosts immediately, which produces the ordinary
+recovery transition, which closes the ticket. Muting a pattern now takes back the work it
+created instead of leaving it in the queue.
 
 ## Change notifications
 

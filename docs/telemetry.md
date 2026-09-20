@@ -73,7 +73,7 @@ donut (noted in the rule column).
 | `memory` | RAM usage | `percent_used` > 95 → **crit**; > 85 → **warn** |
 | `thermals` | Temperature sensors | hottest sensor ≥ 95 °C → **crit**; ≥ 85 °C → **warn** |
 | `battery` | Battery health and charge (laptops) | `health_percent` < 50 → **crit**; < 70 → **warn**. Laptops only; `battery.present` drives the device (laptop/desktop) pie |
-| `reliability` | Grouped Error/Critical event-log breakdown, stability index | Scored on whether each pattern is **still happening** and on **what it is** — never on how many lines it produced. From each group's `by_day`/`last_seen` the rule derives *active* (seen within 48 h, or on ≥ 3 days of the window while still inside it), *recurring* (≥ 2 distinct days) and *burst* (one day holds ≥ 80 % of the count and it has gone quiet). Verdict: a `serious` pattern that is active, **or** `stability_index` < 3 → **crit**; a `serious` pattern that has gone quiet (it self-clears when it leaves the window), a `notable`/`unknown` pattern that is active **and** recurring, **or** `stability_index` < 6 → **warn**; everything else — `benign`, one-off, burst, historical — → **ok**. There is no count threshold: without a classification every pattern is `unknown` and can reach warn but never crit. The reason names up to three scoring patterns (source/event id, count, days active of the window, last seen, suspected cause) and folds the rest into `N historical pattern(s) quiet since <date>`; it never leads with the raw 7-day total. Per-pattern activity travels on the section's `details.patterns`. An operator-suppressed pattern (see *Alarm suppression* below) never scores, but never silences the `stability_index` overlay |
+| `reliability` | Grouped Error/Critical event-log breakdown, stability index, boot instants | Scored on **user-visible impact** and on nothing else. The Windows Error/Critical log is mostly internal component failures Windows itself tolerates, so a pattern is a finding only once the classifier ([ADR-0026](adr/0026-llm-categorization-of-reliability-events.md)) has established that someone would have noticed: `user_impact` ∈ `none`/`degraded`/`crashed`/`data_at_risk` (`unknown` when it cannot tell), plus a plain-language `symptom`. `category`/`severity`/`cause` are still stamped for the heatmap and the detail view; they decide nothing. Verdict: an active `crashed` or `data_at_risk` that **recurred** → **crit**; any other active impact — a single `crashed` or `data_at_risk`, or a `degraded` however long it persists — → **warn**; everything else → **ok**. One rule for every impact: critical means it is still happening, which a single occurrence cannot establish. The `stability_index` overlay still applies on top (< 3 → crit, < 6 → warn) and is **named in the reason** when it decides. Currency comes from the same evidence as before: *active* (seen within 48 h, or on ≥ 3 days whose last hit is under 72 h old), *recurring* (count ≥ 2 **or** ≥ 2 distinct days — a count is unambiguous once an impact is established), *burst* (one day holds ≥ 80 % and it has gone quiet). `Kernel-Power/41`, `BugCheck/1001` and `WER-SystemErrorReporting/1001` are floored at `crashed` whatever the classifier said or whether it ran at all, unless suppressed — the fallback that keeps this section working without an API key. Every group carries a `classification_state` (`classified`/`pending`/`unavailable`/`unclassified`) so a missing verdict is never read as a clean one, and the reason says which. The reason is written in symptoms and names no provider, event id or error code; per-pattern detail travels on `details.patterns`. A `reliability` incident must be confirmed by a newer collection before it alarms (`health_rules.CONFIRM_BEFORE_ALARM`), and a `warn` here does not open a ticket by default. See [ADR-0065](adr/0065-reliability-scored-on-user-visible-impact.md) |
 | `web_activity` | Observed domains (parental controls) | a serious flagged hit (`custom` / `seed` / `external_adult`) in 24 h → **crit**; a `bypass` hit in 24 h → **warn** (see [`parental-controls.md`](parental-controls.md)) |
 | `listening_ports` | Listening TCP/UDP ports | a non-loopback listener on **22 / 3389 / 5900 / 5985 / 5986** → **posture** (how the machine is set up, not an event; a port that *appears* is a change notification) |
 | `local_accounts` | Accounts on the machine (local **and** Microsoft on Windows, `/etc/passwd` on Linux) plus the machine password policy — also the inventory for the `account_*` governance tools, and where each account publishes the verbs it cannot perform | an enabled admin with `password_required` false **and** no password ever set → **crit**; built-in Administrator or Guest enabled → **warn** (Windows only — `root` being enabled on Linux is not a finding); an admin that also carries denied logon rights → **warn** (one of the two settings is stale) (see [`account-governance.md`](account-governance.md)) |
@@ -164,10 +164,10 @@ A single, well-known-benign event pattern can dominate a host's reliability scor
 the `Microsoft-Windows-CAPI2` / `4176` "AuthSafes count" quirk some Windows builds log
 hundreds of times a day from `CryptSvc`, with no known root cause or fix. The operator can
 **suppress** a specific `(source, event_id)` pattern from the Reliability section detail:
-either a click next to the offending event row (always fleet-wide, exact source), or the
+either a click next to the offending event row (host-scoped, exact source), or the
 suppression panel's manual form (**event id required, source optional** — an empty source
-matches *any* source reporting that event id). A rule is fleet-wide by default; the panel
-also offers scoping it to one host.
+matches *any* source reporting that event id). The form defaults to this host and offers
+widening the rule to the whole fleet.
 
 A suppressed pattern:
 
@@ -176,12 +176,18 @@ A suppressed pattern:
 - **carries a distinct `suppressed` badge**, never the `benign` severity pill — "the model
   classified this as harmless" and "the operator decided to ignore this" are different
   claims, from different sources, and the UI keeps them visually separate;
-- is **excluded from severity scoring** — it never counts as a scoring pattern, however
-  active it is, and drops out of the health rule's reason string, replaced by a
-  `(N pattern(s) suppressed)` note so the reader knows the quiet is explained, not guessed;
+- is **excluded from scoring** — it never counts as a finding, however active it is and
+  whatever impact it carries, and drops out of the health rule's reason string, replaced by
+  an `[N suppressed]` note so the reader knows the quiet is explained, not guessed. It also
+  overrides the crash-marker floor: explicit operator intent beats an automatic escalation,
+  or a suppressed `Kernel-Power/41` could never actually be muted;
 - **does not affect the `stability_index` overlay** — the Windows Reliability Index is an
   independent, agent-computed signal a suppression rule carries no information about, so it
   keeps applying on top regardless of what's suppressed.
+
+Adding or removing a rule **re-evaluates the affected hosts immediately**, so the alert
+state and any ticket the muted pattern had already opened are reconciled then and there
+rather than at the loop's next pass — muting a pattern takes back the work it created.
 
 Suppression is a synchronous, LLM-free rule lookup stamped on the telemetry store's
 read path — the same seam the persisted classification above rides — so every health

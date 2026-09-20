@@ -27,11 +27,17 @@ def test_snapshot_section_statuses() -> None:
     assert sections["defender"]["status"] == "crit"
     assert sections["win_update"]["status"] == "warn"
     assert sections["reboot_pending"]["status"] == "warn"
-    # reliability: two unclassified patterns, each active on 3 of 7 days and
-    # last seen on the fixture's own day -> warn (never crit without a
-    # `serious` verdict), finding-shaped reason.
-    assert sections["reliability"]["status"] == "warn"
-    assert "×" in sections["reliability"]["reason"]
+    # reliability: the fixture carries no read-path annotation, so neither
+    # of its two patterns has an established user-visible impact and neither
+    # is a finding. That is the point of the impact model -- an unclassified
+    # event log is not evidence of a problem -- and the reason says it was
+    # looked at rather than going silent.
+    assert sections["reliability"]["status"] == "ok"
+    # ... and the reason does not claim health it has not established: the
+    # fixture's patterns are unjudged, and it says so.
+    assert sections["reliability"]["reason"] == (
+        "no verdict yet on 2 pattern(s) in 7d [2 awaiting classification]"
+    )
 
 
 def test_snapshot_overall_is_crit() -> None:
@@ -179,13 +185,13 @@ def test_thermals_no_sensors_defers_to_agent() -> None:
     assert "reason" not in result
 
 
-# -- reliability: activity- and persistence-based scoring (ADR-0058) ---------
+# -- reliability: scored on user-visible impact ------------------------------
 #
-# The rule reads three per-pattern booleans derived from the `by_day` /
-# `last_seen` evidence the agent sends (`active`, `recurring`, `burst`) plus
-# the ADR-0026 severity. There is no count threshold: these tests build
-# payloads that would have tripped the old volume / distinct-pattern rules
-# and assert the verdict now follows what is *still happening*.
+# A finding is something the person at the machine would have noticed. The
+# Windows Error/Critical log is mostly internal component chatter Windows
+# itself tolerates, so these payloads deliberately include the shapes that
+# used to produce red -- a suppressed firehose, a shutdown-time VSS cluster, a
+# one-off "serious" event -- and assert they produce nothing at all.
 
 
 def _day(offset: int) -> str:
@@ -200,12 +206,20 @@ def _pattern(
     *,
     days: dict[int, int],
     severity: str | None = None,
+    impact: str | None = None,
+    symptom: str = "",
+    state: str | None = "classified",
     level: str = "error",
     last_seen_hours_ago: float | None = None,
     **extra: object,
 ) -> dict:
-    """One reliability event group. ``days`` maps day-offset -> count;
-    ``last_seen`` defaults to the end of the most recent day."""
+    """One annotated reliability event group. ``days`` maps day-offset ->
+    count; ``last_seen`` defaults to the end of the most recent day.
+
+    ``impact``/``symptom``/``state`` stand in for the read-path annotation
+    (event_categories.mark), the same way the payloads here have always
+    carried ``severity`` as if the classifier had run.
+    """
 
     by_day = {_day(off): n for off, n in days.items()}
     e: dict = {
@@ -219,6 +233,12 @@ def _pattern(
         e["last_seen"] = (NOW - timedelta(hours=last_seen_hours_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
     if severity is not None:
         e["severity"] = severity
+    if impact is not None:
+        e["user_impact"] = impact
+    if symptom:
+        e["symptom"] = symptom
+    if state is not None:
+        e["classification_state"] = state
     e.update(extra)
     return e
 
@@ -235,209 +255,272 @@ def _eval_reliability(events: list[dict], **fields: object) -> dict:
     return health_rules.evaluate_section("reliability", payload, now=NOW)
 
 
-def test_reliability_burst_days_ago_scores_ok() -> None:
-    # The thomas-pc reboot storm: 80 DCOM errors on one day a week ago, quiet
-    # since. Under the old rule 80 >= 50 was crit on its own.
+def test_reliability_internal_chatter_is_never_a_finding() -> None:
+    # The live thomas-pc shape: a 3373-event certificate-service firehose, a
+    # 260-event device-pairing complaint on 6 of 7 days, and a handful of
+    # service errors. Every one of them is internal; none has a counterpart a
+    # person would notice. Volume, recurrence and recency all say "active" --
+    # and none of that matters without an impact.
     events = [
-        _pattern("Microsoft-Windows-DistributedCOM", 10010, days={7: 80}, severity="notable",
-                 last_seen_hours_ago=7 * 24),
+        _pattern("Microsoft-Windows-CAPI2", 4176, days={i: 480 for i in range(7)},
+                 severity="notable", impact="none", last_seen_hours_ago=0.2),
+        _pattern("Microsoft-Windows-DeviceAssociationService", 3503,
+                 days={5: 120, 3: 78, 2: 15, 1: 39, 0: 7}, severity="unknown",
+                 impact="none", last_seen_hours_ago=21),
+        _pattern("Microsoft-Windows-DistributedCOM", 10010, days={0: 8},
+                 severity="benign", impact="none", last_seen_hours_ago=2),
     ]
     result = _eval_reliability(events)
     assert result["status"] == "ok"
-    assert f"quiet since {_day(7)}" in result["reason"]
-    pattern = result["details"]["patterns"][0]
-    assert pattern["burst"] is True
-    assert pattern["active"] is False
-    assert pattern["recurring"] is False
+    assert "CAPI2" not in result["reason"]
+    assert "3373" not in result["reason"]
 
 
-def test_reliability_one_off_notable_patterns_score_ok() -> None:
-    # Five distinct one-off errors from the same afternoon five days ago --
-    # every Windows PC produces this in a week. The old "≥5 distinct
-    # non-benign patterns -> crit" rule is the thing this test kills.
+def test_reliability_shutdown_cluster_is_not_a_finding() -> None:
+    """The case that made the module worth deleting.
+
+    On the live fleet thomas-pc was `crit` because of three "serious" events
+    from one evening: Volsnap/25, VSS/13 and VSS/8193, all carrying
+    `0x8007045b` -- ERROR_SHUTDOWN_IN_PROGRESS. The machine had not crashed;
+    the user had shut it down, and VSS complained on the way out. There is no
+    Kernel-Power/41 anywhere in the window, which is Windows' own way of
+    saying the shutdown was clean.
+    """
+
     events = [
-        _pattern(f"App{i}", i, days={5: 1}, severity="notable", last_seen_hours_ago=5 * 24)
-        for i in range(5)
+        _pattern("Volsnap", 25, days={1: 1}, severity="serious", impact="none",
+                 last_seen_hours_ago=32.1),
+        _pattern("VSS", 13, days={1: 1}, severity="serious", impact="none",
+                 last_seen_hours_ago=32.1),
+        _pattern("VSS", 8193, days={1: 1}, severity="serious", impact="none",
+                 last_seen_hours_ago=32.1),
+    ]
+    result = _eval_reliability(events, boot_sessions=[
+        (NOW - timedelta(hours=31.5)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    ])
+    assert result["status"] == "ok"
+
+
+def test_reliability_one_crash_warns_and_a_second_crits() -> None:
+    once = [
+        _pattern("Microsoft-Windows-Kernel-Power", 41, days={1: 1}, level="critical",
+                 impact="crashed", symptom="The PC restarted without shutting down properly",
+                 last_seen_hours_ago=20),
+    ]
+    assert _eval_reliability(once)["status"] == "warn"
+
+    # Twice is a pattern, and a machine that cannot stay up is the thing this
+    # section exists to catch.
+    twice = [
+        _pattern("Microsoft-Windows-Kernel-Power", 41, days={1: 1, 0: 1}, level="critical",
+                 impact="crashed", symptom="The PC restarted without shutting down properly",
+                 last_seen_hours_ago=4),
+    ]
+    assert _eval_reliability(twice)["status"] == "crit"
+
+
+def test_reliability_data_at_risk_still_needs_to_recur_to_crit() -> None:
+    """Critical means it is still happening, for every impact alike.
+
+    Exempting `data_at_risk` from recurrence looked right -- the second
+    occurrence of data loss is the loss -- until the live fleet was replayed
+    through it: one shadow-copy cleanup, 33 hours old and already
+    self-corrected, turned the host red again. A single data-risk event is
+    worth one notification; `disk_smart` carries the hardware signal
+    independently, and `disk` carries the cause.
+    """
+
+    once = [
+        _pattern("disk", 51, days={0: 1}, severity="serious", impact="data_at_risk",
+                 symptom="Files on the system drive may be unreadable",
+                 last_seen_hours_ago=3),
+    ]
+    result = _eval_reliability(once)
+    assert result["status"] == "warn"
+    assert "Files on the system drive may be unreadable" in result["reason"]
+
+    twice = [
+        _pattern("disk", 51, days={1: 1, 0: 1}, severity="serious", impact="data_at_risk",
+                 symptom="Files on the system drive may be unreadable",
+                 last_seen_hours_ago=3),
+    ]
+    assert _eval_reliability(twice)["status"] == "crit"
+
+
+def test_reliability_degraded_warns_however_long_it_persists() -> None:
+    # marianne-pc: BitLocker asks for the recovery key on every restart, 24
+    # times over 6 days. Genuinely worth fixing, genuinely not worth paging
+    # about -- the machine works. A standing annoyance that goes red every day
+    # is how this section became ignorable.
+    events = [
+        _pattern("Microsoft-Windows-BitLocker-Driver", 24641,
+                 days={5: 4, 4: 4, 3: 4, 2: 4, 1: 4, 0: 4}, severity="serious",
+                 impact="degraded",
+                 symptom="The PC asks for the BitLocker recovery key on every restart",
+                 last_seen_hours_ago=14.7),
     ]
     result = _eval_reliability(events)
-    assert result["status"] == "ok"
-    assert "5 historical pattern(s)" in result["reason"]
+    assert result["status"] == "warn"
+    assert "BitLocker recovery key" in result["reason"]
+    assert "24641" not in result["reason"]
 
 
-def test_reliability_active_recurring_unknown_scores_warn() -> None:
-    # An unclassifiable pattern (no key, or the model unsure) that keeps
-    # coming back is worth a look -- never silently benign (ADR-0026) ...
-    recurring = [
-        _pattern("Mystery", 1, days={1: 1, 0: 2}, severity="unknown", last_seen_hours_ago=1),
-    ]
-    assert _eval_reliability(recurring)["status"] == "warn"
-    # ... but the same pattern seen on a single day is a one-off, even if it
-    # was seen an hour ago.
-    one_off = [_pattern("Mystery", 1, days={0: 3}, severity="unknown", last_seen_hours_ago=1)]
-    assert _eval_reliability(one_off)["status"] == "ok"
-
-
-def test_reliability_active_serious_scores_crit() -> None:
+def test_reliability_crash_markers_score_without_any_classifier() -> None:
+    # No API key: every pattern is unclassified. The section must not report
+    # silence as health, so the closed crash-marker set still scores, and the
+    # reason says why everything else is quiet.
     events = [
-        _pattern("disk", 51, days={2: 6, 1: 7, 0: 5}, severity="serious",
-                 last_seen_hours_ago=9, suspected_cause="failing sectors on the boot drive"),
+        _pattern("Microsoft-Windows-Kernel-Power", 41, days={2: 1, 0: 1}, level="critical",
+                 state="unavailable", last_seen_hours_ago=5),
+        _pattern("Microsoft-Windows-CAPI2", 4176, days={i: 480 for i in range(7)},
+                 state="unavailable", last_seen_hours_ago=1),
     ]
     result = _eval_reliability(events)
     assert result["status"] == "crit"
-    assert result["reason"].startswith("disk/51 ×18, 3 of 7 days, last seen 9h ago")
-    assert "failing sectors" in result["reason"]
+    assert health_rules._RELIABILITY_CRASH_SYMPTOM in result["reason"]
+    assert "classification unavailable (no API key)" in result["reason"]
+    # The unclassified firehose still contributes nothing.
+    assert "CAPI2" not in result["reason"]
 
 
-def test_reliability_inactive_serious_scores_warn() -> None:
-    # A Kernel-Power/41 three days ago is still a finding (warn), just not an
-    # active one (crit). It self-clears when it leaves the 7-day window.
+def test_reliability_crash_marker_floor_respects_suppression() -> None:
+    # ADR-0041: explicit operator intent overrides an automatic escalation,
+    # or a suppressed marker could never actually be muted.
     events = [
-        _pattern("Microsoft-Windows-Kernel-Power", 41, days={3: 1}, severity="serious",
-                 last_seen_hours_ago=3 * 24),
+        _pattern("BugCheck", 1001, days={1: 2, 0: 1}, level="critical",
+                 state="unavailable", suppressed=True, last_seen_hours_ago=3),
     ]
-    result = _eval_reliability(events)
-    assert result["status"] == "warn"
-    assert "Microsoft-Windows-Kernel-Power/41" in result["reason"]
-    assert "last seen 3d ago" in result["reason"]
+    assert _eval_reliability(events)["status"] == "ok"
 
 
-def test_reliability_windows_critical_level_is_serious_unless_suppressed() -> None:
-    # A Windows-critical entry counts as serious whatever the LLM said ...
-    active_critical = [
-        _pattern("Kernel-Power", 41, days={1: 1, 0: 1}, severity="unknown", level="critical",
-                 last_seen_hours_ago=2),
-    ]
-    assert _eval_reliability(active_critical)["status"] == "crit"
-    # ... unless the operator suppressed that exact pattern (ADR-0041):
-    # explicit intent overrides the automatic escalation.
-    suppressed = [dict(active_critical[0], suppressed=True)]
-    assert _eval_reliability(suppressed)["status"] == "ok"
-
-
-def test_reliability_unannotated_payload_never_crits_on_count_alone() -> None:
-    # No `severity` anywhere (LLM never ran, no key): every pattern is
-    # `unknown`, which can reach warn when active and recurring but never
-    # crit -- a count alone is not a critical finding. 12 patterns × 200
-    # events would have been crit twice over under the old volume rule.
+def test_reliability_crash_marker_floor_never_lowers_a_worse_verdict() -> None:
+    # The floor raises an impact to `crashed`; it must not pull a classifier
+    # verdict that was already worse back down to it.
     events = [
-        _pattern(f"Src{i}", 100 + i, days={2: 50, 1: 50, 0: 100}, last_seen_hours_ago=1)
-        for i in range(12)
+        _pattern("Microsoft-Windows-Kernel-Power", 41, days={1: 1, 0: 1}, level="critical",
+                 impact="data_at_risk", symptom="The disk lost data during a crash",
+                 last_seen_hours_ago=1),
     ]
     result = _eval_reliability(events)
-    assert result["status"] == "warn"
-    assert result["reason"].startswith("Src0/100 ×200, 3 of 7 days, last seen 1h ago")
-    assert "+9 more active pattern(s)" in result["reason"]
+    assert result["details"]["patterns"][0]["user_impact"] == "data_at_risk"
+    assert result["reason"].startswith("The disk lost data during a crash")
+    assert result["status"] == "crit"
 
 
-def test_reliability_reason_falls_back_to_source_without_category() -> None:
-    # Before annotation runs (or with no API key), the reason names the raw
-    # source/event id and says the cause is unclear rather than inventing one.
-    events = [_pattern("Ntfs", 55, days={2: 5, 1: 5, 0: 10}, last_seen_hours_ago=1)]
-    result = _eval_reliability(events)
-    assert result["status"] == "warn"
-    assert "Ntfs/55 ×20" in result["reason"]
-    assert "cause unclear" in result["reason"]
-
-
-def test_reliability_reason_names_active_patterns_with_cadence_and_age() -> None:
-    # The live thomas-pc shape: one suppressed firehose, one reboot burst, one
-    # genuinely active pattern, a handful of one-offs. The reason must lead
-    # with the finding, not with "3528 error/critical events".
+def test_reliability_unclassified_patterns_are_counted_not_scored() -> None:
+    # A pattern awaiting classification is an absence of information, not
+    # evidence -- but a reader must be able to see it is absent.
     events = [
-        _pattern("Microsoft-Windows-CAPI2", 4176, days={i: 480 for i in range(7)},
-                 severity="unknown", last_seen_hours_ago=1, suppressed=True),
-        _pattern("Microsoft-Windows-DistributedCOM", 10010, days={7: 80}, severity="benign",
-                 last_seen_hours_ago=7 * 24),
-        _pattern("Microsoft-Windows-DeviceAssociationService", 3503,
-                 days={7: 19, 6: 1, 2: 2, 1: 29, 0: 1}, severity="notable", last_seen_hours_ago=0.5,
-                 suspected_cause="Device pairing service cannot discover or enumerate endpoints"),
-        _pattern("Universal Print", 1, days={7: 2}, severity="notable", last_seen_hours_ago=7 * 24),
-        _pattern("Volsnap", 25, days={7: 1}, severity="notable", last_seen_hours_ago=7 * 24),
+        _pattern("Something", 999, days={2: 50, 1: 50, 0: 100}, state="pending",
+                 last_seen_hours_ago=1),
     ]
     result = _eval_reliability(events)
-    assert result["status"] == "warn"
-    reason = result["reason"]
-    assert reason.startswith(
-        "Microsoft-Windows-DeviceAssociationService/3503 ×52, 5 of 7 days, last seen <1h ago"
-        " — Device pairing service cannot discover or enumerate endpoints"
-    )
-    assert f"2 historical pattern(s) quiet since {_day(7)}" in reason
-    assert reason.endswith("(1 pattern(s) suppressed)")
-    assert "CAPI2" not in reason
-    assert not reason[0].isdigit()
+    assert result["status"] == "ok"
+    assert "1 awaiting classification" in result["reason"]
 
 
-def test_reliability_details_carry_per_pattern_activity() -> None:
-    # Consumers (dashboard chip, `agent_health`) read activity off `details`
-    # instead of re-deriving thresholds -- and the shared `events` list the
-    # heatmap draws from is never mutated.
+def test_reliability_reason_never_names_the_log_vocabulary() -> None:
+    # A reason the reader has to look up delegates the work back to them.
     events = [
-        _pattern("disk", 51, days={2: 6, 1: 7, 0: 5}, severity="serious", last_seen_hours_ago=9),
-        _pattern("App", 1000, days={6: 4}, severity="notable", last_seen_hours_ago=6 * 24),
+        _pattern("Microsoft-Windows-WER-SystemErrorReporting", 1001, days={1: 1, 0: 2},
+                 level="critical", impact="crashed",
+                 symptom="The PC froze and restarted by itself", last_seen_hours_ago=2),
+    ]
+    reason = _eval_reliability(events)["reason"]
+    assert reason.startswith("The PC froze and restarted by itself")
+    assert "3×" in reason
+    for forbidden in ("WER-SystemErrorReporting", "1001", "0x"):
+        assert forbidden not in reason
+
+
+def test_reliability_impact_that_stopped_is_history_not_a_finding() -> None:
+    # maria-pc: the same VSS pair, quiet for ten days. It self-clears rather
+    # than staying a dated warning until it leaves the window.
+    events = [
+        _pattern("Microsoft-Windows-Kernel-Power", 41, days={6: 1}, level="critical",
+                 impact="crashed", symptom="The PC restarted unexpectedly",
+                 last_seen_hours_ago=150),
     ]
     result = _eval_reliability(events)
-    details = result["details"]
-    assert details["window_days"] == 7
-    by_source = {p["source"]: p for p in details["patterns"]}
-    assert by_source["disk"] == {
-        "source": "disk", "event_id": 51, "level": "error", "count": 18, "severity": "serious",
-        "category": None, "cause": None, "suppressed": False, "active_days": 3,
-        "first_day": _day(2), "last_day": _day(0), "last_seen_age_hours": 9.0,
-        "active": True, "recurring": True, "burst": False,
-    }
-    assert by_source["App"]["active"] is False
-    assert by_source["App"]["burst"] is True
-    assert "active" not in events[0] and "last_seen_age_hours" not in events[0]
+    assert result["status"] == "ok"
+    assert "resolved" in result["reason"]
+
+
+def test_reliability_a_pattern_that_went_quiet_days_ago_is_not_active() -> None:
+    # The old rule called any pattern with >=3 active days "active" for the
+    # whole 7-day window, which was a second red anchor independent of the 48h
+    # one. Three days of hits that stopped four days ago is history.
+    events = [
+        _pattern("Bonjour Service", 100, days={6: 7, 5: 7, 4: 7}, impact="degraded",
+                 symptom="Network name collision", last_seen_hours_ago=100),
+    ]
+    result = _eval_reliability(events)
+    assert result["status"] == "ok"
+    assert result["details"]["patterns"][0]["active"] is False
+
+    # Still active when the three days are recent.
+    recent = [
+        _pattern("Bonjour Service", 100, days={2: 7, 1: 7, 0: 7}, impact="degraded",
+                 symptom="Network name collision", last_seen_hours_ago=60),
+    ]
+    assert _eval_reliability(recent)["status"] == "warn"
+
+
+def test_reliability_details_carry_the_per_pattern_record() -> None:
+    events = [
+        _pattern("disk", 51, days={2: 6, 0: 12}, severity="serious", impact="data_at_risk",
+                 symptom="Files may be unreadable", last_seen_hours_ago=2,
+                 category="Disk & storage", suspected_cause="failing sectors"),
+    ]
+    shared = events[0]
+    result = _eval_reliability(events, boot_sessions=["2026-06-01T06:00:00Z"])
+    assert result["details"]["patterns"] == [
+        {
+            "source": "disk", "event_id": 51, "level": "error", "count": 18,
+            "severity": "serious", "category": "Disk & storage",
+            "cause": "failing sectors", "user_impact": "data_at_risk",
+            "symptom": "Files may be unreadable", "classification_state": "classified",
+            "suppressed": False, "active_days": 2,
+            "first_day": _day(2), "last_day": _day(0),
+            "last_seen_age_hours": 2.0, "active": True, "recurring": True,
+            "burst": False, "scores": True,
+        }
+    ]
+    assert result["details"]["window_days"] == 7
+    assert result["details"]["boot_sessions"] == 1
+    # Pure: the group the dashboard heatmap shares is not mutated.
+    assert "user_impact" in shared and "scores" not in shared
 
 
 def test_reliability_activity_is_relative_to_now() -> None:
-    # The same payload judged ten days later -- past its own 7-day window --
-    # is history: this is why history reads must evaluate "as of" the
-    # snapshot's own `collected_at`. (Three active days in the window would
-    # otherwise keep it "active" forever.)
     events = [
-        _pattern("disk", 51, days={2: 6, 1: 7, 0: 5}, severity="notable", last_seen_hours_ago=9),
+        _pattern("Microsoft-Windows-Kernel-Power", 41, days={1: 1, 0: 1}, level="critical",
+                 impact="crashed", symptom="The PC restarted unexpectedly",
+                 last_seen_hours_ago=2),
     ]
-    payload = {"status": "ok", "summary": "", "recent_crashes": 18, "window_days": 7, "events": events}
-    assert health_rules.evaluate_section("reliability", payload, now=NOW)["status"] == "warn"
-    later = NOW + timedelta(days=10)
-    assert health_rules.evaluate_section("reliability", payload, now=later)["status"] == "ok"
+    assert _eval_reliability(events)["status"] == "crit"
+    later = health_rules.evaluate_section(
+        "reliability",
+        {"status": "ok", "summary": "", "recent_crashes": 2, "window_days": 7, "events": events},
+        now=NOW + timedelta(days=10),
+    )
+    assert later["status"] == "ok"
 
 
 def test_reliability_by_day_stands_in_for_a_missing_last_seen() -> None:
-    # A group without `last_seen` (older agents, hand-built payloads) still
-    # gets an age from the end of its most recent `by_day` day: NOW is 18:30,
-    # so "last seen yesterday" is 18.5h ago.
-    events = [_pattern("disk", 51, days={2: 1, 1: 1}, severity="serious")]
-    result = _eval_reliability(events)
-    assert result["status"] == "crit"
-    assert result["details"]["patterns"][0]["last_seen_age_hours"] == 18.5
-
-
-def test_reliability_benign_repetition_scores_ok() -> None:
-    # 300 repeats of ONE known-benign pattern, active every day, must not
-    # warn on volume or persistence: benign is benign (ADR-0026).
-    events = [
-        _pattern("DistributedCOM", 10016, days={i: 43 for i in range(7)}, severity="benign",
-                 last_seen_hours_ago=1, category="Windows service",
-                 suspected_cause="two apps colliding over a stale COM permission"),
-    ]
-    result = _eval_reliability(events)
-    assert result["status"] == "ok"
-    assert "known-benign" in result["reason"]
+    events = [_pattern("x", 1, days={1: 3}, impact="none")]
+    p = _eval_reliability(events)["details"]["patterns"][0]
+    assert p["last_seen_age_hours"] == 18.5
 
 
 def test_reliability_quiet_host_reasons() -> None:
-    assert _eval_reliability([])["reason"] == "no error patterns in 7d"
-    assert _eval_reliability([])["status"] == "ok"
-    # Historical and benign patterns are both named in the calm reason.
-    events = [
-        _pattern("App", 1000, days={6: 4}, severity="notable", last_seen_hours_ago=6 * 24),
-        _pattern("DistributedCOM", 10016, days={0: 3}, severity="benign", last_seen_hours_ago=1),
-    ]
-    result = _eval_reliability(events)
-    assert result["status"] == "ok"
-    assert result["reason"] == f"no active error patterns; 1 historical pattern(s) quiet since {_day(6)}, 1 known-benign"
+    assert _eval_reliability([])["reason"] == "no errors logged in 7d"
+    checked = _eval_reliability([
+        _pattern("a", 1, days={0: 3}, impact="none"),
+        _pattern("b", 2, days={0: 1}, impact="none"),
+    ])
+    assert checked["status"] == "ok"
+    assert checked["reason"] == "nothing user-visible in 7d (2 pattern(s) checked)"
 
 
 def test_reliability_annotated_stability_index_still_applies() -> None:
@@ -500,8 +583,20 @@ def test_golden_fixture_reliability_status_is_not_a_verdict() -> None:
 
     reliability = _snapshot()["reliability"]
     assert reliability["status"] == "ok"
-    # And the server reaches its own, different verdict from the same payload.
-    assert health_rules.evaluate_section("reliability", reliability, now=NOW)["status"] == "warn"
+    # And the server reaches its own verdict from the same payload: annotate
+    # the disk group the way the read path would and the section goes crit
+    # while the payload's own `status` still says "ok".
+    annotated = dict(reliability)
+    annotated["events"] = [
+        {**e, "user_impact": "data_at_risk", "symptom": "Files may be unreadable",
+         "classification_state": "classified"}
+        if e["source"] == "disk"
+        else {**e, "user_impact": "none", "classification_state": "classified"}
+        for e in reliability["events"]
+    ]
+    verdict = health_rules.evaluate_section("reliability", annotated, now=NOW)
+    assert verdict["status"] == "crit"
+    assert annotated["status"] == "ok"
 
 
 def test_reliability_defers_when_no_fields() -> None:
@@ -800,144 +895,92 @@ def test_net_quality_non_finite_or_oversized_metrics_does_not_crash(bad: float) 
 # `suppressed` is stamped by the read-path SuppressionList.mark(), not by the
 # health rule itself (see reliability_suppression.py + the TelemetryStore.
 # annotate seam) -- these tests build already-stamped payloads directly, the
-# same way test_event_categories.py's fixtures already carry `category`/
-# `severity` as if ADR-0026 annotation had run.
+# same way the payloads above carry the classifier's annotation.
+#
+# Under the impact model suppression matters less than it did: a pattern with
+# no user-visible impact never scored in the first place, so there is nothing
+# left to mute. What it still has to do is override the two things the rule
+# decides on its own -- the crash-marker floor, and a classifier verdict the
+# operator disagrees with -- without ever touching the raw counts or the
+# independent stability index.
 
 
-def test_reliability_suppressed_pattern_excluded_from_severity_scoring() -> None:
-    # The issue #166 regression: one dominant, suppressed pattern (3439 CAPI2/
-    # 4176 events) must not drown out the one pattern that actually matters
-    # (a single Kernel-Power/41 unclean shutdown).
+def test_reliability_suppressed_impact_no_longer_scores() -> None:
     events = [
-        {"source": "Microsoft-Windows-CAPI2", "event_id": 4176, "level": "error",
-         "count": 3439, "category": "Windows service", "severity": "unknown",
-         "suppressed": True,
-         "suppressed_by": {"id": "x", "scope": "fleet", "source": "Microsoft-Windows-CAPI2",
-                            "event_id": 4176, "note": "known CryptSvc quirk"}},
-        {"source": "Microsoft-Windows-Kernel-Power", "event_id": 41, "level": "critical",
-         "count": 1, "category": "Power & boot", "severity": "notable"},
+        _pattern("disk", 51, days={1: 25, 0: 25}, severity="serious", impact="data_at_risk",
+                 symptom="Files may be unreadable", last_seen_hours_ago=1, suppressed=True),
     ]
-    result = health_rules.evaluate_section(
-        "reliability", {"status": "ok", "summary": "", "recent_crashes": 3440, "events": events},
-        now=NOW,
-    )
-    # One significant (forced-serious) pattern with a low recurrence count ->
-    # warn, not crit -- and it must be the Kernel-Power pattern, not CAPI2.
-    assert result["status"] == "warn"
-    assert "Microsoft-Windows-Kernel-Power/41" in result["reason"]
-    assert "CAPI2" not in result["reason"]
-    assert "1 pattern(s) suppressed" in result["reason"]
-
-
-def test_reliability_all_patterns_suppressed_scores_ok_with_explicit_reason() -> None:
-    events = [
-        {"source": "Microsoft-Windows-CAPI2", "event_id": 4176, "level": "error",
-         "count": 3439, "category": "Windows service", "severity": "unknown",
-         "suppressed": True},
-    ]
-    result = health_rules.evaluate_section(
-        "reliability", {"status": "ok", "summary": "", "recent_crashes": 3439, "events": events},
-        now=NOW,
-    )
+    result = _eval_reliability(events)
     assert result["status"] == "ok"
-    assert "all 1 pattern(s) suppressed" in result["reason"]
-    assert "3439" in result["reason"]  # raw total is still visible
-
-
-def test_reliability_suppressed_serious_pattern_no_longer_crits() -> None:
-    events = [
-        {"source": "disk", "event_id": 51, "level": "error", "count": 50,
-         "category": "Disk & storage", "severity": "serious", "suppressed": True},
-    ]
-    result = health_rules.evaluate_section(
-        "reliability", {"status": "ok", "summary": "", "recent_crashes": 50, "events": events},
-        now=NOW,
-    )
-    assert result["status"] == "ok"
-
-
-def test_reliability_suppressed_windows_critical_no_longer_escalates() -> None:
-    # An operator explicitly suppressing this exact pattern overrides the
-    # automatic "Windows-critical -> serious" escalation.
-    events = [
-        {"source": "Kernel-Power", "event_id": 41, "level": "critical", "count": 5,
-         "category": "Power & boot", "severity": "unknown", "suppressed": True},
-    ]
-    result = health_rules.evaluate_section(
-        "reliability", {"status": "ok", "summary": "", "recent_crashes": 5, "events": events},
-        now=NOW,
-    )
-    assert result["status"] == "ok"
+    assert "1 suppressed" in result["reason"]
+    assert "Files may be unreadable" not in result["reason"]
 
 
 def test_reliability_suppression_does_not_silence_low_stability_index() -> None:
     # The Windows Reliability Index is independent of pattern suppression and
     # always applies on top -- suppressing every pattern must not hide it.
     events = [
-        {"source": "Microsoft-Windows-CAPI2", "event_id": 4176, "level": "error",
-         "count": 3439, "category": "Windows service", "severity": "unknown",
-         "suppressed": True},
+        _pattern("Microsoft-Windows-CAPI2", 4176, days={i: 480 for i in range(7)},
+                 impact="none", last_seen_hours_ago=1, suppressed=True),
     ]
-    result = health_rules.evaluate_section(
-        "reliability",
-        {"status": "ok", "summary": "", "recent_crashes": 3439, "events": events,
-         "stability_index": 2.0},
-        now=NOW,
-    )
+    result = _eval_reliability(events, stability_index=2.0)
     assert result["status"] == "crit"
+    # ... and it says so by name, so a red status is never unexplained.
+    assert "stability index 2.0/10" in result["reason"]
 
 
-def test_reliability_suppressed_pattern_not_reported_as_benign() -> None:
-    # A suppressed, non-benign pattern must never be folded into the
-    # "known-benign" phrase -- that phrase is the LLM's verdict, suppression
-    # is the operator's, and they are different claims.
+def test_reliability_suppressed_firehose_stays_out_of_the_reason() -> None:
+    # The issue #166 regression, restated for the impact model: the muted
+    # pattern is counted so a reader can tell "quiet" from "quieted", but it
+    # is never named and its 3439 events never lead.
     events = [
-        {"source": "Microsoft-Windows-CAPI2", "event_id": 4176, "level": "error",
-         "count": 3439, "category": "Windows service", "severity": "unknown",
-         "suppressed": True},
-        {"source": "DistributedCOM", "event_id": 10016, "level": "error", "count": 10,
-         "category": "Windows service", "severity": "benign"},
+        _pattern("Microsoft-Windows-CAPI2", 4176, days={i: 491 for i in range(7)},
+                 severity="notable", impact="none", last_seen_hours_ago=1, suppressed=True),
+        _pattern("Microsoft-Windows-Kernel-Power", 41, days={1: 1, 0: 1}, level="critical",
+                 impact="crashed", symptom="The PC restarted without shutting down properly",
+                 last_seen_hours_ago=2),
     ]
-    result = health_rules.evaluate_section(
-        "reliability", {"status": "ok", "summary": "", "recent_crashes": 3449, "events": events},
-        now=NOW,
-    )
+    result = _eval_reliability(events)
+    assert result["status"] == "crit"
+    assert result["reason"].startswith("The PC restarted without shutting down properly")
+    assert "CAPI2" not in result["reason"]
+    assert "3437" not in result["reason"]
+    assert "1 suppressed" in result["reason"]
+
+
+def test_reliability_all_patterns_suppressed_scores_ok() -> None:
+    events = [
+        _pattern("Microsoft-Windows-CAPI2", 4176, days={0: 3439}, severity="notable",
+                 impact="none", last_seen_hours_ago=1, suppressed=True),
+    ]
+    result = _eval_reliability(events)
     assert result["status"] == "ok"
-    assert "known-benign" in result["reason"]
-    assert "1 pattern(s) suppressed" in result["reason"]
+    assert "1 suppressed" in result["reason"]
 
 
 def test_reliability_suppression_applies_without_annotation() -> None:
-    # Unannotated events (no `severity` -- the LLM never ran) must also honour
-    # suppression: with the classification persisted (ADR-0058) this is a
-    # rare state, but a fresh install without a key lives in it permanently.
+    # A fresh install without an API key lives permanently in this state: the
+    # crash-marker floor is the only thing that scores, and suppressing that
+    # exact pattern is the operator's call.
     events = [
-        _pattern("Microsoft-Windows-CAPI2", 4176, days={i: 480 for i in range(7)},
-                 last_seen_hours_ago=1, suppressed=True),
-        _pattern("Application Error", 1000, days={2: 10, 1: 20, 0: 13}, last_seen_hours_ago=2),
+        _pattern("Microsoft-Windows-Kernel-Power", 41, days={1: 2, 0: 1}, level="critical",
+                 state="unavailable", last_seen_hours_ago=1, suppressed=True),
+        _pattern("Application Error", 1000, days={2: 10, 1: 20, 0: 13},
+                 state="unavailable", last_seen_hours_ago=2),
     ]
     result = _eval_reliability(events)
-    assert result["status"] == "warn"
-    assert "CAPI2" not in result["reason"]
-    assert result["reason"].startswith("Application Error/1000 ×43")
-    assert "1 pattern(s) suppressed" in result["reason"]
-
-    # A suppressed critical-level group alone -> ok (not escalated by `level`).
-    events = [
-        _pattern("Kernel-Power", 41, days={1: 2, 0: 1}, level="critical", last_seen_hours_ago=1,
-                 suppressed=True),
-    ]
-    assert _eval_reliability(events)["status"] == "ok"
+    assert result["status"] == "ok"
+    assert "1 suppressed" in result["reason"]
+    assert "classification unavailable (no API key)" in result["reason"]
 
 
-def test_reliability_existing_tests_unaffected_by_suppression_support() -> None:
-    # No `suppressed` key anywhere -> the reason carries no suppression clause.
+def test_reliability_unsuppressed_payload_carries_no_suppression_clause() -> None:
     events = [
         _pattern("Application Error", 1000, days={2: 30, 1: 30, 0: 24}, severity="notable",
-                 last_seen_hours_ago=1, category="App crash / hang"),
+                 impact="none", last_seen_hours_ago=1, category="App crash / hang"),
     ]
     result = _eval_reliability(events)
-    assert result["status"] == "warn"
+    assert result["status"] == "ok"
     assert "suppressed" not in result["reason"]
 
 

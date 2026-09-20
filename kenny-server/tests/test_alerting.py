@@ -843,7 +843,8 @@ def test_alert_loop_and_dashboard_agree_on_reliability(tmp_path, monkeypatch) ->
             c.portal.call(partial(app.state.classification_store.upsert_many, [{
                 "source": "DistributedCOM", "event_id": 10016, "category": "Windows service",
                 "severity": "benign", "cause": "stale COM permission",
-                "model": event_categories.CATEGORIZE_MODEL,
+                "user_impact": "none", "symptom": "",
+                "model": event_categories.VERDICT_MODEL_TAG,
             }]))
             c.portal.call(event_categories.load_persisted)
             c.portal.call(partial(store.insert, "pc1", "2026-07-07T23:30:00Z", snap,
@@ -852,7 +853,10 @@ def test_alert_loop_and_dashboard_agree_on_reliability(tmp_path, monkeypatch) ->
             h = {"Authorization": f"Bearer {app.state.operator_token}"}
             section = c.get("/api/agent/pc1", headers=h).json()["health"]["sections"]["reliability"]
             assert section["status"] == "ok"
-            assert "known-benign" in section["reason"]
+            # 700 events across all 7 days, and not a finding: the verdict
+            # says nobody noticed anything, and the reason says the pattern
+            # was looked at rather than going silent about it.
+            assert section["reason"] == "nothing user-visible in 7d (1 pattern(s) checked)"
 
             notifier = FakeNotifier()
             engine = AlertEngine(
@@ -964,3 +968,210 @@ async def test_the_stored_alert_carries_its_title_and_producer(stores) -> None:
     rows = await events.query(kind="alert")
     assert rows[0]["fields"]["title"] == sent[0].title
     assert rows[0]["fields"]["event_type"] == sent[0].event_type
+
+
+# -- confirmation before alarm, and the warn that used to be dropped --------
+
+
+def _reliability_snapshot(crashes: int, *, at: datetime = NOW) -> dict:
+    """A snapshot whose `reliability` section is a crash finding (or clean)."""
+
+    events = []
+    if crashes:
+        events.append({
+            "source": "Microsoft-Windows-Kernel-Power", "event_id": 41, "level": "critical",
+            "count": crashes, "sample": "unexpected shutdown",
+            "last_seen": (at - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "by_day": {(at - timedelta(days=d)).date().isoformat(): 1 for d in range(crashes)},
+            "user_impact": "crashed", "symptom": "The PC restarted unexpectedly",
+            "classification_state": "classified",
+        })
+    return {"reliability": {"status": "ok", "summary": "", "recent_crashes": crashes,
+                            "window_days": 7, "events": events}}
+
+
+async def test_reliability_crit_needs_a_second_collection_before_it_alarms(stores) -> None:
+    """A finding that appears and vanishes inside one push interval is not one.
+
+    `reliability` reads a rolling 7-day window whose contents shift as events
+    age out of it, so one evaluation over one snapshot used to be enough to
+    page someone and open a ticket.
+    """
+
+    store, _, _ = stores
+    notifier = FakeNotifier()
+    engine = make_engine(stores, notifier)
+
+    await insert(store, _reliability_snapshot(2), NOW - timedelta(minutes=1))
+    assert await engine.evaluate_once(NOW) == []
+    assert notifier.sent == []
+
+    # A *newer* collection still saying the same thing confirms it.
+    await insert(store, _reliability_snapshot(2), NOW + timedelta(minutes=15))
+    sent = await engine.evaluate_once(NOW + timedelta(minutes=16))
+    assert len(sent) == 1
+    assert "The PC restarted unexpectedly" in sent[0].body
+
+
+async def test_reliability_finding_that_vanishes_never_alarms(stores) -> None:
+    store, _, _ = stores
+    notifier = FakeNotifier()
+    engine = make_engine(stores, notifier)
+
+    await insert(store, _reliability_snapshot(2), NOW - timedelta(minutes=1))
+    assert await engine.evaluate_once(NOW) == []
+
+    # Gone by the next push: the candidate is dropped, not held.
+    await insert(store, _reliability_snapshot(0), NOW + timedelta(minutes=15))
+    assert await engine.evaluate_once(NOW + timedelta(minutes=16)) == []
+    assert notifier.sent == []
+    # ... and it did not leave a pending row behind to fire later.
+    _, _, state = stores
+    assert await state.get("pc1", "pending:section:reliability") is None
+
+
+async def test_a_warn_blocked_by_cooldown_fires_on_the_next_eligible_pass(stores) -> None:
+    """The cooldown used to swallow a warn outright rather than delay it.
+
+    `status` advanced to the new value while nothing was sent, so the next
+    pass saw no change and skipped it -- the warning was lost for the whole
+    episode. Sections are independent scopes, so this needs one section to
+    burn its own cooldown and then escalate again within the window.
+    """
+
+    store, _, state = stores
+    notifier = FakeNotifier()
+    engine = make_engine(stores, notifier, cooldown_s=3600)
+
+    # First warn fires and starts the cooldown for `section:disk`.
+    await insert(store, snapshot(85.0), NOW - timedelta(minutes=1))
+    assert len(await engine.evaluate_once(NOW)) == 1
+
+    # Recover, then degrade again inside the cooldown window.
+    await insert(store, snapshot(50.0), NOW + timedelta(minutes=5))
+    await engine.evaluate_once(NOW + timedelta(minutes=6))
+    await insert(store, snapshot(85.0), NOW + timedelta(minutes=10))
+    assert await engine.evaluate_once(NOW + timedelta(minutes=11)) == []
+    # Held as a candidate rather than discarded.
+    pending = await state.get("pc1", "pending:section:disk")
+    assert pending is not None and pending["status"] == "warn"
+
+    # Once the cooldown has passed it is delivered, without the condition
+    # having to change again.
+    sent = await engine.evaluate_once(NOW + timedelta(minutes=70))
+    assert len(sent) == 1
+    assert "[WARN] disk" in sent[0].body
+    assert await state.get("pc1", "pending:section:disk") is None
+
+
+async def test_status_age_survives_a_pass_that_changes_nothing(stores) -> None:
+    """`since` is the age of the current finding, which the host page and the
+    ticket both read -- a re-evaluation that changes nothing must not reset
+    it."""
+
+    store, _, state = stores
+    engine = make_engine(stores, FakeNotifier())
+    await insert(store, snapshot(96.0), NOW - timedelta(minutes=1))
+    await engine.evaluate_once(NOW)
+    first = (await state.get("pc1", "section:disk"))["since"]
+
+    await engine.evaluate_once(NOW + timedelta(minutes=30))
+    assert (await state.get("pc1", "section:disk"))["since"] == first
+
+
+# -- the ticket a finding opened is the ticket its recovery closes ----------
+
+
+async def test_recovery_resolves_the_ticket_the_alert_opened(stores) -> None:
+    """Without this the ticket surface only ever accumulated.
+
+    `health` alerts open a ticket by default, `crit -> warn` is silent, a
+    recovery is explicitly never ticketed, and the ticket sweep never reads
+    health -- so an automatically opened ticket could only be closed by a
+    person. Not reliability-specific: every section closes the same way.
+    """
+
+    store, _, _ = stores
+    opened: list[str] = []
+    closed: list[str] = []
+
+    async def _open(note) -> str:
+        opened.append(note.title)
+        return "T-1"
+
+    async def _close(note) -> str:
+        closed.append(",".join(sorted(note.sections)))
+        return "T-1"
+
+    notifier = FakeNotifier()
+    engine = make_engine(stores, notifier, open_ticket=_open, close_ticket=_close)
+
+    await insert(store, snapshot(96.0), NOW - timedelta(minutes=1))
+    await engine.evaluate_once(NOW)
+    assert len(opened) == 1 and closed == []
+
+    await insert(store, snapshot(40.0), NOW + timedelta(minutes=5))
+    await engine.evaluate_once(NOW + timedelta(minutes=6))
+    assert closed == ["disk"]
+
+
+async def test_suppressing_a_pattern_closes_its_ticket(tmp_path, monkeypatch) -> None:
+    """The joined seam, end to end through the real app.
+
+    A rule changes what the next read scores, but the alert state and the
+    ticket were written by the alert loop -- so a muted pattern's alarm stayed
+    live and its ticket stayed open until the next pass. That is what made
+    suppression look like it did nothing: the status went quiet eventually,
+    the work it had already created never did.
+    """
+
+    from functools import partial
+
+    from starlette.testclient import TestClient
+
+    from kenny_server import event_categories
+    from kenny_server.main import build_app
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("KENNY_ALERT_INTERVAL_SECS", "0")
+    app = build_app(db_path=str(tmp_path / "reconcile.sqlite"))
+    event_categories.reset_state()
+    try:
+        with TestClient(app) as c:
+            h = {"Authorization": f"Bearer {app.state.operator_token}"}
+            engine = app.state.alert_engine
+
+            # Wall-clock recent: `evaluate_agent_now` runs against the real
+            # clock (it is what an operator write triggers), and a host whose
+            # newest snapshot is older than the offline window is skipped.
+            base = datetime.now(timezone.utc) - timedelta(minutes=20)
+
+            # Two collections of the same crash finding: the second confirms
+            # it (health_rules.CONFIRM_BEFORE_ALARM), so it alarms and tickets.
+            for minutes in (0, 15):
+                at = base + timedelta(minutes=minutes)
+                c.portal.call(partial(
+                    app.state.store.insert, "pc1", at.isoformat(),
+                    _reliability_snapshot(2, at=at), received_at=at.isoformat(),
+                ))
+                c.portal.call(partial(engine.evaluate_once, at + timedelta(minutes=1)))
+
+            tickets = c.portal.call(partial(app.state.ticket_store.list, states=["new"]))
+            assert len(tickets) == 1
+            assert tickets[0].dedup_key == "alert|pc1|state|reliability"
+
+            # Mute the pattern. The rule write alone must take the work back.
+            r = c.post(
+                "/api/reliability/suppressions",
+                headers=h,
+                json={"event_id": 41, "source": "Microsoft-Windows-Kernel-Power",
+                      "agent_id": "pc1", "note": "known-good test rig"},
+            )
+            assert r.status_code == 200
+
+            ticket = c.portal.call(partial(app.state.ticket_store.get, tickets[0].id))
+            assert ticket.state == "resolved"
+            section = c.get("/api/agent/pc1", headers=h).json()["health"]["sections"]["reliability"]
+            assert section["status"] == "ok"
+    finally:
+        event_categories.reset_state()

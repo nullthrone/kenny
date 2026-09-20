@@ -16,6 +16,7 @@ import pytest
 from fastmcp import Client, FastMCP
 from starlette.testclient import TestClient
 
+from kenny_server import health_rules
 from kenny_server.main import build_app
 from kenny_server.reliability_suppression import SuppressionList, rule_id
 from kenny_server.store import ReliabilitySuppressionStore, TelemetryStore
@@ -377,30 +378,44 @@ def test_suppression_affects_agent_health_response(tmp_path) -> None:
     with TestClient(app) as c:
         h = _bearer(app)
         import asyncio
+        from datetime import datetime, timedelta, timezone
 
+        def _ago(hours: float) -> str:
+            return (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            )
+
+        def _day(offset: int) -> str:
+            return (datetime.now(timezone.utc) - timedelta(days=offset)).date().isoformat()
+
+        # No API key in the test suite, so nothing is classified. The 3439-event
+        # firehose therefore scores nothing at all, and the crash-marker floor
+        # is the only thing that does -- twice, so it is a pattern.
         events = [
             {"source": "Microsoft-Windows-CAPI2", "event_id": 4176, "level": "error",
-             "count": 3439, "sample": "AuthSafes count", "last_seen": "2026-07-29T00:00:00Z",
-             "by_day": {}},
+             "count": 3439, "sample": "AuthSafes count", "last_seen": _ago(1),
+             "by_day": {_day(0): 3439}},
             {"source": "Microsoft-Windows-Kernel-Power", "event_id": 41, "level": "critical",
-             "count": 1, "sample": "unexpected shutdown", "last_seen": "2026-07-29T00:00:00Z",
-             "by_day": {}},
+             "count": 2, "sample": "unexpected shutdown", "last_seen": _ago(2),
+             "by_day": {_day(1): 1, _day(0): 1}},
         ]
         snapshot = {
             "reliability": {
-                "status": "crit", "summary": "3440 error/critical events in 7d",
-                "recent_crashes": 3440, "window_days": 7, "events": events,
+                "status": "crit", "summary": "3441 error/critical events in 7d",
+                "recent_crashes": 3441, "window_days": 7, "events": events,
             }
         }
-        asyncio.run(app.state.store.insert("PC-166", "2026-07-29T21:00:00Z", snapshot))
+        asyncio.run(app.state.store.insert("PC-166", _ago(0.5), snapshot))
 
         before = c.get("/api/agent/PC-166", headers=h).json()
-        # "warn", not the "crit" the payload claims: the rule's verdict is the
-        # status, and the agent's own `status` is not folded in on top of it
-        # (see health_rules.evaluate_section). Here the rule scores one serious
-        # pattern (Kernel-Power/41) at count 1, below the crit recurrence bar.
-        assert before["health"]["sections"]["reliability"]["status"] == "warn"
+        rel = before["health"]["sections"]["reliability"]
+        assert rel["status"] == "crit"
+        # The reason is the symptom, never the provider or the event id -- and
+        # never the 3439-event total the payload leads with.
+        assert rel["reason"].startswith(health_rules._RELIABILITY_CRASH_SYMPTOM)
+        assert "CAPI2" not in rel["reason"] and "3439" not in rel["reason"]
 
+        # Muting the firehose changes nothing, because it was never scoring.
         resp = c.post(
             "/api/reliability/suppressions",
             headers=h,
@@ -408,19 +423,26 @@ def test_suppression_affects_agent_health_response(tmp_path) -> None:
                   "note": "known CryptSvc quirk"},
         )
         assert resp.status_code == 200
+        rel = c.get("/api/agent/PC-166", headers=h).json()["health"]["sections"]["reliability"]
+        assert rel["status"] == "crit"
+        assert "1 suppressed" in rel["reason"]
 
+        # Muting the crash marker does: explicit operator intent overrides the
+        # floor the rule applies on its own (ADR-0041).
+        resp = c.post(
+            "/api/reliability/suppressions",
+            headers=h,
+            json={"event_id": 41, "source": "Microsoft-Windows-Kernel-Power",
+                  "note": "known-good test rig"},
+        )
+        assert resp.status_code == 200
         after = c.get("/api/agent/PC-166", headers=h).json()
         rel = after["health"]["sections"]["reliability"]
-        assert "CAPI2" not in rel["reason"]
-        assert "Kernel-Power" in rel["reason"]
-        assert "suppressed" in rel["reason"]
-        # Suppressing the 3439-event noise pattern does not quiet the section:
-        # the Kernel-Power/41 group is still scored and still warrants a look.
-        # Suppression narrows *which* patterns score, never the independent
-        # signals (ADR-0041).
-        assert rel["status"] == "warn"
+        assert rel["status"] == "ok"
+        assert "2 suppressed" in rel["reason"]
+
         # Raw counts are untouched -- only scoring changed.
-        assert after["snapshot"]["reliability"]["recent_crashes"] == 3440
+        assert after["snapshot"]["reliability"]["recent_crashes"] == 3441
         stamped = {e["source"]: e for e in after["snapshot"]["reliability"]["events"]}
         assert stamped["Microsoft-Windows-CAPI2"]["suppressed"] is True
         assert stamped["Microsoft-Windows-CAPI2"]["count"] == 3439
@@ -554,7 +576,8 @@ async def test_store_annotators_compose_suppression_and_classification(tmp_path)
     event_categories.reset_state()
     event_categories._cache_put(
         ("Microsoft-Windows-DistributedCOM", 10016),
-        {"category": "Windows service", "severity": "benign", "cause": "stale COM permission"},
+        {"category": "Windows service", "severity": "benign", "cause": "stale COM permission",
+         "user_impact": "none", "symptom": ""},
     )
     try:
         store.annotators = [suppression.mark, event_categories.mark]
@@ -571,7 +594,9 @@ async def test_store_annotators_compose_suppression_and_classification(tmp_path)
         latest = await store.latest("PC-A")
         capi2, dcom = latest["snapshot"]["reliability"]["events"]
         assert capi2["suppressed"] is True and "severity" not in capi2
+        assert capi2["classification_state"] == "unavailable"
         assert dcom["severity"] == "benign" and "suppressed" not in dcom
+        assert dcom["user_impact"] == "none" and dcom["classification_state"] == "classified"
 
         # One verdict per host: what the store hands the alert loop scores
         # exactly like what the dashboard sees after its own annotation pass.
@@ -583,12 +608,18 @@ async def test_store_annotators_compose_suppression_and_classification(tmp_path)
         assert via_store["sections"]["reliability"]["status"] == "ok"
         for key in ("status", "reason", "attention"):
             assert via_store["sections"]["reliability"][key] == via_dashboard["sections"]["reliability"][key]
-        # Without the classification annotator the same read would have been
-        # judged on `unknown` severity -- active, recurring -> warn.
+        # Without the classification annotator the same read carries no
+        # verdict at all. It still must not read as a clean bill of health:
+        # the status is the same `ok`, but the reason now says the section is
+        # unclassified rather than quiet -- the difference between "nothing
+        # happened" and "nothing looked".
         store.annotators = [suppression.mark]
         unclassified = await store.latest("PC-A")
-        assert health_rules.evaluate_snapshot(unclassified["snapshot"], now=now)["sections"][
-            "reliability"]["status"] == "warn"
+        blind = health_rules.evaluate_snapshot(unclassified["snapshot"], now=now)
+        assert blind["sections"]["reliability"]["status"] == "ok"
+        assert blind["sections"]["reliability"]["reason"] == (
+            "no verdict yet on 1 pattern(s) in 7d [1 suppressed, 1 awaiting classification]"
+        )
     finally:
         event_categories.reset_state()
         await store.close()

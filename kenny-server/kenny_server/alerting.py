@@ -9,8 +9,20 @@ state (``AlertStateStore``) and applies flap suppression:
 
 * a per-scope cooldown (default 1 h) bounds a flapping section to at most one
   alert plus one recovery per cooldown window,
-* escalations to ``crit`` always fire,
+* escalations to ``crit`` bypass the cooldown,
+* a section listed in ``health_rules.CONFIRM_BEFORE_ALARM`` must still report
+  the same incident on a **newer** ``collected_at`` before it notifies, so a
+  finding that appears and vanishes inside one push interval never reaches
+  anyone,
 * a recovery is only notified when the degraded episode itself was notified.
+
+An escalation that cannot be sent yet -- because its cooldown has not passed,
+or because it is still awaiting confirmation -- is held as a candidate in a
+``pending:section:<name>`` scope rather than emitted-or-dropped. It used to be
+dropped: ``status`` advanced to the new value while nothing was sent, the next
+pass saw no change, and the warning was lost for the whole episode instead of
+being delayed. A candidate is cleared when it is delivered, or when the
+section resolves or improves before it was ever worth sending.
 
 Offline detection is push-based: an agent is offline when its newest snapshot
 is older than ``offline_after_s`` (default three missed 900 s push intervals)
@@ -27,7 +39,10 @@ without a restart. Zero channels stays a legitimate state — the loop still
 evaluates and records, it just pushes nothing.
 
 An optional ``open_ticket`` callable may be injected to turn a notification
-into a ticket. It is opt-in (a server without the ticket surface simply passes
+into a ticket, and a matching ``close_ticket`` to resolve that ticket again
+when the condition recovers — without the second half the surface only ever
+accumulated, since a recovery is never itself ticketed and nothing else reads
+health. Both are opt-in (a server without the ticket surface simply passes
 nothing) and best-effort: delivery happens first and a failing ticket call is
 logged, never raised — alerting must not become less reliable by gaining a
 side effect (ADR-0027). *Which* notifications actually open a ticket is
@@ -50,7 +65,7 @@ from typing import Any, Protocol
 
 from . import ticket_rules as ticket_rules_module
 from .diffs import diff_snapshots
-from .health_rules import evaluate_snapshot
+from .health_rules import CONFIRM_BEFORE_ALARM, evaluate_snapshot
 from .notify import Notification, Notifier
 from .registry import AgentRegistry
 from .store import AlertStateStore, EventStore, TelemetryStore
@@ -116,6 +131,7 @@ class AlertEngine:
         digest_day: str = "mon",
         digest_hour: int = 8,
         open_ticket: Callable[[Notification], Awaitable[str | None]] | None = None,
+        close_ticket: Callable[[Notification], Awaitable[str | None]] | None = None,
         ticket_rules: Any = None,
     ) -> None:
         self._store = store
@@ -158,6 +174,7 @@ class AlertEngine:
         # ``_dispatch``. None means alerts never open tickets, which is the
         # behaviour of every server that does not wire one.
         self._open_ticket = open_ticket
+        self._close_ticket = close_ticket
         # Operator-authored auto-ticket rules (ticket_rules.py), consulted in
         # ``_dispatch``. None mirrors an empty rule set -- ``ticket_rules.decide``
         # is called either way, so "no mirror wired" and "mirror with zero rules"
@@ -207,6 +224,31 @@ class AlertEngine:
                 sent.extend(await self._evaluate_agent(agent_id, now))
             except Exception:  # noqa: BLE001 - one bad agent must not stop the rest
                 logger.exception("alert evaluation failed for %s", agent_id)
+        return sent
+
+    async def evaluate_agent_now(self, agent_id: str = "") -> list[Notification]:
+        """Re-evaluate one host (or the whole fleet) immediately.
+
+        The hook an operator write needs. Adding a suppression rule changes
+        what the *next* read scores, but nothing was re-reading until the
+        loop's next pass -- so a muted pattern's alert stayed live and the
+        ticket it opened stayed open, which is the single most common reason
+        the module looked like it ignored suppression. Running a pass here
+        produces the ordinary recovery transition, and the recovery closes the
+        ticket through the same path every other section uses.
+
+        Best-effort and never raised: an operator's rule write must not fail
+        because re-evaluation did.
+        """
+
+        now = datetime.now(timezone.utc)
+        agents = [agent_id] if agent_id else await self._store.known_agents()
+        sent: list[Notification] = []
+        for aid in agents:
+            try:
+                sent.extend(await self._evaluate_agent(aid, now))
+            except Exception:  # noqa: BLE001 - an operator write must still succeed
+                logger.exception("re-evaluation after an operator change failed for %s", aid)
         return sent
 
     async def _evaluate_agent(self, agent_id: str, now: datetime) -> list[Notification]:
@@ -304,21 +346,50 @@ class AlertEngine:
         recovery_sections: dict[str, str] = {}
 
         headline = ""
+        collected_at = str(latest.get("collected_at") or "")
         for name, section in evaluation["sections"].items():
             scope = f"section:{name}"
+            pending_scope = f"pending:{scope}"
             row = state.get(scope)
+            pending = state.get(pending_scope)
             old = row["status"] if row else "ok"
             new = section["status"]
-            if new == old:
-                continue
             # The body carries the finding, not the transition: what is wrong
             # and since when is what a reader acts on; "ok -> crit" is
             # bookkeeping the Log page already keeps.
             reason = section.get("reason") or section.get("summary") or ""
             notified = False
-            if new in _INCIDENT and _ORDER.get(new, 0) > _ORDER.get(old, 0):
-                # Escalations to crit always fire; warn respects the cooldown.
-                if new == "crit" or self._cooldown_passed(row, now):
+            escalated = new in _INCIDENT and _ORDER.get(new, 0) > _ORDER.get(old, 0)
+
+            # A candidate is an escalation that has not been sent yet. It is
+            # recorded rather than emitted-or-dropped, because a cooldown used
+            # to swallow one outright: `status` advanced to the new value, the
+            # next pass saw no change, and the warn was lost for the whole
+            # episode instead of being delayed.
+            if escalated:
+                if not pending or pending["status"] != new:
+                    await self._alert_state.upsert(
+                        agent_id, pending_scope, status=new, since=collected_at or now.isoformat()
+                    )
+                    pending = {"status": new, "since": collected_at or now.isoformat()}
+            elif pending and (new not in _INCIDENT or _ORDER.get(new, 0) < _ORDER.get(pending["status"], 0)):
+                # It resolved or improved before it was ever worth sending.
+                await self._alert_state.remove(agent_id, pending_scope)
+                pending = None
+
+            if pending and pending["status"] == new:
+                # Escalations to crit still bypass the rate limit; what they no
+                # longer bypass is confirmation. A section in
+                # CONFIRM_BEFORE_ALARM must still say the same thing on a
+                # *newer* collection -- one that appears and vanishes inside a
+                # single push interval never reaches anyone.
+                confirmed = (
+                    name not in CONFIRM_BEFORE_ALARM
+                    or not collected_at
+                    or not pending.get("since")
+                    or collected_at > pending["since"]
+                )
+                if confirmed and (new == "crit" or self._cooldown_passed(row, now)):
                     alert_lines.append(f"[{new.upper()}] {name}: {reason}".rstrip(": "))
                     alert_sections[name] = new
                     if new == "crit" and alert_worst != "crit":
@@ -328,17 +399,25 @@ class AlertEngine:
                         alert_worst = "warn"
                         headline = f"{name}: {reason}" if reason else name
                     notified = True
+                    await self._alert_state.remove(agent_id, pending_scope)
+            elif new == old:
+                continue
             elif new == "ok" and self._episode_was_notified(row):
                 recovery_lines.append(f"[RESOLVED] {name}: {reason}".rstrip(": "))
                 recovery_sections[name] = old
                 notified = True
+
+            if new == old and not notified:
+                continue
             # crit -> warn improvements, and every transition into or out of
-            # posture, update state silently (ADR-0058).
+            # posture, update state silently (ADR-0058). `since` only moves
+            # when the status does: it is the age of the current finding, which
+            # the host page and the ticket both read.
             await self._alert_state.upsert(
                 agent_id,
                 scope,
                 status=new,
-                since=now.isoformat(),
+                since=now.isoformat() if new != old else (row or {}).get("since") or now.isoformat(),
                 last_notified_at=now.isoformat() if notified else (row or {}).get("last_notified_at"),
             )
 
@@ -611,6 +690,17 @@ class AlertEngine:
                         await self._event_store.link_alert_to_ticket(event_id, ticket_id)
             except Exception:  # noqa: BLE001 - alerting stays best-effort
                 logger.exception("the ticket decision for %r failed", note.title)
+        # A recovery closes what the alert opened. It is not routed through
+        # ``ticket_rules`` -- those decide whether work gets *created*, and a
+        # recovery is explicitly never ticketed by them. Nothing was deciding
+        # whether work gets closed, which is why an automatically opened
+        # ticket could only ever be closed by a person, even after the
+        # operator suppressed the pattern that caused it.
+        if self._close_ticket is not None and note.kind == "recovery":
+            try:
+                await self._close_ticket(note)
+            except Exception:  # noqa: BLE001 - alerting stays best-effort
+                logger.exception("resolving the ticket for %r failed", note.title)
 
     # -- loop ---------------------------------------------------------------------
 
