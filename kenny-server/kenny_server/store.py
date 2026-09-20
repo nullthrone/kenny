@@ -822,7 +822,7 @@ class AlertStateStore:
         *,
         status: str,
         since: str,
-        last_notified_at: str | None,
+        last_notified_at: str | None = None,
     ) -> None:
         async with write_lock():
             await self._conn.execute(
@@ -834,6 +834,22 @@ class AlertStateStore:
                 (agent_id, scope, status, since, last_notified_at),
             )
             await self._conn.commit()
+
+    async def remove(self, agent_id: str, scope: str) -> bool:
+        """Drop one ``(agent_id, scope)`` row; ``True`` if it existed.
+
+        Used for the transient ``pending:`` scopes the alert loop keeps while
+        an escalation waits for confirmation or for its cooldown -- those are
+        candidates, not state, and must not outlive the episode that produced
+        them.
+        """
+
+        async with write_lock():
+            cur = await self._conn.execute(
+                "DELETE FROM alert_state WHERE agent_id = ? AND scope = ?", (agent_id, scope)
+            )
+            await self._conn.commit()
+        return (cur.rowcount or 0) > 0
 
     async def delete_agent(self, agent_id: str) -> int:
         """Delete all alert state for ``agent_id`` (host removed from inventory)."""

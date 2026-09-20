@@ -470,6 +470,39 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         )
         return ticket.id
 
+    async def resolve_alert_ticket(note: Notification) -> str | None:
+        """Close the ticket an alert opened, once the condition is gone.
+
+        The ratchet this removes: ``health`` alerts open a ticket by default,
+        ``crit -> warn`` is silent, a recovery is excluded from ticketing
+        entirely, and ``tickets.sweep`` never reads health -- so an
+        automatically opened ticket could only ever be closed by a person.
+        Suppressing the pattern that caused it did not close it either. The
+        module was minting work and never taking it back.
+
+        A recovery names exactly the sections that resolved, and
+        ``alert_dedup_key`` builds the same key from them that ``open`` built
+        from the alert's -- so the ticket is found by construction rather than
+        by matching prose. Actor ``system``, which ``tickets`` already permits
+        for ``new -> resolved``.
+
+        This is deliberately not reliability-specific: every section's alert
+        tickets close the same way.
+        """
+
+        key = alert_dedup_key(note)
+        existing = await ticket_store.find_open_by_dedup_key(key)
+        if existing is None:
+            return None
+        resolved = ", ".join(sorted(note.sections)) or "the condition"
+        await ticket_service.transition(
+            existing.id,
+            "resolved",
+            actor="system",
+            reason=f"{resolved} recovered",
+        )
+        return existing.id
+
     # Push alerting (ADR-0027): transition detection over the health rules,
     # delivered best-effort on the configured channels (possibly none).
     alert_state = AlertStateStore(db_path)
@@ -500,6 +533,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
             (discord_identities, None),
         ],
         open_ticket=open_alert_ticket,
+        close_ticket=resolve_alert_ticket,
         ticket_rules=ticket_rules,
     )
 
@@ -887,6 +921,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         backup_target_store=backup_target_store,
         update_mgr=update_mgr,
         suppression=suppression,
+        on_suppression_change=alert_engine.evaluate_agent_now,
         ticket_rules=ticket_rules,
         tickets=ticket_service,
         ticket_store=ticket_store,

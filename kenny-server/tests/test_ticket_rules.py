@@ -580,3 +580,39 @@ def test_the_disk_section_is_advertised_for_a_forecast_rule() -> None:
     """The admin UI offers the sections a rule can name per event type."""
 
     assert "disk" in KNOWN_SECTIONS["disk_forecast"]
+
+
+def test_reliability_warn_does_not_ticket_by_default() -> None:
+    """A reliability warn is worth one notification, not a queue item.
+
+    `health` opens a ticket for every alert by default, which on a four-host
+    family fleet is what buried the queue. The section-level default narrows
+    that to crit for `reliability` alone; every other section is unchanged,
+    and an operator rule still wins over it.
+    """
+
+    from kenny_server.ticket_rules import decide, rule_id
+
+    def _decide(section: str, priority: str, rules=None):
+        return decide(
+            rules or {},
+            kind="alert",
+            agent_id="pc1",
+            event_type="health",
+            priority=priority,
+            sections={section: "crit" if priority == "high" else "warn"},
+        )
+
+    assert _decide("reliability", "default").open is False
+    assert _decide("reliability", "high").open is True
+    # Every other section keeps the open_all default.
+    assert _decide("disk", "default").open is True
+
+    # An operator rule still overrides the section default, both ways.
+    rules = {
+        ("", "health", "reliability"): {
+            "id": rule_id("", "health", "reliability"), "agent_id": "",
+            "event_type": "health", "section": "reliability", "decision": "open_all",
+        }
+    }
+    assert _decide("reliability", "default", rules).open is True

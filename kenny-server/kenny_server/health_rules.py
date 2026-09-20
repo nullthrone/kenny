@@ -1106,6 +1106,23 @@ WINDOWS_ONLY_SECTIONS: frozenset[str] = frozenset(
 # signature is not.
 OS_AWARE_RULES: frozenset[str] = frozenset({"local_accounts", "services", "uptime"})
 
+# Sections whose incident must be confirmed by a *second* collection before it
+# notifies (see ``alerting._health_transitions``).
+#
+# The alert loop runs every 60s over a snapshot that changes every ~900s, so a
+# single evaluation over a single snapshot was enough to page someone and open
+# a ticket. For most sections that is right: a disk does not un-fill itself,
+# and a Defender that is off is off. ``reliability`` is different -- it reads a
+# rolling 7-day event window whose contents shift as events age out of it, so a
+# finding can appear and vanish between two pushes without anything having
+# happened to the machine. Requiring a newer ``collected_at`` to still agree
+# costs one push interval of latency and removes that whole class of alarm.
+#
+# The policy lives here, next to the thresholds it belongs with
+# (``kenny-server/CLAUDE.md``: health thresholds live only in this module);
+# ``alerting`` reads the set and stays free of per-section knowledge.
+CONFIRM_BEFORE_ALARM: frozenset[str] = frozenset({"reliability"})
+
 
 def _is_windows(agent_os: str | None) -> bool:
     return str(agent_os or "windows").lower() == "windows"
@@ -1172,9 +1189,18 @@ def evaluate_section(
     if outcome is None:
         return _agent_verdict(reported, summary)
     rule_status, reason = outcome[0], outcome[1]
+    # A ruled section carries the *rule's* line and only that one. The agent's
+    # `summary` is written from constants baked into the shipped binary and
+    # knows nothing of suppression, classification or the operator's rules, so
+    # showing it beside the reason contradicts it: `reliability` read
+    # "3675 error/critical events in 7d" under a reason that had carefully
+    # excluded 3373 muted ones. It is still on the raw snapshot for
+    # `agent_snapshot` and the section body; it just stops competing with the
+    # verdict. Sections with no rule keep it -- there it is the only line
+    # available.
     result: dict[str, Any] = {
         "status": rule_status,
-        "summary": summary,
+        "summary": "",
         "attention": rule_status in INCIDENT_STATUSES,
         "tier": tier_of(rule_status),
         "reason": reason,

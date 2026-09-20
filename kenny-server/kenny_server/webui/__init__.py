@@ -179,6 +179,7 @@ def build_api_routes(
     update_mgr: Any = None,
     client_factory: Any = None,
     suppression: Any = None,
+    on_suppression_change: Any = None,
     ticket_rules: Any = None,
     tickets: Any = None,
     ticket_store: Any = None,
@@ -1072,14 +1073,43 @@ def build_api_routes(
             )
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
+        await _reconcile_suppression(agent_id)
         return JSONResponse({"rules": rules})
+
+    async def _reconcile_suppression(agent_id: str) -> None:
+        """Re-evaluate the hosts a rule change affects, right now.
+
+        A rule changes what the next *read* scores, but the alert state and
+        any ticket it opened are written by the alert loop -- so without this
+        a muted pattern's alarm stayed live and its ticket stayed open until
+        the next pass, which is what made suppression look like it did
+        nothing. A fleet-wide rule fans out over every known host.
+
+        Best-effort: the operator's write has already succeeded and must not
+        be reported as failed because reconciliation was.
+        """
+
+        if on_suppression_change is None:
+            return
+        try:
+            if agent_id:
+                await on_suppression_change(agent_id)
+            else:
+                await on_suppression_change("")
+        except Exception:  # noqa: BLE001 - the rule write stands either way
+            logger.exception("re-evaluating after a suppression change failed")
 
     async def api_suppression_remove(request: Request) -> JSONResponse:
         """Remove one reliability alarm suppression rule by id."""
 
         if suppression is None:
             return JSONResponse({"error": "suppression store not configured"}, status_code=503)
-        removed, rules = await suppression.remove(request.path_params["rule_id"])
+        rule_id = request.path_params["rule_id"]
+        removed, rules = await suppression.remove(rule_id)
+        if removed:
+            # "<agent_id>|<source>|<event_id>"; an empty first field is a
+            # fleet-wide rule, which affects every host.
+            await _reconcile_suppression(str(rule_id).split("|", 1)[0])
         return JSONResponse({"ok": True, "removed": removed, "rules": rules})
 
     # -- runtime settings --------------------------------------------------
