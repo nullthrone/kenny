@@ -523,8 +523,9 @@ where [alerts](alerting.md) land as an audit trail, and where the
 [Updates](#updates) and [Auto-ticket rules](#auto-ticket-rules))*
 
 A left section nav picks one group at a time: **Alerting & Digest**, **Web filter**,
-**Chat & AI**, **Backup**, **Updates**, **Discord & Tickets**, **Auto-ticket rules**,
-**Users**, and **Environment (read-only)** — grouped exactly as `config.py`'s catalog.
+**Chat & AI**, **Shell policy**, **Backup**, **Updates**, **Discord & Tickets**,
+**Auto-ticket rules**, **Users**, and **Environment (read-only)** — grouped exactly as
+`config.py`'s catalog.
 
 Every configurable row shows its **label**, its **current value**, and a **source
 badge** — `default`, `env`, or `custom` — telling you where that value came from. A row
@@ -550,6 +551,23 @@ per-agent configuration and editing stays where the API is.
 
 The chat model, whether an Anthropic API key is set, and whether AI recommendations are
 enabled on flagged sections.
+
+### Shell policy
+
+What `powershell_exec` and `shell_exec` may run across the whole fleet
+([ADR-0064](adr/0064-fleet-wide-shell-execution-mode.md)). Three things on one page:
+
+- The **mode** — `unrestricted` (the default), `allowlist`, or `off`.
+- The **allow rules**, used only in `allowlist` mode. A command must match one *in full*:
+  a rule of `uname -a` does not admit `uname -a; rm -rf /`. An empty list under this mode
+  blocks every shell call on every host, and the page says so rather than letting you find
+  out from a refusal.
+- The **deny rules** — the operator's own, which you can add and remove here, and the
+  built-in catalog below them, read-only because every agent compiles it in. Deny is
+  checked first in every mode, so an allow rule can never lift one.
+
+Superuser-only, and deliberately: an account that can run a shell command must not also be
+able to widen what may be run.
 
 ### Backup
 

@@ -164,6 +164,7 @@ def test_describe_carries_a_slug_per_group() -> None:
         "Backup": "backup",
         "Updates": "updates",
         "Discord & Tickets": "discord-tickets",
+        "Shell policy": "shell-policy",
     }
     assert len(slugs) == len(set(slugs.values())), "group slugs must be unique"
 

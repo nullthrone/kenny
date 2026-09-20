@@ -261,3 +261,26 @@ export interface ToolClassesResponse {
   profiles: Record<string, string[]>
   classes: Record<string, string>
 }
+
+/**
+ * One policy rule, in the shape the wire contract uses for both the shared deny
+ * catalog and an allow rule (`docs/protocol.md` § `policy`).
+ */
+export interface PolicyRule {
+  id: string
+  applies_to: string
+  pattern: string
+  reason: string
+}
+
+/** `GET /api/policy/rules` — the compiled-in catalog plus the operator's additions. */
+export interface PolicyRulesResponse {
+  builtin: PolicyRule[]
+  operator: PolicyRule[]
+}
+
+/** `GET /api/policy/shell-allow` — the fleet shell execution mode and its allow rules. */
+export interface ShellAllowResponse {
+  mode: string
+  allow: PolicyRule[]
+}

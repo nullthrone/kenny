@@ -42,7 +42,13 @@ from .. import findings
 from ..forecast import build_facts, deterministic_summary, forecast_events
 from ..recommend import ai_available, recommend_events, warning_facts
 from ..registry import AgentRegistry
-from ..store import ChatHistoryStore, EventStore, PolicyStore, TelemetryStore
+from ..store import (
+    ChatHistoryStore,
+    EventStore,
+    PolicyStore,
+    ShellAllowStore,
+    TelemetryStore,
+)
 from ..tokenstore import AgentTokenStore
 from ..tools import CallLog, ScreenshotStore, build_health, health_for, supports_tool
 from ..tunnel import AgentTunnel, ToolError
@@ -161,6 +167,7 @@ def build_api_routes(
     token_store: AgentTokenStore | None = None,
     policy_store: PolicyStore | None = None,
     policy_engine: PolicyEngine | None = None,
+    shell_allow_store: ShellAllowStore | None = None,
     webfilter: WebFilterService | None = None,
     settings: Settings | None = None,
     user_store: Any = None,
@@ -182,7 +189,10 @@ def build_api_routes(
     categorization; defaults to :func:`_anthropic_client` (injected in tests).
     """
 
-    _APPLIES_TO = {"powershell", "self_protection", "path"}
+    _APPLIES_TO = {"powershell", "posix", "self_protection", "path"}
+    # An allow rule is matched against a command string, so only the two groups
+    # that have one can carry it (ADR-0064).
+    _ALLOW_APPLIES_TO = {"powershell", "posix"}
     _WEBFILTER_ACTIONS = {"watch", "block", "allow"}
     # The two ticket states a bypass request is still waiting on a human in.
     _OPEN_TICKET_STATES = ("new", "in_progress")
@@ -937,6 +947,77 @@ def build_api_routes(
         await tunnel.broadcast_policy()
         return JSONResponse({"ok": True, "removed": removed, "operator": operator})
 
+    # -- fleet shell execution mode (ADR-0064) -----------------------------
+    #
+    # Superuser, not operator. The mode and its allow rules decide what an MCP
+    # caller may run on a managed host, and a principal that can call shell_exec
+    # must not also be able to relax the control that governs it. Adding a deny
+    # rule above stays an operator action; lifting one never was, and neither is
+    # widening the allowlist.
+
+    async def api_shell_allow_list(_request: Request) -> JSONResponse:
+        """The fleet's shell execution mode and its allow rules."""
+
+        mode = "unrestricted"
+        if settings is not None:
+            mode = str(settings.get("KENNY_SHELL_POLICY_MODE") or "unrestricted")
+        rules = await shell_allow_store.list() if shell_allow_store is not None else []
+        return JSONResponse({"mode": mode, "allow": rules})
+
+    async def api_shell_allow_add(request: Request) -> JSONResponse:
+        """Add an allow rule, recompile the mirror, and broadcast the new policy."""
+
+        if shell_allow_store is None:
+            return JSONResponse(
+                {"error": "shell allow store not configured"}, status_code=503
+            )
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - malformed JSON
+            return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        rule_id = str(body.get("id", "")).strip()
+        applies_to = str(body.get("applies_to", "")).strip()
+        pattern = body.get("pattern", "")
+        reason = str(body.get("reason", "")).strip()
+        if not rule_id:
+            return JSONResponse({"error": "id is required"}, status_code=400)
+        if applies_to not in _ALLOW_APPLIES_TO:
+            return JSONResponse(
+                {"error": f"applies_to must be one of {sorted(_ALLOW_APPLIES_TO)}"},
+                status_code=400,
+            )
+        if not isinstance(pattern, str) or not pattern:
+            return JSONResponse({"error": "pattern is required"}, status_code=400)
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            return JSONResponse({"error": f"invalid pattern: {exc}"}, status_code=400)
+        if not reason:
+            return JSONResponse({"error": "reason is required"}, status_code=400)
+        principal = principal_of(request)
+        await shell_allow_store.add(
+            id=rule_id,
+            applies_to=applies_to,
+            pattern=pattern,
+            reason=reason,
+            created_by=getattr(principal, "username", "") or "",
+        )
+        await tunnel.broadcast_policy()
+        return JSONResponse({"allow": await shell_allow_store.list()})
+
+    async def api_shell_allow_remove(request: Request) -> JSONResponse:
+        """Remove one allow rule, recompile the mirror, and broadcast."""
+
+        if shell_allow_store is None:
+            return JSONResponse(
+                {"error": "shell allow store not configured"}, status_code=503
+            )
+        removed = await shell_allow_store.remove(request.path_params["id"])
+        await tunnel.broadcast_policy()
+        return JSONResponse(
+            {"ok": True, "removed": removed, "allow": await shell_allow_store.list()}
+        )
+
     # -- reliability alarm suppression (ADR-0041 / issue #166) --------------
     #
     # Server-held operator state, not a per-agent capability, so this follows
@@ -1010,6 +1091,17 @@ def build_api_routes(
             return JSONResponse({"error": "settings not configured"}, status_code=503)
         return JSONResponse({"groups": settings.describe()})
 
+    async def _after_setting_write(key: str) -> None:
+        """Propagate a written setting that agents hold a copy of.
+
+        The shell execution mode lives in the settings catalog but is enforced on
+        the agent, so a write that stopped at the database would leave the fleet on
+        the previous mode until each agent happened to reconnect (ADR-0064).
+        """
+
+        if key == "KENNY_SHELL_POLICY_MODE":
+            await tunnel.broadcast_policy()
+
     async def api_settings_set(request: Request) -> JSONResponse:
         """Set one override. 400 unknown/invalid, 403 env-only, else apply."""
 
@@ -1036,6 +1128,7 @@ def build_api_routes(
             return JSONResponse({"error": str(exc)}, status_code=403)
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
+        await _after_setting_write(key)
         return JSONResponse(settings.describe_one(key))
 
     async def api_settings_reset(request: Request) -> JSONResponse:
@@ -1052,6 +1145,7 @@ def build_api_routes(
                 {"error": f"{key} is managed via the environment"}, status_code=403
             )
         await settings.reset(key)
+        await _after_setting_write(key)
         return JSONResponse(settings.describe_one(key))
 
     # -- DB backup/restore ---------------------------------------------------
@@ -1745,6 +1839,15 @@ def build_api_routes(
         Route(
             "/api/policy/rules/{id}",
             guard(api_policy_remove, **op),
+            methods=["DELETE"],
+        ),
+        Route("/api/policy/shell-allow", guard(api_shell_allow_list, **su)),
+        Route(
+            "/api/policy/shell-allow", guard(api_shell_allow_add, **su), methods=["POST"]
+        ),
+        Route(
+            "/api/policy/shell-allow/{id}",
+            guard(api_shell_allow_remove, **su),
             methods=["DELETE"],
         ),
         Route("/api/reliability/suppressions", guard(api_suppression_list)),

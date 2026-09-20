@@ -52,6 +52,16 @@ pub fn control_path() -> PathBuf {
     base_dir().join(CONTROL_FILE)
 }
 
+/// The directory the agent keeps its own state files in, resolved exactly as
+/// [`control_path`] resolves the control file's directory.
+///
+/// Exposed so a second piece of agent state — the persisted shell execution mode
+/// (ADR-0064) — lands beside the control file instead of inventing its own location,
+/// and inherits the same platform reasoning about where a service can write.
+pub fn state_dir() -> PathBuf {
+    base_dir()
+}
+
 #[cfg(windows)]
 fn base_dir() -> PathBuf {
     let program_data = std::env::var_os("ProgramData").unwrap_or_else(|| r"C:\ProgramData".into());

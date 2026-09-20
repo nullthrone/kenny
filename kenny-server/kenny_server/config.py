@@ -48,6 +48,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .logging_config import apply_log_level
+from .policy import SHELL_MODES
 
 logger = logging.getLogger("kenny.config")
 
@@ -153,6 +154,7 @@ GROUP_ORDER: tuple[str, ...] = (
     "Backup",
     "Updates",
     "Discord & Tickets",
+    "Shell policy",
 )
 
 
@@ -488,6 +490,17 @@ _SPECS: list[SettingSpec] = [
                "verbatim conversation and tool output needed only to resume it. "
                "The ticket, its summary and its audit trail are never pruned, so "
                "the record outlives the transcript by design."),
+    # -- Shell policy ----------------------------------------------------------
+    # ADR-0064. Superuser-only by construction: /api/settings is superuser-gated, and a
+    # principal that can call shell_exec must not also be able to relax the mode that
+    # governs it, or the control is circular.
+    _spec("KENNY_SHELL_POLICY_MODE", "Shell policy", "enum", "unrestricted",
+          "Shell execution mode", lifecycle="live", choices=SHELL_MODES,
+          help="What powershell_exec and shell_exec may run fleet-wide. "
+               "'unrestricted' runs anything the deny rules allow. 'allowlist' runs "
+               "only commands that fully match an allow rule — an empty allow list "
+               "under this mode blocks every shell call. 'off' blocks them all. Deny "
+               "rules always apply first, so an allow rule can never lift one."),
 ]
 
 CATALOG: dict[str, SettingSpec] = {spec.key: spec for spec in _SPECS}

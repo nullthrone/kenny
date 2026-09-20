@@ -10,8 +10,21 @@ engine has no built-in rules, logs a single warning, and degrades to enforcing
 only the operator's append-only rules (a no-op when there are none). The loader
 NEVER raises on a missing/unreadable catalog.
 
+ADR-0064 adds a second decision axis on the same frame: the fleet's **shell
+execution mode**. Deny rules say what must never run; the mode says what may run
+at all. Deny is evaluated first and always, so an ``allow`` entry can never lift a
+rule from the shared catalog.
+
+The mirror's status is not uniform. For an agent that enforces the mode itself it
+stays UX. For an agent predating v0.18 — which parses the ``policy`` frame and
+ignores ``shell`` — it is the only place the mode is enforced.
+
 Dependency-free: stdlib ``re``/``json``/``pathlib``/``logging`` only. Patterns
 use the portable regex subset common to Rust ``regex`` and Python ``re``.
+
+The verdicts here are pinned against the agent's by the shared decision vectors in
+``docs/fixtures/vectors/policy_decisions.json`` — the test that fails when the two
+hand-written mirrors drift.
 """
 
 from __future__ import annotations
@@ -26,6 +39,16 @@ from typing import Any
 from .protocol import PolicyRule
 
 logger = logging.getLogger("kenny.policy")
+
+#: Valid values of ``policy.shell.mode`` (ADR-0064), loosest first.
+SHELL_MODES = ("unrestricted", "allowlist", "off")
+
+#: The rule-group name each shell tool's command string is matched against. The two
+#: shell tools are the only ones the execution mode governs.
+_SHELL_TOOL_GROUP = {"powershell_exec": "powershell", "shell_exec": "posix"}
+
+#: The arg key carrying each shell tool's command string.
+_SHELL_TOOL_ARG = {"powershell_exec": "script", "shell_exec": "command"}
 
 # Tools whose args are concatenated and matched against ``self_protection``.
 _SELF_PROTECTION_TOOLS = {
@@ -147,6 +170,10 @@ class PolicyEngine:
         self._builtin_raw: list[dict[str, Any]] = _load_catalog_rules()
         self._builtin = _compile_group(self._builtin_raw)
         self._operator = _compile_group([])
+        # ADR-0064. Default ``unrestricted``: the mirror must not refuse calls the
+        # fleet has not been configured to refuse.
+        self._shell_mode: str = "unrestricted"
+        self._shell_allow: dict[str, list[tuple[str, re.Pattern[str]]]] = _compile_group([])
 
     # -- rule management ---------------------------------------------------
 
@@ -166,6 +193,39 @@ class PolicyEngine:
                 normalised.append(dict(r))
         self._operator = _compile_group(normalised)
 
+    def set_shell_policy(
+        self, mode: str, allow: list[dict[str, Any] | PolicyRule] | None = None
+    ) -> None:
+        """Replace the fleet shell execution mode and its allow rules (ADR-0064).
+
+        An unrecognised mode is refused rather than guessed at: it falls back to
+        ``unrestricted`` and logs, because silently picking a stricter mode would
+        take down fleet administration over a typo, and silently picking a looser
+        one would be a policy the operator never set.
+        """
+
+        if mode not in SHELL_MODES:
+            logger.warning("unknown shell policy mode %r; falling back to unrestricted", mode)
+            mode = "unrestricted"
+        normalised: list[dict[str, Any]] = []
+        for r in allow or []:
+            entry = r.model_dump() if isinstance(r, PolicyRule) else dict(r)
+            # An allow entry for a surface with no command string means nothing.
+            if entry.get("applies_to") not in ("powershell", "posix"):
+                logger.warning(
+                    "shell allow rule %s ignored: applies_to must be powershell or posix",
+                    entry.get("id", "<unknown>"),
+                )
+                continue
+            normalised.append(entry)
+        self._shell_mode = mode
+        self._shell_allow = _compile_group(normalised)
+
+    def shell_mode(self) -> str:
+        """The current fleet shell execution mode."""
+
+        return self._shell_mode
+
     # -- mirror ------------------------------------------------------------
 
     def _match(self, group: str, text: str) -> tuple[str, str] | None:
@@ -183,17 +243,19 @@ class PolicyEngine:
         Mirrors the agent's matching exactly per ADR-0020.
         """
 
-        if tool == "powershell_exec":
-            script = args.get("script", "")
-            if not isinstance(script, str):
-                script = ""
-            return self._match("powershell", script) or self._match("self_protection", script)
-
-        if tool == "shell_exec":
-            command = args.get("command", "")
-            if not isinstance(command, str):
-                command = ""
-            return self._match("posix", command) or self._match("self_protection", command)
+        if tool in _SHELL_TOOL_GROUP:
+            group = _SHELL_TOOL_GROUP[tool]
+            raw = args.get(_SHELL_TOOL_ARG[tool], "")
+            # A missing or non-string arg is an empty haystack. Under ``unrestricted``
+            # that lets the call through to the handler, whose job it is to answer
+            # ``bad_args``; under ``allowlist`` an empty string matches no entry, so
+            # the gate below refuses it.
+            text = raw if isinstance(raw, str) else ""
+            return (
+                self._match(group, text)
+                or self._match("self_protection", text)
+                or self._shell_gate(group, text)
+            )
 
         if tool in _SELF_PROTECTION_TOOLS:
             # These tools forward their string args into a shell/exec on the agent
@@ -217,3 +279,21 @@ class PolicyEngine:
             return None
 
         return None
+
+    def _shell_gate(self, group: str, text: str) -> tuple[str, str] | None:
+        """Apply the fleet shell execution mode (ADR-0064).
+
+        Runs *after* the deny groups, so deny always outranks allow. ``allow``
+        entries match the whole trimmed command: a substring match would turn every
+        entry into a prefix onto which anything can be appended.
+        """
+
+        if self._shell_mode == "unrestricted":
+            return None
+        if self._shell_mode == "off":
+            return ("blocked", "shell execution is off by fleet policy")
+        candidate = text.strip()
+        for _reason, pattern in self._shell_allow.get(group, []):
+            if pattern.fullmatch(candidate):
+                return None
+        return ("blocked", "not permitted by the fleet shell allowlist")

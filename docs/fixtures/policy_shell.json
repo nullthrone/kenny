@@ -1,0 +1,28 @@
+{
+  "type": "policy",
+  "rules": [
+    {
+      "id": "op_block_choco",
+      "applies_to": "powershell",
+      "pattern": "(?i)\\bchoco\\b",
+      "reason": "operator: block chocolatey package manager"
+    }
+  ],
+  "shell": {
+    "mode": "allowlist",
+    "allow": [
+      {
+        "id": "al_get_service",
+        "applies_to": "powershell",
+        "pattern": "(?i)Get-Service(\\s+[\\w.-]+)?",
+        "reason": "read service state"
+      },
+      {
+        "id": "al_systemctl_status",
+        "applies_to": "posix",
+        "pattern": "systemctl status [\\w.@-]+",
+        "reason": "read unit state"
+      }
+    ]
+  }
+}

@@ -107,6 +107,7 @@ The three-tier classification lives in one place, so it is worth being precise a
 | **Role & host scope** ([ADR-0033](adr/0033-multi-user-authentication.md)) | Auth middleware + tool layer (server) | The access token — an OAuth token ([ADR-0037](adr/0037-oauth2-authorization-server-for-mcp.md)) or a personal access token — identifies a user; a `user`-role caller only sees/targets its assigned hosts (`select_agent`, `agent_*`, forwarders, and `list_agents`/`fleet_overview` are scope-filtered), and parental-controls mutation tools require `operator`+. The legacy shared token acts as a superuser. |
 | **Capability profile** ([ADR-0047](adr/0047-capability-profiles.md)) | Tool schemas + dispatch (server) | An optional, named per-account tool allowlist that only ever *narrows* what the role already allows — checked twice: the tool is not offered to the model, and dispatch refuses it again. See [ITSM: capability profiles](itsm.md#capability-profiles). |
 | **Agent-side safety guard** ([ADR-0019](adr/0019-agent-side-deterministic-tool-guard.md)) | Compiled into the agent | Deterministically refuses individually catastrophic calls (disk wipes, shadow-copy deletion, event-log clearing, Defender disable, sensitive-path `fs_*`, unlisted `agent_update` hosts) regardless of operator approval — and it cannot be turned off from the server. |
+| **Shell execution mode** ([ADR-0064](adr/0064-fleet-wide-shell-execution-mode.md)) | Set on the server, enforced at the agent | What `powershell_exec` and `shell_exec` may run fleet-wide: `unrestricted` (the default), `allowlist` (only commands that match a declared rule **in full**), or `off`. Deny rules are checked first either way, so an allow rule can never lift one. Set by a **superuser** in Admin → Shell policy. |
 | **OS guard** | Server (forwarder) | Refuses `powershell_exec`/`shell_exec` for the wrong agent OS — e.g. `shell_exec` on a Windows agent — before ever forwarding, naming the correct tool. |
 | **Local kill-switch** ([ADR-0011](adr/0011-local-remote-control-kill-switch.md)) | Agent + tray, at the PC | The person at the PC turns **all** state-changing tools off. Forwarded calls then return `error.code = "disabled"`; telemetry and read-only tools keep working. |
 
@@ -139,6 +140,18 @@ reaches the agent.
 |------|-----------|------|
 | `powershell_exec` | `script`, `timeout_s` | `normal_change` |
 | `shell_exec` | `command`, `timeout_s` | `normal_change` |
+
+Both are governed by the fleet's **shell execution mode**
+([ADR-0064](adr/0064-fleet-wide-shell-execution-mode.md)). Out of the box the mode is
+`unrestricted` and they behave as they always have. Under `allowlist` a command runs only
+if it matches a declared allow rule in its entirety — a rule of `uname -a` does not admit
+`uname -a; rm -rf /` — and under `off` neither tool runs at all. A refusal comes back as
+`error.code = "blocked"`, the same code the safety guard uses.
+
+The mode is a defence against an abused or prompt-injected credential and against
+accidental destruction. It is not a sandbox: it cannot help against a compromised kenny
+server, which is what pushes the mode, or against someone who is already root on the
+managed host.
 
 ### Files
 
