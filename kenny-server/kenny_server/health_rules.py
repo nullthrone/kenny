@@ -333,46 +333,123 @@ def _number(value: Any) -> float | None:
     return result if math.isfinite(result) else None
 
 
-# -- reliability: activity- and persistence-based pattern scoring ------------
+# -- reliability: scored on user-visible impact ------------------------------
 #
-# Score on WHETHER a pattern is still happening and on WHAT it is -- never on
-# how many lines it produced. A reboot storm that wrote 80 identical DCOM
-# errors on one day a week ago is history; one app crash is a one-off; a
-# pattern that fires on five of the last seven days and was last seen an hour
-# ago is an incident. The agent already sends the evidence for this
-# (``by_day`` per pattern, ``last_seen``, ``window_days`` -- see
-# ``docs/protocol.md``); the constants below turn it into three per-pattern
-# booleans (``active``, ``recurring``, ``burst``) that the verdict and the
-# reason read. There is deliberately no count threshold anywhere in this
-# rule: counts cannot tell "3439 identical harmless lines" from "3439
-# individually relevant errors" (ADR-0041), and a distinct-pattern count
-# cannot tell a reboot storm from a machine that is falling apart (ADR-0058).
+# A finding here is something the person at the machine would have noticed.
+# Nothing else is.
 #
+# The Windows Error/Critical log is not a record of user-visible problems; it
+# is a record of internal component failures, the overwhelming majority of
+# which Windows tolerates, retries or recovers from. CAPI2/4176, DCOM/10010,
+# DeviceAssociationService/3503 and the VSS complaints emitted on the way
+# through a shutdown have no human-visible counterpart at all. Treating every
+# entry as a problem candidate and then scoring it down -- by volume, then by
+# severity, then by activity -- produced well-sorted false alarms, because no
+# amount of scoring recovers a true finding from a false premise. So the
+# premise is inverted: only ``user_impact`` (event_categories.py, asked of the
+# classifier in the operator's terms, not the log's) promotes a pattern to a
+# finding, and everything else is diagnostic context that colours nothing.
+#
+# What remains to decide is *how bad* and *is it over*, and for that the
+# evidence the agent already sends is enough: ``by_day``, ``last_seen``,
+# ``boot_sessions`` and the group's count.
+#
+# Note what changes about counts. ADR-0041 and ADR-0058 rejected count
+# thresholds because a count could not tell "3439 identical harmless lines"
+# from "3439 individually relevant errors". Applied to a pattern that has
+# *already* been established to have a user-visible impact, that ambiguity is
+# gone: two unexpected restarts are two unexpected restarts. A count is the
+# direct measure of "did this happen more than once", so recurrence reads it
+# rather than approximating it from distinct days alone.
+
 # A pattern is *active* if it was seen within this many hours of ``now`` ...
 _RELIABILITY_ACTIVE_WITHIN_HOURS = 48
-# ... or, as long as its last hit is still inside the window, on at least this
-# many distinct days of it (a pattern that fires most days is a fixture of the
-# machine even if the last push happened to land in a lull).
+# ... or on at least this many distinct days, provided its last hit is not
+# itself stale (below). The day arm exists so a pattern that fires most days
+# stays active even when the latest push lands in a lull -- not so one that
+# stopped days ago keeps a host lit for the rest of the window.
 _RELIABILITY_ACTIVE_MIN_DAYS = 3
-# A pattern is *recurring* once it has been seen on this many distinct days.
-# Below this it is a one-off, whatever its count.
+_RELIABILITY_ACTIVE_MIN_DAYS_MAX_AGE_HOURS = 72
+# A pattern is *recurring* once it has happened more than once, or on more
+# than one day.
+_RELIABILITY_RECURRING_MIN_COUNT = 2
 _RELIABILITY_RECURRING_MIN_DAYS = 2
 # A pattern is a *burst* when one day holds at least this share of its total
 # and it is not active any more -- the shape of a reboot storm or a single
-# bad afternoon, as opposed to a standing problem.
+# bad afternoon, as opposed to a standing problem. Presentation only.
 _RELIABILITY_BURST_SHARE = 0.8
 # How many scoring patterns the reason names before folding the rest.
 _RELIABILITY_NAMED_PATTERNS = 3
 
 # The Windows Reliability Index (0-10) is an independent, agent-computed
-# signal that content-based pattern scoring can't see into, so it always
-# applies on top. It is deliberately NOT suppressible -- an operator muting a
-# noisy event pattern must never be able to hide a genuinely low reliability
-# index (issue #166 / ADR-0041).
+# signal that pattern scoring can't see into, so it always applies on top. It
+# is deliberately NOT suppressible -- an operator muting a noisy event pattern
+# must never be able to hide a genuinely unstable machine (issue #166 /
+# ADR-0041). When it is what decided, the reason says so by name: a status
+# whose reason lists nothing the reader can act on is indistinguishable from
+# a bug.
 _RELIABILITY_SI_CRIT = 3
 _RELIABILITY_SI_WARN = 6
 
 _RELIABILITY_SEVERITIES = ("benign", "notable", "serious", "unknown")
+
+# Impacts, least to most consequential; index is the comparison order.
+_RELIABILITY_IMPACTS = ("none", "degraded", "crashed", "data_at_risk")
+_RELIABILITY_IMPACT_UNKNOWN = "unknown"
+# The impacts that make a pattern a finding at all.
+_RELIABILITY_SCORING_IMPACTS = frozenset({"degraded", "crashed", "data_at_risk"})
+
+# Why a group does or does not carry a verdict (event_categories.mark). Any
+# other value -- including none at all, from a read path that skipped the
+# classification annotator -- normalizes to ``unclassified``.
+_RELIABILITY_CLASSIFICATION_STATES = frozenset({"classified", "pending", "unavailable"})
+
+# The machine went down. A closed, three-entry set of Windows events that say
+# so unambiguously, applied as a floor under whatever the classifier returned
+# -- including when it returned nothing, which is what keeps this section
+# working on a deployment with no API key.
+#
+# This is a hand-maintained table, which ADR-0026 and ADR-0041 both rejected
+# for this space, so the distinction matters: those rejected enumerating the
+# open-ended set of event sources in order to classify them. This enumerates
+# one unambiguous *event*, the one whose absence would otherwise be read as
+# health. It does not grow with the fleet, and a pattern the operator has
+# explicitly suppressed is exempt (ADR-0041: explicit intent overrides an
+# automatic escalation, or a suppressed marker could never be muted).
+_RELIABILITY_CRASH_MARKERS = frozenset(
+    {
+        ("kernel-power", 41),
+        ("bugcheck", 1001),
+        ("wer-systemerrorreporting", 1001),
+    }
+)
+_RELIABILITY_CRASH_SYMPTOM = "The PC shut down unexpectedly"
+
+
+def _reliability_marker_key(source: Any, event_id: Any) -> tuple[str, int]:
+    """Normalize a group's identity for the crash-marker lookup.
+
+    ``Get-WinEvent`` reports the full provider name
+    (``Microsoft-Windows-Kernel-Power``) while the event viewer, most
+    documentation and this repo's own fixtures use the short one
+    (``Kernel-Power``). Both name the same provider, so the prefix is stripped
+    rather than both spellings being listed.
+    """
+
+    src = str(source or "").strip().lower()
+    prefix = "microsoft-windows-"
+    if src.startswith(prefix):
+        src = src[len(prefix) :]
+    return (src, int(_number(event_id) or -1))
+
+
+def _reliability_impact_rank(impact: str) -> int:
+    """Order an impact for comparison; ``unknown`` sorts below every real one."""
+
+    try:
+        return _RELIABILITY_IMPACTS.index(impact)
+    except ValueError:
+        return -1
 
 
 def _reliability_by_day(value: Any) -> dict[str, int]:
@@ -399,7 +476,7 @@ def _reliability_day_age_hours(day: str, now: datetime) -> float | None:
 
 
 def reliability_patterns(payload: dict[str, Any], now: datetime) -> list[dict[str, Any]]:
-    """Derive one activity/persistence record per reliability event group.
+    """Derive one impact/activity record per reliability event group.
 
     Pure and non-mutating: the ``events`` list is shared with the dashboard's
     heatmap and the fleet aggregation, which must keep seeing the raw groups
@@ -407,32 +484,59 @@ def reliability_patterns(payload: dict[str, Any], now: datetime) -> list[dict[st
     section's ``details`` (see :func:`evaluate_section`). Fields:
 
     ``source``, ``event_id``, ``level``, ``count``, ``category``, ``cause``,
-    ``suppressed`` -- copied from the group (ADR-0026 / ADR-0041 read-path
-    annotations); ``severity`` -- the LLM's verdict, ``unknown`` when absent
-    or unrecognized, forced to ``serious`` for a Windows-critical group unless
-    the operator suppressed that exact pattern (explicit intent overrides the
-    automatic escalation, otherwise a suppressed Kernel-Power/41 could never
-    be muted); ``active_days``, ``first_day``, ``last_day`` -- from ``by_day``;
-    ``last_seen_age_hours`` -- from ``last_seen`` against ``now`` (falls back
-    to the end of ``last_day``); ``active``, ``recurring``, ``burst`` -- the
-    three booleans the verdict reads, defined by the module constants above.
-    All three are relative to ``now``: the same payload judged well after its
+    ``severity``, ``suppressed``, ``classification_state`` -- copied from the
+    group (ADR-0026 / ADR-0041 read-path annotations); ``severity`` degrades
+    to ``unknown`` when absent or unrecognized and is presentation only since
+    the impact model.
+
+    ``user_impact`` -- what the person at the machine would have noticed, the
+    only field the verdict reads. ``unknown`` when the classifier has not
+    reached this pattern or cannot run at all, floored at ``crashed`` for the
+    closed set of events that say the machine went down, unless the operator
+    suppressed that exact pattern. ``symptom`` -- that impact in one plain
+    sentence, which is what the reason line says out loud. ``scores`` --
+    whether this pattern is a finding at all.
+
+    ``active_days``, ``first_day``, ``last_day`` -- from ``by_day`` (UTC
+    calendar dates, per ``docs/protocol.md``); ``last_seen_age_hours`` -- from
+    ``last_seen`` against ``now`` (falls back to the end of ``last_day``);
+    ``active``, ``recurring``, ``burst`` -- defined by the module constants
+    above. All are relative to ``now``: the same payload judged well after its
     window has passed is history, which is why history reads evaluate "as of"
     the snapshot's own ``collected_at``.
     """
 
     events_raw = payload.get("events")
     events = [e for e in events_raw if isinstance(e, dict)] if isinstance(events_raw, list) else []
-    window_hours = (_number(payload.get("window_days")) or 7.0) * 24
     out: list[dict[str, Any]] = []
     for e in events:
         severity = e.get("severity")
         if severity not in _RELIABILITY_SEVERITIES:
             severity = "unknown"
         suppressed = bool(e.get("suppressed"))
-        if e.get("level") == "critical" and not suppressed:
-            severity = "serious"
         count = int(_number(e.get("count")) or 0)
+
+        impact = e.get("user_impact")
+        if impact not in _RELIABILITY_IMPACTS:
+            impact = _RELIABILITY_IMPACT_UNKNOWN
+        state = e.get("classification_state")
+        if state not in _RELIABILITY_CLASSIFICATION_STATES:
+            # No annotation reached this group at all -- a read path that
+            # skipped the classification annotator, or a payload from before
+            # the field existed. It is not classified, and the rule must not
+            # infer from that that nothing is wrong.
+            state = "unclassified"
+        symptom = str(e.get("symptom") or "")
+        marker = (
+            _reliability_marker_key(e.get("source"), e.get("event_id"))
+            in _RELIABILITY_CRASH_MARKERS
+        )
+        if marker and not suppressed and _reliability_impact_rank(impact) < _reliability_impact_rank("crashed"):
+            # The floor, not an override: a classifier that called this worse
+            # than "crashed" keeps its verdict.
+            impact = "crashed"
+            symptom = symptom or _RELIABILITY_CRASH_SYMPTOM
+
         by_day = _reliability_by_day(e.get("by_day"))
         days = sorted(by_day)
         first_day = days[0] if days else None
@@ -450,9 +554,10 @@ def reliability_patterns(payload: dict[str, Any], now: datetime) -> list[dict[st
             age = None
 
         recent = age is not None and age <= _RELIABILITY_ACTIVE_WITHIN_HOURS
-        in_window = age is not None and age <= window_hours
+        not_stale = age is not None and age <= _RELIABILITY_ACTIVE_MIN_DAYS_MAX_AGE_HOURS
         active_days = len(days)
         peak = max(by_day.values(), default=0)
+        active = recent or (not_stale and active_days >= _RELIABILITY_ACTIVE_MIN_DAYS)
         out.append(
             {
                 "source": e.get("source"),
@@ -462,14 +567,23 @@ def reliability_patterns(payload: dict[str, Any], now: datetime) -> list[dict[st
                 "severity": severity,
                 "category": e.get("category"),
                 "cause": e.get("suspected_cause"),
+                "user_impact": impact,
+                "symptom": symptom,
+                "classification_state": state,
                 "suppressed": suppressed,
                 "active_days": active_days,
                 "first_day": first_day,
                 "last_day": last_day,
                 "last_seen_age_hours": round(age, 1) if age is not None else None,
-                "active": recent or (in_window and active_days >= _RELIABILITY_ACTIVE_MIN_DAYS),
-                "recurring": active_days >= _RELIABILITY_RECURRING_MIN_DAYS,
+                "active": active,
+                "recurring": (
+                    count >= _RELIABILITY_RECURRING_MIN_COUNT
+                    or active_days >= _RELIABILITY_RECURRING_MIN_DAYS
+                ),
                 "burst": (count > 0 and peak / count >= _RELIABILITY_BURST_SHARE and not recent),
+                "scores": (
+                    not suppressed and active and impact in _RELIABILITY_SCORING_IMPACTS
+                ),
             }
         )
     return out
@@ -484,104 +598,142 @@ def _age_label(hours: float) -> str:
 
 
 def _reliability_describe(p: dict[str, Any], window_days: int) -> str:
-    label = str(p.get("source") or "?")
-    if p.get("event_id") is not None:
-        label += f"/{p['event_id']}"
-    bits = [f"{label} ×{p['count']}"]
-    if p["active_days"]:
-        bits.append(f"{p['active_days']} of {window_days} days")
+    """One finding in the operator's words.
+
+    Deliberately names no provider, event id or error code: a reason a reader
+    has to look up is a reason that delegates the work back to them, which is
+    the thing this section exists not to do. The technical identity stays on
+    ``details.patterns`` for the host page.
+    """
+
+    symptom = str(p.get("symptom") or "").strip().rstrip(".")
+    if not symptom:
+        symptom = str(p.get("cause") or "").strip().rstrip(".") or "Something is wrong"
+    bits = []
+    if p["count"] > 1:
+        bits.append(f"{p['count']}×")
+    if p["active_days"] > 1:
+        bits.append(f"on {p['active_days']} of {window_days} days")
     if p["last_seen_age_hours"] is not None:
-        bits.append(f"last seen {_age_label(p['last_seen_age_hours'])} ago")
-    cause = p.get("cause") or p.get("category") or "cause unclear"
-    return ", ".join(bits) + f" — {cause}"
+        bits.append(f"last {_age_label(p['last_seen_age_hours'])} ago")
+    return f"{symptom}" + (f" ({', '.join(bits)})" if bits else "")
 
 
 def _reliability_scoring(patterns: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """The patterns that drive the verdict, most important first: active
-    serious, then quiet serious, then active-and-recurring notable/unknown;
-    by count within each group. Suppressed patterns never score."""
+    """The patterns that drive the verdict, most important first.
 
-    scored = [p for p in patterns if not p["suppressed"]]
+    Ordered by how much of the machine is at stake, then by whether it is a
+    standing problem, then by how often it happened. Suppressed patterns, and
+    anything with no user-visible impact, never score.
+    """
 
-    def _rank(p: dict[str, Any]) -> int | None:
-        if p["severity"] == "serious":
-            return 0 if p["active"] else 1
-        if p["severity"] in ("notable", "unknown") and p["active"] and p["recurring"]:
-            return 2
-        return None
-
-    ranked = [(r, p) for p in scored if (r := _rank(p)) is not None]
-    ranked.sort(key=lambda rp: (rp[0], -rp[1]["count"]))
-    return [p for _, p in ranked]
+    scoring = [p for p in patterns if p["scores"]]
+    scoring.sort(
+        key=lambda p: (
+            -_reliability_impact_rank(p["user_impact"]),
+            not p["recurring"],
+            -p["count"],
+        )
+    )
+    return scoring
 
 
 def _reliability_reason(
-    patterns: list[dict[str, Any]], scoring: list[dict[str, Any]], total: int, window_days: int
+    patterns: list[dict[str, Any]],
+    scoring: list[dict[str, Any]],
+    window_days: int,
+    *,
+    stability_index: float | None = None,
+    si_status: Status | None = None,
 ) -> str:
-    """A finding-shaped reason: the patterns that score, each with cadence,
-    persistence and age, then the historical remainder folded into one clause.
+    """What is wrong with this machine, said the way its owner would say it.
 
-    Never leads with the raw 7-day total -- "3528 error/critical events" is a
-    number without a decision in it. Suppressed patterns (ADR-0041) are never
-    named -- that is the point of muting them -- but always counted in the
-    trailing clause, so a reader can tell "quiet" from "quieted". A pattern
-    the operator muted is never folded into "known-benign": that phrase is
-    the LLM's verdict, a suppression is the operator's, a different claim.
+    Never leads with a raw event total -- "3675 error/critical events" is a
+    number with no decision in it, and on the fleet that motivated this it was
+    92% one muted pattern. Names no provider, event id or error code either:
+    those are the vocabulary of the log, not of the person who has to act.
+
+    Every clause that is *not* a finding is still counted, so a quiet section
+    can be told apart from a blind one: patterns the operator suppressed
+    (ADR-0041), patterns still awaiting a verdict, and a deployment where the
+    classifier cannot run at all. When the Windows stability index is what
+    decided the status, it is named -- a red status whose reason lists nothing
+    is indistinguishable from a bug.
     """
 
     suppressed = [p for p in patterns if p["suppressed"]]
-    scored = [p for p in patterns if not p["suppressed"]]
-    suffix = f" ({len(suppressed)} pattern(s) suppressed)" if suppressed else ""
+    # "No verdict yet" and "no verdict ever on this deployment" are different
+    # facts about the same silence, and both have to be visible: a section
+    # that reports nothing because nothing looked must not read like one that
+    # reports nothing because nothing happened.
+    unclassified = [
+        p
+        for p in patterns
+        if not p["suppressed"] and p["classification_state"] != "classified"
+    ]
+    unavailable = any(p["classification_state"] == "unavailable" for p in patterns)
 
-    if not patterns:
-        return (
-            f"no error patterns in {window_days}d"
-            if total == 0
-            else f"{total} events, no patterns reported"
-        )
-    if not scored:
-        return f"{total} events, all {len(suppressed)} pattern(s) suppressed"
+    tail: list[str] = []
+    if suppressed:
+        tail.append(f"{len(suppressed)} suppressed")
+    if unavailable:
+        tail.append("classification unavailable (no API key)")
+    elif unclassified:
+        tail.append(f"{len(unclassified)} awaiting classification")
 
-    scoring_ids = {id(p) for p in scoring}
-    historical = [p for p in scored if id(p) not in scoring_ids and p["severity"] != "benign"]
-    quiet_since = max((p["last_day"] for p in historical if p["last_day"]), default=None)
-    historical_clause = f"{len(historical)} historical pattern(s)"
-    if quiet_since:
-        historical_clause += f" quiet since {quiet_since}"
+    si_clause = ""
+    if si_status is not None and stability_index is not None:
+        si_clause = f"Windows stability index {stability_index:.1f}/10"
 
-    if not scoring:
-        if not historical:
-            by_category: dict[str, int] = {}
-            for p in scored:
-                label = p.get("category") or "?"
-                by_category[label] = by_category.get(label, 0) + p["count"]
-            top_cat = max(by_category, key=lambda c: by_category[c])
-            return f"{total} events, all known-benign ({top_cat}){suffix}"
-        benign_n = len(scored) - len(historical)
-        reason = f"no active error patterns; {historical_clause}"
-        if benign_n:
-            reason += f", {benign_n} known-benign"
-        return reason + suffix
+    if scoring:
+        named = scoring[:_RELIABILITY_NAMED_PATTERNS]
+        parts = [_reliability_describe(p, window_days) for p in named]
+        extra = len(scoring) - len(named)
+        if extra > 0:
+            parts.append(f"+{extra} more")
+        if si_clause:
+            parts.append(si_clause)
+        head = "; ".join(parts)
+    elif si_clause:
+        head = si_clause
+    else:
+        # Quiet. Say what was looked at, so "nothing to report" is visibly a
+        # conclusion rather than an absence of one.
+        quiet = [p for p in patterns if not p["suppressed"] and not p["scores"]]
+        past = [p for p in quiet if p["user_impact"] in _RELIABILITY_SCORING_IMPACTS]
+        if past:
+            quiet_since = max((p["last_day"] for p in past if p["last_day"]), default=None)
+            head = f"no current problems; {len(past)} resolved"
+            if quiet_since:
+                head += f" since {quiet_since}"
+        elif not patterns:
+            head = f"no errors logged in {window_days}d"
+        elif unclassified and len(unclassified) == len([p for p in patterns if not p["suppressed"]]):
+            # Nothing here has been judged, so there is nothing to report as
+            # checked. The tail clause carries the whole story.
+            head = f"no verdict yet on {len(unclassified)} pattern(s) in {window_days}d"
+        else:
+            head = f"nothing user-visible in {window_days}d ({len(quiet)} pattern(s) checked)"
 
-    named = scoring[:_RELIABILITY_NAMED_PATTERNS]
-    reason = ", ".join(_reliability_describe(p, window_days) for p in named)
-    extra = len(scoring) - len(named)
-    if extra > 0:
-        reason += f", +{extra} more active pattern(s)"
-    if historical:
-        reason += f", {historical_clause}"
-    return reason + suffix
+    return head + (f" [{', '.join(tail)}]" if tail else "")
 
 
 def _rule_reliability(
     payload: dict[str, Any], now: datetime
 ) -> "tuple[Status, str, dict[str, Any]] | None":
     # `events` is the grouped Error/Critical breakdown; `stability_index` is the
-    # Windows Reliability Index (0-10). Per-pattern activity is derived from the
-    # `by_day`/`last_seen` fields the agent sends, severity from the ADR-0026
-    # annotation (persisted server-side, ADR-0058) -- one scoring path for every
-    # consumer. Without any annotation every pattern is `unknown`, which can
-    # reach warn but never crit: a count alone is never a critical finding.
+    # Windows Reliability Index (0-10). Scoring reads `user_impact` -- what a
+    # person would have noticed -- from the ADR-0026 annotation (persisted
+    # server-side, ADR-0058), so every consumer reaches the same verdict.
+    #
+    # The shape of the verdict: data at risk is never made to wait for a second
+    # occurrence, because the second occurrence is the loss. Everything else
+    # needs to have happened more than once before it is critical -- one
+    # unexpected restart on an otherwise healthy machine is worth saying once,
+    # not worth paging about, and `warn` already notifies and opens a ticket
+    # exactly once (INCIDENT_STATUSES). Without any annotation nothing scores
+    # except the closed crash-marker set, and the reason says so rather than
+    # reporting silence as health.
     events_raw = payload.get("events")
     si = _number(payload.get("stability_index"))
     total = _number(payload.get("recent_crashes"))
@@ -589,23 +741,43 @@ def _rule_reliability(
         return None
 
     patterns = reliability_patterns(payload, now)
-    if total is None:
-        total = sum(p["count"] for p in patterns)
-    total_i = int(total)
     window_days = int(_number(payload.get("window_days")) or 7)
+    boot_sessions = payload.get("boot_sessions")
+    boots = len(boot_sessions) if isinstance(boot_sessions, list) else None
 
     scoring = _reliability_scoring(patterns)
-    serious_active = any(p["severity"] == "serious" and p["active"] for p in scoring)
+    # `degraded` never crits however long it persists: the machine works, and
+    # a standing annoyance that pages every day is how this section became
+    # ignorable in the first place. It stays a warn until someone fixes it.
+    crit_finding = any(
+        p["user_impact"] == "data_at_risk"
+        or (p["user_impact"] == "crashed" and p["recurring"])
+        for p in scoring
+    )
 
-    if serious_active or (si is not None and si < _RELIABILITY_SI_CRIT):
+    si_status: Status | None = None
+    if si is not None and si < _RELIABILITY_SI_CRIT:
+        si_status = "crit"
+    elif si is not None and si < _RELIABILITY_SI_WARN:
+        si_status = "warn"
+
+    if crit_finding or si_status == "crit":
         status: Status = "crit"
-    elif scoring or (si is not None and si < _RELIABILITY_SI_WARN):
+    elif scoring or si_status == "warn":
         status = "warn"
     else:
         status = "ok"
 
-    reason = _reliability_reason(patterns, scoring, total_i, window_days)
-    return status, reason, {"patterns": patterns, "window_days": window_days}
+    # The index is named whenever it is not ok, not only when it is the sole
+    # driver: it always contributes to the status, and a reader who cannot see
+    # it cannot tell why a host with no named finding is red.
+    reason = _reliability_reason(
+        patterns, scoring, window_days, stability_index=si, si_status=si_status
+    )
+    details = {"patterns": patterns, "window_days": window_days}
+    if boots is not None:
+        details["boot_sessions"] = boots
+    return status, reason, details
 
 
 _WEB_ACTIVITY_SERIOUS = {"custom", "seed", "external_adult"}

@@ -843,7 +843,8 @@ def test_alert_loop_and_dashboard_agree_on_reliability(tmp_path, monkeypatch) ->
             c.portal.call(partial(app.state.classification_store.upsert_many, [{
                 "source": "DistributedCOM", "event_id": 10016, "category": "Windows service",
                 "severity": "benign", "cause": "stale COM permission",
-                "model": event_categories.CATEGORIZE_MODEL,
+                "user_impact": "none", "symptom": "",
+                "model": event_categories.VERDICT_MODEL_TAG,
             }]))
             c.portal.call(event_categories.load_persisted)
             c.portal.call(partial(store.insert, "pc1", "2026-07-07T23:30:00Z", snap,
@@ -852,7 +853,10 @@ def test_alert_loop_and_dashboard_agree_on_reliability(tmp_path, monkeypatch) ->
             h = {"Authorization": f"Bearer {app.state.operator_token}"}
             section = c.get("/api/agent/pc1", headers=h).json()["health"]["sections"]["reliability"]
             assert section["status"] == "ok"
-            assert "known-benign" in section["reason"]
+            # 700 events across all 7 days, and not a finding: the verdict
+            # says nobody noticed anything, and the reason says the pattern
+            # was looked at rather than going silent about it.
+            assert section["reason"] == "nothing user-visible in 7d (1 pattern(s) checked)"
 
             notifier = FakeNotifier()
             engine = AlertEngine(

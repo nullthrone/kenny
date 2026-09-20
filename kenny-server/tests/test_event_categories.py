@@ -81,7 +81,8 @@ def test_maps_in_order_and_validates_enums():
     # Third entry has bad category/severity -> coerced to the fallbacks.
     client = _FakeClient(
         '['
-        '{"category": "App crash / hang", "severity": "notable", "cause": "chrome tab crash"},'
+        '{"category": "App crash / hang", "severity": "notable", "cause": "chrome tab crash",'
+        ' "user_impact": "crashed", "symptom": "Chrome closed itself while they were using it."},'
         '{"category": "Disk & storage", "severity": "serious", "cause": "failing sectors"},'
         '{"category": "Nonsense", "severity": "made up", "cause": "?"}'
         ']'
@@ -89,9 +90,13 @@ def test_maps_in_order_and_validates_enums():
     mapping = _run(ec.categorize_events(client, groups))
     assert mapping[("Application Error", 1000)] == {
         "category": "App crash / hang", "severity": "notable", "cause": "chrome tab crash",
+        "user_impact": "crashed", "symptom": "Chrome closed itself while they were using it.",
     }
     assert mapping[("disk", 51)]["severity"] == "serious"
-    assert mapping[("Weird", 9)] == {"category": "Other", "severity": "unknown", "cause": "?"}
+    assert mapping[("Weird", 9)] == {
+        "category": "Other", "severity": "unknown", "cause": "?",
+        "user_impact": "unknown", "symptom": "",
+    }
     assert client.calls[0] == 1
 
 
@@ -108,14 +113,20 @@ def test_cache_avoids_second_call():
 def test_no_client_returns_fallback():
     groups = [{"source": "disk", "event_id": 51, "sample": "x"}]
     mapping = _run(ec.categorize_events(None, groups))
-    assert mapping[("disk", 51)] == {"category": "Other", "severity": "unknown", "cause": ""}
+    assert mapping[("disk", 51)] == {
+        "category": "Other", "severity": "unknown", "cause": "",
+        "user_impact": "unknown", "symptom": "",
+    }
 
 
 def test_bad_response_falls_back_and_is_not_cached():
     groups = [{"source": "disk", "event_id": 51, "sample": "x"}]
     bad = _FakeClient("not json at all")
     mapping = _run(ec.categorize_events(bad, groups))
-    assert mapping[("disk", 51)] == {"category": "Other", "severity": "unknown", "cause": ""}
+    assert mapping[("disk", 51)] == {
+        "category": "Other", "severity": "unknown", "cause": "",
+        "user_impact": "unknown", "symptom": "",
+    }
     # Fallback isn't cached, but a failed batch does back off for a while (so a
     # persistently broken API isn't re-hit on every read) — see
     # test_failed_batch_backs_off_then_retries for that in isolation. Once the
@@ -135,8 +146,14 @@ def test_length_mismatch_falls_back():
     ]
     client = _FakeClient('[{"category": "Disk & storage", "severity": "serious", "cause": "x"}]')  # only one for two inputs
     mapping = _run(ec.categorize_events(client, groups))
-    assert mapping[("a", 1)] == {"category": "Other", "severity": "unknown", "cause": ""}
-    assert mapping[("b", 2)] == {"category": "Other", "severity": "unknown", "cause": ""}
+    assert mapping[("a", 1)] == {
+        "category": "Other", "severity": "unknown", "cause": "",
+        "user_impact": "unknown", "symptom": "",
+    }
+    assert mapping[("b", 2)] == {
+        "category": "Other", "severity": "unknown", "cause": "",
+        "user_impact": "unknown", "symptom": "",
+    }
 
 
 def test_malformed_element_degrades_without_failing_whole_batch():
@@ -150,8 +167,14 @@ def test_malformed_element_degrades_without_failing_whole_batch():
         '["not an object", {"category": "Network", "severity": "notable", "cause": "flaky wifi"}]'
     )
     mapping = _run(ec.categorize_events(client, groups))
-    assert mapping[("a", 1)] == {"category": "Other", "severity": "unknown", "cause": ""}
-    assert mapping[("b", 2)] == {"category": "Network", "severity": "notable", "cause": "flaky wifi"}
+    assert mapping[("a", 1)] == {
+        "category": "Other", "severity": "unknown", "cause": "",
+        "user_impact": "unknown", "symptom": "",
+    }
+    assert mapping[("b", 2)] == {
+        "category": "Network", "severity": "notable", "cause": "flaky wifi",
+        "user_impact": "unknown", "symptom": "",
+    }
 
 
 def test_annotate_events_stamps_category_severity_and_cause():
@@ -376,14 +399,17 @@ def test_classify_task_writes_through_to_the_store(_memory_store):
     _run(ec.categorize_events(client, groups))
     assert _memory_store.upserts == [[{
         "source": "disk", "event_id": 51, "category": "Disk & storage",
-        "severity": "serious", "cause": "bad sectors", "model": ec.CATEGORIZE_MODEL,
+        "severity": "serious", "cause": "bad sectors",
+        "user_impact": "unknown", "symptom": "", "model": ec.VERDICT_MODEL_TAG,
     }]]
 
 
 def test_persisted_classifications_survive_a_restart(_memory_store):
     _memory_store.rows[("disk", 51)] = {
         "source": "disk", "event_id": 51, "category": "Disk & storage", "severity": "serious",
-        "cause": "bad sectors", "model": ec.CATEGORIZE_MODEL, "classified_at": "2026-09-01T00:00:00Z",
+        "cause": "bad sectors", "user_impact": "data_at_risk",
+        "symptom": "Files on the system drive may be unreadable.",
+        "model": ec.VERDICT_MODEL_TAG, "classified_at": "2026-09-01T00:00:00Z",
     }
     # A row from an older classifier must be dropped, not trusted.
     _memory_store.rows[("old", 1)] = {
@@ -393,13 +419,20 @@ def test_persisted_classifications_survive_a_restart(_memory_store):
     # A row whose enum drifted (hand-edited DB) degrades to the safe defaults.
     _memory_store.rows[("odd", 2)] = {
         "source": "odd", "event_id": 2, "category": "Nonsense", "severity": "fatal",
-        "cause": "x", "model": ec.CATEGORIZE_MODEL, "classified_at": "2026-09-01T00:00:00Z",
+        "cause": "x", "user_impact": "catastrophic", "symptom": "",
+        "model": ec.VERDICT_MODEL_TAG, "classified_at": "2026-09-01T00:00:00Z",
     }
     ec._cache.clear()  # "restart"
     assert _run(ec.load_persisted()) == 2
-    assert _memory_store.deleted_except == [ec.CATEGORIZE_MODEL]
-    assert ec._cache[("disk", 51)] == {"category": "Disk & storage", "severity": "serious", "cause": "bad sectors"}
-    assert ec._cache[("odd", 2)] == {"category": ec.FALLBACK, "severity": ec.SEVERITY_FALLBACK, "cause": "x"}
+    assert _memory_store.deleted_except == [ec.VERDICT_MODEL_TAG]
+    assert ec._cache[("disk", 51)] == {
+        "category": "Disk & storage", "severity": "serious", "cause": "bad sectors",
+        "user_impact": "data_at_risk", "symptom": "Files on the system drive may be unreadable.",
+    }
+    assert ec._cache[("odd", 2)] == {
+        "category": ec.FALLBACK, "severity": ec.SEVERITY_FALLBACK, "cause": "x",
+        "user_impact": ec.IMPACT_FALLBACK, "symptom": "",
+    }
     assert ("old", 1) not in ec._cache
     # And a classify call now finds the persisted verdict without a client.
     result = _run(ec.categorize_events(None, [{"source": "disk", "event_id": 51}]))

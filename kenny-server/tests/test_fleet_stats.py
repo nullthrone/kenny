@@ -559,7 +559,7 @@ def test_fleet_overview_uses_persisted_classification_without_a_client(tmp_path,
         with TestClient(app) as c:
             c.portal.call(partial(app.state.classification_store.upsert_many, [{
                 "source": "disk", "event_id": 51, "category": "Disk & storage",
-                "severity": "serious", "cause": "bad sectors", "model": event_categories.CATEGORIZE_MODEL,
+                "severity": "serious", "cause": "bad sectors", "model": event_categories.VERDICT_MODEL_TAG,
             }]))
             c.portal.call(event_categories.load_persisted)
             c.portal.call(partial(app.state.store.insert, "pc1", "2026-06-07T00:00:00Z", snap))

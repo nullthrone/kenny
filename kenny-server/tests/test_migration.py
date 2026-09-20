@@ -106,7 +106,9 @@ def test_event_classifications_table_created_and_survives_a_second_boot(tmp_path
     with TestClient(app1) as c:
         c.portal.call(partial(app1.state.classification_store.upsert_many, [{
             "source": "disk", "event_id": 51, "category": "Disk & storage",
-            "severity": "serious", "cause": "bad sectors", "model": event_categories.CATEGORIZE_MODEL,
+            "severity": "serious", "cause": "bad sectors",
+            "user_impact": "data_at_risk", "symptom": "Files may be unreadable",
+            "model": event_categories.VERDICT_MODEL_TAG,
         }]))
     event_categories.reset_state()
 
@@ -114,10 +116,11 @@ def test_event_classifications_table_created_and_survives_a_second_boot(tmp_path
     with TestClient(app2) as c:
         assert event_categories._cache[("disk", 51)] == {
             "category": "Disk & storage", "severity": "serious", "cause": "bad sectors",
+            "user_impact": "data_at_risk", "symptom": "Files may be unreadable",
         }
         rows = c.portal.call(app2.state.classification_store.list)
         assert [(r["source"], r["event_id"], r["model"]) for r in rows] == [
-            ("disk", 51, event_categories.CATEGORIZE_MODEL)
+            ("disk", 51, event_categories.VERDICT_MODEL_TAG)
         ]
     event_categories.reset_state()
 
