@@ -29,6 +29,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from datetime import datetime, timezone
 
+from .config import Settings
 from .keystore import build_transcript
 from .policy import PolicyEngine
 from .protocol import (
@@ -42,12 +43,13 @@ from .protocol import (
     Register,
     Request,
     Response,
+    ShellPolicy,
     Telemetry,
     dump_frame,
     parse_frame,
 )
 from .registry import AgentRegistry, AuthError
-from .store import EventStore, PolicyStore, TelemetryStore
+from .store import EventStore, PolicyStore, ShellAllowStore, TelemetryStore
 from .webfilter import WebFilterService
 
 DEFAULT_TIMEOUT_S = 30.0
@@ -131,6 +133,8 @@ class AgentTunnel:
         *,
         policy_engine: PolicyEngine | None = None,
         policy_store: PolicyStore | None = None,
+        shell_allow_store: ShellAllowStore | None = None,
+        settings: Settings | None = None,
         webfilter: WebFilterService | None = None,
         on_agent_online: Callable[[str], Awaitable[None]] | None = None,
         after_insert: Callable[[str, dict[str, Any]], Any] | None = None,
@@ -140,6 +144,11 @@ class AgentTunnel:
         self.event_store = event_store
         self.policy_engine = policy_engine
         self.policy_store = policy_store
+        # The fleet shell execution mode (ADR-0064) is resolved from these two: the
+        # mode is a setting, the allow rules are rows. Absent either, the tunnel
+        # sends no ``shell`` field and the frame is a pre-0.18 one.
+        self.shell_allow_store = shell_allow_store
+        self.settings = settings
         self.webfilter = webfilter
         # Optional hook fired (fire-and-forget) after an agent successfully
         # registers, so the update-campaign on-connect rollout (ADR-0040) can
@@ -214,18 +223,45 @@ class AgentTunnel:
             err.message if err else "agent returned an error without detail",
         )
 
-    async def broadcast_policy(self) -> None:
-        """Push the current operator deny rules to every online agent.
+    async def refresh_shell_policy(self) -> ShellPolicy | None:
+        """Resolve the fleet shell execution mode, sync the mirror to it, return it.
 
-        Called after an operator changes the rule set (ADR-0020). Per-agent send
+        One function, because the policy the agents are pushed and the policy the
+        server mirror enforces must not be able to drift: every caller that sends a
+        ``policy`` frame resolves through here, and resolving refreshes the mirror.
+
+        Returns ``None`` when the server has nothing to say about shell execution
+        (no settings or no store wired, as in tests that build a bare tunnel) — the
+        frame then carries no ``shell`` field and is a pre-0.18 one. ADR-0064.
+        """
+
+        if self.settings is None or self.shell_allow_store is None:
+            return None
+        mode = str(self.settings.get("KENNY_SHELL_POLICY_MODE") or "unrestricted")
+        rows = await self.shell_allow_store.list()
+        if self.policy_engine is not None:
+            self.policy_engine.set_shell_policy(mode, rows)
+        return ShellPolicy(mode=mode, allow=[PolicyRule(**r) for r in rows])
+
+    async def _policy_frame(self) -> dict[str, Any]:
+        """Build the ``policy`` frame every agent is pushed: deny rules plus mode."""
+
+        rules: list[PolicyRule] = []
+        if self.policy_store is not None:
+            rules = [PolicyRule(**r) for r in await self.policy_store.list()]
+        return dump_frame(Policy(rules=rules, shell=await self.refresh_shell_policy()))
+
+    async def broadcast_policy(self) -> None:
+        """Push the current deny rules and shell execution mode to every online agent.
+
+        Called after an operator changes either (ADR-0020, ADR-0064). Per-agent send
         errors are swallowed (logged at debug) so one stale socket can't break a
         fleet-wide broadcast.
         """
 
-        if self.policy_store is None:
+        if self.policy_store is None and self.shell_allow_store is None:
             return
-        rules = [PolicyRule(**r) for r in await self.policy_store.list()]
-        payload = dump_frame(Policy(rules=rules))
+        payload = await self._policy_frame()
         for agent in self.registry.list():
             if not agent.online or agent.send_fn is None:
                 continue
@@ -307,12 +343,12 @@ class AgentTunnel:
                 return None
 
         logger.info("agent %s connected", frame.agent_id)
-        # Push the current operator deny rules to the just-connected agent
-        # (always, even when empty, so behaviour is deterministic). ADR-0020.
-        if self.policy_store is not None:
+        # Push the current deny rules and shell execution mode to the just-connected
+        # agent (always, even when empty, so behaviour is deterministic).
+        # ADR-0020, ADR-0064.
+        if self.policy_store is not None or self.shell_allow_store is not None:
             try:
-                rules = [PolicyRule(**r) for r in await self.policy_store.list()]
-                await send_fn(dump_frame(Policy(rules=rules)))
+                await send_fn(await self._policy_frame())
             except Exception as exc:  # noqa: BLE001 - never break the handshake
                 logger.debug("policy delivery to %s failed: %s", frame.agent_id, exc)
         return frame.agent_id

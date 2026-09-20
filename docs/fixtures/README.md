@@ -32,6 +32,7 @@ Adding/altering a fixture is a contract change — see `docs/protocol.md` § Ver
 | `request_agent_update.json`     | `request` frame (`agent_update`)                 |
 | `response_agent_update.json`    | successful `response` frame (`agent_update`)     |
 | `policy.json`                   | `policy` frame (operator append-only deny rules) |
+| `policy_shell.json`             | `policy` frame carrying `shell` (fleet execution mode + allow rules) |
 | `log.json`                      | `log` frame (forwarded agent log event)          |
 | `request_webfilter_status.json`  | `request` frame (`webfilter_status`)            |
 | `response_webfilter_status.json` | successful `response` frame (`webfilter_status`) |
@@ -53,3 +54,17 @@ Adding/altering a fixture is a contract change — see `docs/protocol.md` § Ver
 | `response_account_session_action.json` | successful `response` frame (`account_session_action`) |
 | `request_password_policy_set.json`  | `request` frame (`password_policy_set`)      |
 | `response_password_policy_set.json` | successful `response` frame (`password_policy_set`) |
+
+## `vectors/`
+
+Not frames, so not round-tripped: shared **decision vectors** that both implementations
+execute and must agree on.
+
+| file                           | what both sides must agree on                     |
+|--------------------------------|---------------------------------------------------|
+| `vectors/mutual_auth.json`     | the byte-exact `register`/`challenge`/`auth` transcript and its Ed25519 signatures |
+| `vectors/policy_decisions.json`| the guard's verdict (`allow` / `blocked`) for a tool call under a given deny + shell policy |
+
+`policy_decisions.json` is the joined test for `kenny-agent/src/policy.rs` and
+`kenny-server/kenny_server/policy.py`, which mirror each other by hand. Adding a case is
+how a new guard behaviour gets pinned on both sides at once.

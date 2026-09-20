@@ -13,19 +13,27 @@
 //! remove a built-in. The `agent_update` host allowlist stays in code (it is agent-only:
 //! it needs the agent's configured server host).
 //!
+//! ADR-0064 adds the second decision axis: the fleet's **shell execution mode**, pushed on
+//! the same `policy` frame. Deny rules say what must never run; the mode says what may run
+//! at all. Deny is evaluated first and always, so an allow rule can never lift a built-in.
+//! The applied mode is persisted next to the kill-switch control file and restored at
+//! startup, so a restart or a reconnect does not silently revert to `unrestricted` for the
+//! seconds before the first `policy` frame lands.
+//!
 //! Scope (be honest): a regex blocklist over a Turing-complete shell is a *seatbelt, not a
 //! sandbox*. It catches catastrophic foot-guns (disk/shadow-copy/log destruction, Defender
 //! disable, self-tampering) and the cheapest bypass (`-EncodedCommand`), which raises the
 //! bar substantially — but it is not a complete boundary. The real boundary stays auth +
 //! confirm-gate + kill-switch; this sits below them as defense-in-depth.
 
+use std::path::PathBuf;
 use std::sync::{OnceLock, RwLock};
 
 use regex::Regex;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::protocol::{ErrorCode, PolicyRule, PolicyTarget};
+use crate::protocol::{ErrorCode, PolicyRule, PolicyTarget, ShellMode, ShellPolicy};
 
 /// Host of the configured server URL, captured at startup so `agent_update` can verify
 /// the download host without threading config through the dispatcher. Set once by
@@ -129,6 +137,174 @@ fn operator() -> &'static RwLock<Grouped> {
     OPERATOR.get_or_init(|| RwLock::new(Grouped::default()))
 }
 
+/// Environment override for the persisted shell-policy path (tests, flexible deployments).
+pub const SHELL_POLICY_FILE_ENV: &str = "KENNY_SHELL_POLICY_FILE";
+
+/// File name of the persisted shell execution mode. Covered by a `self_protection` rule in
+/// the shared catalog: it is guard state, not an ordinary file.
+pub const SHELL_POLICY_FILE: &str = "kenny-agent.shell-policy.json";
+
+/// Resolve the persisted shell-policy path: env override, else beside the control file.
+fn shell_policy_path() -> PathBuf {
+    if let Some(path) = std::env::var_os(SHELL_POLICY_FILE_ENV) {
+        return PathBuf::from(path);
+    }
+    crate::control::state_dir().join(SHELL_POLICY_FILE)
+}
+
+/// The compiled shell execution mode: the mode plus, per shell, its anchored allow rules.
+struct CompiledShell {
+    mode: ShellMode,
+    powershell: Vec<Rule>,
+    posix: Vec<Rule>,
+}
+
+impl Default for CompiledShell {
+    fn default() -> Self {
+        Self {
+            mode: ShellMode::Unrestricted,
+            powershell: Vec::new(),
+            posix: Vec::new(),
+        }
+    }
+}
+
+impl CompiledShell {
+    /// Compile a [`ShellPolicy`] into anchored per-shell rule lists.
+    ///
+    /// Allow patterns are wrapped `^(?:...)$` because `Regex::is_match` is a *substring*
+    /// search: unanchored, an allow rule of `Get-Process` would admit
+    /// `Get-Process; rm -rf /`, which is the whole control defeated by a semicolon. The
+    /// Python mirror reaches the same place with `re.fullmatch`.
+    ///
+    /// Entries for `self_protection` or `path` are dropped: those surfaces carry no
+    /// command string, so an allow rule for them cannot mean anything.
+    fn compile(policy: &ShellPolicy) -> Self {
+        let mut out = Self {
+            mode: policy.mode,
+            powershell: Vec::new(),
+            posix: Vec::new(),
+        };
+        for r in &policy.allow {
+            let target = match r.applies_to {
+                PolicyTarget::Powershell => &mut out.powershell,
+                PolicyTarget::Posix => &mut out.posix,
+                PolicyTarget::SelfProtection | PolicyTarget::Path => {
+                    tracing::warn!(
+                        id = %r.id,
+                        applies_to = ?r.applies_to,
+                        "ignoring shell allow rule: applies_to must be powershell or posix"
+                    );
+                    continue;
+                }
+            };
+            match Regex::new(&format!("^(?:{})$", r.pattern)) {
+                Ok(re) => target.push(Rule {
+                    re,
+                    reason: r.reason.clone(),
+                }),
+                Err(e) => tracing::warn!(
+                    id = %r.id,
+                    pattern = %r.pattern,
+                    error = %e,
+                    "skipping shell allow rule with uncompilable pattern"
+                ),
+            }
+        }
+        out
+    }
+}
+
+/// The active shell execution mode. Defaults to `unrestricted` until a `policy` frame or
+/// the persisted file says otherwise.
+fn shell() -> &'static RwLock<CompiledShell> {
+    static SHELL: OnceLock<RwLock<CompiledShell>> = OnceLock::new();
+    SHELL.get_or_init(|| RwLock::new(CompiledShell::default()))
+}
+
+/// Apply a shell policy in memory without touching the persisted copy.
+fn apply_shell_policy(policy: &ShellPolicy) {
+    *shell().write().unwrap() = CompiledShell::compile(policy);
+}
+
+/// Replace the fleet shell execution mode (ADR-0064 `policy` frame) and persist it.
+///
+/// Persisting is what closes the reconnect window: without it, every agent restart runs
+/// `unrestricted` until the server's first `policy` frame arrives. A failed write is
+/// logged, never fatal — the mode still applies to this process.
+pub fn set_shell_policy(policy: ShellPolicy) {
+    apply_shell_policy(&policy);
+    let path = shell_policy_path();
+    let written = serde_json::to_vec_pretty(&policy)
+        .map_err(|e| e.to_string())
+        .and_then(|bytes| std::fs::write(&path, bytes).map_err(|e| e.to_string()));
+    match written {
+        Ok(()) => {
+            tracing::debug!(path = %path.display(), mode = ?policy.mode, "persisted shell policy")
+        }
+        Err(e) => tracing::warn!(
+            path = %path.display(),
+            error = %e,
+            "could not persist shell policy; it applies to this process only"
+        ),
+    }
+}
+
+/// Restore the last applied shell execution mode at startup.
+///
+/// Deliberately **not** symmetric with the kill switch (ADR-0011), which reads *fail safe
+/// to on* so the machine's owner can always stop remote control. This is a restriction, so
+/// an absent or unreadable file falls back to `unrestricted` and logs: an agent that bricks
+/// fleet administration over a disk hiccup is the worse failure for a self-hosted admin
+/// tool, and an attacker who can delete this file already owns the binary beside it. What
+/// the file buys is the reconnect window, not tamper resistance.
+pub fn load_persisted_shell_policy() {
+    let path = shell_policy_path();
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        // No file: a fresh install, which runs unrestricted until told otherwise.
+        Err(_) => return,
+    };
+    match serde_json::from_str::<ShellPolicy>(&raw) {
+        Ok(policy) => {
+            tracing::info!(mode = ?policy.mode, allow = policy.allow.len(), "restored shell policy");
+            apply_shell_policy(&policy);
+        }
+        Err(e) => tracing::warn!(
+            path = %path.display(),
+            error = %e,
+            "persisted shell policy is unreadable; running unrestricted until the server pushes one"
+        ),
+    }
+}
+
+/// Apply the fleet shell execution mode to one shell call. Runs *after* the deny groups,
+/// so deny always outranks allow. `select` picks the allow list for the shell in question.
+fn shell_gate(
+    select: impl Fn(&CompiledShell) -> &Vec<Rule>,
+    command: &str,
+) -> Result<(), (ErrorCode, String)> {
+    let shell = shell().read().unwrap();
+    match shell.mode {
+        ShellMode::Unrestricted => Ok(()),
+        ShellMode::Off => Err((
+            ErrorCode::Blocked,
+            "shell execution is off by fleet policy".to_string(),
+        )),
+        ShellMode::Allowlist => {
+            let candidate = command.trim();
+            if select(&shell).iter().any(|r| r.re.is_match(candidate)) {
+                Ok(())
+            } else {
+                Err((
+                    ErrorCode::Blocked,
+                    "not permitted by the fleet shell allowlist".to_string(),
+                ))
+            }
+        }
+    }
+}
+
 /// Replace the operator rule set (ADR-0020 `policy` frame). Additive to the built-ins,
 /// which it can never weaken or remove. A rule whose pattern fails to compile is skipped
 /// and logged, never fatal.
@@ -143,15 +319,20 @@ pub fn set_operator_rules(rules: Vec<PolicyRule>) {
 /// built-ins always apply and operator rules are purely additive.
 pub fn check(tool: &str, args: &Value) -> Result<(), (ErrorCode, String)> {
     match tool {
+        // A missing or non-string arg is an empty haystack. Under `unrestricted` that
+        // lets the call reach the handler, whose job it is to answer `bad_args`; under
+        // `allowlist` an empty string matches no entry, so the gate refuses it.
         "powershell_exec" => {
             let script = str_arg(args, "script").unwrap_or_default();
             match_group(|g| &g.powershell, script)?;
             match_group(|g| &g.self_protection, script)?;
+            shell_gate(|s| &s.powershell, script)?;
         }
         "shell_exec" => {
             let command = str_arg(args, "command").unwrap_or_default();
             match_group(|g| &g.posix, command)?;
             match_group(|g| &g.self_protection, command)?;
+            shell_gate(|s| &s.posix, command)?;
         }
         // These mutating tools forward their string args into a shell/exec (e.g.
         // net_adapter_reset interpolates the adapter name into a PowerShell command).
@@ -279,6 +460,8 @@ fn collect_strings(v: &Value, out: &mut String) {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::fs;
+    use std::path::Path;
     use std::sync::Mutex;
 
     /// Serialises tests that mutate the process-global operator rule set so they never
@@ -291,6 +474,25 @@ mod tests {
 
     fn sh(command: &str) -> Result<(), (ErrorCode, String)> {
         check("shell_exec", &json!({ "command": command }))
+    }
+
+    /// Build an allow rule for the shell execution mode.
+    fn allow(id: &str, target: PolicyTarget, pattern: &str) -> PolicyRule {
+        PolicyRule {
+            id: id.to_string(),
+            applies_to: target,
+            pattern: pattern.to_string(),
+            reason: format!("test: {id}"),
+        }
+    }
+
+    /// Apply a shell policy for the duration of a test **without** touching the
+    /// persisted copy, then restore the default. Callers hold `OPERATOR_TEST_LOCK`.
+    fn with_shell<T>(mode: ShellMode, rules: Vec<PolicyRule>, f: impl FnOnce() -> T) -> T {
+        apply_shell_policy(&ShellPolicy { mode, allow: rules });
+        let out = f();
+        apply_shell_policy(&ShellPolicy::default());
+        out
     }
 
     #[test]
@@ -516,6 +718,206 @@ mod tests {
     /// updating the catalog fails here rather than silently disabling self-protection. The
     /// catalog escapes regex metacharacters (e.g. `kenny\-agent`), so we strip backslashes
     /// before comparing against the literal constants.
+    // -- fleet shell execution mode (ADR-0064) ---------------------------------
+
+    #[test]
+    fn shell_mode_defaults_to_unrestricted() {
+        let _guard = OPERATOR_TEST_LOCK.lock().unwrap();
+        // A fresh agent must not refuse what it has never been told to refuse.
+        sh("uname -a").unwrap();
+        ps("Get-Process").unwrap();
+    }
+
+    #[test]
+    fn shell_mode_off_blocks_both_shells_and_nothing_else() {
+        let _guard = OPERATOR_TEST_LOCK.lock().unwrap();
+        with_shell(ShellMode::Off, vec![], || {
+            assert_eq!(sh("uname -a").unwrap_err().0, ErrorCode::Blocked);
+            assert_eq!(ps("Get-Process").unwrap_err().0, ErrorCode::Blocked);
+            // The mode governs the two shell tools only.
+            check("winget_list", &json!({})).unwrap();
+        });
+    }
+
+    #[test]
+    fn shell_allowlist_matches_the_whole_command_only() {
+        let _guard = OPERATOR_TEST_LOCK.lock().unwrap();
+        let rules = vec![allow("a", PolicyTarget::Posix, "uname -a")];
+        with_shell(ShellMode::Allowlist, rules, || {
+            sh("uname -a").unwrap();
+            // Trimmed before matching, so formatting is not a refusal.
+            sh("  uname -a\n").unwrap();
+            // THE anchoring case: unanchored, every allow rule would be a prefix
+            // onto which anything can be appended.
+            assert_eq!(
+                sh("uname -a; rm -rf /home").unwrap_err().0,
+                ErrorCode::Blocked
+            );
+            assert_eq!(sh("echo hi && uname -a").unwrap_err().0, ErrorCode::Blocked);
+            // `$` anchors at end of input, not end of line.
+            assert_eq!(sh("uname -a\nid").unwrap_err().0, ErrorCode::Blocked);
+        });
+    }
+
+    #[test]
+    fn shell_allowlist_empty_blocks_everything() {
+        let _guard = OPERATOR_TEST_LOCK.lock().unwrap();
+        with_shell(ShellMode::Allowlist, vec![], || {
+            assert_eq!(sh("uname -a").unwrap_err().0, ErrorCode::Blocked);
+            assert_eq!(ps("Get-Process").unwrap_err().0, ErrorCode::Blocked);
+        });
+    }
+
+    #[test]
+    fn shell_allowlist_never_lifts_a_deny_rule() {
+        let _guard = OPERATOR_TEST_LOCK.lock().unwrap();
+        let rules = vec![allow("everything", PolicyTarget::Posix, ".*")];
+        with_shell(ShellMode::Allowlist, rules, || {
+            // Built-in.
+            let err = sh("rm -rf /").unwrap_err();
+            assert_eq!(err.0, ErrorCode::Blocked);
+            assert!(
+                err.1.contains("rm -rf"),
+                "deny reason expected, got {}",
+                err.1
+            );
+            // Operator rule.
+            set_operator_rules(vec![PolicyRule {
+                id: "op_no_curl".to_string(),
+                applies_to: PolicyTarget::Posix,
+                pattern: r"\bcurl\b".to_string(),
+                reason: "operator: no ad-hoc downloads".to_string(),
+            }]);
+            assert_eq!(
+                sh("curl https://x.invalid").unwrap_err().0,
+                ErrorCode::Blocked
+            );
+            set_operator_rules(vec![]);
+        });
+    }
+
+    #[test]
+    fn shell_allow_entries_are_per_shell() {
+        let _guard = OPERATOR_TEST_LOCK.lock().unwrap();
+        let rules = vec![allow("a", PolicyTarget::Posix, "uname -a")];
+        with_shell(ShellMode::Allowlist, rules, || {
+            sh("uname -a").unwrap();
+            assert_eq!(ps("uname -a").unwrap_err().0, ErrorCode::Blocked);
+        });
+    }
+
+    #[test]
+    fn shell_allow_ignores_surfaces_without_a_command() {
+        let _guard = OPERATOR_TEST_LOCK.lock().unwrap();
+        let rules = vec![
+            allow("p", PolicyTarget::Path, "uname -a"),
+            allow("s", PolicyTarget::SelfProtection, "uname -a"),
+        ];
+        with_shell(ShellMode::Allowlist, rules, || {
+            assert_eq!(sh("uname -a").unwrap_err().0, ErrorCode::Blocked);
+        });
+    }
+
+    #[test]
+    fn shell_allowlist_fails_closed_on_missing_or_non_string_args() {
+        let _guard = OPERATOR_TEST_LOCK.lock().unwrap();
+        let rules = vec![allow("a", PolicyTarget::Posix, "uname -a")];
+        with_shell(ShellMode::Allowlist, rules, || {
+            assert_eq!(
+                check("shell_exec", &json!({})).unwrap_err().0,
+                ErrorCode::Blocked
+            );
+            let bad = json!({ "command": 42 });
+            assert_eq!(check("shell_exec", &bad).unwrap_err().0, ErrorCode::Blocked);
+        });
+    }
+
+    #[test]
+    fn shell_allow_uncompilable_pattern_is_skipped_not_fatal() {
+        let _guard = OPERATOR_TEST_LOCK.lock().unwrap();
+        let rules = vec![
+            allow("bad", PolicyTarget::Posix, "(unclosed"),
+            allow("good", PolicyTarget::Posix, "uname -a"),
+        ];
+        with_shell(ShellMode::Allowlist, rules, || {
+            sh("uname -a").unwrap();
+        });
+    }
+
+    #[test]
+    fn shell_policy_survives_a_restart() {
+        // What the persisted file buys: a reconnect or a restart does not run
+        // unrestricted for the seconds before the server's `policy` frame lands.
+        let _guard = crate::control::TEST_ENV_LOCK.lock().unwrap();
+        let _rules = OPERATOR_TEST_LOCK.lock().unwrap();
+        let path = std::env::temp_dir().join("kenny-test-shell-policy.json");
+        let _ = std::fs::remove_file(&path);
+        std::env::set_var(SHELL_POLICY_FILE_ENV, &path);
+
+        set_shell_policy(ShellPolicy {
+            mode: ShellMode::Allowlist,
+            allow: vec![allow("a", PolicyTarget::Posix, "uname -a")],
+        });
+        assert!(path.exists(), "applying a shell policy must persist it");
+
+        // Simulate a restart: forget the in-memory policy, then restore from disk.
+        apply_shell_policy(&ShellPolicy::default());
+        sh("id").unwrap(); // proof the reset took effect
+        load_persisted_shell_policy();
+        sh("uname -a").unwrap();
+        assert_eq!(sh("id").unwrap_err().0, ErrorCode::Blocked);
+
+        // An unreadable file falls back to unrestricted and logs, rather than
+        // bricking fleet administration over a disk hiccup (see the fn's docs).
+        apply_shell_policy(&ShellPolicy::default());
+        std::fs::write(&path, b"{ not json").unwrap();
+        load_persisted_shell_policy();
+        sh("id").unwrap();
+
+        apply_shell_policy(&ShellPolicy::default());
+        std::env::remove_var(SHELL_POLICY_FILE_ENV);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The joined seam test: `kenny-server/kenny_server/policy.py` runs the same
+    /// vectors in `tests/test_fixtures.py::test_policy_decision_vectors` and must
+    /// reach the same verdict for every case. A guard behaviour added on one side
+    /// only fails here.
+    #[test]
+    fn shared_decision_vectors() {
+        let _guard = OPERATOR_TEST_LOCK.lock().unwrap();
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../docs/fixtures/vectors/policy_decisions.json");
+        let raw = fs::read_to_string(&path).expect("read policy decision vectors");
+        let doc: Value = serde_json::from_str(&raw).expect("vectors must parse");
+        let cases = doc["cases"].as_array().expect("cases must be an array");
+        assert!(!cases.is_empty(), "no cases in {}", path.display());
+
+        for case in cases {
+            let name = case["name"].as_str().unwrap();
+            let deny: Vec<PolicyRule> =
+                serde_json::from_value(case["operator_deny"].clone()).expect(name);
+            set_operator_rules(deny);
+            let shell: Option<ShellPolicy> =
+                serde_json::from_value(case["shell"].clone()).expect(name);
+            apply_shell_policy(&shell.unwrap_or_default());
+
+            let got = match check(case["tool"].as_str().unwrap(), &case["args"]) {
+                Ok(()) => "allow",
+                Err(_) => "blocked",
+            };
+            assert_eq!(
+                got,
+                case["expect"].as_str().unwrap(),
+                "{name}: {}",
+                case["why"].as_str().unwrap_or("")
+            );
+        }
+
+        set_operator_rules(vec![]);
+        apply_shell_policy(&ShellPolicy::default());
+    }
+
     #[test]
     fn self_protection_patterns_track_constants() {
         let catalog: Catalog =
@@ -536,6 +938,10 @@ mod tests {
             sp.iter().any(|p| p.contains(crate::control::CONTROL_FILE)),
             "no self_protection pattern references CONTROL_FILE ({})",
             crate::control::CONTROL_FILE
+        );
+        assert!(
+            sp.iter().any(|p| p.contains(SHELL_POLICY_FILE)),
+            "no self_protection pattern references SHELL_POLICY_FILE ({SHELL_POLICY_FILE})"
         );
     }
 }

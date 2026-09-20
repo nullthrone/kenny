@@ -1,0 +1,652 @@
+{
+  "vectors_version": 1,
+  "comment": "Joined decision vectors for the deterministic policy guard. kenny-agent/src/policy.rs and kenny-server/kenny_server/policy.py are hand-written mirrors of each other; this file is the test that fails when they diverge. Each case sets the operator deny rules and the shell policy, calls the guard with one tool call, and asserts the verdict. 'shell': null means no shell policy has ever been applied. See ADR-0019, ADR-0020, ADR-0064.",
+  "cases": [
+    {
+      "name": "builtin_posix_rm_rf_root",
+      "shell": {
+        "mode": "unrestricted",
+        "allow": []
+      },
+      "operator_deny": [],
+      "tool": "shell_exec",
+      "args": {
+        "command": "rm -rf /"
+      },
+      "expect": "blocked",
+      "why": "built-in catalog rule posix_rm_rf_root"
+    },
+    {
+      "name": "builtin_posix_fork_bomb",
+      "shell": {
+        "mode": "unrestricted",
+        "allow": []
+      },
+      "operator_deny": [],
+      "tool": "shell_exec",
+      "args": {
+        "command": ":(){ :|: & };:"
+      },
+      "expect": "blocked",
+      "why": "built-in catalog rule posix_fork_bomb"
+    },
+    {
+      "name": "builtin_powershell_shadow_copies",
+      "shell": {
+        "mode": "unrestricted",
+        "allow": []
+      },
+      "operator_deny": [],
+      "tool": "powershell_exec",
+      "args": {
+        "script": "vssadmin delete shadows /all /quiet"
+      },
+      "expect": "blocked",
+      "why": "built-in catalog rule ps_vssadmin_shadows"
+    },
+    {
+      "name": "builtin_powershell_encodedcommand",
+      "shell": {
+        "mode": "unrestricted",
+        "allow": []
+      },
+      "operator_deny": [],
+      "tool": "powershell_exec",
+      "args": {
+        "script": "powershell -EncodedCommand ZQBjAGgAbwA="
+      },
+      "expect": "blocked",
+      "why": "built-in catalog rule ps_encodedcommand"
+    },
+    {
+      "name": "builtin_self_protection_posix",
+      "shell": {
+        "mode": "unrestricted",
+        "allow": []
+      },
+      "operator_deny": [],
+      "tool": "shell_exec",
+      "args": {
+        "command": "systemctl stop kenny-agent"
+      },
+      "expect": "blocked",
+      "why": "self_protection applies to shell_exec as well as powershell_exec"
+    },
+    {
+      "name": "builtin_self_protection_shell_policy_file",
+      "shell": {
+        "mode": "unrestricted",
+        "allow": []
+      },
+      "operator_deny": [],
+      "tool": "shell_exec",
+      "args": {
+        "command": "truncate -s 0 /var/lib/kenny/kenny-agent.shell-policy.json"
+      },
+      "expect": "blocked",
+      "why": "sp_shell_policy_file: the persisted mode is agent state, not an ordinary file"
+    },
+    {
+      "name": "builtin_path_sam_hive",
+      "shell": {
+        "mode": "unrestricted",
+        "allow": []
+      },
+      "operator_deny": [],
+      "tool": "fs_read",
+      "args": {
+        "path": "C:\\Windows\\System32\\config\\SAM"
+      },
+      "expect": "blocked",
+      "why": "path group, matched after normalising / to \\"
+    },
+    {
+      "name": "builtin_path_traversal",
+      "shell": {
+        "mode": "unrestricted",
+        "allow": []
+      },
+      "operator_deny": [],
+      "tool": "fs_list",
+      "args": {
+        "path": "C:\\Users\\..\\..\\Windows"
+      },
+      "expect": "blocked",
+      "why": "path_traversal"
+    },
+    {
+      "name": "net_arg_cannot_smuggle_destructive_command",
+      "shell": {
+        "mode": "unrestricted",
+        "allow": []
+      },
+      "operator_deny": [],
+      "tool": "net_adapter_reset",
+      "args": {
+        "name": "Ethernet; vssadmin delete shadows"
+      },
+      "expect": "blocked",
+      "why": "args of shell-interpolating tools are scanned against the powershell catalog (kenny-sec:handlers/net-adapter-reset-powershell-injection)"
+    },
+    {
+      "name": "operator_deny_applies_in_unrestricted",
+      "shell": {
+        "mode": "unrestricted",
+        "allow": []
+      },
+      "operator_deny": [
+        {
+          "id": "op_no_curl",
+          "applies_to": "posix",
+          "pattern": "\\bcurl\\b",
+          "reason": "operator: no ad-hoc downloads"
+        }
+      ],
+      "tool": "shell_exec",
+      "args": {
+        "command": "curl https://example.invalid/x"
+      },
+      "expect": "blocked",
+      "why": "operator rules are additive to the built-ins"
+    },
+    {
+      "name": "benign_posix_unrestricted",
+      "shell": {
+        "mode": "unrestricted",
+        "allow": []
+      },
+      "operator_deny": [],
+      "tool": "shell_exec",
+      "args": {
+        "command": "uname -a"
+      },
+      "expect": "allow",
+      "why": "nothing in the catalog matches"
+    },
+    {
+      "name": "benign_powershell_unrestricted",
+      "shell": {
+        "mode": "unrestricted",
+        "allow": []
+      },
+      "operator_deny": [],
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-Process | Select-Object -First 5"
+      },
+      "expect": "allow",
+      "why": "nothing in the catalog matches"
+    },
+    {
+      "name": "absent_shell_policy_is_unrestricted",
+      "shell": null,
+      "operator_deny": [],
+      "tool": "shell_exec",
+      "args": {
+        "command": "uname -a"
+      },
+      "expect": "allow",
+      "why": "an agent never told a mode runs unrestricted"
+    },
+    {
+      "name": "unrestricted_tolerates_missing_command",
+      "shell": {
+        "mode": "unrestricted",
+        "allow": []
+      },
+      "operator_deny": [],
+      "tool": "shell_exec",
+      "args": {},
+      "expect": "allow",
+      "why": "a missing arg is an empty haystack; bad_args is the handler's job, not the guard's"
+    },
+    {
+      "name": "off_blocks_posix",
+      "shell": {
+        "mode": "off",
+        "allow": []
+      },
+      "operator_deny": [],
+      "tool": "shell_exec",
+      "args": {
+        "command": "uname -a"
+      },
+      "expect": "blocked",
+      "why": "mode off refuses every shell call, however benign"
+    },
+    {
+      "name": "off_blocks_powershell",
+      "shell": {
+        "mode": "off",
+        "allow": []
+      },
+      "operator_deny": [],
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-Process"
+      },
+      "expect": "blocked",
+      "why": "mode off refuses every shell call, however benign"
+    },
+    {
+      "name": "off_does_not_affect_other_tools",
+      "shell": {
+        "mode": "off",
+        "allow": []
+      },
+      "operator_deny": [],
+      "tool": "winget_list",
+      "args": {},
+      "expect": "allow",
+      "why": "the mode governs the two shell tools only"
+    },
+    {
+      "name": "allowlist_empty_blocks_posix",
+      "shell": {
+        "mode": "allowlist",
+        "allow": []
+      },
+      "operator_deny": [],
+      "tool": "shell_exec",
+      "args": {
+        "command": "uname -a"
+      },
+      "expect": "blocked",
+      "why": "fail-closed: removing the last entry is not the same as leaving the mode"
+    },
+    {
+      "name": "allowlist_empty_blocks_powershell",
+      "shell": {
+        "mode": "allowlist",
+        "allow": []
+      },
+      "operator_deny": [],
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-Process"
+      },
+      "expect": "blocked",
+      "why": "fail-closed"
+    },
+    {
+      "name": "allowlist_exact_match_allows_posix",
+      "shell": {
+        "mode": "allowlist",
+        "allow": [
+          {
+            "id": "al_uname",
+            "applies_to": "posix",
+            "pattern": "uname -a",
+            "reason": "read kernel version"
+          }
+        ]
+      },
+      "operator_deny": [],
+      "tool": "shell_exec",
+      "args": {
+        "command": "uname -a"
+      },
+      "expect": "allow",
+      "why": "the command matches an allow entry in full"
+    },
+    {
+      "name": "allowlist_exact_match_allows_powershell",
+      "shell": {
+        "mode": "allowlist",
+        "allow": [
+          {
+            "id": "al_getsvc",
+            "applies_to": "powershell",
+            "pattern": "Get-Service",
+            "reason": "read service state"
+          }
+        ]
+      },
+      "operator_deny": [],
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-Service"
+      },
+      "expect": "allow",
+      "why": "the script matches an allow entry in full"
+    },
+    {
+      "name": "allowlist_anchored_rejects_suffix",
+      "shell": {
+        "mode": "allowlist",
+        "allow": [
+          {
+            "id": "al_uname",
+            "applies_to": "posix",
+            "pattern": "uname -a",
+            "reason": "read kernel version"
+          }
+        ]
+      },
+      "operator_deny": [],
+      "tool": "shell_exec",
+      "args": {
+        "command": "uname -a; rm -rf /home"
+      },
+      "expect": "blocked",
+      "why": "THE anchoring case: a substring match here would make every allow entry a prefix through which anything can be appended"
+    },
+    {
+      "name": "allowlist_anchored_rejects_prefix",
+      "shell": {
+        "mode": "allowlist",
+        "allow": [
+          {
+            "id": "al_uname",
+            "applies_to": "posix",
+            "pattern": "uname -a",
+            "reason": "read kernel version"
+          }
+        ]
+      },
+      "operator_deny": [],
+      "tool": "shell_exec",
+      "args": {
+        "command": "echo hi && uname -a"
+      },
+      "expect": "blocked",
+      "why": "anchored at the start as well as the end"
+    },
+    {
+      "name": "allowlist_anchored_rejects_embedded_newline",
+      "shell": {
+        "mode": "allowlist",
+        "allow": [
+          {
+            "id": "al_uname",
+            "applies_to": "posix",
+            "pattern": "uname -a",
+            "reason": "read kernel version"
+          }
+        ]
+      },
+      "operator_deny": [],
+      "tool": "shell_exec",
+      "args": {
+        "command": "uname -a\nid"
+      },
+      "expect": "blocked",
+      "why": "$ anchors at end of input, not end of line — no (?m) semantics leak in"
+    },
+    {
+      "name": "allowlist_trims_surrounding_whitespace",
+      "shell": {
+        "mode": "allowlist",
+        "allow": [
+          {
+            "id": "al_uname",
+            "applies_to": "posix",
+            "pattern": "uname -a",
+            "reason": "read kernel version"
+          }
+        ]
+      },
+      "operator_deny": [],
+      "tool": "shell_exec",
+      "args": {
+        "command": "  uname -a\n"
+      },
+      "expect": "allow",
+      "why": "the command is trimmed before matching, so formatting is not a refusal"
+    },
+    {
+      "name": "allowlist_deny_outranks_builtin",
+      "shell": {
+        "mode": "allowlist",
+        "allow": [
+          {
+            "id": "al_any",
+            "applies_to": "posix",
+            "pattern": ".*",
+            "reason": "deliberately permissive, for the deny-outranks-allow case"
+          }
+        ]
+      },
+      "operator_deny": [],
+      "tool": "shell_exec",
+      "args": {
+        "command": "rm -rf /"
+      },
+      "expect": "blocked",
+      "why": "an allow entry can never lift a rule from the shared catalog"
+    },
+    {
+      "name": "allowlist_deny_outranks_operator_rule",
+      "shell": {
+        "mode": "allowlist",
+        "allow": [
+          {
+            "id": "al_any",
+            "applies_to": "posix",
+            "pattern": ".*",
+            "reason": "deliberately permissive, for the deny-outranks-allow case"
+          }
+        ]
+      },
+      "operator_deny": [
+        {
+          "id": "op_no_curl",
+          "applies_to": "posix",
+          "pattern": "\\bcurl\\b",
+          "reason": "operator: no ad-hoc downloads"
+        }
+      ],
+      "tool": "shell_exec",
+      "args": {
+        "command": "curl https://example.invalid/x"
+      },
+      "expect": "blocked",
+      "why": "operator deny rules also outrank the allowlist"
+    },
+    {
+      "name": "allowlist_posix_entry_does_not_admit_powershell",
+      "shell": {
+        "mode": "allowlist",
+        "allow": [
+          {
+            "id": "al_uname",
+            "applies_to": "posix",
+            "pattern": "uname -a",
+            "reason": "read kernel version"
+          }
+        ]
+      },
+      "operator_deny": [],
+      "tool": "powershell_exec",
+      "args": {
+        "script": "uname -a"
+      },
+      "expect": "blocked",
+      "why": "posix entries are consulted for shell_exec only"
+    },
+    {
+      "name": "allowlist_powershell_entry_does_not_admit_posix",
+      "shell": {
+        "mode": "allowlist",
+        "allow": [
+          {
+            "id": "al_getsvc",
+            "applies_to": "powershell",
+            "pattern": "Get-Service",
+            "reason": "read service state"
+          }
+        ]
+      },
+      "operator_deny": [],
+      "tool": "shell_exec",
+      "args": {
+        "command": "Get-Service"
+      },
+      "expect": "blocked",
+      "why": "powershell entries are consulted for powershell_exec only"
+    },
+    {
+      "name": "allowlist_ignores_path_entries",
+      "shell": {
+        "mode": "allowlist",
+        "allow": [
+          {
+            "id": "al_bogus",
+            "applies_to": "path",
+            "pattern": "uname -a",
+            "reason": "ignored"
+          }
+        ]
+      },
+      "operator_deny": [],
+      "tool": "shell_exec",
+      "args": {
+        "command": "uname -a"
+      },
+      "expect": "blocked",
+      "why": "an allow entry for a surface with no command string means nothing"
+    },
+    {
+      "name": "allowlist_ignores_self_protection_entries",
+      "shell": {
+        "mode": "allowlist",
+        "allow": [
+          {
+            "id": "al_bogus",
+            "applies_to": "self_protection",
+            "pattern": "uname -a",
+            "reason": "ignored"
+          }
+        ]
+      },
+      "operator_deny": [],
+      "tool": "shell_exec",
+      "args": {
+        "command": "uname -a"
+      },
+      "expect": "blocked",
+      "why": "an allow entry for a surface with no command string means nothing"
+    },
+    {
+      "name": "allowlist_is_case_sensitive_without_a_flag",
+      "shell": {
+        "mode": "allowlist",
+        "allow": [
+          {
+            "id": "al_uname",
+            "applies_to": "posix",
+            "pattern": "uname -a",
+            "reason": "read kernel version"
+          }
+        ]
+      },
+      "operator_deny": [],
+      "tool": "shell_exec",
+      "args": {
+        "command": "UNAME -A"
+      },
+      "expect": "blocked",
+      "why": "no implicit case folding — the pattern says what it says"
+    },
+    {
+      "name": "allowlist_honours_inline_case_flag",
+      "shell": {
+        "mode": "allowlist",
+        "allow": [
+          {
+            "id": "al_uname_ci",
+            "applies_to": "posix",
+            "pattern": "(?i)uname -a",
+            "reason": "read kernel version"
+          }
+        ]
+      },
+      "operator_deny": [],
+      "tool": "shell_exec",
+      "args": {
+        "command": "UNAME -A"
+      },
+      "expect": "allow",
+      "why": "(?i) is in the portable subset and both engines honour it"
+    },
+    {
+      "name": "allowlist_blocks_missing_command_arg",
+      "shell": {
+        "mode": "allowlist",
+        "allow": [
+          {
+            "id": "al_uname",
+            "applies_to": "posix",
+            "pattern": "uname -a",
+            "reason": "read kernel version"
+          }
+        ]
+      },
+      "operator_deny": [],
+      "tool": "shell_exec",
+      "args": {},
+      "expect": "blocked",
+      "why": "fail-closed: an absent arg matches no allow entry"
+    },
+    {
+      "name": "allowlist_blocks_non_string_command_arg",
+      "shell": {
+        "mode": "allowlist",
+        "allow": [
+          {
+            "id": "al_uname",
+            "applies_to": "posix",
+            "pattern": "uname -a",
+            "reason": "read kernel version"
+          }
+        ]
+      },
+      "operator_deny": [],
+      "tool": "shell_exec",
+      "args": {
+        "command": 42
+      },
+      "expect": "blocked",
+      "why": "fail-closed: a non-string arg is an empty haystack, which matches no entry"
+    },
+    {
+      "name": "allowlist_does_not_affect_other_tools",
+      "shell": {
+        "mode": "allowlist",
+        "allow": []
+      },
+      "operator_deny": [],
+      "tool": "winget_list",
+      "args": {},
+      "expect": "allow",
+      "why": "the mode governs the two shell tools only"
+    },
+    {
+      "name": "allowlist_uncompilable_entry_is_skipped_not_fatal",
+      "shell": {
+        "mode": "allowlist",
+        "allow": [
+          {
+            "id": "al_bad",
+            "applies_to": "posix",
+            "pattern": "(unclosed",
+            "reason": "uncompilable"
+          },
+          {
+            "id": "al_uname",
+            "applies_to": "posix",
+            "pattern": "uname -a",
+            "reason": "read kernel version"
+          }
+        ]
+      },
+      "operator_deny": [],
+      "tool": "shell_exec",
+      "args": {
+        "command": "uname -a"
+      },
+      "expect": "allow",
+      "why": "a bad pattern is dropped with a log line; the remaining entries still decide"
+    }
+  ]
+}

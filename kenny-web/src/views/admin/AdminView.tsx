@@ -15,6 +15,7 @@ import UpdatesSection from './sections/UpdatesSection'
 import DiscordSection from './sections/DiscordSection'
 import TicketRulesSection from './sections/TicketRulesSection'
 import UsersSection from './sections/UsersSection'
+import ShellPolicySection from './sections/ShellPolicySection'
 import styles from './AdminView.module.css'
 
 const SYNTHETIC_LABELS: Record<string, string> = {
@@ -183,6 +184,8 @@ export default function AdminView() {
             <DiscordSection />
           ) : section === 'web-filter' ? (
             <WebFilterSection rows={activeGroup?.rows ?? []} />
+          ) : section === 'shell-policy' ? (
+            <ShellPolicySection rows={activeGroup?.rows ?? []} />
           ) : section === 'auto-ticket-rules' ? (
             <TicketRulesSection />
           ) : section === 'users' ? (

@@ -174,13 +174,32 @@ class PolicyRule(BaseModel):
     reason: str
 
 
+class ShellPolicy(BaseModel):
+    """The fleet's shell execution mode, carried on the ``policy`` frame (ADR-0064).
+
+    Deny rules answer "what must never run"; this answers "what may run at all".
+    Under ``allowlist`` a shell command must match an ``allow`` entry **in full** —
+    see ``PolicyEngine`` for the matching, which both implementations mirror.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["unrestricted", "allowlist", "off"] = "unrestricted"
+    allow: list[PolicyRule] = Field(default_factory=list)
+
+
 class Policy(BaseModel):
-    """``policy`` frame: server -> agent, operator's append-only extra deny rules."""
+    """``policy`` frame: server -> agent, operator's append-only extra deny rules.
+
+    ``shell`` is optional and omitted when unset, so a frame that carries no shell
+    policy is byte-identical to a pre-0.18 one.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     type: Literal["policy"] = "policy"
     rules: list[PolicyRule] = Field(default_factory=list)
+    shell: ShellPolicy | None = None
 
 
 class Ping(BaseModel):

@@ -64,6 +64,10 @@ pub async fn run_until(config: Config, mut shutdown: tokio::sync::watch::Receive
     // service path previously never set it, so `agent_update` from the configured server
     // was wrongly refused as "host not allowlisted". `set_server_url` is idempotent.
     crate::policy::set_server_url(&config.server);
+    // Restore the last applied shell execution mode before the first connection, so a
+    // restart does not run unrestricted for the seconds until the server's `policy`
+    // frame lands (ADR-0064). Same funnel argument as `set_server_url` above.
+    crate::policy::load_persisted_shell_policy();
 
     // Honor a shutdown that was requested before we ever connected.
     if *shutdown.borrow() {
@@ -566,6 +570,12 @@ async fn handle_text(text: &str, tx: &mpsc::Sender<Frame>) {
             // which they can never weaken or remove. The agent never sends a Policy frame.
             info!(count = p.rules.len(), "applied operator policy rules");
             crate::policy::set_operator_rules(p.rules);
+            // The fleet shell execution mode (ADR-0064). Absent, the agent keeps the mode
+            // it already holds — a pre-0.18 server must not silently unlock the shell.
+            if let Some(shell) = p.shell {
+                info!(mode = ?shell.mode, allow = shell.allow.len(), "applied shell policy");
+                crate::policy::set_shell_policy(shell);
+            }
         }
         Frame::Ping => {
             let _ = tx.send(Frame::Pong).await;

@@ -1,4 +1,4 @@
-# kenny Wire Protocol (v0.17)
+# kenny Wire Protocol (v0.18)
 
 > **Single source of truth.** This document and the JSON files in `docs/fixtures/`
 > define the contract between `kenny-server` (Python) and `kenny-agent` (Rust).
@@ -240,6 +240,11 @@ agent remains the authoritative enforcement point. Operators may add — but nev
 deny rules on top of the built-ins; those extra rules are delivered to the agent via the
 `policy` frame below. See ADR-0020.
 
+`blocked` is also the refusal when a shell call is outside what the fleet's **shell execution
+mode** permits (`policy.shell` below): the deny rules say what must never run, the mode says
+what may run at all. A deny rule names itself in the `message`; a mode refusal names the mode.
+See ADR-0064.
+
 ### `policy` (server → agent)
 
 After a successful `register` (and again whenever the operator changes the list), the
@@ -263,6 +268,63 @@ Each rule has `id` (stable identifier), `applies_to` ∈ {`powershell`, `posix`,
 no backreferences/lookaround), and a human-readable `reason`. The agent recompiles its rule
 set on each `policy` frame; a rule whose pattern fails to compile is skipped (logged), never
 fatal. The same `{id, applies_to, pattern, reason}` shape is used by the shared catalog.
+
+#### `policy.shell` — the fleet's shell execution mode
+
+The same frame carries the fleet's **shell execution mode**, which decides the default verdict
+for `powershell_exec` and `shell_exec`. Deny rules answer "what must never run"; the mode
+answers "what may run at all". See ADR-0064.
+
+```json
+{
+  "type": "policy",
+  "rules": [],
+  "shell": {
+    "mode": "allowlist",
+    "allow": [
+      { "id": "al_get_service", "applies_to": "powershell",
+        "pattern": "(?i)Get-Service(\\s+[\\w.-]+)?", "reason": "read service state" }
+    ]
+  }
+}
+```
+
+`shell` is **optional**. Omitted, the agent keeps the mode it already holds; an agent that has
+never been told one runs `unrestricted`. `mode` is one of:
+
+| mode | verdict for `powershell_exec` / `shell_exec` |
+|---|---|
+| `unrestricted` | run it, subject to the deny rules. The default, and the pre-0.18 behaviour. |
+| `allowlist`    | run it only if the command **fully matches** an `allow` entry; otherwise `blocked`. |
+| `off`          | always `blocked`. |
+
+`allow` entries reuse the `{id, applies_to, pattern, reason}` shape above. Only
+`applies_to` ∈ {`powershell`, `posix`} is honoured — `powershell` entries are consulted for
+`powershell_exec`, `posix` entries for `shell_exec`; `self_protection` and `path` entries are
+ignored (and logged), because an allow rule for a surface that has no command string means
+nothing.
+
+Four properties bind every implementation of this mode:
+
+1. **Deny outranks allow.** Deny rules — built-in and operator — are evaluated first and always.
+   An `allow` entry can never lift a rule from the shared catalog.
+2. **`allow` patterns match the whole command, never a substring.** The command string is
+   trimmed of leading/trailing whitespace and must match a pattern *in its entirety*. A
+   substring match would make an `allow` entry of `Get-Process` admit
+   `Get-Process; rm -rf /`. Implementations that match on substrings by default (Rust's
+   `regex::is_match`) anchor the pattern as `^(?:…)$` at compile time.
+3. **An empty `allow` list under `mode: "allowlist"` blocks every shell call.** Fail-closed:
+   removing the last entry is not the same as leaving the mode.
+4. **The refusal is `blocked`, not `disabled`.** `disabled` remains the agent-local kill
+   switch (ADR-0011). The `message` names the mode or the rule that refused the call.
+
+The mode is fleet-wide: every connected agent is pushed the same one. The frame is per
+connection, so a future per-agent override changes only how the server resolves what to put in
+this field — it is not a change to this contract.
+
+An agent predating v0.18 ignores `shell` and keeps running `unrestricted`. For those agents the
+server's mirror (below) is the only place the mode is enforced.
+
 
 ### `telemetry` (agent → server, pushed)
 
@@ -875,11 +937,19 @@ for fleet aggregation. These thresholds are illustrative of the data-driven rule
 
 ## Versioning
 
-`PROTOCOL_VERSION = "0.17"`. Both implementations expose this constant; from v0.8 the
+`PROTOCOL_VERSION = "0.18"`. Both implementations expose this constant; from v0.8 the
 agent puts it on the wire in `register.protocol` to select the mutual-auth handshake
 (compare versions **numerically per component**, not lexically — `"0.10"` is newer than
 `"0.9"`). Bump on any breaking change to a frame or tool schema.
 
+- `0.18` — added `shell` to the `policy` frame (ADR-0064): the fleet's shell execution mode
+  (`unrestricted` / `allowlist` / `off`) plus, under `allowlist`, the anchored allow rules that
+  say what `powershell_exec` and `shell_exec` may run. Deny rules answer "what must never
+  run"; the mode answers "what may run at all", so the default verdict for an arbitrary
+  command is no longer "run it". Additive and optional: a frame without `shell` is unchanged
+  from v0.17, and an agent predating this version ignores the field and keeps running
+  `unrestricted` — for those agents the server's mirror is the only enforcement point. No
+  tool schema changed; the refusal reuses the existing `blocked` error code.
 - `0.17` — added `channel` (∈ `stable`/`dev`) to `register.meta`, mirrored into the
   `os_support` telemetry section on every push — the same one-time-plus-periodic
   reporting pattern `arch` established at v0.13 (ADR-0036), reused here for the second

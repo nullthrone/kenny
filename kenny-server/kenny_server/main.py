@@ -57,6 +57,7 @@ from .store import (
     EventClassificationStore,
     EventStore,
     PolicyStore,
+    ShellAllowStore,
     ReliabilitySuppressionStore,
     SettingsStore,
     TelemetryStore,
@@ -338,6 +339,9 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
     # catalog at construction and never raises if it is missing (fail-open).
     policy_store = PolicyStore(db_path)
     policy_engine = PolicyEngine()
+    # The fleet shell execution mode (ADR-0064). The mode itself is the setting
+    # ``KENNY_SHELL_POLICY_MODE``; this store holds only its allow rules.
+    shell_allow_store = ShellAllowStore(db_path)
     # Parental controls (ADR-0024): per-host store + external-list cache under a
     # dir derived from the DB path, wrapped in the service the tunnel/API/tools use.
     webfilter_store = WebFilterStore(db_path)
@@ -357,6 +361,8 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         event_store,
         policy_engine=policy_engine,
         policy_store=policy_store,
+        shell_allow_store=shell_allow_store,
+        settings=settings,
         webfilter=webfilter,
         # Classify newly seen reliability patterns in the background right
         # after each push lands, so the alert loop never scores an
@@ -627,6 +633,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         await oauth_store.connect()
         await event_store.connect()
         await policy_store.connect()
+        await shell_allow_store.connect()
         await webfilter_store.connect()
         await suppression_store.connect()
         await classification_store.connect()
@@ -659,6 +666,9 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
             )
         # Load persisted operator rules into the mirror engine at startup.
         policy_engine.set_operator_rules(await policy_store.list())
+        # Same for the fleet shell execution mode (ADR-0064): the mirror must be
+        # correct before the first tool call, not only after the first policy push.
+        await tunnel.refresh_shell_policy()
         # Load persisted reliability suppression rules into their mirror too
         # (ADR-0041 / issue #166) -- before any health evaluation can run.
         await suppression.load()
@@ -843,6 +853,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
             await store.close()
             await event_store.close()
             await policy_store.close()
+            await shell_allow_store.close()
             await webfilter_store.close()
             await suppression_store.close()
             await classification_store.close()
@@ -865,6 +876,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         token_store=token_store,
         policy_store=policy_store,
         policy_engine=policy_engine,
+        shell_allow_store=shell_allow_store,
         webfilter=webfilter,
         settings=settings,
         user_store=user_store,
@@ -989,6 +1001,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
     app.state.oauth_store = oauth_store
     app.state.policy_store = policy_store
     app.state.policy_engine = policy_engine
+    app.state.shell_allow_store = shell_allow_store
     app.state.webfilter_store = webfilter_store
     app.state.webfilter = webfilter
     app.state.suppression_store = suppression_store

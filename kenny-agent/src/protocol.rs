@@ -1,4 +1,4 @@
-//! Wire-protocol types mirroring `../docs/protocol.md` (v0.17).
+//! Wire-protocol types mirroring `../docs/protocol.md` (v0.18).
 //!
 //! These serde models are the Rust side of the contract between `kenny-server`
 //! (Python) and `kenny-agent`. They are round-tripped against `../docs/fixtures/`
@@ -12,7 +12,7 @@ use serde_json::{Map, Value};
 ///
 /// From v0.8 this is placed on the wire in `register.protocol` to select the
 /// mutual-auth handshake.
-pub const PROTOCOL_VERSION: &str = "0.17";
+pub const PROTOCOL_VERSION: &str = "0.18";
 
 /// One WebSocket text message. Tagged by the `type` field.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -193,10 +193,52 @@ pub struct Log {
     pub fields: Option<Value>,
 }
 
-/// `policy` frame body: the operator's current set of append-only deny rules (ADR-0020).
+/// `policy` frame body: the operator's current set of append-only deny rules (ADR-0020)
+/// plus the fleet's shell execution mode (ADR-0064).
+///
+/// `shell` is optional and skipped on serialize when absent, so a frame without one is
+/// byte-identical to a pre-0.18 frame. An agent that receives no `shell` keeps whatever
+/// mode it already holds.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Policy {
     pub rules: Vec<PolicyRule>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell: Option<ShellPolicy>,
+}
+
+/// The fleet's shell execution mode and, under `allowlist`, what it permits.
+///
+/// Deny rules say what must never run; this says what may run at all. See ADR-0064 and
+/// [`crate::policy::check`] for the matching rules every implementation must share.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ShellPolicy {
+    pub mode: ShellMode,
+    #[serde(default)]
+    pub allow: Vec<PolicyRule>,
+}
+
+impl Default for ShellPolicy {
+    /// An agent that has never been told a mode runs unrestricted — the pre-0.18
+    /// behaviour, and the only default that does not brick a fresh install.
+    fn default() -> Self {
+        Self {
+            mode: ShellMode::Unrestricted,
+            allow: Vec::new(),
+        }
+    }
+}
+
+/// What `powershell_exec` and `shell_exec` may run (`policy.shell.mode`).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ShellMode {
+    /// Run anything the deny rules allow. The default.
+    Unrestricted,
+    /// Run only commands that fully match an allow rule. An empty allow list
+    /// blocks every shell call.
+    Allowlist,
+    /// Block every shell call.
+    Off,
 }
 
 /// A single deny rule: `applies_to` selects which call surface the `pattern` is matched

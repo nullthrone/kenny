@@ -932,6 +932,109 @@ class PolicyStore:
         return (cur.rowcount or 0) > 0
 
 
+_SHELL_ALLOW_SCHEMA = """
+CREATE TABLE IF NOT EXISTS shell_allow_rules (
+    id          TEXT NOT NULL,
+    agent_id    TEXT NOT NULL DEFAULT '',
+    applies_to  TEXT NOT NULL,
+    pattern     TEXT NOT NULL,
+    reason      TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    created_by  TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (agent_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_shell_allow_created
+    ON shell_allow_rules (agent_id, created_at);
+"""
+
+
+class ShellAllowStore:
+    """Async SQLite-backed store for the fleet's shell allow rules (ADR-0064).
+
+    The rules that say what ``powershell_exec`` and ``shell_exec`` may run while the
+    fleet is in ``allowlist`` mode. The mode itself is a setting
+    (``KENNY_SHELL_POLICY_MODE``); this holds only the rules.
+
+    ``agent_id`` is **reserved**: ADR-0064 keeps a per-agent axis open but does not
+    build it, so every row written today carries the fleet-wide sentinel ``''`` and
+    every read filters on it. An empty string rather than NULL, because SQLite treats
+    NULLs as pairwise-distinct in a uniqueness check and the primary key here spans it
+    (the convention ADR-0041 established for ``reliability_suppressions``). One column
+    now costs less than a migration later.
+    """
+
+    #: The fleet-wide scope. The only value written until a per-agent axis exists.
+    FLEET = ""
+
+    def __init__(self, db_path: str = DEFAULT_DB_PATH) -> None:
+        self.db_path = db_path
+        self._db: aiosqlite.Connection | None = None
+
+    async def connect(self) -> None:
+        if self._db is not None:
+            return
+        self._db = await aiosqlite.connect(self.db_path)
+        await _configure_connection(self._db)
+        await self._db.executescript(_SHELL_ALLOW_SCHEMA)
+        await self._db.commit()
+
+    async def close(self) -> None:
+        if self._db is not None:
+            await self._db.close()
+            self._db = None
+
+    @property
+    def _conn(self) -> aiosqlite.Connection:
+        if self._db is None:
+            raise RuntimeError("ShellAllowStore is not connected; call connect() first")
+        return self._db
+
+    async def list(self) -> list[dict[str, Any]]:
+        """Return the fleet's allow rules, oldest-first."""
+
+        async with self._conn.execute(
+            "SELECT id, applies_to, pattern, reason FROM shell_allow_rules "
+            "WHERE agent_id = ? ORDER BY created_at, id",
+            (self.FLEET,),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [
+            {
+                "id": r["id"],
+                "applies_to": r["applies_to"],
+                "pattern": r["pattern"],
+                "reason": r["reason"],
+            }
+            for r in rows
+        ]
+
+    async def add(
+        self, *, id: str, applies_to: str, pattern: str, reason: str, created_by: str = ""
+    ) -> None:
+        """Insert (or replace) a fleet allow rule, stamping ``created_at``."""
+
+        created_at = datetime.now(timezone.utc).isoformat()
+        async with write_lock():
+            await self._conn.execute(
+                "INSERT OR REPLACE INTO shell_allow_rules "
+                "(id, agent_id, applies_to, pattern, reason, created_at, created_by) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (id, self.FLEET, applies_to, pattern, reason, created_at, created_by),
+            )
+            await self._conn.commit()
+
+    async def remove(self, id: str) -> bool:
+        """Delete one fleet allow rule by id. Returns True if a row was removed."""
+
+        async with write_lock():
+            cur = await self._conn.execute(
+                "DELETE FROM shell_allow_rules WHERE agent_id = ? AND id = ?",
+                (self.FLEET, id),
+            )
+            await self._conn.commit()
+        return (cur.rowcount or 0) > 0
+
+
 _RELIABILITY_SUPPRESSION_SCHEMA = """
 CREATE TABLE IF NOT EXISTS reliability_suppressions (
     id         TEXT PRIMARY KEY,
