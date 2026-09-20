@@ -52,6 +52,11 @@ export default function Fleet() {
                 <div className={styles.cardTop}>
                   <span className={styles.dot} style={{ background: severityColor(h.overall) }} />
                   <span className={styles.hostname}>{h.agent_id}</span>
+                  <span
+                    className={styles.onlineDot}
+                    style={{ background: h.online ? 'var(--ok)' : 'var(--danger)' }}
+                    title={h.online ? 'online' : 'offline'}
+                  />
                   <OsIcon width={14} height={14} strokeWidth={ICON_STROKE_WIDTH} color="var(--text-faint)" aria-hidden="true" />
                 </div>
                 <SeverityChip severity={h.overall} label={h.severity_label} variant="text" className={styles.sevLabel} />
