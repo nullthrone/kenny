@@ -1,4 +1,4 @@
-# kenny Wire Protocol (v0.18)
+# kenny Wire Protocol (v0.19)
 
 > **Single source of truth.** This document and the JSON files in `docs/fixtures/`
 > define the contract between `kenny-server` (Python) and `kenny-agent` (Rust).
@@ -965,11 +965,24 @@ for fleet aggregation. These thresholds are illustrative of the data-driven rule
 
 ## Versioning
 
-`PROTOCOL_VERSION = "0.18"`. Both implementations expose this constant; from v0.8 the
+`PROTOCOL_VERSION = "0.19"`. Both implementations expose this constant; from v0.8 the
 agent puts it on the wire in `register.protocol` to select the mutual-auth handshake
 (compare versions **numerically per component**, not lexically — `"0.10"` is newer than
 `"0.9"`). Bump on any breaking change to a frame or tool schema.
 
+- `0.19` — the `reliability` section gains `boot_sessions` (the UTC boot instants inside the
+  window, read from `Kernel-Boot/20` and `EventLog/6005` in the same query and the same clock
+  as the events) and `truncated_count` (how many groups the cap dropped, so `recent_crashes`
+  can be reconciled against the reported groups). Group selection now reserves slots for
+  `level: "critical"` groups and for the most recently seen before filling by count, up to 40
+  groups: ordering by count alone dropped a single bugcheck behind a chatty harmless
+  provider, so the rarest and most consequential events never reached the server at all.
+  **`by_day` keys are now UTC** calendar dates, matching `last_seen`; they were local dates
+  while the server parsed them as UTC, which made the number of distinct days a pattern spans
+  depend on the host's timezone. That is the one non-additive change here: an agent predating
+  this version still sends local-date keys, and the server reads them exactly as it did
+  before — no worse, and correct once the agent updates. The rest is additive, and a server
+  predating this version ignores both new fields.
 - `0.18` — added `shell` to the `policy` frame (ADR-0064): the fleet's shell execution mode
   (`unrestricted` / `allowlist` / `off`) plus, under `allowlist`, the anchored allow rules that
   say what `powershell_exec` and `shell_exec` may run. Deny rules answer "what must never

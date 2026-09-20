@@ -296,7 +296,19 @@ export interface ReliabilityEvent {
   category?: string
   severity?: 'benign' | 'notable' | 'serious' | 'unknown'
   suspected_cause?: string
+  /** What a person at the machine would have noticed -- the only field health is scored on. */
+  user_impact?: UserImpact
+  /** That impact in one plain sentence, empty when there is none. */
+  symptom?: string
+  /** Why this group does or does not carry a verdict. */
+  classification_state?: 'classified' | 'pending' | 'unavailable'
 }
+
+/**
+ * Least to most consequential. `unknown` is the classifier saying it cannot
+ * tell, which is deliberately not the same claim as `none`.
+ */
+export type UserImpact = 'none' | 'degraded' | 'crashed' | 'data_at_risk' | 'unknown'
 
 /**
  * One reliability pattern's activity record, as `health_rules.reliability_patterns`
@@ -312,6 +324,9 @@ export interface ReliabilityPattern {
   severity: 'benign' | 'notable' | 'serious' | 'unknown'
   category: string | null
   cause: string | null
+  user_impact: UserImpact
+  symptom: string
+  classification_state: 'classified' | 'pending' | 'unavailable' | 'unclassified'
   suppressed: boolean
   /** Distinct days in the window with at least one event. */
   active_days: number
@@ -324,11 +339,15 @@ export interface ReliabilityPattern {
   recurring: boolean
   /** One day holds most of the count and it has gone quiet since -- a storm, not a drip. */
   burst: boolean
+  /** Whether this pattern is a finding at all: an active, unsuppressed impact. */
+  scores: boolean
 }
 
 export interface ReliabilityDetails {
   patterns: ReliabilityPattern[]
   window_days: number
+  /** How many times the host booted inside the window. */
+  boot_sessions?: number
 }
 
 export interface ReliabilitySection extends RawSection {
@@ -340,6 +359,10 @@ export interface ReliabilitySection extends RawSection {
   window_days?: number
   events?: ReliabilityEvent[]
   truncated?: boolean
+  /** How many groups the agent's cap dropped, so the total can be reconciled. */
+  truncated_count?: number
+  /** UTC boot instants inside the window. */
+  boot_sessions?: string[]
 }
 
 /* ── Recommendation stream — extends the frozen ChatEvent vocabulary ──
