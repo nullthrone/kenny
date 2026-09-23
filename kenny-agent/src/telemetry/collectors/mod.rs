@@ -45,6 +45,24 @@ pub mod win_update;
 #[cfg(windows)]
 pub mod winps;
 
+/// Why an OS probe produced nothing usable. Collectors only need "no data" and
+/// fall back to a default; an interactive tool reports the reason instead, so a
+/// probe that ran out of time never reads as one that printed nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(windows), allow(dead_code))]
+pub enum ProbeFailure {
+    /// The process could not be started.
+    Spawn,
+    /// Still running when its budget ran out; it was killed.
+    Timeout(std::time::Duration),
+    /// Ran to completion with a non-zero exit code (`None`: killed by a signal).
+    Exit(Option<i32>),
+    /// Exited cleanly without printing anything.
+    Empty,
+    /// Printed something that is not the JSON the caller expected.
+    Invalid,
+}
+
 use serde_json::{Map, Value};
 
 use super::Section;

@@ -180,6 +180,11 @@ managed host.
 | `diag_eventlog` | `log`, `count` | `read_only` (redacted output) |
 | `diag_autostart` | — | `read_only` |
 
+On Windows, `diag_services`, `diag_eventlog` and `diag_autostart` each run one CIM or
+event-log query that the agent stops after 50 s; the server waits 90 s for these three.
+A query that runs out of time comes back as a `timeout` error naming the query, so a
+slow, busy machine is not mistaken for one that returned nothing.
+
 ### Network
 
 | Tool | Arguments | Tier |

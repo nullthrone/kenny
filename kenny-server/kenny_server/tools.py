@@ -113,10 +113,28 @@ _TOOL_MIN_ROLE: dict[str, str] = {
 # Per-tool floor on the forwarding timeout, for tools whose normal path is
 # slower than the 30 s default. ``account_session_action`` may show the
 # signed-in user a warning and wait it out before acting (the agent caps that
-# wait at 60 s), so the default would time out a perfectly healthy call.
+# wait at 60 s), so the default would time out a perfectly healthy call. The
+# Windows diagnostics run a CIM/event-log query the agent bounds at its own
+# ``DIAG_BUDGET`` (``kenny-agent/src/handlers/diagnostics.rs``); the floor sits
+# above it so a slow query ends in the agent's own ``timeout`` error, which says
+# what timed out, instead of the server giving up first
+# (``tests/test_tool_timeouts.py`` holds the two in order).
 _TOOL_MIN_TIMEOUT_S: dict[str, float] = {
     "account_session_action": 120.0,
+    "diag_services": 90.0,
+    "diag_eventlog": 90.0,
+    "diag_autostart": 90.0,
 }
+
+
+def forward_timeout_s(tool_name: str, args: dict[str, Any]) -> float:
+    """How long to wait for the agent's answer to one forwarded call.
+
+    The caller's ``timeout_s`` (30 s when absent), raised to the tool's floor.
+    Raises ``TypeError``/``ValueError`` for a non-numeric ``timeout_s``.
+    """
+
+    return max(float(args.get("timeout_s", 30)), _TOOL_MIN_TIMEOUT_S.get(tool_name, 0.0))
 
 
 # Forwarding capability tools: name -> ordered arg keys (optional keys end "?").
@@ -434,7 +452,6 @@ def register_tools(
     def make_forwarder(tool_name: str):
         required_os = _OS_SCOPED_TOOLS.get(tool_name)
         min_role = _TOOL_MIN_ROLE.get(tool_name)
-        min_timeout_s = _TOOL_MIN_TIMEOUT_S.get(tool_name, 0.0)
 
         async def forward(args: dict[str, Any] | None = None) -> dict[str, Any]:
             """Forward this capability call to the named agent and return its result."""
@@ -469,7 +486,7 @@ def register_tools(
             # rejected call gets here, not an unhandled TypeError/ValueError
             # out of float().
             try:
-                timeout_s = max(float(args.get("timeout_s", 30)), min_timeout_s)
+                timeout_s = forward_timeout_s(tool_name, args)
             except (TypeError, ValueError):
                 message = f"timeout_s must be a number, got {args.get('timeout_s')!r}"
                 forward_logger.info("refused %s -> %s: %s", tool_name, agent_id, message)

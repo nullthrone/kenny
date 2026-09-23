@@ -4,11 +4,56 @@
 //! `diag_processes` is portable via `sysinfo`. Services/eventlog/autostart are
 //! Windows-only; off Windows they return `unsupported`.
 
+use std::time::Duration;
+
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sysinfo::{ProcessesToUpdate, System};
 
 use crate::protocol::ErrorCode;
+use crate::telemetry::collectors::ProbeFailure;
+
+/// Wall-clock budget for one Windows diagnostic query (services, event log,
+/// autostart). Longer than a telemetry probe's `winps::PROBE_BUDGET`: an operator
+/// is waiting on this one call, and on a busy machine — a telemetry snapshot's
+/// own CIM probes running at the same moment — `Win32_Service` alone can take
+/// longer than a snapshot probe may. It stays below the server's forwarding
+/// timeout for these tools (`kenny_server/tools.py`, `_TOOL_MIN_TIMEOUT_S`), so a
+/// slow query ends in the agent's own `timeout` error rather than the server
+/// giving up first; `tests/test_tool_timeouts.py` holds the two in order.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub const DIAG_BUDGET: Duration = Duration::from_secs(50);
+
+/// The error an interactive diagnostic reports when its query produced nothing.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn probe_error(what: &str, failure: ProbeFailure) -> (ErrorCode, String) {
+    match failure {
+        ProbeFailure::Timeout(budget) => (
+            ErrorCode::Timeout,
+            format!("{what} query timed out after {}s", budget.as_secs()),
+        ),
+        ProbeFailure::Spawn => (
+            ErrorCode::ExecFailed,
+            format!("{what} query could not start PowerShell"),
+        ),
+        ProbeFailure::Exit(Some(code)) => (
+            ErrorCode::ExecFailed,
+            format!("{what} query exited with code {code}"),
+        ),
+        ProbeFailure::Exit(None) => (
+            ErrorCode::ExecFailed,
+            format!("{what} query was terminated"),
+        ),
+        ProbeFailure::Empty => (
+            ErrorCode::ExecFailed,
+            format!("{what} query produced no output"),
+        ),
+        ProbeFailure::Invalid => (
+            ErrorCode::ExecFailed,
+            format!("{what} query produced output that is not valid JSON"),
+        ),
+    }
+}
 
 /// `diag_processes` — running processes with cpu and memory.
 pub fn processes(_args: Value) -> Result<Value, (ErrorCode, String)> {
@@ -112,16 +157,12 @@ mod windows_impl {
         s.replace('\'', "''")
     }
 
-    /// Run `script` (which must emit a `{ok, ...}` JSON envelope) and return the
-    /// parsed value, mapping an `ok:false` envelope or empty/invalid output to a
-    /// proper `ExecFailed` error instead of a silently empty result.
+    /// Run `script` (which must emit a `{ok, ...}` JSON envelope) within
+    /// [`DIAG_BUDGET`] and return the parsed value, mapping an `ok:false` envelope
+    /// or a query that produced nothing to an error that says which it was.
     fn run_envelope(script: &str, what: &str) -> Result<Value, (ErrorCode, String)> {
-        let Some(v) = winps::run_json(script) else {
-            return Err((
-                ErrorCode::ExecFailed,
-                format!("{what} query produced no output"),
-            ));
-        };
+        let v = winps::run_json_within(script, DIAG_BUDGET)
+            .map_err(|failure| probe_error(what, failure))?;
         if v.get("ok").and_then(Value::as_bool) != Some(true) {
             let msg = v
                 .get("error")
@@ -218,6 +259,48 @@ mod windows_impl {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_query_that_ran_out_of_time_reports_a_timeout() {
+        let (code, message) = probe_error("services", ProbeFailure::Timeout(DIAG_BUDGET));
+        assert_eq!(code, ErrorCode::Timeout);
+        assert_eq!(message, "services query timed out after 50s");
+    }
+
+    #[test]
+    fn each_other_failure_says_what_happened() {
+        let cases = [
+            (
+                ProbeFailure::Spawn,
+                "services query could not start PowerShell",
+            ),
+            (
+                ProbeFailure::Exit(Some(1)),
+                "services query exited with code 1",
+            ),
+            (ProbeFailure::Exit(None), "services query was terminated"),
+            (ProbeFailure::Empty, "services query produced no output"),
+            (
+                ProbeFailure::Invalid,
+                "services query produced output that is not valid JSON",
+            ),
+        ];
+        for (failure, expected) in cases {
+            let (code, message) = probe_error("services", failure);
+            assert_eq!(code, ErrorCode::ExecFailed, "{failure:?}");
+            assert_eq!(message, expected);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_probe_past_its_budget_is_killed_and_reported_as_a_timeout() {
+        use crate::telemetry::collectors::winps;
+
+        let budget = Duration::from_secs(1);
+        let result = winps::run_json_within("Start-Sleep -Seconds 10; '{}'", budget);
+        assert_eq!(result.unwrap_err(), ProbeFailure::Timeout(budget));
+    }
 
     #[test]
     fn processes_lists_self() {
