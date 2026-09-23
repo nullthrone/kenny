@@ -758,6 +758,16 @@ class DiscordPyGateway:
     def connected(self) -> bool:
         return self._connected
 
+    @property
+    def guild_allowlist(self) -> frozenset[str]:
+        return self._guild_allowlist
+
+    @guild_allowlist.setter
+    def guild_allowlist(self, guilds: frozenset[str]) -> None:
+        """Replace the allowlist; it is consulted per event, so this applies at once."""
+
+        self._guild_allowlist = frozenset(guilds)
+
     def _guild_allowed(self, guild_id: str) -> bool:
         """True iff ``guild_id`` is present in the allowlist.
 

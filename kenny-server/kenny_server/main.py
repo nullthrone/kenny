@@ -202,26 +202,139 @@ async def _webfilter_schedule_loop(
         await asyncio.sleep(interval_s)
 
 
+# How often a paused backup loop (KENNY_BACKUP_INTERVAL_SECS=0) looks again
+# whether the operator has switched it back on.
+_BACKUP_PAUSED_POLL_SECS = 60.0
+
+
 async def _backup_loop(
-    backup_mgr: BackupManager, settings: Settings, interval_s: int, initial_delay_s: float
+    backup_mgr: BackupManager, settings: Settings, initial_delay_s: float
 ) -> None:
-    """Periodically create a fresh DB snapshot and fan it out (best-effort)."""
+    """Periodically create a fresh DB snapshot and fan it out (best-effort).
+
+    The cadence is re-read every pass, 0 included: 0 pauses the loop instead of
+    ending it, so switching automatic backups off and on again from the
+    dashboard needs no restart.
+    """
 
     await asyncio.sleep(initial_delay_s)
     while True:
+        interval = int(settings.get("KENNY_BACKUP_INTERVAL_SECS"))
+        if interval <= 0:
+            await asyncio.sleep(_BACKUP_PAUSED_POLL_SECS)
+            continue
         try:
             await backup_mgr.create("auto")
         except Exception:  # noqa: BLE001 - never let the loop die
             logging.getLogger("kenny.backup").exception("periodic backup failed")
-        # Re-read the cadence each pass so a dashboard change retimes the loop.
-        interval = settings.get("KENNY_BACKUP_INTERVAL_SECS")
-        await asyncio.sleep(interval if interval and interval > 0 else interval_s)
+        await asyncio.sleep(max(int(settings.get("KENNY_BACKUP_INTERVAL_SECS")), 1))
 
 
 def _guild_ids(raw: Any) -> frozenset[str]:
     """Parse ``KENNY_DISCORD_GUILD_IDS`` into an allowlist (empty = deny all)."""
 
     return frozenset(part.strip() for part in str(raw or "").split(",") if part.strip())
+
+
+def _set_int(obj: Any, attr: str, value: Any) -> None:
+    setattr(obj, attr, int(value))
+
+
+def _bind_triage(settings: Settings, tickets: TicketService, triage: TriageService) -> None:
+    """Keep triage wired to new tickets exactly while it is enabled.
+
+    Wired only when a key is actually configured. A constructed Anthropic client
+    is not the same question: it builds happily without ``ANTHROPIC_API_KEY``
+    and only fails when used, so binding triage to that would fire one doomed
+    investigation per ticket created. ``ai_available`` is the predicate the
+    rest of the AI features already answer this with (``event_categories``,
+    ``recommend``).
+    """
+
+    def apply(_value: Any = None) -> None:
+        enabled = ai_available() and bool(settings.get("KENNY_TRIAGE_ENABLED"))
+        tickets.set_triage(triage.run if enabled else None)
+
+    def set_resolve(value: Any) -> None:
+        triage.resolve_enabled = bool(value)
+
+    def set_iterations(value: Any) -> None:
+        triage.max_iterations = int(value)
+
+    apply()
+    settings.on_change("KENNY_TRIAGE_ENABLED", apply)
+    settings.on_change("KENNY_TRIAGE_RESOLVE", set_resolve)
+    settings.on_change("KENNY_TRIAGE_MAX_ITERATIONS", set_iterations)
+
+
+def _bind_live_settings(
+    settings: Settings,
+    *,
+    ticket_service: TicketService,
+    ticket_store: TicketStore,
+    ticket_assistant: TicketAssistant | None,
+    discord_service: DiscordService | None,
+    discord_gateway: DiscordPyGateway | None,
+) -> None:
+    """Re-apply every ``live`` setting a constructed object holds as an attribute.
+
+    These objects take their values as constructor arguments, which
+    ``build_app`` reads before the operator's overrides are loaded. The hooks
+    registered here close that gap twice: ``settings.load()`` re-runs them for
+    each stored override, and every later write or reset runs them again, so
+    the dashboard's ``live`` label holds (ADR-0032).
+    """
+
+    def ttl(value: Any) -> None:
+        ticket_service.approval_ttl_secs = int(value)
+        if ticket_assistant is not None:
+            ticket_assistant.approval_ttl_secs = int(value)
+
+    settings.on_change("KENNY_TICKET_APPROVAL_TTL_SECS", ttl)
+    for key, attr in (
+        ("KENNY_TICKET_AUTOCLOSE_SECS", "autoclose_secs"),
+        ("KENNY_TICKET_STALL_NUDGE_SECS", "stall_nudge_secs"),
+        ("KENNY_TICKET_STALL_GIVEUP_SECS", "stall_giveup_secs"),
+        ("KENNY_TICKET_ABANDON_SECS", "abandon_secs"),
+    ):
+        settings.on_change(key, partial(_set_int, ticket_service, attr))
+    settings.on_change(
+        "KENNY_TICKET_RETENTION_DAYS", partial(_set_int, ticket_store, "run_retention_days")
+    )
+    if ticket_assistant is not None:
+        settings.on_change("KENNY_CHAT_MODEL", lambda v: setattr(ticket_assistant, "model", str(v)))
+        settings.on_change(
+            "KENNY_DISCORD_MAX_TURNS_PER_TICKET",
+            lambda v: setattr(ticket_assistant, "max_turns_per_ticket", int(v)),
+        )
+    if discord_service is not None:
+        def guilds(value: Any) -> None:
+            allowlist = _guild_ids(value)
+            discord_service.guild_ids = allowlist
+            if discord_gateway is not None:
+                discord_gateway.guild_allowlist = allowlist
+
+        settings.on_change("KENNY_DISCORD_GUILD_IDS", guilds)
+        settings.on_change(
+            "KENNY_DISCORD_SUPPORT_CHANNEL_ID",
+            lambda v: setattr(discord_service, "support_channel_id", str(v) or None),
+        )
+        settings.on_change(
+            "KENNY_DISCORD_OPERATOR_CHANNEL_ID",
+            lambda v: setattr(discord_service, "operator_channel_id", str(v) or None),
+        )
+        settings.on_change(
+            "KENNY_DISCORD_PRIVATE_THREADS",
+            lambda v: setattr(discord_service, "private_threads", bool(v)),
+        )
+        settings.on_change(
+            "KENNY_DISCORD_RATE_LIMIT_PER_USER_HOUR",
+            lambda v: setattr(discord_service, "rate_limit_per_hour", int(v)),
+        )
+        settings.on_change(
+            "KENNY_DISCORD_MODEL",
+            lambda v: setattr(discord_service, "model_override", str(v or "").strip() or None),
+        )
 
 
 async def _discord_loop(service: DiscordService) -> None:
@@ -353,7 +466,10 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
     # remote fan-out targets are operator-configured via backup_target_store.
     backup_target_store = BackupTargetStore(db_path)
     backup_mgr = BackupManager(
-        db_path, backup_target_store, backup_dir=settings.get("KENNY_BACKUP_DIR") or None
+        db_path,
+        backup_target_store,
+        backup_dir=settings.get("KENNY_BACKUP_DIR") or None,
+        retention=lambda: int(settings.get("KENNY_BACKUP_RETENTION")),
     )
     tunnel = AgentTunnel(
         registry,
@@ -521,15 +637,14 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         registry=registry,
         notifier_provider=notifier_provider,
         settings=settings,
-        # (store, settings_key) pairs -- only ``store`` (snapshots) has an
-        # operator-facing retention setting so far (ADR-0051): it dominates
-        # this database's size (~90 KB/row). The rest keep pruning on their
-        # own hardcoded default until a key is added for them too.
+        # (store, settings_key) pairs -- a store with an operator-facing
+        # retention setting (ADR-0051) is pruned with that key's live value;
+        # the rest keep pruning on their own hardcoded default.
         prunables=[
             (store, "KENNY_TELEMETRY_RETENTION_DAYS"),
             (event_store, None),
             (webfilter_store, None),
-            (ticket_store, None),
+            (ticket_store, "KENNY_TICKET_RETENTION_DAYS"),
             (discord_identities, None),
         ],
         open_ticket=open_alert_ticket,
@@ -583,14 +698,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
             resolve_enabled=bool(settings.get("KENNY_TRIAGE_RESOLVE")),
         )
         triage.register(ticket_executor)
-        # Wired only when a key is actually configured. ``client_factory()``
-        # succeeding is not the same question: the client constructs happily
-        # without ``ANTHROPIC_API_KEY`` and only fails when it is used, so
-        # binding triage to that would fire one doomed investigation per ticket
-        # created. ``ai_available`` is the predicate the rest of the AI features
-        # already answer this with (``event_categories``, ``recommend``).
-        if ai_available() and bool(settings.get("KENNY_TRIAGE_ENABLED")):
-            ticket_service.set_triage(triage.run)
+        _bind_triage(settings, ticket_service, triage)
 
     # Discord bot surface (optional). The service is constructed only when a bot
     # token exists — an env-only secret, so its presence is already known here —
@@ -608,12 +716,12 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         logging.getLogger("kenny.discord").warning(
             "Discord surface disabled: no usable Anthropic client"
         )
+    discord_gateway: DiscordPyGateway | None = None
     if discord_token and ticket_assistant is not None:
         guild_allowlist = _guild_ids(settings.get("KENNY_DISCORD_GUILD_IDS"))
+        discord_gateway = DiscordPyGateway(token=discord_token, guild_allowlist=guild_allowlist)
         discord_service = DiscordService(
-            gateway=DiscordPyGateway(
-                token=discord_token, guild_allowlist=guild_allowlist
-            ),
+            gateway=discord_gateway,
             identities=discord_identities,
             tickets=ticket_service,
             users=user_store,
@@ -626,6 +734,14 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
             rate_limit_per_hour=int(settings.get("KENNY_DISCORD_RATE_LIMIT_PER_USER_HOUR")),
             model_override=str(settings.get("KENNY_DISCORD_MODEL") or "").strip() or None,
         )
+    _bind_live_settings(
+        settings,
+        ticket_service=ticket_service,
+        ticket_store=ticket_store,
+        ticket_assistant=ticket_assistant,
+        discord_service=discord_service,
+        discord_gateway=discord_gateway,
+    )
 
     mcp = FastMCP("kenny")
     register_tools(
@@ -678,16 +794,9 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         await update_store.connect()
         await ticket_store.connect()
         await discord_identities.connect()
-        # Ticket lifetimes are "live" settings, but the service and the store are
-        # constructed before the DB overrides are readable — re-read them here so
-        # a dashboard override is in force from the first sweep of this boot.
-        ticket_service.approval_ttl_secs = int(settings.get("KENNY_TICKET_APPROVAL_TTL_SECS"))
-        ticket_service.autoclose_secs = int(settings.get("KENNY_TICKET_AUTOCLOSE_SECS"))
-        ticket_service.stall_nudge_secs = int(settings.get("KENNY_TICKET_STALL_NUDGE_SECS"))
-        ticket_service.stall_giveup_secs = int(settings.get("KENNY_TICKET_STALL_GIVEUP_SECS"))
-        ticket_service.abandon_secs = int(settings.get("KENNY_TICKET_ABANDON_SECS"))
-        ticket_store.run_retention_days = int(settings.get("KENNY_TICKET_RETENTION_DAYS"))
-        # Same reasoning for telemetry retention (ADR-0051): re-read before the
+        # Telemetry retention (ADR-0051) is re-read here, after the overrides
+        # loaded (settings bound through ``_bind_live_settings`` were re-applied
+        # by ``settings.load()`` itself), before the
         # boot-time prune below, so a dashboard override applies from this
         # boot's first sweep instead of only from the next periodic pass.
         store.retention_days = int(settings.get("KENNY_TELEMETRY_RETENTION_DAYS"))
@@ -758,16 +867,12 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         if alert_secs > 0:
             alert_delay = float(settings.get("KENNY_ALERT_INITIAL_DELAY"))
             alert_task = asyncio.create_task(alert_engine.run(alert_secs, alert_delay))
-        # Periodic DB backup loop (see backup.py). KENNY_BACKUP_INTERVAL_SECS=0
-        # disables entirely (a "restart" decision, like the loops above); the
-        # cadence itself is re-read live inside the loop.
-        backup_secs = int(settings.get("KENNY_BACKUP_INTERVAL_SECS"))
-        backup_task: asyncio.Task | None = None
-        if backup_secs > 0:
-            backup_delay = float(settings.get("KENNY_BACKUP_INITIAL_DELAY"))
-            backup_task = asyncio.create_task(
-                _backup_loop(backup_mgr, settings, backup_secs, backup_delay)
-            )
+        # Periodic DB backup loop (see backup.py). Always started: the cadence,
+        # including 0 = paused, is re-read inside the loop.
+        backup_delay = float(settings.get("KENNY_BACKUP_INITIAL_DELAY"))
+        backup_task: asyncio.Task | None = asyncio.create_task(
+            _backup_loop(backup_mgr, settings, backup_delay)
+        )
         # Scheduled update-detection loop (ADR-0040). KENNY_UPDATE_CHECK_INTERVAL_SECS=0
         # disables entirely (a "restart" decision, like the loops above); the
         # cadence itself is re-read live inside the loop. Detection only records
@@ -1060,6 +1165,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
     app.state.discord_identities = discord_identities
     app.state.discord_service = discord_service
     app.state.ticket_assistant = ticket_assistant
+    app.state.triage = triage
     # Replaced by the lifespan with the tasks it actually started (if any).
     app.state.ticket_task = None
     app.state.discord_task = None

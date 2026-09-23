@@ -122,7 +122,7 @@ clients share one bucket). The bundled TLS profile sets this for you.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `KENNY_BACKUP_INTERVAL_SECS` | `21600` (6 h) | Scheduled-backup loop interval; `0` disables (restart to re-enable). Re-read live, so a dashboard change retimes the running loop. |
+| `KENNY_BACKUP_INTERVAL_SECS` | `21600` (6 h) | Scheduled-backup loop interval; `0` pauses automatic backups. Re-read live, so a dashboard change retimes, pauses or resumes the running loop. |
 | `KENNY_BACKUP_INITIAL_DELAY` | `30` | Delay before the first scheduled backup after startup. |
 | `KENNY_BACKUP_RETENTION` | `7` | Snapshots kept per target before older ones are pruned. |
 | `KENNY_BACKUP_DIR` | `<dir of KENNY_DB_PATH>/backups` | Where local snapshots are written — the directory to point an external sync tool at. |
@@ -169,9 +169,9 @@ connected, install the optional dependency first: `pip install -e ".[discord]"`.
 
 Everything above except the bot token and the webhook URL (secrets, env-only) is also
 editable from the dashboard's **[Admin](dashboard.md#admin) → Discord & Tickets** section —
-most apply immediately, and `KENNY_DISCORD_ENABLED`/`KENNY_DISCORD_GUILD_IDS`/
-`KENNY_TICKET_SWEEP_INITIAL_DELAY` need a restart, exactly like the other loop-startup
-settings on this page.
+most apply immediately, and `KENNY_DISCORD_ENABLED`/`KENNY_TICKET_SWEEP_INITIAL_DELAY`
+need a restart, exactly like the other loop-startup settings on this page. The dashboard
+marks a stored change that waits for one as **RESTART PENDING**.
 
 > **Security:** if `KENNY_OPERATOR_TOKEN` is unset the server uses a loud, insecure dev token. Always
 > set real tokens and serve over `wss`/`https` for anything non-local. See

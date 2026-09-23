@@ -21,11 +21,13 @@ export interface KeyValueRowProps {
   action?: KeyValueRowAction
   /** The Admin-style trailing source chip (default/env/custom — see `ConfigSource`). */
   sourceBadge?: KeyValueRowSourceBadge
+  /** A state chip shown before the source chip, e.g. a change waiting for a restart. */
+  flag?: KeyValueRowSourceBadge
   className?: string
 }
 
 /** The label / help / value / action row shared by Profile and Admin. */
-export default function KeyValueRow({ label, help, value, action, sourceBadge, className }: KeyValueRowProps) {
+export default function KeyValueRow({ label, help, value, action, sourceBadge, flag, className }: KeyValueRowProps) {
   return (
     <div className={`${styles.row}${className ? ` ${className}` : ''}`}>
       <div className={`${styles.labelWrap} kc-cell`}>
@@ -33,6 +35,11 @@ export default function KeyValueRow({ label, help, value, action, sourceBadge, c
         {help && <div className={styles.help}>{help}</div>}
       </div>
       <span className={`${styles.value} kc-value`}>{value}</span>
+      {flag && (
+        <span className={`${styles.sourceBadge} kc-caps`} style={{ color: flag.color }}>
+          {flag.label}
+        </span>
+      )}
       {sourceBadge && (
         <span className={`${styles.sourceBadge} kc-caps`} style={{ color: sourceBadge.color }}>
           {sourceBadge.label}

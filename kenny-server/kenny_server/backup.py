@@ -26,7 +26,7 @@ import re
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import aiosqlite
 
@@ -99,9 +99,13 @@ class BackupManager:
         target_store: BackupTargetStore,
         *,
         backup_dir: str | None = None,
+        retention: Callable[[], int] | None = None,
     ) -> None:
         self.db_path = db_path
         self.target_store = target_store
+        # How many backups each target keeps, asked for on every prune so the
+        # operator's KENNY_BACKUP_RETENTION applies from the next run on.
+        self._retention = retention or (lambda: self.DEFAULT_RETENTION)
         self.backup_dir = backup_dir or os.path.join(
             os.path.dirname(os.path.abspath(db_path)) or ".", "backups"
         )
@@ -194,7 +198,7 @@ class BackupManager:
     async def prune(self, retention: int | None = None) -> dict[str, int]:
         """Prune every active target down to ``retention`` newest backups."""
 
-        retention = retention if retention is not None else self.DEFAULT_RETENTION
+        retention = retention if retention is not None else self._retention()
         results: dict[str, int] = {}
         for target_id, dest in await self._active_targets():
             try:

@@ -26,6 +26,8 @@ function initialEditValue(row: AdminRow): string {
  * min/max for `int`/`float`, otherwise text — plus RESET when the value is
  * a `custom` override. Rows the server would reject (`row.editable === false`,
  * the server's own `SettingSpec.writable`) never get an edit control at all.
+ * A `restart` setting says so in its editor, and carries a RESTART PENDING
+ * chip while its stored value is not yet the one the server runs with.
  */
 export default function EditableSettingRow({ row }: EditableSettingRowProps) {
   const queryClient = useQueryClient()
@@ -76,6 +78,7 @@ export default function EditableSettingRow({ row }: EditableSettingRowProps) {
         label={row.label}
         help={row.help}
         value={row.value === null || row.value === '' ? <span style={{ color: 'var(--text-faint)' }}>not set</span> : String(row.value)}
+        flag={row.pendingRestart ? { label: 'RESTART PENDING', color: 'var(--warn)' } : undefined}
         sourceBadge={{ label: CONFIG_SOURCE_LABEL[row.source], color: CONFIG_SOURCE_COLOR[row.source] }}
         action={row.editable ? { label: 'EDIT', onClick: openEditor } : undefined}
       />
@@ -89,6 +92,9 @@ export default function EditableSettingRow({ row }: EditableSettingRowProps) {
       <div className={styles.meta}>
         <div className={styles.label}>{row.label}</div>
         {row.help && <div className={styles.help}>{row.help}</div>}
+        {row.lifecycle === 'restart' && (
+          <div className={styles.help}>Takes effect after the server restarts.</div>
+        )}
       </div>
       <div className={styles.editor}>
         <div className={styles.controlRow}>

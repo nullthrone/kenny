@@ -243,8 +243,7 @@ class DiscordService:
         # itself is shared with the dashboard surface, so this stays a
         # per-call parameter threaded through ``run_turn``/``resume`` rather
         # than mutating ``assistant.model``.
-        self._model_override = model_override
-        self.model = model_override or assistant.model
+        self.model_override = model_override
         self._limiter = _RateLimiter(rate_limit_per_hour, clock=clock)
         # Registers this surface as a default notification target for
         # ``resume_expired`` (an expired gate has no per-call caller) and for
@@ -261,6 +260,20 @@ class DiscordService:
         # reason where they configured it, not only in a log line they will
         # never read.
         self.startup_error: str | None = None
+
+    @property
+    def model(self) -> str:
+        """The model a Discord-driven turn runs on right now."""
+
+        return self.model_override or self.assistant.model
+
+    @property
+    def rate_limit_per_hour(self) -> int:
+        return self._limiter.limit
+
+    @rate_limit_per_hour.setter
+    def rate_limit_per_hour(self, limit: int) -> None:
+        self._limiter.limit = limit
 
     async def _drive_turn(
         self,
@@ -283,7 +296,7 @@ class DiscordService:
             seed_events=seed_events,
             count_turn=count_turn,
             surfaces=(self,),
-            model_override=self._model_override,
+            model_override=self.model_override,
         ):
             pass
 
@@ -969,7 +982,7 @@ class DiscordService:
             ticket.id,
             decided_by=principal,
             surfaces=(self,),
-            model_override=self._model_override,
+            model_override=self.model_override,
         )
 
     async def _decide_consent(

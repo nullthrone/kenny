@@ -28,6 +28,8 @@ function modeRow(value: string): AdminRow {
     min: null,
     max: null,
     isSet: true,
+    lifecycle: 'live',
+    pendingRestart: false,
   }
 }
 
