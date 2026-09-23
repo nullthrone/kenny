@@ -37,8 +37,8 @@ approval and state change underneath it. Four things can open one:
   automatically, so a Defender-disabled or a failing-disk notification arrives with
   somewhere to work it, not just a push you have to remember. An alert-origin ticket has no
   requester — it belongs to the fleet, not a person — so only an operator can see or drive it.
-  **Which events do this is configurable** — the **Auto-ticket rules** section of
-  [Admin](dashboard.md#auto-ticket-rules) lets you narrow it (e.g. stop offline PCs from
+  **Which events do this is configurable** — the auto-ticket rules in
+  [Admin → Alarm rules](dashboard.md#alarm-rules) let you narrow it (e.g. stop offline PCs from
   opening tickets) or widen it (e.g. promote an inventory change, like a new local admin
   account, into one). See
   [Alerting → which events open a ticket](alerting.md#which-events-open-a-ticket-is-configurable).
@@ -135,6 +135,10 @@ default 2 days) — a housekeeping sweep that runs alongside the alert and backu
 anything the requester has to do. `closed` is final: reopening it is not possible, only the
 `resolved` window before auto-close is the undo window.
 
+These lifetimes — reminder, escalation, drop, auto-close — like the approval TTL below and
+transcript retention, are set in [Admin → Tickets](dashboard.md#tickets) or in the
+environment; a value saved in Admin wins.
+
 An operator can call a ticket `resolved` from `new` or `in_progress` — including one
 blocked on `approval` (a duplicate, or something that fixed itself before kenny got to it).
 Resolving one that is still sitting on a pending approval request denies that request
@@ -224,8 +228,9 @@ suppression rule** — a suggestion only; creating one stays yours.
 
 ### Letting kenny close what it checked
 
-Off by default. With **Let triage resolve a ticket** (`KENNY_TRIAGE_RESOLVE`) on, kenny
-may set a ticket to `resolved` itself — but only when all three hold:
+Off by default. With **Let triage resolve a ticket** (`KENNY_TRIAGE_RESOLVE`, in
+**Admin → AI**) on, kenny may set a ticket to `resolved` itself — but only when all three
+hold:
 
 1. the verdict is one that can close anything (never *actionable* or *inconclusive*),
 2. **a read-only check actually ran and actually succeeded** on that ticket, and
@@ -272,7 +277,7 @@ runs and still writes its findings, you just make the call. That is the sensible
 start: read a few weeks of verdicts, then decide whether they earn the switch.
 
 Turn the whole thing off with **Investigate new tickets automatically**
-(`KENNY_TRIAGE_ENABLED`); tickets then arrive uninvestigated, as they did before. It also
+(`KENNY_TRIAGE_ENABLED`) in **Admin → AI**; tickets then arrive uninvestigated. It also
 stays off entirely without an `ANTHROPIC_API_KEY` — there is nothing to investigate with.
 
 See [ADR-0056](adr/0056-unprompted-ticket-triage.md) for the reasoning and the three
@@ -307,24 +312,24 @@ machines a person may ask about**, so it is worth getting right. There are two w
 create it, both landing in the same table and both logged:
 
 **A — the person links themselves.** They run `/link` in Discord. Kenny opens a
-short-lived claim and hands back a code; you confirm it in **Admin → Discord & Tickets →
+short-lived claim and hands back a code; you confirm it in **Admin → Discord →
 Pending claims**, picking which kenny account it belongs to. The claim expires on its own
 if nobody confirms it.
 
-**B — you link them directly.** In **Admin → Discord & Tickets**, **Pick a guild member**
-lists everyone in the server (this needs the **Guild Members** intent — see below) and
+**B — you link them directly.** In **Admin → Discord → Link manually**, the guild-member
+picker lists everyone in the server (this needs the **Guild Members** intent — see below) and
 lets you bind one straight to a kenny account, no code required.
 
 <figure markdown>
-  ![The Discord panel in Admin.](assets/screenshots/admin.png)
-  <figcaption>Admin → Discord & Tickets: connection status, linked accounts, pending claims, and the guild-member picker.</figcaption>
+  ![The Admin page.](assets/screenshots/admin.png)
+  <figcaption>The Admin page; Admin → Discord holds the bot settings, connection status, pending claims, linked identities, and the guild-member picker.</figcaption>
 </figure>
 
 Either way, the person can check what kenny thinks of them with `/whoami` — their
 kenny account, role, capability profile, and which PCs it can see. That command exists
 specifically so a mis-mapping is visible to the person it affects, not silent.
 
-An account can be **unlinked** at any time (Admin → Discord & Tickets → the trash icon on
+An account can be **unlinked** at any time (Admin → Discord → **Unlink** on
 a linked row); a disabled/removed mapping makes that Discord user completely inert
 again — no ticket, no reply, no model call, exactly as if they had never linked.
 
@@ -537,12 +542,13 @@ is defence in depth, not the control.
 
 ### 6. Switch it on
 
-Set `KENNY_DISCORD_ENABLED=1` and restart. The bot connects on startup; nothing happens
-before that, and nothing happens at all without a token.
+Set `KENNY_DISCORD_ENABLED=1` (or turn on **Discord bot enabled** in **Admin → Discord**)
+and restart. The bot connects on startup; nothing happens before that, and nothing happens
+at all without a token.
 
 ### Checking it actually worked
 
-**Admin → Discord & Tickets** shows the gateway status. Three things it will tell you:
+**Admin → Discord** shows the gateway status. Three things it will tell you:
 
 - **connected** — the gateway is up.
 - **failed to start** with a reason — most often the optional `discord.py` dependency is
@@ -566,7 +572,7 @@ for why Discord roles are never read as authorization, however tempting that sho
 ## See also
 
 - [`dashboard.md`](dashboard.md) — the Inbox, its inline approval gates, and the Admin →
-  Discord & Tickets panel, widget by widget.
+  Discord, Tickets and AI sections, widget by widget.
 - [`tools.md`](tools.md) — the three tool tiers and the full confirm-gate table.
 - [`alerting.md`](alerting.md) — how an alert opens a ticket, how to configure which ones do,
   and the Discord webhook notification channel.

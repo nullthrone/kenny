@@ -59,7 +59,7 @@ gate what each destination shows:
 
 - **Superuser** — everything, including Admin's **Users** section.
 - **Operator** — the whole fleet (all hosts, all fleet operations), the Inbox, the Log,
-  and Admin's **Updates** and **Auto-ticket rules** sections — but not user management and
+  and Admin's **Updates** and **Alarm rules** sections — but not user management and
   not the rest of Admin.
 - **User** — only the hosts assigned to them: they see and can operate on those hosts on
   Fleet, and can open and work their own tickets in the Inbox, but cannot remove a host
@@ -334,7 +334,7 @@ A ticket waiting for an approval says so; answering it is one click further on, 
 drawer, beside the frozen call it would run.
 
 A standing critical or warning finding reaches this queue only as the ticket an
-[auto-ticket rule](#auto-ticket-rules) opened from it. A finding with no ticket — a rule
+[auto-ticket rule](#alarm-rules) opened from it. A finding with no ticket — a rule
 set to `never`, or a ticket somebody cancelled — is read where it is derived, on
 [Fleet](#the-host-page) and [Today](#today). The queue carries cases, not conditions
 (ADR-0059).
@@ -517,58 +517,112 @@ where [alerts](alerting.md) land as an audit trail, and where the
 
 <figure markdown>
   ![The Admin page](assets/screenshots/admin.png)
-  <figcaption>Admin's section nav: catalog sections plus Backup, Updates, Discord & Tickets, Auto-ticket rules, Users, and read-only Environment.</figcaption>
+  <figcaption>Admin with Alerts & notifications open; the section nav lists Alerts & notifications, Alarm rules, AI, Tickets, Discord, Backup, Updates, Web filter, Shell policy, System, and Users.</figcaption>
 </figure>
 
 *(`#/admin/{section}` — a superuser sees every section; an operator sees only
-[Updates](#updates) and [Auto-ticket rules](#auto-ticket-rules))*
+[Updates](#updates) and [Alarm rules](#alarm-rules))*
 
-A left section nav picks one group at a time: **Alerting & Digest**, **Web filter**,
-**Chat & AI**, **Shell policy**, **Backup**, **Updates**, **Discord & Tickets**,
-**Auto-ticket rules**, **Users**, and **Environment (read-only)** — grouped exactly as
-`config.py`'s catalog.
+A left section nav picks one section at a time: **Alerts & notifications**, **Alarm
+rules**, **AI**, **Tickets**, **Discord**, **Backup**, **Updates**, **Web filter**,
+**Shell policy**, **System**, and **Users**. Every section except Alarm rules and Users is
+a group of `config.py`'s settings catalog, in the catalog's order; Alarm rules sits right
+after the alerts it governs.
 
-Every configurable row shows its **label**, its **current value**, and a **source
-badge** — `default`, `env`, or `custom` — telling you where that value came from. A row
-sourced from the environment is **read-only**: the server rejects a write to it with 403,
-so the row renders with no editable control rather than one guaranteed to fail. A custom
-row can be **reset** back to its environment/default value.
+**Everything Admin shows can be changed there.** `GET /api/settings` lists only the
+settings the dashboard can write. Bootstrap, network, auth and secret settings, and the
+cadence of the background loops, are set in the server environment and never appear in
+the dashboard — see [Environment variables](setup.md#environment-variables). Beside its
+settings, a section shows the state they act on: the Discord connection, the backup list,
+the update rollout.
 
-### Alerting & Digest
+Every setting row shows its **label**, its **current value**, and a **source badge** —
+`DEFAULT`, `ENV`, or `CUSTOM` — telling you where that value came from. A value saved here
+is `CUSTOM` and wins over the environment; **reset to default** drops it, so the setting
+falls back to the environment or the built-in default. A secret shows only as *set* /
+*not set* and can be replaced but never read back. Settings apply immediately, except
+**Discord bot enabled**, which takes effect on the next server restart: its editor says so,
+and the row carries a **RESTART PENDING** chip while a stored change waits for one.
 
-The ntfy topic, webhook URL, weekly-digest schedule, and alert cooldown — see
-[Alerting & digests](alerting.md).
+### Alerts & notifications
 
-### Web filter
+The alert cooldown and offline threshold, the weekly-digest schedule, and the push
+channels — ntfy topic and token, generic webhook, Discord webhook — see
+[Alerting & digests](alerting.md). Two buttons check them without waiting for a real
+alert:
 
-A fleet-wide roster: which hosts have the web filter turned on, and each one's headline
-state at a glance. This roster is a read surface, not a duplicate editor — click through
-to a host's own [Web filter section modal](#web-filter) on [its page](#the-host-page) to
-actually change `enabled`, `block_mode`, `use_external_adult`,
-`use_bypass_protection`, `doh_policy`, or the domain list, since filtering is a per-host,
-per-agent configuration and editing stays where the API is.
+- **Send test notification** (`POST /api/notify/test`) sends one test message through
+  every configured channel directly — not through the alert engine, so it opens no ticket
+  and touches no cooldown — and lists each channel as `delivered` or
+  `failed · <reason>`. With no channel configured, it says so.
+- **Preview digest** (`GET /api/digest/preview`) renders the weekly digest as it would go
+  out now, without sending it.
 
-### Chat & AI
+### Alarm rules
 
-The chat model, whether an Anthropic API key is set, and whether AI recommendations are
-enabled on flagged sections.
+*(operator+ — like Updates, this section has no settings-catalog group behind it, so it's
+the same for every operator+ role)*
 
-### Shell policy
+The two fleet policies on what an alarm leads to.
 
-What `powershell_exec` and `shell_exec` may run across the whole fleet
-([ADR-0064](adr/0064-fleet-wide-shell-execution-mode.md)). Three things on one page:
+**Auto-ticket rules.** Which alerts open a ticket automatically is operator policy, not a
+fixed rule — see
+[Alerting → which events open a ticket is configurable](alerting.md#which-events-open-a-ticket-is-configurable).
+By default every genuine alert opens a ticket and nothing else does; each rule here either
+narrows that (`never` on a noisy offline PC) or widens it (`open_all` on an inventory
+change). A rule names an event type, an optional section and host, and a decision (`open`
+/ `open if crit` / `never`); rules are most-specific-wins. Removing a fleet-wide rule asks
+for confirmation, since it changes behaviour on every PC.
 
-- The **mode** — `unrestricted` (the default), `allowlist`, or `off`.
-- The **allow rules**, used only in `allowlist` mode. A command must match one *in full*:
-  a rule of `uname -a` does not admit `uname -a; rm -rf /`. An empty list under this mode
-  blocks every shell call on every host, and the page says so rather than letting you find
-  out from a refusal.
-- The **deny rules** — the operator's own, which you can add and remove here, and the
-  built-in catalog below them, read-only because every agent compiles it in. Deny is
-  checked first in every mode, so an allow rule can never lift one.
+**Reliability suppressions.** Reliability event patterns that never count against a
+host's health, every rule in one list — fleet-wide and per host — each with **Remove**.
+Removing a fleet-wide rule asks for confirmation, since it re-arms the alarm on every PC.
+**Add suppression** takes an **event id**, an optional **source** (empty matches any
+source), an optional **host** (empty means fleet-wide), and an optional note. The host
+page's [Reliability section](#reliability) suppresses a pattern from the event itself; see
+[Alarm suppression](telemetry.md#alarm-suppression) and
+[ADR-0041](adr/0041-reliability-alarm-suppression.md).
 
-Superuser-only, and deliberately: an account that can run a shell command must not also be
-able to widen what may be run.
+### AI
+
+The model and the assistant's limits:
+
+- **Chat model** — the Anthropic model id for Ask kenny, the ticket assistant, and triage.
+- **Discord model** — the model for Discord-driven turns; empty uses the chat model.
+- **Investigate new tickets automatically** (on by default) — kenny runs one read-only
+  check on the PC and writes the finding into the ticket before you open it.
+- **Let triage resolve a ticket** (off by default) — with it on, an alert-opened ticket
+  whose investigation reached a closing verdict *and* actually ran a check is set to
+  `resolved`, still inside its normal reopen window.
+- **Triage steps per ticket** — how many model round-trips one investigation may take.
+- **Assistant turns per ticket** — the cap on the turns the ticket assistant takes on one
+  ticket, on the dashboard and in Discord alike, before it is handed to an operator.
+
+Every AI feature is inert without an `ANTHROPIC_API_KEY`, which is set in the environment.
+See [Tickets → kenny looks first](itsm.md#kenny-looks-first-before-you-are-asked-to).
+
+### Tickets
+
+The lifetimes the ticket sweeper enforces: how long an approval or consent waits for a
+decision, the reopen window before a resolved ticket is auto-closed, when a stalled ticket
+gets a reminder and when it is escalated to an operator, when an untouched ticket is given
+up, and how long a closed ticket keeps its raw working transcript. `0` switches off the
+timer it belongs to. See
+[Tickets → the lifecycle](itsm.md#the-lifecycle-in-plain-language).
+
+### Discord
+
+The settings first: **Discord bot enabled** (applies on the next restart), the **allowed
+guild IDs** (empty means deny everywhere), the **support** and **operator** channel IDs,
+**use private threads**, and the per-user **requests per hour**. Below them, the state
+they act on: a **status** card (connected or not, the model in use, the guild count, a
+startup error, and a warning when the Message Content intent is missing), the **pending
+claims** table for enrollment path A (`/link` in Discord), the **linked identities** (with
+an unlink button), and **link manually** for enrollment path B, with a guild-member picker.
+See [Enrollment: linking a Discord account](itsm.md#enrollment-linking-a-discord-account).
+
+Without a bot token (`KENNY_DISCORD_BOT_TOKEN`, set in the environment) the section shows
+the settings and a **No bot token** note in place of the rest.
 
 ### Backup
 
@@ -581,27 +635,28 @@ and gives an operator a way to trigger, inspect, and restore them without touchi
 host filesystem by hand. See [ADR-0039](adr/0039-server-database-backup-and-restore.md)
 for the full rationale.
 
-- **Status** — the most recent backup's age, the total count and size on disk, and the
-  local `backups/` directory path. *Point your sync tool at this directory, never at
-  `kenny.sqlite` itself.* Interval and retention are catalog rows in this same section,
-  not separate inline fields.
-- **Backup now** — triggers an out-of-schedule snapshot immediately (`VACUUM INTO`, so it
-  never blocks concurrent reads/writes).
+- **Settings** — **backup interval** (`0` pauses automatic backups; a change retimes the
+  running loop) and **backup retention** (the newest *N* kept per target). The local
+  backups directory itself is set in the environment (`KENNY_BACKUP_DIR`, by default a
+  `backups/` directory next to the database). *Point your sync tool at that directory,
+  never at `kenny.sqlite` itself.*
+- **Create backup now** — triggers an out-of-schedule snapshot immediately (`VACUUM INTO`,
+  so it never blocks concurrent reads/writes).
+- **Backup list** — every known snapshot, newest first: name, timestamp, size, trigger
+  (scheduled vs. manual), and which target(s) hold a copy. Per row: **Download**,
+  **Verify** (re-checks integrity on demand and shows the result inline), **Restore**
+  (stages the chosen backup and restarts the server to apply it — a confirmation dialog
+  spells this out before you can proceed, since restore is the most destructive action in
+  the product), and **Delete**.
 - **Remote targets** — optional, operator-configured push destinations in addition to the
   always-on local copy: **HTTP** (POST to a simple API), **SCP/SFTP**, or **FTP/FTPS**.
   Add, edit, enable/disable, **test the connection**, or remove a target; credential
   fields are write-only — they show as *set* or *not set*, never echoed back.
-- **Backup list** — every known snapshot (local and remote), newest first: timestamp,
-  size, trigger (scheduled vs. manual), an integrity badge, and which target(s) hold a
-  copy. Per row: **Download**, **Verify** (re-checks integrity on demand), **Restore**
-  (stages the chosen backup and restarts the server to apply it — a confirmation dialog
-  spells this out before you can proceed, since restore is the most destructive action in
-  the product), and **Delete**.
 
 ### Updates
 
 *(operator+ — one of the two sections an operator's Admin nav shows, alongside
-[Auto-ticket rules](#auto-ticket-rules))*
+[Alarm rules](#alarm-rules))*
 
 kenny checks for newer agent releases (GitHub Releases) and a newer server image (GHCR,
 read-only) on a schedule and shows both here — see
@@ -612,8 +667,10 @@ Detection never applies anything by itself; every rollout is an explicit operato
   **digest-pinned** `docker pull …@sha256:… && docker compose up -d` for you to run. kenny
   cannot replace its own running container, so this stays a shown command rather than an
   automated pull.
-- **Agent fleet** — the latest known agent version, whether auto-apply-on-connect is on,
-  and a **check now** button.
+- **Agent rollout** — the latest known agent version and when it was checked, **auto-apply
+  on connect** with a **turn on** / **turn off** button (superuser only; off by default, and
+  it never starts a rollout by itself — a campaign must still be approved), and a
+  **check now** button.
 - **Rollout campaign** — with no active campaign, **approve rollout** pins the latest
   known agent version into a new campaign. Once approved, the campaign shows its pinned
   version and whether on-connect auto-apply is on, plus:
@@ -647,48 +704,51 @@ agent and a second, independent **rollout campaign (dev)** — a stable and a de
 can be active at the same time, since they target different agents. See
 [Dev channel](setup.md#dev-channel-adr-0048) for how an agent moves onto the dev stream.
 
-### Discord & Tickets
+A row below the rollout card sets the **campaign max age** (superuser only): an approved
+campaign auto-expires after this long even if not every agent reached the pinned version
+(default 14 days). How often kenny checks for updates, and which server image it polls, are set in
+the environment.
 
-Below the catalog rows, superusers get a **Discord** panel: a connection-status pill, the
-table of linked accounts (with an unlink button), the **pending claims** table for
-enrollment path A (`/link` in Discord), and **Pick a guild member** for enrollment path B.
-See [Enrollment: linking a Discord account](itsm.md#enrollment-linking-a-discord-account).
-On a server with no Discord identity store configured, the panel says so instead of
-erroring.
+### Web filter
 
-The catalog rows of this group also hold the two switches that decide how much a ticket
-does for itself: **Investigate new tickets automatically** (on by default — kenny runs one
-read-only check on the PC and writes the finding into the ticket before you open it) and
-**Let triage resolve a ticket** (off by default — with it on, an alert-opened ticket whose
-investigation reached a closing verdict *and* actually ran a check is set to `resolved`,
-still inside its normal reopen window). **Triage steps per ticket** bounds how far one
-investigation may go. Both switches are inert without an `ANTHROPIC_API_KEY`. See
-[Tickets → kenny looks first](itsm.md#kenny-looks-first-before-you-are-asked-to).
+The sources of the external block lists and the cap on what is pushed: the **adult**,
+**bypass/VPN**, **gambling**, and **piracy** blocklist URLs, each applied on the next list
+refresh, and **max block domains** — the budget the capped categories share per agent
+(hard cap 10000). How often the lists are refreshed is set in the environment. See
+[Parental controls → External lists](parental-controls.md#external-lists).
 
-### Auto-ticket rules
+Filtering itself is per host: turn it on, pick categories, and edit domains in the host's
+own [Web filter section](#web-filter) on [its page](#the-host-page).
 
-*(operator+ — like Updates, this section has no settings-catalog group behind it, so it's
-the same for every operator+ role)*
+### Shell policy
 
-Which alerts open a ticket automatically is operator policy, not a fixed rule — see
-[Alerting → which events open a ticket is configurable](alerting.md#which-events-open-a-ticket-is-configurable).
-By default every genuine alert opens a ticket and nothing else does; each rule here either
-narrows that (`never` on a noisy offline PC) or widens it (`open_all` on an inventory
-change). A rule names an event type, an optional section and host, and a decision (`open`
-/ `open if crit` / `never`); rules are most-specific-wins. Removing a fleet-wide rule asks
-for confirmation, since it changes behaviour on every PC.
+What `powershell_exec` and `shell_exec` may run across the whole fleet
+([ADR-0064](adr/0064-fleet-wide-shell-execution-mode.md)). Three things on one page:
+
+- The **mode** — `unrestricted` (the default), `allowlist`, or `off`.
+- The **allow rules**, used only in `allowlist` mode. A command must match one *in full*:
+  a rule of `uname -a` does not admit `uname -a; rm -rf /`. An empty list under this mode
+  blocks every shell call on every host, and the page says so rather than letting you find
+  out from a refusal.
+- The **deny rules** — the operator's own, which you can add and remove here, and the
+  built-in catalog below them, read-only because every agent compiles it in. Deny is
+  checked first in every mode, so an allow rule can never lift one.
+
+Superuser-only, and deliberately: an account that can run a shell command must not also be
+able to widen what may be run.
+
+### System
+
+**Log level** (applied immediately) and **snapshot retention** — how long raw telemetry
+snapshots are kept. Snapshots dominate the database's size; lowering retention prunes on
+the next alert cycle (about a minute), and frees space for reuse without shrinking the
+database file.
 
 ### Users
 
 *(superuser only — the whole section is hidden otherwise)*
 
 See [Accounts & roles](#accounts-roles-the-user-menu) above.
-
-### Environment (read-only)
-
-Process-bind values, wire-contract knobs, and secrets, sourced entirely from the
-environment: none of them are writable from here, and a sensitive one shows as *set* /
-*not set* rather than echoed back.
 
 ---
 
@@ -721,7 +781,7 @@ environment: none of them are writable from here, and a sensitive one shows as *
 - **Discord** — a modal showing your own Discord binding(s) (the raw account id only — kenny
   never stores a display name) with an **unlink** button. Linking a Discord account is still
   not self-service: run `/link` in Discord and have an operator confirm the claim in
-  **Admin → Discord & Tickets** (see
+  **Admin → Discord** (see
   [Enrollment: linking a Discord account](itsm.md#enrollment-linking-a-discord-account)).
   Unlinking only takes privilege away, so it needs no operator step.
 - **Set your theme** — persisted per account, independent of the browser you're on.
@@ -847,8 +907,9 @@ restart; a scoped `user` sees the explanation without the button.
 Because the box hangs off the sidebar, it is reached at desktop width — below
 760px the sidebar gives way to the tab bar.
 
-Admin's *Agent distribution* and *Updates* sections cover the staged binary and
-the rollout in operational detail.
+Admin's [Updates](#updates) section covers the rollout in operational detail; where the
+staged binary comes from is set in the environment (see
+[Enabling agent downloads from the GUI](setup.md#enabling-agent-downloads-from-the-gui)).
 
 ---
 
@@ -864,7 +925,13 @@ and the "see the dashboard" links kenny has already posted into Discord all keep
 | `#/tickets` | `#/inbox` |
 | `#/tickets/{id}` | `#/inbox/ticket/{id}` |
 | `#/flagged`, `#/flagged/warn`, `#/flagged/crit` | `#/inbox` |
-| `#/settings`, `#/settings/{section}` | `#/admin`, `#/admin/{section}` — the section slug carries over, except `ticket-rules`, which resolves to `auto-ticket-rules` |
+| `#/settings`, `#/settings/{section}` | `#/admin`, `#/admin/{section}` — the section slug carries over |
+| `#/admin/ticket-rules`, `#/admin/auto-ticket-rules` | `#/admin/alarm-rules` |
+| `#/admin/alerting-digest` | `#/admin/alerts-notifications` |
+| `#/admin/chat-ai` | `#/admin/ai` |
+| `#/admin/discord-tickets` | `#/admin/discord` |
+| `#/admin/logging`, `#/admin/telemetry-limits` | `#/admin/system` |
+| `#/admin/environment`, `#/admin/network-process`, `#/admin/operator-agent-auth`, `#/admin/agent-distribution` | the first Admin section the role can see |
 | `#/backup` | `#/admin/backup` |
 | `#/updates` | `#/admin/updates` |
 

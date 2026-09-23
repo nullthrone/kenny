@@ -2,7 +2,8 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError } from '../../../api/client'
 import EmptyState from '../../../components/EmptyState/EmptyState'
-import type { DiscordClaim, DiscordIdentity, DiscordMember, DiscordStatus } from '../types'
+import type { AdminRow, DiscordClaim, DiscordIdentity, DiscordMember, DiscordStatus } from '../types'
+import GenericSettingsSection from './GenericSettingsSection'
 import shared from '../shared.module.css'
 
 interface DirectoryUser {
@@ -15,8 +16,13 @@ function usernameOf(users: DirectoryUser[] | undefined, id: number): string {
   return users?.find((u) => u.id === id)?.username ?? `user #${id}`
 }
 
-/** Admin → Discord & Tickets. Status, pending `/link` claims, linked identities, manual link. */
-export default function DiscordSection() {
+export interface DiscordSectionProps {
+  /** The Discord group of the settings catalog: whether and where the bot answers. */
+  rows: AdminRow[]
+}
+
+/** Admin → Discord. Settings, then status, pending `/link` claims, linked identities, manual link. */
+export default function DiscordSection({ rows }: DiscordSectionProps) {
   const queryClient = useQueryClient()
   const [manualDiscordId, setManualDiscordId] = useState('')
   const [manualUserId, setManualUserId] = useState('')
@@ -73,15 +79,24 @@ export default function DiscordSection() {
   if (!status.data) return null
 
   if (!status.data.configured) {
-    return <EmptyState title="Discord is not configured" message="No bot token is set for this deployment — ticket linking and mentions are unavailable." />
+    return (
+      <div>
+        <GenericSettingsSection rows={rows} />
+        <EmptyState
+          title="No bot token"
+          message="Set KENNY_DISCORD_BOT_TOKEN in the server environment to connect the bot; the settings above apply once it is."
+        />
+      </div>
+    )
   }
 
   const actionError = [confirmClaim, unlink].map((m) => (m.error instanceof ApiError ? m.error.message : null)).find((m) => m)
 
   return (
     <div>
+      <GenericSettingsSection rows={rows} />
       {actionError && <div className={shared.errorBox}>{actionError}</div>}
-      <div className={shared.card}>
+      <div className={shared.card} style={{ marginTop: 24 }}>
         <div className={shared.cardTitle}>STATUS</div>
         <div className={shared.help}>
           {status.data.connected ? 'connected' : 'not connected'}

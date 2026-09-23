@@ -98,31 +98,23 @@ EXPECTED: dict[str, Any] = {
     "KENNY_DISCORD_GUILD_IDS": (frozenset({"g1", "g2"}), frozenset({"g1", "g2"})),
 }
 
-# Live settings in the same groups whose consumer reads ``Settings`` on every
-# use instead of holding the value: nothing to bind.
-READ_PER_USE = {
-    "KENNY_DISCORD_WEBHOOK_URL",  # notify.NotifierProvider, per dispatch
-    "KENNY_TICKET_SWEEP_INTERVAL_SECS",  # tickets.ticket_sweep_loop, per pass
-}
-
-
 def _expected(key: str) -> Any:
     return EXPECTED.get(key, BOUND[key][0])
 
 
-def test_every_live_ticket_discord_and_chat_setting_is_bound_or_read_per_use() -> None:
-    """A new ``live`` key in these groups must join ``BOUND`` or ``READ_PER_USE``.
+def test_every_live_ai_ticket_and_discord_setting_is_bound() -> None:
+    """A new ``live`` key in these groups must join ``BOUND``.
 
-    Otherwise it is a label the running server does not honour.
+    Their consumers hold values in attributes; a key that is not bound is a
+    label the running server does not honour.
     """
 
     live = {
         key
         for key, spec in CATALOG.items()
-        if spec.lifecycle == "live"
-        and (spec.group == "Discord & Tickets" or key == "KENNY_CHAT_MODEL")
+        if spec.lifecycle == "live" and spec.group in ("AI", "Tickets", "Discord")
     }
-    assert live == set(BOUND) | READ_PER_USE
+    assert live == set(BOUND)
 
 
 def _build(db_path: str) -> Any:

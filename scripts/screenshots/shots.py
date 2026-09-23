@@ -240,7 +240,7 @@ MANIFEST: list[Shot] = [
     # -- Admin ----------------------------------------------------------------
     Shot(
         name="admin",
-        hash="#/admin/alerting-digest",
+        hash="#/admin/alerts-notifications",
         mode="full_page",
         theme="light",
         actions=[{"wait_for": ".kc-adminnav a"}, {"sleep": 500}],

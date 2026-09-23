@@ -114,8 +114,8 @@ condition, its return is news again.
 
 By default, every genuine alert — a health escalation, an agent going offline, a disk-fill
 forecast — opens a ticket, and a recovery, an inventory change, and the weekly digest never
-do. An operator can narrow or widen that per fleet or per host from the **Auto-ticket
-rules** section of [Admin](dashboard.md#auto-ticket-rules), or via the `ticket_rule_*`
+do. An operator can narrow or widen that per fleet or per host from **Admin → Alarm
+rules** ([auto-ticket rules](dashboard.md#alarm-rules)), or via the `ticket_rule_*`
 MCP tools. Each rule names an event type (`health` / `offline` / `disk_forecast` /
 `change`), an optional section and host, and a decision: `open_all` (always), `open_crit`
 (only when the subject is `crit`) or `never`.
@@ -151,7 +151,7 @@ had cleared.
 
 This includes clearing it by decision rather than by repair: adding a reliability
 suppression rule re-evaluates the affected hosts immediately, which produces the ordinary
-recovery transition, which closes the ticket. Muting a pattern now takes back the work it
+recovery transition, which closes the ticket. Muting a pattern takes back the work it
 created instead of leaving it in the queue.
 
 ## Change notifications
@@ -208,7 +208,8 @@ time.
   last-sent time is persisted so a restart never double-sends, and the first digest
   arrives at the next scheduled slot rather than on install.
 - Only sent if `KENNY_DIGEST_ENABLED` is on **and** at least one notifier is configured.
-- Preview it without sending via the operator-only endpoint **`GET /api/digest/preview`**.
+- Preview it without sending via **Preview digest** in **Admin → Alerts & notifications**,
+  or the operator-only endpoint **`GET /api/digest/preview`**.
 
 ## Notification channels
 
@@ -221,7 +222,7 @@ HTTP POST each):
 | **Generic webhook** | `KENNY_WEBHOOK_URL` | JSON POST (`kind`, `title`, `body`, `priority`, `tags`, `agent_id`, `event_type`, `sections`, `at`) |
 | **Discord** | `KENNY_DISCORD_WEBHOOK_URL` | JSON POST of a Discord embed — title, body as the description, priority as the embed colour, and `kind` / `agent_id` as fields |
 
-Set them in **Admin → Alerting & Digest**, or in the environment. A value saved in the
+Set them in **Admin → Alerts & notifications**, or in the environment. A value saved in the
 dashboard wins over the environment and takes effect on the next alert, with no restart.
 Clearing the field turns the channel off — it does not fall back to the environment value,
 because a field an operator has just emptied should not keep delivering. Resetting the row
@@ -235,10 +236,17 @@ Delivery is strictly best-effort: send errors are logged and swallowed, a dead t
 never stalls or kills the loop. **With no channel configured, evaluation still runs and
 records alert history — it just pushes nothing.**
 
+To check the channels without waiting for a real alert, **Send test notification** in the
+same Admin section (superuser only, `POST /api/notify/test`) sends one test message through
+every configured channel directly — not through the alert engine, so it opens no ticket and
+touches no cooldown — and lists each channel as `delivered` or `failed · <reason>`.
+
 ## Configuration
 
-The four channel keys below are editable in **Admin → Alerting & Digest**; the rest are
-read at startup and need a restart. See [`setup.md`](setup.md) for the full list.
+Every key below except `KENNY_ALERT_INTERVAL_SECS` is also editable in **Admin → Alerts &
+notifications**, where a saved value wins over the environment and applies on the next
+alert pass. `KENNY_ALERT_INTERVAL_SECS` is set in the environment only and read at startup.
+See [`setup.md`](setup.md) for the full list.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|

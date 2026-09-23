@@ -125,7 +125,7 @@ Set automatically by `capture.py`, but override-able:
 
 | var | value | why |
 |-----|-------|-----|
-| `KENNY_OPERATOR_TOKEN` | `demo-operator-token` | legacy back-compat token, still set so Admin → Operator & Agent Auth shows it configured; the browser itself signs in with a real seeded session, not this token (see `seed.SeedResult.session_id`) |
+| `KENNY_OPERATOR_TOKEN` | `demo-operator-token` | legacy back-compat token, set as a deployment would; the browser itself signs in with a real seeded session, not this token (see `seed.SeedResult.session_id`) |
 | `KENNY_ALERT_INTERVAL_SECS` | `0` | disable the alert loop |
 | `KENNY_WEBFILTER_REFRESH_SECS` | `0` | disable external-list fetches |
 | `KENNY_DB_PATH` | tempfile | throwaway SQLite (removed after the run) |

@@ -128,22 +128,49 @@ async def test_env_only_write_rejected() -> None:
 
 
 async def test_describe_masks_secrets_and_groups() -> None:
-    s = _settings(env={"KENNY_OPERATOR_TOKEN": "s3cret"})
+    s = _settings(env={"KENNY_NTFY_TOKEN": "s3cret"})
     groups = s.describe()
     names = [g["name"] for g in groups]
-    assert "Alerting & Digest" in names and "Operator & Agent Auth" in names
+    assert "Alerts & notifications" in names
     flat = {row["key"]: row for g in groups for row in g["settings"]}
-    tok = flat["KENNY_OPERATOR_TOKEN"]
+    tok = flat["KENNY_NTFY_TOKEN"]
     assert tok["value"] is None and tok["is_set"] is True and tok["sensitive"] is True
     # a non-secret live setting exposes its value + source
     cd = flat["KENNY_ALERT_COOLDOWN_SECS"]
     assert cd["value"] == 3600 and cd["source"] == "default" and cd["lifecycle"] == "live"
 
 
+async def test_describe_lists_only_what_the_dashboard_can_change() -> None:
+    """Nothing the Admin page renders is read-only: env-only keys stay out."""
+
+    s = _settings(env={"KENNY_OPERATOR_TOKEN": "s3cret", "KENNY_HOST": "0.0.0.0"})
+    rows = [row for g in s.describe() for row in g["settings"]]
+    assert rows and all(row["editable"] is True for row in rows)
+    listed = {row["key"] for row in rows}
+    assert listed == {key for key, spec in CATALOG.items() if spec.writable}
+    assert "KENNY_OPERATOR_TOKEN" not in listed and "KENNY_HOST" not in listed
+
+
 def test_catalog_groups_are_declared() -> None:
-    from kenny_server.config import GROUP_ORDER
+    from kenny_server.config import ENV_GROUP, GROUP_ORDER
     for spec in CATALOG.values():
-        assert spec.group in GROUP_ORDER, f"{spec.key} in undeclared group {spec.group}"
+        if spec.writable:
+            assert spec.group in GROUP_ORDER, f"{spec.key} in undeclared group {spec.group}"
+        else:
+            assert spec.group == ENV_GROUP, f"env-only {spec.key} in UI group {spec.group}"
+
+
+async def test_load_drops_a_stored_override_for_an_env_only_key() -> None:
+    """A key demoted to env-only must not keep a stored value nobody can see."""
+
+    store = _MemStore()
+    await store.set("KENNY_ALERT_INTERVAL_SECS", "5")
+    await store.set("KENNY_ALERT_COOLDOWN_SECS", "120")
+    s = Settings(store, env={}, apply_hooks={})
+    await s.load()
+    assert s.get("KENNY_ALERT_INTERVAL_SECS") == 60
+    assert s.get("KENNY_ALERT_COOLDOWN_SECS") == 120
+    assert await store.all() == {"KENNY_ALERT_COOLDOWN_SECS": "120"}
 
 
 def test_describe_carries_a_slug_per_group() -> None:
@@ -153,18 +180,15 @@ def test_describe_carries_a_slug_per_group() -> None:
     s = _settings()
     slugs = {g["name"]: g["slug"] for g in s.describe()}
     assert slugs == {
-        "Alerting & Digest": "alerting-digest",
-        "Web filter": "web-filter",
-        "Chat & AI": "chat-ai",
-        "Logging": "logging",
-        "Network & Process": "network-process",
-        "Operator & Agent Auth": "operator-agent-auth",
-        "Telemetry limits": "telemetry-limits",
-        "Agent distribution": "agent-distribution",
+        "Alerts & notifications": "alerts-notifications",
+        "AI": "ai",
+        "Tickets": "tickets",
+        "Discord": "discord",
         "Backup": "backup",
         "Updates": "updates",
-        "Discord & Tickets": "discord-tickets",
+        "Web filter": "web-filter",
         "Shell policy": "shell-policy",
+        "System": "system",
     }
     assert len(slugs) == len(set(slugs.values())), "group slugs must be unique"
 
@@ -195,8 +219,8 @@ def test_alert_push_channels_are_writable_and_sensitive() -> None:
         # sensitive "str" would prefill the console's draft with the literal
         # mask text ("set"/"not set") and save that as the channel URL.
         assert spec.type == "secret", key
-    for key in ("KENNY_NTFY_URL", "KENNY_NTFY_TOKEN", "KENNY_WEBHOOK_URL"):
-        assert CATALOG[key].group == "Alerting & Digest"
+    for key in notify.CHANNEL_KEYS:
+        assert CATALOG[key].group == "Alerts & notifications"
 
 
 def test_channel_keys_match_the_catalog() -> None:
@@ -228,13 +252,13 @@ async def test_a_channel_secret_is_never_serialised_back(tmp_path) -> None:
 def test_oauth_ttls_are_in_catalog_with_matching_defaults() -> None:
     # oauth.py's _access_ttl()/_refresh_ttl() fall back to module constants
     # that never flow through Settings; the catalog's coded default must match
-    # them exactly or the read-only row on the page would lie about what the
-    # server actually uses.
+    # them exactly or the catalog would document a default the server does not
+    # use.
     from kenny_server.oauth import _DEFAULT_ACCESS_TTL_SECS, _DEFAULT_REFRESH_TTL_SECS
 
     access = CATALOG["KENNY_OAUTH_ACCESS_TTL_SECS"]
     refresh = CATALOG["KENNY_OAUTH_REFRESH_TTL_SECS"]
-    assert access.group == refresh.group == "Operator & Agent Auth"
+    assert access.group == refresh.group == "Environment"
     assert access.lifecycle == refresh.lifecycle == "env_only"
     assert access.parse(access.default_raw) == _DEFAULT_ACCESS_TTL_SECS
     assert refresh.parse(refresh.default_raw) == _DEFAULT_REFRESH_TTL_SECS
@@ -243,7 +267,7 @@ def test_oauth_ttls_are_in_catalog_with_matching_defaults() -> None:
 def test_sqlite_busy_timeout_is_env_only_and_matches_coded_default() -> None:
     # store._BUSY_TIMEOUT_MS is read once from os.environ at import time
     # (ADR-0051) -- it cannot be changed live, and the catalog's coded default
-    # must match it or the read-only row on the settings page would lie.
+    # must match it or the catalog would document a default the server does not use.
     from kenny_server.store import _BUSY_TIMEOUT_MS
 
     spec = CATALOG["KENNY_SQLITE_BUSY_TIMEOUT_MS"]

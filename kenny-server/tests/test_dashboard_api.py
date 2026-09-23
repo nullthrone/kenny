@@ -136,15 +136,17 @@ def test_audit_requires_auth(tmp_path):
 
 def test_settings_list_shape_and_secret_masking(tmp_path, monkeypatch):
     monkeypatch.setenv("KENNY_OPERATOR_TOKEN", "op-secret")
+    monkeypatch.setenv("KENNY_NTFY_TOKEN", "ntfy-secret")
     monkeypatch.setenv("KENNY_DIGEST_HOUR", "9")
     app = build_app(db_path=str(tmp_path / "settings.sqlite"))
     with TestClient(app) as c:
         r = c.get("/api/settings", headers=_bearer(app))
         assert r.status_code == 200
         groups = r.json()["groups"]
-        assert [g["name"] for g in groups][0] == "Alerting & Digest"
-        # the settings sidebar routes on this slug (#/settings/{slug})
-        assert {g["name"]: g["slug"] for g in groups}["Alerting & Digest"] == "alerting-digest"
+        assert [g["name"] for g in groups][0] == "Alerts & notifications"
+        # the Admin sidebar routes on this slug (#/admin/{slug})
+        slugs = {g["name"]: g["slug"] for g in groups}
+        assert slugs["Alerts & notifications"] == "alerts-notifications"
         assert all(g["slug"] for g in groups)
         flat = {s["key"]: s for g in groups for s in g["settings"]}
         # env source is reported
@@ -152,9 +154,12 @@ def test_settings_list_shape_and_secret_masking(tmp_path, monkeypatch):
         assert flat["KENNY_DIGEST_HOUR"]["source"] == "env"
         # a default-valued live setting
         assert flat["KENNY_ALERT_COOLDOWN_SECS"]["source"] == "default"
-        # the operator token (a secret) is never serialised
-        tok = flat["KENNY_OPERATOR_TOKEN"]
+        # a secret is never serialised, only whether it is set
+        tok = flat["KENNY_NTFY_TOKEN"]
         assert tok["value"] is None and tok["is_set"] is True
+        assert "ntfy-secret" not in r.text
+        # an env-only secret is not listed at all
+        assert "KENNY_OPERATOR_TOKEN" not in flat
         assert "op-secret" not in r.text
 
 

@@ -3,7 +3,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError } from '../../../api/client'
 import EmptyState from '../../../components/EmptyState/EmptyState'
 import { Download, ICON_STROKE_WIDTH } from '../../../components/icons'
-import type { BackupEntry, BackupsResponse, BackupTarget, BackupVerifyResult } from '../types'
+import type { AdminRow, BackupEntry, BackupsResponse, BackupTarget, BackupVerifyResult } from '../types'
+import GenericSettingsSection from './GenericSettingsSection'
 import shared from '../shared.module.css'
 import styles from './BackupSection.module.css'
 import RestoreConfirmModal from './RestoreConfirmModal'
@@ -14,8 +15,13 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
-/** Admin → Backup. Full action set: create, verify, delete, download, restore, and remote targets. */
-export default function BackupSection() {
+export interface BackupSectionProps {
+  /** The Backup group of the settings catalog: interval and retention. */
+  rows: AdminRow[]
+}
+
+/** Admin → Backup. Schedule and retention, then the full action set: create, verify, delete, download, restore, and remote targets. */
+export default function BackupSection({ rows }: BackupSectionProps) {
   const queryClient = useQueryClient()
   const [restoreTarget, setRestoreTarget] = useState<BackupEntry | null>(null)
   const [restoreError, setRestoreError] = useState<string | null>(null)
@@ -65,28 +71,24 @@ export default function BackupSection() {
   if (query.isError) return <EmptyState title="Could not load backups" message="Something went wrong. Reload to try again." />
   if (!query.data) return null
 
-  const { backups, config, targets } = query.data
+  const { backups, targets } = query.data
   const actionError = [create, verify, del, testTarget, deleteTarget]
     .map((m) => (m.isError ? (m.error instanceof ApiError ? m.error.message : 'Something went wrong. Try again.') : null))
     .find((m) => m)
 
   return (
     <div>
-      <p className={styles.intro}>
-        {config.retention != null ? `Keeps ${config.retention} newest` : 'Automatic'}
-        {config.interval_secs ? ` · every ${Math.round(config.interval_secs / 3600)} h` : ''}
-        {config.backup_dir ? ` · ${config.backup_dir}` : ''}
-      </p>
+      <GenericSettingsSection rows={rows} />
 
       {actionError && <div className={shared.errorBox}>{actionError}</div>}
-      <div className={shared.actions} style={{ marginTop: 0, marginBottom: 16 }}>
+      <div className={shared.actions} style={{ marginBottom: 16 }}>
         <button type="button" className={shared.btnPrimary} onClick={() => create.mutate()} disabled={create.isPending}>
           {create.isPending ? 'CREATING…' : 'CREATE BACKUP NOW'}
         </button>
       </div>
 
       {backups.length === 0 ? (
-        <EmptyState title="No backups yet" message="A backup runs automatically on the schedule above, or create one now." />
+        <EmptyState title="No backups yet" message="A backup runs automatically at the interval above, or create one now." />
       ) : (
         <div className={shared.table}>
           {backups.map((b) => {

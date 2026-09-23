@@ -1030,6 +1030,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         ticket_rules=ticket_rules,
         tickets=ticket_service,
         ticket_store=ticket_store,
+        notifier_provider=notifier_provider,
     )
     user_routes = build_user_routes(
         user_store=user_store, registry=registry, store=store, oauth_store=oauth_store

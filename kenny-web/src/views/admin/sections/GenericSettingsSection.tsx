@@ -8,10 +8,9 @@ export interface GenericSettingsSectionProps {
 
 /**
  * The generic renderer for any config group straight off `GET /api/settings`
- * — used for every real group that has no bespoke UI (Alerting & Digest,
- * Chat & AI, Logging, Network & Process, Operator & Agent Auth, Telemetry
- * limits, Agent distribution). Nothing here is hardcoded per-group; the
- * catalog drives it entirely.
+ * — the whole section for a group with no bespoke UI (AI, Tickets, Web filter,
+ * System), and the settings part of every section that has one. Nothing here is
+ * hardcoded per-group; the catalog drives it entirely.
  */
 export default function GenericSettingsSection({ rows }: GenericSettingsSectionProps) {
   return (

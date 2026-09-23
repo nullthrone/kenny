@@ -48,6 +48,12 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 
+from .config import (
+    _DEFAULT_ADULT_URL,
+    _DEFAULT_BYPASS_URL,
+    _DEFAULT_GAMBLING_URL,
+    _DEFAULT_PIRACY_URL,
+)
 from .store import WebFilterStore
 
 logger = logging.getLogger("kenny.webfilter")
@@ -177,21 +183,6 @@ def load_seed() -> frozenset[str]:
 
 # --- category catalog ---------------------------------------------------------
 
-_DEFAULT_ADULT_URL = (
-    "https://raw.githubusercontent.com/StevenBlack/hosts/master/"
-    "alternates/porn-only/hosts"
-)
-_DEFAULT_BYPASS_URL = (
-    "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/"
-    "domains/doh-vpn-proxy-bypass.txt"
-)
-_DEFAULT_GAMBLING_URL = (
-    "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/domains/gambling.txt"
-)
-_DEFAULT_PIRACY_URL = (
-    "https://raw.githubusercontent.com/blocklistproject/Lists/master/piracy.txt"
-)
-
 
 @dataclass(frozen=True)
 class CategorySpec:
@@ -205,10 +196,9 @@ class CategorySpec:
 
     ``url`` is ``None`` for a **local** category: it has no upstream and
     contributes only the per-host custom entries tagged with it (a parent's own
-    "social" or "gaming" list). ``setting_key`` names a
-    :mod:`kenny_server.config` catalog entry when one exists, so an operator's
-    live override wins over the environment; categories added after that catalog
-    was written fall back to ``KENNY_WEBFILTER_<KEY>_URL`` or the default.
+    "social" or "gaming" list). ``setting_key`` names the category's
+    :mod:`kenny_server.config` catalog entry, so an operator's live override wins
+    over the environment.
 
     ``capped`` marks a category whose external extract is subject to
     ``KENNY_WEBFILTER_MAX_BLOCK_DOMAINS``. Bypass protection is deliberately
@@ -244,8 +234,14 @@ CATEGORY_CATALOG: dict[str, CategorySpec] = {
             url=_DEFAULT_BYPASS_URL, setting_key="KENNY_WEBFILTER_BYPASS_URL",
             capped=False,
         ),
-        CategorySpec("gambling", "Gambling", "gambling", url=_DEFAULT_GAMBLING_URL),
-        CategorySpec("piracy", "Piracy / torrents", "piracy", url=_DEFAULT_PIRACY_URL),
+        CategorySpec(
+            "gambling", "Gambling", "gambling",
+            url=_DEFAULT_GAMBLING_URL, setting_key="KENNY_WEBFILTER_GAMBLING_URL",
+        ),
+        CategorySpec(
+            "piracy", "Piracy / torrents", "piracy",
+            url=_DEFAULT_PIRACY_URL, setting_key="KENNY_WEBFILTER_PIRACY_URL",
+        ),
         CategorySpec("social", "Social networks", "social"),
         CategorySpec("gaming", "Gaming", "gaming"),
         CategorySpec("streaming", "Video / streaming", "streaming"),
@@ -397,9 +393,9 @@ class ExternalListCache:
     def _url(self, source: str) -> str:
         """Resolve one source's URL: live setting > env > coded default.
 
-        Only the two categories that predate the settings catalog have a spec
-        there; asking :class:`~kenny_server.config.Settings` for an unlisted key
-        raises, so newer categories resolve through their own env key instead.
+        Every external category has a catalog spec (``setting_key``); without a
+        :class:`~kenny_server.config.Settings` (tests, tools) the category's own
+        env key applies.
         """
 
         spec = CATEGORY_CATALOG[source]

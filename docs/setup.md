@@ -42,7 +42,7 @@ docker compose up --build -d
 
 The server is now on `http://localhost:8000` (data persists on the `kenny-data` volume). Open `/`
 and complete **first-run setup**: the first account you create becomes the **superuser**
-(ADR-0033). From there a superuser manages accounts under the header user menu → *Users*
+(ADR-0033). From there a superuser manages accounts under **Admin → Users**
 (roles `superuser` / `operator` / `user`, per-user host scope, and personal access tokens).
 Claude Desktop connects to `/mcp` through kenny's built-in **OAuth 2.1** flow
 ([ADR-0037](adr/0037-oauth2-authorization-server-for-mcp.md)): add a custom connector with the
@@ -61,6 +61,13 @@ clients share one bucket). The bundled TLS profile sets this for you.
 
 ## Environment variables
 
+Some settings are also editable in the dashboard's [Admin](dashboard.md#admin) page; the
+tables below name the Admin section for each one. A value saved in Admin wins over the
+environment until it is reset there. Every other variable is **environment-only**: it never
+appears in the dashboard, and a stored dashboard value for it is dropped with a warning at
+startup. A background loop whose interval is environment-only (`0` disables it) reads that
+interval at startup.
+
 | Variable | Used by | Default | Purpose |
 |----------|---------|---------|---------|
 | `KENNY_OPERATOR_TOKEN` | server | *insecure dev fallback* | Legacy shared bearer token; still accepted as a **back-compat superuser** for MCP + `/api` after the upgrade to accounts (ADR-0033). Deprecated in favour of per-user access tokens. |
@@ -70,7 +77,7 @@ clients share one bucket). The bundled TLS profile sets this for you.
 | `KENNY_OAUTH_REFRESH_TTL_SECS` | server | `2592000` | Lifetime of a rotating OAuth refresh token (default 30 days); reuse of a rotated token revokes the whole grant. |
 | `KENNY_AGENT_TOKENS` | server | dev map | `id=token,id2=token2` — per-agent tokens (the token store is seeded from this). |
 | `ANTHROPIC_API_KEY` | server | — | Enables the dashboard chat. |
-| `KENNY_CHAT_MODEL` | server | `claude-sonnet-4-6` | Model for the chat loop. |
+| `KENNY_CHAT_MODEL` | server | `claude-sonnet-4-6` | Model for Ask kenny, the ticket assistant and triage. Also editable in Admin → AI. |
 | `KENNY_TLS` | server | unset | Set `1` behind TLS so the login cookie gets the `Secure` flag. |
 | `KENNY_FORWARDED_ALLOW_IPS` | server | `127.0.0.1` | Upstream proxy address(es) allowed to set `X-Forwarded-For`, so the login rate-limiter sees the real client IP behind a reverse proxy (not the proxy's). Set to your proxy's address when fronting kenny with the Caddy TLS profile. |
 | `KENNY_PUBLIC_URL` | server | `http://localhost:<port>` | External base URL; used to build installer/update links, the agent `--server` `wss://…/agent/ws`, and the **OAuth** issuer / discovery-metadata / resource URLs. Set it to your public `https://…` origin so Claude Desktop's OAuth flow advertises reachable endpoints. |
@@ -83,7 +90,7 @@ clients share one bucket). The bundled TLS profile sets this for you.
 | `KENNY_AGENT_VERSION` | server | `0.2.0` | **Fallback** version label only — the GitHub release tag of the fetched binary leads (ADR-0015). Used when no tag is known (e.g. a manually-placed binary without a `.version` sidecar). |
 | `KENNY_HOST` / `KENNY_PORT` | server | `127.0.0.1` / `8000` | Bind address (container sets `0.0.0.0`). |
 | `KENNY_DB_PATH` | server | `kenny.sqlite` | SQLite store (snapshots, events, tokens, keys, chat, web filter — one file). Container: `/data/kenny.sqlite`. |
-| `KENNY_TELEMETRY_RETENTION_DAYS` | server | `30` | How long raw telemetry snapshots are kept (dashboard-editable, ADR-0051). Snapshots dominate this database's size (~90 KB/row); lowering this is the main lever on disk usage. A decrease prunes on the next alert cycle (~60s); `DELETE` frees space for reuse but does not shrink the file — restore from a backup or `VACUUM` offline to reclaim disk. |
+| `KENNY_TELEMETRY_RETENTION_DAYS` | server | `30` | How long raw telemetry snapshots are kept (ADR-0051). Also editable in Admin → System. Snapshots dominate this database's size (~90 KB/row); lowering this is the main lever on disk usage. A decrease prunes on the next alert cycle (~60s); `DELETE` frees space for reuse but does not shrink the file — restore from a backup or `VACUUM` offline to reclaim disk. |
 | `KENNY_SQLITE_BUSY_TIMEOUT_MS` | server | `20000` | How long a write waits for a contended SQLite lock before raising "database is locked" (ADR-0051). Read once at process start; not editable at runtime. |
 | `KENNY_TELEMETRY_INTERVAL_SECS` | agent / server | `900` | Agent push interval; also pre-filled into generated installers. |
 | `KENNY_COEXIST_ENABLED` | agent | `1` | Anti-cheat coexistence (ADR-0035): while a protected game runs, the agent suspends `screen_capture` (returns `paused`) and relaxes process/port telemetry. Set `0` to disable. |
@@ -91,7 +98,7 @@ clients share one bucket). The bundled TLS profile sets this for you.
 | `KENNY_COEXIST_POLL_SECS` | agent | `5` | How often the agent checks whether a watched process is running. |
 | `KENNY_COEXIST_TELEMETRY_INTERVAL_SECS` | agent | `3600` | Telemetry push interval while a protected game is running (never shorter than `KENNY_TELEMETRY_INTERVAL_SECS`). |
 | `KENNY_SERVER_VERSION` | server | `0.0.0-dev` | Version string shown on the sidebar's fleet line, in the **About kenny** dialog, and in `/api/about`. |
-| `KENNY_LOG_LEVEL` | server | `INFO` | Root log level. Server logs are also persisted to the event store (ADR-0017). |
+| `KENNY_LOG_LEVEL` | server | `INFO` | Root log level. Server logs are also persisted to the event store (ADR-0017). Also editable in Admin → System, where a change applies immediately. |
 
 **Agent authentication & identity** (ADR-0022 mutual Ed25519 auth, token rotation):
 
@@ -105,36 +112,42 @@ clients share one bucket). The bundled TLS profile sets this for you.
 | `KENNY_MAX_TELEMETRY_BYTES` | `262144` | Per-push byte cap (256 KiB). |
 | `KENNY_MAX_TELEMETRY_SECTIONS` | `128` | Max sections per snapshot. |
 
-**Alerting, digest & notifications** (see **[Alerting & digests](alerting.md)**):
+**Alerting, digest & notifications** (see **[Alerting & digests](alerting.md)**). Every
+key here except `KENNY_ALERT_INTERVAL_SECS` is also editable in Admin → Alerts &
+notifications:
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `KENNY_ALERT_INTERVAL_SECS` | `60` | Alert-evaluation loop interval; `0` disables alerting. |
+| `KENNY_ALERT_INTERVAL_SECS` | `60` | Alert-evaluation loop interval; `0` disables alerting. Environment-only, read at startup. |
 | `KENNY_ALERT_COOLDOWN_SECS` | `3600` | Per-scope flap-suppression cooldown for `warn` transitions. |
 | `KENNY_ALERT_OFFLINE_AFTER_SECS` | `2700` | Mark an agent offline after this long without a push (≈ three missed 15-min pushes). |
 | `KENNY_DIGEST_ENABLED` | `1` | Weekly digest on/off. |
 | `KENNY_DIGEST_DAY` / `KENNY_DIGEST_HOUR` | `mon` / `8` | When to send the weekly digest. |
-| `KENNY_NTFY_URL` / `KENNY_NTFY_TOKEN` | — | ntfy topic URL (+ optional bearer) for push alerts. Also editable in Admin → Alerting & Digest, where a saved value wins over this one. |
-| `KENNY_WEBHOOK_URL` | — | Generic JSON webhook for alerts. Also editable in Admin → Alerting & Digest. |
+| `KENNY_NTFY_URL` / `KENNY_NTFY_TOKEN` | — | ntfy topic URL (+ optional bearer) for push alerts. |
+| `KENNY_WEBHOOK_URL` | — | Generic JSON webhook for alerts. |
 
 **Database backups** (see the **[Backup section](dashboard.md#backup)**,
 [ADR-0039](adr/0039-server-database-backup-and-restore.md)):
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `KENNY_BACKUP_INTERVAL_SECS` | `21600` (6 h) | Scheduled-backup loop interval; `0` pauses automatic backups. Re-read live, so a dashboard change retimes, pauses or resumes the running loop. |
-| `KENNY_BACKUP_INITIAL_DELAY` | `30` | Delay before the first scheduled backup after startup. |
-| `KENNY_BACKUP_RETENTION` | `7` | Snapshots kept per target before older ones are pruned. |
-| `KENNY_BACKUP_DIR` | `<dir of KENNY_DB_PATH>/backups` | Where local snapshots are written — the directory to point an external sync tool at. |
+| `KENNY_BACKUP_INTERVAL_SECS` | `21600` (6 h) | Scheduled-backup loop interval; `0` pauses automatic backups. Also editable in Admin → Backup; re-read live, so a change there retimes, pauses or resumes the running loop. |
+| `KENNY_BACKUP_INITIAL_DELAY` | `30` | Delay before the first scheduled backup after startup. Environment-only. |
+| `KENNY_BACKUP_RETENTION` | `7` | Snapshots kept per target before older ones are pruned. Also editable in Admin → Backup. |
+| `KENNY_BACKUP_DIR` | `<dir of KENNY_DB_PATH>/backups` | Where local snapshots are written — the directory to point an external sync tool at. Environment-only. |
 
 **Parental controls / web filter** (see **[Parental controls](parental-controls.md)**):
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `KENNY_WEBFILTER_REFRESH_SECS` | `86400` | External adult/bypass list refresh interval; `0` disables. |
-| `KENNY_WEBFILTER_ADULT_URL` | StevenBlack list | Source URL for the porn-only hosts list. |
-| `KENNY_WEBFILTER_BYPASS_URL` | hagezi list | Source URL for the DoH/VPN/proxy bypass list. |
-| `KENNY_WEBFILTER_MAX_BLOCK_DOMAINS` | `5000` | Cap on external-adult domains pushed to an agent (hard cap 10 000). |
+| `KENNY_WEBFILTER_REFRESH_SECS` | `86400` | External list refresh interval; `0` disables. Environment-only, read at startup. |
+| `KENNY_WEBFILTER_ADULT_URL` | StevenBlack list | Source URL for the porn-only hosts list. Also editable in Admin → Web filter. |
+| `KENNY_WEBFILTER_BYPASS_URL` | hagezi list | Source URL for the DoH/VPN/proxy bypass list. Also editable in Admin → Web filter. |
+| `KENNY_WEBFILTER_GAMBLING_URL` | hagezi list | Source URL for the gambling list. Also editable in Admin → Web filter. |
+| `KENNY_WEBFILTER_PIRACY_URL` | blocklistproject list | Source URL for the piracy/torrent list. Also editable in Admin → Web filter. |
+| `KENNY_WEBFILTER_MAX_BLOCK_DOMAINS` | `5000` | Cap on external domains of the capped categories pushed to an agent (hard cap 10 000). Also editable in Admin → Web filter. |
+
+A changed source URL applies on the next list refresh.
 
 **Discord bot & tickets** (see **[Tickets & the Discord bot](itsm.md)** for the full
 operator setup walkthrough — creating the Discord application, the two privileged intents,
@@ -154,24 +167,33 @@ connected, install the optional dependency first: `pip install -e ".[discord]"`.
 | `KENNY_DISCORD_MODEL` | — | Anthropic model id for the Discord surface; empty falls back to `KENNY_CHAT_MODEL`. |
 | `KENNY_DISCORD_MAX_TURNS_PER_TICKET` | `40` | Autonomous turn cap per ticket before it is handed to an operator. Ticket-wide (any turn on the ticket, from Discord or the dashboard's ticket chat), except an operator+-driven turn from either surface never counts against it. |
 | `KENNY_DISCORD_RATE_LIMIT_PER_USER_HOUR` | `20` | Per-account throttle on opening/driving tickets, ticket-wide across both surfaces; `0` = unlimited. An operator+-driven turn, from either surface, is exempt. |
-| `KENNY_DISCORD_WEBHOOK_URL` | — | Discord incoming-webhook URL for the alert push channel — independent of the bot. Also editable in Admin → Alerting & Digest; see [Alerting & digests](alerting.md#notification-channels). |
+| `KENNY_DISCORD_WEBHOOK_URL` | — | Discord incoming-webhook URL for the alert push channel — independent of the bot. Also editable in Admin → Alerts & notifications; see [Alerting & digests](alerting.md#notification-channels). |
 | `KENNY_TICKET_APPROVAL_TTL_SECS` | `86400` | How long a held approval/consent waits for a decision before the sweeper expires it (an expiry counts as a denial); `0` never expires. |
 | `KENNY_TICKET_AUTOCLOSE_SECS` | `172800` | Reopen window: a `resolved` ticket untouched this long is auto-closed; `0` disables. |
 | `KENNY_TICKET_STALL_NUDGE_SECS` | `172800` | A ticket blocked on a reply (from the requester or an operator) this long gets one reminder; `0` disables reminders. |
 | `KENNY_TICKET_STALL_GIVEUP_SECS` | `604800` | A ticket still waiting on the requester after this long is re-blocked on an operator instead; `0` disables escalation. |
 | `KENNY_TICKET_ABANDON_SECS` | `1209600` | A `new`/`in_progress` ticket neither an operator nor its requester has touched this long is cancelled, recorded as dropped rather than withdrawn. Machine activity does not count; a ticket on an approval gate is never dropped this way. `0` disables. See [Tickets → the lifecycle](itsm.md#the-lifecycle-in-plain-language). |
-| `KENNY_TICKET_SWEEP_INTERVAL_SECS` | `300` | Ticket housekeeping loop interval (expires gates, nudges and escalates stalls, auto-closes, drops untouched tickets); `0` disables (restart to re-enable). Re-read live. |
-| `KENNY_TICKET_SWEEP_INITIAL_DELAY` | `30` | Delay before the first sweep after startup. |
+| `KENNY_TICKET_SWEEP_INTERVAL_SECS` | `300` | Ticket housekeeping loop interval (expires gates, nudges and escalates stalls, auto-closes, drops untouched tickets); `0` disables. Environment-only, read at startup. |
+| `KENNY_TICKET_SWEEP_INITIAL_DELAY` | `30` | Delay before the first sweep after startup. Environment-only. |
 | `KENNY_TICKET_RETENTION_DAYS` | `30` | How long a **closed** ticket keeps its raw working transcript. The ticket, its summary and its audit trail are never pruned. |
 | `KENNY_TRIAGE_ENABLED` | `1` | On a new ticket, run one read-only investigation on its PC and write the finding into the ticket before anyone is asked to look. Needs `ANTHROPIC_API_KEY`; without one it stays off whatever this says. See [Tickets → kenny looks first](itsm.md#kenny-looks-first-before-you-are-asked-to). |
 | `KENNY_TRIAGE_RESOLVE` | `0` | Let an investigation set a ticket to `resolved` itself — only for an alert-opened ticket, only on a closing verdict, and only when a read-only check actually ran and succeeded. Off means every verdict is a recommendation. |
 | `KENNY_TRIAGE_MAX_ITERATIONS` | `8` | Model round-trips one investigation may take. Spending them all produces no verdict: the ticket stays open with what was found. |
 
-Everything above except the bot token and the webhook URL (secrets, env-only) is also
-editable from the dashboard's **[Admin](dashboard.md#admin) → Discord & Tickets** section —
-most apply immediately, and `KENNY_DISCORD_ENABLED`/`KENNY_TICKET_SWEEP_INITIAL_DELAY`
-need a restart, exactly like the other loop-startup settings on this page. The dashboard
-marks a stored change that waits for one as **RESTART PENDING**.
+Every key in this table except the bot token and the two `KENNY_TICKET_SWEEP_*` keys
+(environment-only) is also editable in the dashboard's [Admin](dashboard.md#admin) page:
+
+- **Admin → Discord** — `KENNY_DISCORD_ENABLED`, `KENNY_DISCORD_GUILD_IDS`, the support and
+  operator channel IDs, `KENNY_DISCORD_PRIVATE_THREADS`, and
+  `KENNY_DISCORD_RATE_LIMIT_PER_USER_HOUR`.
+- **Admin → AI** — `KENNY_DISCORD_MODEL`, `KENNY_DISCORD_MAX_TURNS_PER_TICKET` (shown as
+  *Assistant turns per ticket*), and the three `KENNY_TRIAGE_*` keys.
+- **Admin → Tickets** — the approval TTL, auto-close, stall, and abandon lifetimes, and
+  `KENNY_TICKET_RETENTION_DAYS`.
+- **Admin → Alerts & notifications** — `KENNY_DISCORD_WEBHOOK_URL`.
+
+A change applies immediately, except `KENNY_DISCORD_ENABLED`, which applies on the next
+restart; the dashboard marks a stored change that waits for one as **RESTART PENDING**.
 
 > **Security:** if `KENNY_OPERATOR_TOKEN` is unset the server uses a loud, insecure dev token. Always
 > set real tokens and serve over `wss`/`https` for anything non-local. See
@@ -451,11 +473,11 @@ read-only) on a schedule, and surfaces both from the dashboard's **Admin → Upd
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `KENNY_UPDATE_CHECK_INTERVAL_SECS` | `86400` (24 h) | Scheduled update-check loop interval; `0` disables (restart to re-enable). Re-read live. |
-| `KENNY_UPDATE_CHECK_INITIAL_DELAY` | `30` | Delay before the first check after startup. |
-| `KENNY_SERVER_IMAGE_REF` | `ghcr.io/nullthrone/kenny-server` | GHCR image polled for a newer server tag. |
-| `KENNY_AGENT_ROLLOUT_ON_CONNECT` | `0` | Auto-apply an active, approved campaign to agents as they connect. Off by default — a campaign must still be approved first either way. |
-| `KENNY_UPDATE_CAMPAIGN_MAX_AGE_SECS` | `1209600` (14 d) | A campaign auto-expires after this long even if not every agent was reached. |
+| `KENNY_UPDATE_CHECK_INTERVAL_SECS` | `86400` (24 h) | Scheduled update-check loop interval; `0` disables. Environment-only, read at startup. |
+| `KENNY_UPDATE_CHECK_INITIAL_DELAY` | `30` | Delay before the first check after startup. Environment-only. |
+| `KENNY_SERVER_IMAGE_REF` | `ghcr.io/nullthrone/kenny-server` | GHCR image polled for a newer server tag. Environment-only. |
+| `KENNY_AGENT_ROLLOUT_ON_CONNECT` | `0` | Auto-apply an active, approved campaign to agents as they connect. Off by default — a campaign must still be approved first either way. Also switched in Admin → Updates (**auto-apply on connect** in the agent rollout card). |
+| `KENNY_UPDATE_CAMPAIGN_MAX_AGE_SECS` | `1209600` (14 d) | A campaign auto-expires after this long even if not every agent was reached. Also editable in Admin → Updates. |
 
 ## Dependencies & security automation
 

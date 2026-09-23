@@ -29,9 +29,8 @@ if __package__ in (None, ""):
 else:
     from . import seed
 
-# The legacy back-compat token — still set as KENNY_OPERATOR_TOKEN so the demo
-# Admin → Operator & Agent Auth section shows it as a real configured secret,
-# but the browser itself signs in with a real "thomas" session
+# The legacy back-compat token, set as KENNY_OPERATOR_TOKEN as a deployment
+# would. The browser itself signs in with a real "thomas" session
 # (``Dashboard.session_id``), not this cookie: the shared-token identity has no
 # user row and would make profile.png show its empty "no editable account"
 # state instead of the real one.

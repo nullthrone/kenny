@@ -5,58 +5,61 @@ import { api } from '../../api/client'
 import EmptyState from '../../components/EmptyState/EmptyState'
 import type { ProfileMe } from '../profile/types'
 import type { RawSettingsResponse } from './types'
-import { buildEnvironmentSection, mapSettingsGroups } from './settingsMap'
+import { mapSettingsGroups } from './settingsMap'
 import AdminNav, { type AdminNavItem } from './AdminNav'
 import GenericSettingsSection from './sections/GenericSettingsSection'
-import EnvironmentSection from './sections/EnvironmentSection'
-import WebFilterSection from './sections/WebFilterSection'
+import AlertsSection from './sections/AlertsSection'
+import AlarmRulesSection from './sections/AlarmRulesSection'
 import BackupSection from './sections/BackupSection'
 import UpdatesSection from './sections/UpdatesSection'
 import DiscordSection from './sections/DiscordSection'
-import TicketRulesSection from './sections/TicketRulesSection'
 import UsersSection from './sections/UsersSection'
 import ShellPolicySection from './sections/ShellPolicySection'
 import styles from './AdminView.module.css'
 
+/** Sections with no settings group of their own behind them. */
 const SYNTHETIC_LABELS: Record<string, string> = {
   updates: 'Updates',
-  'auto-ticket-rules': 'Auto-ticket rules',
+  'alarm-rules': 'Alarm rules',
   users: 'Users',
-  environment: 'Environment',
 }
 
 /**
  * Section slugs that moved, mapped to where they live now. `#/settings/:section`
- * redirects into `#/admin/:section` keeping the slug (`router/routes.tsx`), so a
- * bookmark minted before the redesign arrives here verbatim — and the Auto-ticket
- * section is the one whose slug did change (`ticket-rules` in the legacy
- * dashboard). Resolving the alias here covers the redirect and a hand-typed URL
- * in one place.
+ * redirects into `#/admin/:section` keeping the slug (`router/routes.tsx`), so an
+ * old bookmark arrives here verbatim; resolving the alias here covers the
+ * redirect and a hand-typed URL in one place. A slug whose section no longer
+ * exists at all (the read-only environment groups) falls through to the first
+ * section, like any other unknown one.
  */
 const SLUG_ALIASES: Record<string, string> = {
-  'ticket-rules': 'auto-ticket-rules',
+  'ticket-rules': 'alarm-rules',
+  'auto-ticket-rules': 'alarm-rules',
+  'alerting-digest': 'alerts-notifications',
+  'chat-ai': 'ai',
+  'discord-tickets': 'discord',
+  logging: 'system',
+  'telemetry-limits': 'system',
 }
 
 /**
  * `#/admin/:section` — 220px section nav + a row list.
  *
+ * **Everything here can be changed here.** `GET /api/settings` lists only
+ * settings the dashboard can write (env-only ones are the server environment's
+ * business and never appear), and the synthetic sections are all actions and
+ * rules. What a section shows besides its settings is the state those settings
+ * or actions act on — the Discord connection, the backup list, the rollout.
+ *
  * What the nav holds depends on the role, because `GET /api/settings` is
  * superuser-only (`webui/__init__.py`). A superuser gets every catalog group
- * (`groups[].slug`, eleven today) plus three synthetic sections with no server
- * group of their own: `auto-ticket-rules`, `users`, `environment` (composed
- * client-side from the env-sourced rows, see `settingsMap.ts`).
+ * (`groups[].slug`, in the server's order) plus **Alarm rules** (right after the
+ * alerts it governs) and **Users**.
  *
- * An operator gets **Updates** and **Auto-ticket rules** — the two sections whose
- * own routes floor at `operator` (`/api/updates`, `/api/ticket-rules`). Neither
- * has a settings-catalog group behind it, so both render without `/api/settings`
- * ever being requested: asking for it would 403 and take the whole page down with
- * it, which is exactly what used to happen. `environment` is deliberately not in
- * that list — it is derived from the catalog an operator cannot read.
- *
- * The design's prototype only drew nine sections; the five it omits (Logging,
- * Network & Process, Operator & Agent Auth, Telemetry limits, Agent distribution)
- * are real configuration and render generically here — dropping them would be a
- * silent capability loss the brief explicitly rules out.
+ * An operator gets **Updates** and **Alarm rules** — the two sections whose own
+ * routes floor at `operator` (`/api/updates`, `/api/ticket-rules`,
+ * `/api/reliability/suppressions`). Both render without `/api/settings` ever
+ * being requested: asking for it would 403 and take the whole page down with it.
  */
 export default function AdminView() {
   const { section: rawSection } = useParams<{ section?: string }>()
@@ -73,23 +76,21 @@ export default function AdminView() {
   })
 
   const groups = useMemo(() => (settings.data ? mapSettingsGroups(settings.data) : []), [settings.data])
-  const environmentSection = useMemo(() => buildEnvironmentSection(groups), [groups])
 
   const navItems: AdminNavItem[] = useMemo(() => {
     if (!isOperator) return []
+    const alarmRules = { key: 'alarm-rules', label: SYNTHETIC_LABELS['alarm-rules'] }
     if (!isSuperuser) {
-      return [
-        { key: 'updates', label: SYNTHETIC_LABELS.updates },
-        { key: 'auto-ticket-rules', label: SYNTHETIC_LABELS['auto-ticket-rules'] },
-      ]
+      return [{ key: 'updates', label: SYNTHETIC_LABELS.updates }, alarmRules]
     }
-    const real = groups.map((g) => ({ key: g.key, label: g.label }))
-    return [
-      ...real,
-      { key: 'auto-ticket-rules', label: SYNTHETIC_LABELS['auto-ticket-rules'] },
-      { key: 'users', label: SYNTHETIC_LABELS.users },
-      { key: 'environment', label: SYNTHETIC_LABELS.environment },
-    ]
+    const items: AdminNavItem[] = []
+    for (const g of groups) {
+      items.push({ key: g.key, label: g.label })
+      if (g.key === 'alerts-notifications') items.push(alarmRules)
+    }
+    if (!items.includes(alarmRules)) items.push(alarmRules)
+    items.push({ key: 'users', label: SYNTHETIC_LABELS.users })
+    return items
   }, [groups, isOperator, isSuperuser])
 
   if (me.isLoading || (isSuperuser && settings.isLoading)) {
@@ -149,7 +150,7 @@ export default function AdminView() {
   // invented placeholder slug. An aliased slug is rewritten to its canonical one
   // so the address bar and the nav highlight agree.
   if (!section) {
-    const first = navItems[0]?.key ?? 'environment'
+    const first = navItems[0]?.key ?? 'updates'
     return <Navigate to={`/admin/${first}`} replace />
   }
   if (rawSection && section !== rawSection) {
@@ -165,6 +166,7 @@ export default function AdminView() {
   }
 
   const activeGroup = groups.find((g) => g.key === section)
+  const rows = activeGroup?.rows ?? []
   const title = activeGroup?.label ?? SYNTHETIC_LABELS[section] ?? section
 
   return (
@@ -176,24 +178,22 @@ export default function AdminView() {
         <AdminNav items={navItems} />
         <div>
           <div className={styles.sectionTitle}>{title.toUpperCase()}</div>
-          {section === 'backup' ? (
-            <BackupSection />
+          {section === 'alerts-notifications' ? (
+            <AlertsSection rows={rows} />
+          ) : section === 'alarm-rules' ? (
+            <AlarmRulesSection />
+          ) : section === 'backup' ? (
+            <BackupSection rows={rows} />
           ) : section === 'updates' ? (
-            <UpdatesSection />
-          ) : section === 'discord-tickets' ? (
-            <DiscordSection />
-          ) : section === 'web-filter' ? (
-            <WebFilterSection rows={activeGroup?.rows ?? []} />
+            <UpdatesSection rows={rows} />
+          ) : section === 'discord' ? (
+            <DiscordSection rows={rows} />
           ) : section === 'shell-policy' ? (
-            <ShellPolicySection rows={activeGroup?.rows ?? []} />
-          ) : section === 'auto-ticket-rules' ? (
-            <TicketRulesSection />
+            <ShellPolicySection rows={rows} />
           ) : section === 'users' ? (
             <UsersSection />
-          ) : section === 'environment' ? (
-            <EnvironmentSection rows={environmentSection.rows} />
           ) : activeGroup ? (
-            <GenericSettingsSection rows={activeGroup.rows} />
+            <GenericSettingsSection rows={rows} />
           ) : (
             <EmptyState title="Unknown section" message="This section does not exist. Pick one from the list on the left." />
           )}

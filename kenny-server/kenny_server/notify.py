@@ -46,7 +46,7 @@ class Notification:
     priority: str = "default"  # ntfy scale: "low" | "default" | "high" | "urgent"
     tags: list[str] = field(default_factory=list)
     agent_id: str | None = None
-    kind: str = "alert"  # "alert" | "recovery" | "change" | "digest"
+    kind: str = "alert"  # "alert" | "recovery" | "change" | "digest" | "test"
     # -- structured discriminator for auto-ticket rules (ticket_rules.py) ------
     # ``kind`` says whether this is a genuine alert vs. a recovery/change/digest;
     # ``event_type``/``sections`` say *which* alert, so an operator rule can name
@@ -67,7 +67,14 @@ class Notifier(Protocol):
 
     name: str
 
-    async def send(self, notification: Notification) -> None: ...
+    async def send(self, notification: Notification) -> str | None:
+        """Deliver ``notification``; never raises.
+
+        Returns ``None`` on delivery, or a short reason it failed — which only
+        a caller that reports back to a person (the dashboard's test send)
+        looks at; alert delivery stays best-effort either way.
+        """
+        ...
 
 
 class _HttpNotifier:
@@ -84,14 +91,17 @@ class _HttpNotifier:
             return self._client_factory()
         return httpx.AsyncClient()
 
-    async def _post(self, **kwargs: object) -> None:
+    async def _post(self, **kwargs: object) -> str | None:
         try:
             async with self._make_client() as client:
                 resp = await client.post(self._url, timeout=_SEND_TIMEOUT_S, **kwargs)
             if resp.status_code >= 400:
                 logger.warning("%s notify returned %s", self.name, resp.status_code)
+                return f"HTTP {resp.status_code}"
         except Exception as exc:  # noqa: BLE001 - delivery is best-effort
             logger.warning("%s notify failed: %s", self.name, exc)
+            return str(exc) or type(exc).__name__
+        return None
 
 
 class NtfyNotifier(_HttpNotifier):
@@ -109,7 +119,7 @@ class NtfyNotifier(_HttpNotifier):
         super().__init__(url, client_factory=client_factory)
         self._token = token
 
-    async def send(self, notification: Notification) -> None:
+    async def send(self, notification: Notification) -> str | None:
         headers = {
             "Title": notification.title,
             "Priority": notification.priority,
@@ -118,7 +128,7 @@ class NtfyNotifier(_HttpNotifier):
             headers["Tags"] = ",".join(notification.tags)
         if self._token:
             headers["Authorization"] = f"Bearer {self._token}"
-        await self._post(content=notification.body.encode("utf-8"), headers=headers)
+        return await self._post(content=notification.body.encode("utf-8"), headers=headers)
 
 
 class WebhookNotifier(_HttpNotifier):
@@ -126,8 +136,8 @@ class WebhookNotifier(_HttpNotifier):
 
     name = "webhook"
 
-    async def send(self, notification: Notification) -> None:
-        await self._post(
+    async def send(self, notification: Notification) -> str | None:
+        return await self._post(
             json={
                 "kind": notification.kind,
                 "title": notification.title,
@@ -168,7 +178,7 @@ class DiscordNotifier(_HttpNotifier):
 
     name = "discord"
 
-    async def send(self, notification: Notification) -> None:
+    async def send(self, notification: Notification) -> str | None:
         fields = [{"name": "kind", "value": notification.kind, "inline": True}]
         if notification.agent_id:
             fields.append({"name": "agent_id", "value": notification.agent_id, "inline": True})
@@ -178,7 +188,7 @@ class DiscordNotifier(_HttpNotifier):
             "color": _DISCORD_COLORS.get(notification.priority, _DISCORD_DEFAULT_COLOR),
             "fields": fields,
         }
-        await self._post(json={"embeds": [embed]})
+        return await self._post(json={"embeds": [embed]})
 
 
 # -- channel configuration (ADR-0054) -----------------------------------------
