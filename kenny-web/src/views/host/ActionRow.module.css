@@ -66,6 +66,12 @@
   cursor: default;
 }
 
+.channelNote {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
 .channelActive {
   color: var(--text-body);
   border-color: var(--border-strong);

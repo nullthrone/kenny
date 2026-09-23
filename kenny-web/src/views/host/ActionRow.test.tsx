@@ -69,6 +69,28 @@ describe('ActionRow — operator gating', () => {
   })
 })
 
+describe('ActionRow — channel selector', () => {
+  beforeEach(() => {
+    apiGetMock.mockResolvedValue({ user_id: '1', username: 'thomas', role: 'operator', hosts: [], is_shared_token: false })
+  })
+
+  it('highlights the desired channel and names a differing build', async () => {
+    renderRow({ channel: 'dev', builtChannel: 'stable' })
+
+    const dev = await screen.findByRole('button', { name: 'DEV' })
+    expect(dev.className).toMatch(/channelActive/)
+    expect(screen.getByRole('button', { name: 'STABLE' }).className).not.toMatch(/channelActive/)
+    expect(screen.getByText('running a stable build')).toBeInTheDocument()
+  })
+
+  it('says nothing extra when the build matches the desired channel', async () => {
+    renderRow({ channel: 'dev', builtChannel: 'dev' })
+
+    await screen.findByRole('button', { name: 'DEV' })
+    expect(screen.queryByText(/running a/)).not.toBeInTheDocument()
+  })
+})
+
 describe('ActionRow — REINSTALL', () => {
   it('navigates the browser directly to the installer route, not a fetch', async () => {
     apiGetMock.mockResolvedValue({ user_id: '1', username: 'thomas', role: 'superuser', hosts: [], is_shared_token: false })

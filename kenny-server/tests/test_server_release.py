@@ -171,13 +171,62 @@ async def test_fetch_latest_server_tag_dev_picks_highest_dev_tag():
     assert res.digest == "sha256:" + "e" * 64
 
 
-async def test_fetch_latest_server_tag_dev_no_prerelease_tags():
+async def test_fetch_latest_server_tag_dev_prefers_newer_stable_tag():
+    # A stable release promoted after the last dev build outranks it, so the
+    # dev channel never reports an image older than stable.
+    def handle(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if request.url.path == "/token":
+            return httpx.Response(200, json={"token": "anon"})
+        if url.endswith("/tags/list"):
+            return httpx.Response(
+                200, json={"tags": ["edge", "latest", "2.4.0", "2.4.1-dev.88", "2.5.0"]}
+            )
+        if "/manifests/2.5.0" in url and request.method == "HEAD":
+            return httpx.Response(200, headers={"Docker-Content-Digest": "sha256:" + "f" * 64})
+        return httpx.Response(404)
+
+    res = await server_release.fetch_latest_server_tag(
+        "ghcr.io/nullthrone/kenny-server", client_factory=_factory(handle), channel="dev"
+    )
+    assert res.ok
+    assert res.tag == "2.5.0"
+
+
+def test_release_precedence_orders_like_semver():
+    order = ["2.4.0", "2.4.1-dev.86", "v2.4.1-dev.88", "2.4.1", "2.5.0", "2.5.1-dev.1"]
+    keys = [server_release.release_precedence(t) for t in order]
+    assert None not in keys
+    assert keys == sorted(keys)
+    assert server_release.release_precedence("edge") is None
+    assert server_release.release_precedence("latest") is None
+
+
+async def test_fetch_latest_server_tag_dev_no_prerelease_tags_falls_back_to_stable():
     def handle(request: httpx.Request) -> httpx.Response:
         url = str(request.url)
         if request.url.path == "/token":
             return httpx.Response(200, json={"token": "anon"})
         if url.endswith("/tags/list"):
             return httpx.Response(200, json={"tags": ["latest", "2.0.4", "edge"]})
+        if "/manifests/2.0.4" in url and request.method == "HEAD":
+            return httpx.Response(200, headers={"Docker-Content-Digest": "sha256:" + "a" * 64})
+        return httpx.Response(404)
+
+    res = await server_release.fetch_latest_server_tag(
+        "ghcr.io/nullthrone/kenny-server", client_factory=_factory(handle), channel="dev"
+    )
+    assert res.ok
+    assert res.tag == "2.0.4"
+
+
+async def test_fetch_latest_server_tag_dev_no_versioned_tags():
+    def handle(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if request.url.path == "/token":
+            return httpx.Response(200, json={"token": "anon"})
+        if url.endswith("/tags/list"):
+            return httpx.Response(200, json={"tags": ["latest", "edge"]})
         return httpx.Response(404)
 
     res = await server_release.fetch_latest_server_tag(

@@ -92,6 +92,37 @@ beforeEach(() => {
 })
 
 /**
+ * Joined seam with `api_agent`'s `desired_channel` (pinned server-side by
+ * `test_trigger_update_uses_agent_desired_channel`): the selector must show the
+ * channel UPDATE AGENT installs from, not the one the running binary was built
+ * as. Showing the built channel let a host read STABLE while an update pushed
+ * a dev build.
+ */
+describe('FleetHost — channel selector', () => {
+  it('shows the desired channel, not the built one', async () => {
+    apiGetMock.mockImplementation((url: string) => {
+      if (url === '/api/me') {
+        return Promise.resolve({ user_id: '1', username: 'thomas', role: 'operator', hosts: [], is_shared_token: false })
+      }
+      if (url.startsWith('/api/agent/')) {
+        return Promise.resolve({
+          ...AGENT_DETAIL,
+          meta: { ...AGENT_DETAIL.meta, channel: 'stable' },
+          desired_channel: 'dev',
+        })
+      }
+      return Promise.resolve({})
+    })
+
+    renderAt('/fleet/crit-pc', null)
+
+    const dev = await screen.findByRole('button', { name: 'DEV' })
+    expect(dev.className).toMatch(/channelActive/)
+    expect(screen.getByText('running a stable build')).toBeInTheDocument()
+  })
+})
+
+/**
  * Joined seam: the `target` the server puts on a flagged-section row and the
  * host page's reading of `?section=` (`FleetHost`) have to agree, or a click
  * on a flagged section lands the reader on the machine and leaves them to find

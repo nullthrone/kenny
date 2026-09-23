@@ -19,7 +19,11 @@ export interface ActionRowProps {
    * the reinstall link so the operator doesn't fall back to `uname -m`
    * auto-detection for a box that already told us its arch. */
   arch?: string
+  /** The desired channel — what UPDATE AGENT installs from, and what the
+   * selector highlights. */
   channel?: string
+  /** What the running binary was built as (`meta.channel`). */
+  builtChannel?: string
 }
 
 /**
@@ -37,7 +41,7 @@ export interface ActionRowProps {
  * REMOVE button that offers to purge a host and is guaranteed to 403 is worse
  * than no button at all.
  */
-export default function ActionRow({ agentId, os, arch, channel }: ActionRowProps) {
+export default function ActionRow({ agentId, os, arch, channel, builtChannel }: ActionRowProps) {
   const navigate = useNavigate()
   const [message, setMessage] = useState<{ text: string; error: boolean } | null>(null)
   const [confirmRemove, setConfirmRemove] = useState(false)
@@ -177,6 +181,9 @@ export default function ActionRow({ agentId, os, arch, channel }: ActionRowProps
               {c.toUpperCase()}
             </button>
           ))}
+          {builtChannel && channel && builtChannel !== channel && (
+            <span className={styles.channelNote}>running a {builtChannel} build</span>
+          )}
         </div>
       )}
 

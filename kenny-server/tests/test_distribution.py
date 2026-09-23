@@ -642,14 +642,22 @@ def test_trigger_update_uses_agent_desired_channel(tmp_path, monkeypatch):
     async def _noop(_frame):
         return None
 
-    reg.register_signed_async("dev-pc", {"os": "windows"}, _noop)
+    reg.register_signed_async("dev-pc", {"os": "windows", "channel": "stable"}, _noop)
     reg.mark_offline("dev-pc")
     with TestClient(app) as c:
         h = _bearer(app)
+        assert c.get("/api/agent/dev-pc", headers=h).json()["desired_channel"] == "stable"
         # flip this agent's desired channel to dev via the dashboard route
         r = c.put("/api/agent/dev-pc/channel", headers=h, json={"channel": "dev"})
         assert r.status_code == 200, r.text
         assert r.json()["desired_channel"] == "dev"
+
+        # The host page reads the same desired channel the update route
+        # resolves from, not the channel the running binary was built as —
+        # otherwise it shows STABLE while UPDATE AGENT installs a dev build.
+        detail = c.get("/api/agent/dev-pc", headers=h).json()
+        assert detail["desired_channel"] == "dev"
+        assert detail["meta"]["channel"] == "stable"
 
         # 502 (agent offline) not 503 (binary missing) => the dev binary was
         # selected, proving the desired channel drove resolution.

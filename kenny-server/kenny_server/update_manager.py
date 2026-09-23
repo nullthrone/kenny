@@ -458,6 +458,11 @@ class UpdateManager:
 
         await self.store.set_desired_channel(agent_id, channel)
 
+    async def get_desired_channel(self, agent_id: str) -> str:
+        """Read-side counterpart of :meth:`set_desired_channel`."""
+
+        return await self.store.get_desired_channel(agent_id)
+
     # -- internals ---------------------------------------------------------
 
     async def _apply_to_agent(self, campaign: dict[str, Any], agent: Any) -> None:
