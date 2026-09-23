@@ -5,7 +5,7 @@ import { api } from '../../api/client'
 import type { Me } from '../../api/types'
 import Modal from '../../components/Modal/Modal'
 import { RefreshCw, LifeBuoy, Package, Link as LinkIcon, ArrowUpCircle, Trash2, X, ICON_STROKE_WIDTH } from '../../components/icons'
-import { useRefreshAgent, useRemoteHelp, useUpdateAgent, useRemoveAgent, useSetChannel, useShareLink } from './api'
+import { useRefreshAgent, useRemoteHelp, useUpdateAgent, useRemoveAgent, useShareLink } from './api'
 import { toShareOs } from './format'
 import type { ShareLinkResult } from './types'
 import styles from './ActionRow.module.css'
@@ -19,29 +19,25 @@ export interface ActionRowProps {
    * the reinstall link so the operator doesn't fall back to `uname -m`
    * auto-detection for a box that already told us its arch. */
   arch?: string
-  /** The desired channel — what UPDATE AGENT installs from, and what the
-   * selector highlights. */
-  channel?: string
-  /** What the running binary was built as (`meta.channel`). */
-  builtChannel?: string
 }
 
 /**
  * The host action button row: REFRESH, REMOTE HELP, REINSTALL, RE-SHARE,
- * UPDATE AGENT, REMOVE, and the stable/dev channel selector.
+ * UPDATE AGENT and REMOVE. The release channel is set in Admin → Updates, not
+ * here: it is a fleet-operations setting, not a per-host action.
  *
  * Only REFRESH and REMOTE HELP floor at `user` server-side
  * (`/api/agent/{id}/refresh`, `/api/agent/{id}/remotehelp`, both `scoped`).
  * Everything else is operator+: `/api/agents/{id}/installer` and
- * `/api/agents/share-link` (`distribution.py`), `/api/agents/{id}/update` and
- * `/api/agent/{id}/channel` (`op_scoped`), and `DELETE /api/agent/{id}` (`op`).
+ * `/api/agents/share-link` (`distribution.py`), `/api/agents/{id}/update`
+ * (`op_scoped`), and `DELETE /api/agent/{id}` (`op`).
  * So a scoped `user` sees the first two and nothing else — this list mirrors
  * those `min_role` values, and `ActionRow.test.tsx` fails if the two drift.
  * Hiding is a courtesy, not the boundary: the server refuses regardless. But a
  * REMOVE button that offers to purge a host and is guaranteed to 403 is worse
  * than no button at all.
  */
-export default function ActionRow({ agentId, os, arch, channel, builtChannel }: ActionRowProps) {
+export default function ActionRow({ agentId, os, arch }: ActionRowProps) {
   const navigate = useNavigate()
   const [message, setMessage] = useState<{ text: string; error: boolean } | null>(null)
   const [confirmRemove, setConfirmRemove] = useState(false)
@@ -60,7 +56,6 @@ export default function ActionRow({ agentId, os, arch, channel, builtChannel }: 
   const remoteHelp = useRemoteHelp(agentId)
   const update = useUpdateAgent(agentId)
   const remove = useRemoveAgent()
-  const setChannel = useSetChannel(agentId)
   const shareLink = useShareLink(agentId)
 
   function doRefresh() {
@@ -166,26 +161,6 @@ export default function ActionRow({ agentId, os, arch, channel, builtChannel }: 
       </div>
 
       {message && <p className={`${styles.message}${message.error ? ` ${styles.messageError}` : ''}`}>{message.text}</p>}
-
-      {isOperator && (
-        <div className={styles.channelRow}>
-          <span className={styles.channelLabel}>CHANNEL</span>
-          {(['stable', 'dev'] as const).map((c) => (
-            <button
-              key={c}
-              type="button"
-              className={`${styles.channelButton}${channel === c ? ` ${styles.channelActive}` : ''}`}
-              disabled={setChannel.isPending}
-              onClick={() => setChannel.mutate(c)}
-            >
-              {c.toUpperCase()}
-            </button>
-          ))}
-          {builtChannel && channel && builtChannel !== channel && (
-            <span className={styles.channelNote}>running a {builtChannel} build</span>
-          )}
-        </div>
-      )}
 
       <Modal open={confirmRemove} onClose={() => setConfirmRemove(false)} labelledBy="remove-host-title" width={440}>
         <div className={styles.modalHeader}>

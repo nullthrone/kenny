@@ -372,9 +372,14 @@ tag `v<next-patch>-dev.<run_number>`) via the same shared job body
 against the exact release binary) as a stable tag — nothing about how an artifact is verified
 differs by channel. Because GitHub Releases marks it `prerelease: true`, the stable resolution
 path (`GET /repos/{repo}/releases/latest`) never sees it, so the dev channel cannot affect stable
-agents or the stable server image. The server image also gets a floating `:edge` GHCR tag as a
-convenience `docker pull` alias; nothing server-side resolves or pins against it — detection always
-uses the exact versioned tag + digest.
+agents or the stable server image. The reverse does not hold: the dev channel serves the
+**highest release by semver across both kinds**, so a stable release cut after the last `main`
+push (say `v2.5.0` after `v2.4.1-dev.88`) is what a dev-channel PC gets until the next dev build
+outranks it. A dev-channel PC is never held behind the stable fleet, and it may run a
+stable-built binary, which then reports `channel: stable` while its desired channel stays `dev`.
+The server image also gets a floating `:edge` GHCR tag as a convenience `docker pull` alias;
+nothing server-side resolves or pins against it — detection always uses the exact versioned
+tag + digest.
 
 To run one PC on dev while the rest of the fleet stays stable: set that agent's **desired channel**
 to `dev` in the dashboard (or `POST /api/agents/{id}`), then approve a dev-channel update campaign

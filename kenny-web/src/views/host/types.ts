@@ -41,9 +41,6 @@ export interface AgentDetail {
   online: boolean
   os: string
   meta: AgentMeta
-  /** The channel UPDATE AGENT installs from; `meta.channel` is only what the
-   * running binary was built as. Absent from servers that predate it. */
-  desired_channel?: string
   collected_at: string | null
   snapshot: Record<string, RawSection> | null
   health: { overall: Severity; sections: HostSection[] }

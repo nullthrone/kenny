@@ -609,15 +609,6 @@ def build_api_routes(
                 "online": bool(agent and agent.online),
                 "os": agent_os,
                 "meta": agent.meta if agent else {},
-                # The channel UPDATE AGENT installs from (soll). `meta.channel`
-                # is only what the running binary was built as (ist); the two
-                # differ whenever the channel was switched, or when a dev-channel
-                # host runs a stable release that outranks the last dev build.
-                "desired_channel": (
-                    await update_mgr.get_desired_channel(agent_id)
-                    if update_mgr is not None
-                    else "stable"
-                ),
                 "collected_at": latest["collected_at"] if latest else None,
                 "snapshot": snapshot,
                 "health": await health_for(

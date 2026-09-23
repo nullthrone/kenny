@@ -36,8 +36,8 @@ beforeEach(() => {
  * This row is the client half of a seam: which buttons it draws must match the
  * `min_role` on the routes behind them. Only REFRESH and REMOTE HELP floor at
  * `user` (`scoped`); everything else is operator+. When only REINSTALL and
- * RE-SHARE were gated, a scoped `user` was offered UPDATE AGENT, the channel
- * selector and a REMOVE button that opens a "this cannot be undone" dialog and
+ * RE-SHARE were gated, a scoped `user` was offered UPDATE AGENT and a REMOVE
+ * button that opens a "this cannot be undone" dialog and
  * then 403s. If either side moves, these lists stop matching.
  */
 const USER_ACTIONS = ['REFRESH', 'REMOTE HELP']
@@ -52,8 +52,6 @@ describe('ActionRow — operator gating', () => {
     await waitFor(() => expect(apiGetMock).toHaveBeenCalledWith('/api/me'))
     for (const label of USER_ACTIONS) expect(screen.getByText(label)).toBeInTheDocument()
     for (const label of OPERATOR_ACTIONS) expect(screen.queryByText(label)).not.toBeInTheDocument()
-    // PUT /api/agent/{id}/channel is operator-scoped too, so the selector goes with them.
-    expect(screen.queryByText('CHANNEL')).not.toBeInTheDocument()
   })
 
   it('offers an operator the whole row', async () => {
@@ -65,29 +63,8 @@ describe('ActionRow — operator gating', () => {
     for (const label of [...USER_ACTIONS, ...OPERATOR_ACTIONS]) {
       expect(screen.getByText(label)).toBeInTheDocument()
     }
-    expect(screen.getByText('CHANNEL')).toBeInTheDocument()
-  })
-})
-
-describe('ActionRow — channel selector', () => {
-  beforeEach(() => {
-    apiGetMock.mockResolvedValue({ user_id: '1', username: 'thomas', role: 'operator', hosts: [], is_shared_token: false })
-  })
-
-  it('highlights the desired channel and names a differing build', async () => {
-    renderRow({ channel: 'dev', builtChannel: 'stable' })
-
-    const dev = await screen.findByRole('button', { name: 'DEV' })
-    expect(dev.className).toMatch(/channelActive/)
-    expect(screen.getByRole('button', { name: 'STABLE' }).className).not.toMatch(/channelActive/)
-    expect(screen.getByText('running a stable build')).toBeInTheDocument()
-  })
-
-  it('says nothing extra when the build matches the desired channel', async () => {
-    renderRow({ channel: 'dev', builtChannel: 'dev' })
-
-    await screen.findByRole('button', { name: 'DEV' })
-    expect(screen.queryByText(/running a/)).not.toBeInTheDocument()
+    // The release channel is Admin → Updates' concern, never a host action.
+    expect(screen.queryByText('CHANNEL')).not.toBeInTheDocument()
   })
 })
 
