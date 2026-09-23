@@ -30,6 +30,8 @@ from typing import Any, Callable
 
 import httpx
 
+from .server_release import release_precedence
+
 GITHUB_API = "https://api.github.com"
 DEFAULT_REPO = "nullthrone/kenny"
 # Release asset naming (shared contract with the agent's release workflow):
@@ -379,11 +381,15 @@ def _select_release(client: httpx.Client, repo: str, channel: str) -> dict[str, 
     """Resolve the release JSON to fetch assets from, per channel (ADR-0048).
 
     ``stable`` -> ``GET /releases/latest`` (unchanged, excludes prereleases by
-    GitHub's own construction). ``dev`` -> ``GET /releases`` (newest first),
-    the first non-draft entry with ``prerelease: true``. Returns ``None`` when
-    there is no matching release (a 404 on the stable path, or no matching
-    entry / a 404 on the dev path) — the caller turns that into a
-    ``FetchResult(ok=False)``.
+    GitHub's own construction). ``dev`` -> ``GET /releases``, the non-draft
+    entry with the highest :func:`server_release.release_precedence`, stable
+    releases included: a stable release cut after the last ``main`` push
+    outranks every earlier prerelease, so the dev channel never serves a build
+    older than stable. List order is not trusted — GitHub sorts by creation
+    time, and a stable release promoted from the same commit as a prerelease
+    shares its timestamp. Returns ``None`` when there is no matching release
+    (a 404 on either path, or no parseable non-draft entry on the dev path) —
+    the caller turns that into a ``FetchResult(ok=False)``.
     """
 
     if channel == "dev":
@@ -391,10 +397,15 @@ def _select_release(client: httpx.Client, repo: str, channel: str) -> dict[str, 
         if resp.status_code == 404:
             return None
         resp.raise_for_status()
-        for release in resp.json():
-            if release.get("prerelease") is True and release.get("draft") is False:
-                return release
-        return None
+        ranked = [
+            (rank, release)
+            for release in resp.json()
+            if release.get("draft") is False
+            and (rank := release_precedence(str(release.get("tag_name") or ""))) is not None
+        ]
+        if not ranked:
+            return None
+        return max(ranked, key=lambda pair: pair[0])[1]
 
     resp = client.get(f"{GITHUB_API}/repos/{repo}/releases/latest")
     if resp.status_code == 404:

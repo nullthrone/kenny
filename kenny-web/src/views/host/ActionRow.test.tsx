@@ -36,8 +36,8 @@ beforeEach(() => {
  * This row is the client half of a seam: which buttons it draws must match the
  * `min_role` on the routes behind them. Only REFRESH and REMOTE HELP floor at
  * `user` (`scoped`); everything else is operator+. When only REINSTALL and
- * RE-SHARE were gated, a scoped `user` was offered UPDATE AGENT, the channel
- * selector and a REMOVE button that opens a "this cannot be undone" dialog and
+ * RE-SHARE were gated, a scoped `user` was offered UPDATE AGENT and a REMOVE
+ * button that opens a "this cannot be undone" dialog and
  * then 403s. If either side moves, these lists stop matching.
  */
 const USER_ACTIONS = ['REFRESH', 'REMOTE HELP']
@@ -52,8 +52,6 @@ describe('ActionRow — operator gating', () => {
     await waitFor(() => expect(apiGetMock).toHaveBeenCalledWith('/api/me'))
     for (const label of USER_ACTIONS) expect(screen.getByText(label)).toBeInTheDocument()
     for (const label of OPERATOR_ACTIONS) expect(screen.queryByText(label)).not.toBeInTheDocument()
-    // PUT /api/agent/{id}/channel is operator-scoped too, so the selector goes with them.
-    expect(screen.queryByText('CHANNEL')).not.toBeInTheDocument()
   })
 
   it('offers an operator the whole row', async () => {
@@ -65,7 +63,8 @@ describe('ActionRow — operator gating', () => {
     for (const label of [...USER_ACTIONS, ...OPERATOR_ACTIONS]) {
       expect(screen.getByText(label)).toBeInTheDocument()
     }
-    expect(screen.getByText('CHANNEL')).toBeInTheDocument()
+    // The release channel is Admin → Updates' concern, never a host action.
+    expect(screen.queryByText('CHANNEL')).not.toBeInTheDocument()
   })
 })
 

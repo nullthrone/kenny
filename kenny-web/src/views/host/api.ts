@@ -53,15 +53,6 @@ export function useUpdateAgent(agentId: string) {
   })
 }
 
-export function useSetChannel(agentId: string) {
-  const invalidate = useInvalidateAgent(agentId)
-  return useMutation({
-    mutationFn: (channel: 'stable' | 'dev') =>
-      api.put<{ ok: boolean }>(`/api/agent/${agentId}/channel`, { channel }),
-    onSuccess: () => invalidate(),
-  })
-}
-
 export function useRemoveAgent() {
   return useMutation({
     mutationFn: (agentId: string) => api.delete<{ ok?: boolean }>(`/api/agent/${agentId}`),

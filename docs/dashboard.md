@@ -199,8 +199,9 @@ online/offline. Below it, one row of actions:
 - **Remote help** — open Quick Assist on the PC.
 - **Reinstall** — rebuild this PC's installer, rotating its token.
 - **Re-share** — mint a fresh one-time share link for this PC.
-- **Update agent** — push a self-update. An **update channel** selector (stable/dev) sits
-  alongside it — see [Dev channel](setup.md#dev-channel-adr-0048).
+- **Update agent** — push a self-update from this PC's desired release channel. The
+  channel itself is set per agent under **Admin → Updates**, not on the host page — see
+  [Dev channel](setup.md#dev-channel-adr-0048).
 - **Remove** *(operator/superuser only)* — takes the host out of inventory: purges its
   snapshots, events, tokens, keys, web-filter state, and scope assignments. Destructive —
   confirms first. A host still pinned via `KENNY_AGENT_TOKENS` is refused, since it would

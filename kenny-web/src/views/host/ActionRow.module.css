@@ -40,38 +40,6 @@
   color: var(--danger);
 }
 
-.channelRow {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 24px;
-}
-
-.channelLabel {
-  font-family: var(--font-display);
-  font-size: 10px;
-  letter-spacing: var(--track-caps-wide);
-  color: var(--text-muted);
-}
-
-.channelButton {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  padding: 4px 10px;
-  border: 1px solid var(--border-mid);
-  background: transparent;
-  color: var(--text-muted);
-}
-.channelButton:disabled {
-  cursor: default;
-}
-
-.channelActive {
-  color: var(--text-body);
-  border-color: var(--border-strong);
-  background: var(--surface-inset);
-}
-
 .confirmBody {
   padding: 24px;
 }

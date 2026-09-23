@@ -73,6 +73,31 @@ def _parse_dev_comparable(tag: str) -> tuple[int, int, int, int] | None:
     return None
 
 
+def release_precedence(tag: str) -> tuple[int, int, int, int, int] | None:
+    """Semver precedence of a release tag, for picking what the dev channel serves.
+
+    The dev channel serves the newest build **of either kind**: a stable
+    release cut after the last ``main`` push (e.g. ``2.5.0`` promoted from the
+    same commit as ``2.4.1-dev.88``) outranks every earlier dev prerelease, so a
+    dev-channel host is never held behind the stable fleet. Ordering follows
+    semver: ``X.Y.Z-dev.N`` precedes ``X.Y.Z``, which matches the tag scheme,
+    where a dev tag names the patch that *follows* the latest stable one.
+    A leading ``v`` is ignored; anything else unparseable returns None.
+    """
+
+    tag = tag.strip()
+    if tag[:1] in ("v", "V"):
+        tag = tag[1:]
+    prerelease = _parse_semver_prerelease(tag)
+    if prerelease is not None:
+        major, minor, patch, n = prerelease
+        return (major, minor, patch, 0, n)
+    plain = _parse_semver(tag)
+    if plain is not None:
+        return (*plain, 1, 0)
+    return None
+
+
 def _parse_image_ref(image_ref: str) -> tuple[str, str] | None:
     """Split ``ghcr.io/OWNER/NAME`` into ``(registry, "OWNER/NAME")``, or None."""
 
@@ -127,8 +152,8 @@ async def fetch_latest_server_tag(
 
     ``channel="stable"`` is byte-identical to the original behavior: only bare
     ``X.Y.Z`` tags are considered (excludes ``edge`` and any ``-dev.`` tag).
-    ``channel="dev"`` instead considers only ``X.Y.Z-dev.N`` tags, picking the
-    highest ``(major, minor, patch, dev_n)`` tuple — the exact versioned tag,
+    ``channel="dev"`` considers ``X.Y.Z-dev.N`` and ``X.Y.Z`` tags alike and
+    picks the highest by :func:`release_precedence` — the exact versioned tag,
     never the floating ``:edge`` alias, so a later pin is always an immutable
     tag+digest (ADR-0040's pinning discipline).
     """
@@ -149,14 +174,15 @@ async def fetch_latest_server_tag(
             tags_resp.raise_for_status()
             tags = tags_resp.json().get("tags") or []
 
-            parse = _parse_semver_prerelease if channel == "dev" else _parse_semver
+            # Dev considers stable tags too (see `release_precedence`); stable
+            # never considers dev tags.
+            parse = release_precedence if channel == "dev" else _parse_semver
             candidates = sorted(
                 (t for t in ((tag, parse(tag)) for tag in tags) if t[1] is not None),
                 key=lambda t: t[1],
             )
             if not candidates:
-                kind = "dev-prerelease-tagged" if channel == "dev" else "semver-tagged"
-                return ServerReleaseInfo(ok=False, message=f"no {kind} release found")
+                return ServerReleaseInfo(ok=False, message="no semver-tagged release found")
             best_tag, _ = candidates[-1]
 
             manifest_headers = dict(headers)

@@ -350,18 +350,112 @@ def test_fetch_dev_channel_downloads_prerelease_asset(tmp_path, token, monkeypat
     assert not (tmp_path / "kenny-agent.exe").exists()
 
 
-def test_fetch_dev_channel_no_prerelease_returns_none(tmp_path, token, monkeypatch):
+def test_fetch_dev_channel_no_release_returns_none(tmp_path, token, monkeypatch):
     monkeypatch.setenv("KENNY_DB_PATH", str(tmp_path / "kenny.sqlite"))
 
     def handle(request: httpx.Request) -> httpx.Response:
         url = str(request.url)
         if url.endswith("/releases") or "/releases?" in url:
-            return httpx.Response(200, json=[{"tag_name": "v1.0.0", "prerelease": False, "draft": False}])
+            return httpx.Response(200, json=[{"tag_name": "v1.0.0", "prerelease": False, "draft": True}])
         return httpx.Response(404)
 
     res = agent_release.fetch_latest_agent_binary(client_factory=_factory(handle), channel="dev")
     assert not res.ok
     assert "no dev releases found" in res.message
+
+
+def _select_dev(releases):
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=releases)
+
+    with _factory(handle)() as client:
+        return agent_release._select_release(client, "nullthrone/kenny", "dev")
+
+
+def _rel(tag, *, prerelease, draft=False):
+    return {"tag_name": tag, "prerelease": prerelease, "draft": draft, "assets": []}
+
+
+def test_select_release_dev_prefers_newer_stable_over_older_prerelease():
+    # The /releases list as GitHub returned it after v2.5.0 was promoted from
+    # the commit that had already been published as v2.4.1-dev.88: taking the
+    # first prerelease served the dev channel a build older than stable.
+    releases = [
+        _rel("v2.5.0", prerelease=False),
+        _rel("v2.4.1-dev.88", prerelease=True),
+        _rel("v2.4.1-dev.86", prerelease=True),
+        _rel("v2.4.0", prerelease=False),
+    ]
+    assert _select_dev(releases)["tag_name"] == "v2.5.0"
+    # List order carries no meaning: the two share a creation timestamp.
+    assert _select_dev(list(reversed(releases)))["tag_name"] == "v2.5.0"
+
+
+def test_select_release_dev_prefers_prerelease_newer_than_stable():
+    releases = [
+        _rel("v2.5.0", prerelease=False),
+        _rel("v2.5.1-dev.90", prerelease=True),
+        _rel("v2.4.1-dev.88", prerelease=True),
+    ]
+    assert _select_dev(releases)["tag_name"] == "v2.5.1-dev.90"
+
+
+def test_select_release_dev_stable_outranks_its_own_patch_prereleases():
+    # Dev tags name the patch after the last stable one, so v2.4.1-dev.N were
+    # all built before v2.4.1 itself.
+    releases = [_rel("v2.4.1-dev.88", prerelease=True), _rel("v2.4.1", prerelease=False)]
+    assert _select_dev(releases)["tag_name"] == "v2.4.1"
+
+
+def test_select_release_dev_ignores_drafts_and_unparseable_tags():
+    releases = [
+        _rel("v9.9.9", prerelease=False, draft=True),
+        _rel("nightly", prerelease=True),
+        _rel("v2.4.1-dev.88", prerelease=True),
+    ]
+    assert _select_dev(releases)["tag_name"] == "v2.4.1-dev.88"
+
+
+def test_fetch_dev_channel_serves_newer_stable_build(tmp_path, token, monkeypatch):
+    monkeypatch.delenv("KENNY_AGENT_BINARY_CACHE", raising=False)
+    monkeypatch.setenv("KENNY_DB_PATH", str(tmp_path / "kenny.sqlite"))
+    stable_name = "kenny-agent-v2.5.0-x86_64-pc-windows-msvc.exe"
+    old_dev_name = "kenny-agent-v2.4.1-dev.88-x86_64-pc-windows-msvc.exe"
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if url.endswith("/releases") or "/releases?" in url:
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "tag_name": "v2.4.1-dev.88",
+                        "prerelease": True,
+                        "draft": False,
+                        "assets": [{"name": old_dev_name, "browser_download_url": DEV_EXE_URL}],
+                    },
+                    {
+                        "tag_name": "v2.5.0",
+                        "prerelease": False,
+                        "draft": False,
+                        "assets": [{"name": stable_name, "browser_download_url": EXE_URL}],
+                    },
+                ],
+            )
+        if url == EXE_URL:
+            return httpx.Response(200, content=EXE_BYTES)
+        if url == DEV_EXE_URL:
+            return httpx.Response(200, content=DEV_EXE_BYTES)
+        return httpx.Response(404)
+
+    res = agent_release.fetch_latest_agent_binary(client_factory=_factory(handle), channel="dev")
+    assert res.ok
+    assert res.version == "2.5.0"
+    # Still the dev cache slot: what a dev-channel host is served, and what
+    # `trigger_update` reads the version sidecar from.
+    dev_cache = tmp_path / "kenny-agent-dev.exe"
+    assert dev_cache.read_bytes() == EXE_BYTES
+    assert agent_release.resolve_agent_version(str(dev_cache)) == "2.5.0"
 
 
 def test_cache_path_dev_differs_from_stable(monkeypatch, tmp_path):
