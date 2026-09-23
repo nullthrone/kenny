@@ -27,7 +27,8 @@ from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.routing import Mount, Route, WebSocketRoute
 
-from . import agent_release, alert_subject, event_categories
+from . import agent_release, ai, alert_subject, event_categories
+from .ai import AiAccess
 from .alerting import AlertEngine
 from .config import Settings
 from .auth import (
@@ -69,7 +70,6 @@ from .ticket_alerts import TicketAlertReader
 from .ticket_assistant import TicketAssistant
 from .ticket_rules import TicketRuleList
 from .ticketstore import TicketStore
-from .recommend import ai_available
 from .tickets import TicketService, ticket_sweep_loop
 from .triage import TriageService
 from .tokenstore import AgentTokenStore
@@ -240,20 +240,20 @@ def _set_int(obj: Any, attr: str, value: Any) -> None:
     setattr(obj, attr, int(value))
 
 
-def _bind_triage(settings: Settings, tickets: TicketService, triage: TriageService) -> None:
+def _bind_triage(
+    settings: Settings, ai_access: AiAccess, tickets: TicketService, triage: TriageService
+) -> None:
     """Keep triage wired to new tickets exactly while it is enabled.
 
     Wired only when a key is actually configured. A constructed Anthropic client
-    is not the same question: it builds happily without ``ANTHROPIC_API_KEY``
-    and only fails when used, so binding triage to that would fire one doomed
-    investigation per ticket created. ``ai_available`` is the predicate the
-    rest of the AI features already answer this with (``event_categories``,
-    ``recommend``).
+    is not the same question: it builds happily without a key and only fails
+    when used, so binding triage to that would fire one doomed investigation
+    per ticket created. The key is a setting too, so setting or clearing it
+    re-applies this.
     """
 
     def apply(_value: Any = None) -> None:
-        enabled = ai_available() and bool(settings.get("KENNY_TRIAGE_ENABLED"))
-        tickets.set_triage(triage.run if enabled else None)
+        tickets.set_triage(triage.run if ai_access.enabled("triage") else None)
 
     def set_resolve(value: Any) -> None:
         triage.resolve_enabled = bool(value)
@@ -263,6 +263,7 @@ def _bind_triage(settings: Settings, tickets: TicketService, triage: TriageServi
 
     apply()
     settings.on_change("KENNY_TRIAGE_ENABLED", apply)
+    settings.on_change("ANTHROPIC_API_KEY", apply)
     settings.on_change("KENNY_TRIAGE_RESOLVE", set_resolve)
     settings.on_change("KENNY_TRIAGE_MAX_ITERATIONS", set_iterations)
 
@@ -404,9 +405,9 @@ def _prior_checks_reader(sessions: ChatSessions) -> Any:
 def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_client) -> Starlette:
     """Build and return the composed ASGI application.
 
-    ``client_factory`` constructs the Anthropic client used by both the
-    dashboard chat routes and the Discord surface; it is injected so tests need
-    no API key (see ``webui._anthropic_client``).
+    ``client_factory`` replaces the Anthropic client every AI feature uses; it is
+    injected so tests need no API key. By default the client comes from
+    :class:`~kenny_server.ai.AiAccess`, built for the key in force.
     """
 
     db_path = db_path or os.environ.get("KENNY_DB_PATH", "kenny.sqlite")
@@ -416,6 +417,16 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
     # web filter, chat model, log level) take effect without a restart.
     settings_store = SettingsStore(db_path)
     settings = Settings(settings_store)
+
+    # The one door to the Anthropic API (ADR-0066): the key and every feature
+    # switch resolve through ``settings`` per call. Everything below that needs a
+    # client is handed ``ai_access.client``, so a key saved in the dashboard is
+    # the one the next call uses.
+    ai_access = AiAccess(
+        settings, client_factory=None if client_factory is _anthropic_client else client_factory
+    )
+    ai.bind(ai_access)
+    client_factory = ai_access.client
 
     token_store = AgentTokenStore(db_path)
     key_store = KeyStore(db_path)
@@ -653,9 +664,11 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
     )
 
     # The ticket assistant (dashboard chat +, if configured, Discord) is built
-    # whenever a usable Anthropic client exists — independent of whether a
-    # Discord bot token is set. This is the one place both surfaces' turns are
-    # actually driven from; a server with no API key gets neither.
+    # whenever an Anthropic client can be constructed — independent of whether
+    # a Discord bot token is set, and of whether a key is set yet: whether a
+    # turn may run is ``ai_access.enabled("ticket_assistant")``, asked per turn,
+    # and the client is resolved per turn too. This is the one place both
+    # surfaces' turns are actually driven from.
     ticket_client: Any = None
     try:
         ticket_client = client_factory()
@@ -678,6 +691,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
             users=user_store,
             executor=ticket_executor,
             client=ticket_client,
+            client_provider=client_factory,
             model=str(settings.get("KENNY_CHAT_MODEL")),
             max_turns_per_ticket=int(settings.get("KENNY_DISCORD_MAX_TURNS_PER_TICKET")),
             approval_ttl_secs=int(settings.get("KENNY_TICKET_APPROVAL_TTL_SECS")),
@@ -698,7 +712,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
             resolve_enabled=bool(settings.get("KENNY_TRIAGE_RESOLVE")),
         )
         triage.register(ticket_executor)
-        _bind_triage(settings, ticket_service, triage)
+        _bind_triage(settings, ai_access, ticket_service, triage)
 
     # Discord bot surface (optional). The service is constructed only when a bot
     # token exists — an env-only secret, so its presence is already known here —
@@ -733,6 +747,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
             private_threads=bool(settings.get("KENNY_DISCORD_PRIVATE_THREADS")),
             rate_limit_per_hour=int(settings.get("KENNY_DISCORD_RATE_LIMIT_PER_USER_HOUR")),
             model_override=str(settings.get("KENNY_DISCORD_MODEL") or "").strip() or None,
+            assistant_enabled=partial(ai_access.enabled, "ticket_assistant"),
         )
     _bind_live_settings(
         settings,

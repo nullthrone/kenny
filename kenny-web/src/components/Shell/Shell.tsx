@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link, NavLink, Outlet, useLocation } from 'react-router'
 import { api } from '../../api/client'
+import { useAiFeature } from '../../api/aiStatus'
 import type { FleetResponse, Me, TicketSummary } from '../../api/types'
 import { useTheme } from '../../theme/ThemeProvider'
 import Monogram from '../Monogram/Monogram'
@@ -58,6 +59,10 @@ export default function Shell() {
   const online = fleet.data ? fleet.data.agents.filter((a) => a.online).length : null
 
   const role = me.data?.role ?? null
+  // Ask kenny needs an operator (the chat routes floor there) and the feature
+  // switched on with a key set (ADR-0066); otherwise neither button nor ⌘K.
+  const askOn = useAiFeature('ask')
+  const canAsk = role !== null && role !== 'user' && askOn
   const navItems = navItemsFor(role)
   // Nothing needing you is the ordinary state, and an unread "0" would read
   // as a thing to clear — so the badge is absent rather than zero.
@@ -86,7 +91,7 @@ export default function Shell() {
   useEffect(() => {
     function onKeydown(e: KeyboardEvent) {
       // Not while About is up: the drawer would open behind the dialog.
-      if ((e.metaKey || e.ctrlKey) && e.key === 'k' && !aboutOpen) {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k' && !aboutOpen && canAsk) {
         e.preventDefault()
         setChatOpen((v) => !v)
       }
@@ -94,7 +99,7 @@ export default function Shell() {
     }
     window.addEventListener('keydown', onKeydown)
     return () => window.removeEventListener('keydown', onKeydown)
-  }, [aboutOpen])
+  }, [aboutOpen, canAsk])
 
   /**
    * "Fix via Ask kenny" on a host's section modal starts a real chat turn through
@@ -216,11 +221,13 @@ export default function Shell() {
                 <Moon width={15} height={15} strokeWidth={ICON_STROKE_WIDTH} aria-hidden="true" />
               )}
             </button>
-            <button type="button" onClick={() => setChatOpen((v) => !v)} className={`${styles.askButton} kc-btn`}>
-              <Terminal width={14} height={14} strokeWidth={ICON_STROKE_WIDTH} aria-hidden="true" />
-              <span className="kc-askword">ASK KENNY</span>
-              <span className={styles.askHint}>⌘K</span>
-            </button>
+            {canAsk && (
+              <button type="button" onClick={() => setChatOpen((v) => !v)} className={`${styles.askButton} kc-btn`}>
+                <Terminal width={14} height={14} strokeWidth={ICON_STROKE_WIDTH} aria-hidden="true" />
+                <span className="kc-askword">ASK KENNY</span>
+                <span className={styles.askHint}>⌘K</span>
+              </button>
+            )}
           </div>
         </header>
 
@@ -231,7 +238,7 @@ export default function Shell() {
 
       <AboutModal open={aboutOpen} onClose={() => setAboutOpen(false)} />
 
-      {chatOpen && (
+      {chatOpen && canAsk && (
         <>
           <div className={`${styles.backdrop} kc-backdrop`} onClick={() => setChatOpen(false)} />
           <div className={`${styles.chatPanel} kc-chat`}>

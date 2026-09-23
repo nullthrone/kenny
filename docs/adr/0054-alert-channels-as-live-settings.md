@@ -1,6 +1,7 @@
 # 0054. Alert delivery channels are live settings, resolved per dispatch
 
 - Status: accepted
+- Amended by: [ADR-0066](0066-anthropic-key-as-a-dashboard-setting-excluded-from-backups.md)
 - Boundary moved: the configuration boundary of the observability model's push surface.
   Which channels an alert is delivered on moves out of the host's process environment
   (changeable only with shell access and a restart) and into the settings store

@@ -98,15 +98,28 @@ EXPECTED: dict[str, Any] = {
     "KENNY_DISCORD_GUILD_IDS": (frozenset({"g1", "g2"}), frozenset({"g1", "g2"})),
 }
 
+# Live settings in the same groups whose consumer asks ``Settings`` on every use
+# (through ``ai.AiAccess``) instead of holding the value: nothing to bind.
+READ_PER_USE = {
+    "ANTHROPIC_API_KEY",
+    "KENNY_AI_ASK_ENABLED",
+    "KENNY_AI_RECOMMEND_ENABLED",
+    "KENNY_AI_FORECAST_ENABLED",
+    "KENNY_AI_CLASSIFY_ENABLED",
+    "KENNY_AI_TICKET_ASSISTANT_ENABLED",
+}
+
+
 def _expected(key: str) -> Any:
     return EXPECTED.get(key, BOUND[key][0])
 
 
 def test_every_live_ai_ticket_and_discord_setting_is_bound() -> None:
-    """A new ``live`` key in these groups must join ``BOUND``.
+    """A new ``live`` key in these groups must join ``BOUND`` or ``READ_PER_USE``.
 
-    Their consumers hold values in attributes; a key that is not bound is a
-    label the running server does not honour.
+    A consumer that holds the value in an attribute needs a binding; a key that
+    is neither bound nor read per use is a label the running server does not
+    honour.
     """
 
     live = {
@@ -114,7 +127,7 @@ def test_every_live_ai_ticket_and_discord_setting_is_bound() -> None:
         for key, spec in CATALOG.items()
         if spec.lifecycle == "live" and spec.group in ("AI", "Tickets", "Discord")
     }
-    assert live == set(BOUND)
+    assert live == set(BOUND) | READ_PER_USE
 
 
 def _build(db_path: str) -> Any:

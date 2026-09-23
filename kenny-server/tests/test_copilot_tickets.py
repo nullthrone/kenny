@@ -41,6 +41,14 @@ from kenny_server.toolloop import (
 )
 from kenny_server.tunnel import ToolError
 
+
+@pytest.fixture(autouse=True)
+def _api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests drive AI turns with a fake client; AI runs only with a key set."""
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-not-a-real-key")
+
+
 NOW = datetime(2026, 9, 12, 9, 0, 0, tzinfo=timezone.utc)
 
 

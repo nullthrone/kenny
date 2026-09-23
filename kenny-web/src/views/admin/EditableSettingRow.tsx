@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError } from '../../api/client'
+import { AI_STATUS_KEY } from '../../api/aiStatus'
 import KeyValueRow from '../../components/KeyValueRow/KeyValueRow'
 import type { AdminRow } from './types'
 import { CONFIG_SOURCE_COLOR, CONFIG_SOURCE_LABEL } from './types'
@@ -37,6 +38,8 @@ export default function EditableSettingRow({ row }: EditableSettingRowProps) {
 
   function invalidate() {
     queryClient.invalidateQueries({ queryKey: ['settings'] })
+    // A key or an AI switch changes what the rest of the dashboard offers.
+    queryClient.invalidateQueries({ queryKey: AI_STATUS_KEY })
   }
 
   const save = useMutation({

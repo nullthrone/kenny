@@ -56,7 +56,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
-from .. import tool_classes
+from .. import ai, tool_classes
 from ..auth import Principal
 from ..copilot_tickets import EvidenceReader
 from ..discord_identity import DiscordIdentityStore, IdentityConflict
@@ -118,6 +118,12 @@ _STATUS_ERROR_NAMES = {
     503: "unavailable",
 }
 
+
+
+def _assistant_on(assistant: Any) -> bool:
+    """Whether a ticket turn may run: an assistant exists and its AI switch is on."""
+
+    return assistant is not None and ai.current().enabled("ticket_assistant")
 
 def _err(detail: str, status: int = 400) -> JSONResponse:
     """One error shape for the whole module: ``{"error": ..., "detail": ...}``.
@@ -338,7 +344,7 @@ def build_ticket_routes(
         return JSONResponse(
             {
                 "tickets": [
-                    {**_affordances(tickets, t, principal), "assistant_available": assistant is not None}
+                    {**_affordances(tickets, t, principal), "assistant_available": _assistant_on(assistant)}
                     for t in rows
                 ]
             }
@@ -464,7 +470,7 @@ def build_ticket_routes(
                 # The dashboard's composer/mirror-checkbox affordances key off
                 # these: whether a chat turn can be driven at all, and whether
                 # there is a Discord thread to optionally mirror one into.
-                "assistant_available": assistant is not None,
+                "assistant_available": _assistant_on(assistant),
                 "discord_thread": (await store.get_channel(ticket.id)) is not None,
             }
         )
@@ -582,8 +588,8 @@ def build_ticket_routes(
             return _err("message is required")
         mirror_to_discord = bool(body.get("mirror_to_discord", False))
 
-        if assistant is None:
-            return _err("the AI assistant is not configured", 503)
+        if not _assistant_on(assistant):
+            return _err("the AI assistant is not available on this server", 503)
         if ticket.agent_id is None:
             return _err("this ticket has no target machine", 400)
         if ticket.state in ("closed", "cancelled"):
@@ -926,8 +932,8 @@ def build_ticket_routes(
         approve = body.get("approve")
         if not isinstance(approve, bool):
             return _err("approve must be a boolean")
-        if assistant is None:
-            return _err("the AI assistant is not configured", 503)
+        if not _assistant_on(assistant):
+            return _err("the AI assistant is not available on this server", 503)
         await _check_may_decide(principal, request.path_params["aid"], ticket_id=ticket.id)
 
         decided = await tickets.decide_approval(

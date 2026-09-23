@@ -9,6 +9,7 @@ import { mapSettingsGroups } from './settingsMap'
 import AdminNav, { type AdminNavItem } from './AdminNav'
 import GenericSettingsSection from './sections/GenericSettingsSection'
 import AlertsSection from './sections/AlertsSection'
+import AiSection from './sections/AiSection'
 import AlarmRulesSection from './sections/AlarmRulesSection'
 import BackupSection from './sections/BackupSection'
 import UpdatesSection from './sections/UpdatesSection'
@@ -180,6 +181,8 @@ export default function AdminView() {
           <div className={styles.sectionTitle}>{title.toUpperCase()}</div>
           {section === 'alerts-notifications' ? (
             <AlertsSection rows={rows} />
+          ) : section === 'ai' ? (
+            <AiSection rows={rows} />
           ) : section === 'alarm-rules' ? (
             <AlarmRulesSection />
           ) : section === 'backup' ? (

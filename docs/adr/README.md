@@ -83,3 +83,4 @@ kind of record kenny keeps. What qualifies: *When (not) to write an ADR* in the 
 | [0063](0063-the-copilot-proposes-a-ticket-it-does-not-open-one.md) | The copilot proposes a ticket; it does not open one | proposed |
 | [0064](0064-fleet-wide-shell-execution-mode.md) | The fleet declares what a shell may run | accepted |
 | [0065](0065-reliability-scored-on-user-visible-impact.md) | Reliability is scored on user-visible impact | accepted |
+| [0066](0066-anthropic-key-as-a-dashboard-setting-excluded-from-backups.md) | The Anthropic key is a dashboard setting, kept out of backups | accepted |

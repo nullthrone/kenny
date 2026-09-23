@@ -378,7 +378,7 @@ def test_reliability_crash_markers_score_without_any_classifier() -> None:
     result = _eval_reliability(events)
     assert result["status"] == "crit"
     assert health_rules._RELIABILITY_CRASH_SYMPTOM in result["reason"]
-    assert "classification unavailable (no API key)" in result["reason"]
+    assert "classification unavailable (AI off or no API key)" in result["reason"]
     # The unclassified firehose still contributes nothing.
     assert "CAPI2" not in result["reason"]
 
@@ -971,7 +971,7 @@ def test_reliability_suppression_applies_without_annotation() -> None:
     result = _eval_reliability(events)
     assert result["status"] == "ok"
     assert "1 suppressed" in result["reason"]
-    assert "classification unavailable (no API key)" in result["reason"]
+    assert "classification unavailable (AI off or no API key)" in result["reason"]
 
 
 def test_reliability_unsuppressed_payload_carries_no_suppression_clause() -> None:

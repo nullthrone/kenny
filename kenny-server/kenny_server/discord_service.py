@@ -225,6 +225,7 @@ class DiscordService:
         model_override: str | None = None,
         base_url: Callable[[], str] = urls.public_base_url,
         clock: Callable[[], float] = time.monotonic,
+        assistant_enabled: Callable[[], bool] = lambda: True,
     ) -> None:
         self.gateway = gateway
         self.identities = identities
@@ -244,6 +245,9 @@ class DiscordService:
         # per-call parameter threaded through ``run_turn``/``resume`` rather
         # than mutating ``assistant.model``.
         self.model_override = model_override
+        # Whether a turn may run at all (ADR-0066): the composition root binds
+        # the ticket assistant's AI switch here.
+        self.assistant_enabled = assistant_enabled
         self._limiter = _RateLimiter(rate_limit_per_hour, clock=clock)
         # Registers this surface as a default notification target for
         # ``resume_expired`` (an expired gate has no per-call caller) and for
@@ -288,7 +292,20 @@ class DiscordService:
         Discord never streams a turn's events (there is no live-token UI to
         feed) — it only needs the side effects (trail rows, ``deliver_reply``,
         ``announce_gate``, persistence) ``run_turn`` performs as it goes.
+
+        With the ticket assistant switched off (ADR-0066) no turn runs: the
+        thread gets one line saying an operator will pick the ticket up.
         """
+
+        if not self.assistant_enabled():
+            channel = session.thread_id or session.channel_id
+            if channel and count_turn:
+                await self.gateway.post_message(
+                    channel_id=channel,
+                    content="kenny's assistant is switched off on this server — "
+                    "an operator will pick this ticket up.",
+                )
+            return
 
         async for _ in self.assistant.run_turn(
             session,

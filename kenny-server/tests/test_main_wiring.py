@@ -98,14 +98,15 @@ def test_server_without_discord_serves_fleet_and_tickets(tmp_path) -> None:
         assert c.get("/api/discord/status", headers=h).json()["configured"] is False
 
 
-def test_assistant_exists_without_a_discord_token(tmp_path) -> None:
-    """The ticket assistant only needs a usable Anthropic client.
+def test_assistant_exists_without_a_discord_token(tmp_path, monkeypatch) -> None:
+    """The ticket assistant only needs an API key and a usable Anthropic client.
 
     Independent of ``KENNY_DISCORD_BOT_TOKEN`` — a self-hoster with an API key
     but no Discord bot still gets a working ticket chat, and the dashboard
     route it powers is registered on every server that has one.
     """
 
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-not-a-real-key")
     app = build_app(
         db_path=str(tmp_path / "assistant_only.sqlite"), client_factory=_FakeAnthropic
     )
@@ -125,6 +126,18 @@ def test_assistant_exists_without_a_discord_token(tmp_path) -> None:
         body = c.get(f"/api/tickets/{created.json()['id']}", headers=h).json()
         assert body["assistant_available"] is True
         assert body["discord_thread"] is False
+
+
+def test_the_ticket_chat_is_unavailable_without_a_key(tmp_path, monkeypatch) -> None:
+    """A constructible client is not a working one: without a key no turn runs."""
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    app = build_app(db_path=str(tmp_path / "nokey_chat.sqlite"), client_factory=_FakeAnthropic)
+    with TestClient(app) as c:
+        h = _bearer(app)
+        created = c.post("/api/tickets", json={"title": "no key"}, headers=h)
+        body = c.get(f"/api/tickets/{created.json()['id']}", headers=h).json()
+        assert body["assistant_available"] is False
 
 
 def test_no_assistant_without_a_usable_anthropic_client(tmp_path) -> None:

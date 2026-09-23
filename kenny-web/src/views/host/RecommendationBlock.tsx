@@ -2,6 +2,7 @@ import { Fragment, useEffect, useState } from 'react'
 import { streamChatEvents } from '../../api/sse'
 import type { RecommendationEvent } from './types'
 import styles from './RecommendationBlock.module.css'
+import { useAiFeature } from '../../api/aiStatus'
 
 export interface RecommendationBlockProps {
   agentId: string
@@ -40,6 +41,7 @@ function renderProse(text: string) {
  * doc comment) matters: it's what "FIX VIA ASK KENNY" hands to the chat drawer.
  */
 export default function RecommendationBlock({ agentId, sectionName, aiEnabled, onRemediate }: RecommendationBlockProps) {
+  const askOn = useAiFeature('ask')
   const [text, setText] = useState('')
   const [remediation, setRemediation] = useState<{ available: boolean; prompt: string } | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -85,7 +87,7 @@ export default function RecommendationBlock({ agentId, sectionName, aiEnabled, o
     return (
       <div className={styles.box}>
         <div className={styles.eyebrow}>RECOMMENDATION</div>
-        <div className={styles.prose}>AI recommendations are not configured on this server.</div>
+        <div className={styles.prose}>AI recommendations are not available on this server.</div>
       </div>
     )
   }
@@ -102,7 +104,7 @@ export default function RecommendationBlock({ agentId, sectionName, aiEnabled, o
               ? 'No recommendation was returned.'
               : 'Thinking…'}
       </div>
-      {remediation?.available && (
+      {remediation?.available && askOn && (
         <button type="button" className={styles.fixButton} onClick={() => onRemediate(remediation.prompt)}>
           FIX VIA ASK KENNY
         </button>
