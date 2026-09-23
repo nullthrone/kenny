@@ -217,12 +217,17 @@ category does not silently double what gets pushed. **`bypass` is deliberately u
 it is the layer that stops the filter being circumvented, so silently dropping half of it
 would defeat its purpose.
 
-The URLs, refresh interval, and cap are environment-overridable — see [`setup.md`](setup.md):
+The four source URLs and the cap are editable in the dashboard's
+[Admin → Web filter](dashboard.md#admin) section or in the environment; a changed URL
+applies on the next refresh. The refresh interval is environment-only and read at startup.
+See [`setup.md`](setup.md):
 
-- `KENNY_WEBFILTER_REFRESH_SECS`
 - `KENNY_WEBFILTER_ADULT_URL`
 - `KENNY_WEBFILTER_BYPASS_URL`
+- `KENNY_WEBFILTER_GAMBLING_URL`
+- `KENNY_WEBFILTER_PIRACY_URL`
 - `KENNY_WEBFILTER_MAX_BLOCK_DOMAINS`
+- `KENNY_WEBFILTER_REFRESH_SECS` (environment-only; `0` disables the refresh)
 
 The local categories (`social`, `gaming`, `streaming`, `shopping`, `chat`) have no source
 URL and nothing to fetch — they carry only the custom entries a host has tagged with them.

@@ -417,35 +417,25 @@ export interface AdminSection {
 /**
  * Admin's section navigation is SERVER-DERIVED, not a hardcoded list.
  *
- * `GET /api/settings` returns `{groups: [{name, slug, settings}]}`; the slug is
- * derived from the group's display name and pinned by `test_config.py`, so it is
- * stable and a rename breaks loudly instead of silently. Today's groups are:
+ * `GET /api/settings` returns `{groups: [{name, slug, settings}]}` — only the
+ * settings the dashboard can write, so nothing Admin renders is read-only. The
+ * slug is derived from the group's display name and pinned by `test_config.py`,
+ * so it is stable and a rename breaks loudly instead of silently. Today's groups:
  *
- *   alerting-digest · web-filter · chat-ai · logging · network-process ·
- *   operator-agent-auth · telemetry-limits · agent-distribution · backup ·
- *   updates · discord-tickets
+ *   alerts-notifications · ai · tickets · discord · backup · updates ·
+ *   web-filter · shell-policy · system
  *
- * That is eleven, where the prototype drew nine. The five the prototype does not
- * show (logging, network-process, operator-agent-auth, telemetry-limits,
- * agent-distribution) are real configuration and must not be dropped — the section
- * nav scrolls, which is what the prototype's own mobile treatment already does.
- *
- * Three further sections are synthetic — they are not config groups and have their
+ * Two further sections are synthetic — they are not config groups and have their
  * own endpoints:
- *   `auto-ticket-rules` → /api/ticket-rules
- *   `users`             → /api/users (superuser only; hidden entirely otherwise)
- *   `environment`       → a read-only view across ALL groups filtered to
- *                         `source === 'env'`. The prototype shows this as its own
- *                         section; the server has no such group, so the console
- *                         composes it.
+ *   `alarm-rules` → /api/ticket-rules + /api/reliability/suppressions
+ *   `users`       → /api/users (superuser only; hidden entirely otherwise)
  *
- * `#/admin` with no section resolves to the first server-provided group. Do not
- * invent a placeholder slug.
+ * `#/admin` with no section resolves to the first section the role can see. Do
+ * not invent a placeholder slug.
  *
  * POSSIBLY DEAD: nothing in the console actually uses this type as an
- * annotation — section keys are typed `string` at every call site. Only
- * `settingsMap.ts` names it, in a comment. Kept for the documentation above,
- * which describes real section-list behavior.
+ * annotation — section keys are typed `string` at every call site. Kept for the
+ * documentation above, which describes real section-list behavior.
  */
 export type AdminSectionKey = string
 

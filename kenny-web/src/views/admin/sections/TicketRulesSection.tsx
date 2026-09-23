@@ -6,7 +6,7 @@ import type { FleetResponse } from '../../../api/types'
 import type { TicketRule, TicketRuleVocabulary } from '../types'
 import shared from '../shared.module.css'
 
-/** Admin → Auto-ticket rules. Which alerts open a ticket, fleet-wide or per host. */
+/** Admin → Alarm rules → auto-ticket rules. Which alerts open a ticket, fleet-wide or per host. */
 export default function TicketRulesSection() {
   const queryClient = useQueryClient()
   const [eventType, setEventType] = useState('')

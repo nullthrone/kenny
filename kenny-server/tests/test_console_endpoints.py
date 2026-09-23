@@ -24,6 +24,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from kenny_server import notify, tool_classes
+from kenny_server.config import CATALOG
 from kenny_server.chat import FleetSession, _context_note
 from kenny_server.main import build_app
 
@@ -234,12 +235,12 @@ def test_replayed_transcript_carries_auto_run(tmp_path) -> None:
 
 
 def test_every_settings_row_says_whether_it_is_editable(tmp_path) -> None:
-    """``editable`` must agree with what the write path actually enforces.
+    """Every listed row is editable, and an unlisted env-only key is refused.
 
-    The console renders an input only for an editable row. If that flag and the
-    403 the server returns could disagree, the console would offer a control
-    guaranteed to fail — so they are read from the same ``SettingSpec.writable``
-    property, and this walks every row to prove it.
+    Admin renders only what it can change, so ``/api/settings`` lists writable
+    settings alone. ``editable`` and the 403 on the write path are read from the
+    same ``SettingSpec.writable`` property; this walks every row to prove the
+    list holds nothing the console could not submit.
     """
 
     app = _app(tmp_path)
@@ -249,18 +250,18 @@ def test_every_settings_row_says_whether_it_is_editable(tmp_path) -> None:
         rows = [row for g in groups for row in g["settings"]]
         assert rows
 
-        env_only = [r for r in rows if r["lifecycle"] == "env_only"]
-        assert env_only, "the catalog must still contain env-derived keys"
-
         for row in rows:
-            assert row["editable"] is (row["lifecycle"] != "env_only"), row["key"]
+            assert row["editable"] is True, row["key"]
+            assert row["lifecycle"] != "env_only", row["key"]
             # The contract's other required fields are all present already.
             assert set(row) >= {"key", "label", "help", "value", "source", "editable"}
             assert row["source"] in ("db", "env", "default")
 
-        # A non-editable row really is refused, with the status the console
-        # would otherwise have walked into.
-        key = env_only[0]["key"]
+        # An env-only key is not listed, and a write to it is refused.
+        env_only = [k for k, spec in CATALOG.items() if not spec.writable]
+        assert env_only, "the catalog must still contain env-derived keys"
+        assert not {row["key"] for row in rows} & set(env_only)
+        key = env_only[0]
         assert c.put(f"/api/settings/{key}", headers=h, json={"value": "x"}).status_code == 403
         assert c.delete(f"/api/settings/{key}", headers=h).status_code == 403
 
@@ -468,3 +469,69 @@ def test_theme_is_skipped_cleanly_for_a_shared_token_identity(tmp_path) -> None:
 
         # A bad value is still a bad value, whoever asks.
         assert c.put("/api/me/theme", headers=h, json={"theme": "neon"}).status_code == 400
+
+
+# -- Admin: test notification and web-filter list sources -------------------
+
+
+class _FakeChannel:
+    def __init__(self, name: str, error: str | None) -> None:
+        self.name = name
+        self.error = error
+        self.sent: list[notify.Notification] = []
+
+    async def send(self, notification: notify.Notification) -> str | None:
+        self.sent.append(notification)
+        return self.error
+
+
+def test_a_test_notification_reports_each_channel_and_opens_no_ticket(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = _app(tmp_path)
+    ok, broken = _FakeChannel("ntfy", None), _FakeChannel("webhook", "HTTP 500")
+    monkeypatch.setattr(app.state.notifier_provider, "current", lambda: [ok, broken])
+    with TestClient(app) as c:
+        h = _bearer(app)
+        r = c.post("/api/notify/test", headers=h)
+        assert r.status_code == 200
+        assert r.json() == {
+            "results": [
+                {"channel": "ntfy", "ok": True, "error": None},
+                {"channel": "webhook", "ok": False, "error": "HTTP 500"},
+            ]
+        }
+        assert ok.sent and ok.sent[0].kind == "test"
+        # a test is not an alert: nothing is opened for it
+        assert c.get("/api/tickets", headers=h).json()["tickets"] == []
+
+
+def test_a_real_channel_reports_its_delivery_failure() -> None:
+    """The channel, not only the fake, says why a send failed."""
+
+    import asyncio
+
+    import httpx
+
+    def failing_client() -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda _req: httpx.Response(503))
+        )
+
+    channel = notify.WebhookNotifier("https://example.invalid/hook", client_factory=failing_client)
+    note = notify.Notification(title="t", body="b", kind="test")
+    assert asyncio.run(channel.send(note)) == "HTTP 503"
+
+
+def test_every_external_web_filter_list_is_an_editable_setting() -> None:
+    """The list cache and the catalog agree on which sources exist and their defaults."""
+
+    from kenny_server.webfilter import CATEGORY_CATALOG
+
+    external = [spec for spec in CATEGORY_CATALOG.values() if spec.external]
+    assert {spec.key for spec in external} >= {"adult", "bypass", "gambling", "piracy"}
+    for spec in external:
+        assert spec.setting_key is not None, spec.key
+        setting = CATALOG[spec.setting_key]
+        assert setting.writable and setting.group == "Web filter", spec.key
+        assert setting.default_raw == spec.url, spec.key

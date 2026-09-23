@@ -183,6 +183,7 @@ def build_api_routes(
     ticket_rules: Any = None,
     tickets: Any = None,
     ticket_store: Any = None,
+    notifier_provider: Any = None,
 ) -> list[Route]:
     """Build the dashboard's static + JSON routes.
 
@@ -689,6 +690,33 @@ def build_api_routes(
 
         title, body = await build_digest(store, event_store, registry)
         return JSONResponse({"title": title, "body": body})
+
+    async def api_notify_test(_request: Request) -> JSONResponse:
+        """Send one test message through every configured alert channel.
+
+        Goes to the channels directly, not through the alert engine: a test is
+        not an alert, so it opens no ticket and touches no cooldown. The
+        per-channel outcome is reported back, which alert delivery itself never
+        does (it is best-effort).
+        """
+
+        if notifier_provider is None:
+            return JSONResponse({"error": "alert channels not configured"}, status_code=503)
+        from ..notify import Notification
+
+        note = Notification(
+            title="kenny test notification",
+            body="This is a test message from the kenny dashboard. "
+            "If you can read it, this channel works.",
+            priority="low",
+            tags=["test"],
+            kind="test",
+        )
+        results = []
+        for notifier in notifier_provider.current():
+            error = await notifier.send(note)
+            results.append({"channel": notifier.name, "ok": error is None, "error": error})
+        return JSONResponse({"results": results})
 
     async def api_refresh(request: Request) -> JSONResponse:
         agent_id = request.path_params["id"]
@@ -1961,6 +1989,7 @@ def build_api_routes(
         Route("/api/today", guard(api_today)),
         Route("/api/log", guard(api_log)),
         Route("/api/digest/preview", guard(api_digest_preview, **op)),
+        Route("/api/notify/test", guard(api_notify_test, **su), methods=["POST"]),
         Route("/api/audit", guard(api_audit)),
         Route("/api/events", guard(api_events)),
         Route("/api/agent/{id}", guard(api_agent, **scoped)),

@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError } from '../../../api/client'
 import EmptyState from '../../../components/EmptyState/EmptyState'
-import EditableSettingRow from '../EditableSettingRow'
+import GenericSettingsSection from './GenericSettingsSection'
 import type { AdminRow, PolicyRule, PolicyRulesResponse, ShellAllowResponse } from '../types'
 import shared from '../shared.module.css'
 
@@ -90,9 +90,9 @@ export default function ShellPolicySection({ rows }: ShellPolicySectionProps) {
         run on every managed host. Deny rules are checked first and always, so an allow rule can never lift one.
       </p>
 
-      {modeRow ? (
-        <div className={shared.rows} style={{ marginBottom: 24 }}>
-          <EditableSettingRow row={modeRow} />
+      {rows.length > 0 ? (
+        <div style={{ marginBottom: 24 }}>
+          <GenericSettingsSection rows={rows} />
         </div>
       ) : null}
 

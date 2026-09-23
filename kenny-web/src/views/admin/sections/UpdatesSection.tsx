@@ -3,7 +3,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError } from '../../../api/client'
 import EmptyState from '../../../components/EmptyState/EmptyState'
 import { formatRelativeTime } from '../../host/format'
-import type { UpdateAgentRow, UpdateCampaign, UpdatesResponse } from '../types'
+import type { AdminRow, UpdateAgentRow, UpdateCampaign, UpdatesResponse } from '../types'
+import GenericSettingsSection from './GenericSettingsSection'
 import shared from '../shared.module.css'
 import styles from './UpdatesSection.module.css'
 
@@ -60,7 +61,18 @@ function hostStatus(
  * `update_manager._agents_for_campaign` returns no rows without one — the
  * rows are eligibility against a campaign, not a fleet listing.
  */
-export default function UpdatesSection() {
+export interface UpdatesSectionProps {
+  /**
+   * The Updates group of the settings catalog — empty for an operator, who may
+   * run a rollout but not change how rollouts behave (`/api/settings` is
+   * superuser-only).
+   */
+  rows?: AdminRow[]
+}
+
+const ROLLOUT_ON_CONNECT = 'KENNY_AGENT_ROLLOUT_ON_CONNECT'
+
+export default function UpdatesSection({ rows = [] }: UpdatesSectionProps) {
   const queryClient = useQueryClient()
   const [channel, setChannel] = useState<Channel>('stable')
   // Mirrors the campaign's `on_connect` at approval time. Defaults to on,
@@ -108,6 +120,18 @@ export default function UpdatesSection() {
   // the operator-set desired channel, never the channel the connected binary
   // reports about itself, so an agent just flipped to dev is eligible for the
   // dev campaign that will bring it there.
+  // The global auto-apply gate is switched where its effect shows: in the
+  // rollout card, next to the per-host states it decides (ON CONNECT vs OFFLINE).
+  const canSwitchOnConnect = rows.some((r) => r.key === ROLLOUT_ON_CONNECT)
+  const otherRows = rows.filter((r) => r.key !== ROLLOUT_ON_CONNECT)
+  const switchOnConnect = useMutation({
+    mutationFn: (value: boolean) => api.put(`/api/settings/${ROLLOUT_ON_CONNECT}`, { value }),
+    onSuccess: () => {
+      invalidate()
+      queryClient.invalidateQueries({ queryKey: ['settings'] })
+    },
+  })
+
   const setDesiredChannel = useMutation({
     mutationFn: ({ agentId, desired }: { agentId: string; desired: Channel }) =>
       api.put<{ ok: boolean; agent_id: string; desired_channel: string }>(`/api/agent/${agentId}/channel`, { channel: desired }),
@@ -137,7 +161,7 @@ export default function UpdatesSection() {
 
   const doneCount = agents.filter((a) => a.updated).length
 
-  const mutations = [check, approve, applyNow, revoke, suspend, resume, setDesiredChannel]
+  const mutations = [switchOnConnect, check, approve, applyNow, revoke, suspend, resume, setDesiredChannel]
 
   return (
     <div>
@@ -189,6 +213,17 @@ export default function UpdatesSection() {
           <dd>
             {rolloutOnConnect ? 'on' : 'off'}
             {!rolloutOnConnect ? <span className={styles.stateNote}> · offline agents wait for APPLY NOW</span> : null}
+            {canSwitchOnConnect && (
+              <button
+                type="button"
+                className={shared.btnSmall}
+                style={{ marginLeft: 8 }}
+                onClick={() => switchOnConnect.mutate(!rolloutOnConnect)}
+                disabled={switchOnConnect.isPending}
+              >
+                {rolloutOnConnect ? 'TURN OFF' : 'TURN ON'}
+              </button>
+            )}
           </dd>
           {activeCampaign ? (
             <>
@@ -294,6 +329,8 @@ export default function UpdatesSection() {
           </p>
         )}
       </div>
+
+      {otherRows.length > 0 && <GenericSettingsSection rows={otherRows} />}
 
       {campaigns.length > 0 && (
         <div className={styles.history}>

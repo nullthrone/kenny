@@ -29,17 +29,7 @@ function mapGroup(group: RawSettingGroup): MappedAdminSection {
   return { key: group.slug, label: group.name, rows: group.settings.map(mapRow) }
 }
 
-/** The eleven real config groups from `GET /api/settings`, mapped to the console's `AdminSection` shape. */
+/** The config groups from `GET /api/settings`, mapped to the console's `AdminSection` shape. */
 export function mapSettingsGroups(raw: RawSettingsResponse): MappedAdminSection[] {
   return raw.groups.map(mapGroup)
-}
-
-/**
- * The synthetic `environment` section: every row across every group whose
- * source is `env`, read-only, composed client-side because the server has
- * no such group of its own (types.ts's `AdminSectionKey` doc comment).
- */
-export function buildEnvironmentSection(groups: MappedAdminSection[]): MappedAdminSection {
-  const rows = groups.flatMap((g) => g.rows.filter((r) => r.source === 'env'))
-  return { key: 'environment', label: 'Environment', rows }
 }
