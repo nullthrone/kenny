@@ -339,8 +339,8 @@ _SPECS: list[SettingSpec] = [
     _spec("KENNY_BACKUP_INTERVAL_SECS", "Backup", "int", "21600",
           "Backup interval (s)", lifecycle="live", min=0,
           help="Cadence of the automatic backup loop. Changing it retimes the "
-               "running loop. Setting it to 0 disables the loop only after a "
-               "restart."),
+               "running loop; 0 pauses automatic backups until it is raised "
+               "again."),
     _spec("KENNY_BACKUP_INITIAL_DELAY", "Backup", "float", "30",
           "Initial backup delay (s)", lifecycle="restart", min=0,
           help="Delay before the first automatic backup after startup."),
@@ -401,9 +401,10 @@ _SPECS: list[SettingSpec] = [
           help="Connect the Discord bot surface at startup. Requires a bot "
                "token and at least one allowed guild."),
     _spec("KENNY_DISCORD_GUILD_IDS", "Discord & Tickets", "str", "",
-          "Allowed guild IDs", lifecycle="restart",
+          "Allowed guild IDs", lifecycle="live",
           help="Comma-separated Discord server (guild) snowflakes kenny reacts "
-               "in. EMPTY MEANS DENY EVERYWHERE — there is no allow-all mode."),
+               "in, checked on every event. EMPTY MEANS DENY EVERYWHERE — there "
+               "is no allow-all mode."),
     _spec("KENNY_DISCORD_SUPPORT_CHANNEL_ID", "Discord & Tickets", "str", "",
           "Support channel ID", lifecycle="live",
           help="Channel snowflake where a mention opens a ticket. Empty accepts "
@@ -530,8 +531,29 @@ class Settings:
         self._store = store
         self._catalog = dict(catalog if catalog is not None else CATALOG)
         self._env = env if env is not None else os.environ
-        self._apply_hooks = dict(apply_hooks if apply_hooks is not None else APPLY_HOOKS)
+        self._apply_hooks: dict[str, list[Callable[[Any], None]]] = {
+            key: [hook]
+            for key, hook in (apply_hooks if apply_hooks is not None else APPLY_HOOKS).items()
+        }
         self._overrides: dict[str, str] = {}
+        # Raw value of every ``restart`` setting as this process started with it,
+        # captured by ``load()`` — what the running server actually uses, as
+        # opposed to what is stored for the next boot.
+        self._boot_raw: dict[str, str] = {}
+
+    def on_change(self, key: str, hook: Callable[[Any], None]) -> None:
+        """Re-apply ``key`` to an object that holds its value, whenever it changes.
+
+        For a consumer that keeps the value in an attribute instead of calling
+        :meth:`get` on every use: the hook runs on write, on reset, and once in
+        :meth:`load` for a stored override, which is what makes such a setting
+        honestly ``live``. Register before :meth:`load` so the boot value is
+        applied too.
+        """
+
+        if key not in self._catalog:
+            raise KeyError(key)
+        self._apply_hooks.setdefault(key, []).append(hook)
 
     # -- lifecycle -------------------------------------------------------------
 
@@ -539,6 +561,11 @@ class Settings:
         """Load DB overrides into memory and re-apply live apply-hooks once."""
 
         self._overrides = await self._store.all()
+        self._boot_raw = {
+            key: self._resolve_raw(key, spec)[0]
+            for key, spec in self._catalog.items()
+            if spec.lifecycle == "restart"
+        }
         for key in self._overrides:
             self._run_hook(key)
 
@@ -593,13 +620,23 @@ class Settings:
         self._run_hook(key)
 
     def _run_hook(self, key: str) -> None:
-        hook = self._apply_hooks.get(key)
-        if hook is None:
-            return
-        try:
-            hook(self.get(key))
-        except Exception:  # noqa: BLE001 - an apply-hook must never break a write
-            logger.exception("apply-hook for %s failed", key)
+        for hook in self._apply_hooks.get(key, ()):
+            try:
+                hook(self.get(key))
+            except Exception:  # noqa: BLE001 - an apply-hook must never break a write
+                logger.exception("apply-hook for %s failed", key)
+
+    def pending_restart(self, key: str) -> bool:
+        """True when a ``restart`` setting's value differs from the one in force.
+
+        The running process keeps the value it booted with; this says a change
+        is stored but waits for the next start.
+        """
+
+        spec = self._catalog[key]
+        if spec.lifecycle != "restart" or key not in self._boot_raw:
+            return False
+        return self._resolve_raw(key, spec)[0] != self._boot_raw[key]
 
     # -- serialisation for the API --------------------------------------------
 
@@ -631,6 +668,7 @@ class Settings:
                 "min": spec.min,
                 "max": spec.max,
                 "sensitive": spec.sensitive,
+                "pending_restart": self.pending_restart(key),
             }
             if spec.sensitive:
                 row["value"] = None
@@ -656,6 +694,7 @@ class Settings:
             "source": source,
             "lifecycle": spec.lifecycle,
             "editable": spec.writable,
+            "pending_restart": self.pending_restart(key),
         }
         if spec.sensitive:
             row["value"] = None

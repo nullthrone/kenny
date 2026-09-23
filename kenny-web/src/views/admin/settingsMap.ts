@@ -20,6 +20,8 @@ function mapRow(raw: RawSettingRow): AdminRow {
     min: raw.min,
     max: raw.max,
     isSet: raw.sensitive ? Boolean(raw.is_set) : raw.value !== null && raw.value !== '',
+    lifecycle: raw.lifecycle,
+    pendingRestart: Boolean(raw.pending_restart),
   }
 }
 

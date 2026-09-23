@@ -27,6 +27,8 @@ export interface RawSettingRow {
   min: number | null
   max: number | null
   sensitive: boolean
+  /** A `restart` setting whose stored value differs from the one the server is running with. */
+  pending_restart: boolean
   value: string | number | boolean | null
   is_set?: boolean
   default: string | number | boolean | null
@@ -54,6 +56,8 @@ export interface AdminRow extends SettingRow {
   min: number | null
   max: number | null
   isSet: boolean
+  lifecycle: RawSettingRow['lifecycle']
+  pendingRestart: boolean
 }
 
 export interface MappedAdminSection extends AdminSection {
