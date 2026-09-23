@@ -1157,12 +1157,16 @@ class TicketAssistant:
         max_turns_per_ticket: int = 40,
         approval_ttl_secs: int | None = None,
         base_url: Callable[[], str] = urls.public_base_url,
+        client_provider: Callable[[], Any] | None = None,
     ) -> None:
         self.tickets = tickets
         self.store = tickets.store
         self.users = users
         self.executor = executor
         self.client = client
+        # Asked once per turn when given, so a key changed in the dashboard is
+        # the one the next turn uses (ADR-0066); ``client`` stays the fallback.
+        self._client_provider = client_provider
         self.model = model
         self.max_turns_per_ticket = max_turns_per_ticket
         self.approval_ttl_secs = approval_ttl_secs
@@ -1813,7 +1817,7 @@ class TicketAssistant:
             async for event in drive_events(
                 session,
                 self.executor,
-                client=self.client,
+                client=self._client_provider() if self._client_provider else self.client,
                 model=model,
                 policy=policy,
                 **extra,

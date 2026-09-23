@@ -9,6 +9,8 @@ frames, the confirm-gate round-trip, and in-band ``error`` frames (status stays
 
 from __future__ import annotations
 
+import pytest
+
 import asyncio
 import json
 from contextlib import asynccontextmanager
@@ -26,6 +28,13 @@ from kenny_server.tunnel import AgentTunnel
 from kenny_server.webui import build_chat_routes
 
 from test_chat import FakeAnthropic, _Response, text_block, tool_use_block
+
+
+@pytest.fixture(autouse=True)
+def _api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests drive AI turns with a fake client; AI runs only with a key set."""
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-not-a-real-key")
 
 
 class _BoomMessages:

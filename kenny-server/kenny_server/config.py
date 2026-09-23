@@ -98,6 +98,8 @@ class SettingSpec:
     min: float | None = None
     max: float | None = None
     sensitive: bool = False
+    # Kept out of every backup copy of the database (backup.BackupManager).
+    backup_excluded: bool = False
 
     @property
     def env_name(self) -> str:
@@ -216,7 +218,34 @@ _SPECS: list[SettingSpec] = [
           help="Incoming-webhook URL used as a push notification channel for "
                "alerts. Independent of the bot surface. Empty means the "
                "channel is off."),
-    # -- AI --------------------------------------------------------------------
+    # -- AI (ai.AiAccess resolves the key and every switch per call; ADR-0066) --
+    # The one secret the dashboard stores that is billed per use: it is kept out
+    # of every backup copy (backup_excluded), so a remote backup target never
+    # holds it. After a restore it is set again, or the environment supplies it.
+    _spec("ANTHROPIC_API_KEY", "AI", "secret", "",
+          "Anthropic API key", lifecycle="live", sensitive=True, backup_excluded=True,
+          help="Enables every AI feature below. A key saved here wins over the "
+               "environment and is not included in backups — set it again after a "
+               "restore."),
+    _spec("KENNY_AI_ASK_ENABLED", "AI", "bool", "1",
+          "Ask kenny", lifecycle="live",
+          help="The fleet copilot chat (header button and ⌘K)."),
+    _spec("KENNY_AI_RECOMMEND_ENABLED", "AI", "bool", "1",
+          "Recommendations", lifecycle="live",
+          help="The AI recommendation in a host section's detail view."),
+    _spec("KENNY_AI_FORECAST_ENABLED", "AI", "bool", "1",
+          "Forecast prose", lifecycle="live",
+          help="AI wording for the host forecast. Off shows the plain computed "
+               "summary instead."),
+    _spec("KENNY_AI_CLASSIFY_ENABLED", "AI", "bool", "1",
+          "Reliability event classification", lifecycle="live",
+          help="Classifies Windows reliability events by category and severity. "
+               "Off leaves new events unclassified; health then falls back to the "
+               "crash markers alone."),
+    _spec("KENNY_AI_TICKET_ASSISTANT_ENABLED", "AI", "bool", "1",
+          "Ticket assistant", lifecycle="live",
+          help="kenny answering in a ticket's chat, on the dashboard and in Discord. "
+               "Off leaves tickets to operators."),
     _spec("KENNY_CHAT_MODEL", "AI", "str", "claude-sonnet-4-6",
           "Chat model", lifecycle="live",
           help="Anthropic model id used by Ask kenny, the ticket assistant and "
@@ -391,9 +420,6 @@ _SPECS: list[SettingSpec] = [
           help="Cadence for refreshing the external web-filter lists; 0 disables it."),
     _spec("KENNY_WEBFILTER_INITIAL_REFRESH_DELAY", ENV_GROUP, "float", "5",
           "Initial refresh delay (s)", lifecycle="env_only", min=0),
-    _spec("ANTHROPIC_API_KEY", ENV_GROUP, "secret", "",
-          "Anthropic API key", lifecycle="env_only", sensitive=True,
-          help="Gates the chat/recommendation features. Managed via environment."),
     _spec("KENNY_POLICY_CATALOG", ENV_GROUP, "str", "",
           "Policy catalog path", lifecycle="env_only",
           help="Path to the shared policy catalog file, loaded once at startup."),

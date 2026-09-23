@@ -57,7 +57,7 @@ export default function AskKennyDrawer() {
   const ticketGate = ticket?.gate ?? null
   const unavailable = ticket
     ? !ticket.assistantAvailable
-      ? 'The AI assistant is not configured on this server.'
+      ? 'The AI assistant is not available on this server.'
       : !ticket.agentId
         ? 'This ticket has no target machine.'
         : ticketGate

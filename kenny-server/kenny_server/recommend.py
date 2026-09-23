@@ -34,13 +34,12 @@ parsed.
 from __future__ import annotations
 
 import asyncio
-import os
 import re
 from collections import OrderedDict
 from collections.abc import AsyncIterator
 from typing import Any
 
-from . import health_rules
+from . import ai, health_rules
 from .chat import CAPABILITY_TOOLS, STATE_CHANGING_TOOLS
 
 # Haiku: fast and cheap, sufficient for a 3-line templated recommendation.
@@ -57,9 +56,9 @@ _REPLAY_DELAY = 0.012
 
 
 def ai_available() -> bool:
-    """True if an Anthropic API key is configured (recommendations enabled)."""
+    """True if an Anthropic API key is configured (see :mod:`kenny_server.ai`)."""
 
-    return bool(os.environ.get("ANTHROPIC_API_KEY"))
+    return ai.current().available()
 
 
 def _tool_catalog() -> str:

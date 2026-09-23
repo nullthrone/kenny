@@ -19,7 +19,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from kenny_server import agent_release
+from kenny_server import agent_release, ai
 
 
 def _refuse(request: httpx.Request) -> httpx.Response:
@@ -35,3 +35,12 @@ def _no_real_github(monkeypatch):
         "_default_client",
         lambda: httpx.Client(transport=httpx.MockTransport(_refuse)),
     )
+
+
+@pytest.fixture(autouse=True)
+def _unbind_ai():
+    """``build_app`` binds the process-wide AI access (``kenny_server.ai``); drop it
+    after each test so one test's app — and a key it saved — never answers for the next."""
+
+    yield
+    ai.bind(None)

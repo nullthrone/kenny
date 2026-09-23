@@ -65,9 +65,9 @@ import logging
 import re
 import time
 from collections import OrderedDict
-from functools import lru_cache
 from typing import Any, Callable
 
+from . import ai
 from .recommend import ai_available  # re-exported for callers
 
 __all__ = [
@@ -538,7 +538,7 @@ def _unclassified_state() -> str:
     health it has no basis for.
     """
 
-    return "pending" if ai_available() else "unavailable"
+    return "pending" if ai.current().enabled("classify") else "unavailable"
 
 
 def _stamp(e: dict[str, Any], info: Classification, state: str) -> None:
@@ -633,7 +633,7 @@ def schedule_classification(
     from within a running event loop.
     """
 
-    if not ai_available():
+    if not ai.current().enabled("classify"):
         return False
     now = time.monotonic()
     todo: list[tuple[tuple[str, int], dict[str, Any]]] = []
@@ -653,22 +653,15 @@ def schedule_classification(
     return True
 
 
-@lru_cache(maxsize=1)
 def default_client() -> Any:
-    """Construct the real Anthropic client (lazy import; needs ``ANTHROPIC_API_KEY``).
+    """The Anthropic client of the process-wide AI access (:mod:`kenny_server.ai`).
 
-    A tiny, dependency-free default so callers outside the dashboard (e.g. the
-    ``agent_health`` MCP tool) don't need their own Anthropic wiring. Cached for
-    the life of the process — this runs on every dashboard read (even a fully
-    cached one, see ``annotate_snapshots``), and building a fresh
-    ``anthropic.Anthropic()`` (httpx client, connection pool) per read is pure
-    overhead once the cache is warm. Not used by tests, which always inject
-    ``client_factory``.
+    For callers outside the dashboard (e.g. the ``agent_health`` MCP tool) that
+    have no client of their own. ``ai.AiAccess`` builds the client once per key,
+    so a cached read does not pay for a new ``anthropic.Anthropic()`` either.
     """
 
-    import anthropic
-
-    return anthropic.Anthropic()
+    return ai.current().client()
 
 
 async def annotate_snapshots(
@@ -696,7 +689,7 @@ async def annotate_snapshots(
     if not groups:
         return
     factory = client_factory or default_client
-    client = factory() if ai_available() else None
+    client = factory() if ai.current().enabled("classify") else None
     mapping = await categorize_events(client, groups, wait=wait)
     for snap in snapshots:
         rel = snap.get("reliability") if isinstance(snap, dict) else None

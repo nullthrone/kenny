@@ -585,8 +585,21 @@ page's [Reliability section](#reliability) suppresses a pattern from the event i
 
 ### AI
 
-The model and the assistant's limits:
+The Anthropic API key, one switch per AI feature, the models, and the assistant's limits
+([ADR-0066](adr/0066-anthropic-key-as-a-dashboard-setting-excluded-from-backups.md)):
 
+- **Anthropic API key** — a key saved here wins over `ANTHROPIC_API_KEY` in the
+  environment. It is never shown back, and it is **not included in backups**: after a
+  restore, set it again (or let the environment supply it). **Test key** checks it against
+  the API. The line above the settings says where the key comes from and which features
+  are running.
+- **Ask kenny**, **Recommendations**, **Forecast prose**, **Reliability event
+  classification**, **Ticket assistant** — one switch each, all on by default. A feature
+  runs only with a key set *and* its switch on; while it cannot run, the dashboard does
+  not offer it. The Ask kenny button and ⌘K disappear, the recommendation block says it is
+  unavailable, the forecast shows its plain computed summary marked *AI off*, new
+  reliability events stay unclassified, and a ticket's chat is left to operators (in
+  Discord, kenny says so in the thread).
 - **Chat model** — the Anthropic model id for Ask kenny, the ticket assistant, and triage.
 - **Discord model** — the model for Discord-driven turns; empty uses the chat model.
 - **Investigate new tickets automatically** (on by default) — kenny runs one read-only
@@ -598,8 +611,8 @@ The model and the assistant's limits:
 - **Assistant turns per ticket** — the cap on the turns the ticket assistant takes on one
   ticket, on the dashboard and in Discord alike, before it is handed to an operator.
 
-Every AI feature is inert without an `ANTHROPIC_API_KEY`, which is set in the environment.
-See [Tickets → kenny looks first](itsm.md#kenny-looks-first-before-you-are-asked-to).
+See [Tickets → kenny looks first](itsm.md#kenny-looks-first-before-you-are-asked-to) for
+triage.
 
 ### Tickets
 

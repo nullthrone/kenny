@@ -31,6 +31,7 @@ from typing import Any, Callable
 import aiosqlite
 
 from .backup_targets import BackupDestination, LocalDestination, build_destination
+from .config import CATALOG
 from .store import BackupTargetStore, _configure_connection
 
 logger = logging.getLogger("kenny.backup")
@@ -84,6 +85,34 @@ async def _quick_check(path: str) -> str:
         # "quick_check" row (e.g. "database disk image is malformed") — treat
         # that as a definitive non-"ok" integrity result, not a hard failure.
         return f"error: {exc}"
+    finally:
+        await conn.close()
+
+
+async def _scrub_excluded_settings(path: str) -> None:
+    """Remove every ``backup_excluded`` setting from the snapshot at ``path``.
+
+    Runs on the staged copy before it is hashed, checked or pushed anywhere, so
+    no backup — local or remote — ever holds such a value (ADR-0066). The live
+    database is untouched; after a restore the value is simply unset and the
+    environment, if it has one, applies again. A snapshot of a database that
+    predates the settings table has nothing to scrub.
+    """
+
+    keys = [key for key, spec in CATALOG.items() if spec.backup_excluded]
+    if not keys:
+        return
+    conn = await aiosqlite.connect(path)
+    try:
+        cur = await conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'settings'"
+        )
+        if await cur.fetchone() is None:
+            return
+        await conn.executemany("DELETE FROM settings WHERE key = ?", [(k,) for k in keys])
+        await conn.commit()
+        # The deleted value must not survive in a free page of the copy.
+        await conn.execute("VACUUM")
     finally:
         await conn.close()
 
@@ -158,6 +187,7 @@ class BackupManager:
                 await conn.execute("VACUUM INTO ?", (staging_path,))
             finally:
                 await conn.close()
+            await _scrub_excluded_settings(staging_path)
 
             size = os.path.getsize(staging_path)
             sha256 = await asyncio.to_thread(_sha256_file, staging_path)

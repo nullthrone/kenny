@@ -677,7 +677,7 @@ def _reliability_reason(
     if suppressed:
         tail.append(f"{len(suppressed)} suppressed")
     if unavailable:
-        tail.append("classification unavailable (no API key)")
+        tail.append("classification unavailable (AI off or no API key)")
     elif unclassified:
         tail.append(f"{len(unclassified)} awaiting classification")
 

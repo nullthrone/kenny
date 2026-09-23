@@ -27,7 +27,7 @@ flowchart TB
 
 - A host with Docker + Docker Compose (server), reachable by the agents over TLS.
 - A DNS name + TLS for production (the bundled Caddy profile can obtain certs automatically).
-- For the dashboard chat: an `ANTHROPIC_API_KEY`.
+- For the AI features (Ask kenny, recommendations, forecast prose, event classification, the ticket assistant, triage): an Anthropic API key — in the environment as `ANTHROPIC_API_KEY`, or set later in Admin → AI.
 - To build the agent / cut releases: a GitHub repo with Actions (the workflow targets `windows-latest`).
 
 ## Quick start (Docker Compose)
@@ -76,7 +76,7 @@ interval at startup.
 | `KENNY_OAUTH_ACCESS_TTL_SECS` | server | `3600` | Lifetime of an OAuth access token issued to a connected MCP client (default 1 hour). |
 | `KENNY_OAUTH_REFRESH_TTL_SECS` | server | `2592000` | Lifetime of a rotating OAuth refresh token (default 30 days); reuse of a rotated token revokes the whole grant. |
 | `KENNY_AGENT_TOKENS` | server | dev map | `id=token,id2=token2` — per-agent tokens (the token store is seeded from this). |
-| `ANTHROPIC_API_KEY` | server | — | Enables the dashboard chat. |
+| `ANTHROPIC_API_KEY` | server | — | Enables the AI features. Also settable in Admin → AI, where a saved key wins over this one; a key saved there is not included in backups. |
 | `KENNY_CHAT_MODEL` | server | `claude-sonnet-4-6` | Model for Ask kenny, the ticket assistant and triage. Also editable in Admin → AI. |
 | `KENNY_TLS` | server | unset | Set `1` behind TLS so the login cookie gets the `Secure` flag. |
 | `KENNY_FORWARDED_ALLOW_IPS` | server | `127.0.0.1` | Upstream proxy address(es) allowed to set `X-Forwarded-For`, so the login rate-limiter sees the real client IP behind a reverse proxy (not the proxy's). Set to your proxy's address when fronting kenny with the Caddy TLS profile. |
@@ -176,7 +176,7 @@ connected, install the optional dependency first: `pip install -e ".[discord]"`.
 | `KENNY_TICKET_SWEEP_INTERVAL_SECS` | `300` | Ticket housekeeping loop interval (expires gates, nudges and escalates stalls, auto-closes, drops untouched tickets); `0` disables. Environment-only, read at startup. |
 | `KENNY_TICKET_SWEEP_INITIAL_DELAY` | `30` | Delay before the first sweep after startup. Environment-only. |
 | `KENNY_TICKET_RETENTION_DAYS` | `30` | How long a **closed** ticket keeps its raw working transcript. The ticket, its summary and its audit trail are never pruned. |
-| `KENNY_TRIAGE_ENABLED` | `1` | On a new ticket, run one read-only investigation on its PC and write the finding into the ticket before anyone is asked to look. Needs `ANTHROPIC_API_KEY`; without one it stays off whatever this says. See [Tickets → kenny looks first](itsm.md#kenny-looks-first-before-you-are-asked-to). |
+| `KENNY_TRIAGE_ENABLED` | `1` | On a new ticket, run one read-only investigation on its PC and write the finding into the ticket before anyone is asked to look. Needs an Anthropic API key (Admin → AI or `ANTHROPIC_API_KEY`); without one it stays off whatever this says. See [Tickets → kenny looks first](itsm.md#kenny-looks-first-before-you-are-asked-to). |
 | `KENNY_TRIAGE_RESOLVE` | `0` | Let an investigation set a ticket to `resolved` itself — only for an alert-opened ticket, only on a closing verdict, and only when a read-only check actually ran and succeeded. Off means every verdict is a recommendation. |
 | `KENNY_TRIAGE_MAX_ITERATIONS` | `8` | Model round-trips one investigation may take. Spending them all produces no verdict: the ticket stays open with what was found. |
 

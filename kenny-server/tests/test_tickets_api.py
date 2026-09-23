@@ -18,6 +18,8 @@ neither, which is what a server without Discord configuration serves.
 
 from __future__ import annotations
 
+import pytest
+
 import contextlib
 import json
 from collections.abc import Awaitable, Callable
@@ -41,6 +43,14 @@ from kenny_server.userstore import UserStore
 from kenny_server.webui.tickets import build_ticket_routes
 
 from support.fake_discord import FakeDiscordGateway
+
+
+@pytest.fixture(autouse=True)
+def _api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests drive AI turns with a fake client; AI runs only with a key set."""
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-not-a-real-key")
+
 
 NOW = datetime(2026, 8, 1, 12, 0, 0, tzinfo=timezone.utc)
 GUILD = "guild-1"

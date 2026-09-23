@@ -180,3 +180,35 @@ describe('Shell — the account theme', () => {
     expect(document.documentElement.getAttribute('data-theme')).toBe('light')
   })
 })
+
+/**
+ * Ask kenny is offered only where it can answer: an operator or above (the chat
+ * routes floor there) with the feature switched on and a key set (ADR-0066).
+ * Anything else would be a button whose every turn answers 503.
+ */
+describe('Shell — Ask kenny follows the AI switch', () => {
+  const ON = { configured: true, source: 'db', features: { ask: true } }
+  const OFF = { configured: true, source: 'db', features: { ask: false } }
+
+  it('offers Ask kenny when the feature is on', async () => {
+    mockApi({ '/api/ai/status': ON })
+    renderShell()
+    expect(await screen.findByRole('button', { name: /ASK KENNY/ })).toBeInTheDocument()
+  })
+
+  it('hides the button and the shortcut when the feature is off', async () => {
+    mockApi({ '/api/ai/status': OFF })
+    renderShell()
+    await waitFor(() => expect(apiGetMock).toHaveBeenCalledWith('/api/ai/status'))
+    expect(screen.queryByRole('button', { name: /ASK KENNY/ })).not.toBeInTheDocument()
+    fireEvent.keyDown(window, { key: 'k', metaKey: true })
+    expect(screen.queryByText('ASK KENNY')).not.toBeInTheDocument()
+  })
+
+  it('never offers it to a scoped user, whose every chat call would 403', async () => {
+    mockApi({ '/api/me': { ...ME, role: 'user' }, '/api/ai/status': ON })
+    renderShell()
+    await waitFor(() => expect(apiGetMock).toHaveBeenCalledWith('/api/ai/status'))
+    expect(screen.queryByRole('button', { name: /ASK KENNY/ })).not.toBeInTheDocument()
+  })
+})

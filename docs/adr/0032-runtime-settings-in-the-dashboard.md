@@ -1,6 +1,7 @@
 # 0032. Runtime settings resolved DB-over-env, editable in the dashboard
 
 - Status: accepted
+- Amended by: [ADR-0054](0054-alert-channels-as-live-settings.md), [ADR-0066](0066-anthropic-key-as-a-dashboard-setting-excluded-from-backups.md)
 - Date: 2026-07-04
 
 ## Context and Problem Statement

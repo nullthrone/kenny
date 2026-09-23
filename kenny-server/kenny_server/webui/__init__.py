@@ -23,7 +23,7 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from starlette.routing import Match, Route
 
-from .. import PROTOCOL_VERSION, __version__, agent_release, changelog
+from .. import PROTOCOL_VERSION, __version__, agent_release, ai, changelog
 from ..backup_targets import build_destination
 from ..config import CATALOG, SettingNotWritable, Settings
 from ..chat import (
@@ -40,7 +40,7 @@ from ..policy import PolicyEngine
 from ..event_categories import annotate_snapshots
 from .. import findings
 from ..forecast import build_facts, deterministic_summary, forecast_events
-from ..recommend import ai_available, recommend_events, warning_facts
+from ..recommend import recommend_events, warning_facts
 from ..registry import AgentRegistry
 from ..store import (
     ChatHistoryStore,
@@ -622,8 +622,8 @@ def build_api_routes(
                     "supported": supports_tool("account_set_admin", agent_os)
                 },
                 # Whether the AI Recommendation block is offered for flagged
-                # sections (true only when an Anthropic API key is configured).
-                "ai_enabled": ai_available(),
+                # sections: a key is set and recommendations are switched on.
+                "ai_enabled": ai.current().enabled("recommend"),
                 "history": hist_points,
                 "call_log": [
                     c for c in await call_log.list() if c["agent_id"] == agent_id
@@ -717,6 +717,20 @@ def build_api_routes(
             error = await notifier.send(note)
             results.append({"channel": notifier.name, "ok": error is None, "error": error})
         return JSONResponse({"results": results})
+
+    async def api_ai_status(_request: Request) -> JSONResponse:
+        """Whether a key is set and which AI features may run (ADR-0066).
+
+        Every signed-in role reads it: the dashboard hides what is switched
+        off rather than offering a control that answers 503.
+        """
+
+        return JSONResponse(ai.current().status())
+
+    async def api_ai_test(_request: Request) -> JSONResponse:
+        """Check the configured key against the Anthropic API."""
+
+        return JSONResponse(await asyncio.to_thread(ai.current().probe))
 
     async def api_refresh(request: Request) -> JSONResponse:
         agent_id = request.path_params["id"]
@@ -1990,6 +2004,8 @@ def build_api_routes(
         Route("/api/log", guard(api_log)),
         Route("/api/digest/preview", guard(api_digest_preview, **op)),
         Route("/api/notify/test", guard(api_notify_test, **su), methods=["POST"]),
+        Route("/api/ai/status", guard(api_ai_status)),
+        Route("/api/ai/test", guard(api_ai_test, **su), methods=["POST"]),
         Route("/api/audit", guard(api_audit)),
         Route("/api/events", guard(api_events)),
         Route("/api/agent/{id}", guard(api_agent, **scoped)),
@@ -2062,11 +2078,23 @@ def build_api_routes(
 
 
 def _anthropic_client() -> Any:
-    """Construct the real Anthropic client (lazy import; needs ANTHROPIC_API_KEY)."""
+    """The real Anthropic client for the key in force (see :mod:`kenny_server.ai`)."""
 
-    import anthropic
+    return ai.current().client()
 
-    return anthropic.Anthropic()
+
+def _requires_ai(feature: str, handler: Any) -> Any:
+    """Answer ``503`` instead of running ``handler`` while ``feature`` is off (ADR-0066)."""
+
+    async def gated(request: Request) -> Any:
+        if not ai.current().enabled(feature):
+            return JSONResponse(
+                {"error": f"the AI feature '{feature}' is not available on this server"},
+                status_code=503,
+            )
+        return await handler(request)
+
+    return gated
 
 
 def _sse(event: dict[str, Any]) -> bytes:
@@ -2303,9 +2331,10 @@ def build_chat_routes(
         section = str(body.get("section", "")).strip()
         if not agent_id or not section:
             return JSONResponse({"error": "agent_id and section are required"}, status_code=400)
-        if not ai_available():
+        if not ai.current().enabled("recommend"):
             return JSONResponse(
-                {"error": "AI recommendations are not configured"}, status_code=503
+                {"error": "AI recommendations are not available on this server"},
+                status_code=503,
             )
         latest = await store.latest(agent_id)
         snapshot = latest["snapshot"] if latest else None
@@ -2377,7 +2406,7 @@ def build_chat_routes(
             agent_os=agent.os if agent else "windows",
         )
 
-        if not ai_available():
+        if not ai.current().enabled("forecast"):
             return stream_text(deterministic_summary(facts))
 
         client = client_factory()
@@ -2392,10 +2421,14 @@ def build_chat_routes(
         return StreamingResponse(gen(), media_type="text/event-stream", headers=_STREAM_HEADERS)
 
     return [
-        Route("/api/chat", api_chat, methods=["POST"]),
-        Route("/api/chat/confirm", api_chat_confirm, methods=["POST"]),
-        Route("/api/chat/stream", api_chat_stream, methods=["POST"]),
-        Route("/api/chat/confirm/stream", api_chat_confirm_stream, methods=["POST"]),
+        Route("/api/chat", _requires_ai("ask", api_chat), methods=["POST"]),
+        Route("/api/chat/confirm", _requires_ai("ask", api_chat_confirm), methods=["POST"]),
+        Route("/api/chat/stream", _requires_ai("ask", api_chat_stream), methods=["POST"]),
+        Route(
+            "/api/chat/confirm/stream",
+            _requires_ai("ask", api_chat_confirm_stream),
+            methods=["POST"],
+        ),
         Route("/api/chat/history", api_chat_history_list, methods=["GET"]),
         Route("/api/chat/history/{id}", api_chat_history_get, methods=["GET"]),
         Route("/api/chat/history/{id}", api_chat_history_delete, methods=["DELETE"]),

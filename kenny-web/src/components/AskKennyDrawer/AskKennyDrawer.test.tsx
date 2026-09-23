@@ -289,7 +289,7 @@ describe('AskKennyDrawer — a ticket is the second context, not a second drawer
     chatStore.reset('')
     openOnTicket({ assistantAvailable: false })
     expect(screen.getByLabelText<HTMLTextAreaElement>('Message kenny').placeholder).toBe(
-      'The AI assistant is not configured on this server.',
+      'The AI assistant is not available on this server.',
     )
   })
 
