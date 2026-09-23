@@ -34,6 +34,7 @@ from .tools import (
     CallLog,
     ScreenshotStore,
     build_health,
+    forward_timeout_s,
 )
 from .tunnel import AgentTunnel, ToolError
 
@@ -669,7 +670,7 @@ class ToolExecutor:
         # `drive_events` generator instead of becoming a normal tool_result
         # error event.
         try:
-            timeout_s = float(args.get("timeout_s", 30))
+            timeout_s = forward_timeout_s(tool, args)
         except (TypeError, ValueError):
             message = f"timeout_s must be a number, got {args.get('timeout_s')!r}"
             await self.call_log.record(agent_id, tool, args, ok=False, error=message)

@@ -12,6 +12,8 @@ use std::time::Duration;
 
 use serde_json::Value;
 
+use super::ProbeFailure;
+
 /// Run a PowerShell snippet and parse its stdout as JSON.
 ///
 /// The script is responsible for emitting JSON (typically by piping to
@@ -26,6 +28,24 @@ pub fn run_json(script: &str) -> Option<Value> {
         return None;
     }
     serde_json::from_str(trimmed).ok()
+}
+
+/// Run a PowerShell snippet within `budget` and parse its stdout as JSON, saying
+/// why when there is nothing usable.
+///
+/// For interactive tools rather than telemetry: they get a budget of their own —
+/// an operator waiting on one call can afford more than a snapshot probe — and
+/// they report a timeout as a timeout instead of as empty output.
+pub fn run_json_within(script: &str, budget: Duration) -> Result<Value, ProbeFailure> {
+    let ((success, code), out) = run_capturing_within(powershell(script), budget)?;
+    if !success {
+        return Err(ProbeFailure::Exit(code));
+    }
+    let trimmed = out.trim();
+    if trimmed.is_empty() {
+        return Err(ProbeFailure::Empty);
+    }
+    serde_json::from_str(trimmed).map_err(|_| ProbeFailure::Invalid)
 }
 
 /// Run a PowerShell snippet and return its raw stdout (for non-JSON tools such as
@@ -67,6 +87,11 @@ pub fn run_command_output(program: &str, args: &[&str]) -> Option<String> {
 }
 
 fn run_raw(script: &str) -> Option<String> {
+    run_with_budget(powershell(script))
+}
+
+/// The `powershell.exe` command every probe runs through.
+fn powershell(script: &str) -> Command {
     // Force stdout to UTF-8 before the script runs. PowerShell 5.1 otherwise emits
     // in the console's OEM/ANSI code page, so any non-ASCII character (®, ™, an
     // accented letter, a bullet in a program or publisher name) reaches us as bytes
@@ -85,7 +110,7 @@ fn run_raw(script: &str) -> Option<String> {
         "-Command",
         &script,
     ]);
-    run_with_budget(cmd)
+    cmd
 }
 
 /// Spawn `cmd` and return its stdout only when it exits successfully, but never block
@@ -115,7 +140,18 @@ fn run_with_budget(cmd: Command) -> Option<String> {
 /// `Some((success, stdout))` is returned whenever the child ran to completion, so the
 /// exit-code decision is left to the caller. `None` means spawn failure, timeout, or
 /// an unreadable pipe — cases where there is no output to reason about at all.
-fn run_capturing(mut cmd: Command) -> Option<(bool, String)> {
+fn run_capturing(cmd: Command) -> Option<(bool, String)> {
+    run_capturing_within(cmd, PROBE_BUDGET)
+        .ok()
+        .map(|((success, _code), out)| (success, out))
+}
+
+/// [`run_capturing`] with an explicit budget and the reason it produced nothing.
+/// The first element is `(success, exit_code)`.
+fn run_capturing_within(
+    mut cmd: Command,
+    budget: Duration,
+) -> Result<((bool, Option<i32>), String), ProbeFailure> {
     use std::io::Read;
     use std::process::Stdio;
     use std::time::Instant;
@@ -125,9 +161,9 @@ fn run_capturing(mut cmd: Command) -> Option<(bool, String)> {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .ok()?;
+        .map_err(|_| ProbeFailure::Spawn)?;
 
-    let deadline = Instant::now() + PROBE_BUDGET;
+    let deadline = Instant::now() + budget;
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
@@ -139,18 +175,26 @@ fn run_capturing(mut cmd: Command) -> Option<(bool, String)> {
                 // The success flag is returned alongside so the caller — not this
                 // helper — decides whether a non-zero exit is fatal.
                 let mut buf = Vec::new();
-                child.stdout.take()?.read_to_end(&mut buf).ok()?;
-                return Some((status.success(), String::from_utf8_lossy(&buf).into_owned()));
+                child
+                    .stdout
+                    .take()
+                    .ok_or(ProbeFailure::Spawn)?
+                    .read_to_end(&mut buf)
+                    .map_err(|_| ProbeFailure::Spawn)?;
+                return Ok((
+                    (status.success(), status.code()),
+                    String::from_utf8_lossy(&buf).into_owned(),
+                ));
             }
             Ok(None) => {
                 if Instant::now() >= deadline {
                     let _ = child.kill();
                     let _ = child.wait();
-                    return None;
+                    return Err(ProbeFailure::Timeout(budget));
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
-            Err(_) => return None,
+            Err(_) => return Err(ProbeFailure::Spawn),
         }
     }
 }
