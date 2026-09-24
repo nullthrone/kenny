@@ -110,6 +110,19 @@ async def _body(request: Request) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def _path_int(request: Request, name: str) -> int | None:
+    """Parse a path parameter as an int, or ``None`` when it isn't one.
+
+    Routes here declare a plain ``{uid}`` (no ``:int`` converter), so anything
+    reaches this parameter — treated as "not found", not a 500.
+    """
+
+    try:
+        return int(request.path_params[name])
+    except ValueError:
+        return None
+
+
 _STATUS_ERROR_NAMES = {
     400: "invalid",
     403: "forbidden",
@@ -333,7 +346,10 @@ def build_ticket_routes(
         else:
             agent_id = q.get("agent_id")
             requester_param = q.get("requester_user_id")
-            requester_user_id = int(requester_param) if requester_param else None
+            try:
+                requester_user_id = int(requester_param) if requester_param else None
+            except ValueError:
+                return _err("requester_user_id must be an integer")
             rows = await store.list(
                 state=state,
                 states=states,
@@ -412,7 +428,10 @@ def build_ticket_routes(
         _warn_if_unknown_category(category)
         if principal.at_least("operator"):
             requester = body.get("requester_user_id")
-            requester_user_id = int(requester) if requester is not None else None
+            try:
+                requester_user_id = int(requester) if requester is not None else None
+            except (ValueError, TypeError):
+                return _err("requester_user_id must be an integer")
         else:
             # A scoped `user` may only ever open a ticket on their own behalf.
             requester_user_id = principal.user_id
@@ -1233,8 +1252,8 @@ def build_ticket_routes(
     async def api_user_profile_put(request: Request) -> JSONResponse:
         if user_store is None:
             return _err("user store is not configured", 503)
-        uid = int(request.path_params["uid"])
-        if await user_store.get_user(uid) is None:
+        uid = _path_int(request, "uid")
+        if uid is None or await user_store.get_user(uid) is None:
             return _err("user not found", 404)
         body = await _body(request)
         profile = body.get("capability_profile")
