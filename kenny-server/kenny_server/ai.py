@@ -32,6 +32,9 @@ FEATURES: dict[str, str] = {
 
 KEY_SETTING = "ANTHROPIC_API_KEY"
 
+#: Switches every feature off at once, whatever its own switch says.
+MASTER_SETTING = "KENNY_AI_ENABLED"
+
 
 def _default_factory(api_key: str) -> Any:
     import anthropic
@@ -83,24 +86,33 @@ class AiAccess:
 
     # -- features ----------------------------------------------------------
 
-    def switched_on(self, feature: str) -> bool:
-        """The feature's own switch, regardless of the key."""
-
-        key = FEATURES[feature]
+    def _switch(self, key: str) -> bool:
         if self._settings is not None:
             return bool(self._settings.get(key))
         raw = (self._env.get(key) or "1").strip().lower()
         return raw not in ("0", "false", "no", "off")
 
-    def enabled(self, feature: str) -> bool:
-        """True if the feature may call the model now: a key is set and it is switched on."""
+    def master_on(self) -> bool:
+        """The master switch: off means no feature runs."""
 
-        return self.available() and self.switched_on(feature)
+        return self._switch(MASTER_SETTING)
+
+    def switched_on(self, feature: str) -> bool:
+        """The feature's own switch, regardless of the key and the master switch."""
+
+        return self._switch(FEATURES[feature])
+
+    def enabled(self, feature: str) -> bool:
+        """True if the feature may call the model now: AI is on, a key is set and
+        the feature's own switch is on."""
+
+        return self.master_on() and self.available() and self.switched_on(feature)
 
     def status(self) -> dict[str, Any]:
         """What the dashboard gates on (``GET /api/ai/status``)."""
 
         return {
+            "enabled": self.master_on(),
             "configured": self.available(),
             "source": self.key_source(),
             "features": {name: self.enabled(name) for name in FEATURES},

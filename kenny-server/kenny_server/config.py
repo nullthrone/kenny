@@ -222,6 +222,11 @@ _SPECS: list[SettingSpec] = [
     # The one secret the dashboard stores that is billed per use: it is kept out
     # of every backup copy (backup_excluded), so a remote backup target never
     # holds it. After a restore it is set again, or the environment supplies it.
+    _spec("KENNY_AI_ENABLED", "AI", "bool", "1",
+          "AI features", lifecycle="live",
+          help="Master switch. Off stops every AI feature below at once, whatever "
+               "its own switch says; each switch keeps its setting for when this "
+               "is on again."),
     _spec("ANTHROPIC_API_KEY", "AI", "secret", "",
           "Anthropic API key", lifecycle="live", sensitive=True, backup_excluded=True,
           help="Enables every AI feature below. A key saved here wins over the "

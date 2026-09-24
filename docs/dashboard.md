@@ -217,8 +217,8 @@ panel: what is likely to need attention on this PC soon, synthesized from the di
 and battery trends and the inventory changes since yesterday — e.g. *"Drive C: is filling
 steadily and should reach capacity in about 16 days — the growth is in Videos, not system
 files. A reboot has been pending for 9 days; expect update failures if it waits much
-longer."* With an Anthropic API key it streams from the model; without one the same panel
-shows a concise deterministic summary of the same signals. See
+longer."* With AI forecasts on it streams from the model and is marked *AI*; otherwise
+the same panel shows a concise deterministic summary of the same signals, unmarked. See
 [Alerting & forecasts](alerting.md#forecasts).
 
 ### Posture
@@ -237,7 +237,7 @@ and a one-line summary. Click a card to open that section's **detail modal** —
 URL carries (`#/fleet/{host}?section={name}`), so it can be linked to and shared, and is
 what an [Inbox](#inbox) or [Today](#today) row points at:
 
-- **Recommendation** — for a flagged section, when an Anthropic API key is configured, a
+- **Recommendation** — for a flagged section, while AI recommendations are on, a
   short **Diagnosis / Action / Urgency** advisory. If the issue looks fixable with kenny's
   tools, a **Fix via Ask kenny** button opens the [Ask kenny overlay](#ask-kenny) scoped to
   this host with a suggested prompt already in the box — state-changing steps still hit
@@ -585,9 +585,14 @@ page's [Reliability section](#reliability) suppresses a pattern from the event i
 
 ### AI
 
-The Anthropic API key, one switch per AI feature, the models, and the assistant's limits
+A master switch, the Anthropic API key, one switch per AI feature, the models, and the
+assistant's limits
 ([ADR-0066](adr/0066-anthropic-key-as-a-dashboard-setting-excluded-from-backups.md)):
 
+- **AI features** — the master switch at the top of the section, on by default. One click
+  turns every AI feature off at once, whatever its own switch says; each switch keeps its
+  setting, so turning AI back on restores exactly what was running. The key test still
+  works while it is off.
 - **Anthropic API key** — a key saved here wins over `ANTHROPIC_API_KEY` in the
   environment. It is never shown back, and it is **not included in backups**: after a
   restore, set it again (or let the environment supply it). **Test key** checks it against
@@ -595,11 +600,13 @@ The Anthropic API key, one switch per AI feature, the models, and the assistant'
   are running.
 - **Ask kenny**, **Recommendations**, **Forecast prose**, **Reliability event
   classification**, **Ticket assistant** — one switch each, all on by default. A feature
-  runs only with a key set *and* its switch on; while it cannot run, the dashboard does
-  not offer it. The Ask kenny button and ⌘K disappear, the recommendation block says it is
-  unavailable, the forecast shows its plain computed summary marked *AI off*, new
-  reliability events stay unclassified, and a ticket's chat is left to operators (in
-  Discord, kenny says so in the thread).
+  runs only with AI on, a key set *and* its own switch on; while it cannot run, the
+  dashboard does not show it. The Ask kenny button and ⌘K disappear, a section modal has
+  no recommendation block, the forecast shows its plain computed summary (only AI-written
+  prose is marked *AI*), new reliability events stay unclassified, and a ticket's chat is
+  left to operators: on a ticket page the Ask kenny button and the pointer to a pending
+  decision disappear (in Discord, kenny says so in the thread). On a ticket, the Ask kenny
+  button follows the ticket assistant's switch, not Ask kenny's.
 - **Chat model** — the Anthropic model id for Ask kenny, the ticket assistant, and triage.
 - **Discord model** — the model for Discord-driven turns; empty uses the chat model.
 - **Investigate new tickets automatically** (on by default) — kenny runs one read-only

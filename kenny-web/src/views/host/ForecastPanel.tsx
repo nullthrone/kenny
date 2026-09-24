@@ -13,11 +13,13 @@ export interface ForecastPanelProps {
  * `kenny_server/webui/__init__.py::api_forecast_stream`). Unlike the
  * recommendation stream this route always answers 200 (a deterministic
  * prose summary substitutes when AI forecasts are off or no key is set), so
- * there's no "not configured" branch — only an "AI off" note on the label.
+ * there's no "not configured" branch. The label marks AI-written prose as
+ * such; the computed summary carries no mark, so a switched-off feature leaves
+ * no trace here.
  */
 export default function ForecastPanel({ agentId }: ForecastPanelProps) {
   // With AI prose switched off (or no key) the server streams its plain
-  // computed summary instead; the label says which one this is.
+  // computed summary instead; only the AI wording is marked.
   const aiOn = useAiFeature('forecast')
   const [text, setText] = useState('')
   const [generatedAt, setGeneratedAt] = useState<string | null>(null)
@@ -57,7 +59,7 @@ export default function ForecastPanel({ agentId }: ForecastPanelProps) {
     <div className={styles.panel}>
       <div className={styles.head}>
         <span className={styles.eyebrow}>FORECAST</span>
-        {generatedAt && <span className={styles.meta}>generated {generatedAt}{aiOn ? '' : ' · AI off'}</span>}
+        {generatedAt && <span className={styles.meta}>generated {generatedAt}{aiOn ? ' · AI' : ''}</span>}
       </div>
       <p className={styles.text}>
         {error

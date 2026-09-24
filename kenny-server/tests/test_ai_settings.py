@@ -28,7 +28,7 @@ class _FakeAnthropic:
 
 @pytest.fixture(autouse=True)
 def _no_ambient_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    for key in ("ANTHROPIC_API_KEY", *ai.FEATURES.values()):
+    for key in ("ANTHROPIC_API_KEY", ai.MASTER_SETTING, *ai.FEATURES.values()):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("KENNY_DISCORD_BOT_TOKEN", "bot-token")
 
@@ -55,6 +55,7 @@ def test_a_key_saved_in_the_dashboard_switches_ai_on_everywhere(tmp_path) -> Non
         h = _bearer(app)
         status = c.get("/api/ai/status", headers=h).json()
         assert status == {
+            "enabled": True,
             "configured": False,
             "source": "none",
             "features": {name: False for name in ai.FEATURES},
@@ -102,6 +103,35 @@ def test_each_switch_turns_its_feature_off_and_only_that_one(tmp_path, monkeypat
         assert app.state.discord_service.assistant_enabled() is False
 
         _put(c, app, "KENNY_AI_TICKET_ASSISTANT_ENABLED", True)
+        assert app.state.discord_service.assistant_enabled() is True
+
+
+def test_the_master_switch_turns_everything_off_and_back_to_each_switch(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-from-the-env")
+    app = build_app(db_path=str(tmp_path / "master.sqlite"), client_factory=_FakeAnthropic)
+    with TestClient(app) as c:
+        h = _bearer(app)
+        _put(c, app, "KENNY_AI_FORECAST_ENABLED", False)
+
+        _put(c, app, ai.MASTER_SETTING, False)
+        status = c.get("/api/ai/status", headers=h).json()
+        assert status["enabled"] is False and status["configured"] is True
+        assert not any(status["features"].values())
+        assert c.post("/api/chat/stream", headers=h, json={"message": "hi"}).status_code == 503
+        assert c.get("/api/agent/example-pc", headers=h).json()["ai_enabled"] is False
+        created = c.post("/api/tickets", json={"title": "printer"}, headers=h).json()
+        ticket = c.get(f"/api/tickets/{created['id']}", headers=h).json()
+        assert ticket["assistant_available"] is False
+        assert app.state.tickets._triage is None
+        assert app.state.discord_service.assistant_enabled() is False
+
+        # On again: each feature follows its own switch, as it did before.
+        _put(c, app, ai.MASTER_SETTING, True)
+        features = c.get("/api/ai/status", headers=h).json()["features"]
+        assert features == {name: name != "forecast" for name in ai.FEATURES}
+        assert app.state.tickets._triage is not None
         assert app.state.discord_service.assistant_enabled() is True
 
 

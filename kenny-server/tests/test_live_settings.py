@@ -101,6 +101,7 @@ EXPECTED: dict[str, Any] = {
 # Live settings in the same groups whose consumer asks ``Settings`` on every use
 # (through ``ai.AiAccess``) instead of holding the value: nothing to bind.
 READ_PER_USE = {
+    "KENNY_AI_ENABLED",
     "ANTHROPIC_API_KEY",
     "KENNY_AI_ASK_ENABLED",
     "KENNY_AI_RECOMMEND_ENABLED",
