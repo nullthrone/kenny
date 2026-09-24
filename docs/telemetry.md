@@ -140,8 +140,8 @@ model — and the persisted verdict is stamped onto every snapshot read from the
 the same read-path seam as alarm suppression below. So push alerting, the weekly digest,
 the fleet list, MCP and the dashboard all score the same severity: one verdict per host.
 Category/severity/suspected-cause are server-side annotations; the agent never sends them.
-Without an Anthropic API key, with **Reliability event classification** switched off in
-Admin → AI, or on an API error, a pattern stays unclassified and is
+Without an Anthropic API key, with **Reliability event classification** or the AI master
+switch off in Admin → AI, or on an API error, a pattern stays unclassified and is
 scored as `severity="unknown"` — never as `benign` — and the heatmaps, health scoring, and
 expandable raw groups still work. A classifier model upgrade drops the old verdicts at
 boot and re-classifies.

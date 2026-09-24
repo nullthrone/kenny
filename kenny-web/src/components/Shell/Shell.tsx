@@ -12,6 +12,7 @@ import { Sun, Moon, Terminal, LogOut, X, ICON_STROKE_WIDTH } from '../icons'
 import { initialsOf, roleLabel } from '../format'
 import { deriveCrumb } from './crumb'
 import AskKennyDrawer from '../AskKennyDrawer/AskKennyDrawer'
+import { ticketFromHash } from '../../chat/scope'
 import AboutModal from '../AboutModal/AboutModal'
 import { useAbout } from '../AboutModal/api'
 import styles from './Shell.module.css'
@@ -61,8 +62,12 @@ export default function Shell() {
   const role = me.data?.role ?? null
   // Ask kenny needs an operator (the chat routes floor there) and the feature
   // switched on with a key set (ADR-0066); otherwise neither button nor ⌘K.
+  // On a ticket the drawer is that ticket's assistant, never the fleet copilot,
+  // so there it follows the ticket assistant's switch instead.
   const askOn = useAiFeature('ask')
-  const canAsk = role !== null && role !== 'user' && askOn
+  const assistantOn = useAiFeature('ticket_assistant')
+  const onTicket = ticketFromHash(`#${location.pathname}`) !== ''
+  const canAsk = role !== null && role !== 'user' && (onTicket ? assistantOn : askOn)
   const navItems = navItemsFor(role)
   // Nothing needing you is the ordinary state, and an unread "0" would read
   // as a thing to clear — so the badge is absent rather than zero.

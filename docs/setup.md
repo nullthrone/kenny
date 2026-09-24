@@ -76,7 +76,7 @@ interval at startup.
 | `KENNY_OAUTH_ACCESS_TTL_SECS` | server | `3600` | Lifetime of an OAuth access token issued to a connected MCP client (default 1 hour). |
 | `KENNY_OAUTH_REFRESH_TTL_SECS` | server | `2592000` | Lifetime of a rotating OAuth refresh token (default 30 days); reuse of a rotated token revokes the whole grant. |
 | `KENNY_AGENT_TOKENS` | server | dev map | `id=token,id2=token2` — per-agent tokens (the token store is seeded from this). |
-| `ANTHROPIC_API_KEY` | server | — | Enables the AI features. Also settable in Admin → AI, where a saved key wins over this one; a key saved there is not included in backups. |
+| `ANTHROPIC_API_KEY` | server | — | Enables the AI features. Also settable in Admin → AI, where a saved key wins over this one; a key saved there is not included in backups. The master switch there (`KENNY_AI_ENABLED`, default `1`) turns every AI feature off at once. |
 | `KENNY_CHAT_MODEL` | server | `claude-sonnet-4-6` | Model for Ask kenny, the ticket assistant and triage. Also editable in Admin → AI. |
 | `KENNY_TLS` | server | unset | Set `1` behind TLS so the login cookie gets the `Secure` flag. |
 | `KENNY_FORWARDED_ALLOW_IPS` | server | `127.0.0.1` | Upstream proxy address(es) allowed to set `X-Forwarded-For`, so the login rate-limiter sees the real client IP behind a reverse proxy (not the proxy's). Set to your proxy's address when fronting kenny with the Caddy TLS profile. |

@@ -7,9 +7,8 @@ import { useAiFeature } from '../../api/aiStatus'
 export interface RecommendationBlockProps {
   agentId: string
   sectionName: string
-  /** True only when an Anthropic API key is configured (`AgentDetail.ai_enabled`) —
-   * skips the fetch entirely rather than round-tripping to a route that will
-   * answer 503. */
+  /** True only when recommendations may run (`AgentDetail.ai_enabled`). False
+   * renders nothing: no fetch, and no block saying what is missing. */
   aiEnabled: boolean
   onRemediate: (prompt: string) => void
 }
@@ -83,14 +82,7 @@ export default function RecommendationBlock({ agentId, sectionName, aiEnabled, o
     return () => controller.abort()
   }, [agentId, sectionName, aiEnabled])
 
-  if (!aiEnabled) {
-    return (
-      <div className={styles.box}>
-        <div className={styles.eyebrow}>RECOMMENDATION</div>
-        <div className={styles.prose}>AI recommendations are not available on this server.</div>
-      </div>
-    )
-  }
+  if (!aiEnabled) return null
 
   return (
     <div className={styles.box}>

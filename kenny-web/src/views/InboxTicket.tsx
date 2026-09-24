@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
+import { useAiFeature } from '../api/aiStatus'
 import type { Me } from '../api/types'
 import EmptyState from '../components/EmptyState/EmptyState'
 import { ScrollText } from '../components/icons'
@@ -72,6 +73,9 @@ export default function InboxTicket() {
 
   const me = useQuery({ queryKey: ['me'], queryFn: () => api.get<Me>('/api/me') })
   const isOperator = me.data ? me.data.role !== 'user' : false
+  // The same answer the shell gates the drawer on: the decision is made there,
+  // so with the assistant switched off there is nowhere to make it.
+  const assistantOn = useAiFeature('ticket_assistant')
 
   const directory = useQuery({
     queryKey: ['users', 'directory'],
@@ -310,7 +314,7 @@ export default function InboxTicket() {
           : events.data && <AuditTrail events={events.data.events} directory={directory.data?.users} />}
       </div>
 
-      {openApproval && (
+      {openApproval && assistantOn && (
         // Said, not offered. The card that can answer this is in the drawer,
         // bound to this ticket by the effect above; this button only opens it,
         // which is why it is the one thing on the page that still points there.

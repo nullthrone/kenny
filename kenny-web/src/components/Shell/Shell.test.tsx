@@ -35,12 +35,12 @@ function mockApi(over: Record<string, unknown> = {}) {
   })
 }
 
-function renderShell() {
+function renderShell(path = '/today') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>
-        <MemoryRouter initialEntries={['/today']}>
+        <MemoryRouter initialEntries={[path]}>
           <Shell />
         </MemoryRouter>
       </ThemeProvider>
@@ -208,6 +208,29 @@ describe('Shell — Ask kenny follows the AI switch', () => {
   it('never offers it to a scoped user, whose every chat call would 403', async () => {
     mockApi({ '/api/me': { ...ME, role: 'user' }, '/api/ai/status': ON })
     renderShell()
+    await waitFor(() => expect(apiGetMock).toHaveBeenCalledWith('/api/ai/status'))
+    expect(screen.queryByRole('button', { name: /ASK KENNY/ })).not.toBeInTheDocument()
+  })
+})
+
+/**
+ * On a ticket the drawer is that ticket's assistant, never the fleet copilot
+ * (AskKennyDrawer), so the button there follows the ticket assistant's switch.
+ * Gating it on Ask kenny instead left an open approval unanswerable whenever Ask
+ * kenny was off, and offered a dead drawer whenever the assistant was.
+ */
+describe('Shell — on a ticket, Ask kenny follows the ticket assistant', () => {
+  const TICKET = '/inbox/ticket/t-1'
+
+  it('offers the drawer when only the ticket assistant is on', async () => {
+    mockApi({ '/api/ai/status': { enabled: true, configured: true, source: 'db', features: { ask: false, ticket_assistant: true } } })
+    renderShell(TICKET)
+    expect(await screen.findByRole('button', { name: /ASK KENNY/ })).toBeInTheDocument()
+  })
+
+  it('hides it when the ticket assistant is off, whatever Ask kenny says', async () => {
+    mockApi({ '/api/ai/status': { enabled: true, configured: true, source: 'db', features: { ask: true, ticket_assistant: false } } })
+    renderShell(TICKET)
     await waitFor(() => expect(apiGetMock).toHaveBeenCalledWith('/api/ai/status'))
     expect(screen.queryByRole('button', { name: /ASK KENNY/ })).not.toBeInTheDocument()
   })

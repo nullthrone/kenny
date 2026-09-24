@@ -264,6 +264,7 @@ def _bind_triage(
     apply()
     settings.on_change("KENNY_TRIAGE_ENABLED", apply)
     settings.on_change("ANTHROPIC_API_KEY", apply)
+    settings.on_change("KENNY_AI_ENABLED", apply)
     settings.on_change("KENNY_TRIAGE_RESOLVE", set_resolve)
     settings.on_change("KENNY_TRIAGE_MAX_ITERATIONS", set_iterations)
 

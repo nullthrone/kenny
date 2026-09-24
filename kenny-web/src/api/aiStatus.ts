@@ -10,8 +10,10 @@ export const AI_FEATURES = ['ask', 'recommend', 'forecast', 'classify', 'ticket_
 
 export type AiFeature = (typeof AI_FEATURES)[number]
 
-/** `GET /api/ai/status` — whether a key is set and which features may run. */
+/** `GET /api/ai/status` — the master switch, whether a key is set, and which features may run. */
 export interface AiStatus {
+  /** The master switch (`KENNY_AI_ENABLED`); off means every feature is off. */
+  enabled: boolean
   configured: boolean
   source: 'db' | 'env' | 'none'
   features: Record<AiFeature, boolean>
