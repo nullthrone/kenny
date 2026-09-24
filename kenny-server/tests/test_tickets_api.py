@@ -346,6 +346,31 @@ def test_list_returns_only_own_rows_for_user(tmp_path) -> None:
         assert len(op_tickets) == 3
 
 
+def test_malformed_requester_user_id_is_400_not_500(tmp_path) -> None:
+    """An operator's ``requester_user_id`` filter/field is parsed with ``int()``
+    on both the list query param and the create-ticket body field. Neither a
+    non-numeric string nor a wrong JSON type (list/dict) has any int() guard
+    upstream, so either previously raised an uncaught ValueError/TypeError out
+    of the route handler instead of a clean 400."""
+
+    async def seed(users: UserStore, _store: TicketStore, _svc: TicketService) -> dict:
+        op = await users.create_user("op", "pw-123456", "operator")
+        return {"op_pat": await users.create_pat(op["id"], "t")}
+
+    app = _build_app(tmp_path, seed)
+    with TestClient(app) as c:
+        s = app.state.seed
+        h = _hdr(s["op_pat"])
+        r = c.get("/api/tickets?requester_user_id=not-a-number", headers=h)
+        assert r.status_code == 400
+
+        for bad in ("not-a-number", [1, 2], {"a": 1}):
+            r = c.post(
+                "/api/tickets", json={"title": "x", "requester_user_id": bad}, headers=h
+            )
+            assert r.status_code == 400
+
+
 def test_alert_origin_ticket_invisible_to_user_and_operator_can_see_it(tmp_path) -> None:
     async def seed(users: UserStore, _store: TicketStore, svc: TicketService) -> dict:
         kid = await users.create_user("kid", "pw-123456", "user")

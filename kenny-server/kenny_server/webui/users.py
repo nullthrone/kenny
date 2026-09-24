@@ -53,6 +53,21 @@ def _err(detail: str, status: int = 400) -> JSONResponse:
     return JSONResponse({"error": "invalid", "detail": detail}, status_code=status)
 
 
+def _path_int(request: Request, name: str) -> int | None:
+    """Parse a path parameter as an int, or ``None`` when it isn't one.
+
+    Routes here declare a plain ``{uid}``/``{pid}`` (no ``:int`` converter), so
+    anything reaches this parameter — an id is only ever looked up, never
+    computed with, so a caller-supplied non-integer id is treated the same as
+    an id that parses fine but names no row: "not found", not a 500.
+    """
+
+    try:
+        return int(request.path_params[name])
+    except ValueError:
+        return None
+
+
 def build_user_routes(
     *,
     user_store: UserStore,
@@ -300,8 +315,8 @@ def build_user_routes(
         principal = require_user(request)
         if principal.user_id is None:
             return _err("shared-token session has no tokens")
-        pid = int(request.path_params["pid"])
-        ok = await user_store.revoke_pat(principal.user_id, pid)
+        pid = _path_int(request, "pid")
+        ok = pid is not None and await user_store.revoke_pat(principal.user_id, pid)
         return JSONResponse({"ok": ok})
 
     async def api_avatars(_request: Request) -> JSONResponse:
@@ -354,14 +369,15 @@ def build_user_routes(
         return JSONResponse(await _user_detail(user["id"]), status_code=201)
 
     async def api_user_get(request: Request) -> JSONResponse:
-        detail = await _user_detail(int(request.path_params["uid"]))
+        uid = _path_int(request, "uid")
+        detail = await _user_detail(uid) if uid is not None else None
         if detail is None:
             return _err("user not found", 404)
         return JSONResponse(detail)
 
     async def api_user_update(request: Request) -> JSONResponse:
-        uid = int(request.path_params["uid"])
-        target = await user_store.get_user(uid)
+        uid = _path_int(request, "uid")
+        target = await user_store.get_user(uid) if uid is not None else None
         if target is None:
             return _err("user not found", 404)
         body = await _body(request)
@@ -398,8 +414,8 @@ def build_user_routes(
         return JSONResponse(user)
 
     async def api_user_delete(request: Request) -> JSONResponse:
-        uid = int(request.path_params["uid"])
-        target = await user_store.get_user(uid)
+        uid = _path_int(request, "uid")
+        target = await user_store.get_user(uid) if uid is not None else None
         if target is None:
             return _err("user not found", 404)
         if (
@@ -412,8 +428,8 @@ def build_user_routes(
         return JSONResponse({"ok": True})
 
     async def api_user_password(request: Request) -> JSONResponse:
-        uid = int(request.path_params["uid"])
-        if await user_store.get_user(uid) is None:
+        uid = _path_int(request, "uid")
+        if uid is None or await user_store.get_user(uid) is None:
             return _err("user not found", 404)
         body = await _body(request)
         new = str(body.get("new_password", ""))
@@ -425,8 +441,8 @@ def build_user_routes(
         return JSONResponse({"ok": True})
 
     async def api_user_hosts(request: Request) -> JSONResponse:
-        uid = int(request.path_params["uid"])
-        if await user_store.get_user(uid) is None:
+        uid = _path_int(request, "uid")
+        if uid is None or await user_store.get_user(uid) is None:
             return _err("user not found", 404)
         body = await _body(request)
         hosts = body.get("hosts")
@@ -439,30 +455,30 @@ def build_user_routes(
         )
 
     async def api_user_totp_reset(request: Request) -> JSONResponse:
-        uid = int(request.path_params["uid"])
-        if await user_store.get_user(uid) is None:
+        uid = _path_int(request, "uid")
+        if uid is None or await user_store.get_user(uid) is None:
             return _err("user not found", 404)
         await user_store.set_totp_secret(uid, None)
         return JSONResponse({"ok": True, "totp_enabled": False})
 
     async def api_user_pats(request: Request) -> JSONResponse:
-        uid = int(request.path_params["uid"])
-        if await user_store.get_user(uid) is None:
+        uid = _path_int(request, "uid")
+        if uid is None or await user_store.get_user(uid) is None:
             return _err("user not found", 404)
         return JSONResponse({"pats": await user_store.list_pats(uid)})
 
     async def api_user_pat_create(request: Request) -> JSONResponse:
-        uid = int(request.path_params["uid"])
-        if await user_store.get_user(uid) is None:
+        uid = _path_int(request, "uid")
+        if uid is None or await user_store.get_user(uid) is None:
             return _err("user not found", 404)
         body = await _body(request)
         token = await user_store.create_pat(uid, str(body.get("label", "")) or None)
         return JSONResponse({"token": token})
 
     async def api_user_pat_revoke(request: Request) -> JSONResponse:
-        uid = int(request.path_params["uid"])
-        pid = int(request.path_params["pid"])
-        ok = await user_store.revoke_pat(uid, pid)
+        uid = _path_int(request, "uid")
+        pid = _path_int(request, "pid")
+        ok = uid is not None and pid is not None and await user_store.revoke_pat(uid, pid)
         return JSONResponse({"ok": ok})
 
     su = {"min_role": "superuser"}

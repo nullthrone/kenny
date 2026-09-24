@@ -133,6 +133,43 @@ def test_last_superuser_protected(tmp_path) -> None:
         assert c.delete(f"/api/users/{uid}").status_code == 409
 
 
+def test_malformed_id_path_params_never_crash(tmp_path) -> None:
+    """Every ``/api/users/{uid}`` (and ``/api/*/pats/{pid}``) route parses its
+    path parameter with a bare ``int(...)`` -- the route itself declares a
+    plain ``{uid}``, not ``{uid:int}``, so a non-numeric segment reaches the
+    handler unchanged. It must come back as a clean 404 ("no such id"), not an
+    uncaught ValueError."""
+
+    app = _app(tmp_path)
+    with TestClient(app) as c:
+        _setup_admin(c)
+        c.post("/api/users", json={
+            "username": "kid", "password": "pw-123456", "role": "user"})
+        kid_pat = _pat_for(c, "kid")
+
+        assert c.get("/api/users/not-a-number").status_code == 404
+        assert c.request("PATCH", "/api/users/not-a-number",
+                          json={"role": "operator"}).status_code == 404
+        assert c.delete("/api/users/not-a-number").status_code == 404
+        assert c.post("/api/users/not-a-number/password",
+                       json={"new_password": "new-123456"}).status_code == 404
+        assert c.put("/api/users/not-a-number/hosts",
+                      json={"hosts": []}).status_code == 404
+        assert c.delete("/api/users/not-a-number/totp").status_code == 404
+        assert c.get("/api/users/not-a-number/pats").status_code == 404
+        assert c.post("/api/users/not-a-number/pats",
+                       json={"label": "t"}).status_code == 404
+        assert c.delete("/api/users/not-a-number/pats/also-not-a-number").json() == {
+            "ok": False
+        }
+        assert c.put("/api/users/not-a-number/profile",
+                      json={"capability_profile": None}).status_code == 404
+
+        # `/api/me/pats/{pid}` is reachable by the lowest-privilege `user` role.
+        h = {"Authorization": f"Bearer {kid_pat}"}
+        assert c.delete("/api/me/pats/not-a-number", headers=h).json() == {"ok": False}
+
+
 def test_self_service_password_and_pats(tmp_path) -> None:
     app = _app(tmp_path)
     with TestClient(app) as c:
