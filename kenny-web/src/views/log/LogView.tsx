@@ -5,6 +5,8 @@ import type { LogKind, LogResponse, LogRow } from '../../api/types'
 import Chip from '../../components/Chip/Chip'
 import EmptyState from '../../components/EmptyState/EmptyState'
 import { ScrollText } from '../../components/icons'
+import { formatLogTimestamp } from './format'
+import LogLine from './LogLine'
 import styles from './LogView.module.css'
 
 const FILTERS: { label: string; kind: LogKind | null }[] = [
@@ -31,12 +33,6 @@ function tagColor(tag: string): string {
     default:
       return 'var(--text-muted)'
   }
-}
-
-function formatTime(ts: string): string {
-  const d = new Date(ts)
-  if (Number.isNaN(d.getTime())) return '—'
-  return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false })
 }
 
 /** Commits `value` after `delayMs` of no further changes — keeps the text filter from firing a request per keystroke. */
@@ -112,13 +108,11 @@ export default function LogView() {
         <div className={styles.list}>
           {rows.map((r, i) => (
             <div key={`${r.ts}-${r.kind}-${i}`} className={styles.row}>
-              <span className={styles.time}>{formatTime(r.ts)}</span>
+              <span className={styles.time}>{formatLogTimestamp(r.ts)}</span>
               <span className={styles.tag} style={{ color: tagColor(r.tag) }}>
                 {r.tag}
               </span>
-              <span className={`${styles.line} kc-logline`}>
-                <span className={styles.what}>{r.what}</span> <span className={styles.msg}>{r.message}</span>
-              </span>
+              <LogLine what={r.what} message={r.message} />
               <span className={styles.host}>{r.host ?? '—'}</span>
             </div>
           ))}
