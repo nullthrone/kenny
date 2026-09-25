@@ -188,7 +188,22 @@ _SPECS: list[SettingSpec] = [
     _spec("KENNY_ALERT_OFFLINE_AFTER_SECS", "Alerts & notifications", "int", "2700",
           "Offline threshold (s)", lifecycle="live", min=0,
           help="An agent counts as offline when its newest snapshot is older "
-               "than this and no live connection exists."),
+               "than this and no live connection exists. Offline hosts are not "
+               "health-evaluated; being offline notifies no one."),
+    _spec("KENNY_ALERT_MISSING_AFTER_DAYS", "Alerts & notifications", "int", "7",
+          "Missing threshold (days)", lifecycle="live", min=1,
+          help="A host that has sent no telemetry for this long is reported as "
+               "missing (broken or uninstalled agent) in the daily summary."),
+    _spec("KENNY_ALERT_DAILY_HOUR", "Alerts & notifications", "int", "8",
+          "Daily summary hour (0-23, UTC)", lifecycle="live", min=0, max=23,
+          help="When warnings, missing hosts and disk forecasts found since the "
+               "last summary are sent. Nothing is sent when there is nothing new."),
+    _spec("KENNY_ALERT_CHANGE_PUSH", "Alerts & notifications", "str",
+          "local_accounts,autostart:added,scheduled_tasks:added,browser_extensions:added",
+          "Inventory changes that push", lifecycle="live",
+          help="Comma list of section or section:kind (kind: added, removed, "
+               "changed). Matching changes push immediately; all others are only "
+               "recorded."),
     _spec("KENNY_DIGEST_ENABLED", "Alerts & notifications", "bool", "1",
           "Weekly digest enabled", lifecycle="live"),
     _spec("KENNY_DIGEST_DAY", "Alerts & notifications", "enum", "mon",

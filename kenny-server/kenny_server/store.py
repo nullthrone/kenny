@@ -759,18 +759,37 @@ CREATE TABLE IF NOT EXISTS alert_state (
     last_notified_at TEXT,
     PRIMARY KEY (agent_id, scope)
 );
+CREATE TABLE IF NOT EXISTS notification_messages (
+    channel     TEXT NOT NULL,
+    message_id  TEXT NOT NULL,
+    agent_id    TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    resolved_at TEXT,
+    doc         TEXT NOT NULL,
+    PRIMARY KEY (channel, message_id)
+);
+CREATE INDEX IF NOT EXISTS idx_notification_messages_open
+    ON notification_messages (channel, agent_id, resolved_at);
 """
 
 
 class AlertStateStore:
     """Async SQLite-backed last-known alert state per (agent, scope).
 
-    ``scope`` is ``'offline'``, ``'overall'``, ``'section:<name>'``,
-    ``'change:<section>'`` or ``'digest'``. Persisting the state (rather than
-    keeping it in memory) means a server restart does not re-fire alerts for
-    conditions that were already notified (ADR-0027). Rows are tiny and pruned
-    implicitly by being overwritten, so there is no retention job.
+    ``scope`` is ``'offline'``, ``'missing'``, ``'overall'``,
+    ``'section:<name>'``, ``'pushed:section:<name>'``, ``'change:<section>'``,
+    ``'digest'`` or ``'daily'``. Persisting the state (rather than keeping it in
+    memory) means a server restart does not re-fire alerts for conditions that
+    were already notified (ADR-0027). State rows are tiny and pruned implicitly
+    by being overwritten.
+
+    The same database also holds ``notification_messages``: the channel message
+    each pushed alert became, so a recovery can edit that message in place
+    instead of posting a new one (ADR-0067). Those rows do accumulate and are
+    pruned by :meth:`prune`.
     """
+
+    retention_days = 30
 
     def __init__(self, db_path: str = DEFAULT_DB_PATH) -> None:
         self.db_path = db_path
@@ -851,12 +870,88 @@ class AlertStateStore:
             await self._conn.commit()
         return (cur.rowcount or 0) > 0
 
+    async def all_rows(self) -> list[dict[str, Any]]:
+        """Every state row across the fleet (the daily summary's input)."""
+
+        async with self._conn.execute(
+            "SELECT agent_id, scope, status, since, last_notified_at FROM alert_state "
+            "ORDER BY agent_id, scope"
+        ) as cur:
+            rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
     async def delete_agent(self, agent_id: str) -> int:
         """Delete all alert state for ``agent_id`` (host removed from inventory)."""
 
         async with write_lock():
             cur = await self._conn.execute(
                 "DELETE FROM alert_state WHERE agent_id = ?", (agent_id,)
+            )
+            await self._conn.execute(
+                "DELETE FROM notification_messages WHERE agent_id = ?", (agent_id,)
+            )
+            await self._conn.commit()
+        return cur.rowcount or 0
+
+    # -- channel messages a recovery can edit (ADR-0067) -----------------------
+
+    async def save_message(
+        self, channel: str, message_id: str, agent_id: str, doc: dict[str, Any], *, at: str
+    ) -> None:
+        async with write_lock():
+            await self._conn.execute(
+                "INSERT OR REPLACE INTO notification_messages "
+                "(channel, message_id, agent_id, created_at, resolved_at, doc) "
+                "VALUES (?, ?, ?, ?, NULL, ?)",
+                (channel, message_id, agent_id, at, json.dumps(doc)),
+            )
+            await self._conn.commit()
+
+    async def open_messages(self, channel: str, agent_id: str) -> list[dict[str, Any]]:
+        """Unresolved messages for one host on one channel, oldest first."""
+
+        async with self._conn.execute(
+            "SELECT channel, message_id, agent_id, created_at, doc FROM notification_messages "
+            "WHERE channel = ? AND agent_id = ? AND resolved_at IS NULL ORDER BY created_at",
+            (channel, agent_id),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [{**dict(r), "doc": json.loads(r["doc"])} for r in rows]
+
+    async def update_message(
+        self, channel: str, message_id: str, doc: dict[str, Any], *, resolved_at: str | None
+    ) -> None:
+        async with write_lock():
+            await self._conn.execute(
+                "UPDATE notification_messages SET doc = ?, resolved_at = ? "
+                "WHERE channel = ? AND message_id = ?",
+                (json.dumps(doc), resolved_at, channel, message_id),
+            )
+            await self._conn.commit()
+
+    async def drop_message(self, channel: str, message_id: str) -> None:
+        async with write_lock():
+            await self._conn.execute(
+                "DELETE FROM notification_messages WHERE channel = ? AND message_id = ?",
+                (channel, message_id),
+            )
+            await self._conn.commit()
+
+    async def prune(
+        self, *, now: datetime | None = None, retention_days: int | None = None
+    ) -> int:
+        """Forget channel messages older than the retention window.
+
+        A message this old is scrolled out of any channel a person reads; an
+        episode still open after it simply resolves without an edit.
+        """
+
+        now = now or datetime.now(timezone.utc)
+        days = retention_days if retention_days is not None else self.retention_days
+        cutoff = (now - timedelta(days=days)).isoformat()
+        async with write_lock():
+            cur = await self._conn.execute(
+                "DELETE FROM notification_messages WHERE created_at < ?", (cutoff,)
             )
             await self._conn.commit()
         return cur.rowcount or 0

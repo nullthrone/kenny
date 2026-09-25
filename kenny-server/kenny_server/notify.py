@@ -15,6 +15,14 @@ constructed without a settings layer behaves exactly as it did before. The
 built channels are memoised against the resolved values, so the common case
 (nothing changed) costs one dict lookup per key and no object construction.
 
+*Whether* a notification interrupts anyone is its ``route`` (ADR-0067):
+``push`` goes to the human channels now, ``daily`` waits for the daily
+summary, ``record`` stays in history and the ticket queue. The human channels
+(ntfy, Discord) receive ``push`` only; the generic webhook is a machine
+integration point and receives every route, labelled, to filter for itself.
+Discord additionally returns the id of the message it posted, so a recovery can
+edit that message in place instead of posting another one.
+
 ``client_factory`` is injected so tests can supply an ``httpx.MockTransport``
 (same pattern as ``webfilter.ExternalListCache``).
 """
@@ -23,16 +31,20 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Protocol
+from urllib.parse import quote
 
 import httpx
 
 logger = logging.getLogger("kenny.notify")
 
 _SEND_TIMEOUT_S = 15.0
+
+#: Every value ``Notification.route`` may take (ADR-0067).
+ROUTES: tuple[str, ...] = ("push", "daily", "record")
 
 ClientFactory = Callable[[], httpx.AsyncClient]
 
@@ -60,6 +72,14 @@ class Notification:
     # Empty dict means "no per-section subject": the notification is about
     # the host rather than any section of it (offline, digest).
     sections: dict[str, str] = field(default_factory=dict)
+    # Who this interrupts (ADR-0067): "push" reaches the human channels now,
+    # "daily" is held for the daily summary, "record" only lands in history and
+    # the ticket queue. Routing decides interruption; ticket_rules decides work.
+    route: str = "push"
+    # The body split per section -- {"section", "severity", "text"} -- for a
+    # channel that renders and later edits each finding on its own (Discord).
+    # Empty for producers whose body is not a list of section findings.
+    items: list[dict[str, str]] = field(default_factory=list)
 
 
 class Notifier(Protocol):
@@ -92,16 +112,22 @@ class _HttpNotifier:
         return httpx.AsyncClient()
 
     async def _post(self, **kwargs: object) -> str | None:
+        error, _resp = await self._request("POST", self._url, **kwargs)
+        return error
+
+    async def _request(
+        self, method: str, url: str, **kwargs: object
+    ) -> tuple[str | None, httpx.Response | None]:
         try:
             async with self._make_client() as client:
-                resp = await client.post(self._url, timeout=_SEND_TIMEOUT_S, **kwargs)
+                resp = await client.request(method, url, timeout=_SEND_TIMEOUT_S, **kwargs)
             if resp.status_code >= 400:
                 logger.warning("%s notify returned %s", self.name, resp.status_code)
-                return f"HTTP {resp.status_code}"
+                return f"HTTP {resp.status_code}", resp
         except Exception as exc:  # noqa: BLE001 - delivery is best-effort
             logger.warning("%s notify failed: %s", self.name, exc)
-            return str(exc) or type(exc).__name__
-        return None
+            return str(exc) or type(exc).__name__, None
+        return None, resp
 
 
 class NtfyNotifier(_HttpNotifier):
@@ -135,11 +161,14 @@ class WebhookNotifier(_HttpNotifier):
     """POST a JSON payload to a generic operator-configured webhook URL."""
 
     name = "webhook"
+    # A machine consumer: it gets every route, labelled, and filters itself.
+    receives_all_routes = True
 
     async def send(self, notification: Notification) -> str | None:
         return await self._post(
             json={
                 "kind": notification.kind,
+                "route": notification.route,
                 "title": notification.title,
                 "body": notification.body,
                 "priority": notification.priority,
@@ -155,14 +184,15 @@ class WebhookNotifier(_HttpNotifier):
 _DISCORD_TITLE_LIMIT = 256
 _DISCORD_DESCRIPTION_LIMIT = 4096
 
-# Discord embed colors (decimal), keyed by Notification.priority.
+# Discord embed colors (decimal), keyed by the severity a reader should take
+# from the message -- not by ntfy priority, which conflated warn with recovery.
 _DISCORD_COLORS = {
-    "low": 0x95A5A6,  # grey
-    "default": 0x3498DB,  # blue
-    "high": 0xE67E22,  # orange
-    "urgent": 0xE74C3C,  # red
+    "crit": 0xE74C3C,  # red
+    "warn": 0xF1C40F,  # amber
+    "resolved": 0x2ECC71,  # green
+    "info": 0x95A5A6,  # grey
 }
-_DISCORD_DEFAULT_COLOR = _DISCORD_COLORS["default"]
+_DISCORD_MARKERS = {"crit": "\U0001F534", "warn": "\U0001F7E0", "resolved": "\u2705", "info": ""}
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -173,22 +203,202 @@ def _truncate(text: str, limit: int) -> str:
     return text[: limit - 1] + "…"
 
 
+def severity_of(notification: Notification) -> str:
+    """What a reader should take from ``notification``: crit, warn, resolved or info."""
+
+    if notification.kind == "recovery":
+        return "resolved"
+    if notification.priority in ("high", "urgent"):
+        return "crit"
+    if notification.priority == "low":
+        return "info"
+    return "warn"
+
+
+def _public_base() -> str:
+    """The dashboard origin a link in a chat message may point at, or ``""``.
+
+    Only an explicitly configured ``KENNY_PUBLIC_URL`` counts: the localhost
+    fallback ``urls.public_base_url`` uses for development is a dead link on
+    the phone that reads the message.
+    """
+
+    return os.environ.get("KENNY_PUBLIC_URL", "").strip().rstrip("/")
+
+
+def _duration(delta_s: float) -> str:
+    minutes = max(0, int(delta_s // 60))
+    if minutes < 60:
+        return f"{minutes}m"
+    hours, minutes = divmod(minutes, 60)
+    if hours < 48:
+        return f"{hours}h {minutes:02d}m" if minutes else f"{hours}h"
+    return f"{hours // 24}d {hours % 24}h"
+
+
+def discord_doc(
+    notification: Notification, *, at: datetime, base_url: str = ""
+) -> dict[str, Any]:
+    """The state of one Discord message, from which its embed is rendered.
+
+    Persisted with the message id (``AlertStateStore.save_message``) so a later
+    recovery re-renders the same message with some or all findings resolved,
+    rather than composing a second one.
+    """
+
+    url = ""
+    if base_url and notification.agent_id:
+        url = f"{base_url}/#/fleet/{quote(notification.agent_id, safe='')}"
+        worst = next(iter(notification.sections), "")
+        if worst:
+            url += f"?section={quote(worst, safe='')}"
+    return {
+        "title": notification.title,
+        "severity": severity_of(notification),
+        "items": [
+            {
+                "section": item.get("section", ""),
+                "severity": item.get("severity", ""),
+                "text": item.get("text", ""),
+                "resolved_at": None,
+            }
+            for item in notification.items
+        ],
+        "body": notification.body,
+        "url": url,
+        "created_at": at.isoformat(),
+        "resolved_at": None,
+    }
+
+
+def discord_embed(doc: dict[str, Any]) -> dict[str, Any]:
+    """Render one embed from a :func:`discord_doc` state."""
+
+    resolved_at = doc.get("resolved_at")
+    severity = "resolved" if resolved_at else str(doc.get("severity") or "warn")
+    marker = _DISCORD_MARKERS.get(severity, "")
+    title = f"{marker} {doc.get('title', '')}".strip()
+    items = doc.get("items") or []
+    if items:
+        lines = []
+        for item in items:
+            text = f"**{item['section']}**: {item['text']}" if item.get("text") else f"**{item['section']}**"
+            if item.get("resolved_at"):
+                lines.append(f"{_DISCORD_MARKERS['resolved']} ~~{text}~~")
+            else:
+                lines.append(f"{_DISCORD_MARKERS.get(item.get('severity', ''), '')} {text}".strip())
+        description = "\n".join(lines)
+    else:
+        description = str(doc.get("body") or "")
+    embed: dict[str, Any] = {
+        "title": _truncate(title, _DISCORD_TITLE_LIMIT),
+        "description": _truncate(description, _DISCORD_DESCRIPTION_LIMIT),
+        "color": _DISCORD_COLORS.get(severity, _DISCORD_COLORS["warn"]),
+    }
+    if doc.get("created_at"):
+        embed["timestamp"] = doc["created_at"]
+    if doc.get("url"):
+        embed["url"] = doc["url"]
+    if resolved_at:
+        end = datetime.fromisoformat(resolved_at)
+        start = datetime.fromisoformat(doc["created_at"]) if doc.get("created_at") else end
+        embed["fields"] = [
+            {
+                "name": "Resolved",
+                "value": f"<t:{int(end.timestamp())}:R> · after "
+                f"{_duration((end - start).total_seconds())}",
+                "inline": False,
+            }
+        ]
+    return embed
+
+
+def resolve_doc(doc: dict[str, Any], sections: Iterable[str], *, at: datetime) -> bool:
+    """Mark ``sections`` resolved in ``doc``; ``True`` if anything changed.
+
+    The whole message counts as resolved once none of its findings is still
+    open. A message without per-section items resolves as a whole.
+    """
+
+    wanted = set(sections)
+    changed = False
+    items = doc.get("items") or []
+    for item in items:
+        if item.get("resolved_at") is None and item.get("section") in wanted:
+            item["resolved_at"] = at.isoformat()
+            changed = True
+    if doc.get("resolved_at") is None and (
+        (items and all(i.get("resolved_at") for i in items)) or (not items and wanted)
+    ):
+        doc["resolved_at"] = at.isoformat()
+        changed = True
+    return changed
+
+
+def doc_sections(doc: dict[str, Any]) -> set[str]:
+    """The sections a message still reports as open."""
+
+    return {i["section"] for i in doc.get("items") or [] if not i.get("resolved_at")}
+
+
 class DiscordNotifier(_HttpNotifier):
-    """POST a Discord webhook payload (embed) to a Discord channel webhook URL."""
+    """POST a Discord webhook payload (embed) to a Discord channel webhook URL.
+
+    Posts with ``?wait=true`` so Discord answers with the message it created;
+    :meth:`send_tracked` hands its id back to the alert loop, and :meth:`edit`
+    later rewrites that message (``PATCH .../messages/<id>``) when the
+    condition resolves. A pushed alert is therefore one message that shows its
+    current state, not an alert followed by a recovery.
+    """
 
     name = "discord"
 
+    def __init__(
+        self,
+        url: str,
+        *,
+        client_factory: ClientFactory | None = None,
+        base_url: Callable[[], str] = _public_base,
+    ) -> None:
+        super().__init__(url, client_factory=client_factory)
+        self._base_url = base_url
+
+    def _endpoint(self, suffix: str = "") -> str:
+        base, sep, query = self._url.partition("?")
+        return f"{base.rstrip('/')}{suffix}{sep}{query}"
+
     async def send(self, notification: Notification) -> str | None:
-        fields = [{"name": "kind", "value": notification.kind, "inline": True}]
-        if notification.agent_id:
-            fields.append({"name": "agent_id", "value": notification.agent_id, "inline": True})
-        embed = {
-            "title": _truncate(notification.title, _DISCORD_TITLE_LIMIT),
-            "description": _truncate(notification.body, _DISCORD_DESCRIPTION_LIMIT),
-            "color": _DISCORD_COLORS.get(notification.priority, _DISCORD_DEFAULT_COLOR),
-            "fields": fields,
-        }
-        return await self._post(json={"embeds": [embed]})
+        error, _message_id, _doc = await self.send_tracked(notification)
+        return error
+
+    async def send_tracked(
+        self, notification: Notification, *, at: datetime | None = None
+    ) -> tuple[str | None, str | None, dict[str, Any]]:
+        """Post ``notification``; returns ``(error, message_id, doc)``."""
+
+        doc = discord_doc(
+            notification, at=at or datetime.now(timezone.utc), base_url=self._base_url()
+        )
+        url = self._endpoint()
+        url += ("&" if "?" in url else "?") + "wait=true"
+        error, resp = await self._request("POST", url, json={"embeds": [discord_embed(doc)]})
+        message_id: str | None = None
+        if error is None and resp is not None:
+            try:
+                message_id = str(resp.json().get("id") or "") or None
+            except Exception:  # noqa: BLE001 - an unparseable answer only costs the edit
+                message_id = None
+        return error, message_id, doc
+
+    async def edit(self, message_id: str, doc: dict[str, Any]) -> str | None:
+        """Re-render an earlier message from ``doc``; ``None`` on success."""
+
+        error, _resp = await self._request(
+            "PATCH",
+            self._endpoint(f"/messages/{quote(message_id, safe='')}"),
+            json={"embeds": [discord_embed(doc)]},
+        )
+        return error
 
 
 # -- channel configuration (ADR-0054) -----------------------------------------

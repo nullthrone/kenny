@@ -3,17 +3,43 @@
 kenny evaluates every telemetry snapshot with authoritative server-side health rules and
 surfaces warn/crit on the dashboard — but in a family setting nobody watches a fleet
 dashboard routinely. This page covers the **push channel** that reaches the operator's
-phone when something changes for the worse (or recovers), the **change and forecast**
-findings that ride the same channel, and the **weekly digest**. It is entirely
+phone when something needs action now, the **daily summary** that collects what can wait,
+the **change and forecast** findings, and the **weekly digest**. It is entirely
 server-side: no protocol bump, no agent involvement, thresholds stay in `health_rules.py`
-(see [ADR-0027](adr/0027-push-alerting-ntfy-webhook-and-weekly-digest.md) and
+(see [ADR-0027](adr/0027-push-alerting-ntfy-webhook-and-weekly-digest.md),
+[ADR-0067](adr/0067-alert-delivery-is-routed-by-actionability.md) and
 `diffs.py` / `trends.py`).
+
+## Who gets interrupted
+
+Every notification carries a **route** that decides whether it interrupts anyone. The
+route is independent of whether it opens a [ticket](#an-alert-can-open-a-ticket): routing
+decides *interruption*, auto-ticket rules decide *work*.
+
+| Event | Route | What reaches a person |
+|-------|-------|-----------------------|
+| A section escalates to `crit` | **push** | One message now. Any `warn` lines from the same pass ride along as context |
+| A section escalates to `warn` only | **daily** | A line in the next daily summary |
+| A pushed episode recovers | **push** | Discord edits the original message; ntfy gets a silent low-priority note |
+| An episode that was never pushed recovers | **record** | Nothing |
+| A recovery the operator caused (a suppression) | **record** | Nothing. A Discord message is still edited |
+| A host goes silent for `KENNY_ALERT_MISSING_AFTER_DAYS` | **daily** | A line in the next daily summary |
+| A host goes offline or comes back | — | Nothing. Offline only pauses health evaluation |
+| An inventory change on the allowlist | **push** | One message now |
+| Any other inventory change | **record** | Nothing (Log page, digest counts) |
+| A disk-fill forecast starts | **daily** | A line in the next daily summary, once per episode |
+| Weekly digest | **push** | One message a week |
+
+Human channels (ntfy, Discord) receive `push` only. The generic webhook is a machine
+integration point: it receives every route, labelled with a `route` field, and filters for
+itself. Every route writes the same events-table row and makes the same ticket decision.
 
 ## Push alerting
 
 A background loop on the server re-runs the health rules over **every known agent's**
 latest snapshot on a short interval (default 60 s) and notifies on **transitions only** —
-not on every push:
+not on every push. The rules below decide *whether* a transition produces a notification;
+its route (above) decides who hears about it:
 
 - **Escalations to `crit` bypass the cooldown** (`ok→crit`, `warn→crit`).
 - **`warn` transitions respect a per-scope cooldown** (default 1 h) so a flapping section
@@ -57,13 +83,15 @@ conditions that were already notified.
     in [telemetry.md](telemetry.md#telemetry-sections) and
     [Alarm suppression](telemetry.md#alarm-suppression).
 
-!!! note "Offline detection is push-derived"
+!!! note "Offline is silent; missing is not"
     An agent counts as **offline** when its newest snapshot is older than the offline
     threshold (default 2700 s = three missed 15-min pushes) **and** the in-memory registry
     holds no live tunnel connection. Health evaluation is skipped for offline agents, so a
-    stale snapshot can't flap. Offline PCs that are simply switched off will alert — tune
-    `KENNY_ALERT_OFFLINE_AFTER_SECS` or disable the loop entirely with
-    `KENNY_ALERT_INTERVAL_SECS=0` if that is noise for your fleet.
+    stale snapshot can't flap. Being offline notifies no one: a PC that is switched off is
+    not an incident. A host with no telemetry for `KENNY_ALERT_MISSING_AFTER_DAYS`
+    (default 7) is **missing**. Its agent is broken or gone, which nobody would otherwise
+    notice, so it appears once in the daily summary and opens a ticket. When it reports
+    again, the ticket resolves quietly.
 
 Every emitted alert is also written to the **events table** (`kind='alert'`) as an audit
 trail and as the weekly digest's input, so it shows up in the dashboard's **[Log](dashboard.md#log)**
@@ -112,7 +140,7 @@ condition, its return is news again.
 
 ### Which events open a ticket is configurable
 
-By default, every genuine alert — a health escalation, an agent going offline, a disk-fill
+By default, every genuine alert — a health escalation, a host going missing, a disk-fill
 forecast — opens a ticket, and a recovery, an inventory change, and the weekly digest never
 do. An operator can narrow or widen that per fleet or per host from **Admin → Alarm
 rules** ([auto-ticket rules](dashboard.md#alarm-rules)), or via the `ticket_rule_*`
@@ -122,10 +150,9 @@ MCP tools. Each rule names an event type (`health` / `offline` / `disk_forecast`
 
 Two practical cases this solves:
 
-- **A family PC that is simply switched off overnight** re-opens an offline ticket every
-  cooldown window. A `never` rule on `offline` (fleet-wide or for just that host) stops the
-  tickets without silencing the offline *alert* itself — delivery and the events-table audit
-  trail are unaffected.
+- **A machine that is retired but not yet removed** keeps a missing ticket open. A `never`
+  rule on `offline` for that host stops the ticket without removing the finding from the
+  daily summary or the events-table audit trail.
 - **Inventory changes never open a ticket by default**, even though a new local administrator
   account is exactly the kind of thing worth a ticket. An `open_all` rule on `change` with
   section `local_accounts` promotes it.
@@ -171,11 +198,25 @@ restart) and reports what appeared, disappeared or changed in the inventory sect
 | `scheduled_tasks` | task added/removed, action changed |
 | `local_accounts` | account added/removed, admin/enabled changed |
 
-Changes are batched into **one notification per host**. `local_accounts` changes (a new
-account, or one flipped to admin/enabled) **escalate to high priority** — the
-highest-signal security question in a family fleet. **Sections absent from either
-snapshot are skipped**, so rolling out a new collector never floods the diff with "added"
-rows for a whole section.
+Most of these are routine: software updates, a USB stick, a service switching start type.
+Only changes on the **push allowlist** (`KENNY_ALERT_CHANGE_PUSH`, a comma list of
+`section` or `section:kind`) push. The default is `local_accounts` (every kind) plus
+`autostart:added`, `scheduled_tasks:added` and `browser_extensions:added`. Those are new
+persistence mechanisms and any account drift, which are rare and each worth an
+interruption. `changed` kinds and `listening_ports` stay off by default: updaters rewrite
+autostart and task commands on every update, and processes open ephemeral ports all day.
+
+- An allowlisted change is **never held back by the section cooldown**. Dropping a new
+  autostart entry because another appeared within the hour would be a security miss, and an
+  allowlisted entry that flaps is a signal in itself.
+- Every other change is **recorded** (Log page, digest counts) under the per-section
+  cooldown.
+- Each host's changes from one snapshot become at most one pushed and one recorded
+  notification.
+- `local_accounts` changes (a new account, or one flipped to admin/enabled) are **high
+  priority**, the highest-signal security question in a family fleet.
+- **Sections absent from either snapshot are skipped**, so rolling out a new collector never
+  floods the diff with "added" rows for a whole section.
 
 ## Forecasts
 
@@ -184,9 +225,9 @@ snapshot per UTC day). Forecasts are deliberately shy — they need at least 5 d
 points, a genuinely rising slope and a decent fit (r² ≥ 0.5), else they return nothing
 rather than a scary made-up number:
 
-- **Disk-fill forecast** — *days until full* per volume. Under **~14 days** raises an
-  alert (re-firing at most every 24 h); under **~30 days** shows as a Today KPI and in
-  the weekly digest. The forecast names the `disk` section, so it shares a ticket with an
+- **Disk-fill forecast** — *days until full* per volume. Dropping under **~14 days** raises
+  one alert per episode, listed in the daily summary on the `disk` line; under **~30 days**
+  shows as a Today KPI and in the weekly digest. The forecast names the `disk` section, so it shares a ticket with an
   acute disk finding on the same host, and an auto-ticket rule can target
   `disk_forecast` + `disk`.
 - **Battery drift** — health change as **percent per 30 days**; a meaningful decline
@@ -195,6 +236,21 @@ rather than a scary made-up number:
 These same computations feed the per-host **Forecast** panel at the top of
 [the host page](dashboard.md#the-host-page), which synthesizes them (with the inventory
 diff) into a short prose outlook.
+
+## Daily summary
+
+What can wait is collected into one message a day at `KENNY_ALERT_DAILY_HOUR` (UTC,
+default 08:00):
+
+- It lists findings routed `daily` since the last summary that are **still open** now: warn
+  findings, missing hosts, disk forecasts. One line per host and section, with the current
+  reason and how long it has been open. A finding that came and went in between is left out.
+- A crit that was already pushed is not repeated. It counts towards the `N older finding(s)
+  still open` line, which is followed by a link to the Inbox when `KENNY_PUBLIC_URL` is set.
+- **Nothing is sent when nothing is new.**
+- The weekly digest's slot is skipped, so that morning brings one message.
+- Its state is persisted like the digest's, so a restart neither loses nor repeats a summary.
+- It never opens a ticket; the findings it lists have their own.
 
 ## Weekly digest
 
@@ -219,8 +275,17 @@ HTTP POST each):
 | Channel | Setting | Payload |
 |---------|---------|---------|
 | **ntfy** | `KENNY_NTFY_URL` (+ optional `KENNY_NTFY_TOKEN` bearer) | POST body to an ntfy topic; title/priority/tags as headers — works out of the box with the ntfy phone apps |
-| **Generic webhook** | `KENNY_WEBHOOK_URL` | JSON POST (`kind`, `title`, `body`, `priority`, `tags`, `agent_id`, `event_type`, `sections`, `at`) |
-| **Discord** | `KENNY_DISCORD_WEBHOOK_URL` | JSON POST of a Discord embed — title, body as the description, priority as the embed colour, and `kind` / `agent_id` as fields |
+| **Generic webhook** | `KENNY_WEBHOOK_URL` | JSON POST (`kind`, `route`, `title`, `body`, `priority`, `tags`, `agent_id`, `event_type`, `sections`, `at`) — every route, not only pushes |
+| **Discord** | `KENNY_DISCORD_WEBHOOK_URL` | A Discord embed with one line per finding, coloured by severity (red crit, amber warn, green resolved, grey informational), a timestamp, and a link to the host page when `KENNY_PUBLIC_URL` is set |
+
+A pushed health alert on Discord is **one message that shows its current state**:
+
+- kenny posts with `?wait=true`, keeps the returned message id for 30 days, and on recovery
+  edits that message instead of posting another one.
+- A finding that resolves is struck through. Once every finding has resolved, the message
+  turns green and says when and after how long.
+- An edit does not notify anyone in Discord.
+- If the message is gone (deleted, or the webhook URL was replaced), the edit is dropped.
 
 Set them in **Admin → Alerts & notifications**, or in the environment. A value saved in the
 dashboard wins over the environment and takes effect on the next alert, with no restart.
@@ -252,7 +317,10 @@ See [`setup.md`](setup.md) for the full list.
 |----------|---------|---------|
 | `KENNY_ALERT_INTERVAL_SECS` | `60` | Evaluation interval; `0` disables the loop |
 | `KENNY_ALERT_COOLDOWN_SECS` | `3600` | Per-scope flap suppression window |
-| `KENNY_ALERT_OFFLINE_AFTER_SECS` | `2700` | Offline after this (three missed 15-min pushes) |
+| `KENNY_ALERT_OFFLINE_AFTER_SECS` | `2700` | Offline after this (three missed 15-min pushes); pauses health evaluation, notifies no one |
+| `KENNY_ALERT_MISSING_AFTER_DAYS` | `7` | A host silent this long is missing (daily summary + ticket) |
+| `KENNY_ALERT_DAILY_HOUR` | `8` | Daily summary hour (0–23, UTC) |
+| `KENNY_ALERT_CHANGE_PUSH` | `local_accounts,autostart:added,scheduled_tasks:added,browser_extensions:added` | Inventory changes that push; the rest are recorded |
 | `KENNY_DIGEST_ENABLED` | `1` | Send the weekly digest |
 | `KENNY_DIGEST_DAY` | `mon` | Digest day of week |
 | `KENNY_DIGEST_HOUR` | `8` | Digest hour (0–23) |
@@ -268,5 +336,6 @@ See [`setup.md`](setup.md) for the full list.
 - [`telemetry.md`](telemetry.md) — the sections and health rules these alerts evaluate
 - [`itsm.md`](itsm.md) — tickets, the Discord bot, and what an alert-opened ticket looks like
 - [ADR-0027](adr/0027-push-alerting-ntfy-webhook-and-weekly-digest.md) — push alerting & weekly digest
+- [ADR-0067](adr/0067-alert-delivery-is-routed-by-actionability.md) — routes, the daily summary, editing in place
 - `kenny-server/kenny_server/ticket_rules.py` — the auto-ticket rule model, and why an
   empty rule table reproduces the coded default

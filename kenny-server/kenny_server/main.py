@@ -658,6 +658,8 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
             (webfilter_store, None),
             (ticket_store, "KENNY_TICKET_RETENTION_DAYS"),
             (discord_identities, None),
+            # The channel messages a recovery edits in place (ADR-0067).
+            (alert_state, None),
         ],
         open_ticket=open_alert_ticket,
         close_ticket=resolve_alert_ticket,
