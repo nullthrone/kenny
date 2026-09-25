@@ -47,10 +47,10 @@
   font-size: 11px;
   color: var(--text-faint);
   white-space: nowrap;
-  /* Each row is its own grid, so the column width is fixed at the longest
-     form (with year, 17 chars) to keep every row aligned. */
-  min-width: 17ch;
-  max-width: 17ch;
+  /* Each row is its own grid, so the column width is fixed at the timestamp's
+     length (16 chars) to keep every row aligned. */
+  min-width: 16ch;
+  max-width: 16ch;
   overflow: hidden;
 }
 
