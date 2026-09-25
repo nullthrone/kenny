@@ -35,6 +35,11 @@ class SectionSpec:
     detail_fields: tuple[str, ...] = ()
 
 
+#: Every ``kind`` a change row can carry -- the vocabulary an operator's
+#: change-push allowlist (``alerting.parse_change_allowlist``) is checked against.
+CHANGE_KINDS: tuple[str, ...] = ("added", "removed", "changed")
+
+
 # Section name -> spec. Sections added later (e.g. Phase-3 collectors) are
 # picked up automatically once their entry lands here.
 SPECS: dict[str, SectionSpec] = {

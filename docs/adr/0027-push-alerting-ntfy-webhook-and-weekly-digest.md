@@ -1,6 +1,7 @@
 # 0027. Push alerting via ntfy/webhook and a weekly digest
 
 - Status: accepted
+- Amended by: [ADR-0067](0067-alert-delivery-is-routed-by-actionability.md)
 - Date: 2026-07-02
 
 ## Context and Problem Statement

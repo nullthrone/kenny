@@ -163,38 +163,99 @@ async def test_escalation_to_crit_bypasses_cooldown(stores) -> None:
     assert sent[0].body == "[CRIT] disk: C: 96% full (>=95%)"
 
 
-async def test_offline_alert_and_recovery(stores) -> None:
-    store, _, _ = stores
+async def test_offline_notifies_no_one(stores) -> None:
+    """A switched-off PC is not an incident: no alert, no back-online."""
+
+    store, events, state = stores
     notifier = FakeNotifier()
     engine = make_engine(stores, notifier, registry=FakeRegistry(set()), offline_after_s=2700)
     await insert(store, snapshot(50.0), NOW - timedelta(hours=3))
 
+    assert await engine.evaluate_once(NOW) == []
+    # The state is still tracked -- it is what gates health evaluation.
+    assert (await state.get("pc1", "offline"))["status"] == "offline"
+
+    await insert(store, snapshot(50.0), NOW + timedelta(minutes=10))
+    assert await engine.evaluate_once(NOW + timedelta(minutes=11)) == []
+    assert (await state.get("pc1", "offline"))["status"] == "online"
+    assert notifier.sent == []
+    assert await events.query(kind="alert") == []
+
+
+async def test_a_missing_host_goes_to_the_daily_summary_and_back_quietly(stores) -> None:
+    store, _, _ = stores
+    notifier = FakeNotifier()
+    opened: list[Notification] = []
+    closed: list[Notification] = []
+
+    async def _open(note: Notification) -> str:
+        opened.append(note)
+        return "T-1"
+
+    async def _close(note: Notification) -> str:
+        closed.append(note)
+        return "T-1"
+
+    engine = make_engine(
+        stores, notifier, registry=FakeRegistry(set()), open_ticket=_open, close_ticket=_close
+    )
+    await insert(store, snapshot(50.0), NOW - timedelta(days=8))
+
     sent = await engine.evaluate_once(NOW)
     assert len(sent) == 1
-    assert sent[0].kind == "alert"
-    assert sent[0].priority == "high"
-    assert "offline" in sent[0].title
+    assert sent[0].kind == "alert" and sent[0].event_type == "offline"
+    assert sent[0].route == "daily"
+    assert "8 days" in sent[0].title
+    assert notifier.sent == []  # held for the daily summary...
+    assert len(opened) == 1  # ...but it is work, so it is ticketed
 
-    # Still offline on the next pass: silent.
-    assert await engine.evaluate_once(NOW + timedelta(minutes=5)) == []
+    # Once per episode.
+    assert await engine.evaluate_once(NOW + timedelta(hours=1)) == []
 
-    # A fresh push brings it back online: recovery.
-    await insert(store, snapshot(50.0), NOW + timedelta(minutes=10))
-    sent = await engine.evaluate_once(NOW + timedelta(minutes=11))
-    assert len(sent) == 1
-    assert sent[0].kind == "recovery"
-    assert "back online" in sent[0].title
+    await insert(store, snapshot(50.0), NOW + timedelta(hours=2))
+    sent = await engine.evaluate_once(NOW + timedelta(hours=2, minutes=1))
+    assert [(n.kind, n.route) for n in sent] == [("recovery", "record")]
+    assert notifier.sent == []
+    assert len(closed) == 1
+
+
+async def test_an_offline_episode_announced_before_the_upgrade_still_closes(stores) -> None:
+    """Its ticket was opened by the old offline alert; the return closes it quietly."""
+
+    store, _, state = stores
+    notifier = FakeNotifier()
+    closed: list[Notification] = []
+
+    async def _close(note: Notification) -> str:
+        closed.append(note)
+        return "T-1"
+
+    engine = make_engine(stores, notifier, close_ticket=_close)
+    went = NOW - timedelta(hours=2)
+    await state.upsert("pc1", "offline", status="offline", since=went.isoformat(),
+                       last_notified_at=went.isoformat())
+    await insert(store, snapshot(50.0), NOW - timedelta(minutes=1))
+    sent = await engine.evaluate_once(NOW)
+    assert [(n.kind, n.event_type, n.route) for n in sent] == [("recovery", "offline", "record")]
+    assert notifier.sent == []
+    assert len(closed) == 1
+
+
+async def test_a_host_offline_for_less_than_the_missing_window_is_not_missing(stores) -> None:
+    store, _, _ = stores
+    engine = make_engine(stores, FakeNotifier(), registry=FakeRegistry(set()), missing_after_days=7)
+    await insert(store, snapshot(50.0), NOW - timedelta(days=6))
+    assert await engine.evaluate_once(NOW) == []
 
 
 async def test_health_is_skipped_while_offline(stores) -> None:
     store, _, _ = stores
     notifier = FakeNotifier()
     engine = make_engine(stores, notifier, registry=FakeRegistry(set()))
-    # Stale crit snapshot: only the offline alert fires, not the health alert.
+    # A stale crit snapshot must not alarm: it describes a machine that is off.
     await insert(store, snapshot(96.0), NOW - timedelta(hours=3))
-    sent = await engine.evaluate_once(NOW)
-    assert len(sent) == 1
-    assert "offline" in sent[0].title
+    assert await engine.evaluate_once(NOW) == []
+    assert notifier.sent == []
 
 
 def autostart_snapshot(names: list[str]) -> dict:
@@ -259,7 +320,7 @@ async def test_local_accounts_change_is_high_priority(stores) -> None:
     assert "is_admin: False -> True" in sent[0].body
 
 
-async def test_disk_forecast_alert_with_daily_cooldown(stores) -> None:
+async def test_disk_forecast_fires_once_per_episode_into_the_daily_summary(stores) -> None:
     store, _, _ = stores
     notifier = FakeNotifier()
     engine = make_engine(stores, notifier)
@@ -275,15 +336,13 @@ async def test_disk_forecast_alert_with_daily_cooldown(stores) -> None:
     assert len(sent) == 1
     assert "disk filling up" in sent[0].title
     assert "C:" in sent[0].body
+    assert sent[0].route == "daily"
+    assert notifier.sent == []
 
-    # A new snapshot within the 24 h forecast cooldown stays silent.
-    await insert(store, snapshot(78.2), NOW + timedelta(hours=2))
-    assert await engine.evaluate_once(NOW + timedelta(hours=3)) == []
-
-    # After the cooldown a new snapshot re-fires the (still true) forecast.
-    await insert(store, snapshot(80.0 + 0.4), NOW + timedelta(days=2))
+    # Still true two days later: not news again.
+    await insert(store, snapshot(78.4), NOW + timedelta(days=2))
     sent = await engine.evaluate_once(NOW + timedelta(days=2, hours=1))
-    assert any("disk filling up" in n.title for n in sent)
+    assert not any(n.event_type == "disk_forecast" for n in sent)
 
 
 async def test_producers_carry_their_event_discriminator(stores) -> None:
@@ -293,7 +352,7 @@ async def test_producers_carry_their_event_discriminator(stores) -> None:
     store, _, _ = stores
     notifier = FakeNotifier()
     engine = make_engine(stores, notifier, registry=FakeRegistry(set()))
-    await insert(store, snapshot(96.0), NOW - timedelta(hours=3))
+    await insert(store, snapshot(96.0), NOW - timedelta(days=8))
     sent = await engine.evaluate_once(NOW)
     assert len(sent) == 1
     assert sent[0].event_type == "offline"
@@ -301,7 +360,7 @@ async def test_producers_carry_their_event_discriminator(stores) -> None:
     engine2 = make_engine(stores, notifier, registry=FakeRegistry({"pc1"}))
     await insert(store, snapshot(96.0), NOW - timedelta(minutes=1))
     sent = await engine2.evaluate_once(NOW)
-    # Coming back online also fires an offline-recovery in the same pass (the
+    # Coming back also resolves the missing episode in the same pass (the
     # fixture reused the same alert_state as the block above); pick out the
     # health notification specifically.
     health = [n for n in sent if n.event_type == "health"]
@@ -470,9 +529,9 @@ async def test_engine_emitted_vocabulary_matches_ticket_rules(stores) -> None:
     # health escalation
     await insert(store, snapshot(96.0), NOW - timedelta(minutes=1))
     record(await engine.evaluate_once(NOW))
-    # offline
+    # offline (a missing host)
     engine_offline = make_engine(stores, FakeNotifier(), registry=FakeRegistry(set()))
-    await insert(store, snapshot(50.0), NOW - timedelta(hours=3), agent_id="pc2")
+    await insert(store, snapshot(50.0), NOW - timedelta(days=8), agent_id="pc2")
     record(await engine_offline.evaluate_once(NOW))
     # change
     await insert(store, autostart_snapshot(["A"]), NOW - timedelta(minutes=15), agent_id="pc3")
@@ -1175,3 +1234,387 @@ async def test_suppressing_a_pattern_closes_its_ticket(tmp_path, monkeypatch) ->
             assert section["status"] == "ok"
     finally:
         event_categories.reset_state()
+
+
+# -- routing by actionability (ADR-0067) ---------------------------------------
+
+
+def two_sections(disk_pct: float, mem_pct: float) -> dict:
+    snap = snapshot(disk_pct)
+    snap["memory"] = {"status": "ok", "summary": "", "percent_used": mem_pct}
+    return snap
+
+
+async def test_a_warn_is_work_not_an_interruption(stores) -> None:
+    store, events, _ = stores
+    notifier = FakeNotifier()
+    opened: list[Notification] = []
+
+    async def _open(note: Notification) -> str:
+        opened.append(note)
+        return "T-1"
+
+    engine = make_engine(stores, notifier, open_ticket=_open)
+    await insert(store, snapshot(85.0), NOW - timedelta(minutes=1))
+    sent = await engine.evaluate_once(NOW)
+
+    assert [(n.kind, n.route) for n in sent] == [("alert", "daily")]
+    assert notifier.sent == []  # no push
+    assert len(opened) == 1  # still a ticket in the inbox
+    rows = await events.query(kind="alert")
+    assert rows[0]["fields"]["route"] == "daily"
+
+
+async def test_a_crit_pushes_with_the_pass_s_warn_lines_as_context(stores) -> None:
+    store, _, _ = stores
+    notifier = FakeNotifier()
+    engine = make_engine(stores, notifier)
+    await insert(store, two_sections(96.0, 90.0), NOW - timedelta(minutes=1))
+    sent = await engine.evaluate_once(NOW)
+
+    assert len(sent) == 1  # one note, one ticket
+    assert sent[0].route == "push"
+    assert sent[0].sections == {"disk": "crit", "memory": "warn"}
+    assert [i["section"] for i in sent[0].items] == ["disk", "memory"]
+    assert notifier.sent == sent
+
+
+async def test_only_a_pushed_episode_s_recovery_is_pushed(stores) -> None:
+    store, _, state = stores
+    notifier = FakeNotifier()
+    engine = make_engine(stores, notifier, cooldown_s=0)
+
+    # warn only -> daily; its recovery is recorded, never pushed.
+    await insert(store, snapshot(85.0), NOW - timedelta(minutes=1))
+    await engine.evaluate_once(NOW)
+    await insert(store, snapshot(50.0), NOW + timedelta(minutes=5))
+    sent = await engine.evaluate_once(NOW + timedelta(minutes=6))
+    assert [(n.kind, n.route) for n in sent] == [("recovery", "record")]
+    assert notifier.sent == []
+
+    # crit -> push; its recovery is pushed (quietly, at low priority).
+    await insert(store, snapshot(96.0), NOW + timedelta(minutes=10))
+    await engine.evaluate_once(NOW + timedelta(minutes=11))
+    assert await state.get("pc1", "pushed:section:disk") is not None
+    await insert(store, snapshot(50.0), NOW + timedelta(minutes=15))
+    sent = await engine.evaluate_once(NOW + timedelta(minutes=16))
+    assert [(n.kind, n.route, n.priority) for n in sent] == [("recovery", "push", "low")]
+    assert [n.kind for n in notifier.sent] == ["alert", "recovery"]
+    assert await state.get("pc1", "pushed:section:disk") is None
+
+
+async def test_a_recovery_an_operator_caused_is_never_pushed(stores) -> None:
+    store, _, _ = stores
+    notifier = FakeNotifier()
+    engine = make_engine(stores, notifier)
+    # Wall-clock recent: ``evaluate_agent_now`` runs on the real clock.
+    recent = datetime.now(timezone.utc) - timedelta(minutes=2)
+    await insert(store, snapshot(96.0), recent)
+    await engine.evaluate_agent_now("pc1")
+    assert [n.route for n in notifier.sent] == ["push"]
+
+    await insert(store, snapshot(50.0), recent + timedelta(minutes=1))
+    sent = await engine.evaluate_agent_now("pc1")
+    assert [(n.kind, n.route) for n in sent] == [("recovery", "record")]
+    assert len(notifier.sent) == 1
+
+
+async def test_an_allowlisted_change_pushes_and_is_never_held_by_the_cooldown(stores) -> None:
+    store, _, _ = stores
+    notifier = FakeNotifier()
+    engine = make_engine(stores, notifier, cooldown_s=3600)
+
+    await insert(store, autostart_snapshot(["OneDrive"]), NOW - timedelta(minutes=15))
+    await engine.evaluate_once(NOW - timedelta(minutes=10))
+    await insert(store, autostart_snapshot(["OneDrive", "A"]), NOW - timedelta(minutes=5))
+    sent = await engine.evaluate_once(NOW)
+    assert [(n.kind, n.route) for n in sent] == [("change", "push")]
+
+    # A second addition inside the cooldown still pushes: dropping it would be
+    # a security miss.
+    await insert(store, autostart_snapshot(["OneDrive", "A", "B"]), NOW + timedelta(minutes=5))
+    sent = await engine.evaluate_once(NOW + timedelta(minutes=6))
+    assert [(n.route, n.body) for n in sent] == [("push", "autostart: added B | HKCU\\Run (command=b.exe)")]
+    assert len(notifier.sent) == 2
+
+
+async def test_a_change_off_the_allowlist_is_only_recorded(stores) -> None:
+    store, events, _ = stores
+    notifier = FakeNotifier()
+    engine = make_engine(stores, notifier)
+
+    def software(version: str) -> dict:
+        return {"installed_software": {"status": "ok", "summary": "", "apps": [
+            {"name": "Firefox", "publisher": "Mozilla", "version": version},
+        ]}}
+
+    await insert(store, software("1.0"), NOW - timedelta(minutes=15))
+    await engine.evaluate_once(NOW - timedelta(minutes=10))
+    await insert(store, software("1.1"), NOW - timedelta(minutes=5))
+    sent = await engine.evaluate_once(NOW)
+    assert [(n.kind, n.route) for n in sent] == [("change", "record")]
+    assert notifier.sent == []
+    assert any("Firefox" in r["message"] for r in await events.query(kind="alert"))
+
+
+async def test_the_change_allowlist_is_read_live(stores) -> None:
+    store, _, _ = stores
+    notifier = FakeNotifier()
+    settings = _FakeSettings({"KENNY_ALERT_CHANGE_PUSH": "installed_software:changed"})
+    engine = make_engine(stores, notifier, settings=settings)
+    await insert(store, autostart_snapshot(["OneDrive"]), NOW - timedelta(minutes=15))
+    await engine.evaluate_once(NOW - timedelta(minutes=10))
+    await insert(store, autostart_snapshot(["OneDrive", "A"]), NOW - timedelta(minutes=5))
+    sent = await engine.evaluate_once(NOW)
+    assert [n.route for n in sent] == ["record"]  # autostart is no longer listed
+
+
+def test_the_change_allowlist_parser_drops_what_can_never_match() -> None:
+    from kenny_server.alerting import parse_change_allowlist
+
+    assert parse_change_allowlist("local_accounts") == {
+        ("local_accounts", "added"), ("local_accounts", "removed"), ("local_accounts", "changed"),
+    }
+    assert parse_change_allowlist(" autostart:added , nope, autostart:exploded,") == {
+        ("autostart", "added"),
+    }
+
+
+def test_the_default_change_allowlist_names_what_the_diff_emits() -> None:
+    """Seam: the allowlist default (alerting, and the settings catalogue that
+    shows it) against the sections and kinds diffs.py can actually produce."""
+
+    from kenny_server import config
+    from kenny_server.alerting import DEFAULT_CHANGE_PUSH, parse_change_allowlist
+    from kenny_server.diffs import CHANGE_KINDS, SPECS
+
+    spec = next(s for s in config._SPECS if s.key == "KENNY_ALERT_CHANGE_PUSH")
+    assert spec.default_raw == DEFAULT_CHANGE_PUSH
+    entries = [e.strip() for e in DEFAULT_CHANGE_PUSH.split(",")]
+    assert len(parse_change_allowlist(DEFAULT_CHANGE_PUSH)) >= len(entries)
+    for entry in entries:
+        section, _, kind = entry.partition(":")
+        assert section in SPECS
+        assert not kind or kind in CHANGE_KINDS
+
+
+async def test_every_route_the_engine_emits_is_one_delivery_knows(stores) -> None:
+    from kenny_server.notify import ROUTES
+
+    store, _, _ = stores
+    engine = make_engine(stores, FakeNotifier(), cooldown_s=0)
+    notes: list[Notification] = []
+    await insert(store, snapshot(85.0), NOW - timedelta(minutes=30))
+    notes += await engine.evaluate_once(NOW - timedelta(minutes=29))
+    await insert(store, snapshot(96.0), NOW - timedelta(minutes=20))
+    notes += await engine.evaluate_once(NOW - timedelta(minutes=19))
+    await insert(store, snapshot(40.0), NOW - timedelta(minutes=10))
+    notes += await engine.evaluate_once(NOW - timedelta(minutes=9))
+    assert {n.route for n in notes} == {"daily", "push"}
+    assert {n.route for n in notes} <= set(ROUTES)
+
+
+# -- delivery against the real channels (joined seams) --------------------------
+
+
+def _discord_transport(log: list, *, patch_status: int = 200):
+    import httpx
+
+    counter = iter(range(1, 1000))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        log.append(request)
+        if request.method == "PATCH":
+            return httpx.Response(patch_status, json={})
+        return httpx.Response(200, json={"id": f"m-{next(counter)}"})
+
+    return lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+async def test_a_pushed_alert_is_edited_in_place_when_it_recovers(stores) -> None:
+    import json
+
+    from kenny_server.notify import DiscordNotifier
+
+    store, _, state = stores
+    log: list = []
+    discord = DiscordNotifier(
+        "https://discord.example/hook", client_factory=_discord_transport(log), base_url=lambda: ""
+    )
+    engine = make_engine(stores, discord)  # type: ignore[arg-type]
+
+    await insert(store, two_sections(96.0, 90.0), NOW - timedelta(minutes=1))
+    await engine.evaluate_once(NOW)
+    assert [r.method for r in log] == ["POST"]
+    assert len(await state.open_messages("discord", "pc1")) == 1
+
+    # disk recovers, memory stays warn: the message is edited, not answered.
+    await insert(store, two_sections(40.0, 90.0), NOW + timedelta(minutes=10))
+    await engine.evaluate_once(NOW + timedelta(minutes=11))
+    assert [r.method for r in log] == ["POST", "PATCH"]
+    assert str(log[1].url) == "https://discord.example/hook/messages/m-1"
+    embed = json.loads(log[1].content)["embeds"][0]
+    assert "~~**disk**" in embed["description"] and embed["color"] == 0xE74C3C
+
+    await insert(store, two_sections(40.0, 30.0), NOW + timedelta(minutes=20))
+    await engine.evaluate_once(NOW + timedelta(minutes=21))
+    assert [r.method for r in log] == ["POST", "PATCH", "PATCH"]
+    assert json.loads(log[2].content)["embeds"][0]["color"] == 0x2ECC71
+    assert await state.open_messages("discord", "pc1") == []
+
+
+async def test_a_warn_only_episode_never_reaches_discord(stores) -> None:
+    from kenny_server.notify import DiscordNotifier
+
+    store, _, _ = stores
+    log: list = []
+    discord = DiscordNotifier("https://discord.example/hook", client_factory=_discord_transport(log))
+    engine = make_engine(stores, discord)  # type: ignore[arg-type]
+    await insert(store, snapshot(85.0), NOW - timedelta(minutes=1))
+    await engine.evaluate_once(NOW)
+    await insert(store, snapshot(40.0), NOW + timedelta(minutes=10))
+    await engine.evaluate_once(NOW + timedelta(minutes=11))
+    assert log == []
+
+
+async def test_a_message_gone_from_discord_is_forgotten(stores) -> None:
+    from kenny_server.notify import DiscordNotifier
+
+    store, _, state = stores
+    log: list = []
+    discord = DiscordNotifier(
+        "https://discord.example/hook", client_factory=_discord_transport(log, patch_status=404)
+    )
+    engine = make_engine(stores, discord)  # type: ignore[arg-type]
+    await insert(store, snapshot(96.0), NOW - timedelta(minutes=1))
+    await engine.evaluate_once(NOW)
+    await insert(store, snapshot(40.0), NOW + timedelta(minutes=10))
+    await engine.evaluate_once(NOW + timedelta(minutes=11))
+    assert [r.method for r in log] == ["POST", "PATCH"]
+    assert await state.open_messages("discord", "pc1") == []
+
+
+async def test_the_webhook_receives_every_route_labelled(stores) -> None:
+    import json
+
+    import httpx
+
+    from kenny_server.notify import WebhookNotifier
+
+    store, _, _ = stores
+    log: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        log.append(request)
+        return httpx.Response(204)
+
+    hook = WebhookNotifier(
+        "https://hook.example/",
+        client_factory=lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    engine = make_engine(stores, hook)  # type: ignore[arg-type]
+    await insert(store, snapshot(85.0), NOW - timedelta(minutes=1))
+    await engine.evaluate_once(NOW)
+    payloads = [json.loads(r.content) for r in log]
+    assert [(p["kind"], p["route"]) for p in payloads] == [("alert", "daily")]
+    assert {"kind", "title", "body", "priority", "tags", "agent_id", "event_type",
+            "sections", "at", "route"} <= set(payloads[0])
+
+
+# -- the daily summary ----------------------------------------------------------
+
+
+async def _baseline(engine: AlertEngine, at: datetime) -> None:
+    assert await engine.maybe_send_daily(at) is False  # records the baseline only
+
+
+async def test_the_daily_summary_lists_what_is_new_and_still_open(stores) -> None:
+    store, events, _ = stores
+    notifier = FakeNotifier()
+    engine = make_engine(stores, notifier, registry=FakeRegistry({"pc1", "pc2"}), daily_hour=8,
+                         digest_enabled=False)
+    await _baseline(engine, NOW)
+
+    # pc1: a warn that stays; pc2: a warn that comes and goes before the slot.
+    await insert(store, snapshot(85.0), NOW + timedelta(hours=1))
+    await insert(store, snapshot(86.0), NOW + timedelta(hours=1), agent_id="pc2")
+    await engine.evaluate_once(NOW + timedelta(hours=1, minutes=1))
+    await insert(store, snapshot(40.0), NOW + timedelta(hours=2), agent_id="pc2")
+    await engine.evaluate_once(NOW + timedelta(hours=2, minutes=1))
+    assert notifier.sent == []
+
+    slot = datetime(2026, 7, 2, 8, 5, tzinfo=timezone.utc)
+    assert await engine.maybe_send_daily(slot) is True
+    assert len(notifier.sent) == 1
+    daily = notifier.sent[0]
+    assert (daily.kind, daily.event_type, daily.route) == ("digest", "daily", "push")
+    assert daily.title == "kenny daily: 1 new finding(s)"
+    assert daily.body.startswith("pc1 · disk: C: 85% full (>80%) (for ")
+    assert "pc2" not in daily.body
+
+    # Same day again: nothing. Next day with nothing new: nothing either.
+    assert await engine.maybe_send_daily(slot + timedelta(hours=3)) is False
+    assert await engine.maybe_send_daily(slot + timedelta(days=1)) is False
+    assert len(notifier.sent) == 1
+    assert any(r["fields"].get("event_type") == "daily" for r in await events.query(kind="alert"))
+
+
+async def test_the_daily_summary_leaves_pushed_findings_to_the_open_count(stores) -> None:
+    store, _, _ = stores
+    notifier = FakeNotifier()
+    engine = make_engine(stores, notifier, daily_hour=8, digest_enabled=False)
+    await _baseline(engine, NOW)
+    await insert(store, two_sections(96.0, 40.0), NOW + timedelta(hours=1))
+    await engine.evaluate_once(NOW + timedelta(hours=1, minutes=1))
+    await insert(store, two_sections(96.0, 90.0), NOW + timedelta(hours=2))
+    await engine.evaluate_once(NOW + timedelta(hours=2, minutes=1))
+    assert [n.route for n in notifier.sent] == ["push"]
+
+    assert await engine.maybe_send_daily(datetime(2026, 7, 2, 8, 5, tzinfo=timezone.utc))
+    body = notifier.sent[-1].body
+    assert "memory" in body and "disk" not in body.split("\n")[0]
+    assert "1 older finding(s) still open." in body
+
+
+async def test_the_daily_summary_folds_a_disk_forecast_into_the_disk_line(stores) -> None:
+    store, _, _ = stores
+    notifier = FakeNotifier()
+    engine = make_engine(stores, notifier, daily_hour=8, digest_enabled=False)
+    await _baseline(engine, NOW - timedelta(days=6))
+    base = NOW - timedelta(days=5)
+    for i in range(6):
+        await insert(store, snapshot(72.0 + 2.0 * i), base + timedelta(days=i))
+    sent = await engine.evaluate_once(NOW)
+    assert {n.event_type for n in sent} == {"health", "disk_forecast"}
+
+    assert await engine.maybe_send_daily(datetime(2026, 7, 2, 8, 5, tzinfo=timezone.utc))
+    lines = notifier.sent[-1].body.splitlines()
+    assert len(lines) == 1
+    assert lines[0].startswith("pc1 · disk: C: 82% full (>80%); C: full in ~")
+
+
+async def test_the_daily_summary_yields_the_weekly_digest_s_slot(stores) -> None:
+    store, _, _ = stores
+    notifier = FakeNotifier()
+    # 2026-07-06 is a Monday, the digest's default day and hour.
+    engine = make_engine(stores, notifier, daily_hour=8)
+    await _baseline(engine, datetime(2026, 7, 5, 12, 0, tzinfo=timezone.utc))
+    await insert(store, snapshot(85.0), datetime(2026, 7, 5, 13, 0, tzinfo=timezone.utc))
+    await engine.evaluate_once(datetime(2026, 7, 5, 13, 1, tzinfo=timezone.utc))
+    assert await engine.maybe_send_daily(datetime(2026, 7, 6, 8, 5, tzinfo=timezone.utc)) is False
+    assert notifier.sent == []
+
+
+async def test_the_daily_summary_survives_a_restart(stores) -> None:
+    store, _, _ = stores
+    notifier = FakeNotifier()
+    engine = make_engine(stores, notifier, daily_hour=8, digest_enabled=False)
+    await _baseline(engine, NOW)
+    await insert(store, snapshot(85.0), NOW + timedelta(hours=1))
+    await engine.evaluate_once(NOW + timedelta(hours=1, minutes=1))
+
+    slot = datetime(2026, 7, 2, 8, 5, tzinfo=timezone.utc)
+    assert await engine.maybe_send_daily(slot)
+    restarted = make_engine(stores, notifier, daily_hour=8, digest_enabled=False)
+    assert await restarted.maybe_send_daily(slot + timedelta(minutes=1)) is False
+    assert len(notifier.sent) == 1

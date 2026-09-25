@@ -120,7 +120,10 @@ notifications:
 |----------|---------|---------|
 | `KENNY_ALERT_INTERVAL_SECS` | `60` | Alert-evaluation loop interval; `0` disables alerting. Environment-only, read at startup. |
 | `KENNY_ALERT_COOLDOWN_SECS` | `3600` | Per-scope flap-suppression cooldown for `warn` transitions. |
-| `KENNY_ALERT_OFFLINE_AFTER_SECS` | `2700` | Mark an agent offline after this long without a push (≈ three missed 15-min pushes). |
+| `KENNY_ALERT_OFFLINE_AFTER_SECS` | `2700` | Mark an agent offline after this long without a push (≈ three missed 15-min pushes). Offline pauses health evaluation and notifies no one. |
+| `KENNY_ALERT_MISSING_AFTER_DAYS` | `7` | Report a host with no telemetry for this many days as missing (daily summary + ticket). |
+| `KENNY_ALERT_DAILY_HOUR` | `8` | Hour (UTC) of the daily summary of warnings, missing hosts and disk forecasts. |
+| `KENNY_ALERT_CHANGE_PUSH` | `local_accounts,autostart:added,scheduled_tasks:added,browser_extensions:added` | Inventory changes (`section` or `section:kind`) that push; the rest are only recorded. |
 | `KENNY_DIGEST_ENABLED` | `1` | Weekly digest on/off. |
 | `KENNY_DIGEST_DAY` / `KENNY_DIGEST_HOUR` | `mon` / `8` | When to send the weekly digest. |
 | `KENNY_NTFY_URL` / `KENNY_NTFY_TOKEN` | — | ntfy topic URL (+ optional bearer) for push alerts. |

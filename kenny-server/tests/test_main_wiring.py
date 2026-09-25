@@ -441,9 +441,9 @@ def test_ticket_rules_are_wired_and_a_seeded_rule_survives_a_boot(tmp_path) -> N
         asyncio.run(
             app2.state.store.insert(
                 "pc1",
-                (NOW - timedelta(hours=3)).isoformat(),
+                (NOW - timedelta(days=8)).isoformat(),
                 _snapshot(50.0),
-                received_at=(NOW - timedelta(hours=3)).isoformat(),
+                received_at=(NOW - timedelta(days=8)).isoformat(),
             )
         )
         opened: list[Any] = []
@@ -453,7 +453,8 @@ def test_ticket_rules_are_wired_and_a_seeded_rule_survives_a_boot(tmp_path) -> N
 
         app2.state.alert_engine._open_ticket = spy_open_ticket
 
-        # An empty registry (no live connection) makes this host read offline.
+        # An empty registry (no live connection) plus a week of silence makes
+        # this host read missing -- the one offline event that notifies.
         class _OfflineRegistry:
             def get(self, agent_id: str) -> Any:
                 return None
