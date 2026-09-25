@@ -24,7 +24,7 @@ jobs:
       pull-requests: read
     outputs:
       server: ${{ steps.filter.outputs.server }}
-      server_code: ${{ steps.filter.outputs.server_code }}
+      server_code: ${{ steps.filter_every.outputs.server_code }}
       web: ${{ steps.filter.outputs.web }}
       agent: ${{ steps.filter.outputs.agent }}
       contract: ${{ steps.filter.outputs.contract }}
@@ -37,18 +37,8 @@ jobs:
           filters: |
             server:
               - 'kenny-server/**'
-            # Server code excluding the web dashboard. Pure UI changes don't
-            # affect the agent<->server wire behaviour, so they skip the e2e jobs.
-            # The dashboard's source now lives in kenny-web/ (ADR-0052) -- it was
-            # never under kenny-server/**, so this filter needs no change to keep
-            # excluding it; the exclusion below (the legacy webui/ package data,
-            # kept during the transition) is the only piece still inside the tree.
-            server_code:
-              - 'kenny-server/**'
-              - '!kenny-server/kenny_server/webui/**'
-            # The compiled dashboard (ADR-0052): typechecked and unit-tested on
-            # its own, not by the server job, and irrelevant to the e2e jobs for
-            # the same reason kenny_server/webui/** is above.
+            # The dashboard SPA (ADR-0052): typechecked and unit-tested on its
+            # own, not by the server job, and not exercised by the e2e jobs.
             web:
               - 'kenny-web/**'
             agent:
@@ -58,6 +48,23 @@ jobs:
               - 'docs/fixtures/**'
             ci:
               - '.github/workflows/ci.yml'
+      # A negated pattern only excludes under `every`: under the default `some`
+      # it matches every file outside the excluded tree (kenny-web/, docs/, ...)
+      # and turns the filter on for nearly every change. `every` lives in its own
+      # step because it would make multi-pattern filters like `contract` above
+      # require a file to match all of their patterns.
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4
+        id: filter_every
+        with:
+          predicate-quantifier: 'every'
+          filters: |
+            # Server code minus kenny_server/webui/ (the dashboard's HTTP API
+            # and static assets). The e2e jobs exercise the agent<->server
+            # tunnel, not the dashboard API, so webui/ changes skip them; the
+            # server job still covers webui/ through `server` above.
+            server_code:
+              - 'kenny-server/**'
+              - '!kenny-server/kenny_server/webui/**'
 
   server:
     name: kenny-server (Python)
