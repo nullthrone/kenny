@@ -33,8 +33,9 @@
 }
 
 .row {
+  position: relative;
   display: grid;
-  grid-template-columns: 52px 72px 1fr auto;
+  grid-template-columns: auto 72px 1fr auto;
   gap: 14px;
   align-items: baseline;
   padding: 11px 4px;
@@ -45,6 +46,12 @@
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-faint);
+  white-space: nowrap;
+  /* Each row is its own grid, so the column width is fixed at the longest
+     form (with year, 17 chars) to keep every row aligned. */
+  min-width: 17ch;
+  max-width: 17ch;
+  overflow: hidden;
 }
 
 .tag {
@@ -61,7 +68,46 @@
 }
 
 .line {
+  display: block;
   font-size: var(--text-sm);
+}
+
+/* Grid cell holding the line and, when open, its popover. The popover lays
+   over the line in place, so its text starts exactly where the line's does. */
+.lineCell {
+  position: relative;
+  min-width: 0;
+}
+
+.expandable {
+  cursor: pointer;
+}
+.expandable:hover .msg {
+  color: var(--text-body);
+}
+.expandable:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.popover {
+  position: absolute;
+  top: -9px;
+  left: -10px;
+  right: -10px;
+  z-index: 10;
+  padding: 8px 9px;
+  background: var(--surface-card);
+  border: 1px solid var(--border-mid);
+  box-shadow: var(--shadow-2);
+  font-size: var(--text-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+.popover:focus {
+  outline: none;
 }
 
 .what {
@@ -114,4 +160,23 @@
   padding: 24px 4px;
   font-size: var(--text-sm);
   color: var(--text-muted);
+}
+
+/* On a phone the date stacks above the time instead of taking the message's width. */
+@media (max-width: 760px) {
+  .time {
+    white-space: normal;
+    min-width: 0;
+    max-width: 11ch;
+  }
+
+  /* The line column is too narrow here: anchor the popover to the whole row. */
+  .lineCell {
+    position: static;
+  }
+  .popover {
+    top: calc(100% - 6px);
+    left: 0;
+    right: 0;
+  }
 }
