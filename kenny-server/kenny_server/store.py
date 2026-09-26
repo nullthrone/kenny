@@ -111,6 +111,11 @@ async def _configure_connection(db: aiosqlite.Connection) -> None:
 
 
 class _WriteLockState:
+    # POSSIBLY DEAD: `depth` is written on every acquire/release but never
+    # read back by any caller or assertion — nothing in this module or its
+    # tests consults it. Kept rather than removed since it is the natural
+    # place to assert `depth == 0` before the outer release, should this
+    # re-entrant lock ever need that invariant checked.
     __slots__ = ("lock", "owner", "depth")
 
     def __init__(self) -> None:

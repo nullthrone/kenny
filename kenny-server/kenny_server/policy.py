@@ -221,6 +221,9 @@ class PolicyEngine:
         self._shell_mode = mode
         self._shell_allow = _compile_group(normalised)
 
+    # POSSIBLY DEAD: no webui route or MCP tool reads this back today — only
+    # tests call it directly. Kept as the one getter paired with
+    # `set_shell_policy` for whoever needs to expose the current mode later.
     def shell_mode(self) -> str:
         """The current fleet shell execution mode."""
 
