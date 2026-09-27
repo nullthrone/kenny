@@ -750,6 +750,13 @@ What `powershell_exec` and `shell_exec` may run across the whole fleet
   a rule of `uname -a` does not admit `uname -a; rm -rf /`. An empty list under this mode
   blocks every shell call on every host, and the page says so rather than letting you find
   out from a refusal.
+- The **shipped defaults** — the allow rules a new server starts with
+  (`docs/policy/shell_allow_defaults.json`): read-only diagnostics for both shells plus
+  restarting a named service, and nothing a dedicated tool with its own guard already covers,
+  such as reading files. Each rule is tagged `DEFAULT` or `CHANGED` against them, the page
+  says how far the list has drifted, and **Reset to defaults** replaces the whole list with
+  them after a confirmation. An existing database that already ran `allowlist` with an empty
+  list is not seeded behind the operator's back; it gets the button instead.
 - The **deny rules** — the operator's own, which you can add and remove here, and the
   built-in catalog below them, read-only because every agent compiles it in. Deny is
   checked first in every mode, so an allow rule can never lift one.

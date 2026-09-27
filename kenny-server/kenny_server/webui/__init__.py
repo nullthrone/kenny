@@ -168,6 +168,7 @@ def build_api_routes(
     policy_store: PolicyStore | None = None,
     policy_engine: PolicyEngine | None = None,
     shell_allow_store: ShellAllowStore | None = None,
+    shell_allow_defaults: list[dict[str, str]] | None = None,
     webfilter: WebFilterService | None = None,
     settings: Settings | None = None,
     user_store: Any = None,
@@ -998,14 +999,42 @@ def build_api_routes(
     # rule above stays an operator action; lifting one never was, and neither is
     # widening the allowlist.
 
-    async def api_shell_allow_list(_request: Request) -> JSONResponse:
-        """The fleet's shell execution mode and its allow rules."""
-
+    async def _shell_allow_body() -> dict[str, Any]:
         mode = "unrestricted"
         if settings is not None:
             mode = str(settings.get("KENNY_SHELL_POLICY_MODE") or "unrestricted")
         rules = await shell_allow_store.list() if shell_allow_store is not None else []
-        return JSONResponse({"mode": mode, "allow": rules})
+        # The shipped rules ride along so the page can tell a default rule from a
+        # changed or custom one, and say what a reset would restore.
+        return {"mode": mode, "allow": rules, "defaults": list(shell_allow_defaults or [])}
+
+    async def api_shell_allow_list(_request: Request) -> JSONResponse:
+        """The fleet's shell execution mode, its allow rules, and the shipped defaults."""
+
+        return JSONResponse(await _shell_allow_body())
+
+    async def api_shell_allow_reset(request: Request) -> JSONResponse:
+        """Replace every allow rule with the shipped defaults, and broadcast.
+
+        Superuser like the rest of the list. It can widen the list as well as narrow
+        it, which is exactly why it is not an operator action.
+        """
+
+        if shell_allow_store is None:
+            return JSONResponse(
+                {"error": "shell allow store not configured"}, status_code=503
+            )
+        if not shell_allow_defaults:
+            return JSONResponse(
+                {"error": "no shipped shell allow rules found on this server"},
+                status_code=503,
+            )
+        principal = principal_of(request)
+        await shell_allow_store.reset_to_defaults(
+            shell_allow_defaults, created_by=getattr(principal, "username", "") or ""
+        )
+        await tunnel.broadcast_policy()
+        return JSONResponse(await _shell_allow_body())
 
     async def api_shell_allow_add(request: Request) -> JSONResponse:
         """Add an allow rule, recompile the mirror, and broadcast the new policy."""
@@ -1914,6 +1943,11 @@ def build_api_routes(
             methods=["DELETE"],
         ),
         Route("/api/policy/shell-allow", guard(api_shell_allow_list, **su)),
+        Route(
+            "/api/policy/shell-allow/reset",
+            guard(api_shell_allow_reset, **su),
+            methods=["POST"],
+        ),
         Route(
             "/api/policy/shell-allow", guard(api_shell_allow_add, **su), methods=["POST"]
         ),

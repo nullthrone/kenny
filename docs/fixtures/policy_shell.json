@@ -14,7 +14,7 @@
       {
         "id": "al_get_service",
         "applies_to": "powershell",
-        "pattern": "(?i)Get-Service(\\s+[\\w.-]+)?",
+        "pattern": "(?i)Get-Service( [A-Za-z0-9_.-]+)?",
         "reason": "read service state"
       },
       {

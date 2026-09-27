@@ -350,10 +350,8 @@ def test_shell_allow_api_round_trip(tmp_path) -> None:
     app = build_app(db_path=str(tmp_path / "shell_api.sqlite"))
     with TestClient(app) as c:
         h = _bearer(app)
-        assert c.get("/api/policy/shell-allow", headers=h).json() == {
-            "mode": "unrestricted",
-            "allow": [],
-        }
+        # A new server starts with the shipped rules (test_shell_allow_defaults.py).
+        assert c.get("/api/policy/shell-allow", headers=h).json()["mode"] == "unrestricted"
         resp = c.post(
             "/api/policy/shell-allow",
             headers=h,
@@ -365,7 +363,7 @@ def test_shell_allow_api_round_trip(tmp_path) -> None:
             },
         )
         assert resp.status_code == 200
-        assert [r["id"] for r in resp.json()["allow"]] == ["al_uname"]
+        assert [r["id"] for r in resp.json()["allow"]][-1] == "al_uname"
 
         c.put(
             "/api/settings/KENNY_SHELL_POLICY_MODE",
@@ -375,7 +373,8 @@ def test_shell_allow_api_round_trip(tmp_path) -> None:
         body = c.get("/api/policy/shell-allow", headers=h).json()
         assert body["mode"] == "allowlist"
 
-        assert c.delete("/api/policy/shell-allow/al_uname", headers=h).json()["allow"] == []
+        remaining = c.delete("/api/policy/shell-allow/al_uname", headers=h).json()["allow"]
+        assert "al_uname" not in [r["id"] for r in remaining]
 
 
 def test_shell_allow_api_rejects_bad_input(tmp_path) -> None:
@@ -449,12 +448,13 @@ async def test_policy_frame_carries_the_shell_policy(tmp_path) -> None:
     app = build_app(db_path=str(tmp_path / "shell_frame.sqlite"))
     with TestClient(app):
         tunnel = app.state.tunnel
+        store = app.state.shell_allow_store
+        # Start from an empty list, not the shipped rules a new server is seeded with.
+        await store.reset_to_defaults([])
         frame = await tunnel._policy_frame()
         assert frame["shell"] == {"mode": "unrestricted", "allow": []}
 
-        await app.state.shell_allow_store.add(
-            id="al_uname", applies_to="posix", pattern="uname -a", reason="r"
-        )
+        await store.add(id="al_uname", applies_to="posix", pattern="uname -a", reason="r")
         await app.state.settings.set("KENNY_SHELL_POLICY_MODE", "allowlist")
         frame = await tunnel._policy_frame()
         assert frame["shell"]["mode"] == "allowlist"

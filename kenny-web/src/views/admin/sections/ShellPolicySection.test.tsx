@@ -38,9 +38,14 @@ function rule(over: Partial<PolicyRule> = {}): PolicyRule {
 }
 
 /** Route the two GETs this section makes. */
-function wire({ allow = [] as PolicyRule[], operator = [] as PolicyRule[], builtin = [] as PolicyRule[] } = {}) {
+function wire({
+  allow = [] as PolicyRule[],
+  defaults = [] as PolicyRule[],
+  operator = [] as PolicyRule[],
+  builtin = [] as PolicyRule[],
+} = {}) {
   apiGetMock.mockImplementation((path: string) => {
-    if (path === '/api/policy/shell-allow') return Promise.resolve({ mode: 'allowlist', allow })
+    if (path === '/api/policy/shell-allow') return Promise.resolve({ mode: 'allowlist', allow, defaults })
     if (path === '/api/policy/rules') return Promise.resolve({ builtin, operator })
     throw new Error(`unexpected GET ${path}`)
   })
@@ -56,6 +61,7 @@ function renderSection(value = 'allowlist') {
 }
 
 beforeEach(() => {
+  vi.restoreAllMocks()
   apiGetMock.mockReset()
   apiPostMock.mockReset()
   apiDeleteMock.mockReset()
@@ -135,4 +141,73 @@ it('shows the built-in catalog read-only', async () => {
   expect(screen.getByText('posix_rm_rf_root')).toBeInTheDocument()
   // One REMOVE button: the allow rule's. The built-in has none.
   expect(screen.getAllByRole('button', { name: 'REMOVE' })).toHaveLength(1)
+})
+
+// -- shipped defaults -----------------------------------------------------------
+
+const shipped = [
+  rule({ id: 'al_posix_system_info', pattern: 'uname( -a)?', reason: 'identify the host' }),
+  rule({ id: 'al_posix_services', pattern: 'systemctl status [a-z]+', reason: 'service state' }),
+  rule({ id: 'al_posix_users', pattern: 'who', reason: 'sessions' }),
+]
+
+it('says when the list matches the shipped defaults and offers no reset', async () => {
+  wire({ allow: shipped, defaults: shipped })
+  renderSection('allowlist')
+  expect(await screen.findByText(/matches the shipped defaults \(3 rules\)/i)).toBeInTheDocument()
+  expect(screen.getAllByText('DEFAULT')).toHaveLength(3)
+  expect(screen.queryByRole('button', { name: 'RESET TO DEFAULTS' })).not.toBeInTheDocument()
+})
+
+it('names how the list drifted and tags each rule', async () => {
+  // One shipped rule edited, one removed, one custom added.
+  const allow = [shipped[0], { ...shipped[1], pattern: 'systemctl .*' }, rule({ id: 'al_mine' })]
+  wire({ allow, defaults: shipped })
+  renderSection('allowlist')
+  expect(await screen.findByText(/differs from the shipped defaults: 1 custom, 1 changed, 1 removed/i)).toBeInTheDocument()
+  expect(screen.getAllByText('DEFAULT')).toHaveLength(1)
+  expect(screen.getAllByText('CHANGED')).toHaveLength(1)
+})
+
+it('resets to the shipped defaults only after the operator confirms', async () => {
+  wire({ allow: [rule({ id: 'al_mine' })], defaults: shipped })
+  apiPostMock.mockResolvedValue({ mode: 'allowlist', allow: shipped, defaults: shipped })
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true)
+  renderSection('allowlist')
+  const button = await screen.findByRole('button', { name: 'RESET TO DEFAULTS' })
+
+  fireEvent.click(button)
+  expect(confirm).toHaveBeenCalledWith(expect.stringMatching(/replace all 1 allow rules with the 3 shipped defaults/i))
+  expect(apiPostMock).not.toHaveBeenCalled()
+
+  fireEvent.click(button)
+  await waitFor(() => expect(apiPostMock).toHaveBeenCalledWith('/api/policy/shell-allow/reset', {}))
+})
+
+it('loads the shipped defaults into an empty list without asking', async () => {
+  // Nothing would be lost, so there is nothing to confirm.
+  wire({ allow: [], defaults: shipped })
+  apiPostMock.mockResolvedValue({ mode: 'allowlist', allow: shipped, defaults: shipped })
+  const confirm = vi.spyOn(window, 'confirm')
+  renderSection('allowlist')
+  fireEvent.click(await screen.findByRole('button', { name: 'LOAD SHIPPED DEFAULTS' }))
+  await waitFor(() => expect(apiPostMock).toHaveBeenCalledWith('/api/policy/shell-allow/reset', {}))
+  expect(confirm).not.toHaveBeenCalled()
+})
+
+it('offers no reset when the server ships no defaults', async () => {
+  wire({ allow: [], defaults: [] })
+  renderSection('allowlist')
+  await screen.findByText('ALLOW RULES')
+  expect(screen.queryByRole('button', { name: 'LOAD SHIPPED DEFAULTS' })).not.toBeInTheDocument()
+  expect(screen.queryByText(/shipped defaults \(/i)).not.toBeInTheDocument()
+})
+
+it('folds a long pattern behind a toggle', async () => {
+  const long = rule({ id: 'al_long', pattern: `(${'a|'.repeat(80)}b)` })
+  wire({ allow: [long, rule()] })
+  renderSection('allowlist')
+  expect(await screen.findByText(`pattern · ${long.pattern.length} characters`)).toBeInTheDocument()
+  // The short one stays inline: one toggle for two rules.
+  expect(screen.getAllByText(/^pattern · /)).toHaveLength(1)
 })
