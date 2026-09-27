@@ -148,6 +148,16 @@ if it matches a declared allow rule in its entirety — a rule of `uname -a` doe
 `uname -a; rm -rf /` — and under `off` neither tool runs at all. A refusal comes back as
 `error.code = "blocked"`, the same code the safety guard uses.
 
+A new server ships a default allow list, restorable from Admin → Shell policy, so switching to
+`allowlist` does not start from nothing. It admits read-only diagnostics — system, load,
+storage, services and logs, network state and reachability, packages, accounts, firewall
+state, containers — and one remediation per OS: restarting a service by exact name. Commands
+that read files are left to `fs_read` and `fs_list`, whose path guard a shell would bypass,
+and the rules keep out what turns a diagnostic into something else: command chaining,
+redirection, variables and subexpressions, interpreters, pipes into anything but filters like
+`grep`, `Select-Object` or `Where-Object` with a plain comparison, and the forms of a read-only
+tool that write, delete or run forever (`journalctl --vacuum-*`, `dmesg -c`, `ping -t`).
+
 The mode is a defence against an abused or prompt-injected credential and against
 accidental destruction. It is not a sandbox: it cannot help against a compromised kenny
 server, which is what pushes the mode, or against someone who is already root on the

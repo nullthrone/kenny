@@ -918,6 +918,58 @@ mod tests {
         apply_shell_policy(&ShellPolicy::default());
     }
 
+    /// The shipped shell allow rules, joined: the server seeds and pushes
+    /// `docs/policy/shell_allow_defaults.json` as `PolicyRule`s, and this agent must
+    /// compile every one of them and reach the verdict the shared vectors record.
+    /// `kenny-server/tests/test_shell_allow_defaults.py` runs the same vectors
+    /// against the server mirror. A pattern that only Python's `re` accepts would be
+    /// dropped here with a warning and fail the count below.
+    #[test]
+    fn shell_allow_defaults_vectors() {
+        let _guard = OPERATOR_TEST_LOCK.lock().unwrap();
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs");
+        let raw = fs::read_to_string(root.join("policy/shell_allow_defaults.json"))
+            .expect("read shipped shell allow rules");
+        let doc: Value = serde_json::from_str(&raw).expect("shipped rules must parse");
+        let allow: Vec<PolicyRule> =
+            serde_json::from_value(doc["rules"].clone()).expect("rules must be PolicyRules");
+        assert!(!allow.is_empty(), "no shipped shell allow rules");
+
+        let policy = ShellPolicy {
+            mode: ShellMode::Allowlist,
+            allow,
+        };
+        let compiled = CompiledShell::compile(&policy);
+        assert_eq!(
+            compiled.powershell.len() + compiled.posix.len(),
+            policy.allow.len(),
+            "a shipped allow rule failed to compile in Rust regex or targets a surface without a command"
+        );
+
+        let raw = fs::read_to_string(root.join("fixtures/vectors/shell_allow_defaults.json"))
+            .expect("read shell allow default vectors");
+        let doc: Value = serde_json::from_str(&raw).expect("vectors must parse");
+        let cases = doc["cases"].as_array().expect("cases must be an array");
+        assert!(!cases.is_empty(), "no shell allow default vectors");
+
+        set_operator_rules(vec![]);
+        apply_shell_policy(&policy);
+        for case in cases {
+            let got = match check(case["tool"].as_str().unwrap(), &case["args"]) {
+                Ok(()) => "allow",
+                Err(_) => "blocked",
+            };
+            assert_eq!(
+                got,
+                case["expect"].as_str().unwrap(),
+                "{}: {}",
+                case["args"],
+                case["why"].as_str().unwrap_or("")
+            );
+        }
+        apply_shell_policy(&ShellPolicy::default());
+    }
+
     #[test]
     fn self_protection_patterns_track_constants() {
         let catalog: Catalog =

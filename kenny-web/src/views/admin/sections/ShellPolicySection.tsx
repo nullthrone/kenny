@@ -12,6 +12,36 @@ export interface ShellPolicySectionProps {
 
 const MODE_KEY = 'KENNY_SHELL_POLICY_MODE'
 
+/** Patterns longer than this are folded behind a toggle so the list stays scannable. */
+const LONG_PATTERN = 120
+
+type Provenance = 'default' | 'changed' | 'custom'
+
+/**
+ * Where each allow rule stands against the shipped defaults, matched by id: identical
+ * (`default`), same id but a different surface, pattern or reason (`changed`), or not a
+ * shipped id at all (`custom`). `removed` counts shipped ids missing from the list.
+ */
+function compareToDefaults(allow: PolicyRule[], defaults: PolicyRule[]) {
+  const shipped = new Map(defaults.map((d) => [d.id, d]))
+  const provenance = new Map<string, Provenance>()
+  for (const r of allow) {
+    const d = shipped.get(r.id)
+    if (!d) provenance.set(r.id, 'custom')
+    else if (d.applies_to === r.applies_to && d.pattern === r.pattern && d.reason === r.reason)
+      provenance.set(r.id, 'default')
+    else provenance.set(r.id, 'changed')
+  }
+  const count = (p: Provenance) => [...provenance.values()].filter((v) => v === p).length
+  const present = new Set(allow.map((r) => r.id))
+  return {
+    provenance,
+    custom: count('custom'),
+    changed: count('changed'),
+    removed: defaults.filter((d) => !present.has(d.id)).length,
+  }
+}
+
 /** The two surfaces an allow rule can be matched against — the only ones with a command. */
 const ALLOW_TARGETS: { value: string; label: string }[] = [
   { value: 'posix', label: 'shell_exec (Linux/macOS)' },
@@ -58,6 +88,10 @@ export default function ShellPolicySection({ rows }: ShellPolicySectionProps) {
       queryClient.invalidateQueries({ queryKey: ['admin', 'shell-allow'] })
     },
   })
+  const resetAllow = useMutation({
+    mutationFn: () => api.post<ShellAllowResponse>('/api/policy/shell-allow/reset', {}),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['admin', 'shell-allow'] }),
+  })
   const removeAllow = useMutation({
     mutationFn: (id: string) => api.delete(`/api/policy/shell-allow/${encodeURIComponent(id)}`),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['admin', 'shell-allow'] }),
@@ -80,8 +114,29 @@ export default function ShellPolicySection({ rows }: ShellPolicySectionProps) {
   }
 
   const allowRules = allow.data?.allow ?? []
+  const defaultRules = allow.data?.defaults ?? []
   const operatorRules = deny.data?.operator ?? []
   const builtinRules = deny.data?.builtin ?? []
+  const drift = compareToDefaults(allowRules, defaultRules)
+  const inSync = drift.custom === 0 && drift.changed === 0 && drift.removed === 0
+  const driftParts = [
+    drift.custom ? `${drift.custom} custom` : '',
+    drift.changed ? `${drift.changed} changed` : '',
+    drift.removed ? `${drift.removed} removed` : '',
+  ].filter(Boolean)
+
+  const resetToDefaults = () => {
+    // Nothing to lose on an empty list; otherwise say exactly what goes.
+    if (
+      allowRules.length > 0 &&
+      !window.confirm(
+        `Replace all ${allowRules.length} allow rules with the ${defaultRules.length} shipped defaults? ` +
+          'Custom and changed rules are removed. This applies to every host.',
+      )
+    )
+      return
+    resetAllow.mutate()
+  }
 
   return (
     <div>
@@ -98,8 +153,8 @@ export default function ShellPolicySection({ rows }: ShellPolicySectionProps) {
 
       {mode === 'allowlist' && allowRules.length === 0 ? (
         <div className={shared.warnBox} style={{ marginBottom: 24 }}>
-          Allowlist mode with an empty list blocks every shell call on every host. Add a rule below, or set the mode
-          back to unrestricted.
+          Allowlist mode with an empty list blocks every shell call on every host. Load the shipped defaults, add a
+          rule below, or set the mode back to unrestricted.
         </div>
       ) : null}
       {mode === 'off' ? (
@@ -113,18 +168,52 @@ export default function ShellPolicySection({ rows }: ShellPolicySectionProps) {
       <p className={shared.help} style={{ marginBottom: 12 }}>
         Used only in allowlist mode. A command must match a rule <strong>in full</strong> — a rule of{' '}
         <code className={shared.mono}>uname -a</code> does not admit <code className={shared.mono}>uname -a; rm -rf /</code>.
+        Separate tokens with a literal space, not <code className={shared.mono}>\s</code>: it also matches a newline,
+        and both shells run the next line as a command of its own.
       </p>
+      {defaultRules.length > 0 ? (
+        <div className={shared.actions} style={{ marginTop: 0, marginBottom: 12, alignItems: 'center' }}>
+          <span className={shared.help} style={{ margin: 0 }}>
+            {inSync
+              ? `Matches the shipped defaults (${defaultRules.length} rules): read-only diagnostics plus restarting a named service.`
+              : `Differs from the shipped defaults: ${driftParts.join(', ')}.`}
+          </span>
+          {inSync ? null : (
+            <button
+              type="button"
+              className={shared.btnSmall}
+              onClick={resetToDefaults}
+              disabled={resetAllow.isPending}
+            >
+              {resetAllow.isPending ? 'RESETTING…' : 'RESET TO DEFAULTS'}
+            </button>
+          )}
+        </div>
+      ) : null}
+      {resetAllow.isError && (
+        <div className={shared.errorBox}>
+          {resetAllow.error instanceof ApiError ? resetAllow.error.message : 'Could not reset the allow rules.'}
+        </div>
+      )}
       {allowRules.length === 0 ? (
-        <EmptyState title="No allow rules" message="Nothing is permitted while the mode is allowlist." />
+        <EmptyState
+          title="No allow rules"
+          message="Nothing is permitted while the mode is allowlist."
+          action={defaultRules.length > 0 ? { label: 'LOAD SHIPPED DEFAULTS', onClick: resetToDefaults } : undefined}
+        />
       ) : (
         <div className={shared.table} style={{ marginBottom: 24 }}>
           {allowRules.map((r) => (
             <div key={r.id} className={shared.tableRow}>
               <div className={shared.tableMeta}>
-                <div className={shared.tableLabel}>{r.id}</div>
-                <div className={shared.tableSub}>
-                  {r.applies_to} · <span className={shared.mono}>{r.pattern}</span> · {r.reason}
+                <div className={shared.tableLabel}>
+                  {r.id}
+                  <ProvenanceTag provenance={drift.provenance.get(r.id)} />
                 </div>
+                <div className={shared.tableSub}>
+                  {r.applies_to} · {r.reason}
+                </div>
+                <PatternView pattern={r.pattern} />
               </div>
               <button
                 type="button"
@@ -218,6 +307,32 @@ export default function ShellPolicySection({ rows }: ShellPolicySectionProps) {
         </div>
       </details>
     </div>
+  )
+}
+
+/** DEFAULT or CHANGED beside a rule's id; a custom rule carries no tag. */
+function ProvenanceTag({ provenance }: { provenance: Provenance | undefined }) {
+  if (provenance !== 'default' && provenance !== 'changed') return null
+  return (
+    <span className={shared.tag} style={{ marginLeft: 8 }}>
+      {provenance === 'default' ? 'DEFAULT' : 'CHANGED'}
+    </span>
+  )
+}
+
+/** The pattern itself: inline when short, folded when long (the shipped rules run to ~2 kB). */
+function PatternView({ pattern }: { pattern: string }) {
+  const code = (
+    <code className={shared.mono} style={{ wordBreak: 'break-all' }}>
+      {pattern}
+    </code>
+  )
+  if (pattern.length <= LONG_PATTERN) return <div className={shared.tableSub}>{code}</div>
+  return (
+    <details className={shared.tableSub}>
+      <summary style={{ cursor: 'pointer' }}>pattern · {pattern.length} characters</summary>
+      {code}
+    </details>
   )
 }
 

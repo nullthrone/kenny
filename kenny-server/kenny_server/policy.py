@@ -60,18 +60,30 @@ _SELF_PROTECTION_TOOLS = {
 }
 
 
+#: The shipped shell allow rules: what a new server starts with and what "reset to
+#: defaults" restores. Server-only data beside the deny catalog; the agent never reads
+#: it, it is pushed the rules like any other allow list.
+SHELL_ALLOW_DEFAULTS_FILE = "shell_allow_defaults.json"
+
+
+def _policy_dirs() -> list[Path]:
+    """Ordered candidate directories for the shipped policy files."""
+
+    return [
+        # dev/repo: kenny-server/kenny_server/policy.py -> repo root / docs / policy
+        Path(__file__).resolve().parents[2] / "docs" / "policy",
+        # container: see Dockerfile COPY docs/policy/ -> /app/docs/policy/
+        Path("/app/docs/policy"),
+    ]
+
+
 def _catalog_candidates() -> list[Path]:
     """Ordered candidate paths for the shared deny-rule catalog."""
 
     env = os.environ.get("KENNY_POLICY_CATALOG", "").strip()
     if env:
         return [Path(env)]
-    return [
-        # dev/repo: kenny-server/kenny_server/policy.py -> repo root / docs / policy
-        Path(__file__).resolve().parents[2] / "docs" / "policy" / "deny_rules.json",
-        # container: see Dockerfile COPY docs/policy/ -> /app/docs/policy/
-        Path("/app/docs/policy/deny_rules.json"),
-    ]
+    return [d / "deny_rules.json" for d in _policy_dirs()]
 
 
 def _resolve_catalog_path() -> Path | None:
@@ -101,6 +113,52 @@ def _load_catalog_rules() -> list[dict[str, Any]]:
         logger.warning("policy catalog %s has no usable rules; mirror disabled", path)
         return []
     return rules
+
+
+def load_shell_allow_defaults() -> list[dict[str, str]]:
+    """Load the shipped shell allow rules. Never raises.
+
+    Returns them in file order as ``{id, applies_to, pattern, reason}`` dicts. An entry
+    that is malformed, targets a surface without a command string, or does not compile
+    is skipped and logged; a missing or unreadable file yields ``[]``, which leaves a
+    new server with an empty list and the reset action with nothing to restore.
+    """
+
+    path = next(
+        (d / SHELL_ALLOW_DEFAULTS_FILE for d in _policy_dirs()
+         if (d / SHELL_ALLOW_DEFAULTS_FILE).is_file()),
+        None,
+    )
+    if path is None:
+        logger.warning("shipped shell allow rules not found; no defaults to seed or restore")
+        return []
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError) as exc:
+        logger.warning("shipped shell allow rules %s could not be read (%s)", path, exc)
+        return []
+    raw = data.get("rules") if isinstance(data, dict) else None
+    if not isinstance(raw, list):
+        logger.warning("shipped shell allow rules %s have no rule list", path)
+        return []
+    out: list[dict[str, str]] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        rule = {k: entry.get(k) for k in ("id", "applies_to", "pattern", "reason")}
+        if not all(isinstance(v, str) and v for v in rule.values()):
+            logger.warning("shipped shell allow rule %r skipped: missing field", entry.get("id"))
+            continue
+        if rule["applies_to"] not in ("powershell", "posix"):
+            logger.warning("shipped shell allow rule %s skipped: bad applies_to", rule["id"])
+            continue
+        try:
+            re.compile(rule["pattern"])
+        except re.error as exc:
+            logger.warning("shipped shell allow rule %s skipped: %s", rule["id"], exc)
+            continue
+        out.append(rule)
+    return out
 
 
 def _compile_group(rules: list[Any]) -> dict[str, list[tuple[str, re.Pattern[str]]]]:

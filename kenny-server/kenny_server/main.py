@@ -48,7 +48,7 @@ from .logging_config import StoreLogHandler, configure_logging, drain_log_queue
 from .notify import Notification, NotifierProvider
 from .oauth import build_oauth_routes
 from .oauthstore import OAuthStore
-from .policy import PolicyEngine
+from .policy import PolicyEngine, load_shell_allow_defaults
 from .registry import AgentRegistry
 from .reliability_suppression import SuppressionList
 from .store import (
@@ -467,6 +467,8 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
     # The fleet shell execution mode (ADR-0064). The mode itself is the setting
     # ``KENNY_SHELL_POLICY_MODE``; this store holds only its allow rules.
     shell_allow_store = ShellAllowStore(db_path)
+    # What a new database starts with and what "reset to defaults" restores.
+    shell_allow_defaults = load_shell_allow_defaults()
     # Parental controls (ADR-0024): per-host store + external-list cache under a
     # dir derived from the DB path, wrapped in the service the tunnel/API/tools use.
     webfilter_store = WebFilterStore(db_path)
@@ -802,6 +804,15 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         await event_store.connect()
         await policy_store.connect()
         await shell_allow_store.connect()
+        # Offered once per database. A new database gets the shipped rules whatever
+        # the mode. An existing one with an empty list gets them only outside
+        # `allowlist`: there an empty list blocks every shell call, which may be the
+        # operator's deliberate choice, and seeding would widen it unannounced.
+        await shell_allow_store.seed_defaults(
+            shell_allow_defaults,
+            seed=shell_allow_store.created
+            or settings.get("KENNY_SHELL_POLICY_MODE") != "allowlist",
+        )
         await webfilter_store.connect()
         await suppression_store.connect()
         await classification_store.connect()
@@ -1034,6 +1045,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         policy_store=policy_store,
         policy_engine=policy_engine,
         shell_allow_store=shell_allow_store,
+        shell_allow_defaults=shell_allow_defaults,
         webfilter=webfilter,
         settings=settings,
         user_store=user_store,

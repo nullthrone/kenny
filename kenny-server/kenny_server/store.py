@@ -1056,6 +1056,10 @@ CREATE TABLE IF NOT EXISTS shell_allow_rules (
 );
 CREATE INDEX IF NOT EXISTS idx_shell_allow_created
     ON shell_allow_rules (agent_id, created_at);
+CREATE TABLE IF NOT EXISTS shell_allow_meta (
+    key    TEXT PRIMARY KEY,
+    value  TEXT NOT NULL
+);
 """
 
 
@@ -1077,15 +1081,25 @@ class ShellAllowStore:
     #: The fleet-wide scope. The only value written until a per-agent axis exists.
     FLEET = ""
 
+    #: ``shell_allow_meta`` key recording that the shipped defaults were offered once.
+    _SEEDED = "defaults_seeded"
+
     def __init__(self, db_path: str = DEFAULT_DB_PATH) -> None:
         self.db_path = db_path
         self._db: aiosqlite.Connection | None = None
+        #: True when this connect created the rule table: a new database, not one an
+        #: operator has already curated (or deliberately emptied).
+        self.created = False
 
     async def connect(self) -> None:
         if self._db is not None:
             return
         self._db = await aiosqlite.connect(self.db_path)
         await _configure_connection(self._db)
+        async with self._db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'shell_allow_rules'"
+        ) as cur:
+            self.created = await cur.fetchone() is None
         await self._db.executescript(_SHELL_ALLOW_SCHEMA)
         await self._db.commit()
 
@@ -1144,6 +1158,68 @@ class ShellAllowStore:
             )
             await self._conn.commit()
         return (cur.rowcount or 0) > 0
+
+    async def _insert_all(self, rules: list[dict[str, Any]], created_by: str) -> None:
+        """Insert ``rules`` keeping their order: ``list`` sorts by ``created_at``."""
+
+        base = datetime.now(timezone.utc)
+        await self._conn.executemany(
+            "INSERT OR REPLACE INTO shell_allow_rules "
+            "(id, agent_id, applies_to, pattern, reason, created_at, created_by) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    r["id"], self.FLEET, r["applies_to"], r["pattern"], r["reason"],
+                    (base + timedelta(microseconds=i)).isoformat(), created_by,
+                )
+                for i, r in enumerate(rules)
+            ],
+        )
+
+    async def _mark_seeded(self) -> None:
+        await self._conn.execute(
+            "INSERT OR REPLACE INTO shell_allow_meta (key, value) VALUES (?, ?)",
+            (self._SEEDED, datetime.now(timezone.utc).isoformat()),
+        )
+
+    async def seed_defaults(self, rules: list[dict[str, Any]], *, seed: bool) -> bool:
+        """Offer the shipped defaults once per database. Returns True if it seeded.
+
+        The first call records that the offer was made, whatever it decides, so a
+        later start never re-adds rules an operator removed. It seeds only when
+        ``seed`` is true and the fleet list is empty: rules an operator wrote are
+        never mixed with the defaults behind their back.
+        """
+
+        async with write_lock():
+            async with self._conn.execute(
+                "SELECT 1 FROM shell_allow_meta WHERE key = ?", (self._SEEDED,)
+            ) as cur:
+                if await cur.fetchone() is not None:
+                    return False
+            async with self._conn.execute(
+                "SELECT COUNT(*) FROM shell_allow_rules WHERE agent_id = ?", (self.FLEET,)
+            ) as cur:
+                empty = (await cur.fetchone())[0] == 0
+            seeded = seed and empty and bool(rules)
+            if seeded:
+                await self._insert_all(rules, created_by="kenny")
+            await self._mark_seeded()
+            await self._conn.commit()
+        return seeded
+
+    async def reset_to_defaults(
+        self, rules: list[dict[str, Any]], *, created_by: str = ""
+    ) -> None:
+        """Replace the whole fleet list with ``rules`` in one transaction."""
+
+        async with write_lock():
+            await self._conn.execute(
+                "DELETE FROM shell_allow_rules WHERE agent_id = ?", (self.FLEET,)
+            )
+            await self._insert_all(rules, created_by)
+            await self._mark_seeded()
+            await self._conn.commit()
 
 
 _RELIABILITY_SUPPRESSION_SCHEMA = """

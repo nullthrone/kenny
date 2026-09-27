@@ -72,3 +72,19 @@ def test_the_image_does_not_ship_development_extras() -> None:
 
     shipped = _extras_installed_by_the_image() & _NON_RUNTIME_EXTRAS
     assert not shipped, f"Dockerfile installs development extra(s) {sorted(shipped)}"
+
+
+def test_the_image_ships_the_policy_files_the_server_loads() -> None:
+    """The deny catalog and the shipped shell allow rules are read at runtime from
+    ``/app/docs/policy``. The server degrades without them rather than failing — no
+    mirror, and a new install with an empty allow list and nothing to reset to — so
+    a Dockerfile that stopped copying them would ship without anyone noticing."""
+
+    from kenny_server.policy import SHELL_ALLOW_DEFAULTS_FILE, _policy_dirs
+
+    assert Path("/app/docs/policy") in _policy_dirs()
+    assert re.search(r"^COPY docs/policy/ /app/docs/policy/$", _DOCKERFILE.read_text(), re.M), (
+        "Dockerfile no longer copies docs/policy/ to /app/docs/policy/"
+    )
+    for name in ("deny_rules.json", SHELL_ALLOW_DEFAULTS_FILE):
+        assert (_ROOT.parent / "docs" / "policy" / name).is_file(), name

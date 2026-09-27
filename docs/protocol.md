@@ -283,7 +283,7 @@ answers "what may run at all". See ADR-0064.
     "mode": "allowlist",
     "allow": [
       { "id": "al_get_service", "applies_to": "powershell",
-        "pattern": "(?i)Get-Service(\\s+[\\w.-]+)?", "reason": "read service state" }
+        "pattern": "(?i)Get-Service( [A-Za-z0-9_.-]+)?", "reason": "read service state" }
     ]
   }
 }
@@ -313,6 +313,9 @@ Four properties bind every implementation of this mode:
    substring match would make an `allow` entry of `Get-Process` admit
    `Get-Process; rm -rf /`. Implementations that match on substrings by default (Rust's
    `regex::is_match`) anchor the pattern as `^(?:…)$` at compile time.
+   Write the tokens of an `allow` pattern with a literal space, not `\s`: `\s` also matches
+   a newline, which both shells treat as a command separator, so `Get-Service(\s+\S+)?`
+   admits `Get-Service` + newline + `Stop-Computer`.
 3. **An empty `allow` list under `mode: "allowlist"` blocks every shell call.** Fail-closed:
    removing the last entry is not the same as leaving the mode.
 4. **The refusal is `blocked`, not `disabled`.** `disabled` remains the agent-local kill

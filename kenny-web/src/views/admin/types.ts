@@ -283,8 +283,12 @@ export interface PolicyRulesResponse {
   operator: PolicyRule[]
 }
 
-/** `GET /api/policy/shell-allow` — the fleet shell execution mode and its allow rules. */
+/**
+ * `GET /api/policy/shell-allow` — the fleet shell execution mode, its allow rules, and the
+ * rules the server ships (what a new install starts with and a reset restores).
+ */
 export interface ShellAllowResponse {
   mode: string
   allow: PolicyRule[]
+  defaults: PolicyRule[]
 }
