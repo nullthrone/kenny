@@ -400,7 +400,7 @@ def test_classify_task_writes_through_to_the_store(_memory_store):
     assert _memory_store.upserts == [[{
         "source": "disk", "event_id": 51, "category": "Disk & storage",
         "severity": "serious", "cause": "bad sectors",
-        "user_impact": "unknown", "symptom": "", "model": ec.VERDICT_MODEL_TAG,
+        "user_impact": "unknown", "symptom": "", "model": ec.verdict_model_tag(),
     }]]
 
 
@@ -409,7 +409,7 @@ def test_persisted_classifications_survive_a_restart(_memory_store):
         "source": "disk", "event_id": 51, "category": "Disk & storage", "severity": "serious",
         "cause": "bad sectors", "user_impact": "data_at_risk",
         "symptom": "Files on the system drive may be unreadable.",
-        "model": ec.VERDICT_MODEL_TAG, "classified_at": "2026-09-01T00:00:00Z",
+        "model": ec.verdict_model_tag(), "classified_at": "2026-09-01T00:00:00Z",
     }
     # A row from an older classifier must be dropped, not trusted.
     _memory_store.rows[("old", 1)] = {
@@ -420,11 +420,11 @@ def test_persisted_classifications_survive_a_restart(_memory_store):
     _memory_store.rows[("odd", 2)] = {
         "source": "odd", "event_id": 2, "category": "Nonsense", "severity": "fatal",
         "cause": "x", "user_impact": "catastrophic", "symptom": "",
-        "model": ec.VERDICT_MODEL_TAG, "classified_at": "2026-09-01T00:00:00Z",
+        "model": ec.verdict_model_tag(), "classified_at": "2026-09-01T00:00:00Z",
     }
     ec._cache.clear()  # "restart"
     assert _run(ec.load_persisted()) == 2
-    assert _memory_store.deleted_except == [ec.VERDICT_MODEL_TAG]
+    assert _memory_store.deleted_except == [ec.verdict_model_tag()]
     assert ec._cache[("disk", 51)] == {
         "category": "Disk & storage", "severity": "serious", "cause": "bad sectors",
         "user_impact": "data_at_risk", "symptom": "Files on the system drive may be unreadable.",

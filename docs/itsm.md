@@ -278,8 +278,9 @@ start: read a few weeks of verdicts, then decide whether they earn the switch.
 
 Turn the whole thing off with **Investigate new tickets automatically**
 (`KENNY_TRIAGE_ENABLED`) in **Admin → AI**; tickets then arrive uninvestigated. It also
-stays off while the AI master switch there is off, and without an Anthropic API key
-(Admin → AI or `ANTHROPIC_API_KEY`) — there is nothing to investigate with.
+stays off while the AI master switch there is off, and without an Anthropic API key or an
+AI gateway (Admin → AI, or `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL`) — there is nothing
+to investigate with.
 
 See [ADR-0056](adr/0056-unprompted-ticket-triage.md) for the reasoning and the three
 controls that bound it.

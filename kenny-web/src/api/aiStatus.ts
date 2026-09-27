@@ -10,12 +10,16 @@ export const AI_FEATURES = ['ask', 'recommend', 'forecast', 'classify', 'ticket_
 
 export type AiFeature = (typeof AI_FEATURES)[number]
 
-/** `GET /api/ai/status` — the master switch, whether a key is set, and which features may run. */
+/** `GET /api/ai/status` — the master switch, whether a key or gateway is set, and which features may run. */
 export interface AiStatus {
   /** The master switch (`KENNY_AI_ENABLED`); off means every feature is off. */
   enabled: boolean
+  /** A key or an AI gateway is set (ADR-0068: a gateway may hold the provider key). */
   configured: boolean
+  /** Where the API key comes from; `none` behind a gateway that authenticates itself. */
   source: 'db' | 'env' | 'none'
+  /** The AI gateway's host, or null when kenny talks to the Anthropic API directly. */
+  gateway: string | null
   features: Record<AiFeature, boolean>
 }
 

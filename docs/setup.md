@@ -27,7 +27,7 @@ flowchart TB
 
 - A host with Docker + Docker Compose (server), reachable by the agents over TLS.
 - A DNS name + TLS for production (the bundled Caddy profile can obtain certs automatically).
-- For the AI features (Ask kenny, recommendations, forecast prose, event classification, the ticket assistant, triage): an Anthropic API key — in the environment as `ANTHROPIC_API_KEY`, or set later in Admin → AI.
+- For the AI features (Ask kenny, recommendations, forecast prose, event classification, the ticket assistant, triage): an Anthropic API key — in the environment as `ANTHROPIC_API_KEY`, or set later in Admin → AI — or an [AI gateway](#ai-gateway) that holds one.
 - To build the agent / cut releases: a GitHub repo with Actions (the workflow targets `windows-latest`).
 
 ## Quick start (Docker Compose)
@@ -78,6 +78,9 @@ interval at startup.
 | `KENNY_AGENT_TOKENS` | server | dev map | `id=token,id2=token2` — per-agent tokens (the token store is seeded from this). |
 | `ANTHROPIC_API_KEY` | server | — | Enables the AI features. Also settable in Admin → AI, where a saved key wins over this one; a key saved there is not included in backups. The master switch there (`KENNY_AI_ENABLED`, default `1`) turns every AI feature off at once. |
 | `KENNY_CHAT_MODEL` | server | `claude-sonnet-4-6` | Model for Ask kenny, the ticket assistant and triage. Also editable in Admin → AI. |
+| `KENNY_FAST_MODEL` | server | `claude-haiku-4-5` | Model for recommendations, forecast prose and reliability-event classification. Also editable in Admin → AI. |
+| `ANTHROPIC_BASE_URL` | server | — | Base URL of an [AI gateway](#ai-gateway); empty talks to the Anthropic API directly. Also editable in Admin → AI. |
+| `ANTHROPIC_CUSTOM_HEADERS` | server | — | Headers sent with every model call, for the [AI gateway](#ai-gateway): `Name: Value` entries separated by `;` or newlines. Also settable in Admin → AI; a value saved there is never shown back and not included in backups. |
 | `KENNY_TLS` | server | unset | Set `1` behind TLS so the login cookie gets the `Secure` flag. |
 | `KENNY_FORWARDED_ALLOW_IPS` | server | `127.0.0.1` | Upstream proxy address(es) allowed to set `X-Forwarded-For`, so the login rate-limiter sees the real client IP behind a reverse proxy (not the proxy's). Set to your proxy's address when fronting kenny with the Caddy TLS profile. |
 | `KENNY_PUBLIC_URL` | server | `http://localhost:<port>` | External base URL; used to build installer/update links, the agent `--server` `wss://…/agent/ws`, and the **OAuth** issuer / discovery-metadata / resource URLs. Set it to your public `https://…` origin so Claude Desktop's OAuth flow advertises reachable endpoints. |
@@ -179,7 +182,7 @@ connected, install the optional dependency first: `pip install -e ".[discord]"`.
 | `KENNY_TICKET_SWEEP_INTERVAL_SECS` | `300` | Ticket housekeeping loop interval (expires gates, nudges and escalates stalls, auto-closes, drops untouched tickets); `0` disables. Environment-only, read at startup. |
 | `KENNY_TICKET_SWEEP_INITIAL_DELAY` | `30` | Delay before the first sweep after startup. Environment-only. |
 | `KENNY_TICKET_RETENTION_DAYS` | `30` | How long a **closed** ticket keeps its raw working transcript. The ticket, its summary and its audit trail are never pruned. |
-| `KENNY_TRIAGE_ENABLED` | `1` | On a new ticket, run one read-only investigation on its PC and write the finding into the ticket before anyone is asked to look. Needs an Anthropic API key (Admin → AI or `ANTHROPIC_API_KEY`); without one it stays off whatever this says. See [Tickets → kenny looks first](itsm.md#kenny-looks-first-before-you-are-asked-to). |
+| `KENNY_TRIAGE_ENABLED` | `1` | On a new ticket, run one read-only investigation on its PC and write the finding into the ticket before anyone is asked to look. Needs an Anthropic API key or an [AI gateway](#ai-gateway) (Admin → AI, or `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL`); without either it stays off whatever this says. See [Tickets → kenny looks first](itsm.md#kenny-looks-first-before-you-are-asked-to). |
 | `KENNY_TRIAGE_RESOLVE` | `0` | Let an investigation set a ticket to `resolved` itself — only for an alert-opened ticket, only on a closing verdict, and only when a read-only check actually ran and succeeded. Off means every verdict is a recommendation. |
 | `KENNY_TRIAGE_MAX_ITERATIONS` | `8` | Model round-trips one investigation may take. Spending them all produces no verdict: the ticket stays open with what was found. |
 
@@ -202,6 +205,42 @@ restart; the dashboard marks a stored change that waits for one as **RESTART PEN
 > set real tokens and serve over `wss`/`https` for anything non-local. See
 > [`adr/0008-operator-authentication.md`](adr/0008-operator-authentication.md) and
 > [`adr/0014-auth-hardening.md`](adr/0014-auth-hardening.md).
+
+## AI gateway
+
+kenny can send every model call through an AI gateway you run or subscribe to, instead of
+straight to the Anthropic API — for central quotas, inline inspection of prompts and
+answers, and an audit trail outside kenny
+([ADR-0068](adr/0068-llm-egress-through-an-operator-configured-gateway.md)). Everything is
+set in Admin → AI (or the environment) and applies to the next call, without a restart.
+
+**What the gateway must do.** Serve the Anthropic Messages API at `<base URL>/v1/messages`
+and pass it through intact: streaming (server-sent events), tool use, extended thinking and
+`cache_control`. A gateway that only speaks another API format does not work with kenny.
+Configure it to answer an upstream error — including overload during a stream — with the
+error status, not with `200`: kenny retries and reports on the status.
+
+**What kenny needs from you.**
+
+| Setting | What to put there |
+|---|---|
+| **AI gateway URL** (`ANTHROPIC_BASE_URL`) | The gateway's base URL, without `/v1/messages`, e.g. `https://gateway.example` or `https://gateway.example/tenant/kenny`. `https` is required, except to a host on the same machine or container network (`http://localhost:8080`, `http://gateway:8080`). |
+| **AI gateway headers** (`ANTHROPIC_CUSTOM_HEADERS`) | The headers the gateway authenticates and routes by, e.g. `X-Gateway-Key: …; X-Gateway-Route: kenny`. Never shown back and never in a backup — set them again after a restore. |
+| **Anthropic API key** | Empty if the gateway holds the provider key (kenny then sends a placeholder); otherwise the key, which kenny sends to the gateway. |
+| **Chat model** / **Fast model** | The model ids the gateway expects, if it names models its own way. |
+
+Headers the HTTP client owns (`Host`, `Content-Length`, `Connection`, …), `X-Api-Key` and
+`Anthropic-Version` cannot be set this way.
+
+**Check it.** **Test connection** in Admin → AI sends one single-token message on the fast
+model through the gateway — the same path, headers and model id every feature uses — and
+shows the gateway's answer verbatim if it refuses. The status line above it names the
+gateway's host.
+
+**What the gateway sees.** Everything the model sees: telemetry facts, event-log samples,
+web-activity host names, ticket text and tool output. Choose a gateway you would trust with
+the model provider's role. kenny's approval gates do not depend on the model: a
+state-changing tool call still waits for an operator, whatever the gateway returns.
 
 ## Running from source (development)
 

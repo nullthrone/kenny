@@ -47,6 +47,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from . import ai
 from .logging_config import apply_log_level
 from .policy import SHELL_MODES
 
@@ -100,6 +101,8 @@ class SettingSpec:
     sensitive: bool = False
     # Kept out of every backup copy of the database (backup.BackupManager).
     backup_excluded: bool = False
+    # Extra check for a ``str``/``secret`` value; raises ValueError to reject it.
+    check: Callable[[str], None] | None = None
 
     @property
     def env_name(self) -> str:
@@ -142,7 +145,12 @@ class SettingSpec:
                     f"{self.key}: must be one of {', '.join(self.choices)}"
                 )
             return
-        # str / secret: any string is acceptable.
+        # str / secret: any string is acceptable, unless the spec checks it.
+        if self.check is not None:
+            try:
+                self.check(raw)
+            except ValueError as exc:
+                raise ValueError(f"{self.key}: {exc}") from exc
 
 
 def _spec(key: str, group: str, type: str, default_raw: str, label: str, **kw: Any) -> SettingSpec:
@@ -246,7 +254,22 @@ _SPECS: list[SettingSpec] = [
           "Anthropic API key", lifecycle="live", sensitive=True, backup_excluded=True,
           help="Enables every AI feature below. A key saved here wins over the "
                "environment and is not included in backups — set it again after a "
-               "restore."),
+               "restore. Behind a gateway that holds the provider key, leave it "
+               "empty."),
+    # The AI gateway (ADR-0068): every model call goes to this base URL with
+    # these headers instead of straight to the Anthropic API. The headers are
+    # the gateway's credentials, so they get the key's treatment.
+    _spec("ANTHROPIC_BASE_URL", "AI", "str", "",
+          "AI gateway URL", lifecycle="live", check=ai.check_base_url,
+          help="Base URL of an AI gateway that speaks the Anthropic Messages API "
+               "(/v1/messages). Empty talks to the Anthropic API directly. Plain "
+               "http only to a local or container-network host."),
+    _spec("ANTHROPIC_CUSTOM_HEADERS", "AI", "secret", "",
+          "AI gateway headers", lifecycle="live", sensitive=True, backup_excluded=True,
+          check=ai.check_headers,
+          help="Extra headers sent with every model call, for the gateway's "
+               "authentication and routing: 'Name: Value' entries separated by "
+               "';'. Not included in backups — set them again after a restore."),
     _spec("KENNY_AI_ASK_ENABLED", "AI", "bool", "1",
           "Ask kenny", lifecycle="live",
           help="The fleet copilot chat (header button and ⌘K)."),
@@ -274,6 +297,10 @@ _SPECS: list[SettingSpec] = [
           "Discord model", lifecycle="live",
           help="Anthropic model id for Discord-driven turns. Empty uses the chat "
                "model."),
+    _spec("KENNY_FAST_MODEL", "AI", "str", ai.DEFAULT_FAST_MODEL,
+          "Fast model", lifecycle="live",
+          help="Model id for recommendations, forecast prose and reliability-event "
+               "classification. Behind a gateway, the id the gateway expects."),
     _spec("KENNY_TRIAGE_ENABLED", "AI", "bool", "1",
           "Investigate new tickets automatically", lifecycle="live",
           help="On a new ticket, kenny runs one read-only investigation on the "

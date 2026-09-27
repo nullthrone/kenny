@@ -32,14 +32,14 @@ from typing import Any
 
 # Reuse the single source of truth for AI availability and the replay chunker
 # (same streaming UX as the AI Recommendation), rather than redefining them.
+from . import ai
 from .recommend import _word_chunks, ai_available
 from .tools import build_health
 
 __all__ = ["ai_available", "build_facts", "deterministic_summary", "forecast_events"]
 
-# Haiku: fast and cheap, sufficient for a few sentences of forecast prose — the
-# same model the AI Recommendation uses.
-FORECAST_MODEL = "claude-haiku-4-5"
+# The fast model (``KENNY_FAST_MODEL``) is sufficient for a few sentences of
+# forecast prose — the same model the AI Recommendation uses.
 _MAX_TOKENS = 300
 # Cap how many inventory-change rows enter the facts (and thus the prompt and the
 # fallback). The old panel could grow without bound — a forecast never should.
@@ -301,7 +301,7 @@ async def forecast_events(client: Any, facts: dict[str, Any]) -> AsyncIterator[d
     full = ""
     try:
         with client.messages.stream(
-            model=FORECAST_MODEL,
+            model=ai.current().fast_model(),
             max_tokens=_MAX_TOKENS,
             system=_cached_system(),
             messages=[_facts_message(facts)],

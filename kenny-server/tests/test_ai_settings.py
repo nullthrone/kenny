@@ -28,7 +28,13 @@ class _FakeAnthropic:
 
 @pytest.fixture(autouse=True)
 def _no_ambient_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    for key in ("ANTHROPIC_API_KEY", ai.MASTER_SETTING, *ai.FEATURES.values()):
+    for key in (
+        "ANTHROPIC_API_KEY",
+        ai.BASE_URL_SETTING,
+        ai.HEADERS_SETTING,
+        ai.MASTER_SETTING,
+        *ai.FEATURES.values(),
+    ):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("KENNY_DISCORD_BOT_TOKEN", "bot-token")
 
@@ -58,6 +64,7 @@ def test_a_key_saved_in_the_dashboard_switches_ai_on_everywhere(tmp_path) -> Non
             "enabled": True,
             "configured": False,
             "source": "none",
+            "gateway": None,
             "features": {name: False for name in ai.FEATURES},
         }
         assert app.state.tickets._triage is None
@@ -136,10 +143,15 @@ def test_the_master_switch_turns_everything_off_and_back_to_each_switch(
 
 
 def test_the_client_follows_a_changed_key(monkeypatch) -> None:
-    """The real client is built for the key in force and rebuilt when it changes."""
+    """The real client is built for the key in force and rebuilt when it changes.
+
+    The same holds for the gateway URL and headers (``test_ai_gateway.py``).
+    """
 
     built: list[str] = []
-    monkeypatch.setattr(ai, "_default_factory", lambda key: built.append(key) or object())
+    monkeypatch.setattr(
+        ai, "_default_factory", lambda key, _url, _headers: built.append(key) or object()
+    )
 
     class _Settings:
         values = {"ANTHROPIC_API_KEY": "sk-one"}
@@ -178,5 +190,5 @@ def test_the_key_test_reports_a_missing_key_without_calling_out() -> None:
     access = ai.AiAccess(env={})
     assert asyncio.run(asyncio.to_thread(access.probe)) == {
         "ok": False,
-        "error": "no API key is set",
+        "error": "no API key or gateway is set",
     }
