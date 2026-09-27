@@ -949,6 +949,8 @@ def build_api_routes(
             body = await request.json()
         except Exception:  # noqa: BLE001 - malformed JSON
             return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
         rule_id = str(body.get("id", "")).strip()
         applies_to = str(body.get("applies_to", "")).strip()
         pattern = body.get("pattern", "")
@@ -1018,6 +1020,8 @@ def build_api_routes(
             body = await request.json()
         except Exception:  # noqa: BLE001 - malformed JSON
             return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
         rule_id = str(body.get("id", "")).strip()
         applies_to = str(body.get("applies_to", "")).strip()
         pattern = body.get("pattern", "")
@@ -1093,6 +1097,8 @@ def build_api_routes(
             body = await request.json()
         except Exception:  # noqa: BLE001 - malformed JSON
             return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
         agent_id = str(body.get("agent_id") or "").strip()
         if agent_id:
             known = await _known_ids(registry, store)
@@ -1191,6 +1197,8 @@ def build_api_routes(
             body = await request.json()
         except Exception:  # noqa: BLE001 - malformed JSON
             return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
         if "value" not in body:
             return JSONResponse({"error": "value is required"}, status_code=400)
         raw = "" if body["value"] is None else str(body["value"])
@@ -1354,6 +1362,8 @@ def build_api_routes(
             body = await request.json()
         except Exception:  # noqa: BLE001 - malformed JSON
             return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
         kind = str(body.get("kind", ""))
         label = str(body.get("label", "")).strip()
         config = body.get("config")
@@ -1380,6 +1390,8 @@ def build_api_routes(
             body = await request.json()
         except Exception:  # noqa: BLE001 - malformed JSON
             return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
         label = str(body["label"]).strip() if body.get("label") else None
         config = body.get("config")
         merged_config: dict[str, Any] | None = None
@@ -1532,6 +1544,8 @@ def build_api_routes(
             body = await request.json()
         except Exception:  # noqa: BLE001 - malformed JSON
             return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
         channel = body.get("channel")
         if channel not in ("stable", "dev"):
             return JSONResponse({"error": "channel must be 'stable' or 'dev'"}, status_code=400)
@@ -1590,6 +1604,8 @@ def build_api_routes(
             body = await request.json()
         except Exception:  # noqa: BLE001 - malformed JSON
             return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
         doh = body.get("doh_policy")
         if doh is not None and doh not in ("disable", "leave"):
             return JSONResponse(
@@ -1626,6 +1642,8 @@ def build_api_routes(
             body = await request.json()
         except Exception:  # noqa: BLE001 - malformed JSON
             return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
         action = str(body.get("action", "block"))
         if action not in _WEBFILTER_ACTIONS:
             return JSONResponse(
@@ -2157,7 +2175,12 @@ def build_chat_routes(
         copilot_tickets.register_tools(executor)
 
     async def api_chat(request: Request) -> JSONResponse:
-        body = await request.json()
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - malformed JSON
+            return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
         message = str(body.get("message", "")).strip()
         if not message:
             return JSONResponse({"error": "message is required"}, status_code=400)
@@ -2192,7 +2215,12 @@ def build_chat_routes(
         return JSONResponse(result.to_public())
 
     async def api_chat_confirm(request: Request) -> JSONResponse:
-        body = await request.json()
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - malformed JSON
+            return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
         session_id = body.get("session_id")
         session = await sessions.get(session_id) if session_id else None
         if session is None:
@@ -2221,7 +2249,12 @@ def build_chat_routes(
         later failure is surfaced in-band as an ``error`` event.
         """
 
-        body = await request.json()
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - malformed JSON
+            return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
         message = str(body.get("message", "")).strip()
         if not message:
             return JSONResponse({"error": "message is required"}, status_code=400)
@@ -2261,7 +2294,12 @@ def build_chat_routes(
     async def api_chat_confirm_stream(request: Request) -> Response:
         """Streaming twin of ``/api/chat/confirm``."""
 
-        body = await request.json()
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - malformed JSON
+            return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
         session_id = body.get("session_id")
         session = await sessions.get(session_id) if session_id else None
         if session is None:
@@ -2326,7 +2364,12 @@ def build_chat_routes(
         as an ``error`` event. Inherits operator auth from the ``/api`` middleware.
         """
 
-        body = await request.json()
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - malformed JSON
+            return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
         agent_id = str(body.get("agent_id", "")).strip()
         section = str(body.get("section", "")).strip()
         if not agent_id or not section:
@@ -2368,7 +2411,12 @@ def build_chat_routes(
 
         from .. import diffs, trends
 
-        body = await request.json()
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - malformed JSON
+            return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
         agent_id = str(body.get("agent_id", "")).strip()
         if not agent_id:
             return JSONResponse({"error": "agent_id is required"}, status_code=400)
