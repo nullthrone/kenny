@@ -44,3 +44,14 @@ def _unbind_ai():
 
     yield
     ai.bind(None)
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_gateway(monkeypatch):
+    """An AI gateway in the developer's environment (``ANTHROPIC_BASE_URL`` is a
+    common one) would switch AI on for every test that expects it off without a
+    key, and would point the real SDK at that host. Tests that exercise the
+    gateway set it themselves (``test_ai_gateway.py``)."""
+
+    for key in (ai.BASE_URL_SETTING, ai.HEADERS_SETTING, ai.FAST_MODEL_SETTING):
+        monkeypatch.delenv(key, raising=False)

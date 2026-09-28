@@ -585,9 +585,10 @@ page's [Reliability section](#reliability) suppresses a pattern from the event i
 
 ### AI
 
-A master switch, the Anthropic API key, one switch per AI feature, the models, and the
-assistant's limits
-([ADR-0066](adr/0066-anthropic-key-as-a-dashboard-setting-excluded-from-backups.md)):
+A master switch, the Anthropic API key, an optional AI gateway, one switch per AI feature,
+the models, and the assistant's limits
+([ADR-0066](adr/0066-anthropic-key-as-a-dashboard-setting-excluded-from-backups.md),
+[ADR-0068](adr/0068-llm-egress-through-an-operator-configured-gateway.md)):
 
 - **AI features** — the master switch at the top of the section, on by default. One click
   turns every AI feature off at once, whatever its own switch says; each switch keeps its
@@ -595,12 +596,18 @@ assistant's limits
   works while it is off.
 - **Anthropic API key** — a key saved here wins over `ANTHROPIC_API_KEY` in the
   environment. It is never shown back, and it is **not included in backups**: after a
-  restore, set it again (or let the environment supply it). **Test key** checks it against
-  the API. The line above the settings says where the key comes from and which features
-  are running.
+  restore, set it again (or let the environment supply it). **Test connection** sends one
+  single-token message the way every feature does and shows the answer if it fails. The
+  line above the settings says where the key comes from, whether calls go through a
+  gateway, and which features are running.
+- **AI gateway URL** and **AI gateway headers** — route every model call through an AI
+  gateway instead of straight to the Anthropic API; see
+  [Setup → AI gateway](setup.md#ai-gateway). The headers are never shown back and not
+  included in backups. Behind a gateway that holds the provider key, the key can stay
+  empty.
 - **Ask kenny**, **Recommendations**, **Forecast prose**, **Reliability event
   classification**, **Ticket assistant** — one switch each, all on by default. A feature
-  runs only with AI on, a key set *and* its own switch on; while it cannot run, the
+  runs only with AI on, a key or gateway set *and* its own switch on; while it cannot run, the
   dashboard does not show it. The Ask kenny button and ⌘K disappear, a section modal has
   no recommendation block, the forecast shows its plain computed summary (only AI-written
   prose is marked *AI*), new reliability events stay unclassified, and a ticket's chat is
@@ -608,6 +615,8 @@ assistant's limits
   decision disappear (in Discord, kenny says so in the thread). On a ticket, the Ask kenny
   button follows the ticket assistant's switch, not Ask kenny's.
 - **Chat model** — the Anthropic model id for Ask kenny, the ticket assistant, and triage.
+- **Fast model** — the model id for recommendations, forecast prose and reliability-event
+  classification.
 - **Discord model** — the model for Discord-driven turns; empty uses the chat model.
 - **Investigate new tickets automatically** (on by default) — kenny runs one read-only
   check on the PC and writes the finding into the ticket before you open it.

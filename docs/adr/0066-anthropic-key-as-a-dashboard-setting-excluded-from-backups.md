@@ -1,6 +1,7 @@
 # 0066. The Anthropic key is a dashboard setting, kept out of backups
 
 - Status: accepted
+- Amended by: [ADR-0068](0068-llm-egress-through-an-operator-configured-gateway.md)
 - Boundary moved: **the storage and trust model for secrets.** The Anthropic API key moves
   out of the process environment into `kenny.sqlite`, where a superuser can set it from the
   dashboard, and it becomes the first stored value that is deliberately excluded from

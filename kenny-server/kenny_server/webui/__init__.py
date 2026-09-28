@@ -2352,7 +2352,7 @@ def build_chat_routes(
         return JSONResponse({"ok": True})
 
     async def api_recommendation_stream(request: Request) -> Response:
-        """Stream a Haiku "AI Recommendation" for one flagged section as SSE.
+        """Stream an "AI Recommendation" for one flagged section as SSE.
 
         Body: ``{agent_id, section}``. Pre-stream validation returns JSON
         (``400`` missing/unknown/healthy section, ``503`` if no API key); once

@@ -1,7 +1,7 @@
 """Server-side "AI Recommendation" for flagged telemetry sections.
 
 When the operator opens a section detail popup for a card in ``warn``/``crit``,
-the dashboard asks Haiku for a short, fixed-shape recommendation
+the dashboard asks the fast model (``KENNY_FAST_MODEL``) for a short, fixed-shape recommendation
 (``Diagnosis`` / ``Action`` / ``Urgency``) plus a machine-readable remediation
 directive. The directive drives the dashboard's "Auto-Remediate" button, which
 injects a prompt into the server-hosted chat (the copilot).
@@ -42,8 +42,8 @@ from typing import Any
 from . import ai, health_rules
 from .chat import CAPABILITY_TOOLS, STATE_CHANGING_TOOLS
 
-# Haiku: fast and cheap, sufficient for a 3-line templated recommendation.
-RECOMMEND_MODEL = "claude-haiku-4-5"
+# The fast model (``KENNY_FAST_MODEL``) is sufficient for a 3-line templated
+# recommendation; it is resolved per call through ``ai.current().fast_model()``.
 _MAX_TOKENS = 400
 _SENTINEL = "---"
 # Hold back this many trailing chars while streaming so a partial sentinel
@@ -62,7 +62,7 @@ def ai_available() -> bool:
 
 
 def _tool_catalog() -> str:
-    """Compact catalog of capability tools Haiku may rely on for remediation."""
+    """Compact catalog of capability tools the model may rely on for remediation."""
 
     lines = []
     for name in CAPABILITY_TOOLS:
@@ -227,7 +227,7 @@ async def recommend_events(client: Any, facts: dict[str, Any]) -> AsyncIterator[
     emitted = 0
     try:
         with client.messages.stream(
-            model=RECOMMEND_MODEL,
+            model=ai.current().fast_model(),
             max_tokens=_MAX_TOKENS,
             system=_cached_system(),
             messages=[_user_message(facts)],

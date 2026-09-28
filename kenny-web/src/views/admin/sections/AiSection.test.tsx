@@ -73,3 +73,33 @@ describe('AiSection — the master switch', () => {
     expect(screen.getByText('Ask kenny')).toBeInTheDocument()
   })
 })
+
+function renderWithStatus(status: Record<string, unknown>) {
+  apiGetMock.mockResolvedValue({ enabled: true, features: { ask: true }, ...status })
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  render(
+    <QueryClientProvider client={client}>
+      <AiSection rows={[row('KENNY_AI_ENABLED', 'AI features', true)]} />
+    </QueryClientProvider>,
+  )
+}
+
+/** The status line says where model calls go (ADR-0068). */
+describe('AiSection — the AI gateway', () => {
+  it('names the gateway host, and needs no key behind it', async () => {
+    renderWithStatus({ configured: true, source: 'none', gateway: 'gateway.example' })
+    expect(await screen.findByText(/No key — the gateway authenticates · via gateway gateway\.example/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'TEST CONNECTION' })).toBeEnabled()
+  })
+
+  it('says calls go straight to Anthropic without one', async () => {
+    renderWithStatus({ configured: true, source: 'env', gateway: null })
+    expect(await screen.findByText(/Key from the server environment · direct to Anthropic/)).toBeInTheDocument()
+  })
+
+  it('offers no test while neither a key nor a gateway is set', async () => {
+    renderWithStatus({ configured: false, source: 'none', gateway: null })
+    expect(await screen.findByText(/No API key or gateway is set/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'TEST CONNECTION' })).toBeDisabled()
+  })
+})

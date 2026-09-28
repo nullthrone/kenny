@@ -77,10 +77,11 @@ export interface AiSectionProps {
 }
 
 /**
- * Admin → AI (ADR-0066). A master switch, the Anthropic API key, a check that
- * it works, the models, and one switch per AI feature. A feature runs only with
- * the master switch on, a key set and its own switch on — the status line says
- * which ones may run now.
+ * Admin → AI (ADR-0066, ADR-0068). A master switch, the Anthropic API key, an
+ * optional AI gateway, a check that the connection works, the models, and one
+ * switch per AI feature. A feature runs only with the master switch on, a key or
+ * gateway set and its own switch on — the status line says which ones may run
+ * now, and whether calls go through a gateway.
  */
 export default function AiSection({ rows }: AiSectionProps) {
   const status = useAiStatus()
@@ -93,6 +94,14 @@ export default function AiSection({ rows }: AiSectionProps) {
   const aiOn = status.data?.enabled !== false
   const configured = status.data?.configured === true
   const source = status.data?.source
+  const gateway = status.data?.gateway ?? null
+  const credential =
+    source === 'db'
+      ? 'Key saved here'
+      : source === 'env'
+      ? 'Key from the server environment'
+      : 'No key — the gateway authenticates'
+  const route = gateway ? `via gateway ${gateway}` : 'direct to Anthropic'
   const running = status.data
     ? Object.entries(status.data.features ?? {})
         .filter(([, on]) => on)
@@ -107,24 +116,24 @@ export default function AiSection({ rows }: AiSectionProps) {
         {!aiOn
           ? 'AI is switched off — no feature runs.'
           : configured
-          ? `Key ${source === 'db' ? 'saved here' : 'from the server environment'} · running: ${running.join(', ') || 'nothing'}`
-          : 'No API key is set — every AI feature is off until one is.'}{' '}
-        A key saved here is not included in backups; set it again after a restore.
+          ? `${credential} · ${route} · running: ${running.join(', ') || 'nothing'}`
+          : 'No API key or gateway is set — every AI feature is off until one is.'}{' '}
+        A key or gateway headers saved here are not included in backups; set them again after a restore.
       </p>
 
       <div className={shared.actions} style={{ marginTop: 0, marginBottom: 16 }}>
         <button type="button" className={shared.btn} onClick={() => test.mutate()} disabled={test.isPending || !configured}>
-          {test.isPending ? 'TESTING…' : 'TEST KEY'}
+          {test.isPending ? 'TESTING…' : 'TEST CONNECTION'}
         </button>
       </div>
       {test.data &&
         (test.data.ok ? (
-          <div className={shared.okBox}>The key works.</div>
+          <div className={shared.okBox}>The connection works.</div>
         ) : (
-          <div className={shared.errorBox}>The key did not work: {test.data.error}</div>
+          <div className={shared.errorBox}>The connection failed: {test.data.error}</div>
         ))}
       {test.isError && (
-        <div className={shared.errorBox}>{test.error instanceof ApiError ? test.error.message : 'Could not test the key.'}</div>
+        <div className={shared.errorBox}>{test.error instanceof ApiError ? test.error.message : 'Could not test the connection.'}</div>
       )}
 
       <GenericSettingsSection rows={rest} />

@@ -245,11 +245,11 @@ def _bind_triage(
 ) -> None:
     """Keep triage wired to new tickets exactly while it is enabled.
 
-    Wired only when a key is actually configured. A constructed Anthropic client
-    is not the same question: it builds happily without a key and only fails
-    when used, so binding triage to that would fire one doomed investigation
-    per ticket created. The key is a setting too, so setting or clearing it
-    re-applies this.
+    Wired only when a key or a gateway is actually configured. A constructed
+    Anthropic client is not the same question: it builds happily without a key
+    and only fails when used, so binding triage to that would fire one doomed
+    investigation per ticket created. The key and the gateway URL are settings
+    too, so setting or clearing either re-applies this.
     """
 
     def apply(_value: Any = None) -> None:
@@ -264,6 +264,7 @@ def _bind_triage(
     apply()
     settings.on_change("KENNY_TRIAGE_ENABLED", apply)
     settings.on_change("ANTHROPIC_API_KEY", apply)
+    settings.on_change("ANTHROPIC_BASE_URL", apply)
     settings.on_change("KENNY_AI_ENABLED", apply)
     settings.on_change("KENNY_TRIAGE_RESOLVE", set_resolve)
     settings.on_change("KENNY_TRIAGE_MAX_ITERATIONS", set_iterations)

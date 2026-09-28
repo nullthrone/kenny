@@ -1,7 +1,7 @@
 """Server-side LLM classification of reliability events (ADR-0026).
 
 The agent reports raw Windows event groups (``source`` + ``event_id`` + a sample
-message). The server asks the connected LLM (the same Haiku model + API key the
+message). The server asks the connected LLM (the same fast model + API access the
 AI Recommendation uses, see ``recommend.py``) what each group *means* — the
 space of Windows event sources is large and open-ended, so a hand-maintained
 table was never an option.
@@ -77,7 +77,6 @@ __all__ = [
     "IMPACT_FALLBACK",
     "SEVERITIES",
     "SEVERITY_FALLBACK",
-    "VERDICT_MODEL_TAG",
     "ai_available",
     "categorize_events",
     "annotate_events",
@@ -88,18 +87,25 @@ __all__ = [
     "mark",
     "reset_state",
     "schedule_classification",
+    "verdict_model_tag",
 ]
 
 logger = logging.getLogger("kenny.event_categories")
 
-CATEGORIZE_MODEL = "claude-haiku-4-5"
 # Bumped whenever the *question* we ask changes, independently of the model.
 # A verdict is a function of both, so both belong in the stored ``model`` tag
 # that :meth:`EventClassificationStore.delete_model_except` invalidates on:
 # re-asking a changed question is exactly as necessary as re-asking a new
 # model, and a prompt edit used to invalidate nothing at all.
 _VERDICT_REVISION = "impact-1"
-VERDICT_MODEL_TAG = f"{CATEGORIZE_MODEL}/{_VERDICT_REVISION}"
+
+
+def verdict_model_tag() -> str:
+    """The stored ``model`` tag for a verdict asked now: the fast model in force
+    (``KENNY_FAST_MODEL``) and the question's revision."""
+
+    return f"{ai.current().fast_model()}/{_VERDICT_REVISION}"
+
 _MAX_TOKENS = 1024
 # Bounds the in-memory mirror of the persisted table. A real fleet has a few
 # hundred distinct (source, event_id) patterns at most.
@@ -285,13 +291,13 @@ def bind_store(store: Any) -> None:
 
 async def load_persisted() -> int:
     """Fill the cache from the bound store (call once at startup, after the
-    store is connected). Rows from a different ``CATEGORIZE_MODEL`` are
+    store is connected). Rows tagged with another model or revision are
     dropped first so a model upgrade re-classifies instead of serving stale
     verdicts. Returns the number of classifications loaded."""
 
     if _store is None:
         return 0
-    await _store.delete_model_except(VERDICT_MODEL_TAG)
+    await _store.delete_model_except(verdict_model_tag())
     rows = await _store.list()
     for r in rows:
         _cache_put(
@@ -327,7 +333,7 @@ async def _persist(items: list[tuple[tuple[str, int], Classification]]) -> None:
                     "cause": c["cause"],
                     "user_impact": c["user_impact"],
                     "symptom": c["symptom"],
-                    "model": VERDICT_MODEL_TAG,
+                    "model": verdict_model_tag(),
                 }
                 for key, c in items
             ]
@@ -409,12 +415,12 @@ def _user_message(groups: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 async def _classify(client: Any, groups: list[dict[str, Any]]) -> list[Classification] | None:
-    """One batched Haiku call classifying ``groups``; None on any failure."""
+    """One batched fast-model call classifying ``groups``; None on any failure."""
 
     try:
         resp = await asyncio.to_thread(
             client.messages.create,
-            model=CATEGORIZE_MODEL,
+            model=ai.current().fast_model(),
             max_tokens=_MAX_TOKENS,
             system=_cached_system(),
             messages=[_user_message(groups)],
