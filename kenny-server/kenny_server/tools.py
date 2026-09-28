@@ -134,7 +134,15 @@ def forward_timeout_s(tool_name: str, args: dict[str, Any]) -> float:
     Raises ``TypeError``/``ValueError`` for a non-numeric ``timeout_s``.
     """
 
-    return max(float(args.get("timeout_s", 30)), _TOOL_MIN_TIMEOUT_S.get(tool_name, 0.0))
+    try:
+        timeout_s = float(args.get("timeout_s", 30))
+    except OverflowError:
+        # An oversized JSON int (e.g. 10**400) survives `args.get` fine --
+        # Python ints are arbitrary precision -- but `float()` raises
+        # OverflowError, not the TypeError/ValueError this function's own
+        # contract (and both its callers' `except` clauses) expect.
+        raise ValueError(f"timeout_s too large: {args.get('timeout_s')!r}") from None
+    return max(timeout_s, _TOOL_MIN_TIMEOUT_S.get(tool_name, 0.0))
 
 
 # Forwarding capability tools: name -> ordered arg keys (optional keys end "?").
