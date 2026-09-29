@@ -587,23 +587,29 @@ def build_api_routes(
         return JSONResponse({"rows": log_rows, "next_cursor": next_cursor})
 
     async def api_agent(request: Request) -> JSONResponse:
+        from datetime import datetime, timedelta, timezone
+
         agent_id = request.path_params["id"]
         agent = registry.get(agent_id)
         latest = await store.latest(agent_id)
         snapshot = latest["snapshot"] if latest else None
-        history = await store.history(agent_id, limit=50)
+        # The host's 30-day health sparkline: the last snapshot of each UTC day,
+        # oldest first, each scored as of its own collected_at -- the same
+        # window (and memo key) as /api/fleet/trend?days=30.
+        since = (datetime.now(timezone.utc) - timedelta(days=30)).date().isoformat()
+        daily = await _daily_latest_cached(agent_id, since)
         # Categorize the latest reliability events (for the detail heatmap + the
         # health reason). History points only carry `overall`, so they don't need it.
         await _annotate_reliability([snapshot])
         agent_os = agent.os if agent else "windows"
         hist_points = [
             {
-                "collected_at": h["collected_at"],
+                "collected_at": d["collected_at"],
                 "overall": build_health(
-                    h["snapshot"], agent_os=agent_os, now=h["collected_at"]
+                    d["snapshot"], agent_os=agent_os, now=d["collected_at"]
                 )["overall"],
             }
-            for h in history
+            for d in daily
         ]
         return JSONResponse(
             {

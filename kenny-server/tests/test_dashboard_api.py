@@ -428,6 +428,72 @@ def test_agent_trends_endpoint(tmp_path):
         assert forecast["days_until_full"] == 10.0
 
 
+def _disk(percent_used: float) -> dict:
+    return {"disk": {"status": "ok", "summary": "",
+                     "volumes": [{"mount": "C:", "percent_used": percent_used}]}}
+
+
+def test_agent_history_spans_30_daily_points(tmp_path):
+    """/api/agent/{id} `history` backs the "HEALTH · 30 DAYS" sparkline: one
+    point per UTC day over the last 30 days, oldest first -- not the newest raw
+    snapshots, which at the default push interval cover about half a day."""
+
+    from datetime import datetime, timedelta, timezone
+
+    app = build_app(db_path=str(tmp_path / "history.sqlite"))
+    now = datetime.now(timezone.utc)
+
+    def day_start(days_ago: int) -> datetime:
+        return (now - timedelta(days=days_ago)).replace(hour=0, minute=0, second=0, microsecond=0)
+
+    with TestClient(app) as c:
+        store = app.state.store
+
+        def insert(at: datetime, snap: dict) -> None:
+            c.portal.call(partial(store.insert, "example-pc", at.isoformat(), snap))
+
+        insert(day_start(40) + timedelta(hours=1), _disk(97))  # outside the window
+        insert(day_start(20) + timedelta(hours=1), _disk(97))  # crit, superseded that day
+        last_of_day_20 = day_start(20) + timedelta(hours=2)
+        insert(last_of_day_20, _disk(40))
+        day_10 = day_start(10) + timedelta(hours=1)
+        insert(day_10, _disk(90))
+        # More snapshots today than the old raw-snapshot limit of 50, all
+        # between midnight and now so they land in today's bucket.
+        today = day_start(0)
+        todays = [today + (now - today) * i / 60 for i in range(60)]
+        for at in todays:
+            insert(at, _disk(40))
+
+        history = c.get("/api/agent/example-pc", headers=_bearer(app)).json()["history"]
+
+    assert history == [
+        {"collected_at": last_of_day_20.isoformat(), "overall": "ok"},
+        {"collected_at": day_10.isoformat(), "overall": "warn"},
+        {"collected_at": todays[-1].isoformat(), "overall": "ok"},
+    ]
+
+
+def test_agent_history_scores_each_point_as_of_its_own_day(tmp_path):
+    """A history point is judged by the clock of the day it was collected
+    (ADR-0058): a Defender scan one day old was healthy then, even though the
+    same snapshot judged today is three weeks stale."""
+
+    from datetime import datetime, timedelta, timezone
+
+    app = build_app(db_path=str(tmp_path / "history_asof.sqlite"))
+    collected = datetime.now(timezone.utc) - timedelta(days=20)
+    snap = {"defender": {"status": "ok", "summary": "", "enabled": True,
+                         "realtime_protection": True,
+                         "last_scan": (collected - timedelta(days=1)).isoformat()}}
+    with TestClient(app) as c:
+        c.portal.call(partial(app.state.store.insert, "example-pc", collected.isoformat(), snap))
+        body = c.get("/api/agent/example-pc", headers=_bearer(app)).json()
+
+    assert body["health"]["sections"]["defender"]["status"] == "warn"  # as of now
+    assert body["history"] == [{"collected_at": collected.isoformat(), "overall": "ok"}]
+
+
 # -- POST /api/agent/{id}/refresh: a storage hiccup must not 500 -------------
 #
 # The tunnel round-trip already succeeded by the time store.insert runs; a
