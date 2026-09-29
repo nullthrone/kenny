@@ -803,7 +803,11 @@ def _rule_web_activity(payload: dict[str, Any], now: datetime) -> "tuple[Status,
         for f in _dicts(flagged)
         if (age := _age_days(f.get("last_seen"), now=now)) is not None and age <= 1.0
     ]
-    serious = [f for f in recent if f.get("category") in _WEB_ACTIVITY_SERIOUS]
+    serious = [
+        f
+        for f in recent
+        if isinstance(f.get("category"), str) and f["category"] in _WEB_ACTIVITY_SERIOUS
+    ]
     if serious:
         example = serious[0].get("domain", "?")
         return "crit", f"{len(serious)} flagged domain(s) in 24h (e.g. {example})"
@@ -823,7 +827,9 @@ def _rule_listening_ports(payload: dict[str, Any], now: datetime) -> "tuple[Stat
     exposed = [
         p
         for p in _dicts(payload.get("ports"))
-        if p.get("port") in _REMOTE_ACCESS_PORTS
+        # `port` is an unvalidated wire value: a list/dict is unhashable and would
+        # raise TypeError on the set lookup, so only an int is ever a candidate.
+        if isinstance(p.get("port"), int) and p["port"] in _REMOTE_ACCESS_PORTS
         and not str(p.get("address", "")).startswith(("127.", "::1"))
     ]
     if exposed:

@@ -42,6 +42,18 @@ def _parse_day(value: Any) -> date | None:
 def _fit(points: list[tuple[float, float]]) -> tuple[float, float] | None:
     """OLS fit; returns ``(slope, r2)`` or None for degenerate input."""
 
+    try:
+        fit = _fit_unchecked(points)
+    except OverflowError:
+        # Finite but huge wire values (e.g. 1e308) overflow when squared; such a
+        # series has no usable trend line.
+        return None
+    if fit is None or not all(math.isfinite(v) for v in fit):
+        return None
+    return fit
+
+
+def _fit_unchecked(points: list[tuple[float, float]]) -> tuple[float, float] | None:
     n = len(points)
     if n < 2:
         return None

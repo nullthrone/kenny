@@ -144,3 +144,17 @@ def test_an_oversized_or_non_finite_numeric_field_is_skipped_not_a_crash() -> No
     trend = battery_trend(daily2)
     assert trend is not None
     assert trend["points"] == 4
+
+
+def test_finite_but_huge_values_are_no_trend_not_a_crash() -> None:
+    # 1e308 is a valid finite float but overflows when squared inside the OLS fit.
+    daily = [
+        {
+            "collected_at": f"2026-06-0{i + 1}T00:00:00+00:00",
+            "snapshot": {"disk": {"volumes": [{"mount": "C:", "percent_used": v}]}},
+        }
+        for i, v in enumerate([1e308, 1e-308, 1e308, 5.0])
+    ]
+    [row] = disk_forecast(daily)
+    assert row["slope_percent_per_day"] == 0.0
+    assert row["days_until_full"] is None
