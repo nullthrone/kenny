@@ -33,6 +33,7 @@ from .tools import (
     CAPABILITY_TOOLS,
     CallLog,
     ScreenshotStore,
+    availability_summary,
     build_health,
     forward_timeout_s,
 )
@@ -118,7 +119,14 @@ SURFACE_ONLY_TOOLS: frozenset[str] = frozenset({TRIAGE_VERDICT_TOOL, TICKET_SUMM
 #: Server tools :class:`ToolExecutor` dispatches itself. Guards
 #: :meth:`ToolExecutor.register_server_tool` against shadowing one of them.
 _BUILTIN_SERVER_TOOLS: frozenset[str] = frozenset(
-    {"list_agents", "select_agent", "fleet_overview", "agent_health", "agent_snapshot"}
+    {
+        "list_agents",
+        "select_agent",
+        "fleet_overview",
+        "agent_health",
+        "agent_snapshot",
+        "agent_availability",
+    }
 )
 
 SERVER_TOOLS: dict[str, dict[str, Any]] = {
@@ -150,6 +158,23 @@ SERVER_TOOLS: dict[str, dict[str, Any]] = {
         "properties": {
             "id": {"type": "string", "description": "Agent id."},
             "section": {"type": "string", "description": "Optional single section name."},
+        },
+        "required": ["id"],
+    },
+    "agent_availability": {
+        "description": (
+            "When one agent was reachable over the last `days` days: availability %, "
+            "outages (newest first), spans the server was not running (unknown), and "
+            "reboots. Use it to tell whether a machine was off, disconnected or rebooted."
+        ),
+        "properties": {
+            "id": {"type": "string", "description": "Agent id."},
+            "days": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 30,
+                "description": "Window in days, 1-30 (default 7).",
+            },
         },
         "required": ["id"],
     },
@@ -596,12 +621,19 @@ class ToolExecutor:
         tunnel: AgentTunnel,
         call_log: CallLog,
         screenshots: ScreenshotStore,
+        presence: Any = None,
+        settings: Any = None,
     ) -> None:
         self.registry = registry
         self.store = store
         self.tunnel = tunnel
         self.call_log = call_log
         self.screenshots = screenshots
+        #: The availability record and live settings ``agent_availability`` reads.
+        #: Optional: without the record, availability is rebuilt from telemetry
+        #: arrival times alone.
+        self.presence = presence
+        self.settings = settings
         #: Server tools handled by a collaborator rather than by this class, as
         #: ``handler(args, session) -> dict``. An additive seam, in the shape of
         #: ``TelemetryStore.annotate`` (ADR-0041): the executor is shared by
@@ -647,6 +679,15 @@ class ToolExecutor:
             return await self._agent_health(str(args["id"]))
         if tool == "agent_snapshot":
             return await self._agent_snapshot(str(args["id"]), args.get("section"))
+        if tool == "agent_availability":
+            return await availability_summary(
+                str(args["id"]),
+                args.get("days"),
+                registry=self.registry,
+                store=self.store,
+                presence=self.presence,
+                settings=self.settings,
+            )
         raise ToolError("unknown_tool", f"unknown server tool {tool!r}")
 
     async def run_capability(

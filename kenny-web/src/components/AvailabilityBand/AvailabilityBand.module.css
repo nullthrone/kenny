@@ -1,0 +1,186 @@
+.panel {
+  composes: kc-box from global;
+  background: var(--surface-card);
+  border: 1px solid var(--border-line);
+  box-shadow: var(--shadow-1);
+  padding: 20px 24px 16px;
+  margin-bottom: 28px;
+}
+
+.head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+/* Same eyebrow as the host page's "HEALTH · 30 DAYS". */
+.eyebrow {
+  font-family: var(--font-display);
+  font-size: 10px;
+  letter-spacing: var(--track-caps-wide);
+  color: var(--text-muted);
+}
+
+.toggle {
+  display: flex;
+  flex: none;
+}
+
+.toggleBtn {
+  padding: 0 10px;
+  min-height: var(--control-h-sm);
+  border: 1px solid var(--border-mid);
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-display);
+  font-size: 10px;
+  letter-spacing: var(--track-caps);
+}
+.toggleBtn + .toggleBtn {
+  margin-left: -1px;
+}
+.toggleBtn:hover {
+  background: var(--surface-inset);
+  color: var(--text-body);
+}
+.toggleActive,
+.toggleActive:hover {
+  position: relative;
+  background: var(--kc-btn-bg);
+  border-color: var(--kc-btn-bg);
+  color: var(--kc-btn-fg);
+  cursor: default;
+}
+
+.summaryRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px 20px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.figure {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.pct {
+  font-family: var(--font-display);
+  font-size: var(--display-sm);
+  font-weight: var(--weight-display);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-body);
+}
+
+.pctCaption {
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+.legend li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.swatch {
+  width: 10px;
+  height: 10px;
+  flex: none;
+}
+
+/* The band's approx. hatch (card-coloured stripes over the state colour),
+   shown over a neutral base since it applies to every state. */
+.swatchApprox {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--text-muted) 0 2px,
+    var(--surface-card) 2px 3.5px
+  );
+}
+
+.swatchBoot {
+  width: 2px;
+  height: 12px;
+  flex: none;
+  background: var(--text-body);
+}
+
+.plot {
+  position: relative;
+  touch-action: pan-y;
+  transition: opacity var(--dur-med) var(--ease);
+}
+
+.stale {
+  opacity: 0.55;
+}
+
+.svg {
+  display: block;
+  overflow: visible;
+}
+
+.axisLabel,
+.ledgerLabel {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  fill: var(--text-faint);
+}
+
+.ledgerLabel {
+  fill: var(--text-muted);
+}
+
+/* Drops over the day axis (its `top` is set from the plot geometry), so the
+   band and the marks above it stay readable while it is up; the component's
+   matching left/translate pair pins it inside the plot at either end. */
+.tooltip {
+  position: absolute;
+  width: max-content;
+  max-width: 100%;
+  padding: 5px 9px;
+  background: var(--kc-inv-bg);
+  color: var(--kc-inv-fg);
+  /* In dark the inverse surface IS the card colour; the rule is what lifts it. */
+  border: 1px solid var(--border-mid);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.4;
+  box-shadow: var(--shadow-2);
+  pointer-events: none;
+  z-index: 1;
+}
+
+.note {
+  margin: 8px 0 4px;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+
+.caption {
+  margin: 6px 0 0;
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .plot {
+    transition: none;
+  }
+}

@@ -23,7 +23,7 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from starlette.routing import Match, Route
 
-from .. import PROTOCOL_VERSION, __version__, agent_release, ai, changelog
+from .. import PROTOCOL_VERSION, __version__, agent_release, ai, availability, changelog
 from ..backup_targets import build_destination
 from ..config import CATALOG, SettingNotWritable, Settings
 from ..chat import (
@@ -66,6 +66,9 @@ from ..webfilter import (
 from .authz import guard, principal_of, visible_ids
 
 logger = logging.getLogger("kenny.webui")
+
+#: Span of the per-host availability strip in ``/api/fleet`` (hourly cells).
+_FLEET_AVAILABILITY_DAYS = 7
 
 # The dashboard's HTML entry point, in preference order (ADR-0052): the
 # compiled SPA (``kenny-web/``, built by ``npm run build``) if it has been
@@ -186,6 +189,7 @@ def build_api_routes(
     tickets: Any = None,
     ticket_store: Any = None,
     notifier_provider: Any = None,
+    presence: Any = None,
 ) -> list[Route]:
     """Build the dashboard's static + JSON routes.
 
@@ -286,11 +290,34 @@ def build_api_routes(
         return rows
 
     async def api_fleet(request: Request) -> JSONResponse:
+        from datetime import datetime, timedelta, timezone
+
         ids = await _known_ids(registry, store)
         principal = principal_of(request)
         if principal is not None:
             ids = visible_ids(principal, ids)
         agents = [await _overview(i, registry, store, alert_state=alert_state) for i in ids]
+        # Last 7 days of availability per host, one cell per hour. Dashboard only:
+        # added here, not in ``_overview``, so the MCP fleet payloads stay as they are.
+        now = datetime.now(timezone.utc)
+        week_start = now - timedelta(days=_FLEET_AVAILABILITY_DAYS)
+        week = await availability.load_many(
+            presence=presence,
+            store=store,
+            agent_ids=ids,
+            window_start=week_start,
+            window_end=now,
+            now=now,
+            offline_after_secs=availability.offline_after_secs(settings),
+        )
+        for agent in agents:
+            result = week[agent["agent_id"]]
+            agent["availability_7d"] = {
+                "online_pct": result["online_pct"],
+                "cells": availability.buckets(
+                    result, week_start, now, _FLEET_AVAILABILITY_DAYS * 24
+                ),
+            }
         from .. import health_rules
 
         overall = health_rules.worst(*(a["overall"] for a in agents if a["overall"] != "unknown"))
@@ -691,6 +718,26 @@ def build_api_routes(
             }
         )
 
+    async def api_agent_availability(request: Request) -> JSONResponse:
+        """When the host was reachable over the last ``days`` (1-30, default 30)."""
+
+        agent_id = request.path_params["id"]
+        try:
+            days = availability.parse_days(request.query_params.get("days"), 30)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        result = await availability.load_one(
+            presence=presence,
+            store=store,
+            agent_id=agent_id,
+            days=days,
+            offline_after_secs=availability.offline_after_secs(settings),
+        )
+        agent = registry.get(agent_id)
+        return JSONResponse(
+            {"agent_id": agent_id, "online": bool(agent and agent.online), **result}
+        )
+
     async def api_digest_preview(request: Request) -> JSONResponse:
         """Render (but do not send) the weekly digest for a manual check."""
 
@@ -937,6 +984,7 @@ def build_api_routes(
             screenshots=screenshots,
             suppression=suppression,
             ticket_rules=ticket_rules,
+            presence=presence,
         )
         await call_log.record(agent_id, "remove_host", {}, ok=True)
         return JSONResponse({"ok": True, "agent_id": agent_id, "purged": result})
@@ -2085,6 +2133,7 @@ def build_api_routes(
         Route("/api/agent/{id}", guard(api_remove_host, **op), methods=["DELETE"]),
         Route("/api/agent/{id}/changes", guard(api_agent_changes, **scoped)),
         Route("/api/agent/{id}/trends", guard(api_agent_trends, **scoped)),
+        Route("/api/agent/{id}/availability", guard(api_agent_availability, **scoped)),
         Route("/api/agent/{id}/refresh", guard(api_refresh, **scoped), methods=["POST"]),
         Route(
             "/api/agent/{id}/remotehelp",
@@ -2198,6 +2247,8 @@ def build_chat_routes(
     history_store: ChatHistoryStore,
     client_factory: Any = _anthropic_client,
     copilot_tickets: Any = None,
+    presence: Any = None,
+    settings: Settings | None = None,
 ) -> list[Route]:
     """Build the server-hosted Claude chat routes.
 
@@ -2225,6 +2276,8 @@ def build_chat_routes(
         tunnel=tunnel,
         call_log=call_log,
         screenshots=screenshots,
+        presence=presence,
+        settings=settings,
     )
     if copilot_tickets is not None:
         copilot_tickets.register_tools(executor)

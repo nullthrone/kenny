@@ -138,13 +138,16 @@ background, rather than blanking or erroring on a slow network.
 
 <figure markdown>
   ![The Fleet page](assets/screenshots/fleet.png)
-  <figcaption>Fleet: a card per PC — status dot, severity label, one-line summary, OS, and last push. Click a card to open the host.</figcaption>
+  <figcaption>Fleet: a card per PC — status dot, severity label, one-line summary, OS, 7-day availability, and last push. Click a card to open the host.</figcaption>
 </figure>
 
 A card grid, one card per PC: a **status dot**, the hostname, a **severity label** (e.g.
 `CRITICAL · DISK`, `WARNING · SECURITY`, or `HEALTHY`), a one-line summary (the worst
-section's reason, or "all quiet" plus a notable stat), the OS, and the time of its last
-telemetry push. Cards are sorted worst-first. **Click a card to open [the host
+section's reason, or "all quiet" plus a notable stat), the OS, a **7-day availability
+strip** (one cell per hour: green when the PC was reachable all hour, red when it was not,
+amber when it dropped out within the hour, grey when the server itself was down; hover for
+the percentage), and the time of its last telemetry
+push. Cards are sorted worst-first. **Click a card to open [the host
 page](#the-host-page)** — Fleet itself never shows a second pane or an inline detail; the
 whole page is the grid.
 
@@ -184,7 +187,7 @@ with sequence diagrams.
 
 <figure markdown>
   ![A host's full page](assets/screenshots/host.png)
-  <figcaption>The host page: header and action row, the AI forecast, problem-section cards, the healthy checklist, the health trend, and the last screenshot.</figcaption>
+  <figcaption>The host page: header and action row, the AI forecast, availability, problem-section cards, the healthy checklist, the health trend, and the last screenshot.</figcaption>
 </figure>
 
 Clicking a card on Fleet opens that PC's own full page (`#/fleet/{host}`) — not a modal,
@@ -220,6 +223,25 @@ files. A reboot has been pending for 9 days; expect update failures if it waits 
 longer."* With AI forecasts on it streams from the model and is marked *AI*; otherwise
 the same panel shows a concise deterministic summary of the same signals, unmarked. See
 [Alerting & forecasts](alerting.md#forecasts).
+
+### Availability
+
+A timeline of when the PC was reachable over the last **30 days** (switch to **7 D** for
+a closer look), headed by its availability percentage:
+
+- **Online** (green): the PC's agent was connected to the server.
+- **Offline** (red): the server was running and the PC was not connected. The agent pings
+  every 30 s, so a PC that vanishes without closing its connection turns offline after 90 s.
+- **Unknown** (grey): the server itself was down, or the PC was not enrolled yet. Unknown
+  time does not count against the percentage.
+- **Approx.** (hatched): the stretch before the server started recording connections
+  exactly, reconstructed from telemetry arrival times at roughly 15-minute resolution. A
+  dashed *exact since* line marks where exact recording begins.
+- **Reboot** ticks mark each boot the PC reported.
+
+Hover (or tap) the band for the state, time range, and duration of any stretch. History
+follows the telemetry retention (30 days by default). Claude answers the same question
+through the `agent_availability` tool ("was the kids' PC online last night?").
 
 ### Posture
 

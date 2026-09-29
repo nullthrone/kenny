@@ -1,0 +1,11 @@
+.strip {
+  height: 6px;
+  margin-top: 14px;
+  border-radius: var(--radius-1);
+  overflow: clip;
+  background: var(--surface-inset);
+}
+
+.svg {
+  display: block;
+}

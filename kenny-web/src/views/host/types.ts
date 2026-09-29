@@ -71,6 +71,40 @@ export function normalizeSections(raw: unknown): HostSection[] {
   return []
 }
 
+/* ── Availability (GET /api/agent/{id}/availability?days=N) ──
+ *
+ * `online` — the host's agent held its tunnel to the kenny server;
+ * `offline` — the server was running but the host was not connected;
+ * `unknown` — the server itself was down, or the host was not enrolled yet.
+ * All instants are ISO-8601 UTC. */
+
+export type AvailabilityState = 'online' | 'offline' | 'unknown'
+
+export interface AvailabilitySegment {
+  start: string
+  end: string
+  state: AvailabilityState
+  /** Reconstructed from telemetry arrival times (~15-min resolution) rather
+   * than recorded exactly — the stretch before `ledger_since`. */
+  approx: boolean
+}
+
+export interface AgentAvailability {
+  agent_id: string
+  /** Current tunnel state. */
+  online: boolean
+  window: { start: string; end: string }
+  /** Oldest first, contiguous, covering `window`. */
+  segments: AvailabilitySegment[]
+  /** Reboot instants inside the window, oldest first. */
+  boots: string[]
+  /** 0..100, one decimal, over known time only; null when none is known. */
+  online_pct: number | null
+  totals: { online_secs: number; offline_secs: number; unknown_secs: number }
+  /** Before this instant segments are reconstructed (`approx: true`). */
+  ledger_since: string | null
+}
+
 /* ── Local accounts (snapshot.local_accounts — docs/protocol.md "local_accounts") ── */
 
 export interface LocalAccount {

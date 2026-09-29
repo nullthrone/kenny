@@ -435,8 +435,10 @@ ADR-0017); they are never forwarded to an agent.
 { "type": "pong" }
 ```
 
-Either side may send `ping`; the peer replies `pong`. The server marks an agent
-offline if no frame (any type) arrives within 3 missed intervals.
+Either side may send `ping`; the peer replies `pong`. The agent sends a `ping` every
+**30 s**. The server closes the connection and marks the agent offline if no frame (any type)
+arrives within 3 missed intervals (**90 s**), so a half-open socket cannot keep a host
+"online".
 
 ## Tool catalog
 
@@ -663,6 +665,7 @@ rule: a governance call must never be able to lock everyone out of the machine.
 | `fleet_overview`  | `{}`            | per-agent rolled-up health for the dashboard        |
 | `agent_health`    | `{id}`          | per-section status/summary for one agent            |
 | `agent_snapshot`  | `{id, section?}`| latest stored snapshot (or one section) for an agent|
+| `agent_availability` | `{id, days?}` | when one host was reachable: availability %, outages, reboots over the last `days` (1–30, default 7) |
 | `webfilter_get`   | `{id}`          | one host's parental-controls config + custom list   |
 | `webfilter_set`   | `{id, ...}`     | edit a host's config/toggles or add/remove a domain |
 | `webfilter_push`  | `{id}`          | build the effective block set and forward `webfilter_apply`/`clear` |
@@ -690,6 +693,12 @@ nothing to an agent — `agent_id` is an optional scope filter, not a routing ta
 The `ticket_rule_*` server-only tools manage which alerts open a ticket automatically
 (server-side policy); `_set`/`_remove` are state-changing (ADR-0009). Like the suppression tools, they
 forward nothing to an agent — `agent_id` is an optional scope filter, not a routing target.
+
+`agent_availability` is read-only and forwards nothing to an agent. It reads the server's own
+presence record: each tunnel session (connect to disconnect or heartbeat timeout), the server's
+own run times, and the reboot instants from the `uptime` section. Time the server itself was not
+running is `unknown`, not offline. Before that record existed, the server reconstructs presence
+from telemetry arrival times and marks those spans `approx`.
 
 ## Telemetry sections
 
@@ -821,6 +830,25 @@ spanned, age of `last_seen`, whether it is still happening) from the `by_day`, `
 wire. These annotations are all **server-internal and not part of this wire contract** — the
 agent never sends them (see ADR-0026, ADR-0041, ADR-0058). Off Windows the section is
 the `n/a on this platform` stub with `events: []` and `boot_sessions: []`.
+
+The `uptime` section reports when the host last booted:
+
+```json
+"uptime": {
+  "status": "ok", "summary": "up 3d 4h",
+  "uptime_secs": 273600,
+  "boot_time_unix": 1780322400
+}
+```
+
+- **`uptime_secs`** — seconds since boot at collection time.
+- **`boot_time_unix`** — the boot instant as Unix seconds (UTC). It is derived from the
+  current time minus the uptime, so successive pushes of one boot can differ by a second or
+  two; the server treats boot instants within 120 s of each other as the same boot. The
+  server records every distinct value as a reboot marker in its availability history.
+
+The agent always reports `status: "ok"`; whether a long uptime is a finding is the server's
+call (ADR-0058).
 
 ### Security-inventory, resilience, and parental-awareness sections (v0.10)
 

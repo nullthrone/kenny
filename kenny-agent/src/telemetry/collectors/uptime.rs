@@ -6,7 +6,6 @@ use sysinfo::System;
 use crate::protocol::Status;
 use crate::telemetry::Section;
 
-/// Uptime in seconds beyond which we surface a `warn` (nudge a reboot).
 /// Collect the `uptime` section.
 pub fn collect() -> Section {
     section_for(System::uptime(), System::boot_time())
@@ -47,5 +46,27 @@ mod tests {
         assert_eq!(v["status"], "ok");
         assert_eq!(v["summary"], "up 120d 1h");
         assert_eq!(v["uptime_secs"], 120 * 86_400 + 3_600);
+    }
+
+    /// The server reads `boot_time_unix` from the golden fixture to build its
+    /// reboot markers; this asserts the collector produces exactly that shape,
+    /// so a renamed or dropped field fails here and not on the dashboard.
+    #[test]
+    fn the_fixture_is_what_the_collector_produces() {
+        let fixture: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../docs/fixtures/telemetry_snapshot.json"),
+            )
+            .expect("read the fixture"),
+        )
+        .expect("parse the fixture");
+        let expected = &fixture["snapshot"]["uptime"];
+        let actual = section_for(
+            expected["uptime_secs"].as_u64().expect("uptime_secs"),
+            expected["boot_time_unix"].as_u64().expect("boot_time_unix"),
+        )
+        .into_value();
+        assert_eq!(&actual, expected);
     }
 }

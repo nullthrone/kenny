@@ -52,6 +52,10 @@ class Agent:
     send_fn: SendFn | None = None
     connected_at: datetime | None = None
     last_seen: datetime | None = None
+    #: Generation of the connection currently registered for this agent. Every
+    #: registration takes a new value, so the teardown of a socket that has since
+    #: been replaced by a reconnect can tell it no longer owns the agent's state.
+    conn_id: int = 0
 
     @property
     def os(self) -> str:
@@ -129,6 +133,8 @@ class AgentRegistry:
         # ``_active_agent`` remains the fallback for keyless (single-operator /
         # back-compat) callers.
         self._active_by_key: dict[str, str] = {}
+        # Source of ``Agent.conn_id``; monotonic for the life of the process.
+        self._conn_seq = 0
 
     @property
     def token_store(self) -> "AgentTokenStore | None":
@@ -246,6 +252,8 @@ class AgentRegistry:
         agent.send_fn = send_fn
         agent.connected_at = now
         agent.last_seen = now
+        self._conn_seq += 1
+        agent.conn_id = self._conn_seq
         self._agents[agent_id] = agent
         if self._active_agent is None:
             self._active_agent = agent_id
@@ -287,11 +295,25 @@ class AgentRegistry:
         if agent is not None:
             agent.meta["channel"] = channel
 
-    def mark_offline(self, agent_id: str) -> None:
+    def mark_offline(self, agent_id: str, conn_id: int | None = None) -> bool:
+        """Mark ``agent_id`` offline. Returns False when the call was a no-op
+        because a newer connection owns the agent.
+
+        ``conn_id`` names the connection that is going away. When it no longer
+        matches the agent's current ``conn_id`` the agent has reconnected on a new
+        socket before the old one died, and marking it offline would take down
+        the live connection -- so nothing changes. ``None`` marks offline
+        unconditionally.
+        """
+
         agent = self._agents.get(agent_id)
-        if agent is not None:
-            agent.online = False
-            agent.send_fn = None
+        if agent is None:
+            return True
+        if conn_id is not None and agent.conn_id != conn_id:
+            return False
+        agent.online = False
+        agent.send_fn = None
+        return True
 
     # -- lookups -----------------------------------------------------------
 

@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../api/client'
 import type {
   AccountActionResult,
+  AgentAvailability,
   AgentDetail,
   ShareLinkResult,
   SuppressionRule,
@@ -21,6 +22,26 @@ export function useAgentDetail(agentId: string) {
     queryKey: agentQueryKey(agentId),
     queryFn: () => api.get<AgentDetail>(`/api/agent/${encodeURIComponent(agentId)}`),
     enabled: Boolean(agentId),
+  })
+}
+
+/**
+ * Tunnel availability over the last `days` (1..30). Keyed under
+ * `agentQueryKey`, so every invalidation of the host re-pulls it too. Like
+ * the detail query it never polls (api/queryClient.ts). The previous
+ * window stays on screen while a switched one loads, so the panel does not
+ * collapse to a loading line and back.
+ */
+export function useAgentAvailability(agentId: string, days: number) {
+  return useQuery({
+    queryKey: [...agentQueryKey(agentId), 'availability', days] as const,
+    queryFn: () =>
+      api.get<AgentAvailability>(`/api/agent/${encodeURIComponent(agentId)}/availability?days=${days}`),
+    enabled: Boolean(agentId),
+    // Only across a window switch on the same host: the route reuses this
+    // view for another host, whose band must never stand in for this one.
+    placeholderData: (previous, previousQuery) =>
+      previousQuery?.queryKey[1] === agentId ? previous : undefined,
   })
 }
 

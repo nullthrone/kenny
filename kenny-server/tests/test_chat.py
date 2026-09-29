@@ -180,6 +180,7 @@ def test_tool_schemas_cover_all_tools() -> None:
         "fleet_overview",
         "agent_health",
         "agent_snapshot",
+        "agent_availability",
     ):
         assert server_tool in names
     assert set(CAPABILITY_TOOLS) <= names

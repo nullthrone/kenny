@@ -84,11 +84,32 @@ function renderAt(initialEntry: string, element: React.ReactNode) {
   )
 }
 
+/** `GET /api/agent/{id}/availability?days=30` — one day, the second half offline. */
+const AVAILABILITY = {
+  agent_id: 'crit-pc',
+  online: true,
+  window: { start: '2026-08-01T00:00:00Z', end: '2026-08-02T00:00:00Z' },
+  segments: [
+    { start: '2026-08-01T00:00:00Z', end: '2026-08-01T12:00:00Z', state: 'online', approx: false },
+    { start: '2026-08-01T12:00:00Z', end: '2026-08-02T00:00:00Z', state: 'offline', approx: false },
+  ],
+  boots: ['2026-08-01T06:00:00Z'],
+  online_pct: 50,
+  totals: { online_secs: 43_200, offline_secs: 43_200, unknown_secs: 0 },
+  ledger_since: null,
+}
+
+/** Answers by path, so the availability card gets its own shape rather than
+ * the host detail every `/api/agent/` path used to receive. */
+function apiByPath(path: string) {
+  if (path.startsWith('/api/agent/crit-pc/availability')) return Promise.resolve(AVAILABILITY)
+  if (path.startsWith('/api/agent/')) return Promise.resolve(AGENT_DETAIL)
+  return Promise.resolve({})
+}
+
 beforeEach(() => {
   apiGetMock.mockReset()
-  apiGetMock.mockImplementation((url: string) =>
-    url.startsWith('/api/agent/') ? Promise.resolve(AGENT_DETAIL) : Promise.resolve({}),
-  )
+  apiGetMock.mockImplementation(apiByPath)
 })
 
 /**
@@ -158,5 +179,27 @@ describe('posture sections (ADR-0058)', () => {
     expect(screen.getByText('since 31 d')).toBeInTheDocument()
     // Not counted as healthy either.
     expect(screen.getByText('HEALTHY · 1 SECTION')).toBeInTheDocument()
+  })
+})
+
+describe('availability card', () => {
+  it('draws the host’s availability band from its own endpoint, 30 days by default', async () => {
+    renderAt('/fleet/crit-pc', null)
+
+    expect(
+      await screen.findByRole('img', { name: 'Availability over 30 days: 50.0 %, 1 outage, 1 reboot' }),
+    ).toBeInTheDocument()
+    expect(screen.getByText('AVAILABILITY · 30 DAYS')).toBeInTheDocument()
+    expect(apiGetMock).toHaveBeenCalledWith('/api/agent/crit-pc/availability?days=30')
+  })
+
+  it('asks for the 7-day window when it is chosen', async () => {
+    renderAt('/fleet/crit-pc', null)
+    await screen.findByText('AVAILABILITY · 30 DAYS')
+
+    fireEvent.click(screen.getByRole('button', { name: '7 D' }))
+
+    expect(await screen.findByText('AVAILABILITY · 7 DAYS')).toBeInTheDocument()
+    await waitFor(() => expect(apiGetMock).toHaveBeenCalledWith('/api/agent/crit-pc/availability?days=7'))
   })
 })

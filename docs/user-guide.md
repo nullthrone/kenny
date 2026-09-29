@@ -104,6 +104,10 @@ own page.
   attention on this PC soon, drawn from the disk-fill and battery trends and the inventory
   changes since yesterday. With an Anthropic API key the model writes it; without a key the
   same panel shows a concise deterministic summary.
+- **Availability** — a 30-day (or 7-day) timeline of when the PC was reachable, with its
+  availability percentage, outages, and reboot marks. Time the server itself was down shows
+  as unknown and does not count against the PC. See
+  [Availability](dashboard.md#availability).
 - **Health trend** — recent snapshots as a sparkline.
 - **Last screenshot** — the most recent desktop capture, with a **recapture** button.
 - Action buttons: **refresh**, **remote help** (Quick Assist), **reinstall**, **re-share**,
@@ -202,7 +206,7 @@ resetting your password) — see the [dashboard reference](dashboard.md).
 | Screen | `screen_capture` | read-only |
 | Telemetry | `telemetry_collect` | read-only |
 | Agent mgmt | `agent_update` | ✅ |
-| Server-only | `list_agents` · `select_agent` · `fleet_overview` · `agent_health` · `agent_snapshot` | read-only |
+| Server-only | `list_agents` · `select_agent` · `fleet_overview` · `agent_health` · `agent_snapshot` · `agent_availability` | read-only |
 
 Parental-controls tools (`webfilter_apply/clear`, `webfilter_get/set/push`, `web_activity_query`)
 are covered in **[Parental controls](parental-controls.md)**. The **[tool reference](tools.md)** has

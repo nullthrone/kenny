@@ -68,6 +68,8 @@ def test_role_matrix_via_pats(tmp_path) -> None:
         assert c.get("/api/users", headers=h).status_code == 403
         assert c.get("/api/agent/PC-KID", headers=h).status_code == 200
         assert c.get("/api/agent/PC-OTHER", headers=h).status_code == 403
+        assert c.get("/api/agent/PC-KID/availability", headers=h).status_code == 200
+        assert c.get("/api/agent/PC-OTHER/availability", headers=h).status_code == 403
         assert c.delete("/api/agent/PC-KID", headers=h).status_code == 403
         # A scoped operation (refresh) is allowed on an assigned host but the
         # agent is offline, so it fails at the tunnel (502), not the guard (403).

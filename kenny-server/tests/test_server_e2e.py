@@ -786,3 +786,135 @@ async def test_e2e_telemetry_push_kicks_classification(tmp_path, monkeypatch) ->
             await agent.stop()
     finally:
         event_categories.reset_state()
+
+
+# -- liveness and availability (docs/protocol.md § ping/pong, § uptime) --------
+
+
+@pytest.mark.asyncio
+async def test_e2e_silent_agent_is_closed_and_marked_offline(tmp_path, monkeypatch) -> None:
+    """An agent that registers and then sends nothing -- no ping, no telemetry --
+    is disconnected after the heartbeat timeout and shows offline, instead of a
+    half-open socket keeping it "online" forever."""
+
+    from kenny_server import tunnel as tunnel_module
+
+    monkeypatch.setenv("KENNY_SERVER_PRIVATE_KEY", SERVER_SEED_B64)
+    monkeypatch.setattr(tunnel_module, "HEARTBEAT_TIMEOUT_SECS", 0.5)
+    port = _free_port()
+    app = build_app(db_path=str(tmp_path / "silent.sqlite"))
+
+    async with _Server(app, port):
+        agent = MockAgent(f"ws://127.0.0.1:{port}/agent/ws", "dev")
+        await app.state.key_store.enroll("dev", agent.public_key_b64)
+        await agent.start()
+        await asyncio.sleep(0.2)
+        assert app.state.registry.get("dev").online is True
+
+        await asyncio.sleep(1.0)
+        assert app.state.registry.get("dev").online is False
+        assert agent.ws is not None and agent.ws.close_code == tunnel_module.HEARTBEAT_CLOSE_CODE
+        sessions = await app.state.presence.sessions("dev", "2000-01-01", "2100-01-01")
+        assert [s["end_reason"] for s in sessions] == ["heartbeat_timeout"]
+        await agent.stop()
+
+
+@pytest.mark.asyncio
+async def test_e2e_availability_route_fleet_strip_and_mcp_tool_agree(
+    tmp_path, monkeypatch
+) -> None:
+    """The joined availability seam: a mock agent connects over ``/agent/ws`` and
+    pushes the golden telemetry (with its ``uptime`` section); the presence record
+    it leaves is what the dashboard route, the fleet strip and the MCP tool read."""
+
+    import time
+    from datetime import datetime, timezone
+
+    import httpx
+
+    monkeypatch.setenv("KENNY_SERVER_PRIVATE_KEY", SERVER_SEED_B64)
+    port = _free_port()
+    app = build_app(db_path=str(tmp_path / "availability.sqlite"))
+
+    async with _Server(app, port):
+        agent = MockAgent(f"ws://127.0.0.1:{port}/agent/ws", "dev")
+        await app.state.key_store.enroll("dev", agent.public_key_b64)
+        await agent.start()
+        await asyncio.sleep(0.1)
+
+        # A live agent stamps the current time on what it collects.
+        frame = _fixture("telemetry_snapshot.json")
+        frame["agent_id"] = "dev"
+        frame["collected_at"] = datetime.now(timezone.utc).isoformat()
+        fixture_boot = frame["snapshot"]["uptime"]["boot_time_unix"]
+        assert agent.ws is not None
+        await agent.ws.send(json.dumps(frame))
+        await asyncio.sleep(0.2)
+        # The fixture's boot instant is recorded as a reboot marker ...
+        fixture_boot_iso = datetime.fromtimestamp(fixture_boot, timezone.utc).isoformat()
+        assert await app.state.presence.boots("dev", "1970-01-01", "9999-01-01") == [
+            fixture_boot_iso
+        ]
+        # ... and a later push reporting a new boot adds a second one.
+        reboot = int(time.time()) - 3600
+        frame["snapshot"]["uptime"]["boot_time_unix"] = reboot
+        frame["snapshot"]["uptime"]["uptime_secs"] = 3600
+        await agent.ws.send(json.dumps(frame))
+        await asyncio.sleep(0.2)
+        reboot_iso = datetime.fromtimestamp(reboot, timezone.utc).isoformat()
+        # Segments are reported in whole seconds: let the connection span one.
+        await asyncio.sleep(1.1)
+
+        headers = {"Authorization": f"Bearer {app.state.operator_token}"}
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}", headers=headers) as http:
+            r = await http.get("/api/agent/dev/availability")
+            assert r.status_code == 200
+            body = r.json()
+            assert body["agent_id"] == "dev" and body["online"] is True
+            assert set(body) == {
+                "agent_id", "online", "window", "segments", "boots",
+                "online_pct", "totals", "ledger_since",
+            }
+            assert body["segments"][-1]["state"] == "online"
+            assert body["segments"][-1]["approx"] is False
+            assert body["segments"][-1]["end"] == body["window"]["end"]
+            # The fixture boot (2026-06-01) is only listed while it is inside the window.
+            window_start = datetime.fromisoformat(body["window"]["start"])
+            expected_boots = [
+                b for b in (fixture_boot_iso, reboot_iso)
+                if datetime.fromisoformat(b) >= window_start
+            ]
+            assert body["boots"] == expected_boots
+            assert reboot_iso in body["boots"]
+            assert body["online_pct"] == 100.0
+            assert body["ledger_since"] is not None
+
+            for bad in ("0", "31", "abc"):
+                assert (await http.get(f"/api/agent/dev/availability?days={bad}")).status_code == 400
+            week = (await http.get("/api/agent/dev/availability?days=7")).json()
+
+            fleet = (await http.get("/api/fleet")).json()
+            dev = next(a for a in fleet["agents"] if a["agent_id"] == "dev")
+            strip = dev["availability_7d"]
+            assert set(strip) == {"online_pct", "cells"}
+            assert len(strip["cells"]) == 168
+            assert strip["online_pct"] == week["online_pct"]
+            assert strip["cells"][-1] == 1.0
+            assert strip["cells"][0] is None  # before the host was known
+
+        transport = StreamableHttpTransport(f"http://127.0.0.1:{port}/mcp", headers=headers)
+        async with Client(transport) as client:
+            assert "agent_availability" in {t.name for t in await client.list_tools()}
+            res = (await client.call_tool("agent_availability", {"id": "dev", "days": 7})).data
+            assert res["online_pct"] == week["online_pct"]
+            assert res["online"] is True
+            assert res["boots"][0] == reboot_iso  # newest first
+            assert res["outages"] == [] and res["outages_truncated"] is False
+            # MCP fleet payloads do not carry the dashboard strip.
+            fleet_mcp = (await client.call_tool("fleet_overview", {})).data
+            assert all("availability_7d" not in a for a in fleet_mcp["agents"])
+
+        await agent.stop()
+        await asyncio.sleep(0.2)
+        sessions = await app.state.presence.sessions("dev", "2000-01-01", "2100-01-01")
+        assert [s["end_reason"] for s in sessions] == ["disconnect"]

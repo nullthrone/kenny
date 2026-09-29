@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router'
 import { api } from '../api/client'
 import type { FleetResponse } from '../api/types'
+import AvailabilityStrip from '../components/AvailabilityStrip/AvailabilityStrip'
 import BinaryBanner from '../components/BinaryBanner/BinaryBanner'
 import EmptyState from '../components/EmptyState/EmptyState'
 import SeverityChip from '../components/SeverityChip/SeverityChip'
@@ -61,6 +62,7 @@ export default function Fleet() {
                 </div>
                 <SeverityChip severity={h.overall} label={h.severity_label} variant="text" className={styles.sevLabel} />
                 <div className={styles.summary}>{h.summary}</div>
+                <AvailabilityStrip availability={h.availability_7d} />
                 <div className={styles.cardFoot}>
                   <span>{osLabel(h.os)}</span>
                   <span>push {relativePush(h.collected_at)}</span>

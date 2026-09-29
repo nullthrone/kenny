@@ -118,7 +118,9 @@ FLEET_WIDE_TOOLS: frozenset[str] = frozenset({"list_agents", "fleet_overview"})
 
 #: Server-only tools that name their host in an ``id`` argument. Pinned to the
 #: ticket's frozen target for the same reason ``agent_id`` is discarded.
-_HOST_ARG_TOOLS: frozenset[str] = frozenset({"agent_health", "agent_snapshot"})
+_HOST_ARG_TOOLS: frozenset[str] = frozenset(
+    {"agent_health", "agent_snapshot", "agent_availability"}
+)
 
 _TOOL_CATALOG: frozenset[str] = frozenset(SERVER_TOOLS) | frozenset(CAPABILITY_TOOLS)
 
@@ -826,7 +828,7 @@ class TicketPolicy:
             return Deny("no_agent", "this ticket has no target machine")
 
         # The host-scope check runs over every host the call would reach, not
-        # just the routing target: ``agent_health``/``agent_snapshot`` name their
+        # just the routing target: the tools in ``_HOST_ARG_TOOLS`` name their
         # host in an ``id`` argument, and on a ticket whose target is NULL
         # ``resolve_target`` has nothing to pin that argument to. The absence of
         # a frozen target is not permission to read any host.

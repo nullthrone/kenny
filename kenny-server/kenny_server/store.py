@@ -328,6 +328,57 @@ class TelemetryStore:
             rows = await cur.fetchall()
         return [r["agent_id"] for r in rows]
 
+    async def received_times(self, agent_id: str, since: str, until: str) -> list[str]:
+        """``received_at`` of every snapshot of ``agent_id`` in ``[since, until)``, oldest first.
+
+        Selects the timestamp column alone: the availability reconstruction
+        (``availability.py``) needs when pushes arrived, never what they said, and
+        a snapshot blob is ~90 KB.
+        """
+
+        return (await self.received_times_many([agent_id], since, until)).get(agent_id, [])
+
+    async def received_times_many(
+        self, agent_ids: list[str], since: str, until: str
+    ) -> dict[str, list[str]]:
+        """Batch :meth:`received_times`: one query for many agents.
+
+        Agents with no snapshot in the range are absent from the result.
+        """
+
+        out: dict[str, list[str]] = {}
+        if not agent_ids:
+            return out
+        marks = ",".join("?" * len(agent_ids))
+        async with self._conn.execute(
+            f"SELECT agent_id, received_at FROM snapshots WHERE agent_id IN ({marks}) "
+            "AND received_at >= ? AND received_at < ? ORDER BY received_at",
+            (*agent_ids, since, until),
+        ) as cur:
+            rows = await cur.fetchall()
+        for r in rows:
+            out.setdefault(r["agent_id"], []).append(r["received_at"])
+        return out
+
+    async def first_collected_many(self, agent_ids: list[str]) -> dict[str, str]:
+        """The oldest stored ``collected_at`` per agent (served from the index).
+
+        Availability treats time before a host's first snapshot as "not enrolled
+        yet". ``collected_at`` rather than ``received_at`` because the
+        ``(agent_id, collected_at)`` index answers it without touching a row.
+        """
+
+        if not agent_ids:
+            return {}
+        marks = ",".join("?" * len(agent_ids))
+        async with self._conn.execute(
+            f"SELECT agent_id, MIN(collected_at) AS first FROM snapshots "
+            f"WHERE agent_id IN ({marks}) GROUP BY agent_id",
+            tuple(agent_ids),
+        ) as cur:
+            rows = await cur.fetchall()
+        return {r["agent_id"]: r["first"] for r in rows if r["first"] is not None}
+
     _PRUNE_CHUNK = 500
 
     async def prune(
@@ -421,6 +472,479 @@ class TelemetryStore:
             "received_at": row["received_at"],
             "snapshot": snapshot,
         }
+
+
+_PRESENCE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS presence_sessions (
+    id              INTEGER PRIMARY KEY,
+    agent_id        TEXT NOT NULL,
+    connected_at    TEXT NOT NULL,
+    disconnected_at TEXT,
+    end_reason      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_presence_sessions_agent_time
+    ON presence_sessions (agent_id, connected_at);
+CREATE TABLE IF NOT EXISTS server_runs (
+    id            INTEGER PRIMARY KEY,
+    started_at    TEXT NOT NULL,
+    last_alive_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS host_boots (
+    agent_id TEXT NOT NULL,
+    boot_at  TEXT NOT NULL,
+    PRIMARY KEY (agent_id, boot_at)
+);
+CREATE TABLE IF NOT EXISTS presence_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+"""
+
+#: Why a presence session ended. ``disconnect``: the socket closed.
+#: ``heartbeat_timeout``: no frame for three heartbeat intervals (docs/protocol.md
+#: § ping/pong). ``server_stopped``: the server shut down, or crashed and closed
+#: the session at its last sign of life on the next start. ``superseded``: the
+#: agent reconnected on a new socket before the old one died.
+PRESENCE_END_REASONS: tuple[str, ...] = (
+    "disconnect",
+    "heartbeat_timeout",
+    "server_stopped",
+    "superseded",
+)
+
+#: Boot instants this close together are one boot (docs/protocol.md § uptime):
+#: the agent derives ``boot_time_unix`` from now minus uptime, so successive
+#: pushes of one boot jitter by a second or two.
+BOOT_SAME_WITHIN_SECS = 120
+
+
+def _presence_ts(value: datetime | None) -> str:
+    return (value or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat()
+
+
+def _boot_iso(boot_unix: int) -> str:
+    # Whole seconds, one fixed format: host_boots.boot_at is range-compared as text.
+    return datetime.fromtimestamp(boot_unix, timezone.utc).isoformat()
+
+
+class PresenceStore:
+    """The server's own record of when each host was reachable.
+
+    Three tables. ``presence_sessions`` holds one row per tunnel connection
+    (connect to disconnect/heartbeat timeout). ``server_runs`` holds the spans the
+    server itself was running, so time it was down reads as *unknown* rather than
+    as every host being offline. ``host_boots`` holds the distinct reboot instants
+    the ``uptime`` section reported. ``availability.py`` turns them into segments.
+
+    ``presence_meta`` records one-time work (the boot backfill), the same way
+    ``shell_allow_meta`` records the shipped-defaults offer.
+
+    Retention follows the telemetry snapshots (``KENNY_TELEMETRY_RETENTION_DAYS``):
+    before the ledger, availability is reconstructed from snapshot arrival times,
+    so the two have to age together.
+
+    Reads use a second connection (``_rconn``). A read cancelled mid-flight (an
+    HTTP request going away, the boot backfill stopped at shutdown) has its cursor
+    finalized on the event loop's thread; if that coincides with a write on the
+    same connection, the write's busy wait holds the connection mutex the
+    finalizer needs, and both sit out the whole ``busy_timeout``. Writes here keep
+    the tunnel's sessions and the run heartbeat, so they never share a connection
+    with a read that can be cancelled.
+    """
+
+    _BOOTS_BACKFILLED = "boots_backfilled"
+
+    def __init__(
+        self, db_path: str = DEFAULT_DB_PATH, retention_days: int = TELEMETRY_RETENTION_DAYS
+    ) -> None:
+        self.db_path = db_path
+        self.retention_days = retention_days
+        self._db: aiosqlite.Connection | None = None
+        self._rdb: aiosqlite.Connection | None = None
+        #: The ``server_runs`` row of this process, set by :meth:`start_run`.
+        self.run_id: int | None = None
+        # Last boot instant noted per agent, so the common case -- the same boot
+        # reported on every push -- costs no query.
+        self._last_boot: dict[str, int] = {}
+
+    async def connect(self) -> None:
+        if self._db is not None:
+            return
+        self._db = await aiosqlite.connect(self.db_path)
+        await _configure_connection(self._db)
+        await self._db.executescript(_PRESENCE_SCHEMA)
+        await self._db.commit()
+        self._rdb = await aiosqlite.connect(self.db_path)
+        await _configure_connection(self._rdb)
+
+    async def close(self) -> None:
+        for db in (self._rdb, self._db):
+            if db is not None:
+                await db.close()
+        self._db = self._rdb = None
+
+    @property
+    def _conn(self) -> aiosqlite.Connection:
+        """The write connection."""
+
+        if self._db is None:
+            raise RuntimeError("PresenceStore is not connected; call connect() first")
+        return self._db
+
+    @property
+    def _rconn(self) -> aiosqlite.Connection:
+        """The read connection (see the class docstring)."""
+
+        if self._rdb is None:
+            raise RuntimeError("PresenceStore is not connected; call connect() first")
+        return self._rdb
+
+    # -- server runs -------------------------------------------------------
+
+    async def start_run(self, now: datetime | None = None) -> int:
+        """Open this process's run; close whatever the previous one left open.
+
+        Sessions still open belong to a previous process that did not shut down
+        cleanly. They end at that run's last sign of life (``last_alive_at``, kept
+        fresh by :meth:`touch_run`), so a crash misattributes at most one touch
+        interval. The gap until now is covered by no run and reads as unknown.
+        """
+
+        stamp = _presence_ts(now)
+        async with write_lock():
+            async with self._rconn.execute(
+                "SELECT last_alive_at FROM server_runs ORDER BY started_at DESC, id DESC LIMIT 1"
+            ) as cur:
+                row = await cur.fetchone()
+            ended = row["last_alive_at"] if row is not None else stamp
+            await self._conn.execute(
+                "UPDATE presence_sessions SET disconnected_at = MAX(connected_at, ?), "
+                "end_reason = 'server_stopped' WHERE disconnected_at IS NULL",
+                (ended,),
+            )
+            cur = await self._conn.execute(
+                "INSERT INTO server_runs (started_at, last_alive_at) VALUES (?, ?)",
+                (stamp, stamp),
+            )
+            await self._conn.commit()
+        self.run_id = int(cur.lastrowid)
+        return self.run_id
+
+    async def touch_run(self, now: datetime | None = None) -> None:
+        """Advance this run's ``last_alive_at`` (called about once a minute)."""
+
+        if self.run_id is None:
+            return
+        async with write_lock():
+            await self._conn.execute(
+                "UPDATE server_runs SET last_alive_at = ? WHERE id = ?",
+                (_presence_ts(now), self.run_id),
+            )
+            await self._conn.commit()
+
+    async def stop_run(self, now: datetime | None = None) -> None:
+        """Graceful shutdown: end every open session and this run at ``now``."""
+
+        stamp = _presence_ts(now)
+        async with write_lock():
+            await self._conn.execute(
+                "UPDATE presence_sessions SET disconnected_at = MAX(connected_at, ?), "
+                "end_reason = 'server_stopped' WHERE disconnected_at IS NULL",
+                (stamp,),
+            )
+            await self._conn.commit()
+        if self.run_id is not None:
+            async with write_lock():
+                await self._conn.execute(
+                    "UPDATE server_runs SET last_alive_at = ? WHERE id = ?",
+                    (stamp, self.run_id),
+                )
+                await self._conn.commit()
+        self.run_id = None
+
+    # -- sessions ----------------------------------------------------------
+
+    async def open_session(self, agent_id: str, now: datetime | None = None) -> int:
+        """Record that ``agent_id`` connected; returns the session id."""
+
+        async with write_lock():
+            cur = await self._conn.execute(
+                "INSERT INTO presence_sessions (agent_id, connected_at) VALUES (?, ?)",
+                (agent_id, _presence_ts(now)),
+            )
+            await self._conn.commit()
+        return int(cur.lastrowid)
+
+    async def close_session(
+        self, session_id: int, reason: str, now: datetime | None = None
+    ) -> bool:
+        """End an open session. A session already ended is left as it is."""
+
+        if reason not in PRESENCE_END_REASONS:
+            raise ValueError(f"unknown presence end reason {reason!r}")
+        async with write_lock():
+            cur = await self._conn.execute(
+                "UPDATE presence_sessions SET disconnected_at = MAX(connected_at, ?), "
+                "end_reason = ? WHERE id = ? AND disconnected_at IS NULL",
+                (_presence_ts(now), reason, session_id),
+            )
+            await self._conn.commit()
+        return (cur.rowcount or 0) > 0
+
+    # -- boots -------------------------------------------------------------
+
+    async def note_boot(
+        self, agent_id: str, boot_unix: Any, now: datetime | None = None
+    ) -> bool:
+        """Record a reported boot instant unless one within 120 s is already known.
+
+        Returns True when a new boot was recorded. Values that are not a plausible
+        Unix time (not an int, not positive, more than a day in the future) are
+        ignored: the value comes from the agent and is not trusted.
+        """
+
+        if isinstance(boot_unix, bool) or not isinstance(boot_unix, int):
+            return False
+        horizon = (now or datetime.now(timezone.utc)).timestamp() + 86400
+        if boot_unix <= 0 or boot_unix > horizon:
+            return False
+        cached = self._last_boot.get(agent_id)
+        if cached is not None and abs(cached - boot_unix) <= BOOT_SAME_WITHIN_SECS:
+            return False
+        recorded = await self._insert_boot(agent_id, boot_unix)
+        self._last_boot[agent_id] = boot_unix
+        return recorded
+
+    async def _insert_boot(self, agent_id: str, boot_unix: int) -> bool:
+        low = _boot_iso(max(0, boot_unix - BOOT_SAME_WITHIN_SECS))
+        high = _boot_iso(boot_unix + BOOT_SAME_WITHIN_SECS)
+        async with write_lock():
+            # Under the write lock, so no other writer in this process can slip a
+            # boot in between this check and the insert below.
+            async with self._rconn.execute(
+                "SELECT 1 FROM host_boots WHERE agent_id = ? AND boot_at BETWEEN ? AND ? LIMIT 1",
+                (agent_id, low, high),
+            ) as cur:
+                if await cur.fetchone() is not None:
+                    return False
+            await self._conn.execute(
+                "INSERT OR IGNORE INTO host_boots (agent_id, boot_at) VALUES (?, ?)",
+                (agent_id, _boot_iso(boot_unix)),
+            )
+            await self._conn.commit()
+        return True
+
+    async def backfill_boots_from_snapshots(self) -> int:
+        """Once per database: record the boot instants already in stored snapshots.
+
+        Reads ``uptime.boot_time_unix`` out of the ``snapshots`` table in SQL, so
+        reboots from before the presence ledger existed still show. Recorded in
+        ``presence_meta`` whatever it found, so it never runs twice. Returns how
+        many boots were added.
+        """
+
+        async with self._rconn.execute(
+            "SELECT 1 FROM presence_meta WHERE key = ?", (self._BOOTS_BACKFILLED,)
+        ) as cur:
+            if await cur.fetchone() is not None:
+                return 0
+        async with self._rconn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'snapshots'"
+        ) as cur:
+            has_snapshots = await cur.fetchone() is not None
+        by_agent: dict[str, list[int]] = {}
+        if has_snapshots:
+            # ``instr`` first so only snapshots that carry the field are parsed.
+            async with self._rconn.execute(
+                "SELECT agent_id, json_extract(snapshot, '$.uptime.boot_time_unix') AS boot "
+                "FROM snapshots WHERE instr(snapshot, 'boot_time_unix') > 0"
+            ) as cur:
+                rows = await cur.fetchall()
+            for r in rows:
+                boot = r["boot"]
+                if isinstance(boot, int) and not isinstance(boot, bool) and boot > 0:
+                    by_agent.setdefault(r["agent_id"], []).append(boot)
+        added = 0
+        for agent_id, boots in by_agent.items():
+            kept: list[int] = []
+            for boot in sorted(set(boots)):
+                if kept and boot - kept[-1] <= BOOT_SAME_WITHIN_SECS:
+                    continue
+                kept.append(boot)
+            for boot in kept:
+                if await self._insert_boot(agent_id, boot):
+                    added += 1
+        async with write_lock():
+            await self._conn.execute(
+                "INSERT OR REPLACE INTO presence_meta (key, value) VALUES (?, ?)",
+                (self._BOOTS_BACKFILLED, _presence_ts(None)),
+            )
+            await self._conn.commit()
+        return added
+
+    # -- reads -------------------------------------------------------------
+
+    async def ledger_epoch(self) -> str | None:
+        """When the presence record begins: the earliest run's start, or None."""
+
+        async with self._rconn.execute("SELECT MIN(started_at) AS epoch FROM server_runs") as cur:
+            row = await cur.fetchone()
+        return row["epoch"] if row is not None else None
+
+    async def runs(self, since: str, until: str) -> list[dict[str, Any]]:
+        """Server runs overlapping ``[since, until)``, oldest first.
+
+        ``current`` marks this process's run; its ``last_alive_at`` trails the
+        truth by up to one touch interval, so readers extend it to now.
+        """
+
+        async with self._rconn.execute(
+            "SELECT id, started_at, last_alive_at FROM server_runs "
+            "WHERE (started_at < ? AND last_alive_at >= ?) OR id = ? ORDER BY started_at",
+            (until, since, self.run_id),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [
+            {
+                "started_at": r["started_at"],
+                "last_alive_at": r["last_alive_at"],
+                "current": r["id"] == self.run_id,
+            }
+            for r in rows
+        ]
+
+    async def sessions(self, agent_id: str, since: str, until: str) -> list[dict[str, Any]]:
+        """Sessions of ``agent_id`` overlapping ``[since, until)``, oldest first."""
+
+        return (await self.sessions_many([agent_id], since, until)).get(agent_id, [])
+
+    async def sessions_many(
+        self, agent_ids: list[str], since: str, until: str
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Batch :meth:`sessions`. An open session has ``disconnected_at`` None."""
+
+        out: dict[str, list[dict[str, Any]]] = {}
+        if not agent_ids:
+            return out
+        marks = ",".join("?" * len(agent_ids))
+        async with self._rconn.execute(
+            "SELECT agent_id, connected_at, disconnected_at, end_reason FROM presence_sessions "
+            f"WHERE agent_id IN ({marks}) AND connected_at < ? "
+            "AND (disconnected_at IS NULL OR disconnected_at > ?) ORDER BY connected_at",
+            (*agent_ids, until, since),
+        ) as cur:
+            rows = await cur.fetchall()
+        for r in rows:
+            out.setdefault(r["agent_id"], []).append(
+                {
+                    "connected_at": r["connected_at"],
+                    "disconnected_at": r["disconnected_at"],
+                    "end_reason": r["end_reason"],
+                }
+            )
+        return out
+
+    async def first_session_many(self, agent_ids: list[str]) -> dict[str, str]:
+        """The earliest recorded ``connected_at`` per agent."""
+
+        if not agent_ids:
+            return {}
+        marks = ",".join("?" * len(agent_ids))
+        async with self._rconn.execute(
+            "SELECT agent_id, MIN(connected_at) AS first FROM presence_sessions "
+            f"WHERE agent_id IN ({marks}) GROUP BY agent_id",
+            tuple(agent_ids),
+        ) as cur:
+            rows = await cur.fetchall()
+        return {r["agent_id"]: r["first"] for r in rows if r["first"] is not None}
+
+    async def boots(self, agent_id: str, since: str, until: str) -> list[str]:
+        """Boot instants of ``agent_id`` in ``[since, until]``, oldest first."""
+
+        return (await self.boots_many([agent_id], since, until)).get(agent_id, [])
+
+    async def boots_many(
+        self, agent_ids: list[str], since: str, until: str
+    ) -> dict[str, list[str]]:
+        """Batch :meth:`boots`."""
+
+        out: dict[str, list[str]] = {}
+        if not agent_ids:
+            return out
+        marks = ",".join("?" * len(agent_ids))
+        async with self._rconn.execute(
+            f"SELECT agent_id, boot_at FROM host_boots WHERE agent_id IN ({marks}) "
+            "AND boot_at >= ? AND boot_at <= ? ORDER BY boot_at",
+            (*agent_ids, since, until),
+        ) as cur:
+            rows = await cur.fetchall()
+        for r in rows:
+            out.setdefault(r["agent_id"], []).append(r["boot_at"])
+        return out
+
+    # -- retention ---------------------------------------------------------
+
+    async def prune(
+        self, *, now: datetime | None = None, retention_days: int | None = None
+    ) -> int:
+        """Age the record out past the retention window. Returns rows deleted.
+
+        What straddles the cutoff is clipped to it rather than kept whole: the
+        ledger then begins exactly where the retained snapshots do, and time
+        before it reads as unknown instead of as a run with its sessions pruned
+        away (which would read as offline). This process's own run is never
+        deleted.
+        """
+
+        now = now or datetime.now(timezone.utc)
+        days = retention_days if retention_days is not None else self.retention_days
+        cutoff = (now - timedelta(days=days)).isoformat()
+        total = 0
+        statements: list[tuple[str, tuple[Any, ...], bool]] = [
+            (
+                "DELETE FROM presence_sessions "
+                "WHERE disconnected_at IS NOT NULL AND disconnected_at < ?",
+                (cutoff,),
+                True,
+            ),
+            (
+                "UPDATE presence_sessions SET connected_at = ? WHERE connected_at < ?",
+                (cutoff, cutoff),
+                False,
+            ),
+            (
+                "DELETE FROM server_runs WHERE last_alive_at < ? AND id IS NOT ?",
+                (cutoff, self.run_id),
+                True,
+            ),
+            (
+                "UPDATE server_runs SET started_at = ? WHERE started_at < ?",
+                (cutoff, cutoff),
+                False,
+            ),
+            ("DELETE FROM host_boots WHERE boot_at < ?", (cutoff,), True),
+        ]
+        for sql, params, counts in statements:
+            async with write_lock():
+                cur = await self._conn.execute(sql, params)
+                await self._conn.commit()
+            if counts:
+                total += cur.rowcount or 0
+        return total
+
+    async def delete_agent(self, agent_id: str) -> int:
+        """Delete every session and boot of ``agent_id`` (host removed from inventory)."""
+
+        total = 0
+        for table in ("presence_sessions", "host_boots"):
+            async with write_lock():
+                cur = await self._conn.execute(
+                    f"DELETE FROM {table} WHERE agent_id = ?", (agent_id,)
+                )
+                await self._conn.commit()
+            total += cur.rowcount or 0
+        self._last_boot.pop(agent_id, None)
+        return total
 
 
 _EVENTS_SCHEMA = """

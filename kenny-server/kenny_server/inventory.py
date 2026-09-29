@@ -46,6 +46,7 @@ async def purge_agent(
     screenshots,
     suppression=None,
     ticket_rules=None,
+    presence=None,
 ) -> dict[str, str]:
     """Delete every trace of ``agent_id``; return a per-store outcome map."""
 
@@ -66,6 +67,8 @@ async def purge_agent(
     await _try("agent_key", key_store.delete(agent_id))
     await _try("webfilter", webfilter_store.delete_agent(agent_id))
     await _try("user_hosts", user_store.purge_host(agent_id))
+    if presence is not None:
+        await _try("presence", presence.delete_agent(agent_id))
     if suppression is not None:
         # Only this host's own suppression rules go -- fleet-wide rules mute a
         # Windows quirk, not a specific PC, and must survive its removal.

@@ -52,6 +52,7 @@ TOOL_CLASSES: dict[str, str] = {
     "fleet_overview": READ_ONLY,
     "agent_health": READ_ONLY,
     "agent_snapshot": READ_ONLY,
+    "agent_availability": READ_ONLY,
     # -- shells: arbitrary code on the host --------------------------------
     "powershell_exec": NORMAL_CHANGE,
     "shell_exec": NORMAL_CHANGE,
@@ -193,6 +194,7 @@ _SELF_SERVICE_BASIC: frozenset[str] = frozenset(
         "select_agent",
         "agent_health",
         "agent_snapshot",
+        "agent_availability",
         "telemetry_collect",
         "diag_processes",
         "diag_services",
