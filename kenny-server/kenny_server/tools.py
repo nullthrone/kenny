@@ -41,6 +41,7 @@ from .webfilter import (
     ListTooLargeError,
     WebFilterService,
     describe_categories,
+    list_drift,
     load_seed,
     validate_categories,
 )
@@ -769,7 +770,6 @@ def register_tools(
     async def _webfilter_overview(agent_id: str) -> dict[str, Any]:
         config = await webfilter.get_config(agent_id)
         custom = await webfilter.list_domains(agent_id)
-        applied_hash = config.get("applied_hash")
         # An over-cap list is a state the overview has to be able to *show*:
         # failing the read too would leave the operator with an error and no way
         # to see which category to turn off.
@@ -789,7 +789,7 @@ def register_tools(
             "schedule": await webfilter.schedule_state(agent_id),
             "current_hash": current_hash,
             "oversize": oversize,
-            "drift": bool(applied_hash) and applied_hash != current_hash,
+            "drift": list_drift(config, current_hash),
         }
 
     @mcp.tool(
@@ -808,8 +808,14 @@ def register_tools(
         name="webfilter_set",
         description=(
             "Update parental-controls config, the custom domain list, and/or the "
-            "schedule for an agent (state-changing). Toggles: enabled, block_mode, "
-            "use_external_adult, use_bypass_protection, doh_policy. Categories: a "
+            "schedule for an agent (state-changing). enforcement: 'off' (match "
+            "nothing), 'log_only' (record and alarm on matches) or 'protect' (also "
+            "block, on the next webfilter_push). history: 'violations' (keep only "
+            "matches; switching to it irreversibly purges this host's stored "
+            "unmatched browsing history) or 'full' (keep every observed domain). The "
+            "host collects web activity unless enforcement is off and history is "
+            "violations. Legacy toggles enabled/block_mode still work. Other "
+            "toggles: use_external_adult, use_bypass_protection, doh_policy. Categories: a "
             "comma-separated set of category keys (replaces the enabled set). "
             "Optional add_domain/remove_domain (+action, +domain_category, so an "
             "entry applies only while that category is on). Schedule: pass "
@@ -821,6 +827,8 @@ def register_tools(
     )
     async def webfilter_set(
         id: str,
+        enforcement: str | None = None,
+        history: str | None = None,
         enabled: bool | None = None,
         block_mode: bool | None = None,
         use_external_adult: bool | None = None,
@@ -850,15 +858,20 @@ def register_tools(
             )
         except ValueError as exc:
             raise ToolError("bad_args", str(exc)) from exc
-        await webfilter.set_config(
-            id,
-            enabled=enabled,
-            block_mode=block_mode,
-            use_external_adult=use_external_adult,
-            use_bypass_protection=use_bypass_protection,
-            doh_policy=doh_policy,
-            categories=list(keys) if keys is not None else None,
-        )
+        try:
+            outcome = await webfilter.configure(
+                id,
+                enforcement=enforcement,
+                history=history,
+                enabled=enabled,
+                block_mode=block_mode,
+                use_external_adult=use_external_adult,
+                use_bypass_protection=use_bypass_protection,
+                doh_policy=doh_policy,
+                categories=list(keys) if keys is not None else None,
+            )
+        except ValueError as exc:
+            raise ToolError("bad_args", str(exc)) from exc
         if add_domain:
             try:
                 await webfilter.add_domain(
@@ -883,14 +896,17 @@ def register_tools(
                 raise ToolError("bad_args", str(exc)) from exc
         if remove_window:
             await webfilter.remove_window(id, remove_window)
-        return await _webfilter_overview(id)
+        overview = await _webfilter_overview(id)
+        if outcome["purged"] is not None:
+            overview["purged"] = outcome["purged"]
+        return overview
 
     @mcp.tool(
         name="webfilter_push",
         description=(
             "Push the effective parental-controls block list to an agent (state-changing): "
-            "forwards webfilter_apply when block mode is on, else webfilter_clear. The "
-            "list reflects any schedule window open right now."
+            "forwards webfilter_apply when enforcement is 'protect', else webfilter_clear. "
+            "The list reflects any schedule window open right now."
         ),
     )
     async def webfilter_push(id: str) -> dict[str, Any]:
@@ -904,9 +920,9 @@ def register_tools(
             # Refuse here rather than hand the agent a list it rejects with
             # `bad_args` anyway — the operator gets a count and a way out.
             raise ToolError("bad_args", str(exc)) from exc
-        block_mode = bool(config["block_mode"])
-        tool = "webfilter_apply" if block_mode else "webfilter_clear"
-        call_args = args if block_mode else {}
+        protect = config["enforcement"] == "protect"
+        tool = "webfilter_apply" if protect else "webfilter_clear"
+        call_args = args if protect else {}
         try:
             result = await tunnel.send_request(id, tool, call_args, 30)
             await call_log.record(id, tool, call_args, ok=True)
@@ -916,7 +932,7 @@ def register_tools(
         applied_at = str(result.get("applied_at") or datetime.now(timezone.utc).isoformat())
         await webfilter.set_applied_state(
             id,
-            args["list_hash"] if block_mode else None,
+            args["list_hash"] if protect else None,
             applied_at,
             bool(result.get("ok", True)),
         )

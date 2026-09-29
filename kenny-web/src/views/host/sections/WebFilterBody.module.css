@@ -25,6 +25,17 @@
   flex: none;
 }
 
+.levelGroup {
+  border: none;
+  margin: 0;
+  padding: 0;
+}
+
+.levelLegend {
+  font-size: var(--text-sm);
+  padding: 8px 0 0;
+}
+
 .help {
   color: var(--text-faint);
   font-size: var(--text-xs);

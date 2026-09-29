@@ -192,7 +192,9 @@ class Policy(BaseModel):
     """``policy`` frame: server -> agent, operator's append-only extra deny rules.
 
     ``shell`` is optional and omitted when unset, so a frame that carries no shell
-    policy is byte-identical to a pre-0.18 one.
+    policy is byte-identical to a pre-0.18 one. ``collect`` (v0.20, ADR-0069) is the
+    per-host map of telemetry section -> whether this agent collects it; it is
+    likewise omitted when unset, so a frame without it is byte-identical to v0.19.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -200,6 +202,7 @@ class Policy(BaseModel):
     type: Literal["policy"] = "policy"
     rules: list[PolicyRule] = Field(default_factory=list)
     shell: ShellPolicy | None = None
+    collect: dict[str, bool] | None = None
 
 
 class Ping(BaseModel):

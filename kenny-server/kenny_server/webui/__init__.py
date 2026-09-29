@@ -57,6 +57,7 @@ from ..webfilter import (
     ListTooLargeError,
     WebFilterService,
     describe_categories,
+    list_drift,
     load_seed,
     normalize_domain,
     requested_domains,
@@ -1206,7 +1207,9 @@ def build_api_routes(
         the previous mode until each agent happened to reconnect (ADR-0064).
         """
 
-        if key == "KENNY_SHELL_POLICY_MODE":
+        if key in ("KENNY_SHELL_POLICY_MODE", "KENNY_WEBFILTER_DEFAULT_HISTORY"):
+            # The default history decides `policy.collect` for every host whose
+            # web filter was never configured (ADR-0069).
             await tunnel.broadcast_policy()
 
     async def api_settings_set(request: Request) -> JSONResponse:
@@ -1617,7 +1620,7 @@ def build_api_routes(
             },
             "current_hash": current_hash,
             "oversize": oversize,
-            "drift": bool(applied_hash) and applied_hash != current_hash,
+            "drift": list_drift(config, current_hash),
         }
 
     async def api_webfilter_get(request: Request) -> JSONResponse:
@@ -1652,16 +1655,27 @@ def build_api_routes(
                 categories = list(validate_categories(raw_categories))
             except ValueError as exc:
                 return JSONResponse({"error": str(exc)}, status_code=400)
-        config = await webfilter.set_config(
-            agent_id,
-            enabled=body.get("enabled"),
-            block_mode=body.get("block_mode"),
-            use_external_adult=body.get("use_external_adult"),
-            use_bypass_protection=body.get("use_bypass_protection"),
-            doh_policy=doh,
-            categories=categories,
-        )
-        return JSONResponse({"config": config})
+        # enforcement/history (ADR-0069) are validated by the service; turning
+        # history to `violations` purges in the same call and a change to what
+        # the host collects re-sends its `policy` frame.
+        try:
+            outcome = await webfilter.configure(
+                agent_id,
+                enforcement=body.get("enforcement"),
+                history=body.get("history"),
+                enabled=body.get("enabled"),
+                block_mode=body.get("block_mode"),
+                use_external_adult=body.get("use_external_adult"),
+                use_bypass_protection=body.get("use_bypass_protection"),
+                doh_policy=doh,
+                categories=categories,
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        payload: dict[str, Any] = {"config": outcome["config"]}
+        if outcome["purged"] is not None:
+            payload["purged"] = outcome["purged"]
+        return JSONResponse(payload)
 
     async def api_webfilter_add_domain(request: Request) -> JSONResponse:
         if webfilter is None:
@@ -1807,7 +1821,8 @@ def build_api_routes(
                 },
                 status_code=400,
             )
-        block_mode = bool(config["block_mode"])
+        # Only `protect` blocks (ADR-0069); every other level clears the host.
+        block_mode = config["enforcement"] == "protect"
         tool = "webfilter_apply" if block_mode else "webfilter_clear"
         call_args: dict[str, Any] = args if block_mode else {}
         try:

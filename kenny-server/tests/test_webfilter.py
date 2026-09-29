@@ -789,7 +789,10 @@ async def test_record_activity_survives_malformed_hits_and_sources(
     SQLite bind in ``upsert_events``).
     """
 
-    await service.set_config("pc1", enabled=True, block_mode=True, categories=[])
+    # history `full`, so the unmatched domain is stored and its row can be read.
+    await service.set_config(
+        "pc1", enabled=True, block_mode=True, categories=[], history="full"
+    )
     payload = {
         "domains": [
             {"domain": "example.com", "first_seen": "2026-07-01T10:00:00Z",
@@ -840,6 +843,8 @@ async def test_service_record_activity_never_crashes_on_malformed_hits_or_source
     """
 
     last_seen = datetime.now(timezone.utc).isoformat()
+    # history `full`: every observed domain is stored, so each row can be read.
+    await service.set_config("pc1", history="full")
     await service.record_activity(
         "pc1",
         {

@@ -184,6 +184,7 @@ one asks permission, the other refuses to be evaded.
   (`webfilter_get`/`webfilter_set` extended in place — no new tool names, so the tier map
   and its agent-parity test stay untouched), `tickets.py` (`web_filter` category),
   `webui/__init__.py` (`/api/agent/{id}/webfilter/schedule`, `/webfilter/requests`).
+- Amended by [ADR-0069](0069-web-filter-enforcement-and-history-per-host.md): per-host `enforcement` (`off`/`log_only`/`protect`) replaces the `enabled`/`block_mode` pair, and a separate `history` (`violations`/`full`) decides what is kept; collection is gated per host over the `policy` frame.
 - No agent-side change; no `docs/protocol.md`, `docs/fixtures/`, `protocol.py` or
   `protocol.rs` change; no `PROTOCOL_VERSION` bump.
 - Follow-ups, additive and not built now: settings-catalog specs for the loop's cadence;

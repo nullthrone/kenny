@@ -20,20 +20,28 @@
 //! startup, so a restart or a reconnect does not silently revert to `unrestricted` for the
 //! seconds before the first `policy` frame lands.
 //!
+//! ADR-0069 adds a third, unrelated field to the same frame: the per-host telemetry
+//! **collection gate** (`policy.collect`). It is data minimisation, not a safety rule, and
+//! lives here only because this module owns the state every `policy` frame updates. It is
+//! held in memory only: the server discards on insert what it did not ask for, so a
+//! snapshot taken before the first frame of a process lands costs nothing but bandwidth.
+//!
 //! Scope (be honest): a regex blocklist over a Turing-complete shell is a *seatbelt, not a
 //! sandbox*. It catches catastrophic foot-guns (disk/shadow-copy/log destruction, Defender
 //! disable, self-tampering) and the cheapest bypass (`-EncodedCommand`), which raises the
 //! bar substantially — but it is not a complete boundary. The real boundary stays auth +
 //! confirm-gate + kill-switch; this sits below them as defense-in-depth.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{OnceLock, RwLock};
 
 use regex::Regex;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::protocol::{ErrorCode, PolicyRule, PolicyTarget, ShellMode, ShellPolicy};
+use crate::protocol::{ErrorCode, Policy, PolicyRule, PolicyTarget, ShellMode, ShellPolicy};
 
 /// Host of the configured server URL, captured at startup so `agent_update` can verify
 /// the download host without threading config through the dispatcher. Set once by
@@ -305,6 +313,67 @@ fn shell_gate(
     }
 }
 
+/// Apply one inbound `policy` frame: operator deny rules, the shell execution mode and
+/// the telemetry collection gate. The tunnel calls exactly this for every `policy` frame,
+/// so whatever a test drives through here is what a real frame does.
+pub fn apply(p: Policy) {
+    // Operator's append-only deny rules (ADR-0020): additive to the built-ins, which they
+    // can never weaken or remove. The agent never sends a Policy frame.
+    tracing::info!(count = p.rules.len(), "applied operator policy rules");
+    set_operator_rules(p.rules);
+    // The fleet shell execution mode (ADR-0064). Absent, the agent keeps the mode it
+    // already holds — a pre-0.18 server must not silently unlock the shell.
+    if let Some(shell) = p.shell {
+        tracing::info!(mode = ?shell.mode, allow = shell.allow.len(), "applied shell policy");
+        set_shell_policy(shell);
+    }
+    // This host's telemetry collection gate (ADR-0069). Absent, the agent keeps the gate
+    // it already holds.
+    if let Some(collect) = p.collect {
+        set_collect(&collect);
+        tracing::info!(?collect, "applied telemetry collection policy");
+    }
+}
+
+/// Whether this agent collects `web_activity` (`policy.collect`). Defaults to `true`: an
+/// agent that has never been told collects every section — the pre-0.20 behaviour.
+static COLLECT_WEB_ACTIVITY: AtomicBool = AtomicBool::new(true);
+
+/// The gate behind a `policy.collect` key, or `None` for a section the agent does not
+/// gate. `web_activity` is the only honoured key.
+fn collect_gate(section: &str) -> Option<&'static AtomicBool> {
+    match section {
+        "web_activity" => Some(&COLLECT_WEB_ACTIVITY),
+        _ => None,
+    }
+}
+
+/// Update the collection gate from a present `policy.collect` map. Each known key sets
+/// its section; a known section absent from the map keeps its value; unknown keys are
+/// ignored so a newer server can name sections this agent does not gate.
+pub fn set_collect(collect: &BTreeMap<String, bool>) {
+    for (section, &on) in collect {
+        match collect_gate(section) {
+            // Relaxed is enough: the flag guards nothing else, and every reader reaches
+            // it through a spawn or channel hand-off that already orders the store.
+            Some(gate) => gate.store(on, Ordering::Relaxed),
+            None => tracing::debug!(section = %section, "ignoring unknown policy.collect key"),
+        }
+    }
+}
+
+/// Whether the named telemetry section may be collected. A section without a gate is
+/// always collected.
+pub fn collects(section: &str) -> bool {
+    collect_gate(section).is_none_or(|gate| gate.load(Ordering::Relaxed))
+}
+
+/// Serialises every test that mutates this module's process-global state — operator
+/// rules, shell mode, collection gate — so they never observe each other's state.
+/// Shared with other modules' tests that drive a `policy` frame end to end.
+#[cfg(test)]
+pub(crate) static POLICY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Replace the operator rule set (ADR-0020 `policy` frame). Additive to the built-ins,
 /// which it can never weaken or remove. A rule whose pattern fails to compile is skipped
 /// and logged, never fatal.
@@ -462,11 +531,6 @@ mod tests {
     use serde_json::json;
     use std::fs;
     use std::path::Path;
-    use std::sync::Mutex;
-
-    /// Serialises tests that mutate the process-global operator rule set so they never
-    /// observe each other's state.
-    static OPERATOR_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn ps(script: &str) -> Result<(), (ErrorCode, String)> {
         check("powershell_exec", &json!({ "script": script }))
@@ -487,7 +551,7 @@ mod tests {
     }
 
     /// Apply a shell policy for the duration of a test **without** touching the
-    /// persisted copy, then restore the default. Callers hold `OPERATOR_TEST_LOCK`.
+    /// persisted copy, then restore the default. Callers hold `POLICY_TEST_LOCK`.
     fn with_shell<T>(mode: ShellMode, rules: Vec<PolicyRule>, f: impl FnOnce() -> T) -> T {
         apply_shell_policy(&ShellPolicy { mode, allow: rules });
         let out = f();
@@ -669,7 +733,7 @@ mod tests {
 
     #[test]
     fn operator_rules_add_then_clear() {
-        let _guard = OPERATOR_TEST_LOCK.lock().unwrap();
+        let _guard = POLICY_TEST_LOCK.lock().unwrap();
 
         // Before any operator rule, `choco install` is allowed.
         ps("choco install x").unwrap();
@@ -692,7 +756,7 @@ mod tests {
 
     #[test]
     fn bad_operator_pattern_is_skipped_not_fatal() {
-        let _guard = OPERATOR_TEST_LOCK.lock().unwrap();
+        let _guard = POLICY_TEST_LOCK.lock().unwrap();
 
         set_operator_rules(vec![
             PolicyRule {
@@ -722,7 +786,7 @@ mod tests {
 
     #[test]
     fn shell_mode_defaults_to_unrestricted() {
-        let _guard = OPERATOR_TEST_LOCK.lock().unwrap();
+        let _guard = POLICY_TEST_LOCK.lock().unwrap();
         // A fresh agent must not refuse what it has never been told to refuse.
         sh("uname -a").unwrap();
         ps("Get-Process").unwrap();
@@ -730,7 +794,7 @@ mod tests {
 
     #[test]
     fn shell_mode_off_blocks_both_shells_and_nothing_else() {
-        let _guard = OPERATOR_TEST_LOCK.lock().unwrap();
+        let _guard = POLICY_TEST_LOCK.lock().unwrap();
         with_shell(ShellMode::Off, vec![], || {
             assert_eq!(sh("uname -a").unwrap_err().0, ErrorCode::Blocked);
             assert_eq!(ps("Get-Process").unwrap_err().0, ErrorCode::Blocked);
@@ -741,7 +805,7 @@ mod tests {
 
     #[test]
     fn shell_allowlist_matches_the_whole_command_only() {
-        let _guard = OPERATOR_TEST_LOCK.lock().unwrap();
+        let _guard = POLICY_TEST_LOCK.lock().unwrap();
         let rules = vec![allow("a", PolicyTarget::Posix, "uname -a")];
         with_shell(ShellMode::Allowlist, rules, || {
             sh("uname -a").unwrap();
@@ -761,7 +825,7 @@ mod tests {
 
     #[test]
     fn shell_allowlist_empty_blocks_everything() {
-        let _guard = OPERATOR_TEST_LOCK.lock().unwrap();
+        let _guard = POLICY_TEST_LOCK.lock().unwrap();
         with_shell(ShellMode::Allowlist, vec![], || {
             assert_eq!(sh("uname -a").unwrap_err().0, ErrorCode::Blocked);
             assert_eq!(ps("Get-Process").unwrap_err().0, ErrorCode::Blocked);
@@ -770,7 +834,7 @@ mod tests {
 
     #[test]
     fn shell_allowlist_never_lifts_a_deny_rule() {
-        let _guard = OPERATOR_TEST_LOCK.lock().unwrap();
+        let _guard = POLICY_TEST_LOCK.lock().unwrap();
         let rules = vec![allow("everything", PolicyTarget::Posix, ".*")];
         with_shell(ShellMode::Allowlist, rules, || {
             // Built-in.
@@ -798,7 +862,7 @@ mod tests {
 
     #[test]
     fn shell_allow_entries_are_per_shell() {
-        let _guard = OPERATOR_TEST_LOCK.lock().unwrap();
+        let _guard = POLICY_TEST_LOCK.lock().unwrap();
         let rules = vec![allow("a", PolicyTarget::Posix, "uname -a")];
         with_shell(ShellMode::Allowlist, rules, || {
             sh("uname -a").unwrap();
@@ -808,7 +872,7 @@ mod tests {
 
     #[test]
     fn shell_allow_ignores_surfaces_without_a_command() {
-        let _guard = OPERATOR_TEST_LOCK.lock().unwrap();
+        let _guard = POLICY_TEST_LOCK.lock().unwrap();
         let rules = vec![
             allow("p", PolicyTarget::Path, "uname -a"),
             allow("s", PolicyTarget::SelfProtection, "uname -a"),
@@ -820,7 +884,7 @@ mod tests {
 
     #[test]
     fn shell_allowlist_fails_closed_on_missing_or_non_string_args() {
-        let _guard = OPERATOR_TEST_LOCK.lock().unwrap();
+        let _guard = POLICY_TEST_LOCK.lock().unwrap();
         let rules = vec![allow("a", PolicyTarget::Posix, "uname -a")];
         with_shell(ShellMode::Allowlist, rules, || {
             assert_eq!(
@@ -834,7 +898,7 @@ mod tests {
 
     #[test]
     fn shell_allow_uncompilable_pattern_is_skipped_not_fatal() {
-        let _guard = OPERATOR_TEST_LOCK.lock().unwrap();
+        let _guard = POLICY_TEST_LOCK.lock().unwrap();
         let rules = vec![
             allow("bad", PolicyTarget::Posix, "(unclosed"),
             allow("good", PolicyTarget::Posix, "uname -a"),
@@ -849,7 +913,7 @@ mod tests {
         // What the persisted file buys: a reconnect or a restart does not run
         // unrestricted for the seconds before the server's `policy` frame lands.
         let _guard = crate::control::TEST_ENV_LOCK.lock().unwrap();
-        let _rules = OPERATOR_TEST_LOCK.lock().unwrap();
+        let _rules = POLICY_TEST_LOCK.lock().unwrap();
         let path = std::env::temp_dir().join("kenny-test-shell-policy.json");
         let _ = std::fs::remove_file(&path);
         std::env::set_var(SHELL_POLICY_FILE_ENV, &path);
@@ -885,7 +949,7 @@ mod tests {
     /// only fails here.
     #[test]
     fn shared_decision_vectors() {
-        let _guard = OPERATOR_TEST_LOCK.lock().unwrap();
+        let _guard = POLICY_TEST_LOCK.lock().unwrap();
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../docs/fixtures/vectors/policy_decisions.json");
         let raw = fs::read_to_string(&path).expect("read policy decision vectors");
@@ -926,7 +990,7 @@ mod tests {
     /// dropped here with a warning and fail the count below.
     #[test]
     fn shell_allow_defaults_vectors() {
-        let _guard = OPERATOR_TEST_LOCK.lock().unwrap();
+        let _guard = POLICY_TEST_LOCK.lock().unwrap();
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs");
         let raw = fs::read_to_string(root.join("policy/shell_allow_defaults.json"))
             .expect("read shipped shell allow rules");
@@ -995,5 +1059,69 @@ mod tests {
             sp.iter().any(|p| p.contains(SHELL_POLICY_FILE)),
             "no self_protection pattern references SHELL_POLICY_FILE ({SHELL_POLICY_FILE})"
         );
+    }
+
+    /// Decode a `policy` frame body from JSON the way the tunnel receives it.
+    fn policy_frame(raw: &str) -> Policy {
+        match serde_json::from_str::<crate::protocol::Frame>(raw).expect("policy frame") {
+            crate::protocol::Frame::Policy(p) => p,
+            other => panic!("expected a policy frame, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn collect_gate_follows_policy_frames() {
+        let _guard = POLICY_TEST_LOCK.lock().unwrap();
+        assert!(
+            collects("web_activity"),
+            "an untold agent collects everything"
+        );
+
+        // `collect` omitted: the gate is left as it is, in either state.
+        apply(policy_frame(r#"{"type":"policy","rules":[]}"#));
+        assert!(collects("web_activity"));
+
+        apply(policy_frame(
+            r#"{"type":"policy","rules":[],"collect":{"web_activity":false}}"#,
+        ));
+        assert!(!collects("web_activity"));
+
+        apply(policy_frame(r#"{"type":"policy","rules":[]}"#));
+        assert!(
+            !collects("web_activity"),
+            "omitted collect must not reset the gate"
+        );
+
+        // A present map without the key leaves that section as it is.
+        apply(policy_frame(r#"{"type":"policy","rules":[],"collect":{}}"#));
+        assert!(!collects("web_activity"));
+
+        apply(policy_frame(
+            r#"{"type":"policy","rules":[],"collect":{"web_activity":true}}"#,
+        ));
+        assert!(collects("web_activity"));
+    }
+
+    #[test]
+    fn collect_gate_ignores_unknown_keys() {
+        let _guard = POLICY_TEST_LOCK.lock().unwrap();
+        apply(policy_frame(
+            r#"{"type":"policy","rules":[],"collect":{"no_such_section":false,"web_activity":false}}"#,
+        ));
+        assert!(!collects("web_activity"));
+        // An ungated section is always collected, whatever the server says about it.
+        assert!(collects("no_such_section"));
+        assert!(collects("disk"));
+
+        apply(policy_frame(
+            r#"{"type":"policy","rules":[],"collect":{"no_such_section":true}}"#,
+        ));
+        assert!(
+            !collects("web_activity"),
+            "an unknown key must not touch a known gate"
+        );
+
+        set_collect(&BTreeMap::from([("web_activity".to_string(), true)]));
+        assert!(collects("web_activity"));
     }
 }

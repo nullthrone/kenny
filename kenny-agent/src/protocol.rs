@@ -1,9 +1,11 @@
-//! Wire-protocol types mirroring `../docs/protocol.md` (v0.19).
+//! Wire-protocol types mirroring `../docs/protocol.md` (v0.20).
 //!
 //! These serde models are the Rust side of the contract between `kenny-server`
 //! (Python) and `kenny-agent`. They are round-tripped against `../docs/fixtures/`
 //! in the `fixtures` test. Do not change a frame/tool shape here without first
 //! changing the contract in `docs/protocol.md`.
+
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -12,7 +14,7 @@ use serde_json::{Map, Value};
 ///
 /// From v0.8 this is placed on the wire in `register.protocol` to select the
 /// mutual-auth handshake.
-pub const PROTOCOL_VERSION: &str = "0.19";
+pub const PROTOCOL_VERSION: &str = "0.20";
 
 /// One WebSocket text message. Tagged by the `type` field.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -193,17 +195,23 @@ pub struct Log {
     pub fields: Option<Value>,
 }
 
-/// `policy` frame body: the operator's current set of append-only deny rules (ADR-0020)
-/// plus the fleet's shell execution mode (ADR-0064).
+/// `policy` frame body: the operator's current set of append-only deny rules (ADR-0020),
+/// the fleet's shell execution mode (ADR-0064), and this host's telemetry collection
+/// gate (ADR-0069).
 ///
-/// `shell` is optional and skipped on serialize when absent, so a frame without one is
-/// byte-identical to a pre-0.18 frame. An agent that receives no `shell` keeps whatever
-/// mode it already holds.
+/// `shell` and `collect` are optional and skipped on serialize when absent, so a frame
+/// without them is byte-identical to a pre-0.18 frame. An agent that receives no `shell`
+/// keeps whatever mode it already holds; one that receives no `collect` keeps whatever
+/// gate it already holds.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Policy {
     pub rules: Vec<PolicyRule>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shell: Option<ShellPolicy>,
+    /// Telemetry section name -> whether this agent collects it (`policy.collect`).
+    /// A `BTreeMap` so re-serialization is deterministic.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collect: Option<BTreeMap<String, bool>>,
 }
 
 /// The fleet's shell execution mode and, under `allowlist`, what it permits.
@@ -330,6 +338,33 @@ mod tests {
         assert!(
             checked >= 9,
             "expected to check the golden fixtures, got {checked}"
+        );
+    }
+
+    /// `policy_collect.json` is picked up by [`fixtures_round_trip`] like every fixture;
+    /// this pins that it decodes into `collect` rather than being silently dropped, and
+    /// that a frame without the field keeps omitting it (the pre-0.20 shape).
+    #[test]
+    fn policy_collect_fixture_decodes_into_collect() {
+        let path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs/fixtures/policy_collect.json");
+        let raw = fs::read_to_string(&path).expect("read policy_collect.json");
+        let Frame::Policy(p) = serde_json::from_str::<Frame>(&raw).expect("policy frame") else {
+            panic!("policy_collect.json is not a policy frame");
+        };
+        let collect = p.collect.expect("collect present");
+        assert_eq!(collect.get("web_activity"), Some(&false));
+        assert!(p.shell.is_none());
+
+        let bare: Frame = serde_json::from_str(r#"{"type":"policy","rules":[]}"#).unwrap();
+        let Frame::Policy(ref bp) = bare else {
+            panic!("expected policy frame");
+        };
+        assert!(bp.collect.is_none());
+        let out = serde_json::to_value(&bare).unwrap();
+        assert!(
+            out.get("collect").is_none(),
+            "absent collect must stay absent"
         );
     }
 

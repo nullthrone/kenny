@@ -12,6 +12,11 @@
 //! The parsing/merging core in [`core`] is `#[cfg(windows)]`-free and unit-tested on
 //! Linux CI against fabricated SQLite DBs. Only the OS probes (DNS cache, real profile
 //! paths) are Windows-gated. Off Windows the section is the standard `n/a` stub.
+//!
+//! The server can switch the section off per host (`policy.collect`, ADR-0069). The gate
+//! is checked here, before any probe, so the scheduled push and the on-demand
+//! `telemetry_collect` path cannot disagree; switched off, the section is the same stub
+//! with the summary [`NOT_COLLECTED`].
 
 use serde_json::json;
 
@@ -21,27 +26,41 @@ use crate::telemetry::Section;
 /// Rolling observation window reported to the server.
 const WINDOW_HOURS: i64 = 24;
 
+/// Summary of the stub reported while the server's `policy.collect` switches the
+/// section off (contract: `policy.collect`).
+pub const NOT_COLLECTED: &str = "not collected (server policy)";
+
 /// Collect the `web_activity` section.
 pub fn collect() -> Section {
+    // The collection gate comes first and on every platform: switched off, neither the
+    // DNS cache nor any browser DB is touched.
+    if !crate::policy::collects("web_activity") {
+        return empty(NOT_COLLECTED);
+    }
     #[cfg(windows)]
     {
         windows_impl::collect()
     }
     #[cfg(not(windows))]
     {
-        Section::with_fields(
-            Status::Ok,
-            "n/a on this platform",
-            json!({
-                "window_hours": WINDOW_HOURS,
-                "sources": [],
-                "domains": [],
-                "truncated": false,
-                "browser_profiles_read": 0,
-                "errors": [],
-            }),
-        )
+        empty("n/a on this platform")
     }
+}
+
+/// The section's normal shape with no data: `status: ok`, empty `sources`/`domains`.
+fn empty(summary: &str) -> Section {
+    Section::with_fields(
+        Status::Ok,
+        summary,
+        json!({
+            "window_hours": WINDOW_HOURS,
+            "sources": [],
+            "domains": [],
+            "truncated": false,
+            "browser_profiles_read": 0,
+            "errors": [],
+        }),
+    )
 }
 
 /// Portable parsing/merging core — compiled and tested on every platform.
@@ -147,6 +166,51 @@ pub mod core {
         OS_CHATTER
             .iter()
             .any(|s| d == *s || d.ends_with(&format!(".{s}")))
+    }
+
+    /// True when `addr` is a sinkhole — the unspecified IPv4 (`0.0.0.0`) or IPv6 (`::`)
+    /// address a hosts-file block (`webfilter_apply`) resolves a name to. Parsed rather
+    /// than string-compared, so every spelling of the address counts
+    /// (`0:0:0:0:0:0:0:0`, `::0`, `::ffff:0.0.0.0`); anything unparseable is not one.
+    pub fn is_sinkhole(addr: &str) -> bool {
+        match addr.trim().parse::<std::net::IpAddr>() {
+            Ok(std::net::IpAddr::V4(v4)) => v4.is_unspecified(),
+            Ok(std::net::IpAddr::V6(v6)) => {
+                v6.is_unspecified() || v6.to_ipv4_mapped().is_some_and(|v4| v4.is_unspecified())
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// The names worth reporting from DNS-cache `(entry, data)` records, deduplicated, in
+    /// first-seen order.
+    ///
+    /// Windows preloads the hosts file into the DNS client cache, so every name the web
+    /// filter blocks appears there resolving to a sinkhole: that is the block, not a
+    /// visit. A name is kept when **any** of its records is a real address (a name can
+    /// carry several A/AAAA records) and dropped only when all of them are sinkholes.
+    /// Names are trimmed of a trailing dot and lowercased before grouping.
+    pub fn dns_names_without_sinkholes<'a>(
+        records: impl IntoIterator<Item = (&'a str, &'a str)>,
+    ) -> Vec<String> {
+        let mut order: Vec<String> = Vec::new();
+        let mut reached: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
+        for (entry, data) in records {
+            let name = entry.trim().trim_end_matches('.').to_ascii_lowercase();
+            if name.is_empty() {
+                continue;
+            }
+            let real = !is_sinkhole(data);
+            match reached.get_mut(&name) {
+                Some(seen) => *seen |= real,
+                None => {
+                    reached.insert(name.clone(), real);
+                    order.push(name);
+                }
+            }
+        }
+        order.retain(|name| reached[name]);
+        order
     }
 
     /// Convert Chromium `last_visit_time` (microseconds since 1601-01-01 UTC) to RFC3339.
@@ -380,6 +444,62 @@ pub mod core {
             assert!(!is_noise("example.com"));
             assert!(!is_noise("cdn.example.net"));
             assert!(!is_noise("news.ycombinator.com"));
+        }
+
+        #[test]
+        fn is_sinkhole_matches_every_spelling_of_unspecified() {
+            for addr in [
+                "0.0.0.0",
+                " 0.0.0.0 ",
+                "::",
+                "::0",
+                "0:0:0:0:0:0:0:0",
+                "0000:0000:0000:0000:0000:0000:0000:0000",
+                "::ffff:0.0.0.0",
+            ] {
+                assert!(is_sinkhole(addr), "{addr} should be a sinkhole");
+            }
+            for addr in [
+                "127.0.0.1",
+                "93.184.216.34",
+                "::1",
+                "2606:2800:220:1:248:1893:25c8:1946",
+                "0.0.0.1",
+                "",
+                "example.com",
+                "0",
+            ] {
+                assert!(!is_sinkhole(addr), "{addr} should not be a sinkhole");
+            }
+        }
+
+        #[test]
+        fn dns_names_drop_only_all_sinkhole_names() {
+            let records = [
+                // Hosts-file blocks: both families sinkholed.
+                ("blocked.example", "0.0.0.0"),
+                ("blocked.example", "::"),
+                // Visited: real address.
+                ("news.example", "93.184.216.34"),
+                // Mixed: one real record keeps the name, in either order.
+                ("mixed.example", "0.0.0.0"),
+                ("mixed.example", "2606:2800:220:1:248:1893:25c8:1946"),
+                ("MIXED2.example.", "203.0.113.7"),
+                ("mixed2.example", "::"),
+                // A record without a usable address is not a sinkhole.
+                ("cname.example", ""),
+                ("", "93.184.216.34"),
+            ];
+            assert_eq!(
+                dns_names_without_sinkholes(records),
+                vec![
+                    "news.example",
+                    "mixed.example",
+                    "mixed2.example",
+                    "cname.example"
+                ]
+            );
+            assert!(dns_names_without_sinkholes([("only.example", "0:0:0:0:0:0:0:0")]).is_empty());
         }
 
         #[test]
@@ -764,16 +884,28 @@ mod windows_impl {
     }
 
     /// Read the DNS client cache A/AAAA entries into observations (source `dns_cache`).
+    ///
+    /// Reads each record's address (`Data`) alongside its name so the hosts file's own
+    /// entries — preloaded into the cache, resolving to a sinkhole — are not reported as
+    /// visits; see [`core::dns_names_without_sinkholes`].
     fn collect_dns_cache(now_rfc: &str) -> Vec<Observation> {
         let script = "Get-DnsClientCache -Type A,AAAA -ErrorAction SilentlyContinue | \
-             Select-Object -ExpandProperty Entry -Unique | ConvertTo-Json -Compress";
+             Select-Object Entry,Data | ConvertTo-Json -Compress";
         let Some(v) = winps::run_json(script) else {
             return Vec::new();
         };
-        winps::as_array(v)
+        // One record serialises as a bare object, several as an array.
+        let rows = winps::as_array(v);
+        let records = rows.iter().filter_map(|row| {
+            let entry = row.get("Entry")?.as_str()?;
+            let data = row
+                .get("Data")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            Some((entry, data))
+        });
+        core::dns_names_without_sinkholes(records)
             .into_iter()
-            .filter_map(|entry| entry.as_str().map(str::to_string))
-            .map(|e| e.trim_end_matches('.').to_ascii_lowercase())
             .filter(|d| !core::is_noise(d))
             .map(|domain| Observation {
                 domain,
@@ -947,11 +1079,36 @@ mod tests {
     #[cfg(not(windows))]
     #[test]
     fn off_windows_is_ok_stub() {
+        // Hold the policy lock so a concurrent test cannot switch the gate off under us.
+        let _guard = crate::policy::POLICY_TEST_LOCK.lock().unwrap();
         let v = collect().into_value();
         assert_eq!(v["status"], "ok");
         assert_eq!(v["summary"], "n/a on this platform");
         assert_eq!(v["sources"].as_array().unwrap().len(), 0);
         assert_eq!(v["domains"].as_array().unwrap().len(), 0);
         assert_eq!(v["browser_profiles_read"], 0);
+    }
+
+    /// Switched off by `policy.collect`, the section is the documented stub on every
+    /// platform — the gate sits before the `#[cfg(windows)]` split.
+    #[test]
+    fn gated_off_is_the_not_collected_stub() {
+        let _guard = crate::policy::POLICY_TEST_LOCK.lock().unwrap();
+        crate::policy::set_collect(&[("web_activity".to_string(), false)].into());
+        let v = collect().into_value();
+        crate::policy::set_collect(&[("web_activity".to_string(), true)].into());
+        assert_eq!(
+            v,
+            json!({
+                "status": "ok",
+                "summary": "not collected (server policy)",
+                "window_hours": 24,
+                "sources": [],
+                "domains": [],
+                "truncated": false,
+                "browser_profiles_read": 0,
+                "errors": [],
+            })
+        );
     }
 }
