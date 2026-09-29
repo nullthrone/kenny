@@ -18,8 +18,8 @@ and — on demand — block a set of known-harmful domains. There are two featur
 
 The **server** holds each host's config and lists and does all the matching and
 classification. The **agent** stays dumb: its collector reports the domains it can observe
-right now (from the OS DNS client cache and each user's browser history), and — only when
-**block mode** is on — it applies a single flat block list idempotently (a marker-delimited
+right now (from the OS DNS client cache and each user's browser history), and — only under
+**Protect** — it applies a single flat block list idempotently (a marker-delimited
 hosts-file block plus optional browser DoH-off), refusing any list that would blackhole
 self-protected names. No matching logic ever rides the wire.
 
@@ -28,6 +28,40 @@ self-protected names. No matching logic ever rides the wire.
     after a listed site is reached, whether or not blocking was on or was bypassed
     (admin rights, a VPN, or a portable browser defeat host-level blocking). See
     [ADR-0024](adr/0024-parental-controls-web-activity-and-webfilter.md).
+
+## Enforcement and history
+
+Each host has two independent settings
+([ADR-0069](adr/0069-web-filter-enforcement-and-history-per-host.md)):
+
+| Setting | Values | What it decides |
+|---------|--------|-----------------|
+| **Enforcement** (`enforcement`) | **Off** (`off`) · **Log only** (`log_only`) · **Protect** (`protect`) | What the filter does: nothing; match observed domains against the list, record the matches and raise the alarm; or all of that plus block the list on the PC. |
+| **Keep full browsing history** (`history`) | off (`violations`) · on (`full`) | What the server keeps: only the matches, or every domain the PC reached. |
+
+| | history: matches only | history: full |
+|---|---|---|
+| **Off** | nothing is collected on the PC | every domain is kept, nothing is matched |
+| **Log only** | matches + alarm | matches + alarm + every domain |
+| **Protect** | block + matches + alarm | block + matches + alarm + every domain |
+
+- **Collection follows from both.** The PC collects web activity only when enforcement is
+  not Off or full history is on. Under Off with matches only, the agent is told not to
+  collect and gathers nothing.
+- **Matches only is enforced by the server.** The agent holds no list, so it still reports
+  every domain it observes; the server keeps only the matches and discards the rest on
+  arrival.
+- **Under Protect a match means something got through** — the block was circumvented (a
+  VPN, a portable browser) or the entry is a `watch` entry. Names the hosts file blocks
+  are not reported as reached.
+- **Turning full history off deletes it.** The dashboard asks first, then removes this PC's
+  stored unmatched domains immediately; it cannot be undone.
+- **Changing enforcement is an edit like any other**: it shows up as drift until you apply.
+- **A new PC** starts at Off with matches only, so nothing is collected. The history it
+  starts with is the `KENNY_WEBFILTER_DEFAULT_HISTORY` setting (Admin → Settings → Web
+  filter), fixed when the PC is first heard from; changing the setting affects new PCs only.
+- **Upgrading changes nothing that is recorded.** Every PC that was already reporting web
+  activity keeps full history and the filter behaviour it had.
 
 ## Categories and precedence
 
@@ -91,7 +125,7 @@ Monday through Friday, add `social` and `gaming`"). A window names its weekdays,
 
 A schedule can only make the filter **stricter for its duration**. A window **adds**
 categories on top of whatever the host's own toggles already have; it never removes one,
-and it cannot turn the feature or block mode on by itself — both still have to be on for
+and it cannot raise the host's enforcement level — the host has to be at **Protect** for
 anything to be pushed. Authoring an enabled window is what opts a host into unattended
 pushes: a host with no enabled window is never touched by the schedule loop. Deleting the
 last window does not trigger an unattended revert to the base list either — the host simply
@@ -177,15 +211,16 @@ checklist entry to open the section modal.
 The modal shows three things:
 
 1. **Flagged** — domains that matched this PC's list (domain, category, matched entry, last seen).
-2. **Observed domains (24h)** — everything the agent saw, with hit counts and sources.
+2. **Observed domains (24h)** — everything the agent saw, with hit counts and sources; only
+   with **keep full browsing history** on, otherwise just the matches.
 3. The per-host **parental-controls list editor**.
 
 The editor's toggles:
 
 | Toggle | Config field | Effect |
 |--------|-------------|--------|
-| monitor this PC | `enabled` | observe web activity and match it against this list |
-| block listed sites | `block_mode` | push the block list to the agent (hosts file + DoH off) |
+| enforcement: Off / Log only / Protect | `enforcement` | what the filter does — see [Enforcement and history](#enforcement-and-history) |
+| keep full browsing history | `history` (`violations` / `full`) | keep every observed domain, not only matches |
 | use adult blocklist | `use_external_adult` | reference the StevenBlack porn-only list |
 | block VPN/proxy bypass | `use_bypass_protection` | also block DoH / VPN / proxy domains |
 | disable browser DoH | `doh_policy` (`disable` / `leave`) | turn DNS-over-HTTPS off in browsers so the hosts block can't be bypassed |

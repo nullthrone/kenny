@@ -1,4 +1,4 @@
-import type { WebfilterOversize, WebfilterScheduleState } from '../types'
+import type { WebfilterEnforcement, WebfilterOversize, WebfilterScheduleState } from '../types'
 import { formatClockTime, formatCountdown } from '../format'
 import styles from './WebFilterStateBanner.module.css'
 
@@ -9,7 +9,7 @@ export interface OversizeCandidate {
 }
 
 export interface WebFilterStateBannerProps {
-  filteringEnabled: boolean
+  enforcement: WebfilterEnforcement
   schedule: WebfilterScheduleState
   oversize: WebfilterOversize | null
   oversizeCandidate: OversizeCandidate | null
@@ -26,8 +26,16 @@ export interface WebFilterStateBannerProps {
  * pushed at all, which matters more than which categories would apply if it
  * were. Otherwise: stricter-now, or the quiet base state.
  */
+/** The clause appended to the banner for anything short of `protect`, so the
+ * banner never implies a block that is not being pushed. */
+function enforcementNote(enforcement: WebfilterEnforcement): string {
+  if (enforcement === 'off') return ' Filtering is off for this host, so nothing is matched or enforced.'
+  if (enforcement === 'log_only') return ' Log only: matches are recorded and alarmed, nothing is blocked.'
+  return ''
+}
+
 export default function WebFilterStateBanner({
-  filteringEnabled,
+  enforcement,
   schedule,
   oversize,
   oversizeCandidate,
@@ -57,7 +65,7 @@ export default function WebFilterStateBanner({
         <p className={styles.text}>
           Reverts at {clock} ({schedule.timezone}) — {countdown ? `in ${countdown}` : 'shortly'}. Extra:{' '}
           {schedule.extra_categories.join(', ')}.
-          {!filteringEnabled && ' Filtering is off for this host, so nothing is enforced yet.'}
+          {enforcementNote(enforcement)}
         </p>
       </div>
     )
@@ -76,7 +84,7 @@ export default function WebFilterStateBanner({
               schedule.next_change_at ? ` Next window opens at ${nextClock} — in ${nextCountdown}.` : ''
             }`
           : 'No schedule configured for this host.'}
-        {!filteringEnabled && ' Filtering is off for this host, so nothing is enforced.'}
+        {enforcementNote(enforcement)}
       </p>
     </div>
   )

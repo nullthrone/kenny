@@ -1,5 +1,5 @@
 import { useMemo, useState, type FormEvent } from 'react'
-import type { WebfilterDomainAction, WebfilterOverview } from '../types'
+import type { WebfilterDomainAction, WebfilterEnforcement, WebfilterHistory, WebfilterOverview } from '../types'
 import { describeActionError } from '../errors'
 import { formatRelativeTime } from '../format'
 import { useAddWebfilterDomain, useApplyWebfilter, useRemoveWebfilterDomain, useSetWebfilterConfig } from '../api'
@@ -20,6 +20,12 @@ const ACTION_COLOR: Record<WebfilterDomainAction, string> = {
   watch: 'var(--text-muted)',
 }
 
+const ENFORCEMENT_OPTIONS: { value: WebfilterEnforcement; label: string; help: string }[] = [
+  { value: 'off', label: 'Off', help: 'the filter does nothing' },
+  { value: 'log_only', label: 'Log only', help: 'matches are recorded and alarmed, nothing is blocked' },
+  { value: 'protect', label: 'Protect', help: 'matches are blocked; what still gets through is recorded and alarmed' },
+]
+
 /** The largest currently-enabled external category, by cached list size —
  * the concrete "turn this off" answer the over-cap banner and the category
  * list both point at. `null` when nothing is over the cap or nothing
@@ -36,9 +42,10 @@ function findOversizeCandidate(overview: WebfilterOverview): OversizeCandidate |
   return best
 }
 
-/** Full-edit web filter section modal body — the state banner, category
- * toggles, schedule, bypass requests, the custom domain list, and Apply.
- * `GET/PUT/POST/DELETE /api/agent/{id}/webfilter*` (ADR-0024, ADR-0055).
+/** Full-edit web filter section modal body — the state banner, the
+ * enforcement level and history setting, category toggles, schedule, bypass
+ * requests, the custom domain list, and Apply.
+ * `GET/PUT/POST/DELETE /api/agent/{id}/webfilter*` (ADR-0024, ADR-0055, ADR-0069).
  * Every mutation invalidates and re-pulls this overview rather than
  * patching it optimistically. */
 export default function WebFilterBody({ agentId, overview }: WebFilterBodyProps) {
@@ -70,6 +77,18 @@ export default function WebFilterBody({ agentId, overview }: WebFilterBodyProps)
     setAction('allow')
   }
 
+  function onHistoryChange(full: boolean) {
+    const history: WebfilterHistory = full ? 'full' : 'violations'
+    if (
+      !full &&
+      !window.confirm(
+        'Delete the browsing history stored for this host? Only matches against the filter are kept from now on. This cannot be undone.',
+      )
+    )
+      return
+    setConfig.mutate({ history })
+  }
+
   function onApply() {
     setApplyResult(null)
     apply.mutate(undefined, {
@@ -85,7 +104,7 @@ export default function WebFilterBody({ agentId, overview }: WebFilterBodyProps)
   return (
     <div>
       <WebFilterStateBanner
-        filteringEnabled={config.enabled}
+        enforcement={config.enforcement}
         schedule={schedule}
         oversize={oversize}
         oversizeCandidate={oversizeCandidate}
@@ -93,24 +112,34 @@ export default function WebFilterBody({ agentId, overview }: WebFilterBodyProps)
 
       <div className={styles.section}>
         <div className={styles.eyebrow}>CONFIGURATION</div>
+        <fieldset className={styles.levelGroup} disabled={setConfig.isPending}>
+          <legend className={styles.levelLegend}>Enforcement</legend>
+          {ENFORCEMENT_OPTIONS.map((opt) => (
+            <label key={opt.value} className={styles.toggleRow}>
+              <input
+                type="radio"
+                name={`webfilter-enforcement-${agentId}`}
+                value={opt.value}
+                checked={config.enforcement === opt.value}
+                onChange={() => setConfig.mutate({ enforcement: opt.value })}
+              />
+              {opt.label} <span className={styles.help}>— {opt.help}</span>
+            </label>
+          ))}
+        </fieldset>
         <label className={styles.toggleRow}>
           <input
             type="checkbox"
-            checked={config.enabled}
-            onChange={(e) => setConfig.mutate({ enabled: e.target.checked })}
+            checked={config.history === 'full'}
+            onChange={(e) => onHistoryChange(e.target.checked)}
             disabled={setConfig.isPending}
           />
-          Filtering enabled
+          Keep full browsing history{' '}
+          <span className={styles.help}>— stores every domain this host reaches, not only matches</span>
         </label>
-        <label className={styles.toggleRow}>
-          <input
-            type="checkbox"
-            checked={config.block_mode}
-            onChange={(e) => setConfig.mutate({ block_mode: e.target.checked })}
-            disabled={setConfig.isPending}
-          />
-          Block mode <span className={styles.help}>— off logs matches without blocking them</span>
-        </label>
+        {!config.collecting && (
+          <p className={styles.status}>This host does not collect web activity.</p>
+        )}
         <div className={styles.dohRow}>
           <span>DNS-over-HTTPS</span>
           <select

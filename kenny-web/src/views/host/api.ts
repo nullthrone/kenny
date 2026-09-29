@@ -7,6 +7,8 @@ import type {
   SuppressionRule,
   WebfilterActionResult,
   WebfilterDomainAction,
+  WebfilterEnforcement,
+  WebfilterHistory,
   WebfilterOverview,
   WebfilterRequestsResponse,
   WebfilterScheduleWindow,
@@ -101,8 +103,10 @@ export function useSetWebfilterConfig(agentId: string) {
   return useMutation({
     mutationFn: (
       patch: Partial<{
-        enabled: boolean
-        block_mode: boolean
+        enforcement: WebfilterEnforcement
+        /** Switching to `violations` purges this host's stored browsing
+         * history server-side; the response reports what was removed. */
+        history: WebfilterHistory
         doh_policy: 'disable' | 'leave'
         /** The whole enabled set, not a delta — sending it also settles the
          * two legacy toggle columns server-side so the representations can't
@@ -110,7 +114,10 @@ export function useSetWebfilterConfig(agentId: string) {
          * including `adult`/`bypass`, is turned on or off from this view. */
         categories: string[]
       }>,
-    ) => api.put<{ config: WebfilterOverview['config'] }>(`/api/agent/${agentId}/webfilter/config`, patch),
+    ) => api.put<{ config: WebfilterOverview['config']; purged?: { events: number; snapshots: number } }>(
+        `/api/agent/${agentId}/webfilter/config`,
+        patch,
+      ),
     onSuccess: () => invalidate(),
   })
 }

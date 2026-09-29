@@ -219,7 +219,7 @@ async def test_reset_restores_defaults_and_reaches_the_agents(tmp_path) -> None:
         assert resp.status_code == 200
         assert resp.json()["allow"] == load_shell_allow_defaults()
 
-        frame = await app.state.tunnel._policy_frame()
+        frame = await app.state.tunnel._policy_frame("dev")
         assert [r["id"] for r in frame["shell"]["allow"]] == [
             r["id"] for r in load_shell_allow_defaults()
         ]

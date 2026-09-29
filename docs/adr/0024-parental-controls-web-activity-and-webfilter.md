@@ -152,6 +152,7 @@ server as the authoritative matcher and the agent a dumb, idempotent enforcer.**
   split exactly where it is — the server is still the authoritative matcher, the agent still
   a dumb enforcer receiving one flat `domains` list with no clock and no category — and moves
   the *authorization* boundary instead, to admit a standing rule the server enacts unattended.
+- Amended by [ADR-0069](0069-web-filter-enforcement-and-history-per-host.md): per-host `enforcement` (`off`/`log_only`/`protect`) replaces the `enabled`/`block_mode` pair, and a separate `history` (`violations`/`full`) decides what is kept; collection is gated per host over the `policy` frame.
 - Related: [ADR-0007](0007-telemetry-push-model-and-sqlite-storage.md) (telemetry push + store),
   [ADR-0011](0011-local-remote-control-kill-switch.md) (kill switch),
   [ADR-0019](0019-agent-side-deterministic-tool-guard.md) (safety guard),

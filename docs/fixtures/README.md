@@ -33,6 +33,7 @@ Adding/altering a fixture is a contract change — see `docs/protocol.md` § Ver
 | `response_agent_update.json`    | successful `response` frame (`agent_update`)     |
 | `policy.json`                   | `policy` frame (operator append-only deny rules) |
 | `policy_shell.json`             | `policy` frame carrying `shell` (fleet execution mode + allow rules) |
+| `policy_collect.json`           | `policy` frame carrying `collect` (per-host telemetry collection gate) |
 | `log.json`                      | `log` frame (forwarded agent log event)          |
 | `request_webfilter_status.json`  | `request` frame (`webfilter_status`)            |
 | `response_webfilter_status.json` | successful `response` frame (`webfilter_status`) |

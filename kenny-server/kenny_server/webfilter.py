@@ -21,6 +21,9 @@ feature (ADR-0024):
   windows that add categories for their duration, evaluated in a named IANA
   timezone. The window model is entirely server-side: the agent has no clock
   and no concept of a category (ADR-0024, ADR-0055).
+* :func:`collects_web_activity` / :func:`list_drift` — what a host's two
+  settings (``enforcement`` × ``history``, ADR-0069) resolve to: whether the
+  agent is told to collect, and whether the host carries a list it should not.
 * :class:`WebFilterService` — the async facade the tunnel, API, and MCP tools
   use; wraps a :class:`~kenny_server.store.WebFilterStore` + an
   :class:`ExternalListCache`.
@@ -43,7 +46,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any, Awaitable, Callable, Iterable, Sequence
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
@@ -54,7 +57,12 @@ from .config import (
     _DEFAULT_GAMBLING_URL,
     _DEFAULT_PIRACY_URL,
 )
-from .store import WebFilterStore
+from .store import (
+    WEBFILTER_ENFORCEMENT_LEVELS,
+    WEBFILTER_HISTORY_MODES,
+    TelemetryStore,
+    WebFilterStore,
+)
 
 logger = logging.getLogger("kenny.webfilter")
 
@@ -1020,6 +1028,36 @@ def schedule_state(
     }
 
 
+# --- enforcement x history (ADR-0069) -----------------------------------------
+
+
+def collects_web_activity(config: dict[str, Any]) -> bool:
+    """Whether a host is told to collect ``web_activity`` (``policy.collect``).
+
+    The single place this is decided: a host collects when its filter matches
+    anything (enforcement not ``off``) or when the server keeps its full
+    history. Only ``off`` + ``violations`` switches collection off — there is
+    nothing to match and nothing to keep.
+    """
+
+    return config.get("enforcement", "off") != "off" or config.get("history") == "full"
+
+
+def list_drift(config: dict[str, Any], current_hash: str | None) -> bool:
+    """True when the host's applied list differs from what its level calls for.
+
+    Under ``protect`` the host should carry ``current_hash``; under any other
+    level it should carry nothing (``webfilter_clear``). A host that was never
+    pushed to has no applied state and shows no drift, so a level change is
+    configuration that surfaces as drift and is applied explicitly.
+    """
+
+    if config.get("applied_at") is None:
+        return False
+    expected = current_hash if config.get("enforcement") == "protect" else None
+    return config.get("applied_hash") != expected
+
+
 # --- service facade -----------------------------------------------------------
 
 _VALID_ACTIONS = ("watch", "block", "allow")
@@ -1066,19 +1104,114 @@ def _safe_hits(value: Any) -> int:
 
 
 class WebFilterService:
-    """Async facade over a :class:`WebFilterStore` + :class:`ExternalListCache`."""
+    """Async facade over a :class:`WebFilterStore` + :class:`ExternalListCache`.
 
-    def __init__(self, store: WebFilterStore, cache: ExternalListCache) -> None:
+    ``settings`` supplies the live ``KENNY_WEBFILTER_DEFAULT_HISTORY`` (without
+    it, an unconfigured host keeps ``violations``). ``telemetry_store`` is where
+    a history purge also empties the stored snapshots' ``domains``.
+    ``on_collect_change`` is awaited with the agent id whenever a config change
+    flips :func:`collects_web_activity` for that host — the tunnel's
+    ``push_policy``, wired after construction the way ``on_agent_online`` is.
+    """
+
+    def __init__(
+        self,
+        store: WebFilterStore,
+        cache: ExternalListCache,
+        *,
+        settings: Any = None,
+        telemetry_store: TelemetryStore | None = None,
+        on_collect_change: Callable[[str], Awaitable[None]] | None = None,
+    ) -> None:
         self.store = store
         self.cache = cache
+        self.settings = settings
+        self.telemetry_store = telemetry_store
+        self.on_collect_change = on_collect_change
 
     # -- config / list CRUD ------------------------------------------------
 
+    def default_history(self) -> str:
+        """The history an unconfigured host has (live setting, else ``violations``)."""
+
+        if self.settings is None:
+            return "violations"
+        value = str(self.settings.get("KENNY_WEBFILTER_DEFAULT_HISTORY"))
+        return value if value in WEBFILTER_HISTORY_MODES else "violations"
+
     async def get_config(self, agent_id: str) -> dict[str, Any]:
-        return await self.store.get_config(agent_id)
+        """The host's config, with ``collecting`` resolved from its two settings."""
+
+        config = await self.store.get_config(
+            agent_id, default_history=self.default_history()
+        )
+        config["collecting"] = collects_web_activity(config)
+        return config
+
+    async def configure(self, agent_id: str, **fields: Any) -> dict[str, Any]:
+        """Apply a partial config change and everything it implies.
+
+        Returns ``{"config": ..., "purged": {"events": n, "snapshots": m} | None}``.
+        Turning history from ``full`` to ``violations`` purges the host's
+        unmatched events and empties ``domains`` in its stored snapshots in the
+        same call (ADR-0069) — both surfaces that change the config go through
+        here, so neither can skip it. A change that flips whether the host
+        collects fires ``on_collect_change``; a failure there is logged, never
+        raised, because the config write already stands and the host picks the
+        value up on its next connect.
+
+        Raises :class:`ValueError` for an unknown enforcement level or history
+        mode, before anything is written.
+        """
+
+        enforcement = fields.get("enforcement")
+        if enforcement is not None and enforcement not in WEBFILTER_ENFORCEMENT_LEVELS:
+            raise ValueError(
+                f"enforcement must be one of {', '.join(WEBFILTER_ENFORCEMENT_LEVELS)}"
+            )
+        history = fields.get("history")
+        if history is not None and history not in WEBFILTER_HISTORY_MODES:
+            raise ValueError(f"history must be one of {', '.join(WEBFILTER_HISTORY_MODES)}")
+
+        before = await self.get_config(agent_id)
+        await self.store.set_config(
+            agent_id, default_history=self.default_history(), **fields
+        )
+        config = await self.get_config(agent_id)
+        purged: dict[str, int] | None = None
+        if before["history"] == "full" and config["history"] == "violations":
+            purged = await self.purge_history(agent_id)
+        if before["collecting"] != config["collecting"] and self.on_collect_change:
+            try:
+                await self.on_collect_change(agent_id)
+            except Exception as exc:  # noqa: BLE001 - the config write stands
+                logger.debug("collect-change hook for %s failed: %s", agent_id, exc)
+        return {"config": config, "purged": purged}
 
     async def set_config(self, agent_id: str, **fields: Any) -> dict[str, Any]:
-        return await self.store.set_config(agent_id, **fields)
+        """:meth:`configure`, returning only the resulting config."""
+
+        return (await self.configure(agent_id, **fields))["config"]
+
+    async def purge_history(self, agent_id: str) -> dict[str, int]:
+        """Drop everything but the matches from this host's stored web activity.
+
+        Deletes its unflagged ``web_activity_events`` rows and empties
+        ``web_activity.domains`` in its stored snapshots (when a telemetry store
+        is wired). Irreversible; returns the counts.
+        """
+
+        events = await self.store.purge_unflagged_events(agent_id)
+        snapshots = 0
+        if self.telemetry_store is not None:
+            snapshots = await self.telemetry_store.clear_web_activity_domains(agent_id)
+        logger.info(
+            "webfilter history for %s set to violations: purged %d events, %d snapshots",
+            agent_id,
+            events,
+            snapshots,
+        )
+        return {"events": events, "snapshots": snapshots}
 
     async def list_domains(self, agent_id: str) -> list[dict[str, Any]]:
         return await self.store.list_domains(agent_id)
@@ -1153,7 +1286,7 @@ class WebFilterService:
     ) -> dict[str, Any]:
         """The host's observable schedule state (see :func:`schedule_state`)."""
 
-        config = await self.store.get_config(agent_id)
+        config = await self.get_config(agent_id)
         windows = await self.list_windows(agent_id)
         return schedule_state(config, windows, at=at)
 
@@ -1179,7 +1312,7 @@ class WebFilterService:
         the clock. Raises :class:`ListTooLargeError` past the agent's cap.
         """
 
-        config = await self.store.get_config(agent_id)
+        config = await self.get_config(agent_id)
         rows = await self.store.list_domains(agent_id)
         windows = await self.list_windows(agent_id)
         extra = schedule_state(config, windows, at=at)["extra_categories"]
@@ -1193,8 +1326,8 @@ class WebFilterService:
     ) -> list[dict[str, Any]]:
         """Hosts whose scheduled list differs from what they last had applied.
 
-        One entry per host with an enabled window whose feature *and* block mode
-        are on and whose freshly computed ``list_hash`` differs from the stored
+        One entry per host with an enabled window whose enforcement level is
+        ``protect`` (ADR-0069) and whose freshly computed ``list_hash`` differs from the stored
         ``applied_hash``: ``{agent_id, args}`` when there is something to push,
         or ``{agent_id, error}`` when the list cannot be built (over the agent's
         cap). Hosts with no enabled window are never returned — authoring a
@@ -1207,8 +1340,8 @@ class WebFilterService:
 
         due: list[dict[str, Any]] = []
         for agent_id in await self.store.agents_with_windows():
-            config = await self.store.get_config(agent_id)
-            if not (config.get("enabled") and config.get("block_mode")):
+            config = await self.get_config(agent_id)
+            if config["enforcement"] != "protect":
                 continue
             try:
                 args = await self.build_apply(agent_id, at=at)
@@ -1223,27 +1356,43 @@ class WebFilterService:
     async def set_applied_state(
         self, agent_id: str, list_hash: str | None, applied_at: str, ok: bool
     ) -> None:
-        await self.store.set_applied_state(agent_id, list_hash, applied_at, ok)
+        await self.store.set_applied_state(
+            agent_id, list_hash, applied_at, ok, default_history=self.default_history()
+        )
 
     # -- insert-time enrichment -------------------------------------------
 
     async def record_activity(
         self, agent_id: str, payload: dict[str, Any]
     ) -> dict[str, Any]:
-        """Upsert observed domains + annotate the payload with ``flagged``.
+        """Filter, record and annotate one ``web_activity`` payload (ADR-0069).
 
-        Always records observed domains into ``web_activity_events``. When the
-        feature is enabled for the host, returns a copy of ``payload`` with a
-        ``flagged`` array (matched domains, category, timestamps) and
-        ``flagged_count_24h``. When disabled, returns ``payload`` unchanged so the
-        health rule defers (no ``flagged`` key).
+        Matching runs iff the host's enforcement is not ``off``. What is kept
+        follows its history:
+
+        * ``full`` — every observed domain is upserted into
+          ``web_activity_events``; the payload's ``domains`` is kept.
+        * ``violations`` — only the matches are upserted, and the returned
+          payload's ``domains`` is ``[]``. With enforcement ``off`` nothing
+          matches, so nothing is stored at all.
+
+        When matching, the returned copy carries a ``flagged`` array (matched
+        domain, category, timestamps) and ``flagged_count_24h``. Under ``off``
+        there is no ``flagged`` key, so the health rule defers; ``off`` +
+        ``full`` returns ``payload`` unchanged.
+
+        The server does not trust the ``policy.collect`` gate: an agent that
+        predates it, or a snapshot taken before the first ``policy`` frame,
+        still sends every domain, and this is where it is dropped.
         """
 
-        config = await self.store.get_config(agent_id)
+        await self.store.ensure_config(agent_id, default_history=self.default_history())
+        config = await self.get_config(agent_id)
         rows = await self.store.list_domains(agent_id)
-        enabled = bool(config.get("enabled"))
+        matching = config["enforcement"] != "off"
+        keep_all = config["history"] == "full"
         effective = None
-        if enabled:
+        if matching:
             windows = await self.list_windows(agent_id)
             # Match against what is in force *now*, so a window that widened the
             # filter also widens what the parent is alarmed about — and, because
@@ -1253,6 +1402,8 @@ class WebFilterService:
             effective = effective_list(config, rows, self.cache, extra_categories=extra)
 
         observed = payload.get("domains") or []
+        if not isinstance(observed, list):
+            observed = []
         events: list[dict[str, Any]] = []
         flagged: list[dict[str, Any]] = []
         now = datetime.now(timezone.utc)
@@ -1269,6 +1420,8 @@ class WebFilterService:
                 hit = classify(domain, effective)
                 if hit is not None:
                     category, matched_entry = hit
+            if category is None and not keep_all:
+                continue  # history `violations`: an unmatched domain is not kept
             first_seen = item.get("first_seen")
             last_seen = item.get("last_seen")
             sources = item.get("sources")
@@ -1299,10 +1452,14 @@ class WebFilterService:
         if events:
             await self.store.upsert_events(agent_id, events)
 
-        if not enabled:
+        if not matching and keep_all:
             return payload
 
         annotated = dict(payload)
+        if not keep_all:
+            annotated["domains"] = []
+        if not matching:
+            return annotated
         annotated["flagged"] = flagged
         cutoff = now - timedelta(hours=24)
         annotated["flagged_count_24h"] = sum(

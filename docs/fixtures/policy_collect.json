@@ -1,0 +1,7 @@
+{
+  "type": "policy",
+  "rules": [],
+  "collect": {
+    "web_activity": false
+  }
+}

@@ -6,7 +6,9 @@
 //! * **read loop** — decode inbound frames; reply to `ping` with `pong` and spawn
 //!   each `request` onto its own task so a slow tool never stalls the socket (which
 //!   would starve the server's WebSocket keepalive and get us disconnected).
-//! * **telemetry scheduler** — push `telemetry` frames on a timer.
+//! * **telemetry scheduler** — push `telemetry` frames on a timer. The session's first
+//!   push waits (bounded) for the server's `policy` frame, which the server sends right
+//!   after the handshake, so it already honours `policy.collect`.
 //! * **heartbeat** — send periodic `ping` so the server's missed-interval logic
 //!   keeps us online.
 //!
@@ -15,10 +17,11 @@
 //! whole stack tears down and [`run`] reconnects with exponential backoff. See
 //! ADR-0003 (self-built tunnel) and ADR-0004 (agent dials out).
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Notify};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, error, info, warn};
@@ -39,6 +42,10 @@ const HEARTBEAT: Duration = Duration::from_secs(30);
 const OUTBOX_CAP: usize = 64;
 /// Maximum log records drained into frames per wakeup.
 const LOG_BATCH: usize = 64;
+/// Upper bound on how long a session's first telemetry push waits for the server's
+/// `policy` frame. The server sends it immediately after the handshake, so this is only
+/// reached against a server that sends none; the push then goes out with the gate as held.
+const FIRST_POLICY_WAIT: Duration = Duration::from_secs(5);
 
 /// Connect-and-serve forever, reconnecting with exponential backoff. Never returns.
 ///
@@ -267,11 +274,32 @@ async fn serve_once(
         info!("mutual-auth handshake complete; server identity verified");
     }
 
-    // Telemetry scheduler.
+    // Telemetry scheduler. Its first collection waits for this session's first `policy`
+    // frame (bounded by FIRST_POLICY_WAIT): the scheduler starts before the read loop has
+    // read anything, and the collection gate (`policy.collect`, ADR-0069) must be applied
+    // before the snapshot it governs is taken. `Notify` keeps the permit if the frame is
+    // handled before the scheduler starts waiting.
+    let policy_applied = Arc::new(Notify::new());
     let telemetry_tx = tx.clone();
     let agent_id = config.agent_id.clone();
     let interval = Duration::from_secs(config.telemetry_interval_secs);
-    let telemetry = tokio::spawn(scheduler::run(agent_id, interval, telemetry_tx));
+    let first_push_after = {
+        let policy_applied = Arc::clone(&policy_applied);
+        async move {
+            if tokio::time::timeout(FIRST_POLICY_WAIT, policy_applied.notified())
+                .await
+                .is_err()
+            {
+                debug!("no policy frame yet; taking the first snapshot with the gate as held");
+            }
+        }
+    };
+    let telemetry = tokio::spawn(scheduler::run(
+        agent_id,
+        interval,
+        telemetry_tx,
+        first_push_after,
+    ));
 
     // Heartbeat.
     let heartbeat_tx = tx.clone();
@@ -317,7 +345,7 @@ async fn serve_once(
             }
             Ok(())
         }
-        r = read_loop(&mut stream, &tx) => r,
+        r = read_loop(&mut stream, &tx, &policy_applied) => r,
     };
 
     // Tear down the session's tasks.
@@ -510,15 +538,20 @@ fn urlencode_segment(s: &str) -> String {
     out
 }
 
-/// Process inbound messages until the stream ends.
-async fn read_loop<S>(stream: &mut S, tx: &mpsc::Sender<Frame>) -> anyhow::Result<()>
+/// Process inbound messages until the stream ends. `policy_applied` is signalled after
+/// each `policy` frame has been applied.
+async fn read_loop<S>(
+    stream: &mut S,
+    tx: &mpsc::Sender<Frame>,
+    policy_applied: &Notify,
+) -> anyhow::Result<()>
 where
     S: StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
 {
     while let Some(msg) = stream.next().await {
         match msg? {
             Message::Text(text) => {
-                handle_text(&text, tx).await;
+                handle_text(&text, tx, policy_applied).await;
             }
             Message::Binary(_) => {
                 debug!("ignoring unexpected binary message");
@@ -541,7 +574,7 @@ where
 }
 
 /// Decode one JSON text frame and act on it.
-async fn handle_text(text: &str, tx: &mpsc::Sender<Frame>) {
+async fn handle_text(text: &str, tx: &mpsc::Sender<Frame>, policy_applied: &Notify) {
     let frame: Frame = match serde_json::from_str(text) {
         Ok(f) => f,
         Err(e) => {
@@ -566,16 +599,11 @@ async fn handle_text(text: &str, tx: &mpsc::Sender<Frame>) {
             });
         }
         Frame::Policy(p) => {
-            // Operator's append-only deny rules (ADR-0020): additive to the built-ins,
-            // which they can never weaken or remove. The agent never sends a Policy frame.
-            info!(count = p.rules.len(), "applied operator policy rules");
-            crate::policy::set_operator_rules(p.rules);
-            // The fleet shell execution mode (ADR-0064). Absent, the agent keeps the mode
-            // it already holds — a pre-0.18 server must not silently unlock the shell.
-            if let Some(shell) = p.shell {
-                info!(mode = ?shell.mode, allow = shell.allow.len(), "applied shell policy");
-                crate::policy::set_shell_policy(shell);
-            }
+            // Deny rules, shell mode and collection gate, applied synchronously so every
+            // frame read after this one already sees them. Only then release the
+            // scheduler's first push.
+            crate::policy::apply(p);
+            policy_applied.notify_one();
         }
         Frame::Ping => {
             let _ = tx.send(Frame::Pong).await;
@@ -863,5 +891,65 @@ mod tests {
             }),
         )
         .expect("agent_update from the configured server host must be allowlisted");
+    }
+
+    /// JOINED SEAM (ADR-0069): the golden `policy_collect.json` fixture, handled by the
+    /// tunnel exactly as a frame off the socket, must switch `web_activity` to its stub in
+    /// both the scheduled path (the collector) and the on-demand `telemetry_collect`
+    /// request, and must release the scheduler's first push. Fails if the fixture, the
+    /// frame handling and the collector drift apart.
+    // `#[tokio::test]` is single-threaded, so holding the policy lock across awaits
+    // cannot deadlock.
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn policy_collect_fixture_gates_web_activity_end_to_end() {
+        let _guard = crate::policy::POLICY_TEST_LOCK.lock().unwrap();
+        let raw = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../docs/fixtures/policy_collect.json"),
+        )
+        .expect("read policy_collect.json");
+        assert!(
+            matches!(serde_json::from_str::<Frame>(&raw), Ok(Frame::Policy(_))),
+            "fixture must decode as a policy frame"
+        );
+
+        let (tx, mut rx) = mpsc::channel::<Frame>(4);
+        let policy_applied = Notify::new();
+        handle_text(&raw, &tx, &policy_applied).await;
+        tokio::time::timeout(Duration::from_millis(100), policy_applied.notified())
+            .await
+            .expect("handling a policy frame must release the first telemetry push");
+
+        // Scheduled path: the collector the scheduler's snapshot runs.
+        let scheduled = crate::telemetry::collectors::web_activity::collect().into_value();
+
+        // On-demand path: a real `telemetry_collect` request through the same tunnel.
+        let request = serde_json::json!({
+            "type": "request",
+            "id": "seam-1",
+            "tool": "telemetry_collect",
+            "args": { "sections": ["web_activity"] },
+        })
+        .to_string();
+        handle_text(&request, &tx, &policy_applied).await;
+        let response = tokio::time::timeout(Duration::from_secs(30), rx.recv()).await;
+
+        // Restore the default before asserting so a failure cannot leak the gate.
+        crate::policy::set_collect(&[("web_activity".to_string(), true)].into());
+
+        assert_eq!(scheduled["status"], "ok");
+        assert_eq!(scheduled["summary"], "not collected (server policy)");
+        assert_eq!(scheduled["domains"], serde_json::json!([]));
+
+        let Ok(Some(Frame::Response(resp))) = response else {
+            panic!("expected a telemetry_collect response, got {response:?}");
+        };
+        assert!(resp.ok, "telemetry_collect failed: {:?}", resp.error);
+        let on_demand = &resp.result.expect("result")["web_activity"];
+        assert_eq!(
+            on_demand, &scheduled,
+            "scheduled and on-demand paths disagree"
+        );
     }
 }

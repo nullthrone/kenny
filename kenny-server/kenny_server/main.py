@@ -137,8 +137,8 @@ async def webfilter_schedule_pass(
 ) -> dict[str, int]:
     """One pass of the web-filter schedule: push where now differs from applied.
 
-    For every host with an enabled schedule window whose feature and block mode
-    are both on, compare the list the schedule says applies *now* against the
+    For every host with an enabled schedule window whose enforcement level is
+    ``protect`` (ADR-0069), compare the list the schedule says applies *now* against the
     ``applied_hash`` already on the host and forward ``webfilter_apply`` only
     when they differ — so a pass over an unchanged fleet costs nothing on the
     wire and re-running it is idempotent.
@@ -472,10 +472,14 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
     shell_allow_defaults = load_shell_allow_defaults()
     # Parental controls (ADR-0024): per-host store + external-list cache under a
     # dir derived from the DB path, wrapped in the service the tunnel/API/tools use.
+    # The telemetry store is where a history purge also empties stored snapshots
+    # (ADR-0069); the collect-change hook is wired to the tunnel below.
     webfilter_store = WebFilterStore(db_path)
     cache_dir = os.path.dirname(os.path.abspath(db_path)) or "."
     webfilter_cache = ExternalListCache(cache_dir, settings=settings)
-    webfilter = WebFilterService(webfilter_store, webfilter_cache)
+    webfilter = WebFilterService(
+        webfilter_store, webfilter_cache, settings=settings, telemetry_store=store
+    )
     # Backup/restore (ADR: server DB backup/restore): a local snapshot dir is
     # always active (that's what solves the Syncthing lock-contention problem);
     # remote fan-out targets are operator-configured via backup_target_store.
@@ -500,6 +504,10 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         # unclassified snapshot for want of a dashboard read (ADR-0058).
         after_insert=partial(event_categories.schedule_classification, client_factory=client_factory),
     )
+    # A config change that flips whether a host collects web activity re-sends
+    # that host its `policy` frame (ADR-0069). The tunnel needs the service at
+    # construction, so the hook is wired back afterwards.
+    webfilter.on_collect_change = tunnel.push_policy
     call_log = CallLog(event_store=event_store)
     screenshots = ScreenshotStore()
     chat_history_store = ChatHistoryStore(db_path)

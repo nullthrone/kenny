@@ -262,8 +262,9 @@ is still stored and reachable via the API.
 ### Web filter
 
 The section modal for `web_activity` opens the per-host **parental-controls list editor**:
-flagged domains, observed domains, and the toggles that control this PC's filter —
-**monitor this PC** (`enabled`), **block listed sites** (`block_mode`), **use adult
+flagged domains, observed domains, and the settings that control this PC's filter — the
+**enforcement** level (Off / Log only / Protect, `enforcement`), **keep full browsing
+history** (`history`), **use adult
 blocklist** (`use_external_adult`), **block VPN/proxy bypass** (`use_bypass_protection`),
 and **disable browser DoH** (`doh_policy`) — plus adding/removing custom domains and an
 **apply now** button. See [Parental controls](parental-controls.md) for the full model.

@@ -86,3 +86,4 @@ kind of record kenny keeps. What qualifies: *When (not) to write an ADR* in the 
 | [0066](0066-anthropic-key-as-a-dashboard-setting-excluded-from-backups.md) | The Anthropic key is a dashboard setting, kept out of backups | accepted |
 | [0067](0067-alert-delivery-is-routed-by-actionability.md) | Alert delivery is routed by actionability | proposed |
 | [0068](0068-llm-egress-through-an-operator-configured-gateway.md) | LLM egress through an operator-configured gateway | accepted |
+| [0069](0069-web-filter-enforcement-and-history-per-host.md) | Web filtering is set per host on two axes: enforcement and history | accepted |

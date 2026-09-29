@@ -451,12 +451,12 @@ async def test_policy_frame_carries_the_shell_policy(tmp_path) -> None:
         store = app.state.shell_allow_store
         # Start from an empty list, not the shipped rules a new server is seeded with.
         await store.reset_to_defaults([])
-        frame = await tunnel._policy_frame()
+        frame = await tunnel._policy_frame("dev")
         assert frame["shell"] == {"mode": "unrestricted", "allow": []}
 
         await store.add(id="al_uname", applies_to="posix", pattern="uname -a", reason="r")
         await app.state.settings.set("KENNY_SHELL_POLICY_MODE", "allowlist")
-        frame = await tunnel._policy_frame()
+        frame = await tunnel._policy_frame("dev")
         assert frame["shell"]["mode"] == "allowlist"
         assert [r["id"] for r in frame["shell"]["allow"]] == ["al_uname"]
         # Resolving refreshed the mirror in the same pass.

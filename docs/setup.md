@@ -152,6 +152,7 @@ notifications:
 | `KENNY_WEBFILTER_GAMBLING_URL` | hagezi list | Source URL for the gambling list. Also editable in Admin → Web filter. |
 | `KENNY_WEBFILTER_PIRACY_URL` | blocklistproject list | Source URL for the piracy/torrent list. Also editable in Admin → Web filter. |
 | `KENNY_WEBFILTER_MAX_BLOCK_DOMAINS` | `5000` | Cap on external domains of the capped categories pushed to an agent (hard cap 10 000). Also editable in Admin → Web filter. |
+| `KENNY_WEBFILTER_DEFAULT_HISTORY` | `violations` | History a PC starts with when first heard from: `violations` keeps only matches against its list, `full` keeps every observed domain. Changing it affects new PCs only. Also editable in Admin → Web filter. |
 
 A changed source URL applies on the next list refresh.
 
