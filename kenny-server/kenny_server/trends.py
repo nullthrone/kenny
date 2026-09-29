@@ -85,8 +85,20 @@ def _daily_series(
         if day0 is None:
             day0 = day
         for key, value in extract(payload):
-            if isinstance(value, (int, float)):
-                series.setdefault(key, []).append(((day - day0).days, float(value)))
+            # `value` is an unvalidated wire extra (protocol.Section allows any
+            # extra field) -- reject bools (isinstance(True, int) is True) and
+            # anything that can't survive becoming a real float: an oversized
+            # int raises OverflowError, and a non-finite float is never a
+            # usable trend point.
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            try:
+                as_float = float(value)
+            except OverflowError:
+                continue
+            if not math.isfinite(as_float):
+                continue
+            series.setdefault(key, []).append(((day - day0).days, as_float))
     return series
 
 

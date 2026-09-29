@@ -52,3 +52,12 @@ def test_a_tool_without_a_floor_keeps_the_callers_timeout() -> None:
     assert forward_timeout_s("fs_list", {"timeout_s": 5}) == 5
     with pytest.raises(ValueError):
         forward_timeout_s("fs_list", {"timeout_s": "soon"})
+
+
+def test_an_oversized_timeout_s_raises_value_error_not_overflow_error() -> None:
+    # `timeout_s` is unvalidated caller input (an MCP tool arg or LLM tool-call
+    # argument); JSON has no int-size limit, and `float()` on a huge-but-valid
+    # int raises OverflowError, not the TypeError/ValueError both call sites'
+    # `except` clauses catch to fail the call closed instead of crashing.
+    with pytest.raises(ValueError):
+        forward_timeout_s("fs_list", {"timeout_s": 10**400})
