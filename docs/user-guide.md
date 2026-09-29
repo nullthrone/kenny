@@ -206,7 +206,7 @@ resetting your password) — see the [dashboard reference](dashboard.md).
 | Screen | `screen_capture` | read-only |
 | Telemetry | `telemetry_collect` | read-only |
 | Agent mgmt | `agent_update` | ✅ |
-| Server-only | `list_agents` · `select_agent` · `fleet_overview` · `agent_health` · `agent_snapshot` | read-only |
+| Server-only | `list_agents` · `select_agent` · `fleet_overview` · `agent_health` · `agent_snapshot` · `agent_availability` | read-only |
 
 Parental-controls tools (`webfilter_apply/clear`, `webfilter_get/set/push`, `web_activity_query`)
 are covered in **[Parental controls](parental-controls.md)**. The **[tool reference](tools.md)** has

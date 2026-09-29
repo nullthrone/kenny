@@ -18,7 +18,7 @@ kenny splits its tools into two families:
   **OS guard** (below) refuses to forward the wrong one for a given agent's OS.
 - **Server-only orchestration tools** read the registry, telemetry store, and health rules
   on the server. They are **never forwarded** to an agent: `list_agents`, `select_agent`,
-  `fleet_overview`, `agent_health`, `agent_snapshot` (plus the server-side web-filter
+  `fleet_overview`, `agent_health`, `agent_snapshot`, `agent_availability` (plus the server-side web-filter
   tools).
 
 !!! note "`agent_id` targeting, and what `select_agent` actually does now ([ADR-0038](adr/0038-explicit-per-call-agent-targeting.md))"
@@ -287,6 +287,7 @@ These read server state and are never forwarded. All are read-only.
 | `fleet_overview` | — | Per-agent rolled-up health for the whole fleet, in the same shape as `list_agents`. |
 | `agent_health` | `id` | Per-section health for one agent: `status`, `summary`, `reason`, `attention`, `tier` (`incident` / `posture` / `none`), `since` and `age_seconds` (how long the section has held its current status, from the alert loop's state; null until it has seen it) and, where a rule has structured evidence, `details` (the reliability rule's per-pattern activity record, `win_update`'s per-KB failures). |
 | `agent_snapshot` | `id`, `section?` | Latest stored telemetry snapshot (optionally one section). |
+| `agent_availability` | `id`, `days?` | When one host was reachable over the last `days` (1–30, default 7): `online_pct` (unknown time excluded), `totals`, `outages` (offline stretches ≥ 5 min, newest first), `unknown_spans` (the server itself was down), `boots`, and `ledger_since` (before it, stretches are reconstructed from telemetry arrival and marked `approx`). |
 
 !!! note "`select_agent` is withheld from the ticket surface"
     Every other server-only tool above is available wherever a ticket's profile allows
