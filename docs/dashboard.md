@@ -254,7 +254,8 @@ is still stored and reachable via the API.
 
 ### Health trend & last screenshot
 
-- **Health · 30 days** — a sparkline of the PC's worst-of health per snapshot.
+- **Health · 30 days** — a sparkline of the PC's worst-of health per day: the last snapshot of
+  each UTC day over the past 30 days, oldest first, each scored as of the day it was collected.
 - **Last screenshot** — the most recent desktop capture, with a **recapture** button;
   click the image to enlarge it. Screenshots are captured in the user's session by the
   tray helper.

@@ -4925,7 +4925,7 @@
         <div class="k-card k-card--sunken kc-trend">
           <div class="k-row" style="justify-content:space-between">
             <span class="kc-section-lbl">health trend · 30 d</span>
-            <span class="k-mono" style="font-size:11px;color:var(--fg-faint)">worst-of / snapshot</span>
+            <span class="k-mono" style="font-size:11px;color:var(--fg-faint)">worst-of / day</span>
           </div>
           ${sparkline(data.history || [])}
         </div>
@@ -4983,7 +4983,7 @@
       const line = pts.map((p, i) => `${x(i).toFixed(1)},${yOf(p.overall)}`).join(" ");
       const last = pts[pts.length - 1];
       return `<svg class="kc-spark" viewBox="0 0 400 44" preserveAspectRatio="none" role="img">
-        <title>overall health over the last ${n} snapshots</title>
+        <title>overall health over the last ${n} days</title>
         <polyline points="${line}" fill="none" stroke="${colOf(last.overall)}" stroke-width="2"
           stroke-linejoin="round" stroke-linecap="round"/>
       </svg>`;
