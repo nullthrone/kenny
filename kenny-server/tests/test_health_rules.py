@@ -1179,3 +1179,23 @@ def test_malformed_nested_field_never_crashes(section: str, payload: dict) -> No
     full_payload = {"status": "ok", "summary": "x", **payload}
     result = health_rules.evaluate_section(section, full_payload, now=NOW)
     assert result["status"] in ("ok", "posture", "warn", "crit")
+
+
+def test_unhashable_wire_values_in_set_lookups_do_not_crash() -> None:
+    # `port` and `category` are unvalidated wire extras; a list/dict is unhashable
+    # and must be treated as "not a match", not raise TypeError from the set lookup.
+    ports = health_rules.evaluate_section(
+        "listening_ports",
+        {"status": "ok", "ports": [{"port": [3389], "address": "0.0.0.0"}, {"port": {}}]},
+        now=NOW,
+    )
+    assert ports["status"] == "ok"
+    web = health_rules.evaluate_section(
+        "web_activity",
+        {
+            "status": "ok",
+            "flagged": [{"category": ["seed"], "domain": "x", "last_seen": NOW.isoformat()}],
+        },
+        now=NOW,
+    )
+    assert web["status"] in ("ok", "warn", "crit")

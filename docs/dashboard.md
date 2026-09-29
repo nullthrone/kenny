@@ -276,7 +276,8 @@ is still stored and reachable via the API.
 
 ### Health trend & last screenshot
 
-- **Health · 30 days** — a sparkline of the PC's worst-of health per snapshot.
+- **Health · 30 days** — a sparkline of the PC's worst-of health per day: the last snapshot of
+  each UTC day over the past 30 days, oldest first, each scored as of the day it was collected.
 - **Last screenshot** — the most recent desktop capture, with a **recapture** button;
   click the image to enlarge it. Screenshots are captured in the user's session by the
   tray helper.
@@ -284,8 +285,9 @@ is still stored and reachable via the API.
 ### Web filter
 
 The section modal for `web_activity` opens the per-host **parental-controls list editor**:
-flagged domains, observed domains, and the toggles that control this PC's filter —
-**monitor this PC** (`enabled`), **block listed sites** (`block_mode`), **use adult
+flagged domains, observed domains, and the settings that control this PC's filter — the
+**enforcement** level (Off / Log only / Protect, `enforcement`), **keep full browsing
+history** (`history`), **use adult
 blocklist** (`use_external_adult`), **block VPN/proxy bypass** (`use_bypass_protection`),
 and **disable browser DoH** (`doh_policy`) — plus adding/removing custom domains and an
 **apply now** button. See [Parental controls](parental-controls.md) for the full model.

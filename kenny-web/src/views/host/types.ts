@@ -187,8 +187,22 @@ export interface WebfilterExternalStat {
   enabled: boolean
 }
 
+/** What the filter does on a host (ADR-0069): nothing, record and alarm on
+ * matches, or also block them. */
+export type WebfilterEnforcement = 'off' | 'log_only' | 'protect'
+
+/** What the server keeps of a host's observed domains (ADR-0069): only the
+ * matches against the filter, or every domain (a browsing profile). */
+export type WebfilterHistory = 'violations' | 'full'
+
 export interface WebfilterConfig {
   agent_id: string
+  enforcement: WebfilterEnforcement
+  history: WebfilterHistory
+  /** Whether the host is told to collect web activity at all — derived
+   * server-side from the two settings above; never re-derive it here. */
+  collecting: boolean
+  /** Legacy views of `enforcement`, kept for older API callers. */
   enabled: boolean
   block_mode: boolean
   use_external_adult: boolean

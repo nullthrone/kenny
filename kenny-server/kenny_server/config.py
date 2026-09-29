@@ -50,6 +50,7 @@ from typing import Any
 from . import ai
 from .logging_config import apply_log_level
 from .policy import SHELL_MODES
+from .store import WEBFILTER_HISTORY_MODES
 
 logger = logging.getLogger("kenny.config")
 
@@ -428,6 +429,13 @@ _SPECS: list[SettingSpec] = [
     _spec("KENNY_WEBFILTER_MAX_BLOCK_DOMAINS", "Web filter", "int", "5000",
           "Max block domains", lifecycle="live", min=1, max=10000,
           help="Cap on external adult domains pushed to an agent (hard cap 10000)."),
+    _spec("KENNY_WEBFILTER_DEFAULT_HISTORY", "Web filter", "enum", "violations",
+          "Default web history", lifecycle="live", choices=WEBFILTER_HISTORY_MODES,
+          help="What the server keeps of web activity for a host it hears from "
+               "for the first time. 'violations' keeps only matches against the "
+               "host's list — with the filter off that is nothing, and the host is "
+               "told not to collect. 'full' keeps every observed domain. A host "
+               "keeps the value it got; changing this affects new hosts only."),
     # -- Shell policy ----------------------------------------------------------
     # ADR-0064. Superuser-only by construction: /api/settings is superuser-gated, and a
     # principal that can call shell_exec must not also be able to relax the mode that

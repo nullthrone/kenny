@@ -18,6 +18,7 @@ exception small — a rule that *can* be expressed per-snapshot belongs in
 
 from __future__ import annotations
 
+import math
 from datetime import date, datetime
 from typing import Any
 
@@ -41,6 +42,18 @@ def _parse_day(value: Any) -> date | None:
 def _fit(points: list[tuple[float, float]]) -> tuple[float, float] | None:
     """OLS fit; returns ``(slope, r2)`` or None for degenerate input."""
 
+    try:
+        fit = _fit_unchecked(points)
+    except OverflowError:
+        # Finite but huge wire values (e.g. 1e308) overflow when squared; such a
+        # series has no usable trend line.
+        return None
+    if fit is None or not all(math.isfinite(v) for v in fit):
+        return None
+    return fit
+
+
+def _fit_unchecked(points: list[tuple[float, float]]) -> tuple[float, float] | None:
     n = len(points)
     if n < 2:
         return None
@@ -72,8 +85,20 @@ def _daily_series(
         if day0 is None:
             day0 = day
         for key, value in extract(payload):
-            if isinstance(value, (int, float)):
-                series.setdefault(key, []).append(((day - day0).days, float(value)))
+            # `value` is an unvalidated wire extra (protocol.Section allows any
+            # extra field) -- reject bools (isinstance(True, int) is True) and
+            # anything that can't survive becoming a real float: an oversized
+            # int raises OverflowError, and a non-finite float is never a
+            # usable trend point.
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            try:
+                as_float = float(value)
+            except OverflowError:
+                continue
+            if not math.isfinite(as_float):
+                continue
+            series.setdefault(key, []).append(((day - day0).days, as_float))
     return series
 
 

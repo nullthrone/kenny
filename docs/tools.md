@@ -321,7 +321,7 @@ half.
 | Tool | Arguments | Tier |
 |------|-----------|------|
 | `webfilter_get` | `id` | `read_only` |
-| `webfilter_set` | `id`, plus config toggles / `add_domain` / `remove_domain` | `normal_change` |
+| `webfilter_set` | `id`, plus `enforcement` / `history` / config toggles / `add_domain` / `remove_domain` | `normal_change` |
 | `webfilter_push` | `id` | `standard_change` |
 | `web_activity_query` | `id`, `hours?`, `flagged_only?` | `read_only` (privacy-sensitive, redacted output) |
 

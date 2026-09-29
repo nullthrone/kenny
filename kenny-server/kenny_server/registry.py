@@ -215,6 +215,21 @@ class AgentRegistry:
 
         return self._mark_online(agent_id, meta, send_fn)
 
+    def mark_online(
+        self,
+        agent_id: str,
+        meta: dict[str, Any],
+        send_fn: SendFn,
+    ) -> Agent:
+        """Make an already-authenticated connection routable.
+
+        For a caller that authenticated the agent itself (signature or token)
+        and has something to deliver on the socket before any request may be
+        routed to it — the tunnel's first ``policy`` frame.
+        """
+
+        return self._mark_online(agent_id, meta, send_fn)
+
     def register(
         self,
         agent_id: str,

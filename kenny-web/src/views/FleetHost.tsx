@@ -119,7 +119,7 @@ export default function FleetHost() {
             <>
               <Sparkline values={historyValues} color="var(--red-600)" />
               <p className={styles.trendCaption}>
-                Worst-of health per snapshot{trendDirection ? ` — ${trendDirection} since the earliest reading shown` : ''}.
+                Worst-of health per day{trendDirection ? ` — ${trendDirection} since the earliest reading shown` : ''}.
               </p>
             </>
           ) : (

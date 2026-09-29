@@ -328,6 +328,35 @@ this field — it is not a change to this contract.
 An agent predating v0.18 ignores `shell` and keeps running `unrestricted`. For those agents the
 server's mirror (below) is the only place the mode is enforced.
 
+#### `policy.collect` — per-host telemetry collection gate
+
+The same frame carries `collect`, a map of **telemetry section name → whether this agent
+collects it**. It exists so that a section the server has no use for on a given host is not
+gathered on that host at all, instead of being gathered and then discarded. Today the only
+honoured key is `web_activity`; unknown keys are ignored.
+
+```json
+{
+  "type": "policy",
+  "rules": [],
+  "collect": { "web_activity": false }
+}
+```
+
+- `collect` is **optional**. Omitted, the agent keeps what it holds; a key absent from a
+  present map is likewise left as it is. An agent that has never been told collects every
+  section — the pre-0.20 behaviour.
+- Unlike `shell`, `collect` is **per host**: the server resolves it from that host's
+  web-filter configuration (ADR-0069), so two connections can be pushed different values.
+  The server re-sends the frame to a host whenever the resolved value changes.
+- A section switched off still appears in every snapshot and `telemetry_collect` result as a
+  stub with the section's normal shape, empty data, `status: "ok"` and the summary
+  `not collected (server policy)`. The gate sits in the collector, so the scheduled push and
+  the on-demand `telemetry_collect` path cannot disagree.
+- The agent treats `collect` as data minimisation, not as authority: the server does not
+  rely on it. It discards what it did not ask for on insert, which covers agents predating
+  this version and any snapshot taken before the first `policy` frame arrived.
+
 
 ### `telemetry` (agent → server, pushed)
 
@@ -651,6 +680,11 @@ rule: a governance call must never be able to lock everyone out of the machine.
 The `webfilter_*` server-only tools manage the per-host list and trigger a push; they wrap
 the forwarded `webfilter_apply`/`webfilter_clear` capability tools (ADR-0024). `webfilter_set`
 and `webfilter_push` are state-changing (they pass the operator confirm-gate, ADR-0009).
+A host's configuration has two independent settings (ADR-0069): `enforcement` ∈ {`off`,
+`log_only`, `protect`} — what the filter does (nothing / record and alarm on matches / also
+block) — and `history` ∈ {`violations`, `full`} — whether the server keeps every observed
+domain or only the matches. `webfilter_push` forwards `webfilter_apply` only under
+`protect`, otherwise `webfilter_clear`.
 
 The `reliability_suppression_*` server-only tools manage the suppression-rule table behind
 the Reliability card (ADR-0041); `_add`/`_remove` are state-changing (ADR-0009). They forward
@@ -715,8 +749,15 @@ authoritative (see ADR-0024). The section payload the agent sends:
 On telemetry insert the server annotates the *stored* payload with a `flagged` array (the
 matches against the host's list, with category and timestamps) that the `web_activity` health
 rule consumes. That annotation is **server-internal and not part of this wire contract** — the
-agent never sends `flagged`. Off Windows the section is the standard `n/a on this platform`
-stub with empty `sources`/`domains`.
+agent never sends `flagged`. What the server keeps of the rest depends on the host's
+configuration (ADR-0069): with history `violations` it stores only the matches, and the
+stored `domains` array is empty. Off Windows the section is the standard `n/a on this
+platform` stub with empty `sources`/`domains`; switched off by `policy.collect` it is the same
+stub with the summary `not collected (server policy)`.
+
+The DNS client cache also holds the names the hosts file resolves locally — Windows preloads
+them — so the collector drops cache entries whose address is a sinkhole (`0.0.0.0` or `::`).
+Without that, every name `webfilter_apply` blocks would be reported as reached.
 
 The `reliability` section reports **what** is going wrong, not just how many errors there are:
 a breakdown of the Error/Critical entries in the System + Application event logs over a rolling
@@ -996,11 +1037,19 @@ for fleet aggregation. These thresholds are illustrative of the data-driven rule
 
 ## Versioning
 
-`PROTOCOL_VERSION = "0.19"`. Both implementations expose this constant; from v0.8 the
+`PROTOCOL_VERSION = "0.20"`. Both implementations expose this constant; from v0.8 the
 agent puts it on the wire in `register.protocol` to select the mutual-auth handshake
 (compare versions **numerically per component**, not lexically — `"0.10"` is newer than
 `"0.9"`). Bump on any breaking change to a frame or tool schema.
 
+- `0.20` — added `collect` to the `policy` frame (ADR-0069): a per-host map of telemetry
+  section → whether the agent collects it, honoured today for `web_activity`. A section
+  switched off is reported as a stub with the summary `not collected (server policy)`.
+  The `web_activity` collector also stops reporting DNS-cache entries that resolve to a
+  sinkhole address (`0.0.0.0`/`::`), which are the hosts file's own entries and not visits.
+  Additive and optional: a frame without `collect` is unchanged from v0.19, and an agent
+  predating this version ignores the field and keeps collecting — the server discards what
+  it did not ask for on insert, so for those agents the server is the only enforcement point.
 - `0.19` — the `reliability` section gains `boot_sessions` (the UTC boot instants inside the
   window, read from `Kernel-Boot/20` and `EventLog/6005` in the same query and the same clock
   as the events) and `truncated_count` (how many groups the cap dropped, so `recent_crashes`

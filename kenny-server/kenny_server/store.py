@@ -111,6 +111,11 @@ async def _configure_connection(db: aiosqlite.Connection) -> None:
 
 
 class _WriteLockState:
+    # POSSIBLY DEAD: `depth` is written on every acquire/release but never
+    # read back by any caller or assertion — nothing in this module or its
+    # tests consults it. Kept rather than removed since it is the natural
+    # place to assert `depth == 0` before the outer release, should this
+    # re-entrant lock ever need that invariant checked.
     __slots__ = ("lock", "owner", "depth")
 
     def __init__(self) -> None:
@@ -409,6 +414,40 @@ class TelemetryStore:
             deleted = cur.rowcount or 0
             total += deleted
             if deleted < self._PRUNE_CHUNK:
+                break
+            await asyncio.sleep(0)
+        return total
+
+    async def clear_web_activity_domains(self, agent_id: str) -> int:
+        """Empty ``web_activity.domains`` in every stored snapshot of ``agent_id``.
+
+        The storage half of turning a host's web history to ``violations``
+        (ADR-0069): the matches stay in the snapshot's ``flagged`` annotation,
+        every other observed domain is dropped. Returns the snapshots rewritten.
+
+        Rewrites whole ~90 KB rows, so — like :meth:`prune` — it works in small
+        chunks, each its own transaction under :func:`write_lock`, with a
+        scheduling yield between them. The predicate excludes rows whose
+        ``domains`` is already an empty array, which is what makes the loop end.
+        """
+
+        total = 0
+        while True:
+            async with write_lock():
+                cur = await self._conn.execute(
+                    "UPDATE snapshots SET snapshot = "
+                    "json_set(snapshot, '$.web_activity.domains', json('[]')) "
+                    "WHERE id IN (SELECT id FROM snapshots WHERE agent_id = ? "
+                    "AND json_type(snapshot, '$.web_activity.domains') IS NOT NULL "
+                    "AND NOT (json_type(snapshot, '$.web_activity.domains') = 'array' "
+                    "AND json_array_length(snapshot, '$.web_activity.domains') = 0) "
+                    "LIMIT ?)",
+                    (agent_id, self._PRUNE_CHUNK),
+                )
+                await self._conn.commit()
+            updated = cur.rowcount or 0
+            total += updated
+            if updated < self._PRUNE_CHUNK:
                 break
             await asyncio.sleep(0)
         return total
@@ -2776,7 +2815,8 @@ CREATE TABLE IF NOT EXISTS webfilter_config (
     updated_at            TEXT,
     applied_hash          TEXT,
     applied_at            TEXT,
-    applied_ok            INTEGER
+    applied_ok            INTEGER,
+    history               TEXT NOT NULL DEFAULT 'violations'
 );
 CREATE TABLE IF NOT EXISTS webfilter_domains (
     agent_id  TEXT NOT NULL,
@@ -2815,8 +2855,20 @@ CREATE INDEX IF NOT EXISTS idx_web_activity_last_seen
     ON web_activity_events (agent_id, last_seen DESC);
 """
 
-# Config defaults for a host that has never been configured (ADR-0024).
+#: What a host's web filter does (ADR-0069): match nothing, record and alarm on
+#: matches, or also block. Stored in the ``enabled``/``block_mode`` columns:
+#: ``off`` is ``enabled=0``, ``log_only`` is ``enabled=1, block_mode=0``,
+#: ``protect`` is ``enabled=1, block_mode=1``.
+WEBFILTER_ENFORCEMENT_LEVELS: tuple[str, ...] = ("off", "log_only", "protect")
+#: What the server keeps of a host's web activity (ADR-0069): only the matches,
+#: or every observed domain.
+WEBFILTER_HISTORY_MODES: tuple[str, ...] = ("violations", "full")
+
+# Config defaults for a host that has never been configured (ADR-0024). The
+# default ``history`` is not here: it is the live setting
+# ``KENNY_WEBFILTER_DEFAULT_HISTORY``, passed in by the caller.
 _WEBFILTER_DEFAULTS: dict[str, Any] = {
+    "enforcement": "off",
     "enabled": False,
     "block_mode": False,
     "use_external_adult": True,
@@ -2824,20 +2876,43 @@ _WEBFILTER_DEFAULTS: dict[str, Any] = {
     "doh_policy": "disable",
 }
 _WEBFILTER_TOGGLES = (
-    "enabled",
-    "block_mode",
     "use_external_adult",
     "use_bypass_protection",
 )
 
 # Columns added after the tables first shipped, backfilled into existing DB
-# files the same way ``UpdateStore._migrate`` does. Both default to the
-# pre-category behaviour: no extra categories on a config, and an untagged
-# (always-in-force) custom entry.
+# files the same way ``UpdateStore._migrate`` does. The category columns default
+# to the pre-category behaviour: no extra categories on a config, and an
+# untagged (always-in-force) custom entry. ``history`` defaults to ``full`` for
+# rows that predate it, because every host was recording its full web activity
+# then — an upgrade must not change what is recorded (ADR-0069).
 _WEBFILTER_MIGRATED_COLUMNS: dict[str, dict[str, str]] = {
-    "webfilter_config": {"categories": "TEXT"},
+    "webfilter_config": {
+        "categories": "TEXT",
+        "history": "TEXT NOT NULL DEFAULT 'full'",
+    },
     "webfilter_domains": {"category": "TEXT"},
 }
+
+
+def _enforcement_from_columns(enabled: Any, block_mode: Any) -> str:
+    """Map the stored booleans onto an enforcement level.
+
+    A ``block_mode`` without ``enabled`` is ``off``: nothing was ever pushed or
+    flagged for such a host, so reading it as anything stricter would change
+    behaviour on upgrade.
+    """
+
+    if not enabled:
+        return "off"
+    return "protect" if block_mode else "log_only"
+
+
+def _check_choice(name: str, value: Any, choices: tuple[str, ...]) -> str:
+    text = str(value)
+    if text not in choices:
+        raise ValueError(f"{name} must be one of {', '.join(choices)}; got {value!r}")
+    return text
 
 
 class WebFilterStore:
@@ -2863,18 +2938,63 @@ class WebFilterStore:
         self._db = await aiosqlite.connect(self.db_path)
         await _configure_connection(self._db)
         await self._db.executescript(_WEBFILTER_SCHEMA)
-        await self._migrate()
+        added = await self._migrate()
+        if "webfilter_config.history" in added:
+            await self._materialise_observed_hosts()
         await self._db.commit()
 
-    async def _migrate(self) -> None:
-        """Add the category columns to DB files created before they existed."""
+    async def _migrate(self) -> set[str]:
+        """Add later columns to DB files created before they existed.
 
+        Returns the ``table.column`` names this call added, so a migration step
+        that must run exactly once — when its column appears — can key off it.
+        """
+
+        added: set[str] = set()
         for table, columns in _WEBFILTER_MIGRATED_COLUMNS.items():
             async with self._conn.execute(f"PRAGMA table_info({table})") as cur:
                 existing = {row["name"] for row in await cur.fetchall()}
             for col, ddl in columns.items():
                 if col not in existing:
                     await self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
+                    added.add(f"{table}.{col}")
+        return added
+
+    async def _materialise_observed_hosts(self) -> None:
+        """Give every host with recorded web activity a config row keeping ``full``.
+
+        Runs once, when ``history`` is added to an existing database. A host
+        that was recording but never configured would otherwise fall to the
+        live default for unconfigured hosts, which may be ``violations`` — and
+        an upgrade must not change what is recorded (ADR-0069). Every other
+        column takes its default, so the enforcement level stays ``off``.
+        """
+
+        await self._conn.execute(
+            "INSERT OR IGNORE INTO webfilter_config (agent_id, history) "
+            "SELECT DISTINCT e.agent_id, 'full' FROM web_activity_events e "
+            "WHERE NOT EXISTS "
+            "(SELECT 1 FROM webfilter_config c WHERE c.agent_id = e.agent_id)"
+        )
+
+    async def ensure_config(self, agent_id: str, *, default_history: str) -> None:
+        """Fix a host's history at first contact, if it has no config row yet.
+
+        The default for unconfigured hosts is a live setting; resolving it on
+        every read would let a later change of that setting silently change what
+        an already-known host records. Writing it down the first time the host
+        is heard from makes the default apply to new hosts only (ADR-0069).
+        """
+
+        history = (
+            default_history if default_history in WEBFILTER_HISTORY_MODES else "violations"
+        )
+        async with write_lock():
+            await self._conn.execute(
+                "INSERT OR IGNORE INTO webfilter_config (agent_id, history) VALUES (?, ?)",
+                (agent_id, history),
+            )
+            await self._conn.commit()
 
     async def close(self) -> None:
         if self._db is not None:
@@ -2918,13 +3038,23 @@ class WebFilterStore:
             keys.add("bypass")
         return sorted(keys)
 
-    async def get_config(self, agent_id: str) -> dict[str, Any]:
-        """Return the host's config (defaults when never configured)."""
+    async def get_config(
+        self, agent_id: str, *, default_history: str = "violations"
+    ) -> dict[str, Any]:
+        """Return the host's config (defaults when never configured).
+
+        ``enforcement`` is derived from the stored ``enabled``/``block_mode``
+        columns, and those two are reported back *normalised* from it —
+        ``enabled`` is "not ``off``", ``block_mode`` is "``protect``" — so a
+        stored ``block_mode`` without ``enabled`` reads as ``off`` everywhere.
+        ``default_history`` is what a host with no row reports (the live
+        ``KENNY_WEBFILTER_DEFAULT_HISTORY``).
+        """
 
         async with self._conn.execute(
             "SELECT enabled, block_mode, use_external_adult, use_bypass_protection, "
-            "doh_policy, updated_at, applied_hash, applied_at, applied_ok, categories "
-            "FROM webfilter_config WHERE agent_id = ?",
+            "doh_policy, updated_at, applied_hash, applied_at, applied_ok, categories, "
+            "history FROM webfilter_config WHERE agent_id = ?",
             (agent_id,),
         ) as cur:
             row = await cur.fetchone()
@@ -2933,6 +3063,11 @@ class WebFilterStore:
             return {
                 "agent_id": agent_id,
                 **defaults,
+                "history": (
+                    default_history
+                    if default_history in WEBFILTER_HISTORY_MODES
+                    else "violations"
+                ),
                 "categories": self._merge_categories(
                     None,
                     bool(defaults["use_external_adult"]),
@@ -2943,10 +3078,15 @@ class WebFilterStore:
                 "applied_at": None,
                 "applied_ok": None,
             }
+        enforcement = _enforcement_from_columns(row["enabled"], row["block_mode"])
+        history = row["history"]
         return {
             "agent_id": agent_id,
-            "enabled": bool(row["enabled"]),
-            "block_mode": bool(row["block_mode"]),
+            "enforcement": enforcement,
+            # An unreadable stored value keeps the less revealing mode.
+            "history": history if history in WEBFILTER_HISTORY_MODES else "violations",
+            "enabled": enforcement != "off",
+            "block_mode": enforcement == "protect",
             "use_external_adult": bool(row["use_external_adult"]),
             "use_bypass_protection": bool(row["use_bypass_protection"]),
             "categories": self._merge_categories(
@@ -2961,8 +3101,30 @@ class WebFilterStore:
             "applied_ok": None if row["applied_ok"] is None else bool(row["applied_ok"]),
         }
 
-    async def set_config(self, agent_id: str, **fields: Any) -> dict[str, Any]:
+    async def _stored_toggles(self, agent_id: str) -> tuple[bool, bool] | None:
+        """The raw ``(enabled, block_mode)`` columns, or ``None`` without a row."""
+
+        async with self._conn.execute(
+            "SELECT enabled, block_mode FROM webfilter_config WHERE agent_id = ?",
+            (agent_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        return bool(row["enabled"]), bool(row["block_mode"])
+
+    async def set_config(
+        self, agent_id: str, *, default_history: str = "violations", **fields: Any
+    ) -> dict[str, Any]:
         """Upsert a partial config change (unknown keys ignored). Returns config.
+
+        ``enforcement`` sets both ``enabled`` and ``block_mode``; without it the
+        legacy ``enabled``/``block_mode`` toggles still move their own column,
+        applied to what is stored, so a caller toggling them one at a time
+        gets the same result it always did. ``history`` is written as given; a
+        host with no row materialises ``default_history``. Raises
+        :class:`ValueError` for an unknown enforcement level or history mode,
+        before anything is written.
 
         ``categories`` is the whole enabled set, not a delta: passing it also
         settles ``use_external_adult``/``use_bypass_protection``, so the two
@@ -2970,7 +3132,28 @@ class WebFilterStore:
         *instead* still works and only moves its own category.
         """
 
-        current = await self.get_config(agent_id)
+        enforcement = fields.get("enforcement")
+        if enforcement is not None:
+            enforcement = _check_choice(
+                "enforcement", enforcement, WEBFILTER_ENFORCEMENT_LEVELS
+            )
+        history = fields.get("history")
+        if history is not None:
+            history = _check_choice("history", history, WEBFILTER_HISTORY_MODES)
+
+        current = await self.get_config(agent_id, default_history=default_history)
+        stored = await self._stored_toggles(agent_id)
+        enabled, block_mode = stored if stored is not None else (False, False)
+        if enforcement is not None:
+            enabled = enforcement != "off"
+            block_mode = enforcement == "protect"
+        else:
+            if fields.get("enabled") is not None:
+                enabled = bool(fields["enabled"])
+            if fields.get("block_mode") is not None:
+                block_mode = bool(fields["block_mode"])
+        if history is not None:
+            current["history"] = history
         categories = fields.get("categories")
         if categories is not None:
             wanted = {str(c) for c in categories}
@@ -2986,48 +3169,66 @@ class WebFilterStore:
             set(current["categories"]) - {"adult", "bypass"}
         )
         now = datetime.now(timezone.utc).isoformat()
-        await self._conn.execute(
-            "INSERT INTO webfilter_config "
-            "(agent_id, enabled, block_mode, use_external_adult, use_bypass_protection, "
-            "doh_policy, updated_at, applied_hash, applied_at, applied_ok, categories) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-            "ON CONFLICT(agent_id) DO UPDATE SET "
-            "enabled=excluded.enabled, block_mode=excluded.block_mode, "
-            "use_external_adult=excluded.use_external_adult, "
-            "use_bypass_protection=excluded.use_bypass_protection, "
-            "doh_policy=excluded.doh_policy, updated_at=excluded.updated_at, "
-            "categories=excluded.categories",
-            (
-                agent_id,
-                int(current["enabled"]),
-                int(current["block_mode"]),
-                int(current["use_external_adult"]),
-                int(current["use_bypass_protection"]),
-                current["doh_policy"],
-                now,
-                current["applied_hash"],
-                current["applied_at"],
-                None if current["applied_ok"] is None else int(current["applied_ok"]),
-                json.dumps(extras),
-            ),
-        )
-        await self._conn.commit()
-        return await self.get_config(agent_id)
+        async with write_lock():
+            await self._conn.execute(
+                "INSERT INTO webfilter_config "
+                "(agent_id, enabled, block_mode, use_external_adult, use_bypass_protection, "
+                "doh_policy, updated_at, applied_hash, applied_at, applied_ok, categories, "
+                "history) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(agent_id) DO UPDATE SET "
+                "enabled=excluded.enabled, block_mode=excluded.block_mode, "
+                "use_external_adult=excluded.use_external_adult, "
+                "use_bypass_protection=excluded.use_bypass_protection, "
+                "doh_policy=excluded.doh_policy, updated_at=excluded.updated_at, "
+                "categories=excluded.categories, history=excluded.history",
+                (
+                    agent_id,
+                    int(enabled),
+                    int(block_mode),
+                    int(current["use_external_adult"]),
+                    int(current["use_bypass_protection"]),
+                    current["doh_policy"],
+                    now,
+                    current["applied_hash"],
+                    current["applied_at"],
+                    None if current["applied_ok"] is None else int(current["applied_ok"]),
+                    json.dumps(extras),
+                    current["history"],
+                ),
+            )
+            await self._conn.commit()
+        return await self.get_config(agent_id, default_history=default_history)
 
     async def set_applied_state(
-        self, agent_id: str, list_hash: str | None, applied_at: str, ok: bool
+        self,
+        agent_id: str,
+        list_hash: str | None,
+        applied_at: str,
+        ok: bool,
+        *,
+        default_history: str = "violations",
     ) -> None:
-        """Persist the last-applied block hash/time/result for drift display."""
+        """Persist the last-applied block hash/time/result for drift display.
 
-        await self._conn.execute(
-            "INSERT INTO webfilter_config (agent_id, applied_hash, applied_at, applied_ok) "
-            "VALUES (?, ?, ?, ?) "
-            "ON CONFLICT(agent_id) DO UPDATE SET "
-            "applied_hash=excluded.applied_hash, applied_at=excluded.applied_at, "
-            "applied_ok=excluded.applied_ok",
-            (agent_id, list_hash, applied_at, 1 if ok else 0),
+        A host with no row yet gets one here; it materialises ``default_history``
+        so that a push never silently changes what the host records.
+        """
+
+        history = (
+            default_history if default_history in WEBFILTER_HISTORY_MODES else "violations"
         )
-        await self._conn.commit()
+        async with write_lock():
+            await self._conn.execute(
+                "INSERT INTO webfilter_config "
+                "(agent_id, applied_hash, applied_at, applied_ok, history) "
+                "VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(agent_id) DO UPDATE SET "
+                "applied_hash=excluded.applied_hash, applied_at=excluded.applied_at, "
+                "applied_ok=excluded.applied_ok",
+                (agent_id, list_hash, applied_at, 1 if ok else 0, history),
+            )
+            await self._conn.commit()
 
     # -- custom domain list ------------------------------------------------
 
@@ -3292,6 +3493,21 @@ class WebFilterStore:
         async with write_lock():
             cur = await self._conn.execute(
                 "DELETE FROM web_activity_events WHERE last_seen < ?", (cutoff,)
+            )
+            await self._conn.commit()
+        return cur.rowcount or 0
+
+    async def purge_unflagged_events(self, agent_id: str) -> int:
+        """Delete ``agent_id``'s observed domains that matched nothing. Returns count.
+
+        The events half of turning a host's history to ``violations``
+        (ADR-0069); the matches (``flagged = 1``) are kept.
+        """
+
+        async with write_lock():
+            cur = await self._conn.execute(
+                "DELETE FROM web_activity_events WHERE agent_id = ? AND flagged = 0",
+                (agent_id,),
             )
             await self._conn.commit()
         return cur.rowcount or 0

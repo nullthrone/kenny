@@ -34,6 +34,9 @@ function baseOverview(overrides: Partial<WebfilterOverview> = {}): WebfilterOver
     agent_id: 'oma-pc',
     config: {
       agent_id: 'oma-pc',
+      enforcement: 'protect',
+      history: 'violations',
+      collecting: true,
       enabled: true,
       block_mode: true,
       use_external_adult: true,
@@ -141,6 +144,72 @@ describe('WebFilterBody — over-cap state', () => {
     // cached domains) — gambling (8000) and bypass (200) are both off, so
     // the banner must name adult specifically, not the largest list overall.
     expect(screen.getByText(/"Adult content"/)).toBeInTheDocument()
+  })
+})
+
+describe('WebFilterBody — enforcement and history', () => {
+  function withConfig(patch: Partial<WebfilterOverview['config']>): WebfilterOverview {
+    const base = baseOverview()
+    return { ...base, config: { ...base.config, ...patch } }
+  }
+
+  it('selecting an enforcement level PUTs that level, not the legacy booleans', async () => {
+    apiPutMock.mockResolvedValue({ config: baseOverview().config })
+    renderBody(baseOverview())
+
+    fireEvent.click(screen.getByRole('radio', { name: /Log only/ }))
+
+    await waitFor(() =>
+      expect(apiPutMock).toHaveBeenCalledWith('/api/agent/oma-pc/webfilter/config', { enforcement: 'log_only' }),
+    )
+  })
+
+  it('turning full history off asks first, and sends nothing when declined', () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    renderBody(withConfig({ history: 'full' }))
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /Keep full browsing history/ }))
+
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringMatching(/cannot be undone/))
+    expect(apiPutMock).not.toHaveBeenCalled()
+    confirmSpy.mockRestore()
+  })
+
+  it('turning full history off PUTs violations once confirmed', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    apiPutMock.mockResolvedValue({ config: baseOverview().config, purged: { events: 3, snapshots: 2 } })
+    renderBody(withConfig({ history: 'full' }))
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /Keep full browsing history/ }))
+
+    await waitFor(() =>
+      expect(apiPutMock).toHaveBeenCalledWith('/api/agent/oma-pc/webfilter/config', { history: 'violations' }),
+    )
+    confirmSpy.mockRestore()
+  })
+
+  it('turning full history on does not ask — it deletes nothing', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm')
+    apiPutMock.mockResolvedValue({ config: baseOverview().config })
+    renderBody(baseOverview())
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /Keep full browsing history/ }))
+
+    await waitFor(() =>
+      expect(apiPutMock).toHaveBeenCalledWith('/api/agent/oma-pc/webfilter/config', { history: 'full' }),
+    )
+    expect(confirmSpy).not.toHaveBeenCalled()
+    confirmSpy.mockRestore()
+  })
+
+  it('says so when the host collects nothing', () => {
+    renderBody(withConfig({ enforcement: 'off', history: 'violations', collecting: false }))
+    expect(screen.getByText('This host does not collect web activity.')).toBeInTheDocument()
+  })
+
+  it('names log-only in the banner so it never reads as blocking', () => {
+    renderBody(withConfig({ enforcement: 'log_only' }))
+    expect(screen.getByText(/Log only: matches are recorded and alarmed/)).toBeInTheDocument()
   })
 })
 

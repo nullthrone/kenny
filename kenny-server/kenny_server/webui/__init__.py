@@ -57,6 +57,7 @@ from ..webfilter import (
     ListTooLargeError,
     WebFilterService,
     describe_categories,
+    list_drift,
     load_seed,
     normalize_domain,
     requested_domains,
@@ -614,23 +615,29 @@ def build_api_routes(
         return JSONResponse({"rows": log_rows, "next_cursor": next_cursor})
 
     async def api_agent(request: Request) -> JSONResponse:
+        from datetime import datetime, timedelta, timezone
+
         agent_id = request.path_params["id"]
         agent = registry.get(agent_id)
         latest = await store.latest(agent_id)
         snapshot = latest["snapshot"] if latest else None
-        history = await store.history(agent_id, limit=50)
+        # The host's 30-day health sparkline: the last snapshot of each UTC day,
+        # oldest first, each scored as of its own collected_at -- the same
+        # window (and memo key) as /api/fleet/trend?days=30.
+        since = (datetime.now(timezone.utc) - timedelta(days=30)).date().isoformat()
+        daily = await _daily_latest_cached(agent_id, since)
         # Categorize the latest reliability events (for the detail heatmap + the
         # health reason). History points only carry `overall`, so they don't need it.
         await _annotate_reliability([snapshot])
         agent_os = agent.os if agent else "windows"
         hist_points = [
             {
-                "collected_at": h["collected_at"],
+                "collected_at": d["collected_at"],
                 "overall": build_health(
-                    h["snapshot"], agent_os=agent_os, now=h["collected_at"]
+                    d["snapshot"], agent_os=agent_os, now=d["collected_at"]
                 )["overall"],
             }
-            for h in history
+            for d in daily
         ]
         return JSONResponse(
             {
@@ -998,6 +1005,8 @@ def build_api_routes(
             body = await request.json()
         except Exception:  # noqa: BLE001 - malformed JSON
             return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
         rule_id = str(body.get("id", "")).strip()
         applies_to = str(body.get("applies_to", "")).strip()
         pattern = body.get("pattern", "")
@@ -1095,6 +1104,8 @@ def build_api_routes(
             body = await request.json()
         except Exception:  # noqa: BLE001 - malformed JSON
             return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
         rule_id = str(body.get("id", "")).strip()
         applies_to = str(body.get("applies_to", "")).strip()
         pattern = body.get("pattern", "")
@@ -1170,6 +1181,8 @@ def build_api_routes(
             body = await request.json()
         except Exception:  # noqa: BLE001 - malformed JSON
             return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
         agent_id = str(body.get("agent_id") or "").strip()
         if agent_id:
             known = await _known_ids(registry, store)
@@ -1248,7 +1261,9 @@ def build_api_routes(
         the previous mode until each agent happened to reconnect (ADR-0064).
         """
 
-        if key == "KENNY_SHELL_POLICY_MODE":
+        if key in ("KENNY_SHELL_POLICY_MODE", "KENNY_WEBFILTER_DEFAULT_HISTORY"):
+            # The default history decides `policy.collect` for every host whose
+            # web filter was never configured (ADR-0069).
             await tunnel.broadcast_policy()
 
     async def api_settings_set(request: Request) -> JSONResponse:
@@ -1268,6 +1283,8 @@ def build_api_routes(
             body = await request.json()
         except Exception:  # noqa: BLE001 - malformed JSON
             return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
         if "value" not in body:
             return JSONResponse({"error": "value is required"}, status_code=400)
         raw = "" if body["value"] is None else str(body["value"])
@@ -1431,6 +1448,8 @@ def build_api_routes(
             body = await request.json()
         except Exception:  # noqa: BLE001 - malformed JSON
             return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
         kind = str(body.get("kind", ""))
         label = str(body.get("label", "")).strip()
         config = body.get("config")
@@ -1457,6 +1476,8 @@ def build_api_routes(
             body = await request.json()
         except Exception:  # noqa: BLE001 - malformed JSON
             return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
         label = str(body["label"]).strip() if body.get("label") else None
         config = body.get("config")
         merged_config: dict[str, Any] | None = None
@@ -1609,6 +1630,8 @@ def build_api_routes(
             body = await request.json()
         except Exception:  # noqa: BLE001 - malformed JSON
             return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
         channel = body.get("channel")
         if channel not in ("stable", "dev"):
             return JSONResponse({"error": "channel must be 'stable' or 'dev'"}, status_code=400)
@@ -1651,7 +1674,7 @@ def build_api_routes(
             },
             "current_hash": current_hash,
             "oversize": oversize,
-            "drift": bool(applied_hash) and applied_hash != current_hash,
+            "drift": list_drift(config, current_hash),
         }
 
     async def api_webfilter_get(request: Request) -> JSONResponse:
@@ -1667,6 +1690,8 @@ def build_api_routes(
             body = await request.json()
         except Exception:  # noqa: BLE001 - malformed JSON
             return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
         doh = body.get("doh_policy")
         if doh is not None and doh not in ("disable", "leave"):
             return JSONResponse(
@@ -1684,16 +1709,27 @@ def build_api_routes(
                 categories = list(validate_categories(raw_categories))
             except ValueError as exc:
                 return JSONResponse({"error": str(exc)}, status_code=400)
-        config = await webfilter.set_config(
-            agent_id,
-            enabled=body.get("enabled"),
-            block_mode=body.get("block_mode"),
-            use_external_adult=body.get("use_external_adult"),
-            use_bypass_protection=body.get("use_bypass_protection"),
-            doh_policy=doh,
-            categories=categories,
-        )
-        return JSONResponse({"config": config})
+        # enforcement/history (ADR-0069) are validated by the service; turning
+        # history to `violations` purges in the same call and a change to what
+        # the host collects re-sends its `policy` frame.
+        try:
+            outcome = await webfilter.configure(
+                agent_id,
+                enforcement=body.get("enforcement"),
+                history=body.get("history"),
+                enabled=body.get("enabled"),
+                block_mode=body.get("block_mode"),
+                use_external_adult=body.get("use_external_adult"),
+                use_bypass_protection=body.get("use_bypass_protection"),
+                doh_policy=doh,
+                categories=categories,
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        payload: dict[str, Any] = {"config": outcome["config"]}
+        if outcome["purged"] is not None:
+            payload["purged"] = outcome["purged"]
+        return JSONResponse(payload)
 
     async def api_webfilter_add_domain(request: Request) -> JSONResponse:
         if webfilter is None:
@@ -1703,6 +1739,8 @@ def build_api_routes(
             body = await request.json()
         except Exception:  # noqa: BLE001 - malformed JSON
             return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
         action = str(body.get("action", "block"))
         if action not in _WEBFILTER_ACTIONS:
             return JSONResponse(
@@ -1837,7 +1875,8 @@ def build_api_routes(
                 },
                 status_code=400,
             )
-        block_mode = bool(config["block_mode"])
+        # Only `protect` blocks (ADR-0069); every other level clears the host.
+        block_mode = config["enforcement"] == "protect"
         tool = "webfilter_apply" if block_mode else "webfilter_clear"
         call_args: dict[str, Any] = args if block_mode else {}
         try:
@@ -2244,7 +2283,12 @@ def build_chat_routes(
         copilot_tickets.register_tools(executor)
 
     async def api_chat(request: Request) -> JSONResponse:
-        body = await request.json()
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - malformed JSON
+            return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
         message = str(body.get("message", "")).strip()
         if not message:
             return JSONResponse({"error": "message is required"}, status_code=400)
@@ -2279,7 +2323,12 @@ def build_chat_routes(
         return JSONResponse(result.to_public())
 
     async def api_chat_confirm(request: Request) -> JSONResponse:
-        body = await request.json()
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - malformed JSON
+            return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
         session_id = body.get("session_id")
         session = await sessions.get(session_id) if session_id else None
         if session is None:
@@ -2308,7 +2357,12 @@ def build_chat_routes(
         later failure is surfaced in-band as an ``error`` event.
         """
 
-        body = await request.json()
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - malformed JSON
+            return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
         message = str(body.get("message", "")).strip()
         if not message:
             return JSONResponse({"error": "message is required"}, status_code=400)
@@ -2348,7 +2402,12 @@ def build_chat_routes(
     async def api_chat_confirm_stream(request: Request) -> Response:
         """Streaming twin of ``/api/chat/confirm``."""
 
-        body = await request.json()
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - malformed JSON
+            return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
         session_id = body.get("session_id")
         session = await sessions.get(session_id) if session_id else None
         if session is None:
@@ -2413,7 +2472,12 @@ def build_chat_routes(
         as an ``error`` event. Inherits operator auth from the ``/api`` middleware.
         """
 
-        body = await request.json()
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - malformed JSON
+            return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
         agent_id = str(body.get("agent_id", "")).strip()
         section = str(body.get("section", "")).strip()
         if not agent_id or not section:
@@ -2455,7 +2519,12 @@ def build_chat_routes(
 
         from .. import diffs, trends
 
-        body = await request.json()
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - malformed JSON
+            return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
         agent_id = str(body.get("agent_id", "")).strip()
         if not agent_id:
             return JSONResponse({"error": "agent_id is required"}, status_code=400)

@@ -37,9 +37,55 @@
   overflow: hidden;
 }
 
+.zoom {
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: zoom-in;
+  display: block;
+}
+
 .image {
   width: 100%;
   height: 100%;
   object-fit: cover;
   display: block;
+}
+
+.modalHeader {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 8px 8px 24px;
+  border-bottom: 1px solid var(--border-line);
+}
+
+.modalTitle {
+  font-family: var(--font-display);
+  font-size: 12px;
+  letter-spacing: var(--track-caps);
+  flex: 1;
+  min-width: 0;
+}
+
+.close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  min-width: 44px;
+  min-height: 44px;
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+.close:hover {
+  color: var(--text-body);
+}
+
+.full {
+  display: block;
+  width: 100%;
+  height: auto;
 }

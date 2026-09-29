@@ -96,3 +96,65 @@ def test_non_list_volumes_field_is_ignored_not_a_crash() -> None:
         }
     ]
     assert disk_forecast(daily) == []
+
+
+def test_an_oversized_or_non_finite_numeric_field_is_skipped_not_a_crash() -> None:
+    # `percent_used`/`health_percent` are unvalidated wire extras. JSON has no
+    # int-size limit, so a malfunctioning/malicious agent can push an int so
+    # large that `float()` raises OverflowError, or (via the `json` module's
+    # Infinity/NaN decode extension) a non-finite float -- neither is a usable
+    # trend point, and both must be skipped rather than crash the forecast.
+    daily = [
+        {
+            "collected_at": f"2026-06-0{i + 1}T00:00:00+00:00",
+            "snapshot": {"disk": {"volumes": [{"mount": "C:", "percent_used": 50}]}},
+        }
+        for i in range(4)
+    ]
+    daily.append(
+        {
+            "collected_at": "2026-06-05T00:00:00+00:00",
+            "snapshot": {"disk": {"volumes": [{"mount": "C:", "percent_used": 10**400}]}},
+        }
+    )
+    result = disk_forecast(daily)
+    assert result == [
+        {
+            "mount": "C:",
+            "current_percent": 50.0,
+            "slope_percent_per_day": 0.0,
+            "days_until_full": None,
+            "points": 4,
+        }
+    ]
+
+    daily2 = [
+        {
+            "collected_at": f"2026-06-0{i + 1}T00:00:00+00:00",
+            "snapshot": {"battery": {"health_percent": 90}},
+        }
+        for i in range(4)
+    ]
+    daily2.append(
+        {
+            "collected_at": "2026-06-05T00:00:00+00:00",
+            "snapshot": {"battery": {"health_percent": float("inf")}},
+        }
+    )
+    trend = battery_trend(daily2)
+    assert trend is not None
+    assert trend["points"] == 4
+
+
+def test_finite_but_huge_values_are_no_trend_not_a_crash() -> None:
+    # 1e308 is a valid finite float but overflows when squared inside the OLS fit.
+    daily = [
+        {
+            "collected_at": f"2026-06-0{i + 1}T00:00:00+00:00",
+            "snapshot": {"disk": {"volumes": [{"mount": "C:", "percent_used": v}]}},
+        }
+        for i, v in enumerate([1e308, 1e-308, 1e308, 5.0])
+    ]
+    [row] = disk_forecast(daily)
+    assert row["slope_percent_per_day"] == 0.0
+    assert row["days_until_full"] is None

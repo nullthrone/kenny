@@ -4,7 +4,9 @@ Flow (see ``docs/protocol.md`` § Transport):
 
 1. The agent opens an outbound WebSocket to ``/agent/ws`` and sends a
    ``register`` frame.
-2. The server authenticates and registers the connection (with a ``send_fn``).
+2. The server authenticates the agent, sends it its ``policy`` frame, and only
+   then registers the connection (with a ``send_fn``), so the policy is on the
+   socket before any request can be routed to the agent.
 3. The server may forward MCP tool calls as ``request`` frames via
    :meth:`AgentTunnel.send_request`, awaiting the matching ``response`` keyed by
    request ``id``.
@@ -53,7 +55,7 @@ from .protocol import (
 )
 from .registry import AgentRegistry, AuthError
 from .store import EventStore, PolicyStore, PresenceStore, ShellAllowStore, TelemetryStore
-from .webfilter import WebFilterService
+from .webfilter import WebFilterService, collects_web_activity
 
 DEFAULT_TIMEOUT_S = 30.0
 HANDSHAKE_TIMEOUT_S = 10.0
@@ -267,32 +269,87 @@ class AgentTunnel:
             self.policy_engine.set_shell_policy(mode, rows)
         return ShellPolicy(mode=mode, allow=[PolicyRule(**r) for r in rows])
 
-    async def _policy_frame(self) -> dict[str, Any]:
-        """Build the ``policy`` frame every agent is pushed: deny rules plus mode."""
+    def _delivers_policy(self) -> bool:
+        """Whether this tunnel has anything to put on a ``policy`` frame."""
+
+        return (
+            self.policy_store is not None
+            or self.shell_allow_store is not None
+            or self.webfilter is not None
+        )
+
+    async def _fleet_policy(self) -> Policy:
+        """The fleet-wide half of the ``policy`` frame: deny rules plus shell mode."""
 
         rules: list[PolicyRule] = []
         if self.policy_store is not None:
             rules = [PolicyRule(**r) for r in await self.policy_store.list()]
-        return dump_frame(Policy(rules=rules, shell=await self.refresh_shell_policy()))
+        return Policy(rules=rules, shell=await self.refresh_shell_policy())
 
-    async def broadcast_policy(self) -> None:
-        """Push the current deny rules and shell execution mode to every online agent.
+    async def _collect_for(self, agent_id: str) -> dict[str, bool] | None:
+        """The per-host ``policy.collect`` map, or ``None`` when nothing decides it.
 
-        Called after an operator changes either (ADR-0020, ADR-0064). Per-agent send
-        errors are swallowed (logged at debug) so one stale socket can't break a
-        fleet-wide broadcast.
+        Resolved from the host's web-filter configuration (ADR-0069); without a
+        web-filter service the field is omitted and the frame is a v0.19 one.
         """
 
-        if self.policy_store is None and self.shell_allow_store is None:
+        if self.webfilter is None:
+            return None
+        config = await self.webfilter.get_config(agent_id)
+        return {"web_activity": collects_web_activity(config)}
+
+    async def _frame_for(self, agent_id: str, fleet: Policy) -> dict[str, Any]:
+        collect = await self._collect_for(agent_id)
+        return dump_frame(fleet.model_copy(update={"collect": collect}))
+
+    async def _policy_frame(self, agent_id: str) -> dict[str, Any]:
+        """Build the ``policy`` frame for one agent.
+
+        Deny rules and the shell execution mode are fleet-wide; ``collect`` is
+        resolved per host (ADR-0020, ADR-0064, ADR-0069).
+        """
+
+        return await self._frame_for(agent_id, await self._fleet_policy())
+
+    async def broadcast_policy(self) -> None:
+        """Push every online agent its current ``policy`` frame.
+
+        Called after an operator changes the deny rules, the shell execution mode,
+        or anything that decides collection fleet-wide (ADR-0020, ADR-0064,
+        ADR-0069). The fleet-wide part is resolved once; each agent gets its own
+        ``collect``. Per-agent errors are swallowed (logged at debug) so one stale
+        socket can't break a fleet-wide broadcast.
+        """
+
+        if not self._delivers_policy():
             return
-        payload = await self._policy_frame()
+        fleet = await self._fleet_policy()
         for agent in self.registry.list():
             if not agent.online or agent.send_fn is None:
                 continue
             try:
-                await agent.send_fn(payload)
+                await agent.send_fn(await self._frame_for(agent.agent_id, fleet))
             except Exception as exc:  # noqa: BLE001 - one bad socket must not abort
                 logger.debug("policy broadcast to %s failed: %s", agent.agent_id, exc)
+
+    async def push_policy(self, agent_id: str) -> None:
+        """Re-send one agent its ``policy`` frame (its ``collect`` changed).
+
+        A no-op when the agent is offline — it is pushed the current frame on
+        its next connect. Send errors are swallowed (logged at debug), as in
+        :meth:`broadcast_policy`.
+        """
+
+        if not self._delivers_policy():
+            return
+        try:
+            send_fn = self.registry.send_fn_for(agent_id)
+        except AuthError:
+            return
+        try:
+            await send_fn(await self._policy_frame(agent_id))
+        except Exception as exc:  # noqa: BLE001 - the config write already stands
+            logger.debug("policy push to %s failed: %s", agent_id, exc)
 
     # -- WebSocket endpoint ------------------------------------------------
 
@@ -376,9 +433,9 @@ class AgentTunnel:
     async def _handshake_conn(self, websocket: WebSocket) -> tuple[str, int] | None:
         """Run the handshake; on success return ``(agent_id, conn_id)``.
 
-        ``conn_id`` is read right after registration, before anything else is
-        awaited, so it names *this* connection even if the agent reconnects while
-        the policy frame below is being sent.
+        ``conn_id`` is taken from the registration itself (``mark_online``), with
+        no await in between, so it names *this* connection even if the agent
+        reconnects while the policy frame is being re-sent.
         """
 
         raw = await websocket.receive_text()
@@ -415,19 +472,43 @@ class AgentTunnel:
         else:
             if not await self._handshake_token(websocket, frame, send_fn):
                 return None
-        registered = self.registry.get(frame.agent_id)
-        conn_id = registered.conn_id if registered is not None else 0
 
+        # Push the current deny rules, shell execution mode and collection gate to
+        # the just-authenticated agent (always, even when empty, so behaviour is
+        # deterministic) *before* the connection becomes routable: the frame is
+        # on the socket ahead of any request the registry could forward, so no
+        # call reaches the agent before its policy. ADR-0020, ADR-0064, ADR-0069.
+        sent = await self._deliver_policy(frame.agent_id, send_fn)
+        conn_id = self.registry.mark_online(
+            frame.agent_id, frame.meta.model_dump(), send_fn
+        ).conn_id
         logger.info("agent %s connected", frame.agent_id)
-        # Push the current deny rules and shell execution mode to the just-connected
-        # agent (always, even when empty, so behaviour is deterministic).
-        # ADR-0020, ADR-0064.
-        if self.policy_store is not None or self.shell_allow_store is not None:
-            try:
-                await send_fn(await self._policy_frame())
-            except Exception as exc:  # noqa: BLE001 - never break the handshake
-                logger.debug("policy delivery to %s failed: %s", frame.agent_id, exc)
+        # A change made between building that frame and registering could not
+        # reach this agent through the registry; re-send if the frame moved (or
+        # the first delivery failed).
+        await self._deliver_policy(frame.agent_id, send_fn, previous=sent)
         return frame.agent_id, conn_id
+
+    async def _deliver_policy(
+        self, agent_id: str, send_fn: Any, *, previous: dict[str, Any] | None = None
+    ) -> dict[str, Any] | None:
+        """Send ``agent_id`` its ``policy`` frame unless it equals ``previous``.
+
+        Returns the frame the agent now holds (``previous`` when nothing new was
+        delivered), or ``None`` when this tunnel has no policy to deliver. Never
+        raises: a failure is logged at debug, the handshake goes on.
+        """
+
+        if not self._delivers_policy():
+            return None
+        try:
+            payload = await self._policy_frame(agent_id)
+            if payload != previous:
+                await send_fn(payload)
+            return payload
+        except Exception as exc:  # noqa: BLE001 - never break the handshake
+            logger.debug("policy delivery to %s failed: %s", agent_id, exc)
+            return previous
 
     async def _handshake_signed(
         self, websocket: WebSocket, frame: Register, send_fn: Any
@@ -435,8 +516,9 @@ class AgentTunnel:
         """Run the v0.8 mutual-auth challenge/response. Returns True on success.
 
         The server signs the transcript (proving its identity to the agent), then
-        requires a valid ``auth`` signature from the agent before registering the
-        connection. Any failure closes the socket with ``4401`` and returns False.
+        requires a valid ``auth`` signature from the agent. Any failure closes the
+        socket with ``4401`` and returns False. Registering the connection is the
+        caller's, after the ``policy`` frame is delivered.
         """
 
         key_store = self.registry.key_store
@@ -502,16 +584,16 @@ class AgentTunnel:
             )
             await websocket.close(code=4401)
             return False
-
-        self.registry.register_signed_async(
-            frame.agent_id, frame.meta.model_dump(), send_fn
-        )
         return True
 
     async def _handshake_token(
         self, websocket: WebSocket, frame: Register, send_fn: Any
     ) -> bool:
-        """Legacy bearer-token registration (migration window). True on success."""
+        """Legacy bearer-token authentication (migration window). True on success.
+
+        Registering the connection is the caller's, after the ``policy`` frame is
+        delivered.
+        """
 
         if not _token_auth_enabled():
             logger.warning(
@@ -521,9 +603,7 @@ class AgentTunnel:
             await websocket.close(code=4401)
             return False
         try:
-            await self.registry.register_async(
-                frame.agent_id, frame.token or "", frame.meta.model_dump(), send_fn
-            )
+            await self.registry.authenticate_async(frame.agent_id, frame.token or "")
         except AuthError:
             logger.warning("auth failed for agent %s; closing 4401", frame.agent_id)
             await websocket.close(code=4401)  # unauthorized (non-1000)
@@ -647,9 +727,12 @@ class AgentTunnel:
                 reported_channel = snapshot.get("os_support", {}).get("channel")
                 if reported_channel in ("stable", "dev"):
                     self.registry.note_channel(frame.agent_id, reported_channel)
-                # Parental controls (ADR-0024): enrich the web_activity section
-                # with server-computed `flagged` before persisting. A webfilter
-                # bug must never drop the whole snapshot.
+                # Parental controls (ADR-0024, ADR-0069): filter the web_activity
+                # section to what this host keeps and enrich it with
+                # server-computed `flagged` before persisting. A webfilter bug must
+                # never drop the whole snapshot — but nor may it store what the
+                # host's history setting says to drop, so on failure the section
+                # is kept without its domains (fail closed).
                 if self.webfilter is not None and "web_activity" in snapshot:
                     try:
                         snapshot["web_activity"] = await self.webfilter.record_activity(
@@ -657,8 +740,14 @@ class AgentTunnel:
                         )
                     except Exception:  # noqa: BLE001 - never lose the snapshot
                         logger.exception(
-                            "webfilter record_activity failed for %s", frame.agent_id
+                            "webfilter record_activity failed for %s; storing "
+                            "web_activity without domains",
+                            frame.agent_id,
                         )
+                        snapshot["web_activity"] = {
+                            **snapshot["web_activity"],
+                            "domains": [],
+                        }
                 try:
                     await self.store.insert(
                         frame.agent_id,
