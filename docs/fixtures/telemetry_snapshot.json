@@ -59,6 +59,12 @@
         "WindowsUpdate"
       ]
     },
+    "uptime": {
+      "status": "ok",
+      "summary": "up 3d 4h",
+      "uptime_secs": 273600,
+      "boot_time_unix": 1780322400
+    },
     "thermals": {
       "status": "ok",
       "summary": "hottest 61C",
