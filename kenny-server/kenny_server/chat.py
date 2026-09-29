@@ -7,7 +7,8 @@ half of the Anthropic tool-use loop; the loop itself lives in ``toolloop.py``.
 Two tool families are exposed to Claude (see ``tools.py``):
 
 * **Server-only tools** — ``list_agents``, ``select_agent``, ``fleet_overview``,
-  ``agent_health``, ``agent_snapshot`` — read the registry/store directly.
+  ``agent_health``, ``agent_snapshot``, ``agent_availability`` — read the
+  registry/store directly.
 * **Capability tools** — every key in :data:`~kenny_server.tools.CAPABILITY_TOOLS`
   — forwarded to the active agent via ``tunnel.send_request``.
 
@@ -96,7 +97,8 @@ _SYSTEM_PROMPT = (
     '("agents") by calling tools.\n\n'
     "How to work:\n"
     "- Use the server-only tools (list_agents, fleet_overview, agent_health, "
-    "agent_snapshot) to understand fleet state.\n"
+    "agent_snapshot, agent_availability) to understand fleet state; "
+    "agent_availability tells whether a machine was off, disconnected or rebooted.\n"
     "- Capability tools run on a single agent. Call select_agent first to choose "
     "which machine the capability runs on; mention the agent by name in your reply.\n"
     "- Read-only tools run immediately. State-changing tools (running PowerShell, "

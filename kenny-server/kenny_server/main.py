@@ -58,6 +58,7 @@ from .store import (
     EventClassificationStore,
     EventStore,
     PolicyStore,
+    PresenceStore,
     ShellAllowStore,
     ReliabilitySuppressionStore,
     SettingsStore,
@@ -228,6 +229,39 @@ async def _backup_loop(
         except Exception:  # noqa: BLE001 - never let the loop die
             logging.getLogger("kenny.backup").exception("periodic backup failed")
         await asyncio.sleep(max(int(settings.get("KENNY_BACKUP_INTERVAL_SECS")), 1))
+
+
+#: How often the presence record's run heartbeat is written. A crash misattributes
+#: at most this much time: sessions left open end at the last write.
+PRESENCE_TOUCH_SECS = 60
+
+
+async def _presence_touch_loop(presence: PresenceStore, interval_s: float) -> None:
+    """Keep this run's ``last_alive_at`` fresh (availability, see availability.py).
+
+    Its own loop rather than a step of the alert loop: alerting can be switched
+    off (``KENNY_ALERT_INTERVAL_SECS=0``), and the run record must not stop with it.
+    """
+
+    while True:
+        await asyncio.sleep(interval_s)
+        try:
+            await presence.touch_run()
+        except Exception:  # noqa: BLE001 - never let the loop die
+            logging.getLogger("kenny.presence").exception("presence run touch failed")
+
+
+async def _presence_backfill(presence: PresenceStore) -> None:
+    """One-time boot backfill from stored snapshots, off the startup path."""
+
+    try:
+        added = await presence.backfill_boots_from_snapshots()
+        if added:
+            logging.getLogger("kenny.presence").info(
+                "recorded %d reboot(s) from stored snapshots", added
+            )
+    except Exception:  # noqa: BLE001 - best-effort; retried on the next start
+        logging.getLogger("kenny.presence").exception("boot backfill failed")
 
 
 def _guild_ids(raw: Any) -> frozenset[str]:
@@ -437,6 +471,8 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
     registry = AgentRegistry(token_store=token_store, key_store=key_store)
     store = TelemetryStore(db_path)
     event_store = EventStore(db_path)
+    # Availability (availability.py): tunnel sessions, server runs and reboots.
+    presence = PresenceStore(db_path)
     # Reliability alarm suppression (ADR-0041 / issue #166): an operator-authored
     # rule table + an in-memory mirror consulted synchronously by every health
     # read. Installed as `store`'s read-path annotator so every consumer of
@@ -499,6 +535,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         # after each push lands, so the alert loop never scores an
         # unclassified snapshot for want of a dashboard read (ADR-0058).
         after_insert=partial(event_categories.schedule_classification, client_factory=client_factory),
+        presence=presence,
     )
     call_log = CallLog(event_store=event_store)
     screenshots = ScreenshotStore()
@@ -657,6 +694,9 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         # the rest keep pruning on their own hardcoded default.
         prunables=[
             (store, "KENNY_TELEMETRY_RETENTION_DAYS"),
+            # Same key as the snapshots: before the presence record begins,
+            # availability is rebuilt from snapshot arrival times.
+            (presence, "KENNY_TELEMETRY_RETENTION_DAYS"),
             (event_store, None),
             (webfilter_store, None),
             (ticket_store, "KENNY_TICKET_RETENTION_DAYS"),
@@ -691,6 +731,8 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
             tunnel=tunnel,
             call_log=call_log,
             screenshots=screenshots,
+            presence=presence,
+            settings=settings,
         )
         ticket_assistant = TicketAssistant(
             tickets=ticket_service,
@@ -775,6 +817,8 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         suppression=suppression,
         alert_state=alert_state,
         ticket_rules=ticket_rules,
+        presence=presence,
+        settings=settings,
     )
     # mcp_app owns "/mcp" internally and is mounted at the app root below (not
     # re-prefixed with another "/mcp"). A Mount always requires a trailing slash
@@ -798,6 +842,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         # before anything else reads config.
         await settings.load()
         await store.connect()
+        await presence.connect()
         await token_store.connect()
         await key_store.connect()
         await user_store.connect()
@@ -830,6 +875,10 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         # boot-time prune below, so a dashboard override applies from this
         # boot's first sweep instead of only from the next periodic pass.
         store.retention_days = int(settings.get("KENNY_TELEMETRY_RETENTION_DAYS"))
+        presence.retention_days = store.retention_days
+        # Open this process's run before the first agent can connect; it closes
+        # whatever a crashed predecessor left open (see PresenceStore.start_run).
+        await presence.start_run()
         if applied:
             await event_store.insert_alert(
                 agent_id=None,
@@ -861,6 +910,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         # below can dispatch a single notification.
         await ticket_rules.load()
         await store.prune()
+        await presence.prune()
         await event_store.prune()
         await webfilter_store.prune()
         await oauth_store.prune_expired()
@@ -937,6 +987,10 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
                 bool(settings.get("KENNY_DISCORD_ENABLED")),
                 "set" if discord_token else "unset",
             )
+        presence_task = asyncio.create_task(
+            _presence_touch_loop(presence, PRESENCE_TOUCH_SECS)
+        )
+        presence_backfill_task = asyncio.create_task(_presence_backfill(presence))
         # Exposed for tests/introspection: which optional loops this boot started.
         app.state.ticket_task = ticket_task
         app.state.discord_task = discord_task
@@ -980,6 +1034,18 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
             async with mcp_app.router.lifespan_context(app):
                 yield
         finally:
+            # The presence run is closed first, while every other writer is still
+            # intact: a task cancelled mid-write below can leave its connection
+            # holding SQLite's write lock until that store closes, and a write
+            # queued behind it would sit out the whole busy_timeout.
+            for task in (presence_task, presence_backfill_task):
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+            try:
+                await presence.stop_run()
+            except Exception:  # noqa: BLE001 - never block shutdown on the record
+                logging.getLogger("kenny.presence").exception("closing the presence run failed")
             logging.getLogger().removeHandler(log_handler)
             drain_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -1015,6 +1081,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
             if discord_service is not None:
                 with contextlib.suppress(Exception):
                     await discord_service.gateway.close()
+            await presence.close()
             await token_store.close()
             await key_store.close()
             await user_store.close()
@@ -1038,6 +1105,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
     api_routes = build_api_routes(
         registry=registry,
         store=store,
+        presence=presence,
         tunnel=tunnel,
         call_log=call_log,
         screenshots=screenshots,
@@ -1082,6 +1150,8 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         history_store=chat_history_store,
         client_factory=client_factory,
         copilot_tickets=copilot_tickets,
+        presence=presence,
+        settings=settings,
     )
     # The server-hosted copilot drives arbitrary capability tools over the
     # process-global active agent, so it is gated to operator+ (ADR-0033). The
@@ -1166,6 +1236,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
     app.state.settings = settings
     app.state.settings_store = settings_store
     app.state.store = store
+    app.state.presence = presence
     app.state.event_store = event_store
     app.state.token_store = token_store
     app.state.key_store = key_store

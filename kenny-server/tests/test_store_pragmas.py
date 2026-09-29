@@ -34,6 +34,7 @@ from kenny_server.store import (
     EventClassificationStore,
     EventStore,
     PolicyStore,
+    PresenceStore,
     ReliabilitySuppressionStore,
     ShellAllowStore,
     SettingsStore,
@@ -50,6 +51,7 @@ from kenny_server.userstore import UserStore
 # ``tmp_path``; anything else a constructor needs goes in kwargs here.
 ALL_STORES: list[tuple[type, dict]] = [
     (TelemetryStore, {}),
+    (PresenceStore, {}),
     (EventStore, {}),
     (AlertStateStore, {}),
     (PolicyStore, {}),

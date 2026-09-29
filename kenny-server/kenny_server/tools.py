@@ -8,8 +8,9 @@ Two kinds of tools (names match ``docs/protocol.md`` § Tool catalog exactly):
   call's ``args`` before the wire frame is built, so it never reaches the agent
   and the wire contract is untouched.
 * **Server-only tools** — ``list_agents``, ``select_agent``, ``fleet_overview``,
-  ``agent_health``, ``agent_snapshot`` — read from the registry, store, and
-  health rules; they are not forwarded to a single agent.
+  ``agent_health``, ``agent_snapshot``, ``agent_availability`` — read from the
+  registry, store, presence record and health rules; they are not forwarded to a
+  single agent.
 
 Every forwarded call is appended to an in-memory ``call_log`` for the dashboard
 tool-call log.
@@ -33,7 +34,7 @@ from typing import Any
 
 from fastmcp import FastMCP
 
-from . import findings, health_rules
+from . import availability, findings, health_rules
 from .registry import AgentRegistry
 from .store import EventStore, TelemetryStore
 from .tunnel import AgentTunnel, ToolError
@@ -431,6 +432,39 @@ def _resolve_target(principal, args: dict[str, Any]) -> str:
     return target
 
 
+async def availability_summary(
+    agent_id: str,
+    days: Any,
+    *,
+    registry: AgentRegistry,
+    store: TelemetryStore,
+    presence: Any,
+    settings: Any,
+) -> dict[str, Any]:
+    """The ``agent_availability`` result, shared by MCP and the chat tool loop.
+
+    ``days`` outside 1-30 (or not an integer) raises :class:`ToolError`
+    ``bad_args`` rather than being clamped, so the caller learns its window was
+    not the one it asked for.
+    """
+
+    try:
+        window_days = availability.parse_days(days, 7)
+    except (TypeError, ValueError) as exc:
+        raise ToolError("bad_args", str(exc)) from exc
+    result = await availability.load_one(
+        presence=presence,
+        store=store,
+        agent_id=agent_id,
+        days=window_days,
+        offline_after_secs=availability.offline_after_secs(settings),
+    )
+    agent = registry.get(agent_id)
+    return availability.summarize(
+        result, agent_id=agent_id, online=bool(agent and agent.online)
+    )
+
+
 def register_tools(
     mcp: FastMCP,
     *,
@@ -442,8 +476,15 @@ def register_tools(
     suppression: Any = None,
     alert_state: Any = None,
     ticket_rules: Any = None,
+    presence: Any = None,
+    settings: Any = None,
 ) -> None:
-    """Register all MCP tools on ``mcp``."""
+    """Register all MCP tools on ``mcp``.
+
+    ``presence`` is the availability record (``store.PresenceStore``); without it
+    ``agent_availability`` reconstructs presence from telemetry arrival times.
+    ``settings`` supplies the live offline threshold it shares with alerting.
+    """
 
     # -- forwarding capability tools --------------------------------------
 
@@ -589,6 +630,21 @@ def register_tools(
             "collected_at": latest["collected_at"] if latest else None,
             **health,
         }
+
+    @mcp.tool(
+        name="agent_availability",
+        description=(
+            "When one host was reachable over the last `days` days (1-30, default 7): "
+            "availability %, outages (offline spans of 5 min or more, newest first), "
+            "spans the server itself was not running (unknown, not offline), and "
+            "reboots. `approx` marks spans reconstructed from telemetry arrival times."
+        ),
+    )
+    async def agent_availability(id: str, days: int = 7) -> dict[str, Any]:
+        _require_scope(_mcp_principal(), id)
+        return await availability_summary(
+            id, days, registry=registry, store=store, presence=presence, settings=settings
+        )
 
     @mcp.tool(name="agent_snapshot", description="Latest stored snapshot (or one section).")
     async def agent_snapshot(id: str, section: str | None = None) -> dict[str, Any]:

@@ -114,6 +114,7 @@ OBSERVED_PHRASES: dict[str, str] = {
     "fleet_overview": "the fleet overview",
     "agent_health": "the agent's health",
     "agent_snapshot": "the host's latest snapshot",
+    "agent_availability": "when the machine was reachable",
     "fs_list": "a folder's contents",
     "fs_search": "files matching a search",
     "fs_read": "a file's contents",

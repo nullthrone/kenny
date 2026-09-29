@@ -11,7 +11,10 @@ Flow (see ``docs/protocol.md`` § Transport):
 4. The agent pushes ``telemetry`` frames; these are routed to the store and
    health evaluation.
 5. ``ping``/``pong`` keep the connection alive; any inbound frame refreshes the
-   agent's ``last_seen``.
+   agent's ``last_seen``. A connection that sends no frame at all for
+   :data:`HEARTBEAT_TIMEOUT_SECS` is closed and the agent marked offline.
+6. Each authenticated connection is one presence session in
+   :class:`~kenny_server.store.PresenceStore` (the availability record).
 """
 
 from __future__ import annotations
@@ -49,11 +52,22 @@ from .protocol import (
     parse_frame,
 )
 from .registry import AgentRegistry, AuthError
-from .store import EventStore, PolicyStore, ShellAllowStore, TelemetryStore
+from .store import EventStore, PolicyStore, PresenceStore, ShellAllowStore, TelemetryStore
 from .webfilter import WebFilterService
 
 DEFAULT_TIMEOUT_S = 30.0
 HANDSHAKE_TIMEOUT_S = 10.0
+
+#: The agent's ping interval (``HEARTBEAT`` in ``kenny-agent/src/tunnel.rs``;
+#: ``tests/test_presence.py`` reads it from there).
+HEARTBEAT_SECS = 30
+#: No frame of any kind for three missed heartbeats: the connection is dead even
+#: if TCP has not noticed (docs/protocol.md § ping/pong).
+HEARTBEAT_TIMEOUT_SECS = 3 * HEARTBEAT_SECS
+#: Close code for a heartbeat timeout. 4408 mirrors HTTP 408 Request Timeout in
+#: the application range (4000-4999), next to the 4400/4401 the handshake uses.
+#: The agent treats any close as "reconnect with backoff".
+HEARTBEAT_CLOSE_CODE = 4408
 
 logger = logging.getLogger("kenny.tunnel")
 
@@ -138,6 +152,7 @@ class AgentTunnel:
         webfilter: WebFilterService | None = None,
         on_agent_online: Callable[[str], Awaitable[None]] | None = None,
         after_insert: Callable[[str, dict[str, Any]], Any] | None = None,
+        presence: PresenceStore | None = None,
     ) -> None:
         self.registry = registry
         self.store = store
@@ -161,8 +176,14 @@ class AgentTunnel:
         # classification (ADR-0058) uses to kick its background batch. Never
         # awaited, wrapped in its own guard: ingestion does not depend on it.
         self.after_insert = after_insert
+        # Optional presence record (availability). Every write to it is guarded:
+        # a presence failure is logged and never reaches the connection.
+        self.presence = presence
         # request_id -> Future[Response]
         self._pending: dict[str, asyncio.Future[Response]] = {}
+        # request_id -> (agent_id, conn_id) of the connection it was sent on, so a
+        # closing socket fails only the requests it owned.
+        self._pending_owner: dict[str, tuple[str, int]] = {}
 
     # -- server -> agent ---------------------------------------------------
 
@@ -201,10 +222,12 @@ class AgentTunnel:
             send_fn = self.registry.send_fn_for(agent_id)
         except AuthError as exc:
             raise ToolError("offline", f"{agent_id} is not connected") from exc
+        agent = self.registry.get(agent_id)
         request_id = str(uuid.uuid4())
         loop = asyncio.get_running_loop()
         future: asyncio.Future[Response] = loop.create_future()
         self._pending[request_id] = future
+        self._pending_owner[request_id] = (agent_id, agent.conn_id if agent else 0)
 
         frame = Request(id=request_id, tool=tool, args=args)
         try:
@@ -214,6 +237,7 @@ class AgentTunnel:
             raise ToolError("timeout", f"tool {tool} exceeded {timeout_s}s") from exc
         finally:
             self._pending.pop(request_id, None)
+            self._pending_owner.pop(request_id, None)
 
         if response.ok:
             return response.result or {}
@@ -277,20 +301,59 @@ class AgentTunnel:
 
         await websocket.accept()
         agent_id: str | None = None
+        conn_id: int | None = None
+        session_id: int | None = None
+        end_reason = "disconnect"
         try:
-            agent_id = await self._handshake(websocket)
-            if agent_id is None:
+            accepted = await self._handshake_conn(websocket)
+            if accepted is None:
                 return
+            agent_id, conn_id = accepted
+            session_id = await self._open_presence(agent_id)
             if self.on_agent_online is not None:
                 asyncio.create_task(self._fire_on_agent_online(agent_id))
-            await self._serve(websocket, agent_id)
+            end_reason = await self._serve(websocket, agent_id)
         except WebSocketDisconnect:
             pass
         finally:
             if agent_id is not None:
-                self.registry.mark_offline(agent_id)
-                self._fail_pending_for_disconnect()
-                logger.info("agent %s disconnected", agent_id)
+                # A reconnect may already own the agent; then this teardown must
+                # leave the live connection's state (and requests) alone.
+                if not self.registry.mark_offline(agent_id, conn_id):
+                    end_reason = "superseded"
+                self._fail_pending_for_disconnect(agent_id, conn_id)
+                logger.info("agent %s disconnected (%s)", agent_id, end_reason)
+                if session_id is not None:
+                    await self._close_presence(agent_id, session_id, end_reason)
+
+    async def _open_presence(self, agent_id: str) -> int | None:
+        if self.presence is None:
+            return None
+        try:
+            return await self.presence.open_session(agent_id)
+        except Exception:  # noqa: BLE001 - presence must never break the tunnel
+            logger.exception("opening presence session for %s failed", agent_id)
+            return None
+
+    async def _close_presence(self, agent_id: str, session_id: int, reason: str) -> None:
+        if self.presence is None:
+            return
+        try:
+            await self.presence.close_session(session_id, reason)
+        except Exception:  # noqa: BLE001 - presence must never break the tunnel
+            logger.exception("closing presence session for %s failed", agent_id)
+
+    async def _note_boot(self, agent_id: str, snapshot: dict[str, Any]) -> None:
+        if self.presence is None:
+            return
+        uptime = snapshot.get("uptime")
+        boot = uptime.get("boot_time_unix") if isinstance(uptime, dict) else None
+        if not isinstance(boot, int) or isinstance(boot, bool):
+            return
+        try:
+            await self.presence.note_boot(agent_id, boot)
+        except Exception:  # noqa: BLE001 - presence must never break the tunnel
+            logger.exception("recording boot time for %s failed", agent_id)
 
     async def _fire_on_agent_online(self, agent_id: str) -> None:
         """Run the on-connect hook detached from the handshake/serve path.
@@ -307,6 +370,17 @@ class AgentTunnel:
             logger.exception("on_agent_online hook failed for %s", agent_id)
 
     async def _handshake(self, websocket: WebSocket) -> str | None:
+        accepted = await self._handshake_conn(websocket)
+        return accepted[0] if accepted is not None else None
+
+    async def _handshake_conn(self, websocket: WebSocket) -> tuple[str, int] | None:
+        """Run the handshake; on success return ``(agent_id, conn_id)``.
+
+        ``conn_id`` is read right after registration, before anything else is
+        awaited, so it names *this* connection even if the agent reconnects while
+        the policy frame below is being sent.
+        """
+
         raw = await websocket.receive_text()
         try:
             frame = parse_frame(raw)
@@ -341,6 +415,8 @@ class AgentTunnel:
         else:
             if not await self._handshake_token(websocket, frame, send_fn):
                 return None
+        registered = self.registry.get(frame.agent_id)
+        conn_id = registered.conn_id if registered is not None else 0
 
         logger.info("agent %s connected", frame.agent_id)
         # Push the current deny rules and shell execution mode to the just-connected
@@ -351,7 +427,7 @@ class AgentTunnel:
                 await send_fn(await self._policy_frame())
             except Exception as exc:  # noqa: BLE001 - never break the handshake
                 logger.debug("policy delivery to %s failed: %s", frame.agent_id, exc)
-        return frame.agent_id
+        return frame.agent_id, conn_id
 
     async def _handshake_signed(
         self, websocket: WebSocket, frame: Register, send_fn: Any
@@ -454,9 +530,31 @@ class AgentTunnel:
             return False
         return True
 
-    async def _serve(self, websocket: WebSocket, agent_id: str) -> None:
+    async def _serve(self, websocket: WebSocket, agent_id: str) -> str:
+        """Serve frames until the connection ends; return why it ended.
+
+        ``"heartbeat_timeout"`` when nothing arrived for
+        :data:`HEARTBEAT_TIMEOUT_SECS` (the socket is closed here), otherwise
+        ``"disconnect"``.
+        """
+
         while True:
-            raw = await websocket.receive_text()
+            try:
+                raw = await asyncio.wait_for(
+                    websocket.receive_text(), timeout=HEARTBEAT_TIMEOUT_SECS
+                )
+            except asyncio.TimeoutError:
+                logger.info(
+                    "agent %s sent nothing for %ss; closing %d",
+                    agent_id,
+                    HEARTBEAT_TIMEOUT_SECS,
+                    HEARTBEAT_CLOSE_CODE,
+                )
+                try:
+                    await websocket.close(code=HEARTBEAT_CLOSE_CODE)
+                except Exception:  # noqa: BLE001 - the peer is gone; closing is best-effort
+                    logger.debug("closing a timed-out socket for %s failed", agent_id)
+                return "heartbeat_timeout"
             # Absolute ceiling: reject any frame too large to safely parse, before
             # parsing/persisting it, so a compromised agent can't exhaust server
             # memory (CWE-400/770). The strict per-kind caps for unsolicited pushes
@@ -493,7 +591,7 @@ class AgentTunnel:
                     "closing connection for %s: removed from inventory", agent_id
                 )
                 await websocket.close(code=4400)
-                return
+                return "disconnect"
 
             self.registry.mark_seen(agent_id)
 
@@ -581,6 +679,7 @@ class AgentTunnel:
                             self.after_insert(frame.agent_id, snapshot)
                         except Exception:  # noqa: BLE001 - a hook bug must not touch the tunnel
                             logger.exception("after_insert hook failed for %s", frame.agent_id)
+                    await self._note_boot(frame.agent_id, snapshot)
                     continue
                 logger.debug("telemetry from %s at %s", frame.agent_id, frame.collected_at)
             elif isinstance(frame, Log):
@@ -618,8 +717,21 @@ class AgentTunnel:
         if future is not None and not future.done():
             future.set_result(response)
 
-    def _fail_pending_for_disconnect(self) -> None:
-        for future in list(self._pending.values()):
+    def _fail_pending_for_disconnect(
+        self, agent_id: str | None = None, conn_id: int | None = None
+    ) -> None:
+        """Fail the in-flight requests the closing connection owned.
+
+        Only requests sent on that connection: another agent's calls, and calls
+        already sent on a newer connection of the same agent, are still live.
+        Without ``agent_id`` every pending request fails.
+        """
+
+        for request_id, future in list(self._pending.items()):
+            owner = self._pending_owner.get(request_id)
+            if agent_id is not None and owner is not None:
+                if owner[0] != agent_id or (conn_id is not None and owner[1] != conn_id):
+                    continue
             if not future.done():
                 future.set_exception(ToolError("internal", "agent disconnected"))
 

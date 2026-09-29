@@ -838,3 +838,37 @@ def test_offline_and_a_forecast_on_one_host_stay_separate(tmp_path) -> None:
         asyncio.run(open_ticket(forecast))
 
         assert len(asyncio.run(app.state.ticket_store.list(limit=50))) == 2
+
+
+# -- the presence record (availability) -----------------------------------------
+
+
+def test_presence_ages_with_the_snapshots_it_is_rebuilt_from(tmp_path) -> None:
+    """Before the presence record begins, availability is reconstructed from
+    snapshot arrival times -- so the record must be pruned under the same live
+    retention key as the snapshots, never on a fixed default of its own."""
+
+    app = build_app(db_path=str(tmp_path / "presence_prune.sqlite"))
+    keys = {id(store): key for store, key in app.state.alert_engine._prunables}
+    assert id(app.state.presence) in keys, "the presence record is never pruned"
+    assert keys[id(app.state.presence)] == keys[id(app.state.store)]
+    assert app.state.tunnel.presence is app.state.presence
+
+
+def test_each_boot_is_a_server_run_closed_on_shutdown(tmp_path) -> None:
+    """The lifespan opens a run on start and closes it on shutdown; a second boot
+    opens a second run. Time between the two is covered by neither (unknown)."""
+
+    db = str(tmp_path / "presence_runs.sqlite")
+    app = build_app(db_path=db)
+    with TestClient(app):
+        first_run = app.state.presence.run_id
+        assert first_run is not None
+    assert app.state.presence.run_id is None
+
+    app2 = build_app(db_path=db)
+    with TestClient(app2):
+        runs = asyncio.run(
+            app2.state.presence.runs("2000-01-01", "2100-01-01")
+        )
+        assert [r["current"] for r in runs] == [False, True]
