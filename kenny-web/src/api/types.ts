@@ -207,6 +207,18 @@ export interface FleetAgent {
   os: string
   agent_version: string
   collected_at: string | null
+  /** Last 7 days of tunnel availability; absent from an older server. */
+  availability_7d?: FleetAvailability7d
+}
+
+/**
+ * A host's last 7 days as 168 hourly cells, oldest first. A cell is the
+ * online fraction of that hour's KNOWN time (0..1); `null` means the whole
+ * hour is unknown (the kenny server was down, or the host was not enrolled).
+ */
+export interface FleetAvailability7d {
+  online_pct: number | null
+  cells: (number | null)[]
 }
 
 export interface FleetResponse {

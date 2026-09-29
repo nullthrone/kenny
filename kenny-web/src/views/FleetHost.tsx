@@ -8,6 +8,7 @@ import { useAgentDetail } from './host/api'
 import { normalizeSections } from './host/types'
 import { osLabel, severityRank } from './host/format'
 import ActionRow from './host/ActionRow'
+import AvailabilityPanel from './host/AvailabilityPanel'
 import ForecastPanel from './host/ForecastPanel'
 import { SECTION_PARAM } from './host/sections'
 import SectionList from './host/SectionList'
@@ -106,6 +107,8 @@ export default function FleetHost() {
       <ActionRow agentId={data.agent_id} os={data.os} arch={data.meta.arch} />
 
       <ForecastPanel agentId={data.agent_id} />
+
+      <AvailabilityPanel agentId={data.agent_id} />
 
       <SectionList sections={sections} onOpenProblem={openSection} />
 

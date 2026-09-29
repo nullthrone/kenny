@@ -104,6 +104,10 @@ own page.
   attention on this PC soon, drawn from the disk-fill and battery trends and the inventory
   changes since yesterday. With an Anthropic API key the model writes it; without a key the
   same panel shows a concise deterministic summary.
+- **Availability** — a 30-day (or 7-day) timeline of when the PC was reachable, with its
+  availability percentage, outages, and reboot marks. Time the server itself was down shows
+  as unknown and does not count against the PC. See
+  [Availability](dashboard.md#availability).
 - **Health trend** — recent snapshots as a sparkline.
 - **Last screenshot** — the most recent desktop capture, with a **recapture** button.
 - Action buttons: **refresh**, **remote help** (Quick Assist), **reinstall**, **re-share**,
