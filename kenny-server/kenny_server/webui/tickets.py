@@ -118,9 +118,14 @@ def _path_int(request: Request, name: str) -> int | None:
     """
 
     try:
-        return int(request.path_params[name])
+        value = int(request.path_params[name])
     except ValueError:
         return None
+    # SQLite INTEGER is 64-bit signed; a larger id can name no row, and binding it
+    # would raise OverflowError instead of returning "not found".
+    if not -(2**63) <= value < 2**63:
+        return None
+    return value
 
 
 _STATUS_ERROR_NAMES = {

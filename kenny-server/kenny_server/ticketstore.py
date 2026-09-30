@@ -485,6 +485,10 @@ class PendingRequest:
         return asdict(self)
 
 
+# Largest value SQLite can bind as an INTEGER; a caller-supplied ``limit`` is capped to it
+# so an absurd value means "no cap" instead of an OverflowError at bind time.
+_SQLITE_MAX_INT = 2**63 - 1
+
 _TICKET_COLUMNS = (
     "id, number, title, state, origin, priority, category, requester_user_id, "
     "agent_id, role_snapshot, profile_snapshot, summary, resolution, "
@@ -851,7 +855,7 @@ class TicketStore:
             clauses.append("last_human_at < ?")
             params.append(human_before)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        params.append(limit)
+        params.append(min(limit, _SQLITE_MAX_INT))
         async with self._conn.execute(
             f"SELECT {_TICKET_COLUMNS} FROM tickets {where} "
             "ORDER BY updated_at DESC, number DESC LIMIT ?",
@@ -1245,7 +1249,7 @@ class TicketStore:
         if kind is not None:
             clauses.append("kind = ?")
             params.append(kind)
-        params.append(limit)
+        params.append(min(limit, _SQLITE_MAX_INT))
         async with self._conn.execute(
             f"SELECT {_EVENT_COLUMNS} FROM ticket_events "
             f"WHERE {' AND '.join(clauses)} ORDER BY at, id LIMIT ?",

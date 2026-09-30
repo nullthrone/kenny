@@ -241,6 +241,35 @@ def build_oauth_routes(*, oauth_store, user_store) -> list[Route]:
                 {"error": "invalid_client_metadata", "error_description": "body must be JSON"},
                 status_code=400,
             )
+        if not isinstance(body, dict):
+            return JSONResponse(
+                {
+                    "error": "invalid_client_metadata",
+                    "error_description": "body must be a JSON object",
+                },
+                status_code=400,
+            )
+        client_name = body.get("client_name")
+        auth_method = body.get("token_endpoint_auth_method", "none")
+        grant_types = body.get("grant_types")
+        if (
+            not (client_name is None or isinstance(client_name, str))
+            or not isinstance(auth_method, str)
+            or not (
+                grant_types is None
+                or (isinstance(grant_types, list) and all(isinstance(g, str) for g in grant_types))
+            )
+        ):
+            return JSONResponse(
+                {
+                    "error": "invalid_client_metadata",
+                    "error_description": (
+                        "client_name and token_endpoint_auth_method must be strings and "
+                        "grant_types a list of strings"
+                    ),
+                },
+                status_code=400,
+            )
         redirect_uris = body.get("redirect_uris")
         if not isinstance(redirect_uris, list) or not redirect_uris:
             return JSONResponse(
@@ -258,9 +287,9 @@ def build_oauth_routes(*, oauth_store, user_store) -> list[Route]:
                 )
         client = await oauth_store.register_client(
             redirect_uris,
-            client_name=body.get("client_name"),
-            token_endpoint_auth_method=body.get("token_endpoint_auth_method", "none"),
-            grant_types=body.get("grant_types"),
+            client_name=client_name,
+            token_endpoint_auth_method=auth_method,
+            grant_types=grant_types,
         )
         return JSONResponse(client, status_code=201)
 
