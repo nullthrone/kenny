@@ -247,6 +247,8 @@ def build_api_routes(
         if dist_file is not None:
             return FileResponse(dist_file)
         name = Path(rel).name
+        if "\x00" in name:
+            return Response(status_code=404)
         path = (_ASSETS / name).resolve()
         media = _ASSET_TYPES.get(path.suffix.lower())
         if media is None or path.parent != _ASSETS.resolve() or not path.is_file():
