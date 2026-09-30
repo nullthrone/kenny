@@ -189,6 +189,8 @@ class AgentRegistry:
         if not await self._key_store.verify_signature(agent_id, transcript, agent_sig):
             raise AuthError(f"signature authentication failed for agent {agent_id!r}")
 
+    # POSSIBLY DEAD: the tunnel registers through `register_signed_async` and
+    # nothing in production calls this token-only path — only tests do.
     async def register_async(
         self,
         agent_id: str,
