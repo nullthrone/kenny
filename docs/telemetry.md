@@ -60,7 +60,7 @@ donut (noted in the rule column).
 | Section | Reports | Server-side health rule |
 |---------|---------|-------------------------|
 | `disk` | Volumes, free space, largest directories | worst volume `percent_used` ≥ 95 → **crit**; > 80 → **warn**; else **ok** |
-| `disk_smart` | SMART attributes / drive health flags | *no rule — agent-reported* |
+| `disk_smart` | Per physical disk: health status, uncorrected read/write errors, total read errors, wear, temperature, power-on hours | *no rule — agent-reported*: a disk not `Healthy` → **crit**; any uncorrected read/write error → **warn** |
 | `defender` | Microsoft Defender state, last scan | `enabled` false **or** `realtime_protection` false → **crit**; last scan older than 14 days → **warn** |
 | `defender_quarantine` | Quarantined-threat inventory | *no rule — agent-reported* |
 | `av_thirdparty` | Registered third-party antivirus products | *no rule — agent-reported* |

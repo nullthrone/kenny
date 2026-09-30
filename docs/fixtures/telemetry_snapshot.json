@@ -79,6 +79,34 @@
         }
       ]
     },
+    "disk_smart": {
+      "status": "ok",
+      "summary": "SMART healthy",
+      "disks": [
+        {
+          "model": "Samsung SSD 870 EVO 1TB",
+          "health_status": "Healthy",
+          "predictive_failure": false,
+          "wear": 3,
+          "temperature_c": 34,
+          "power_on_hours": 8123,
+          "read_errors_total": 0,
+          "read_errors_uncorrected": 0,
+          "write_errors_uncorrected": 0
+        },
+        {
+          "model": "ST2000DM008-2FR102",
+          "health_status": "Healthy",
+          "predictive_failure": false,
+          "wear": null,
+          "temperature_c": 38,
+          "power_on_hours": 21457,
+          "read_errors_total": 184223611,
+          "read_errors_uncorrected": 0,
+          "write_errors_uncorrected": 0
+        }
+      ]
+    },
     "reliability": {
       "status": "ok",
       "summary": "48 error/critical events in 7d",

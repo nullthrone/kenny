@@ -1,4 +1,4 @@
-# kenny Wire Protocol (v0.19)
+# kenny Wire Protocol (v0.21)
 
 > **Single source of truth.** This document and the JSON files in `docs/fixtures/`
 > define the contract between `kenny-server` (Python) and `kenny-agent` (Rust).
@@ -850,6 +850,41 @@ The `uptime` section reports when the host last booted:
 The agent always reports `status: "ok"`; whether a long uptime is a finding is the server's
 call (ADR-0058).
 
+The `disk_smart` section reports one row per physical disk, from `Get-PhysicalDisk` joined
+with `Get-StorageReliabilityCounter`:
+
+```json
+"disk_smart": {
+  "status": "warn", "summary": "uncorrected errors: Samsung SSD 870 EVO 1TB (read 2)",
+  "disks": [
+    { "model": "Samsung SSD 870 EVO 1TB", "health_status": "Healthy",
+      "predictive_failure": false, "wear": 3, "temperature_c": 34, "power_on_hours": 8123,
+      "read_errors_total": 2, "read_errors_uncorrected": 2, "write_errors_uncorrected": 0 }
+  ]
+}
+```
+
+- **`health_status`** — the disk's own `HealthStatus` string (`Healthy`, `Warning`,
+  `Unhealthy`, `Unknown`); **`predictive_failure`** is `health_status ≠ "Healthy"`.
+- **`read_errors_total`** — every read error the drive counted, almost all of them
+  corrected. Vendors scale it differently, and on some HDDs it is a large number on a
+  healthy drive, so it never grades the section.
+- **`read_errors_uncorrected`** / **`write_errors_uncorrected`** — errors the drive could
+  not recover (on NVMe, the media and data-integrity error count). Non-zero means data was
+  lost at least once.
+- **`wear`** — percent of rated endurance used (0–100, SSDs); **`temperature_c`** — °C;
+  **`power_on_hours`** — hours powered on.
+
+All counters are lifetime values, and each is `null` when the drive or its driver does not
+report it — `null` is unknown, not zero. The reallocated-sector count (SMART attribute 5)
+is not part of the section: `Get-StorageReliabilityCounter` does not expose it.
+
+The agent grades the section and the server has no rule for it: any disk whose
+`health_status` is not `Healthy` → `crit`; else any disk with a non-zero uncorrected read or
+write count → `warn`; else `ok`. The uncorrected counts never reset, so a disk that once
+lost data keeps the section at `warn` for as long as it is installed. Off Windows the
+section is the standard `n/a on this platform` stub with an empty `disks` list.
+
 ### Security-inventory, resilience, and parental-awareness sections (v0.10)
 
 Added at v0.10 (see ADR-0028, ADR-0029). All are additive; off Windows each is the
@@ -1037,10 +1072,17 @@ for fleet aggregation. These thresholds are illustrative of the data-driven rule
 
 ## Versioning
 
-`PROTOCOL_VERSION = "0.20"`. Both implementations expose this constant; from v0.8 the
+`PROTOCOL_VERSION = "0.21"`. Both implementations expose this constant; from v0.8 the
 agent puts it on the wire in `register.protocol` to select the mutual-auth handshake
 (compare versions **numerically per component**, not lexically — `"0.10"` is newer than
 `"0.9"`). Bump on any breaking change to a frame or tool schema.
+
+- `0.21` — the `disk_smart` rows drop `reallocated_sectors`, which carried
+  `Get-StorageReliabilityCounter`'s `ReadErrorsTotal` (the mostly-corrected read-error
+  count), not SMART attribute 5. The rows now carry that value as `read_errors_total`,
+  plus `read_errors_uncorrected`, `write_errors_uncorrected` and `power_on_hours`. A
+  non-zero uncorrected count grades the section `warn`. No server code read the old field;
+  a server predating this version stores the new fields as opaque section data.
 
 - `0.20` — added `collect` to the `policy` frame (ADR-0069): a per-host map of telemetry
   section → whether the agent collects it, honoured today for `web_activity`. A section
