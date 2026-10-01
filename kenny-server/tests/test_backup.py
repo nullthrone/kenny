@@ -207,6 +207,8 @@ async def test_verify_detects_corruption(tmp_path) -> None:
 
         ok = await mgr.verify(result["name"])
         assert ok["integrity"] == "ok"
+        assert ok["ok"] is True
+        assert "error" not in ok
 
         backup_path = os.path.join(mgr.backup_dir, result["name"])
         with open(backup_path, "r+b") as fh:
@@ -214,6 +216,8 @@ async def test_verify_detects_corruption(tmp_path) -> None:
 
         corrupted = await mgr.verify(result["name"])
         assert corrupted["integrity"] != "ok"
+        assert corrupted["ok"] is False
+        assert corrupted["error"] == corrupted["integrity"]
     finally:
         await target_store.close()
 

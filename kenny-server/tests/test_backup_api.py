@@ -60,6 +60,9 @@ def test_backups_create_list_verify_download_delete_roundtrip(tmp_path) -> None:
 
         verified = c.post(f"/api/backups/{name}/verify", headers=h).json()
         assert verified["integrity"] == "ok"
+        # The dashboard renders `ok` (BackupVerifyResult in kenny-web); without it
+        # every verify shows as failed.
+        assert verified["ok"] is True
 
         dl = c.get(f"/api/backups/{name}/download?source=local", headers=h)
         assert dl.status_code == 200

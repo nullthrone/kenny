@@ -260,7 +260,11 @@ class BackupManager:
         return sorted(merged.values(), key=lambda m: m.get("created_at") or "", reverse=True)
 
     async def verify(self, name: str, source: str = "local") -> dict[str, Any]:
-        """Retrieve ``name`` from ``source`` into a temp file and quick_check it."""
+        """Retrieve ``name`` from ``source`` into a temp file and quick_check it.
+
+        ``ok`` is the verdict the dashboard renders; ``integrity`` is the raw
+        ``quick_check`` result, and ``error`` carries it when it is not ``"ok"``.
+        """
 
         _validate_name(name)
         dest = await self._destination(source)
@@ -275,7 +279,15 @@ class BackupManager:
         finally:
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
-        return {"name": name, "source": source, "integrity": integrity}
+        result: dict[str, Any] = {
+            "name": name,
+            "source": source,
+            "ok": integrity == "ok",
+            "integrity": integrity,
+        }
+        if integrity != "ok":
+            result["error"] = integrity
+        return result
 
     async def retrieve(self, name: str, source: str = "local") -> str:
         """Retrieve ``name`` from ``source`` into a fresh temp file; caller deletes it.
