@@ -143,6 +143,8 @@ def _hotp(key: bytes, counter: int, digits: int) -> str:
     return str(binary % (10**digits)).zfill(digits)
 
 
+# POSSIBLY DEAD: no production caller — verification goes through
+# `verify_totp`. Only tests call this directly to mint codes.
 def totp_at(
     secret: str, timestamp: float, *, step: int = _TOTP_STEP, digits: int = _TOTP_DIGITS
 ) -> str:
