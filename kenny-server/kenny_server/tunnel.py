@@ -426,6 +426,9 @@ class AgentTunnel:
         except Exception:  # noqa: BLE001 - a hook failure must never affect the tunnel
             logger.exception("on_agent_online hook failed for %s", agent_id)
 
+    # POSSIBLY DEAD: the serve loop calls `_handshake_conn` directly; only tests
+    # call this agent_id-only wrapper. Remove it (and move those tests to
+    # `_handshake_conn`) if nothing else needs it.
     async def _handshake(self, websocket: WebSocket) -> str | None:
         accepted = await self._handshake_conn(websocket)
         return accepted[0] if accepted is not None else None
