@@ -94,7 +94,8 @@ pub fn read(args: Value) -> Result<Value, (ErrorCode, String)> {
     }))
 }
 
-/// `fs_disk_usage` — per-volume capacity, shared with the `disk` collector.
+/// `fs_disk_usage` — per-volume capacity of every mount; the `disk` section filters
+/// the same list.
 pub fn disk_usage(_args: Value) -> Result<Value, (ErrorCode, String)> {
     Ok(json!({ "volumes": crate::telemetry::collectors::disk::volumes() }))
 }
