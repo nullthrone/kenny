@@ -49,6 +49,7 @@ import io
 import logging
 import json
 import os
+import re
 import secrets
 import time
 import zipfile
@@ -420,6 +421,16 @@ def _install_sh(
     )
 
 
+def _attachment(filename: str) -> str:
+    """A ``Content-Disposition`` value whose filename cannot break the header.
+
+    The agent id comes straight from the URL path, so it may hold non-latin-1 text
+    (which cannot be encoded into a header and surfaced as a 500), quotes or CR/LF.
+    """
+
+    return f'attachment; filename="{re.sub(r"[^A-Za-z0-9._-]", "_", filename)}"'
+
+
 def _build_installer_zip(binary: str, agent_id: str, token: str, server_pubkey: str) -> bytes:
     wss = _wss_url()
     interval = int(os.environ.get("KENNY_TELEMETRY_INTERVAL_SECS", "900") or 900)
@@ -486,7 +497,7 @@ def build_download_routes(
             return Response(
                 script,
                 media_type="text/x-shellscript",
-                headers={"Content-Disposition": f'attachment; filename="install-{agent_id}.sh"'},
+                headers={"Content-Disposition": _attachment(f"install-{agent_id}.sh")},
             )
         binary = agent_binary_path()
         if binary is None:
@@ -496,7 +507,7 @@ def build_download_routes(
         return Response(
             data,
             media_type="application/zip",
-            headers={"Content-Disposition": f'attachment; filename="kenny-agent-{agent_id}.zip"'},
+            headers={"Content-Disposition": _attachment(f"kenny-agent-{agent_id}.zip")},
         )
 
     def _mint_share_link(agent_id: str, os_name: str, arch: str | None, ttl_s: int) -> dict:
@@ -627,7 +638,7 @@ def build_download_routes(
         return Response(
             data,
             media_type="application/zip",
-            headers={"Content-Disposition": f'attachment; filename="kenny-agent-{agent_id}.zip"'},
+            headers={"Content-Disposition": _attachment(f"kenny-agent-{agent_id}.zip")},
         )
 
     async def enroll(request: Request) -> Response:
