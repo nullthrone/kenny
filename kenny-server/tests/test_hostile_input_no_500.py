@@ -76,3 +76,15 @@ def test_asset_name_with_nul_is_404(client) -> None:
 @pytest.mark.parametrize("path", ["/api/tickets"])
 def test_absurd_limit_is_not_a_500(client, path) -> None:
     assert client.get(path, params={"limit": "9" * 30}).status_code == 200
+
+
+@pytest.mark.parametrize("agent_id", ["%E2%82%AC", "a%22b", "a%0d%0ab"])
+@pytest.mark.parametrize("query", ["?os=linux", ""])
+def test_installer_download_survives_hostile_agent_id(client, agent_id, query) -> None:
+    """The agent id lands in ``Content-Disposition``; it must not break the header."""
+
+    r = client.get(f"/api/agents/{agent_id}/installer{query}")
+    assert r.status_code in (200, 503)
+    disposition = r.headers.get("content-disposition", "")
+    assert disposition.count('"') in (0, 2)
+    assert "\r" not in disposition and "\n" not in disposition
