@@ -77,7 +77,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
@@ -85,7 +84,7 @@ from typing import Any, Protocol
 from . import ticket_rules as ticket_rules_module
 from .diffs import CHANGE_KINDS, SPECS, diff_snapshots
 from .health_rules import CONFIRM_BEFORE_ALARM, evaluate_snapshot
-from .notify import Notification, Notifier, doc_sections, resolve_doc
+from .notify import Notification, Notifier, doc_sections, public_link_base, resolve_doc
 from .registry import AgentRegistry
 from .store import AlertStateStore, EventStore, TelemetryStore
 from .trends import DISK_FULL_ALERT_DAYS, disk_forecast
@@ -999,13 +998,14 @@ class AlertEngine:
             return False
         from .digest import build_digest
 
-        title, body = await build_digest(
-            self._store, self._event_store, self._registry, now=now
+        digest = await build_digest(
+            self._store, self._event_store, self._registry, now=now, base_url=public_link_base()
         )
         await self._dispatch(
             Notification(
-                title=title,
-                body=body,
+                title=digest.title,
+                body=digest.body,
+                markdown=digest.markdown,
                 priority="low",
                 tags=["newspaper"],
                 agent_id=None,
@@ -1074,7 +1074,7 @@ class AlertEngine:
             lines.append(f"… and {len(findings) - _MAX_DAILY_LINES} more")
         if older:
             lines.append(f"{older} older finding(s) still open.")
-        base = os.environ.get("KENNY_PUBLIC_URL", "").strip().rstrip("/")
+        base = public_link_base()
         if base:
             lines.append(f"{base}/#/inbox")
         await self._dispatch(

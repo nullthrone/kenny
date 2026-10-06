@@ -76,19 +76,19 @@ async def test_build_digest_renders_fleet_summary(stores) -> None:
         fields={"kind": "alert"}, at=(NOW - timedelta(days=10)).isoformat(),
     )
 
-    title, body = await build_digest(store, events, FakeRegistry({"kids-pc"}), now=NOW)
-    assert "2026-07-01" in title
-    assert "1 host(s), 1 online" in body
-    assert "0 ok / 0 warn / 1 crit" in body  # disk 96% => crit
-    assert "Alerts (7d): 1 (1 crit), changes: 1." in body
-    assert "1 reboot(s) pending" in body
-    assert "kids-pc 3.0h" in body
+    digest = await build_digest(store, events, FakeRegistry({"kids-pc"}), now=NOW)
+    body = digest.body
+    assert "2026-07-01" in digest.title
+    assert body.startswith("1 host · 1 online · 1 crit · 0 warn · 0 ok")  # disk 96% => crit
+    assert "This week: 1 alert (1 crit) · 1 change" in body
+    assert "1 reboot pending" in body
+    assert "Screen time (7d): kids-pc 3.0h" in body
 
 
 async def test_build_digest_empty_fleet(stores) -> None:
     store, events, _ = stores
-    _, body = await build_digest(store, events, FakeRegistry(), now=NOW)
-    assert body == "No agents have reported telemetry yet."
+    digest = await build_digest(store, events, FakeRegistry(), now=NOW, base_url="https://k.example")
+    assert digest.body == digest.markdown == "No agents have reported telemetry yet."
 
 
 async def test_build_digest_tolerates_malformed_list_entries(stores) -> None:
@@ -105,9 +105,9 @@ async def test_build_digest_tolerates_malformed_list_entries(stores) -> None:
     }
     await store.insert("kids-pc", NOW.isoformat(), snapshot, received_at=NOW.isoformat())
 
-    title, body = await build_digest(store, events, FakeRegistry({"kids-pc"}), now=NOW)
-    assert "2026-07-01" in title
-    assert body  # did not raise
+    digest = await build_digest(store, events, FakeRegistry({"kids-pc"}), now=NOW)
+    assert "2026-07-01" in digest.title
+    assert digest.body  # did not raise
 
 
 def make_engine(stores, notifier, **kwargs) -> AlertEngine:
@@ -187,9 +187,97 @@ async def test_digest_lists_posture_once_and_names_the_finding(stores) -> None:
         ]},
     }
     await store.insert("kids-pc", NOW.isoformat(), snapshot, received_at=NOW.isoformat())
-    _, body = await build_digest(store, events, FakeRegistry({"kids-pc"}), now=NOW)
-    # Degraded names the finding, not "disk crit".
-    assert "Degraded: kids-pc (crit: disk: C: 96% full (>=95%); win_update: KB1 failed 3×" in body
-    assert "Posture: kids-pc (encryption, listening_ports)" in body
+    body = (await build_digest(store, events, FakeRegistry({"kids-pc"}), now=NOW)).body
+    # The overview names the sections; the reasons are on the host page.
+    assert "\U0001F534 kids-pc: disk, win_update" in body
+    assert "96%" not in body and "KB1" not in body
+    # Posture is listed once, as a count per host.
+    assert "Posture: kids-pc (2)" in body
     # Distinct KBs, not rows.
-    assert "1 failed update(s)" in body
+    assert "1 failed update on 1 host" in body
+
+
+async def test_digest_aggregates_disk_forecasts_per_host(stores) -> None:
+    """Several filling volumes on one host (e.g. Docker overlay mounts sharing the
+    root filesystem) are one entry with the soonest estimate, not one per mount."""
+
+    store, events, _ = stores
+    for i in range(10):
+        at = (NOW - timedelta(days=9 - i)).isoformat()
+        volumes = [
+            {"mount": "/", "percent_used": 60 + 2 * i},
+            {"mount": "/var/lib/docker/overlay/abc", "percent_used": 60 + 2 * i},
+            {"mount": "/data", "percent_used": 30 + 5 * i},
+        ]
+        await store.insert(
+            "nas", at, {"disk": {"status": "ok", "summary": "", "volumes": volumes}}, received_at=at
+        )
+    body = (await build_digest(store, events, FakeRegistry({"nas"}), now=NOW)).body
+    assert "disk filling: nas (~5d)" in body
+    assert body.count("nas (~") == 1
+    assert "overlay" not in body
+
+
+async def test_digest_links_hosts_only_when_the_dashboard_url_is_known(stores) -> None:
+    store, events, _ = stores
+    snapshot = {"disk": {"status": "ok", "summary": "", "volumes": [{"mount": "C:", "percent_used": 96.0}]}}
+    await store.insert("kids_pc", NOW.isoformat(), snapshot, received_at=NOW.isoformat())
+
+    linked = await build_digest(
+        store, events, FakeRegistry({"kids_pc"}), now=NOW, base_url="https://kenny.example/"
+    )
+    # Markdown: the host name links to its worst section, escaped for Discord.
+    assert "[kids\\_pc](https://kenny.example/#/fleet/kids_pc?section=disk): disk" in linked.markdown
+    assert "[0 alerts (0 crit)](https://kenny.example/#/log)" in linked.markdown
+    assert linked.markdown.endswith("[Open kenny](https://kenny.example/#/fleet)")
+    # Plain text: no inline links, one dashboard URL at the end.
+    assert "kids_pc: disk" in linked.body
+    assert linked.body.endswith("Details: https://kenny.example/#/fleet")
+    assert linked.body.count("https://") == 1
+
+    unlinked = await build_digest(store, events, FakeRegistry({"kids_pc"}), now=NOW)
+    assert "http" not in unlinked.body and "http" not in unlinked.markdown
+
+
+async def test_digest_caps_the_host_list(stores) -> None:
+    store, events, _ = stores
+    snapshot = {"disk": {"status": "ok", "summary": "", "volumes": [{"mount": "C:", "percent_used": 85.0}]}}
+    for n in range(11):
+        await store.insert(f"pc{n:02d}", NOW.isoformat(), snapshot, received_at=NOW.isoformat())
+    body = (await build_digest(store, events, FakeRegistry(), now=NOW)).body
+    assert "pc07: disk" in body and "pc08" not in body
+    assert "+3 more hosts" in body
+
+
+async def test_digest_reaches_discord_with_host_links(stores, monkeypatch) -> None:
+    """Joined seam: scheduler -> Notification -> Discord embed carries the links."""
+
+    import json
+
+    import httpx
+
+    from kenny_server.notify import DiscordNotifier
+
+    monkeypatch.setenv("KENNY_PUBLIC_URL", "https://kenny.example")
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(200, json={"id": "m-1"})
+
+    discord = DiscordNotifier(
+        "https://discord.example/webhook",
+        client_factory=lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    store, events, _ = stores
+    snapshot = {"disk": {"status": "ok", "summary": "", "volumes": [{"mount": "C:", "percent_used": 96.0}]}}
+    await store.insert("kids-pc", NOW.isoformat(), snapshot, received_at=NOW.isoformat())
+
+    engine = make_engine(stores, discord)
+    await engine.maybe_send_digest(NOW)
+    assert await engine.maybe_send_digest(datetime(2026, 7, 6, 8, 30, tzinfo=timezone.utc)) is True
+
+    embed = json.loads(captured[-1].content)["embeds"][0]
+    assert embed["title"] == "kenny weekly digest - 2026-07-06"
+    assert "[kids-pc](https://kenny.example/#/fleet/kids-pc?section=disk): disk" in embed["description"]
+    assert embed["description"].endswith("[Open kenny](https://kenny.example/#/fleet)")
