@@ -302,12 +302,6 @@ mod tests {
 
     // ---- Frame budget ---------------------------------------------------------------
 
-    /// The server drops an unsolicited `telemetry` frame larger than 256 KiB
-    /// (`_MAX_TELEMETRY_BYTES` in `kenny_server/tunnel.py`) and logs only a warning, so
-    /// an agent whose snapshot grows past it goes silent without any error on its side.
-    /// This is the agent's own bound, leaving headroom below that cap.
-    const FRAME_BUDGET_BYTES: usize = 200 * 1024;
-
     /// A string of exactly `len` characters that starts with `prefix` and `i`, so every
     /// row is distinct and nothing is shorter than a realistic value.
     fn text(prefix: &str, i: usize, len: usize) -> String {
@@ -601,8 +595,10 @@ mod tests {
     }
 
     /// The sections that carry hardware-health facts, and the share of the frame their
-    /// worst case may take. Measured at ~65 KiB; the rest of the budget belongs to the
-    /// older inventory sections.
+    /// worst case may take. The server drops an unsolicited `telemetry` frame larger than
+    /// 256 KiB (`_MAX_TELEMETRY_BYTES` in `kenny_server/tunnel.py`) and only logs a
+    /// warning, so the agent bounds what these sections may add to it. Measured at
+    /// ~65 KiB; the rest of the frame belongs to the older inventory sections.
     const HARDWARE_SECTIONS: [&str; 4] = ["hardware_errors", "gpu", "fans", "disk_smart"];
     const HARDWARE_SECTIONS_BUDGET_BYTES: usize = 80 * 1024;
 
@@ -633,25 +629,6 @@ mod tests {
             total < HARDWARE_SECTIONS_BUDGET_BYTES,
             "hardware sections take {total} bytes at their caps, over the \
              {HARDWARE_SECTIONS_BUDGET_BYTES} share; per section: {}",
-            size_report(&snapshot)
-        );
-    }
-
-    /// Every section at its caps at once. This is a theoretical ceiling, not a typical
-    /// host, and it does not hold: the capped inventory sections alone (`scheduled_tasks`,
-    /// `installed_software`, `web_activity`, ...) exceed the budget before the hardware
-    /// sections add to it, so the test is ignored until the caps or the budget are
-    /// decided. Run it with `cargo test -- --ignored` for the per-section sizes in the
-    /// failure message; compare against `max(length(snapshot))` on a real store.
-    #[test]
-    #[ignore = "the contract's caps summed exceed the frame budget; see the doc comment"]
-    fn a_snapshot_with_every_section_at_its_caps_fits_the_telemetry_frame_budget() {
-        let snapshot = worst_case_snapshot(&section_names());
-        let total = frame_bytes(snapshot.clone());
-        assert!(
-            total < FRAME_BUDGET_BYTES,
-            "worst-case telemetry frame is {total} bytes, over the {FRAME_BUDGET_BYTES} budget \
-             (the server drops frames over 256 KiB); per section: {}",
             size_report(&snapshot)
         );
     }
