@@ -973,9 +973,10 @@ All counters are lifetime values, and each is `null` when the drive or its drive
 report it — `null` is unknown, not zero. The reallocated-sector count appears only as SMART
 attribute `"5"` in `smart_attributes`; `Get-StorageReliabilityCounter` does not expose it.
 
-The section `status` is still the agent's own grade: any disk whose `health_status` is not
-`Healthy` or whose `predictive_failure` is true → `crit`; else any disk with a non-zero
-uncorrected read or write count → `warn`; else `ok`. The **server's health rule is
+The section `status` is still the agent's own grade: any disk whose `health_status` is
+neither `Healthy` nor `Unknown` (Linux has no OS verdict) or whose `predictive_failure` is
+true → `crit`; else any disk with a non-zero uncorrected read or write count → `warn`; else
+`ok`. The **server's health rule is
 authoritative** for `disk_smart`: it judges the new fields (`nvme`, `smart_attributes`,
 `bus_type`, `removable`) and its verdict replaces the agent's grade. The agent's grade stands
 only for payloads the rule defers on because they have the old row shape (no `nvme` and no
