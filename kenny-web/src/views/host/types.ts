@@ -324,7 +324,7 @@ export interface GpuSection extends RawSection {
 export interface FanReading {
   key: string
   label?: string | null
-  source?: 'hwmon' | 'lhm' | 'nvml' | string
+  source?: 'hwmon' | 'lhm' | string
   /** A burst of samples, in order. */
   rpm_samples?: number[] | null
   duty_percent?: number | null
