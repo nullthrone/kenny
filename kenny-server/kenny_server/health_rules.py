@@ -17,6 +17,8 @@ import math
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
+from . import hardware_catalog
+
 Status = str  # "ok" | "posture" | "warn" | "crit"
 
 # ``posture`` is a server-side verdict only (ADR-0058): a standing configuration
@@ -294,7 +296,110 @@ def _rule_thermals(payload: dict[str, Any], now: datetime) -> "tuple[Status, str
     return "ok", f"Hottest {hottest:.0f}°C"
 
 
-def _rule_os_support(payload: dict[str, Any], now: datetime) -> "tuple[Status, str] | None":
+# =============================================================================
+# disk_smart  (plan Step 1)
+# -----------------------------------------------------------------------------
+# The server's SMART / NVMe health judgement. Constants and helpers private to
+# this rule belong in this block, between this banner and the next one.
+# Each rule below owns its block; do not edit another rule's block.
+# =============================================================================
+
+
+def _rule_disk_smart(payload: dict[str, Any], now: datetime) -> "tuple[Status, str] | None":
+    """Judge ``disk_smart``: the drive's own failure signals, per internal disk.
+
+    Will report crit for ``predictive_failure``, ``health_status`` Unhealthy or
+    NVMe ``critical_warning`` bits 0/2/3/4; warn for ``health_status`` Warning,
+    the temperature bit or SMART 197 above zero; and posture for non-zero
+    lifetime media / uncorrected counters (HDDs) and ``percentage_used`` >= 90.
+    Removable and USB disks are excluded. Defers (``None``) on old-shaped rows
+    (no ``nvme`` and no ``smart_attributes`` key) so an old agent's own grade
+    stands. Whether a counter is *rising* is the trend layer's job.
+    """
+
+    return None
+
+
+# =============================================================================
+# hardware_errors  (plan Step 2)
+# -----------------------------------------------------------------------------
+# Component-attributed hardware events. Attribution and severity classes come
+# from ``hardware_catalog``; per-group activity from :func:`group_activity`.
+# Constants and helpers private to this rule belong in this block.
+# =============================================================================
+
+
+def _rule_hardware_errors(
+    payload: dict[str, Any], now: datetime
+) -> "tuple[Status, str] | None":
+    """Judge ``hardware_errors``: "risk rising, component X, symptom Y".
+
+    Will escalate only on Level-3 precursors and uncorrected hardware errors, so
+    it never double-alarms with ``reliability``: crit for recurring uncorrected
+    errors (WHEA 18, EDAC UE, hardware Xids); warn for repeated graphics-driver
+    resets with hardware corroboration, recurring retries on internal disks and
+    crash diversity that co-occurs with a corrected CPU/memory error; posture
+    for chronic corrected errors. Bugchecks only attribute and corroborate.
+    Reasons are symptoms (ADR-0065). Defers when the section carries no groups
+    key at all (an old agent).
+    """
+
+    return None
+
+
+# =============================================================================
+# gpu  (plan Step 3)
+# -----------------------------------------------------------------------------
+# Raw GPU health facts (ECC, retired pages, clock-event reasons). Constants and
+# helpers private to this rule belong in this block.
+# =============================================================================
+
+
+def _rule_gpu(payload: dict[str, Any], now: datetime) -> "tuple[Status, str] | None":
+    """Judge ``gpu``: a failing card or a starved one.
+
+    Will report crit for uncorrected ECC above zero, a row-remap failure or
+    pending retired pages; warn for an active ``hw_slowdown`` /
+    ``hw_power_brake_slowdown`` (a PSU or cable signal); posture for
+    ``hw_thermal_slowdown``. PCIe link width is judged against the device's own
+    history by the trend layer, never against ``width_max`` here. Defers when no
+    GPU is reported.
+    """
+
+    return None
+
+
+# =============================================================================
+# fans  (plan Step 4)
+# -----------------------------------------------------------------------------
+# Measured fan speeds in a short burst. Constants and helpers private to this
+# rule belong in this block.
+# =============================================================================
+
+
+def _rule_fans(payload: dict[str, Any], now: datetime) -> "tuple[Status, str] | None":
+    """Judge ``fans``: a stalled or unstable fan.
+
+    Will report warn for a stall (every sample 0 RPM while the commanded duty is
+    at least 30 %) and for jitter (a coefficient of variation above ~15 % at a
+    constant duty). Fans flagged ``idle_or_absent`` are not stalls. Drift
+    against a fan's own baseline is the trend layer's job. Defers when no fan is
+    reported.
+    """
+
+    return None
+
+
+# =============================================================================
+# os_support
+# =============================================================================
+
+# The microcode finding is worded as a symptom (ADR-0065): the reader needs to
+# know what to do, not which advisory it came from.
+_CPU_MICROCODE_REASON = "The CPU needs a BIOS/microcode update to prevent permanent damage"
+
+
+def _os_support_eol(payload: dict[str, Any], now: datetime) -> "tuple[Status, str] | None":
     if payload.get("eol") is True:
         return "crit", "OS is end-of-life"
     age = _age_days(payload.get("eol_date"), now=now)
@@ -305,6 +410,30 @@ def _rule_os_support(payload: dict[str, Any], now: datetime) -> "tuple[Status, s
         if age > -90:
             return "warn", f"OS end-of-life in {-age:.0f}d"
     return None
+
+
+def _os_support_microcode(payload: dict[str, Any], now: datetime) -> "tuple[Status, str] | None":
+    if hardware_catalog.raptor_lake_needs_microcode(payload.get("cpu") or {}):
+        return "warn", _CPU_MICROCODE_REASON
+    return None
+
+
+def _rule_os_support(payload: dict[str, Any], now: datetime) -> "tuple[Status, str] | None":
+    """Worst of the OS and CPU checks, with every finding's reason joined.
+
+    ``os_support`` carries the OS edition and the host's CPU identity, so a
+    finding about either lands here (a rule sees only its own section).
+    """
+
+    findings = [
+        f
+        for check in (_os_support_eol, _os_support_microcode)
+        if (f := check(payload, now)) is not None
+    ]
+    if not findings:
+        return None
+    findings.sort(key=lambda f: -_ORDER[f[0]])  # stable: ties keep check order
+    return findings[0][0], "; ".join(reason for _, reason in findings)
 
 
 def _number(value: Any) -> float | None:
@@ -475,6 +604,58 @@ def _reliability_day_age_hours(day: str, now: datetime) -> float | None:
     return max(0.0, (now - end).total_seconds() / 3600)
 
 
+def group_activity(group: dict[str, Any], now: datetime) -> dict[str, Any]:
+    """Activity of one event group (``count``, ``by_day``, ``last_seen``) as of ``now``.
+
+    Shared by every rule that judges a ``reliability``-shaped group, so "recent",
+    "active" and "recurring" mean one thing everywhere. Pure, tolerant of
+    malformed input, and every value JSON-safe. Fields:
+
+    ``count`` -- the group's event count (``0`` when absent or unusable);
+    ``active_days``, ``first_day``, ``last_day`` -- from ``by_day`` (UTC calendar
+    dates); ``age_hours`` -- from ``last_seen`` against ``now``, falling back to
+    the end of ``last_day``, ``None`` when neither is usable; ``recent``,
+    ``active``, ``recurring``, ``burst`` -- defined by the ``_RELIABILITY_*``
+    constants above.
+    """
+
+    count = int(_number(group.get("count")) or 0)
+    by_day = _reliability_by_day(group.get("by_day"))
+    days = sorted(by_day)
+    first_day = days[0] if days else None
+    last_day = days[-1] if days else None
+
+    last_seen = _parse_ts(group.get("last_seen"))
+    if last_seen is not None and last_seen.tzinfo is None:
+        last_seen = last_seen.replace(tzinfo=timezone.utc)
+    age: float | None
+    if last_seen is not None:
+        age = max(0.0, (now - last_seen).total_seconds() / 3600)
+    elif last_day is not None:
+        age = _reliability_day_age_hours(last_day, now)
+    else:
+        age = None
+
+    recent = age is not None and age <= _RELIABILITY_ACTIVE_WITHIN_HOURS
+    not_stale = age is not None and age <= _RELIABILITY_ACTIVE_MIN_DAYS_MAX_AGE_HOURS
+    active_days = len(days)
+    peak = max(by_day.values(), default=0)
+    return {
+        "count": count,
+        "active_days": active_days,
+        "first_day": first_day,
+        "last_day": last_day,
+        "age_hours": age,
+        "recent": recent,
+        "active": recent or (not_stale and active_days >= _RELIABILITY_ACTIVE_MIN_DAYS),
+        "recurring": (
+            count >= _RELIABILITY_RECURRING_MIN_COUNT
+            or active_days >= _RELIABILITY_RECURRING_MIN_DAYS
+        ),
+        "burst": count > 0 and peak / count >= _RELIABILITY_BURST_SHARE and not recent,
+    }
+
+
 def reliability_patterns(payload: dict[str, Any], now: datetime) -> list[dict[str, Any]]:
     """Derive one impact/activity record per reliability event group.
 
@@ -537,27 +718,9 @@ def reliability_patterns(payload: dict[str, Any], now: datetime) -> list[dict[st
             impact = "crashed"
             symptom = symptom or _RELIABILITY_CRASH_SYMPTOM
 
-        by_day = _reliability_by_day(e.get("by_day"))
-        days = sorted(by_day)
-        first_day = days[0] if days else None
-        last_day = days[-1] if days else None
-
-        last_seen = _parse_ts(e.get("last_seen"))
-        if last_seen is not None and last_seen.tzinfo is None:
-            last_seen = last_seen.replace(tzinfo=timezone.utc)
-        age: float | None
-        if last_seen is not None:
-            age = max(0.0, (now - last_seen).total_seconds() / 3600)
-        elif last_day is not None:
-            age = _reliability_day_age_hours(last_day, now)
-        else:
-            age = None
-
-        recent = age is not None and age <= _RELIABILITY_ACTIVE_WITHIN_HOURS
-        not_stale = age is not None and age <= _RELIABILITY_ACTIVE_MIN_DAYS_MAX_AGE_HOURS
-        active_days = len(days)
-        peak = max(by_day.values(), default=0)
-        active = recent or (not_stale and active_days >= _RELIABILITY_ACTIVE_MIN_DAYS)
+        act = group_activity(e, now)
+        age = act["age_hours"]
+        active = act["active"]
         out.append(
             {
                 "source": e.get("source"),
@@ -571,16 +734,13 @@ def reliability_patterns(payload: dict[str, Any], now: datetime) -> list[dict[st
                 "symptom": symptom,
                 "classification_state": state,
                 "suppressed": suppressed,
-                "active_days": active_days,
-                "first_day": first_day,
-                "last_day": last_day,
+                "active_days": act["active_days"],
+                "first_day": act["first_day"],
+                "last_day": act["last_day"],
                 "last_seen_age_hours": round(age, 1) if age is not None else None,
                 "active": active,
-                "recurring": (
-                    count >= _RELIABILITY_RECURRING_MIN_COUNT
-                    or active_days >= _RELIABILITY_RECURRING_MIN_DAYS
-                ),
-                "burst": (count > 0 and peak / count >= _RELIABILITY_BURST_SHARE and not recent),
+                "recurring": act["recurring"],
+                "burst": act["burst"],
                 "scores": (
                     not suppressed and active and impact in _RELIABILITY_SCORING_IMPACTS
                 ),
@@ -1086,6 +1246,10 @@ RULES: dict[str, Rule | OsAwareRule] = {
     "battery": _rule_battery,
     "memory": _rule_memory,
     "thermals": _rule_thermals,
+    "disk_smart": _rule_disk_smart,
+    "hardware_errors": _rule_hardware_errors,
+    "gpu": _rule_gpu,
+    "fans": _rule_fans,
     "os_support": _rule_os_support,
     "web_activity": _rule_web_activity,
     "reliability": _rule_reliability,
@@ -1132,11 +1296,16 @@ OS_AWARE_RULES: frozenset[str] = frozenset({"local_accounts", "services", "uptim
 # finding can appear and vanish between two pushes without anything having
 # happened to the machine. Requiring a newer ``collected_at`` to still agree
 # costs one push interval of latency and removes that whole class of alarm.
+# ``hardware_errors`` (the same rolling event window), ``gpu`` (clock-event
+# reasons that flicker with load) and ``fans`` (a burst of five samples) are
+# transient in the same way.
 #
 # The policy lives here, next to the thresholds it belongs with
 # (``kenny-server/CLAUDE.md``: health thresholds live only in this module);
 # ``alerting`` reads the set and stays free of per-section knowledge.
-CONFIRM_BEFORE_ALARM: frozenset[str] = frozenset({"reliability"})
+CONFIRM_BEFORE_ALARM: frozenset[str] = frozenset(
+    {"reliability", "hardware_errors", "gpu", "fans"}
+)
 
 
 def _is_windows(agent_os: str | None) -> bool:
