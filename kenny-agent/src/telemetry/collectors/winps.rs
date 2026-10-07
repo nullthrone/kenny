@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use super::ProbeFailure;
+use super::{proc, ProbeFailure};
 
 /// Run a PowerShell snippet and parse its stdout as JSON.
 ///
@@ -133,9 +133,7 @@ fn run_with_budget(cmd: Command) -> Option<String> {
 /// stall the whole telemetry snapshot — collectors run on a bounded pool, but a
 /// child with no timeout would still pin one worker indefinitely. On timeout the
 /// child is killed and `None` returned, so the collector falls back to its default.
-/// `stderr` is discarded (we only consume stdout JSON), which also rules out a
-/// stderr-pipe-buffer deadlock; telemetry stdout is small, so reading it after the
-/// child exits cannot block.
+/// The spawn/drain/kill mechanics live in [`proc::run_command`].
 ///
 /// `Some((success, stdout))` is returned whenever the child ran to completion, so the
 /// exit-code decision is left to the caller. `None` means spawn failure, timeout, or
@@ -149,54 +147,10 @@ fn run_capturing(cmd: Command) -> Option<(bool, String)> {
 /// [`run_capturing`] with an explicit budget and the reason it produced nothing.
 /// The first element is `(success, exit_code)`.
 fn run_capturing_within(
-    mut cmd: Command,
+    cmd: Command,
     budget: Duration,
 ) -> Result<((bool, Option<i32>), String), ProbeFailure> {
-    use std::io::Read;
-    use std::process::Stdio;
-    use std::time::Instant;
-
-    let mut child = cmd
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|_| ProbeFailure::Spawn)?;
-
-    let deadline = Instant::now() + budget;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                // Decode stdout losslessly rather than with `read_to_string`: a probe
-                // may emit bytes that are not valid UTF-8 (PowerShell defaults to the
-                // console code page, and tools like `netsh`/`w32tm` use it too). A
-                // single stray byte from a vendor-supplied program name once dropped
-                // the entire probe to `None`; `from_utf8_lossy` keeps the row instead.
-                // The success flag is returned alongside so the caller — not this
-                // helper — decides whether a non-zero exit is fatal.
-                let mut buf = Vec::new();
-                child
-                    .stdout
-                    .take()
-                    .ok_or(ProbeFailure::Spawn)?
-                    .read_to_end(&mut buf)
-                    .map_err(|_| ProbeFailure::Spawn)?;
-                return Ok((
-                    (status.success(), status.code()),
-                    String::from_utf8_lossy(&buf).into_owned(),
-                ));
-            }
-            Ok(None) => {
-                if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(ProbeFailure::Timeout(budget));
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            Err(_) => return Err(ProbeFailure::Spawn),
-        }
-    }
+    proc::run_command(cmd, budget).map(|out| ((out.success, out.code), out.stdout))
 }
 
 /// Normalize a value that PowerShell's `ConvertTo-Json` may emit either as a
@@ -212,7 +166,5 @@ pub fn as_array(value: Value) -> Vec<Value> {
     }
 }
 
-/// Per-probe wall-clock budget. A telemetry probe that has not finished within this
-/// window is killed and treated as "no data" (the collector then falls back to its
-/// default), so one wedged CIM/PowerShell call can never stall the whole snapshot.
-pub const PROBE_BUDGET: Duration = Duration::from_secs(20);
+/// Per-probe wall-clock budget; see [`proc::PROBE_BUDGET`].
+pub use super::proc::PROBE_BUDGET;
