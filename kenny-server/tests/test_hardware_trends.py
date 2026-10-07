@@ -92,6 +92,33 @@ def test_wearout_forecast_is_none_for_flat_falling_short_or_noisy_series() -> No
     assert trends.wearout_forecast(series(noisy)) is None
 
 
+def test_wearout_forecast_needs_more_than_a_few_days_of_whole_percent_steps() -> None:
+    assert trends.wearout_forecast(series([85, 85, 85, 85, 86])) is None
+    # A month of data is still short of 30 calendar days / 21 points.
+    assert trends.wearout_forecast(series([85] * 20 + [86] * 9)) is None
+    # Enough points, but spread over too few calendar days.
+    assert trends.wearout_forecast(series([80, 80, 81, 81, 82, 82] * 4)) is None
+
+
+def test_wearout_forecast_needs_a_real_movement_in_a_long_series() -> None:
+    assert trends.wearout_forecast(series([85] * 60 + [86])) is None  # one step of one point
+    # two steps (or two points) are enough once the series is long
+    assert trends.wearout_forecast(series([85] * 30 + [86] * 20 + [87] * 11)) is not None
+    assert trends.wearout_forecast(series([85] * 30 + [87] * 31)) is not None
+
+
+def test_a_genuine_slow_trend_over_two_months_still_forecasts() -> None:
+    values = [80 + i // 15 for i in range(61)]  # +1 point every 15 days, whole percent
+    days = trends.wearout_forecast(series(values))
+    assert days is not None and 200 < days < 400
+    spare = [100 - i // 6 for i in range(61)]  # -1 point every 6 days
+    assert trends.spare_decline(series(spare), 10) is not None
+
+
+def test_spare_decline_has_the_same_evidence_floor() -> None:
+    assert trends.spare_decline(series([100, 100, 100, 100, 99]), 10) is None
+
+
 def test_wearout_forecast_is_zero_for_a_drive_at_its_rated_endurance() -> None:
     assert trends.wearout_forecast(series([97, 98, 100])) == 0.0
     assert trends.wearout_forecast(series([100])) == 0.0
@@ -389,8 +416,21 @@ def test_a_counter_that_started_non_zero_or_went_quiet_long_ago_is_not_news() ->
     assert forecast({"disk:S1": standing}) == []
     old = disk_metrics(media_errors=series([0] * 5 + [2] * 56))  # first error 56 days ago
     assert forecast({"disk:S1": old}) == []
+
+
+def test_a_later_rise_of_an_already_non_zero_counter_is_not_a_first_error() -> None:
+    # The first error was 56 days ago; it rose again 15 days ago. That is not a
+    # "first" error, and re-announcing it as one would misdescribe it.
     rising = disk_metrics(media_errors=series([0] * 5 + [2] * 40 + [3] * 16))
-    assert forecast({"disk:S1": rising}) != []  # still moving
+    assert forecast({"disk:S1": rising}) == []
+
+
+def test_a_first_error_inside_the_window_fires_even_if_it_rose_again() -> None:
+    fresh = disk_metrics(media_errors=series([0] * 50 + [1] * 5 + [4] * 6))
+    (f,) = forecast({"disk:S1": fresh})
+    assert f["reason"] == "first_error"
+    outside = disk_metrics(media_errors=series([0] * 20 + [1] * 41))  # first move 41 days ago
+    assert forecast({"disk:S1": outside}) == []
 
 
 def test_a_reset_counter_is_not_a_first_error_by_itself() -> None:

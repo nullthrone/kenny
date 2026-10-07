@@ -6,6 +6,7 @@ and the dashboard API run on top of it with a frozen clock.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from functools import partial
 
@@ -82,12 +83,18 @@ def wearing(pct: float, **disk_kw) -> dict:
     return snapshot(disk_smart=disk_smart(disk("S1", "WD_BLACK SN850X", pct=pct, spare=100, **disk_kw)))
 
 
-async def put_wear_history(store, days: int = 20, end: datetime = NOW, agent_id: str = "pc1") -> None:
-    """``days`` daily snapshots, +1 % a day, ending ``end``."""
+async def put_wear_history(
+    store, days: int = 40, end: datetime = NOW, agent_id: str = "pc1", step: float = 0.5
+) -> None:
+    """``days`` daily snapshots, ``step`` % a day, ending ``end``.
+
+    The default is long enough for the wear forecast's evidence floor
+    (``trends.SLOW_MIN_POINTS`` over ``SLOW_MIN_SPAN_DAYS``).
+    """
 
     for i in range(days):
         at = end - timedelta(days=days - 1 - i, minutes=1)
-        await put(store, wearing(70.0 + i), at, agent_id)
+        await put(store, wearing(70.0 + i * step), at, agent_id)
 
 
 def forecast_notes(notes: list[Notification]) -> list[Notification]:
@@ -99,7 +106,7 @@ def forecast_notes(notes: list[Notification]) -> list[Notification]:
 
 async def test_the_first_rollup_backfills_every_stored_day(stores) -> None:
     store, _, _, hw = stores
-    await put_wear_history(store, days=5)
+    await put_wear_history(store, days=5, step=1.0)
     wrote = await hardware_history.rollup_agent(store, hw, "pc1", now=NOW)
     assert wrote > 0
     series = (await hw.series("pc1", "2000-01-01"))["disk:S1"]["percentage_used"]
@@ -116,7 +123,7 @@ async def test_the_first_rollup_backfills_every_stored_day(stores) -> None:
 
 async def test_the_rollup_is_idempotent(stores) -> None:
     store, _, _, hw = stores
-    await put_wear_history(store, days=5)
+    await put_wear_history(store, days=5, step=1.0)
     await hardware_history.rollup_agent(store, hw, "pc1", now=NOW)
     first = await hw.series("pc1", "2000-01-01")
     await hardware_history.rollup_agent(store, hw, "pc1", now=NOW)
@@ -271,13 +278,13 @@ async def test_the_same_forecast_is_not_news_again(stores) -> None:
 async def test_a_growing_set_notifies_again_with_the_new_item_first(stores) -> None:
     store, _, state, _ = stores
     engine = make_engine(stores)
-    for i in range(20):
-        at = NOW - timedelta(days=19 - i, minutes=1)
+    for i in range(40):
+        at = NOW - timedelta(days=39 - i, minutes=1)
         await put(
             store,
             snapshot(
                 disk_smart=disk_smart(
-                    disk("S1", "WD_BLACK SN850X", pct=70.0 + i, spare=100),
+                    disk("S1", "WD_BLACK SN850X", pct=70.0 + i * 0.5, spare=100),
                     disk("S2", "Samsung 990", pct=5, spare=100, media_errors=0),
                 )
             ),
@@ -334,16 +341,16 @@ async def test_a_shrinking_set_stays_quiet_but_forgets_so_a_return_is_news(store
     store, _, state, _ = stores
     engine = make_engine(stores)
     # two disks wear out; later only one does
-    for i in range(20):
+    for i in range(40):
         await put(
             store,
             snapshot(
                 disk_smart=disk_smart(
-                    disk("A", "Disk A", pct=70.0 + i, spare=100),
-                    disk("B", "Disk B", pct=70.0 + i, spare=100),
+                    disk("A", "Disk A", pct=70.0 + i * 0.5, spare=100),
+                    disk("B", "Disk B", pct=70.0 + i * 0.5, spare=100),
                 )
             ),
-            NOW - timedelta(days=19 - i, minutes=1),
+            NOW - timedelta(days=39 - i, minutes=1),
         )
     await engine.rollup_hardware_history(NOW)
     (note,) = forecast_notes(await engine.evaluate_once(NOW))
@@ -573,12 +580,12 @@ def _bearer(app):
     return {"Authorization": f"Bearer {app.state.operator_token}"}
 
 
-def _seed_wear(c, app, agent_id="example-pc", days=20):
+def _seed_wear(c, app, agent_id="example-pc", days=40):
     store = app.state.store
     now = datetime.now(timezone.utc)
     for i in range(days):
         at = now - timedelta(days=days - 1 - i, minutes=1)
-        c.portal.call(partial(store.insert, agent_id, at.isoformat(), wearing(70.0 + i)))
+        c.portal.call(partial(store.insert, agent_id, at.isoformat(), wearing(70.0 + i * 0.5)))
     return now
 
 
@@ -597,9 +604,9 @@ def test_the_trends_api_carries_the_hardware_history_and_forecasts(tmp_path) -> 
     assert device["device_key"] == "disk:S1" and device["kind"] == "disk"
     assert device["label"] == "WD_BLACK SN850X"
     points = device["series"]["percentage_used"]
-    assert len(points) == 20
+    assert len(points) == 40
     assert set(points[0]) == {"day", "value"}
-    assert points[0]["value"] == 70.0 and points[-1]["value"] == 89.0
+    assert points[0]["value"] == 70.0 and points[-1]["value"] == 89.5
     assert [p["day"] for p in points] == sorted(p["day"] for p in points)
     (forecast_row,) = hw["forecasts"]
     assert set(forecast_row) == {"device_key", "kind", "label", "reason", "symptom", "days_until"}
@@ -676,3 +683,188 @@ def test_main_wires_the_history_store_into_the_engine_and_the_prune_sweep(tmp_pa
     assert app.state.alert_engine._hw_history is app.state.hw_history
     # the history has its own window, not the snapshots'
     assert keys[id(app.state.hw_history)] != keys[id(app.state.store)]
+
+
+# -- an unreadable history never takes the rest down ----------------------------------------
+
+
+async def _broken(*args, **kw):
+    raise RuntimeError("history store is down")
+
+
+def test_the_trends_api_survives_an_unreadable_history(tmp_path, monkeypatch, caplog) -> None:
+    app = build_app(db_path=str(tmp_path / "api_broken.sqlite"))
+    with TestClient(app) as c:
+        now = datetime.now(timezone.utc)
+        for i in range(6):  # a filling volume: the disk forecast has something to say
+            snap = {"disk": {"volumes": [{"mount": "C:", "percent_used": 50.0 + 5 * i}]}}
+            at = now - timedelta(days=5 - i)
+            c.portal.call(partial(app.state.store.insert, "example-pc", at.isoformat(), snap))
+        monkeypatch.setattr(app.state.hw_history, "series", _broken)
+        with caplog.at_level("WARNING", logger="kenny.webui"):
+            resp = c.get("/api/agent/example-pc/trends", headers=_bearer(app))
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["hardware"] == hardware_history.empty_payload()
+    assert [v["mount"] for v in body["disk"]] == ["C:"]
+    assert body["battery"] is None
+    assert any("hardware history unavailable" in r.message for r in caplog.records)
+
+
+async def test_the_digest_survives_an_unreadable_history(stores, monkeypatch, caplog) -> None:
+    store, events, _, hw = stores
+    await put_wear_history(store)
+    await hardware_history.rollup_all(store, hw, now=NOW)
+    _, healthy = await build_digest(store, events, FakeRegistry(), now=NOW, hw_history=hw)
+    assert "Hardware at risk:" in healthy
+
+    monkeypatch.setattr(hw, "series", _broken)
+    with caplog.at_level("WARNING", logger="kenny.digest"):
+        title, body = await build_digest(store, events, FakeRegistry(), now=NOW, hw_history=hw)
+    assert "Hardware at risk" not in body
+    assert body.splitlines()[0] == healthy.splitlines()[0]  # the rest is intact
+    assert any("hardware forecast failed" in r.message for r in caplog.records)
+
+
+# -- the boot-time rollup runs in the background ------------------------------------------
+
+
+def test_startup_does_not_wait_for_the_first_rollup(tmp_path, monkeypatch) -> None:
+    import threading
+
+    started = threading.Event()
+
+    async def never_finishes(*args, **kw) -> int:
+        started.set()
+        await asyncio.sleep(3600)
+        return 0
+
+    monkeypatch.setattr(hardware_history, "rollup_all", never_finishes)
+    app = build_app(db_path=str(tmp_path / "boot.sqlite"))
+    # Entering the context returns only once the lifespan has finished starting;
+    # an awaited rollup would hang it here.
+    with TestClient(app):
+        assert started.wait(5), "the boot-time rollup never started"
+    # and leaving it cancels the rollup instead of waiting it out
+
+
+async def test_the_boot_rollup_precedes_the_snapshot_prune_and_the_first_tick_skips_its_own(
+    stores, monkeypatch
+) -> None:
+    store, _, _, _ = stores
+    calls: list[str] = []
+
+    async def rollup_all(*args, **kw) -> int:
+        calls.append("rollup")
+        return 0
+
+    real_prune = store.prune
+
+    async def prune(*args, **kw):
+        calls.append("prune")
+        return await real_prune(*args, **kw)
+
+    monkeypatch.setattr(hardware_history, "rollup_all", rollup_all)
+    monkeypatch.setattr(store, "prune", prune)
+    engine = make_engine(stores, prunables=[(store, None)])
+    engine.start_startup_maintenance()
+    await engine._maybe_prune(NOW)  # the alert loop's first pass waits for it ...
+    assert calls == ["rollup", "prune", "prune"]  # ... and does not roll up again
+    await engine._maybe_prune(NOW + timedelta(hours=25))
+    assert calls.count("rollup") == 2  # later passes roll up as usual
+
+
+async def test_without_a_boot_task_the_first_pass_rolls_up(stores, monkeypatch) -> None:
+    calls: list[str] = []
+
+    async def rollup_all(*args, **kw) -> int:
+        calls.append("rollup")
+        return 0
+
+    monkeypatch.setattr(hardware_history, "rollup_all", rollup_all)
+    engine = make_engine(stores)
+    await engine._maybe_prune(NOW)
+    assert calls == ["rollup"]
+
+
+# -- forecasts are cached until the history changes ---------------------------------------
+
+
+class _Spy:
+    """Counts the reads that make a forecast expensive."""
+
+    def __init__(self, monkeypatch, store, hw) -> None:
+        self.series = self.latest = 0
+        real_series, real_latest = hw.series, store.latest
+
+        async def series(*args, **kw):
+            self.series += 1
+            return await real_series(*args, **kw)
+
+        async def latest(*args, **kw):
+            self.latest += 1
+            return await real_latest(*args, **kw)
+
+        monkeypatch.setattr(hw, "series", series)
+        monkeypatch.setattr(store, "latest", latest)
+
+
+async def test_a_second_forecast_without_a_new_rollup_does_not_touch_the_store(
+    stores, monkeypatch
+) -> None:
+    store, _, _, hw = stores
+    engine = make_engine(stores)
+    await put_wear_history(store)
+    await engine.rollup_hardware_history(NOW)
+    snap = (await store.latest("pc1"))["snapshot"]
+    spy = _Spy(monkeypatch, store, hw)
+
+    first = await engine.hardware_forecasts("pc1", NOW, snapshot=snap)
+    assert first and spy.series == 1
+    assert spy.latest == 0  # the caller's snapshot named the devices
+    assert await engine.hardware_forecasts("pc1", NOW, snapshot=snap) == first
+    assert await engine.hardware_forecasts("pc1", NOW + timedelta(hours=3)) == first
+    assert (spy.series, spy.latest) == (1, 0)
+
+
+async def test_every_snapshot_after_the_first_reuses_the_cached_forecast(stores, monkeypatch) -> None:
+    store, _, _, hw = stores
+    engine = make_engine(stores)
+    await put_wear_history(store)
+    await engine.rollup_hardware_history(NOW)
+    await engine.evaluate_once(NOW)
+    spy = _Spy(monkeypatch, store, hw)
+    await put(store, wearing(90), NOW + timedelta(hours=1))
+    await engine.evaluate_once(NOW + timedelta(hours=2))  # a new snapshot, no new rollup
+    assert spy.series == 0
+
+
+async def test_describe_reuses_the_forecast_cache(stores, monkeypatch) -> None:
+    store, _, _, hw = stores
+    engine = make_engine(stores)
+    await put_wear_history(store)
+    await engine.rollup_hardware_history(NOW)
+    await engine.evaluate_once(NOW)
+    spy = _Spy(monkeypatch, store, hw)
+    lines = await engine._describe("pc1", {"hardware_forecast": {"since": NOW.isoformat()}}, NOW)
+    assert lines and "write endurance" in lines[0][2]
+    assert spy.series == 0
+
+
+async def test_a_new_rollup_or_a_new_day_refreshes_the_forecast(stores, monkeypatch) -> None:
+    store, _, _, hw = stores
+    engine = make_engine(stores)
+    await put_wear_history(store)
+    await engine.rollup_hardware_history(NOW)
+    spy = _Spy(monkeypatch, store, hw)
+    await engine.hardware_forecasts("pc1", NOW)
+    assert spy.series == 1
+    await put(store, wearing(95), NOW + timedelta(hours=1))
+    await engine.rollup_hardware_history(NOW + timedelta(hours=2))  # record() bumps the version
+    await engine.hardware_forecasts("pc1", NOW + timedelta(hours=2))
+    assert spy.series == 2
+    await engine.hardware_forecasts("pc1", NOW + timedelta(days=1))  # the UTC day turned
+    assert spy.series == 3
+    await hw.delete_agent("pc1")
+    assert await engine.hardware_forecasts("pc1", NOW + timedelta(days=1)) == []
+    assert spy.series == 4

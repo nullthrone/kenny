@@ -551,9 +551,9 @@ async def test_engine_emitted_vocabulary_matches_ticket_rules(stores) -> None:
     await hw.connect()
     try:
         engine_hw = make_engine(stores, FakeNotifier(), hw_history=hw)
-        for i in range(20):
-            wear = {"disk_smart": disk_smart(disk("S1", "WD", pct=70.0 + i, spare=100))}
-            await insert(store, wear, NOW - timedelta(days=19 - i, minutes=1), agent_id="pc5")
+        for i in range(40):
+            wear = {"disk_smart": disk_smart(disk("S1", "WD", pct=70.0 + i * 0.5, spare=100))}
+            await insert(store, wear, NOW - timedelta(days=39 - i, minutes=1), agent_id="pc5")
         await engine_hw.rollup_hardware_history(NOW)
         record(await engine_hw.evaluate_once(NOW))
     finally:

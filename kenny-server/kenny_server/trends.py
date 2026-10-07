@@ -178,9 +178,22 @@ WEAR_OUT_ALERT_DAYS = 180.0
 SPARE_DECLINE_ALERT_DAYS = 90.0
 #: Window the wear and spare fits look at.
 WEAR_FIT_DAYS = 180
-#: A counter that first left zero longer ago than this, and has not moved since,
-#: is history, not news.
+#: A counter whose first move off zero is older than this is history, not news.
+#: Only the first zero-to-non-zero transition itself is a "first error": a counter
+#: that was already non-zero and rose again is not new, whatever its latest step.
 FIRST_ERROR_RECENT_DAYS = 30
+#: The slow counters (wear, spare capacity) report whole percent, so a day's value
+#: changes by one point or not at all. A straight line through such a staircase is
+#: meaningless until the series is long enough: five days at 85, 85, 85, 85, 86 fit
+#: a steep slope that projects failure within weeks from a single step. A
+#: projection therefore needs this many days with data ...
+SLOW_MIN_POINTS = 21
+#: ... spread over at least this many calendar days ...
+SLOW_MIN_SPAN_DAYS = 30
+#: ... that show a real movement: at least this many distinct step changes, or a
+#: total change of at least SLOW_MIN_TOTAL_CHANGE points.
+SLOW_MIN_STEPS = 2
+SLOW_MIN_TOTAL_CHANGE = 2.0
 #: A device with no data for this long is gone (replaced, removed), not failing.
 STALE_DEVICE_DAYS = 14
 
@@ -333,11 +346,31 @@ def rate_per_day(series: Series) -> float | None:
     return sum(delta for _, delta in counter_deltas(series)) / span
 
 
+def _slow_enough_evidence(recent: list[tuple[date, float]]) -> bool:
+    """Whether a slow integer-percent counter has moved enough, over enough time,
+    to fit a line through (see ``SLOW_MIN_POINTS``)."""
+
+    if len(recent) < SLOW_MIN_POINTS or (recent[-1][0] - recent[0][0]).days < SLOW_MIN_SPAN_DAYS:
+        return False
+    steps = sum(1 for (_, a), (_, b) in zip(recent, recent[1:]) if a != b)
+    total = abs(recent[-1][1] - recent[0][1])
+    return steps >= SLOW_MIN_STEPS or total >= SLOW_MIN_TOTAL_CHANGE
+
+
 def _linear_days(
-    series: Series, target: float, *, rising: bool, window_days: int = WEAR_FIT_DAYS
+    series: Series,
+    target: float,
+    *,
+    rising: bool,
+    window_days: int = WEAR_FIT_DAYS,
+    slow: bool = False,
 ) -> float | None:
     """Days until a fitted series reaches ``target`` -- the shared gate of the
-    disk forecast: enough points, a slope in the right direction, a decent fit."""
+    disk forecast: enough points, a slope in the right direction, a decent fit.
+
+    ``slow`` marks a whole-percent counter that moves a point a month (wear,
+    spare capacity) and demands the longer evidence of :func:`_slow_enough_evidence`.
+    """
 
     points = _points(series)
     if not points:
@@ -346,7 +379,7 @@ def _linear_days(
     if (current >= target) if rising else (current <= target):
         return 0.0
     recent = [p for p in points if (last_day - p[0]).days <= window_days]
-    if len(recent) < MIN_POINTS:
+    if len(recent) < MIN_POINTS or (slow and not _slow_enough_evidence(recent)):
         return None
     fit = _fit([(float((d - recent[0][0]).days), v) for d, v in recent])
     if fit is None:
@@ -360,12 +393,13 @@ def _linear_days(
 def wearout_forecast(percentage_used: Series) -> float | None:
     """Days until an SSD's ``percentage_used`` reaches 100, or ``None``.
 
-    Gated like :func:`disk_forecast`: at least ``MIN_POINTS`` days in the last
-    180, a rising slope and an r² of at least ``MIN_R2``. A drive already at 100
-    returns 0.
+    Gated like :func:`disk_forecast` -- a rising slope and an r² of at least
+    ``MIN_R2`` over the last 180 days -- and, because ``percentage_used`` is whole
+    percent, on the longer evidence of ``SLOW_MIN_POINTS`` / ``SLOW_MIN_SPAN_DAYS``.
+    A drive already at 100 returns 0.
     """
 
-    return _linear_days(percentage_used, 100.0, rising=True)
+    return _linear_days(percentage_used, 100.0, rising=True, slow=True)
 
 
 def spare_decline(available_spare: Series, threshold: Series | float | None) -> float | None:
@@ -383,7 +417,7 @@ def spare_decline(available_spare: Series, threshold: Series | float | None) -> 
         limit = _finite(threshold)
     if limit is None:
         return None
-    return _linear_days(available_spare, limit, rising=False)
+    return _linear_days(available_spare, limit, rising=False, slow=True)
 
 
 def _pcie_regression(
@@ -568,11 +602,10 @@ def _disk_forecasts(
 
     for metric in FIRST_ERROR_METRICS:
         series = metrics.get(metric)
-        if not series or first_nonzero(series) is None:
-            continue
-        grew = [d for d, delta in counter_deltas(series) if delta > 0]
-        newest = _as_date(grew[-1]) if grew else None
-        if newest is not None and (today - newest).days <= FIRST_ERROR_RECENT_DAYS:
+        first = _as_date(first_nonzero(series)) if series else None
+        # The first zero-to-non-zero transition itself must be recent; a counter
+        # that was already non-zero and rose again is not a "first" error.
+        if first is not None and 0 <= (today - first).days <= FIRST_ERROR_RECENT_DAYS:
             # One per device: the first counter in FIRST_ERROR_METRICS order.
             out.append(
                 _forecast(

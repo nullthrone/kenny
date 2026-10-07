@@ -583,6 +583,23 @@ class HardwareHistoryStore:
         self.db_path = db_path
         self.retention_days = retention_days
         self._db: aiosqlite.Connection | None = None
+        # Bumped by every write through this object, so a consumer that caches
+        # something derived from an agent's history knows when it went stale
+        # without reading the database (see :meth:`version`).
+        self._versions: dict[str, int] = {}
+        self._epoch = 0
+
+    def version(self, agent_id: str) -> tuple[int, int]:
+        """A token that changes whenever ``agent_id``'s history does.
+
+        Equal tokens mean nothing was recorded, deleted or pruned through this
+        store since the earlier one; in memory, so asking costs no query.
+        """
+
+        return self._epoch, self._versions.get(agent_id, 0)
+
+    def _touch(self, agent_id: str) -> None:
+        self._versions[agent_id] = self._versions.get(agent_id, 0) + 1
 
     async def connect(self) -> None:
         if self._db is not None:
@@ -646,6 +663,7 @@ class HardwareHistoryStore:
             except BaseException:
                 await self._conn.rollback()
                 raise
+            self._touch(agent_id)
         return len(rows)
 
     async def series(
@@ -685,6 +703,7 @@ class HardwareHistoryStore:
         async with write_lock():
             cur = await self._conn.execute("DELETE FROM hw_metrics WHERE day < ?", (cutoff,))
             await self._conn.commit()
+        self._epoch += 1
         return cur.rowcount or 0
 
     async def delete_agent(self, agent_id: str) -> int:
@@ -694,6 +713,7 @@ class HardwareHistoryStore:
             cur = await self._conn.execute("DELETE FROM hw_metrics WHERE agent_id = ?", (agent_id,))
             await self._conn.execute("DELETE FROM hw_rollup_state WHERE agent_id = ?", (agent_id,))
             await self._conn.commit()
+        self._touch(agent_id)
         return cur.rowcount or 0
 
 

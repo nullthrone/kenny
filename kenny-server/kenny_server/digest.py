@@ -11,6 +11,7 @@ scheduler in ``alerting.py``).
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -19,6 +20,8 @@ from .health_rules import _dicts, evaluate_snapshot
 from .registry import AgentRegistry
 from .store import EventStore, HardwareHistoryStore, TelemetryStore
 from .trends import DISK_FULL_KPI_DAYS, battery_trend, disk_forecast
+
+logger = logging.getLogger("kenny.digest")
 
 _MAX_LIST_LINES = 6
 
@@ -109,14 +112,18 @@ async def build_digest(
                     f"{agent_id} {f['mount']} full in ~{f['days_until_full']:.0f}d"
                 )
         if hw_history is not None:
-            for f in await hardware_history.load_forecasts(
-                store,
-                hw_history,
-                agent_id,
-                now=now,
-                labels=hardware_metrics.device_labels(snapshot),
-            ):
-                hardware_lines.append(f"{agent_id}: {f['symptom']}")
+            try:
+                at_risk = await hardware_history.load_forecasts(
+                    store,
+                    hw_history,
+                    agent_id,
+                    now=now,
+                    labels=hardware_metrics.device_labels(snapshot),
+                )
+            except Exception:  # noqa: BLE001 - the digest is useful without this block
+                logger.warning("hardware forecast failed for %s", agent_id, exc_info=True)
+                at_risk = []
+            hardware_lines.extend(f"{agent_id}: {f['symptom']}" for f in at_risk)
         battery = battery_trend(daily)
         if battery and battery["percent_per_30d"] is not None and battery["percent_per_30d"] < -1:
             battery_lines.append(

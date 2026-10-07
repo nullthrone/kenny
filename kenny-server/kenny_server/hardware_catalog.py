@@ -150,6 +150,49 @@ def detail_counts(details: Any, key: str) -> dict[str, int]:
     return out
 
 
+# -- removable media -----------------------------------------------------------
+
+#: Bus types of media the user plugs in and out: USB drives and SD / MMC card
+#: readers. Neither is judged as a disk, and storage retries on them are set aside.
+REMOVABLE_BUS_TYPES: frozenset[str] = frozenset({"usb", "sd"})
+
+
+def is_removable_bus(bus: Any) -> bool:
+    """Whether a ``bus_type`` / ``disk_bus_type`` value names removable media."""
+
+    return isinstance(bus, str) and bus.strip().casefold() in REMOVABLE_BUS_TYPES
+
+
+def is_removable_disk(row: Any) -> bool:
+    """Whether a ``disk_smart`` row is removable media (a USB drive, an SD card).
+
+    The one definition the ``disk_smart`` rule (which does not judge such a disk)
+    and the history rollup (which does not track it) share.
+    """
+
+    if not isinstance(row, Mapping):
+        return False
+    return row.get("removable") is True or is_removable_bus(row.get("bus_type"))
+
+
+def internal_share(details: Any) -> float:
+    """The share of a storage group's events that are *not* on removable media.
+
+    ``details.disk_bus_type`` says which bus each sampled event's disk is on.
+    Retries on a USB drive or an SD / MMC card reader are the user pulling a
+    plug, not a failing internal disk. No usable bus information (or
+    ``Unknown``) is judged as internal: silence about the bus is not evidence
+    of removable media.
+    """
+
+    counts = detail_counts(details, "disk_bus_type")
+    total = sum(counts.values())
+    if total <= 0:
+        return 1.0
+    removable = sum(n for bus, n in counts.items() if is_removable_bus(bus))
+    return (total - removable) / total
+
+
 # -- WHEA ---------------------------------------------------------------------
 
 _WHEA = "whea-logger"

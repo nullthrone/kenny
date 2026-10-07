@@ -244,9 +244,9 @@ rather than a scary made-up number:
 
     | Reason | Device | Raised when |
     |--------|--------|-------------|
-    | `wear_out` | SSD | `percentage_used` is projected to reach 100 within **180 days** (same fit gate as the disk forecast, over the last 180 days) or is already there |
-    | `spare_decline` | NVMe | `available_spare` is projected to reach the drive's own safety threshold within **90 days** or already has |
-    | `first_error` | disk | a lifetime counter (media errors, SMART 197 / 198 / 5, uncorrected read/write) left zero and grew within the last **30 days**; a counter that was already non-zero when observation began is a standing fact, not news |
+    | `wear_out` | SSD | `percentage_used` is projected to reach 100 within **180 days** or is already there; the fit needs at least 21 days of data spanning 30 calendar days and either two step changes or a 2-point rise, because the counter moves in whole percent |
+    | `spare_decline` | NVMe | `available_spare` is projected to reach the drive's own safety threshold within **90 days** or already has, on the same evidence floor as `wear_out` |
+    | `first_error` | disk | a lifetime counter (media errors, SMART 197 / 198 / 5, uncorrected read/write) first left zero within the last **30 days**; a counter that was already non-zero when observation began, or that rises again later, is a standing fact, not news |
     | `pcie_width_regression` | GPU | the widest link seen under load was below the card's own historic best on at least 3 of the last 7 days (an x4 slot is by design; only a *drop* counts) |
     | `fan_drift` | fan | in every duty band with data, the last 7 days' median RPM is at least **12 %** below the fan's own baseline (its first 30 days), on at least 5 of the 7 days — a change of fan curve does not trigger it |
     | `error_rate_rising` | component | a hardware-error count (events, EDAC or PCIe counters) over the last 7 days is at least twice the weekly rate of the 21 days before, with at least 3 events and two weeks of history |
