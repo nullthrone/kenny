@@ -305,19 +305,151 @@ def _rule_thermals(payload: dict[str, Any], now: datetime) -> "tuple[Status, str
 # =============================================================================
 
 
-def _rule_disk_smart(payload: dict[str, Any], now: datetime) -> "tuple[Status, str] | None":
+# Keys that only a 0.22+ agent puts on a ``disk_smart`` row. A payload where no
+# row carries any of them has the pre-0.22 shape, and the rule defers.
+_SMART_NEW_ROW_KEYS = ("nvme", "smart_attributes", "bus_type")
+# NVMe ``critical_warning`` bits. Bit 1 (temperature) alone is a warn; the rest
+# mean the drive itself says it can no longer be trusted with data.
+_NVME_CRIT_BITS: tuple[tuple[int, str], ...] = (
+    (0, "has used up its spare capacity"),
+    (2, "reports that its reliability is degraded"),
+    (3, "has switched to read-only to protect its data"),
+    (4, "reports that its power-loss memory backup has failed"),
+)
+_NVME_TEMPERATURE_BIT = 1
+# ``percentage_used`` at or above this is a standing fact (the drive is near
+# its rated end of life), not an event.
+_SMART_ENDURANCE_POSTURE_PCT = 90
+# Lifetime ATA counters that mean something on a spinning disk. SSD vendors
+# scale and use these attributes differently, so they are not judged there.
+_SMART_HDD_LIFETIME_ATTRS: tuple[tuple[str, str], ...] = (
+    ("5", "has reallocated damaged sectors in its lifetime"),
+    ("187", "has recorded unrecoverable read errors in its lifetime"),
+    ("198", "has recorded unrecoverable read errors in its lifetime"),
+)
+_SMART_PENDING_SECTORS_SYMPTOM = "has sectors waiting to be reallocated"
+_SMART_RANK = {"ok": 0, "posture": 1, "warn": 2, "crit": 3}
+_SMART_REASON_MAX_FINDINGS = 3
+_SMART_DETAILS_MAX_FINDINGS = 20
+
+
+def _smart_text(value: Any) -> str | None:
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _smart_positive(value: Any) -> bool:
+    n = _number(value)
+    return n is not None and n > 0
+
+
+def _smart_disk_findings(row: dict[str, Any]) -> list[tuple[Status, str]]:
+    """``(status, symptom)`` findings for one internal disk, most severe first."""
+
+    crit: list[str] = []
+    warn: list[str] = []
+    posture: list[str] = []
+
+    def add(bucket: list[str], symptom: str) -> None:
+        if symptom not in crit and symptom not in warn and symptom not in posture:
+            bucket.append(symptom)
+
+    paused = row.get("paused") is True
+    health = (_smart_text(row.get("health_status")) or "").casefold()
+    nvme = {} if paused else _as_dict(row.get("nvme"))
+    attrs = {} if paused else _as_dict(row.get("smart_attributes"))
+    is_hdd = _smart_text(row.get("media_type")) == "HDD"
+
+    if not paused and row.get("predictive_failure") is True:
+        add(crit, "reports that it is failing")
+    if health == "unhealthy":
+        add(crit, "reports that it is failing")
+    elif health == "warning":
+        add(warn, "reports a health warning")
+
+    warning_bits = _number(nvme.get("critical_warning"))
+    bits = int(warning_bits) if warning_bits is not None and warning_bits >= 0 else 0
+    for bit, symptom in _NVME_CRIT_BITS:
+        if bits >> bit & 1:
+            add(crit, symptom)
+    if bits >> _NVME_TEMPERATURE_BIT & 1:
+        add(warn, "reports a temperature warning")
+    if _smart_positive(attrs.get("197")):
+        add(warn, _SMART_PENDING_SECTORS_SYMPTOM)
+
+    if _smart_positive(nvme.get("media_errors")) or (
+        not paused and _smart_positive(row.get("read_errors_uncorrected"))
+    ):
+        add(posture, "has recorded unrecoverable read errors in its lifetime")
+    if not paused and _smart_positive(row.get("write_errors_uncorrected")):
+        add(posture, "has recorded unrecoverable write errors in its lifetime")
+    if is_hdd:
+        for attr, symptom in _SMART_HDD_LIFETIME_ATTRS:
+            if _smart_positive(attrs.get(attr)):
+                add(posture, symptom)
+    used = _number(nvme.get("percentage_used"))
+    if used is not None and used >= _SMART_ENDURANCE_POSTURE_PCT:
+        add(posture, f"is at {used:.0f}% of its rated write endurance")
+
+    return (
+        [("crit", s) for s in crit]
+        + [("warn", s) for s in warn]
+        + [("posture", s) for s in posture]
+    )
+
+
+def _rule_disk_smart(
+    payload: dict[str, Any], now: datetime
+) -> "tuple[Status, str] | tuple[Status, str, dict[str, Any]] | None":
     """Judge ``disk_smart``: the drive's own failure signals, per internal disk.
 
-    Will report crit for ``predictive_failure``, ``health_status`` Unhealthy or
+    Reports crit for ``predictive_failure``, ``health_status`` Unhealthy or
     NVMe ``critical_warning`` bits 0/2/3/4; warn for ``health_status`` Warning,
     the temperature bit or SMART 197 above zero; and posture for non-zero
-    lifetime media / uncorrected counters (HDDs) and ``percentage_used`` >= 90.
-    Removable and USB disks are excluded. Defers (``None``) on old-shaped rows
-    (no ``nvme`` and no ``smart_attributes`` key) so an old agent's own grade
-    stands. Whether a counter is *rising* is the trend layer's job.
+    lifetime media / uncorrected counters (SMART 5/187/198 on HDDs only) and
+    ``percentage_used`` >= 90. Removable and USB disks are excluded. A paused
+    row (anti-cheat coexistence) has no NVMe / SMART reads to judge; only its
+    ``health_status`` counts. Defers (``None``) when no row carries any of the
+    0.22 keys (``nvme``, ``smart_attributes``, ``bus_type``) so an old agent's
+    own grade stands. Whether a counter is *rising* is the trend layer's job.
+
+    Worst-of across disks; the reason joins up to three findings, most severe
+    first, in symptoms (ADR-0065). ``details`` is ``{"disks": [{model, serial,
+    status, symptom}, ...]}`` -- a dict, because :func:`evaluate_section` only
+    carries dict details.
     """
 
-    return None
+    rows = _dicts(payload.get("disks"))
+    if not rows or not any(k in row for row in rows for k in _SMART_NEW_ROW_KEYS):
+        return None
+
+    findings: list[tuple[Status, str, str, str | None, str]] = []
+    judged = 0
+    for row in rows:
+        if row.get("removable") is True or _smart_text(row.get("bus_type")) == "USB":
+            continue
+        judged += 1
+        model = (_smart_text(row.get("model")) or "(unknown model)")[:80]
+        serial = _smart_text(row.get("serial"))
+        for status, symptom in _smart_disk_findings(row):
+            findings.append((status, f"Disk {model} {symptom}", model, serial, symptom))
+    if not judged:
+        return "ok", "No internal disks to judge"
+    if not findings:
+        return "ok", f"SMART healthy on {judged} disk(s)"
+
+    findings.sort(key=lambda f: -_SMART_RANK[f[0]])  # stable: disk order kept
+    status = findings[0][0]
+    shown = [f[1] for f in findings[:_SMART_REASON_MAX_FINDINGS]]
+    reason = "; ".join(shown)
+    if len(findings) > len(shown):
+        reason += f" (+{len(findings) - len(shown)} more)"
+    details = {
+        "disks": [
+            {"model": model, "serial": serial, "status": st, "symptom": symptom}
+            for st, _, model, serial, symptom in findings[:_SMART_DETAILS_MAX_FINDINGS]
+        ]
+    }
+    return status, reason, details
 
 
 # =============================================================================
