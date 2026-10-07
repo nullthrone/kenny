@@ -1,0 +1,14 @@
+.throttle {
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+  margin: 8px 0 0;
+}
+
+.errors {
+  margin: 0;
+  padding-left: 16px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-faint);
+  overflow-wrap: anywhere;
+}
