@@ -1,4 +1,4 @@
-# kenny Wire Protocol (v0.21)
+# kenny Wire Protocol (v0.22)
 
 > **Single source of truth.** This document and the JSON files in `docs/fixtures/`
 > define the contract between `kenny-server` (Python) and `kenny-agent` (Rust).
@@ -707,14 +707,16 @@ Each section payload **must** include `status` ∈ {`ok`, `warn`, `crit`} and a 
 
 **Mandatory:** `disk`, `peripherals`, `network`, `routing`, `processes`, `services`,
 `defender`, `win_update`.
-**Hardware health:** `disk_smart`, `battery`, `memory`, `thermals` (optional).
+**Hardware health:** `disk_smart`, `battery`, `memory`, `thermals`, `hardware_errors`,
+`gpu`, `fans` (optional).
 **Security & crypto:** `firewall`, `encryption`, `av_thirdparty`, `defender_quarantine`.
 **Update & stability:** `reboot_pending`, `os_support`, `reliability`, `app_updates`.
 **Operations & daily:** `uptime`, `time_sync`, `printers`, `wifi_quality`, `autostart`.
 
-Five of these sections **report without grading**, like `reliability` and the inventory
-sections below: `services`, `encryption`, `printers`, `time_sync` and `uptime` always carry
-`status: "ok"`, and the server's health rules are authoritative for them (ADR-0058). The
+Eight of these sections **report without grading**, like `reliability` and the inventory
+sections below: `services`, `encryption`, `printers`, `time_sync`, `uptime`,
+`hardware_errors`, `gpu` and `fans` always carry `status: "ok"`, and the server's health
+rules are authoritative for them (ADR-0058). The
 raw fields are unchanged; only the collector's own verdict is gone, so a server-side rule
 can relax a section as well as tighten it.
 **Parental controls:** `web_activity`, `screen_time`.
@@ -850,40 +852,321 @@ The `uptime` section reports when the host last booted:
 The agent always reports `status: "ok"`; whether a long uptime is a finding is the server's
 call (ADR-0058).
 
-The `disk_smart` section reports one row per physical disk, from `Get-PhysicalDisk` joined
-with `Get-StorageReliabilityCounter`:
+The `os_support` section reports the OS edition, its end-of-support posture and the host's
+identity (ADR-0036):
+
+```json
+"os_support": {
+  "status": "ok", "summary": "Windows 11 Pro",
+  "name": "Windows", "version": "11 (26200)", "build": "26200",
+  "eol": false, "eol_date": null, "arch": "x86_64", "channel": "stable",
+  "cpu": { "vendor": "GenuineIntel", "brand": "13th Gen Intel(R) Core(TM) i7-13700K",
+           "family": 6, "model": 183, "stepping": 1,
+           "microcode": "0x12b", "microcode_bios": "0x123" }
+}
+```
+
+- A top-level field whose value is `null` may be absent from the payload; the two are the
+  same to a consumer.
+- **`name`**, **`version`** — the OS name and version string; **`build`** — the Windows
+  build number, `null` elsewhere; **`eol`** / **`eol_date`** — whether the OS is past
+  end-of-servicing and the (ISO-8601 UTC) date, `null` when unknown; **`arch`** ∈
+  `x86_64`/`aarch64` (protocol 0.13); **`channel`** ∈ `stable`/`dev` (protocol 0.17).
+- **`cpu`** (protocol 0.22) is `null` when the CPU identity cannot be read, else an
+  object: **`vendor`** (`GenuineIntel`, `AuthenticAMD`, …) and **`brand`** (the brand string)
+  as the CPU reports them; **`family`**, **`model`**, **`stepping`** — integers as the
+  CPU reports them (the decimal values, e.g. `6` / `183` / `1` for Intel family 6 model
+  0xB7 stepping 1); **`microcode`** — the running microcode revision as a lowercase hex
+  string (`"0x12b"`), `null` when unreadable; **`microcode_bios`** — the revision the
+  firmware loaded at boot when the OS reports it separately, else `null`.
+  - Windows reads `HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0`:
+    `ProcessorNameString`, `VendorIdentifier` and `Identifier` (`Intel64 Family 6 Model 183
+    Stepping 1`). `Update Revision` is a REG_BINARY whose revision is the **high** dword on
+    Intel and the **low** dword on AMD; `microcode_bios` comes from `Previous Update
+    Revision` when present.
+  - Linux reads `/proc/cpuinfo` (`vendor_id`, `model name`, `cpu family`, `model`,
+    `stepping`, `microcode`); `microcode_bios` is `null`.
+
+Whether a CPU model plus microcode revision is a finding is the server's call; the agent
+only reports the facts.
+
+The `disk_smart` section reports one row per physical disk. On Windows the rows come from
+`Get-PhysicalDisk` joined with `Get-StorageReliabilityCounter`, the drive's own SMART
+predict-failure flag (`root\wmi` `MSStorageDriver_FailurePredictStatus`), the ATA
+attribute table (`MSStorageDriver_FailurePredictData`) and, for NVMe disks, the NVMe
+health log read from the raw device (log page `0x02`). On Linux (protocol 0.22) the rows
+come from the NVMe admin ioctl (health log `0x02`, needs root) and an opportunistic bounded
+`smartctl --json` for ATA disks, with identity from sysfs/udev:
 
 ```json
 "disk_smart": {
-  "status": "warn", "summary": "uncorrected errors: Samsung SSD 870 EVO 1TB (read 2)",
+  "status": "ok", "summary": "SMART healthy",
   "disks": [
-    { "model": "Samsung SSD 870 EVO 1TB", "health_status": "Healthy",
-      "predictive_failure": false, "wear": 3, "temperature_c": 34, "power_on_hours": 8123,
-      "read_errors_total": 2, "read_errors_uncorrected": 2, "write_errors_uncorrected": 0 }
+    { "model": "WD_BLACK SN850X 2000GB", "health_status": "Healthy",
+      "predictive_failure": false, "wear": 2, "temperature_c": 41, "power_on_hours": 1520,
+      "read_errors_total": null, "read_errors_uncorrected": 0, "write_errors_uncorrected": 0,
+      "device_number": 2, "serial": "23012A800123", "bus_type": "NVMe", "media_type": "SSD",
+      "size_bytes": 2000398934016, "removable": false, "temperature_max_c": 74,
+      "smart_attributes": null,
+      "nvme": { "critical_warning": 0, "available_spare": 100, "available_spare_threshold": 10,
+                "percentage_used": 2, "media_errors": 0, "unsafe_shutdowns": 14,
+                "error_log_entries": 0, "data_units_written": 18734512,
+                "power_on_hours": 1520, "temperature_c": 41 },
+      "nvme_error": null, "paused": false }
   ]
 }
 ```
 
+Per row, in two groups. The first group is the original row and keeps its meaning:
+
 - **`health_status`** — the disk's own `HealthStatus` string (`Healthy`, `Warning`,
-  `Unhealthy`, `Unknown`); **`predictive_failure`** is `health_status ≠ "Healthy"`.
+  `Unhealthy`, `Unknown`); Linux has no OS-level verdict and reports `Unknown`.
+- **`predictive_failure`** — the drive's own SMART predict-failure flag: on Windows
+  `MSStorageDriver_FailurePredictStatus.PredictFailure`, on Linux `smartctl`'s
+  `smart_status.passed == false`. `null` when the flag is unavailable (no such WMI
+  instance, no `smartctl`, an NVMe disk on Linux, a paused read) — `null` is unknown, not
+  `false`. Before 0.22 the field echoed `health_status ≠ "Healthy"`.
 - **`read_errors_total`** — every read error the drive counted, almost all of them
   corrected. Vendors scale it differently, and on some HDDs it is a large number on a
   healthy drive, so it never grades the section.
 - **`read_errors_uncorrected`** / **`write_errors_uncorrected`** — errors the drive could
   not recover (on NVMe, the media and data-integrity error count). Non-zero means data was
-  lost at least once.
+  lost at least once. On Linux only NVMe disks fill `read_errors_uncorrected` (from the
+  NVMe `media_errors`); the other counters are `null` there.
 - **`wear`** — percent of rated endurance used (0–100, SSDs); **`temperature_c`** — °C;
   **`power_on_hours`** — hours powered on.
 
-All counters are lifetime values, and each is `null` when the drive or its driver does not
-report it — `null` is unknown, not zero. The reallocated-sector count (SMART attribute 5)
-is not part of the section: `Get-StorageReliabilityCounter` does not expose it.
+The second group is new in 0.22 and additive:
 
-The agent grades the section and the server has no rule for it: any disk whose
-`health_status` is not `Healthy` → `crit`; else any disk with a non-zero uncorrected read or
-write count → `warn`; else `ok`. The uncorrected counts never reset, so a disk that once
-lost data keeps the section at `warn` for as long as it is installed. Off Windows the
-section is the standard `n/a on this platform` stub with an empty `disks` list.
+- **`device_number`** — integer or `null`: the Windows `PhysicalDriveN` number, the join key
+  for `hardware_errors` disk events (`details.disk_number`). Always `null` on Linux.
+- **`serial`** — string or `null`: the drive's serial number, stable across reboots.
+- **`bus_type`** — one of `NVMe`, `SATA`, `SAS`, `USB`, `RAID`, `SCSI`, `Unknown`.
+- **`media_type`** — one of `SSD`, `HDD`, `Unspecified`.
+- **`size_bytes`** — integer or `null`; **`removable`** — boolean, true for removable media
+  (USB sticks, card readers).
+- **`temperature_max_c`** — number or `null`: the highest temperature the drive has
+  recorded, °C.
+- **`smart_attributes`** — an object or `null`: a map from the ATA attribute id **as a
+  decimal string** to that attribute's **raw value** (integer), restricted to the ids
+  `"5"` (reallocated sectors), `"187"` (reported uncorrectable), `"188"` (command
+  timeout), `"197"` (current pending sectors), `"198"` (offline uncorrectable) and
+  `"199"` (UDMA CRC errors). An id the drive does not report is absent from the map.
+  `null` when the disk is not ATA or the table is unreadable.
+- **`nvme`** — an object or `null`, decoded from the NVMe SMART / health log (page `0x02`):
+  **`critical_warning`** (integer bitfield: bit 0 spare below threshold, bit 1 temperature,
+  bit 2 reliability degraded, bit 3 read-only, bit 4 volatile-memory backup failed),
+  **`available_spare`**, **`available_spare_threshold`** and **`percentage_used`** (integer
+  percent; `percentage_used` may exceed 100), **`media_errors`**, **`unsafe_shutdowns`**,
+  **`error_log_entries`**, **`data_units_written`** and **`power_on_hours`** (integers) and
+  **`temperature_c`** (integer °C). The 128-bit NVMe counters saturate to the unsigned
+  64-bit maximum; values above 2^53 lose precision in JavaScript consumers.
+- **`nvme_error`** — string or `null`: why `nvme` is `null` on an NVMe disk (for example
+  `"unsupported by driver"` behind a RAID/VMD driver or a USB bridge). A non-null
+  `nvme_error` is never to be read as a healthy disk.
+- **`paused`** — boolean: the raw-device reads (the NVMe log and the SMART WMI classes) were
+  skipped because anti-cheat coexistence is active (ADR-0035). The counters those reads
+  would have filled — `nvme`, `smart_attributes`, `predictive_failure` — are then `null`, and
+  the server keeps its last value instead of reading the nulls as a change.
+
+All counters are lifetime values, and each is `null` when the drive or its driver does not
+report it — `null` is unknown, not zero. The reallocated-sector count appears only as SMART
+attribute `"5"` in `smart_attributes`; `Get-StorageReliabilityCounter` does not expose it.
+
+The section `status` is still the agent's own grade: any disk whose `health_status` is not
+`Healthy` or whose `predictive_failure` is true → `crit`; else any disk with a non-zero
+uncorrected read or write count → `warn`; else `ok`. The **server's health rule is
+authoritative** for `disk_smart`: it judges the new fields (`nvme`, `smart_attributes`,
+`bus_type`, `removable`) and its verdict replaces the agent's grade. The agent's grade stands
+only for payloads the rule defers on because they have the old row shape (no `nvme` and no
+`smart_attributes` keys, as sent by an agent before 0.22). Where no physical disk can be
+listed the section is `{ "disks": [] }`.
+
+The `hardware_errors` section reports **which hardware-relevant events** happened in a
+rolling window (default 14 days): corrected and uncorrected machine-check and PCIe errors,
+graphics-driver resets, storage retries, unexpected power loss and bugchecks, plus
+aggregate application-crash diversity. It is the raw material for the server's "which
+component is failing" judgement:
+
+```json
+"hardware_errors": {
+  "status": "ok", "summary": "13 hardware-relevant events in 14d",
+  "window_days": 14, "effective_window_days": 14,
+  "oldest_event_utc": "2026-05-12T03:41:09Z",
+  "sources": ["event_log"],
+  "groups": [
+    { "source": "Microsoft-Windows-WHEA-Logger", "event_id": 19, "level": "warning",
+      "count": 3, "last_seen": "2026-06-03T21:07:44Z",
+      "by_day": { "2026-05-29": 1, "2026-06-01": 1, "2026-06-03": 1 },
+      "sample": "A corrected hardware error has occurred.",
+      "details": { "error_source": { "Corrected Machine Check": 3 },
+                   "error_type": { "Bus/Interconnect Error": 3 },
+                   "processor_apic_id": { "6": 2, "14": 1 } } }
+  ],
+  "truncated": false, "truncated_count": 0,
+  "app_crashes": { "total": 17, "distinct_apps": 5, "distinct_modules": 4,
+                   "exception_codes": { "0xc0000005": 11, "0xc0000409": 4 },
+                   "by_day": { "2026-06-03": 5, "2026-06-04": 12 } },
+  "edac": [],
+  "aer": [],
+  "errors": []
+}
+```
+
+Field rules a consumer may rely on:
+
+- **`window_days`** is the window the agent queried (14). **`effective_window_days`** is how
+  far back the queried log actually reaches — `window_days` when the oldest record is older
+  than the window, shorter when a wrapped System log has already dropped older records,
+  `null` when unknown — and **`oldest_event_utc`** is that oldest record's UTC timestamp
+  (`null` when unknown). They keep a log that wrapped after three days from reading as
+  eleven quiet ones.
+- **`sources`** lists what the agent read: `["event_log"]` on Windows,
+  `["journal", "edac", "aer"]` on Linux (a source it could not read is dropped from the list
+  and named in `errors`).
+- **`groups`** are keyed by `(source, event_id)` and have the same semantics as
+  `reliability`'s events: `by_day` keys are UTC calendar dates, `last_seen` is the newest
+  member's UTC timestamp (`...Z`), `sample` is the newest member's first message line
+  (at most 200 characters), and `level` ∈ `critical`/`error`/`warning`/`information`
+  (event levels 1–4). **`count`** is the number of events in the group; the
+  `summary`'s event count is the sum over all groups, including dropped ones.
+- **The group list is capped at 24.** The most recent and the largest groups are kept;
+  `truncated` says whether anything was dropped and `truncated_count` how many groups.
+- **`details`** maps a key to `{ value: count }`, each key holding at most 5 values. The
+  counts cover only the newest ~10 events per group whose event XML was read (reading
+  every event's XML would not fit the collection budget), so a `details` count may be lower
+  than the group's `count`. The values are strings, exactly as the event reports them.
+  Documented keys on Windows:
+  - `Microsoft-Windows-WHEA-Logger`: `error_source`, `error_type`, `processor_apic_id`,
+    `pci_vendor_device` (`"1022:1483"`) and `pci_location`;
+  - `Microsoft-Windows-Kernel-Power` 41 and `BugCheck` / `Microsoft-Windows-WER-SystemErrorReporting`
+    1001: `bugcheck_code`, a hex string such as `"0x00000124"` (Kernel-Power 41 stores it
+    decimal; the agent converts);
+  - `Microsoft-Windows-Kernel-Power` 41: `power_button`, `"true"` or `"false"` — `"true"`
+    when `PowerButtonTimestamp` is non-zero, i.e. the user held the power button;
+  - the storage providers (`disk`, `storahci`, `stornvme`): `disk_number`, joinable to
+    `disk_smart` rows' `device_number`;
+  - `nvlddmkm`: `xid`; `Display` 4101: `driver`.
+  Other keys may appear; a consumer ignores keys it does not know.
+- **`app_crashes`** aggregates `Application Error` 1000 in the Application log instead of
+  listing it as a group, so a chatty crash loop cannot crowd the hardware events out of the
+  cap: `total` events, `distinct_apps`, `distinct_modules` (module **basenames** only, never
+  paths, and never per user), `exception_codes` (`{ "0xc0000005": n }`) and `by_day`. It is
+  `null` (or absent) on Linux and when the Application log cannot be read.
+- **Linux** groups come from the kernel journal. `source` is the matcher `key` from the
+  vector file below (`mce`, `edac`, `nvrm_xid`, `amdgpu_ras`, `block_io`, `nvme`, `ata`,
+  `pcie_aer`) and `event_id` is `0`; `details` carries the matcher's capture group where it
+  has one: `xid` for `nvrm_xid`, `device` for `block_io`. `edac` (one entry per memory
+  controller from `/sys/devices/system/edac/mc/mc*/{ce_count,ue_count}`) and `aer` (one
+  entry per PCIe device, from `aer_dev_{correctable,nonfatal,fatal}` `TOTAL_ERR_*`, listed
+  **only if the total is non-zero**) are filled on Linux only, are empty lists on Windows
+  and are capped at 32 entries each.
+- **Errors versus emptiness.** A probe that fails (a query that errors, a timeout, an
+  unreadable log) adds a string to `errors`; a query that matches nothing is **not** an
+  error. Off-platform or when nothing can be read, the section carries empty lists and
+  `status: "ok"`, never the `n/a on this platform` stub.
+
+Which events the agent queries is a closed set, the file
+[`fixtures/vectors/hardware_event_query.json`](fixtures/vectors/hardware_event_query.json)
+(the agent's query set): `window_days`, `windows` (one entry per Windows provider — `log`,
+`provider`, `event_ids`, `max_level`, where level 1 is critical, 2 error, 3 warning and 4
+information, and an optional `aggregate` naming the section field the events fold into) and
+`linux_kernel_patterns` (a matcher `key` and a `regex` over journal kernel messages). The
+agent's constant and the server's attribution tables must both equal it, so an event the
+server attributes is always an event the agent queries.
+
+The agent reports facts and does not judge: **component attribution, the meaning of a
+bugcheck code and every threshold are server-side and not part of this contract** (the
+agent always reports `status: "ok"`, like `reliability`, ADR-0058). A `status` an agent
+does send is not folded into the rule's verdict.
+
+The `gpu` section inventories the graphics adapters and reports their raw health facts:
+
+```json
+"gpu": {
+  "status": "ok", "summary": "1 GPU(s)",
+  "gpus": [
+    { "name": "NVIDIA GeForce RTX 4080", "vendor": "nvidia", "pci_id": "10de:2704",
+      "bus_id": "0000:01:00.0", "uuid": "GPU-4f1c2a6e-8d3b-7c59-1e20-a9b3c4d5e6f7",
+      "driver_version": "560.94", "sources": ["wmi", "nvidia-smi"],
+      "temperature_c": 47, "utilization_percent": 6, "power_draw_w": 38.5,
+      "power_limit_w": 320.0, "fan_target_percent": 30,
+      "pcie": { "gen_current": 1, "gen_max": 4, "width_current": 16, "width_max": 16 },
+      "throttle": { "hw_slowdown": false, "hw_thermal_slowdown": false,
+                    "hw_power_brake_slowdown": false, "sw_thermal_slowdown": false },
+      "ecc": null, "ras": null }
+  ],
+  "truncated": false, "errors": []
+}
+```
+
+- **`vendor`** ∈ `nvidia`, `amd`, `intel`, `unknown`. **`name`** is always a string; every
+  other per-GPU field except `vendor` and `sources` is `null` when the source does not
+  report it (a `[N/A]` from `nvidia-smi` is `null`).
+- **`pci_id`** is `"<vendor>:<device>"` in lowercase hex, **`bus_id`** the PCI address
+  (`0000:01:00.0`), **`uuid`** the vendor's device UUID (NVIDIA `GPU-…`),
+  **`driver_version`** the driver's version string.
+- **`sources`** lists where the facts came from, from the open set `wmi`, `nvidia-smi`,
+  `sysfs`.
+- **`temperature_c`**, **`utilization_percent`**, **`power_draw_w`** and **`power_limit_w`**
+  are numbers. **`fan_target_percent`** is the driver's *target* fan speed, **not** a
+  measured speed — the `fans` section carries measured RPM.
+- **`pcie`** — `gen_current` / `gen_max` / `width_current` / `width_max`, integers. The
+  current link generation (and, on some cards, width) **downshifts at idle by design**, so
+  a snapshot's current values only say something when the GPU is under load.
+- **`throttle`** — the four clock-event reasons as booleans: `hw_slowdown`,
+  `hw_thermal_slowdown`, `hw_power_brake_slowdown` (an external power-brake signal) and
+  `sw_thermal_slowdown`; `null` when the driver does not report them.
+- **`ecc`** — `null` on consumer cards, else `uncorrected_volatile` (number or `null`),
+  `retired_pages_pending` (boolean or `null`) and `remapped_rows` (`null` or `correctable`,
+  `uncorrectable`, `pending`, `failure`).
+- **`ras`** — amdgpu on Linux only: a map from RAS block (`gfx`, `umc`, `sdma`, …) to its
+  `{ "ue": n, "ce": n }` error counts, `null` elsewhere.
+- The list is capped at **8** GPUs (`truncated`); `errors` holds the strings of probes that
+  failed. A host without a readable GPU reports `gpus: []` and `status: "ok"`.
+
+The agent does not grade this section; thresholds are the server's call.
+
+The `fans` section reports **measured** fan speeds, sampled in a short burst so the server
+can tell a stable fan from a stalled or unstable one without the agent keeping state
+(ADR-0007):
+
+```json
+"fans": {
+  "status": "ok", "summary": "3 fans read",
+  "sources_tried": ["hwmon"],
+  "sample_interval_ms": 1000,
+  "fans": [
+    { "key": "nct6798.fan1", "label": "CPU_FAN", "source": "hwmon",
+      "rpm_samples": [1180, 1176, 1182, 1179, 1181], "duty_percent": 45.0,
+      "mode": "pwm", "idle_or_absent": false }
+  ],
+  "truncated": false, "errors": []
+}
+```
+
+- One collection takes a **burst of 5 samples about `sample_interval_ms` (1000) apart**
+  within the single collector call; the agent keeps no state between collections.
+  `rpm_samples` holds those samples in order.
+- Only fans with a **measured** RPM are listed. A fan whose speed is only a commanded
+  target (an NVIDIA GPU fan via `nvidia-smi`) is not.
+- **`key`** is stable per fan across pushes: the hwmon chip name plus the fan index
+  (`nct6798.fan2`), a LibreHardwareMonitor sensor identifier, or a GPU UUID plus the fan
+  index. **`label`** is the board's own name for the fan (`CPU_FAN`) or `null`.
+  **`source`** ∈ `hwmon`, `lhm`, `nvml`.
+- **`duty_percent`** is the commanded PWM duty (0–100) when the agent can read it, else
+  `null`. **`mode`** ∈ `pwm`, `dc`, `auto`, `manual`, `unknown`.
+- **`idle_or_absent`** is `true` when every sample is 0 RPM **and** no duty is readable,
+  i.e. the channel is unused or nothing is attached, which is not evidence of a stall.
+- The list is capped at **16** fans (`truncated`). `sources_tried` names every source the
+  agent attempted (`hwmon` on Linux, `lhm_wmi` on Windows) and `errors` the probes that
+  failed.
+- Windows reads **only** the WMI namespace of LibreHardwareMonitor or OpenHardwareMonitor
+  when one is running on the host; kenny ships no ring-0 sensor driver (ADR-0035). On most
+  Windows hosts nothing is running, so `fans` is `[]` with `sources_tried: ["lhm_wmi"]` —
+  an empty list is the normal case, not a fault.
+
+The agent does not grade this section; stall and drift judgements are the server's.
 
 ### Security-inventory, resilience, and parental-awareness sections (v0.10)
 
@@ -1072,10 +1355,22 @@ for fleet aggregation. These thresholds are illustrative of the data-driven rule
 
 ## Versioning
 
-`PROTOCOL_VERSION = "0.21"`. Both implementations expose this constant; from v0.8 the
+`PROTOCOL_VERSION = "0.22"`. Both implementations expose this constant; from v0.8 the
 agent puts it on the wire in `register.protocol` to select the mutual-auth handshake
 (compare versions **numerically per component**, not lexically — `"0.10"` is newer than
 `"0.9"`). Bump on any breaking change to a frame or tool schema.
+
+- `0.22` — predictive hardware-failure signals, additive except for one meaning change.
+  New sections `hardware_errors`, `gpu` and `fans`, which report raw facts with
+  `status: "ok"` and no agent grading. `hardware_errors` queries a closed set of events
+  (`docs/fixtures/vectors/hardware_event_query.json`). `os_support` gains `cpu`. The
+  `disk_smart` rows gain `device_number`, `serial`, `bus_type`, `media_type`, `size_bytes`,
+  `removable`, `temperature_max_c`, `smart_attributes`, `nvme`, `nvme_error` and `paused`,
+  and `disk_smart` now also reports on Linux (it was the `n/a` stub). **Semantic change:**
+  `disk_smart.predictive_failure` is now the drive's own SMART predict-failure flag
+  (`null` when unavailable) instead of `health_status ≠ "Healthy"`. The server's
+  `disk_smart` rule is authoritative where it applies; an agent before 0.22 keeps working
+  because the rule defers on its payloads.
 
 - `0.21` — the `disk_smart` rows drop `reallocated_sectors`, which carried
   `Get-StorageReliabilityCounter`'s `ReadErrorsTotal` (the mostly-corrected read-error

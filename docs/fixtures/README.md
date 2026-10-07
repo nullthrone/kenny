@@ -28,7 +28,7 @@ Adding/altering a fixture is a contract change — see `docs/protocol.md` § Ver
 | `response_error_paused.json`    | error `response` frame (anti-cheat coexistence `paused`) |
 | `ping.json` / `pong.json`       | heartbeat frames                                 |
 | `telemetry_snapshot.json`       | `telemetry` frame with a representative snapshot |
-| `telemetry_snapshot_linux.json` | `telemetry` frame from a Linux agent (partial snapshot: the account-governance sections plus two `n/a` stubs) |
+| `telemetry_snapshot_linux.json` | `telemetry` frame from a Linux agent (partial snapshot: the account-governance sections, the hardware-health sections `os_support`, `disk_smart`, `hardware_errors`, `gpu` and `fans`, plus two `n/a` stubs) |
 | `request_agent_update.json`     | `request` frame (`agent_update`)                 |
 | `response_agent_update.json`    | successful `response` frame (`agent_update`)     |
 | `policy.json`                   | `policy` frame (operator append-only deny rules) |
@@ -65,7 +65,16 @@ execute and must agree on.
 |--------------------------------|---------------------------------------------------|
 | `vectors/mutual_auth.json`     | the byte-exact `register`/`challenge`/`auth` transcript and its Ed25519 signatures |
 | `vectors/policy_decisions.json`| the guard's verdict (`allow` / `blocked`) for a tool call under a given deny + shell policy |
+| `vectors/hardware_event_query.json` | the closed set of Windows event providers/ids/levels and Linux kernel-message matchers the agent queries for `hardware_errors`; the agent's constant and the server's attribution tables must both equal it |
 
 `policy_decisions.json` is the joined test for `kenny-agent/src/policy.rs` and
 `kenny-server/kenny_server/policy.py`, which mirror each other by hand. Adding a case is
 how a new guard behaviour gets pinned on both sides at once.
+
+## `null` versus absent in section payloads
+
+The Python round-trip drops a `null` that sits directly in a telemetry section payload
+(`os_support.eol_date`, `hardware_errors.app_crashes`); a `null` inside a list row or a
+nested object (`disk_smart` rows, `os_support.cpu`) survives. The fixtures therefore leave
+those top-level fields out where their value is `null`, and a consumer reads an absent
+field exactly as `null`. The agent may send either.
