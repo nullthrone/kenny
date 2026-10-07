@@ -17,6 +17,13 @@ export interface SparklineProps {
   /** Baseline rule at the bottom, matching the prototype's `<line>`. Default `var(--ink-200)`. */
   baselineColor?: string
   className?: string
+  /**
+   * A fixed value drawn as a dashed rule (e.g. a threshold). It takes part in
+   * the scale, so it is always on the chart even when the line stays far from it.
+   */
+  reference?: number
+  /** Accessible name; defaults to "Trend". */
+  label?: string
 }
 
 /**
@@ -32,16 +39,20 @@ export default function Sparkline({
   fill,
   baselineColor = 'var(--ink-200)',
   className,
+  reference,
+  label = 'Trend',
 }: SparklineProps) {
   const padding = 4
-  const min = Math.min(...values)
-  const max = Math.max(...values)
+  const hasReference = typeof reference === 'number' && Number.isFinite(reference)
+  const scale = hasReference ? [...values, reference] : values
+  const min = Math.min(...scale)
+  const max = Math.max(...scale)
   const range = max - min
+  const yOf = (v: number) => (range === 0 ? height / 2 : padding + (1 - (v - min) / range) * (height - padding * 2))
 
   const points = values.map((v, i) => {
     const x = values.length > 1 ? (i / (values.length - 1)) * viewBoxWidth : 0
-    const y = range === 0 ? height / 2 : padding + (1 - (v - min) / range) * (height - padding * 2)
-    return [x, y] as const
+    return [x, yOf(v)] as const
   })
 
   const linePath = points.map(([x, y], i) => `${i === 0 ? 'M' : 'L'}${x},${y}`).join(' ')
@@ -57,10 +68,21 @@ export default function Sparkline({
       preserveAspectRatio="none"
       className={className}
       role="img"
-      aria-label="Trend"
+      aria-label={label}
     >
       {areaPath && <path d={areaPath} fill={fill} />}
       <path d={linePath} fill="none" stroke={color} strokeWidth="1.5" />
+      {hasReference && (
+        <line
+          x1="0"
+          y1={yOf(reference)}
+          x2={viewBoxWidth}
+          y2={yOf(reference)}
+          stroke="var(--warn)"
+          strokeDasharray="4 3"
+          data-testid="sparkline-reference"
+        />
+      )}
       <line x1="0" y1={height - 0.5} x2={viewBoxWidth} y2={height - 0.5} stroke={baselineColor} />
     </svg>
   )

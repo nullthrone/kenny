@@ -1,18 +1,21 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../api/client'
-import type {
-  AccountActionResult,
-  AgentAvailability,
-  AgentDetail,
-  ShareLinkResult,
-  SuppressionRule,
-  WebfilterActionResult,
-  WebfilterDomainAction,
-  WebfilterEnforcement,
-  WebfilterHistory,
-  WebfilterOverview,
-  WebfilterRequestsResponse,
-  WebfilterScheduleWindow,
+import {
+  normalizeHardwareTrends,
+  type AccountActionResult,
+  type AgentAvailability,
+  type AgentDetail,
+  type AgentTrends,
+  type HardwareTrends,
+  type ShareLinkResult,
+  type SuppressionRule,
+  type WebfilterActionResult,
+  type WebfilterDomainAction,
+  type WebfilterEnforcement,
+  type WebfilterHistory,
+  type WebfilterOverview,
+  type WebfilterRequestsResponse,
+  type WebfilterScheduleWindow,
 } from './types'
 
 export const agentQueryKey = (agentId: string) => ['agent', agentId] as const
@@ -42,6 +45,22 @@ export function useAgentAvailability(agentId: string, days: number) {
     // view for another host, whose band must never stand in for this one.
     placeholderData: (previous, previousQuery) =>
       previousQuery?.queryKey[1] === agentId ? previous : undefined,
+  })
+}
+
+/**
+ * The long-lived device history from `/api/agent/{id}/trends` (its `hardware`
+ * key), or null when the server does not send it. Every consumer (the forecast
+ * panel and the section bodies) shares this one query, so the route is fetched
+ * once per host view. A failed request reads as "no history": the panels render
+ * as they did before it existed.
+ */
+export function useHardwareTrends(agentId: string, enabled = true) {
+  return useQuery({
+    queryKey: [...agentQueryKey(agentId), 'trends'] as const,
+    queryFn: () => api.get<AgentTrends>(`/api/agent/${encodeURIComponent(agentId)}/trends`),
+    select: (trends): HardwareTrends | null => normalizeHardwareTrends(trends),
+    enabled: enabled && Boolean(agentId),
   })
 }
 

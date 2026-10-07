@@ -1,12 +1,24 @@
-import type { FanReading, FansSection } from '../types'
+import type { FanReading, FansSection, HardwareTrends } from '../types'
 import Sparkline from '../../../components/Sparkline/Sparkline'
 import { DASH, finite, formatCount, mean } from './hardwareFormat'
-import { EmptyNote, Eyebrow, HwCard, HwCards, HwChip, Note, StatList, type StatItem } from './HardwareParts'
+import { EmptyNote, Eyebrow, HwCard, HwCards, HwChip, Note, StatList, Subhead, type StatItem } from './HardwareParts'
+import { HistoryList, HistorySpark } from './HistorySpark'
+import { drawable, findDevice, forecastsFor } from './hardwareHistory'
 import styles from './FansBody.module.css'
 
 export interface FansBodyProps {
   fans: FansSection
+  /** The long-lived device history (`/trends` -> `hardware`); absent on an older server. */
+  history?: HardwareTrends | null
 }
+
+/** Median RPM per commanded-duty band, in the order the server names them. */
+const DUTY_BANDS: { metric: string; label: string }[] = [
+  { metric: 'rpm_duty_30_50', label: '30–50' },
+  { metric: 'rpm_duty_50_70', label: '50–70' },
+  { metric: 'rpm_duty_70_90', label: '70–90' },
+  { metric: 'rpm_duty_90_100', label: '90–100' },
+]
 
 /** The burst's finite samples; a fan with none reads as "no measurement". */
 function samplesOf(fan: FanReading): number[] {
@@ -28,7 +40,37 @@ function fanName(fan: FanReading): string {
   return fan.label || fan.key
 }
 
-function ActiveFan({ fan }: { fan: FanReading }) {
+/** One fan's RPM-at-duty history and, when the server flagged drift, its symptom. */
+function FanHistory({ fan, history }: { fan: FanReading; history?: HardwareTrends | null }) {
+  const key = `fan:${fan.key}`
+  const device = findDevice(history, key)
+  if (!device) return null
+  const bands = DUTY_BANDS.flatMap(({ metric, label }) => {
+    const points = drawable(device, metric)
+    return points ? [{ metric, label, points }] : []
+  })
+  const drift = forecastsFor(history, key, 'fan_drift')
+  if (bands.length === 0 && drift.length === 0) return null
+  return (
+    <>
+      {bands.length > 0 && (
+        <>
+          <Subhead>HISTORY</Subhead>
+          <HistoryList>
+            {bands.map((b) => (
+              <HistorySpark key={b.metric} label={`RPM at ${b.label} % duty`} points={b.points} format={(v) => formatRpm(v)} />
+            ))}
+          </HistoryList>
+        </>
+      )}
+      {drift.map((f, i) => (
+        <Note key={i} tone="warn">{f.symptom}</Note>
+      ))}
+    </>
+  )
+}
+
+function ActiveFan({ fan, history }: { fan: FanReading; history?: HardwareTrends | null }) {
   const samples = samplesOf(fan)
   const duty = finite(fan.duty_percent)
   const items: StatItem[] = [
@@ -55,6 +97,7 @@ function ActiveFan({ fan }: { fan: FanReading }) {
           </div>
         )}
       </div>
+      <FanHistory fan={fan} history={history} />
     </HwCard>
   )
 }
@@ -64,7 +107,7 @@ function ActiveFan({ fan }: { fan: FanReading }) {
  * samples per fan with the commanded duty where readable. The agent does not
  * grade this section; stall, jitter and drift judgements are the server's.
  */
-export default function FansBody({ fans }: FansBodyProps) {
+export default function FansBody({ fans, history }: FansBodyProps) {
   const all = fans.fans ?? []
   const active = all.filter((f) => !f.idle_or_absent)
   const unused = all.filter((f) => f.idle_or_absent)
@@ -98,7 +141,7 @@ export default function FansBody({ fans }: FansBodyProps) {
       ) : (
         <HwCards>
           {active.map((fan) => (
-            <ActiveFan key={fan.key} fan={fan} />
+            <ActiveFan key={fan.key} fan={fan} history={history} />
           ))}
         </HwCards>
       )}

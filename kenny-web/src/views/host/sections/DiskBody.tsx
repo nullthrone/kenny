@@ -1,8 +1,10 @@
-import type { DiskNvmeHealth, DiskSection, DiskSmartRow, DiskSmartSection } from '../types'
+import type { DiskNvmeHealth, DiskSection, DiskSmartRow, DiskSmartSection, HardwareTrends } from '../types'
 import { severityColor } from '../../../components/tone'
 import { formatBytes } from '../format'
 import { DASH, finite, formatCount, formatPercent, formatPowerOnHours, formatTemp, isNonZero } from './hardwareFormat'
 import { EmptyNote, Eyebrow, HwCard, HwCards, HwChip, Note, StatList, Subhead, type StatItem, type Tone } from './HardwareParts'
+import { HistoryList, HistorySpark } from './HistorySpark'
+import { drawable, findDevice, hasNonZero, lastValue } from './hardwareHistory'
 import styles from './DiskBody.module.css'
 
 export interface DiskBodyProps {
@@ -12,6 +14,8 @@ export interface DiskBodyProps {
   diskSmart?: DiskSmartSection
   /** Which half the opened section is about; it is listed first. */
   focus?: 'volumes' | 'physical'
+  /** The long-lived device history (`/trends` -> `hardware`); absent on an older server. */
+  history?: HardwareTrends | null
 }
 
 /** Best-effort extraction of the mount `disk.reason` names ("C: 96% full
@@ -108,7 +112,51 @@ function attributeItems(attrs: Record<string, number | null>): StatItem[] {
     .map(([id, raw]) => counter(`${id} · ${SMART_ATTRIBUTE_NAMES[id] ?? `Attribute ${id}`}`, raw))
 }
 
-function PhysicalDisk({ row }: { row: DiskSmartRow }) {
+/** Error-counter series worth a sparkline once they have risen above zero. */
+const ERROR_COUNTER_SERIES: { metric: string; label: string }[] = [
+  { metric: 'media_errors', label: 'Media errors' },
+  { metric: 'read_errors_uncorrected', label: 'Uncorrected read errors' },
+  { metric: 'write_errors_uncorrected', label: 'Uncorrected write errors' },
+  { metric: 'smart_5', label: `5 · ${SMART_ATTRIBUTE_NAMES['5']}` },
+  { metric: 'smart_187', label: `187 · ${SMART_ATTRIBUTE_NAMES['187']}` },
+  { metric: 'smart_197', label: `197 · ${SMART_ATTRIBUTE_NAMES['197']}` },
+  { metric: 'smart_198', label: `198 · ${SMART_ATTRIBUTE_NAMES['198']}` },
+]
+
+/** The disk's own daily history, matched by `disk:` + serial; nothing without one. */
+function DiskHistory({ serial, history }: { serial?: string | null; history?: HardwareTrends | null }) {
+  const device = serial ? findDevice(history, `disk:${serial}`) : null
+  if (!device) return null
+  const used = drawable(device, 'percentage_used')
+  const spare = drawable(device, 'available_spare')
+  const threshold = device.series.available_spare_threshold
+  const errors = ERROR_COUNTER_SERIES.flatMap(({ metric, label }) => {
+    const points = drawable(device, metric)
+    return points && hasNonZero(points) ? [{ metric, label, points }] : []
+  })
+  if (!used && !spare && errors.length === 0) return null
+  return (
+    <>
+      <Subhead>HISTORY</Subhead>
+      <HistoryList>
+        {used && <HistorySpark label="Endurance used" points={used} format={formatPercent} />}
+        {spare && (
+          <HistorySpark
+            label="Spare capacity"
+            points={spare}
+            reference={threshold && threshold.length > 0 ? lastValue(threshold) : undefined}
+            format={formatPercent}
+          />
+        )}
+        {errors.map((e) => (
+          <HistorySpark key={e.metric} label={e.label} points={e.points} tone="alert" />
+        ))}
+      </HistoryList>
+    </>
+  )
+}
+
+function PhysicalDisk({ row, history }: { row: DiskSmartRow; history?: HardwareTrends | null }) {
   const tone = healthTone(row.health_status)
   const kind = [row.bus_type, row.media_type && row.media_type !== 'Unspecified' ? row.media_type : null]
     .filter(Boolean)
@@ -158,13 +206,14 @@ function PhysicalDisk({ row }: { row: DiskSmartRow }) {
           <StatList items={attributeItems(attrs)} />
         </>
       )}
+      <DiskHistory serial={row.serial} history={history} />
       {row.nvme_error && <Note>health log unavailable: {row.nvme_error}</Note>}
       {row.paused && <Note>raw-disk reads paused while a protected game runs</Note>}
     </HwCard>
   )
 }
 
-function PhysicalDisks({ diskSmart }: { diskSmart?: DiskSmartSection }) {
+function PhysicalDisks({ diskSmart, history }: { diskSmart?: DiskSmartSection; history?: HardwareTrends | null }) {
   const disks = diskSmart?.disks
   if (!disks) {
     // An old or failed push: no rows, but the agent's one-line summary still stands.
@@ -178,7 +227,7 @@ function PhysicalDisks({ diskSmart }: { diskSmart?: DiskSmartSection }) {
       ) : (
         <HwCards>
           {disks.map((row, i) => (
-            <PhysicalDisk key={`${row.device_number ?? ''}-${row.serial ?? ''}-${i}`} row={row} />
+            <PhysicalDisk key={`${row.device_number ?? ''}-${row.serial ?? ''}-${i}`} row={row} history={history} />
           ))}
         </HwCards>
       )}
@@ -240,8 +289,8 @@ function Volumes({ disk }: { disk: DiskSection }) {
  * first: a full volume and a failing drive are one question — "is this
  * machine's storage fine".
  */
-export default function DiskBody({ disk, diskSmart, focus = 'volumes' }: DiskBodyProps) {
+export default function DiskBody({ disk, diskSmart, focus = 'volumes', history }: DiskBodyProps) {
   const volumes = disk?.volumes ? <Volumes disk={disk} /> : null
-  const physical = <PhysicalDisks diskSmart={diskSmart} />
+  const physical = <PhysicalDisks diskSmart={diskSmart} history={history} />
   return <div>{focus === 'physical' ? <>{physical}{volumes}</> : <>{volumes}{physical}</>}</div>
 }
