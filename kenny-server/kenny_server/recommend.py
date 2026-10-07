@@ -44,7 +44,8 @@ from .chat import CAPABILITY_TOOLS, STATE_CHANGING_TOOLS
 
 # The fast model (``KENNY_FAST_MODEL``) is sufficient for a 3-line templated
 # recommendation; it is resolved per call through ``ai.current().fast_model()``.
-_MAX_TOKENS = 400
+# The ceiling holds the model's reasoning as well as the ~400-token answer.
+_MAX_TOKENS = 2048
 _SENTINEL = "---"
 # Hold back this many trailing chars while streaming so a partial sentinel
 # ("\n---") is never flushed to the operator as visible prose.
@@ -226,25 +227,27 @@ async def recommend_events(client: Any, facts: dict[str, Any]) -> AsyncIterator[
     full = ""
     emitted = 0
     try:
-        with client.messages.stream(
-            model=ai.current().fast_model(),
-            max_tokens=_MAX_TOKENS,
+        for chunk in ai.stream_fast_text(
+            ai.current(),
+            client,
+            _MAX_TOKENS,
             system=_cached_system(),
             messages=[_user_message(facts)],
-        ) as stream:
-            for chunk in stream.text_stream:
-                full += chunk
-                visible, hit = _visible_split(full)
-                if hit:
-                    if len(visible) > emitted:
-                        yield {"type": "text_delta", "text": visible[emitted:]}
-                        emitted = len(visible)
-                    continue  # keep accumulating for the parse, stop emitting
-                safe = max(0, len(visible) - _HOLDBACK)
-                if safe > emitted:
-                    yield {"type": "text_delta", "text": visible[emitted:safe]}
-                    emitted = safe
+        ):
+            full += chunk
+            visible, hit = _visible_split(full)
+            if hit:
+                if len(visible) > emitted:
+                    yield {"type": "text_delta", "text": visible[emitted:]}
+                    emitted = len(visible)
+                continue  # keep accumulating for the parse, stop emitting
+            safe = max(0, len(visible) - _HOLDBACK)
+            if safe > emitted:
+                yield {"type": "text_delta", "text": visible[emitted:safe]}
+                emitted = safe
     except Exception as exc:  # noqa: BLE001 - surface in-band like the chat stream
+        # Nothing is cached: a cut-off or declined answer would otherwise be
+        # replayed to every later warning of the same type.
         yield {"type": "error", "error": str(exc)}
         return
 

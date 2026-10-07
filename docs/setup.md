@@ -78,7 +78,7 @@ interval at startup.
 | `KENNY_AGENT_TOKENS` | server | dev map | `id=token,id2=token2` — per-agent tokens (the token store is seeded from this). |
 | `ANTHROPIC_API_KEY` | server | — | Enables the AI features. Also settable in Admin → AI, where a saved key wins over this one; a key saved there is not included in backups. The master switch there (`KENNY_AI_ENABLED`, default `1`) turns every AI feature off at once. |
 | `KENNY_CHAT_MODEL` | server | `claude-sonnet-4-6` | Model for Ask kenny, the ticket assistant and triage. Also editable in Admin → AI. |
-| `KENNY_FAST_MODEL` | server | `claude-haiku-4-5` | Model for recommendations, forecast prose and reliability-event classification. Also editable in Admin → AI. |
+| `KENNY_FAST_MODEL` | server | `claude-haiku-5-5` | Model for recommendations, forecast prose and reliability-event classification. Also editable in Admin → AI. |
 | `ANTHROPIC_BASE_URL` | server | — | Base URL of an [AI gateway](#ai-gateway); empty talks to the Anthropic API directly. Also editable in Admin → AI. |
 | `ANTHROPIC_CUSTOM_HEADERS` | server | — | Headers sent with every model call, for the [AI gateway](#ai-gateway): `Name: Value` entries separated by `;` or newlines. Also settable in Admin → AI; a value saved there is never shown back and not included in backups. |
 | `KENNY_TLS` | server | unset | Set `1` behind TLS so the login cookie gets the `Secure` flag. |
@@ -217,8 +217,10 @@ answers, and an audit trail outside kenny
 set in Admin → AI (or the environment) and applies to the next call, without a restart.
 
 **What the gateway must do.** Serve the Anthropic Messages API at `<base URL>/v1/messages`
-and pass it through intact: streaming (server-sent events), tool use, extended thinking and
-`cache_control`. A gateway that only speaks another API format does not work with kenny.
+and pass it through intact: streaming (server-sent events), tool use, extended thinking,
+`output_config` (the effort setting) and `cache_control`. A gateway that rejects the effort
+setting still works: kenny drops it after the first refusal and the fast model thinks at its
+own default. A gateway that only speaks another API format does not work with kenny.
 Configure it to answer an upstream error — including overload during a stream — with the
 error status, not with `200`: kenny retries and reports on the status.
 
@@ -235,8 +237,8 @@ Headers the HTTP client owns (`Host`, `Content-Length`, `Connection`, …), `X-A
 `Anthropic-Version` cannot be set this way.
 
 **Check it.** **Test connection** in Admin → AI sends one single-token message on the fast
-model through the gateway — the same path, headers and model id every feature uses — and
-shows the gateway's answer verbatim if it refuses. The status line above it names the
+model through the gateway — the same path, headers, model id and request shape every
+feature uses — and shows the gateway's answer verbatim if it refuses. The status line above it names the
 gateway's host.
 
 **What the gateway sees.** Everything the model sees: telemetry facts, event-log samples,

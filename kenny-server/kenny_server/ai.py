@@ -24,7 +24,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -51,7 +51,22 @@ HEADERS_SETTING = "ANTHROPIC_CUSTOM_HEADERS"
 #: reliability-event classification. The conversational features use
 #: ``KENNY_CHAT_MODEL``.
 FAST_MODEL_SETTING = "KENNY_FAST_MODEL"
-DEFAULT_FAST_MODEL = "claude-haiku-4-5"
+DEFAULT_FAST_MODEL = "claude-haiku-5-5"
+
+#: How hard the fast model thinks. Every fast route asks for a short, templated
+#: answer, so the lowest level: current models think by default, and at a higher
+#: level the reasoning would spend the output budget the answer needs.
+FAST_EFFORT = "low"
+
+#: Fast models that answered an ``effort`` setting with a 400 (one that predates
+#: it, or a gateway that does not pass it on), remembered so the rejection is
+#: paid once per process rather than once per call.
+_MODELS_WITHOUT_EFFORT: set[str] = set()
+
+#: Why a fast-route response is unusable, by ``stop_reason``: cut off by
+#: ``max_tokens`` (reasoning counts against it) or declined by the model's
+#: safety classifiers. Neither may be cached or parsed as an answer.
+UNUSABLE_STOP_REASONS = frozenset({"max_tokens", "refusal"})
 
 #: Sent as the API key when a gateway is set and no key is: the gateway holds
 #: the provider credentials and authenticates kenny by its own headers. The SDK
@@ -261,6 +276,39 @@ class AiAccess:
 
         return self._raw(FAST_MODEL_SETTING) or DEFAULT_FAST_MODEL
 
+    def fast_request(self, max_tokens: int) -> dict[str, Any]:
+        """The request arguments every fast-route call shares.
+
+        ``max_tokens`` must leave room for reasoning as well as the answer. No
+        sampling parameters and no assistant prefill, ever: current models
+        reject both with a 400.
+        """
+
+        model = self.fast_model()
+        request: dict[str, Any] = {"model": model, "max_tokens": max_tokens}
+        if model not in _MODELS_WITHOUT_EFFORT:
+            request["output_config"] = {"effort": FAST_EFFORT}
+        return request
+
+    def drop_effort(self, request: Mapping[str, Any], exc: Exception) -> bool:
+        """True if ``exc`` is the API refusing ``request``'s effort setting.
+
+        The model is then remembered, and the caller retries once with a fresh
+        :meth:`fast_request`, which no longer carries the setting. Anything
+        else is the caller's error to report.
+        """
+
+        if "output_config" not in request or getattr(exc, "status_code", None) != 400:
+            return False
+        message = str(getattr(exc, "message", "") or exc).lower()
+        if "effort" not in message and "output_config" not in message:
+            return False
+        logger.warning(
+            "model %s rejected an effort setting; continuing without it", request["model"]
+        )
+        _MODELS_WITHOUT_EFFORT.add(str(request["model"]))
+        return True
+
     # -- features ----------------------------------------------------------
 
     def _switch(self, key: str) -> bool:
@@ -315,9 +363,12 @@ class AiAccess:
     def probe(self) -> dict[str, Any]:
         """Check the connection with the smallest real call there is.
 
-        One single-token message on the fast model: it takes the same path
-        every feature takes — key or gateway headers, base URL, model id, and
-        whatever the gateway inspects — which listing models would not.
+        One single-token message on the fast model, sent with the arguments
+        every fast route sends (:meth:`fast_request`): it takes the same path
+        every feature takes — key or gateway headers, base URL, model id, the
+        request shape, and whatever the gateway inspects — which listing models
+        would not. Being cut off at one token is the expected outcome; a
+        refusal is not.
         """
 
         if not self.available():
@@ -325,15 +376,84 @@ class AiAccess:
         problem = self.config_error()
         if problem is not None:
             return {"ok": False, "error": problem}
-        try:
-            self.client().messages.create(
-                model=self.fast_model(),
-                max_tokens=1,
-                messages=[{"role": "user", "content": "ping"}],
-            )
-        except Exception as exc:  # noqa: BLE001 - reported to the operator verbatim
-            return {"ok": False, "error": str(exc) or type(exc).__name__}
+        request = self.fast_request(1)
+        while True:
+            try:
+                response = self.client().messages.create(
+                    **request, messages=[{"role": "user", "content": "ping"}]
+                )
+            except Exception as exc:  # noqa: BLE001 - reported to the operator verbatim
+                if self.drop_effort(request, exc):
+                    request = self.fast_request(1)
+                    continue
+                return {"ok": False, "error": str(exc) or type(exc).__name__}
+            break
+        if getattr(response, "stop_reason", None) == "refusal":
+            return {"ok": False, "error": "the model declined the test request"}
         return {"ok": True, "error": None}
+
+
+class UnusableResponse(Exception):
+    """A fast-route response that must not be shown as an answer or cached:
+    cut off, declined, or empty. The message is safe to show the operator."""
+
+    def __init__(self, stop_reason: str | None, category: str | None = None) -> None:
+        self.stop_reason = stop_reason
+        self.category = category
+        if stop_reason == "refusal":
+            message = "the model declined to answer"
+        elif stop_reason == "max_tokens":
+            message = "the answer was cut off before it finished"
+        else:
+            message = "the model returned no answer"
+        super().__init__(message)
+
+
+def check_usable(response: Any) -> None:
+    """Raise :class:`UnusableResponse` if ``response`` stopped for a reason that
+    makes its text unusable (:data:`UNUSABLE_STOP_REASONS`). A refusal's
+    category is logged: it is the only trace of why a feature went quiet."""
+
+    stop_reason = getattr(response, "stop_reason", None)
+    if stop_reason not in UNUSABLE_STOP_REASONS:
+        return
+    details = getattr(response, "stop_details", None)
+    category = getattr(details, "category", None) if details is not None else None
+    if stop_reason == "refusal":
+        logger.warning("fast model declined a request (category %s)", category or "unknown")
+    raise UnusableResponse(stop_reason, category)
+
+
+def stream_fast_text(
+    access: AiAccess, client: Any, max_tokens: int, **params: Any
+) -> Iterator[str]:
+    """Stream the text of one fast-route call, as the shared request shapes it.
+
+    Retries once without the effort setting when the model rejects it
+    (:meth:`AiAccess.drop_effort`), which can only happen before any text
+    arrives. Raises :class:`UnusableResponse` after the last chunk if the
+    response was cut off, declined or empty, so a caller never caches one.
+    """
+
+    request = access.fast_request(max_tokens)
+    while True:
+        emitted = False
+        try:
+            with client.messages.stream(**request, **params) as stream:
+                for chunk in stream.text_stream:
+                    if chunk:
+                        emitted = True
+                    yield chunk
+                final = stream.get_final_message()
+        except Exception as exc:
+            if not emitted and access.drop_effort(request, exc):
+                request = access.fast_request(max_tokens)
+                continue
+            raise
+        break
+    check_usable(final)
+    if not emitted:
+        raise UnusableResponse(getattr(final, "stop_reason", None))
 
 
 _current: AiAccess | None = None
