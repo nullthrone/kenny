@@ -1,0 +1,133 @@
+/* Presentational pieces shared by the hardware-health section bodies. */
+
+.eyebrow {
+  font-family: var(--font-display);
+  font-size: 9px;
+  letter-spacing: var(--track-caps-wide);
+  color: var(--text-muted);
+  margin: 20px 0 10px;
+}
+
+.eyebrow:first-child {
+  margin-top: 0;
+}
+
+.cards {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.card {
+  composes: kc-box from global;
+  border: 1px solid var(--border-line);
+  border-radius: 2px;
+  padding: 12px 14px;
+}
+
+.head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.title {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  min-width: 0;
+  overflow-wrap: break-word;
+}
+
+.chip {
+  flex: none;
+  padding: 1px 6px;
+  border: 1px solid currentColor;
+  border-radius: 2px;
+  font-family: var(--font-display);
+  font-size: 9px;
+  letter-spacing: var(--track-caps);
+  color: var(--text-muted);
+}
+
+.chip[data-tone='ok'] {
+  color: var(--ok);
+}
+.chip[data-tone='warn'] {
+  color: var(--warn);
+}
+.chip[data-tone='alert'] {
+  color: var(--danger);
+}
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 6px 20px;
+  margin: 0;
+}
+
+.stat {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: baseline;
+  padding: 3px 0;
+  border-bottom: 1px solid var(--border-line);
+  min-width: 0;
+}
+
+.statLabel {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  min-width: 0;
+}
+
+.statValue {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-align: right;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* A non-zero error counter, or a value past its own threshold. Colour only, so
+   a row of counters does not turn into a wall of alarms. */
+.statValue[data-tone='alert'] {
+  color: var(--danger);
+}
+.statValue[data-tone='warn'] {
+  color: var(--warn);
+}
+.statValue[data-tone='muted'] {
+  color: var(--text-faint);
+}
+
+.note {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  margin: 8px 0 0;
+  overflow-wrap: break-word;
+}
+
+.note[data-tone='warn'] {
+  color: var(--warn);
+}
+
+.empty {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  padding: 4px 0 8px;
+  margin: 0;
+}
+
+.subhead {
+  font-family: var(--font-display);
+  font-size: 9px;
+  letter-spacing: var(--track-caps);
+  color: var(--text-faint);
+  margin: 12px 0 6px;
+}

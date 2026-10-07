@@ -158,6 +158,189 @@ export interface DiskSection extends RawSection {
   top_dirs: DiskTopDir[]
 }
 
+/* ── Physical-disk health (snapshot.disk_smart — docs/protocol.md "disk_smart") ──
+ *
+ * One row per physical disk. Every counter is lifetime and `null`/absent means
+ * "the drive or its driver does not report it", which is unknown, never zero.
+ * The 0.22 fields are additive, so every one is optional: an older agent's row
+ * carries only the first group. */
+
+/** NVMe SMART / health log (page 0x02). 128-bit counters saturate at 2^64-1,
+ * so values above 2^53 lose precision here. */
+export interface DiskNvmeHealth {
+  /** Bitfield: 0 spare below threshold, 1 temperature, 2 reliability, 3 read-only, 4 volatile backup. */
+  critical_warning?: number | null
+  available_spare?: number | null
+  available_spare_threshold?: number | null
+  /** May exceed 100. */
+  percentage_used?: number | null
+  media_errors?: number | null
+  unsafe_shutdowns?: number | null
+  error_log_entries?: number | null
+  data_units_written?: number | null
+  power_on_hours?: number | null
+  temperature_c?: number | null
+}
+
+export interface DiskSmartRow {
+  model?: string | null
+  health_status?: string | null
+  /** The drive's own SMART predict-failure flag; null is unknown, not false. */
+  predictive_failure?: boolean | null
+  wear?: number | null
+  temperature_c?: number | null
+  power_on_hours?: number | null
+  read_errors_total?: number | null
+  read_errors_uncorrected?: number | null
+  write_errors_uncorrected?: number | null
+  device_number?: number | null
+  serial?: string | null
+  bus_type?: string | null
+  media_type?: string | null
+  size_bytes?: number | null
+  removable?: boolean | null
+  temperature_max_c?: number | null
+  /** ATA attribute id (decimal string) → raw value; only ids the drive reports. */
+  smart_attributes?: Record<string, number | null> | null
+  nvme?: DiskNvmeHealth | null
+  /** Why `nvme` is null on an NVMe disk. Never to be read as healthy. */
+  nvme_error?: string | null
+  /** Raw-device reads were skipped while anti-cheat coexistence is active. */
+  paused?: boolean | null
+}
+
+export interface DiskSmartSection extends RawSection {
+  disks?: DiskSmartRow[]
+}
+
+/* ── Hardware errors (snapshot.hardware_errors) ── */
+
+export interface HardwareErrorGroup {
+  source: string
+  event_id: number
+  level: string
+  count: number
+  last_seen?: string | null
+  by_day?: Record<string, number> | null
+  sample?: string | null
+  /** key → { value: count }; counts cover only the newest ~10 events of the group. */
+  details?: Record<string, Record<string, number>> | null
+}
+
+export interface HardwareAppCrashes {
+  total?: number | null
+  distinct_apps?: number | null
+  distinct_modules?: number | null
+  exception_codes?: Record<string, number> | null
+  by_day?: Record<string, number> | null
+}
+
+/** One memory controller (Linux). */
+export interface HardwareEdacEntry {
+  controller: string
+  ce_count?: number | null
+  ue_count?: number | null
+}
+
+/** One PCIe device with a non-zero AER total (Linux). */
+export interface HardwareAerEntry {
+  device: string
+  correctable?: number | null
+  nonfatal?: number | null
+  fatal?: number | null
+}
+
+export interface HardwareErrorsSection extends RawSection {
+  window_days?: number | null
+  /** How far back the queried log really reaches; shorter than `window_days` when the log wrapped. */
+  effective_window_days?: number | null
+  oldest_event_utc?: string | null
+  sources?: string[]
+  groups?: HardwareErrorGroup[]
+  truncated?: boolean
+  truncated_count?: number
+  app_crashes?: HardwareAppCrashes | null
+  edac?: HardwareEdacEntry[]
+  aer?: HardwareAerEntry[]
+  errors?: string[]
+}
+
+/* ── GPU (snapshot.gpu) ── */
+
+export interface GpuPcie {
+  gen_current?: number | null
+  gen_max?: number | null
+  width_current?: number | null
+  width_max?: number | null
+}
+
+export interface GpuThrottle {
+  hw_slowdown?: boolean | null
+  hw_thermal_slowdown?: boolean | null
+  hw_power_brake_slowdown?: boolean | null
+  sw_thermal_slowdown?: boolean | null
+}
+
+export interface GpuEcc {
+  uncorrected_volatile?: number | null
+  retired_pages_pending?: boolean | null
+  remapped_rows?: {
+    correctable?: number | null
+    uncorrectable?: number | null
+    pending?: number | null
+    failure?: number | null
+  } | null
+}
+
+export interface GpuCard {
+  name: string
+  vendor?: 'nvidia' | 'amd' | 'intel' | 'unknown' | string
+  pci_id?: string | null
+  bus_id?: string | null
+  uuid?: string | null
+  driver_version?: string | null
+  sources?: string[]
+  temperature_c?: number | null
+  utilization_percent?: number | null
+  power_draw_w?: number | null
+  power_limit_w?: number | null
+  /** The driver's *target* fan speed, not a measured one. */
+  fan_target_percent?: number | null
+  pcie?: GpuPcie | null
+  throttle?: GpuThrottle | null
+  ecc?: GpuEcc | null
+  /** amdgpu RAS block → error counts. */
+  ras?: Record<string, { ue?: number | null; ce?: number | null }> | null
+}
+
+export interface GpuSection extends RawSection {
+  gpus?: GpuCard[]
+  truncated?: boolean
+  errors?: string[]
+}
+
+/* ── Fans (snapshot.fans) ── */
+
+export interface FanReading {
+  key: string
+  label?: string | null
+  source?: 'hwmon' | 'lhm' | 'nvml' | string
+  /** A burst of samples, in order. */
+  rpm_samples?: number[] | null
+  duty_percent?: number | null
+  mode?: 'pwm' | 'dc' | 'auto' | 'manual' | 'unknown' | string | null
+  /** Every sample 0 RPM and no duty readable: an unused channel, not a stall. */
+  idle_or_absent?: boolean
+}
+
+export interface FansSection extends RawSection {
+  sources_tried?: string[]
+  sample_interval_ms?: number | null
+  fans?: FanReading[]
+  truncated?: boolean
+  errors?: string[]
+}
+
 /* ── Web filter (GET/PUT/POST/DELETE /api/agent/{id}/webfilter*) ──
  *
  * Categories, schedule and bypass requests (ADR-0055,
