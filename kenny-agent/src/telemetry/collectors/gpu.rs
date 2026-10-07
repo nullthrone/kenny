@@ -6,9 +6,10 @@
 //! Facts come from up to three sources that are merged per adapter:
 //!   * identity — `Win32_VideoController` on Windows (`wmi`), `/sys/class/drm` on Linux
 //!     (`sysfs`);
-//!   * `nvidia-smi` on both OSes (`nvidia-smi`), queried in separate field groups so an
-//!     unknown field in one group (an older driver, a GeForce card) cannot take the
-//!     others down with it;
+//!   * `nvidia-smi` on both OSes (`nvidia-smi`), queried in few field groups (each run
+//!     initialises NVML, which is slow on a sick driver) that are kept apart where one
+//!     unknown field in a group (an older driver) would otherwise take the others down
+//!     with it, and abandoned for the snapshot at the first run that hangs or cannot start;
 //!   * amdgpu's sysfs/hwmon files on Linux (`sysfs`).
 //!
 //! Adapters that Windows lists but that are not graphics hardware are skipped: any
@@ -24,6 +25,7 @@ use std::collections::BTreeMap;
 use serde_json::{json, Map, Value};
 
 use super::nvidia::{self, Row};
+use super::ProbeFailure;
 use crate::protocol::Status;
 use crate::telemetry::Section;
 
@@ -43,12 +45,12 @@ pub fn collect() -> Section {
     let identities = sysfs::probe(std::path::Path::new(sysfs::DRM_ROOT));
 
     let wants_nvidia_smi = identities.iter().any(Gpu::expects_nvidia_smi);
-    let nv = collect_nvidia(&|fields| nvidia::query(fields));
-    if nv.is_none() && wants_nvidia_smi {
-        errors.push("nvidia-smi: no usable output".to_string());
+    let nv = query_nvidia(&|fields| nvidia::query_checked(fields));
+    if let Some(error) = nvidia_error(&nv, wants_nvidia_smi) {
+        errors.push(error);
     }
 
-    let (gpus, truncated) = assemble(identities, nv.unwrap_or_default());
+    let (gpus, truncated) = assemble(identities, nv.gpus.unwrap_or_default());
     section_from(&gpus, truncated, errors)
 }
 
@@ -434,11 +436,14 @@ struct NvGpu {
     ecc: Option<Ecc>,
 }
 
-/// Core group. `pci.bus_id` (column 2) joins the other groups to it.
+/// Core group: everything every driver that knows `pci.bus_id` also reports, including
+/// the identity pair (`pci.bus_id`, `pci.device_id`), so one run answers for the fields
+/// that merge a GPU into its identity. `pci.bus_id` joins the other groups to it.
 const CORE_FIELDS: &[&str] = &[
     "name",
     "uuid",
     "pci.bus_id",
+    "pci.device_id",
     "driver_version",
     "temperature.gpu",
     "utilization.gpu",
@@ -450,17 +455,18 @@ const CORE_FIELDS: &[&str] = &[
     "pcie.link.width.current",
     "pcie.link.width.max",
 ];
-/// What is asked when the full core group fails.
+/// What is asked when the full core group fails: a prefix of [`CORE_FIELDS`], so both
+/// decode with the same columns.
 const CORE_MIN_FIELDS: &[&str] = &[
     "name",
     "uuid",
     "pci.bus_id",
+    "pci.device_id",
     "driver_version",
     "temperature.gpu",
 ];
 const CORE_BUS_COL: usize = 2;
-/// Optional groups lead with `pci.bus_id`, the join key.
-const IDENT_FIELDS: &[&str] = &["pci.bus_id", "pci.device_id"];
+const CORE_DEVICE_COL: usize = 3;
 const THROTTLE_SUFFIXES: &[&str] = &[
     "hw_slowdown",
     "hw_thermal_slowdown",
@@ -469,38 +475,119 @@ const THROTTLE_SUFFIXES: &[&str] = &[
 ];
 /// Current spelling first; drivers older than r525 only know the `throttle` one.
 const THROTTLE_PREFIXES: &[&str] = &["clocks_event_reasons.", "clocks_throttle_reasons."];
-const ECC_FIELDS: &[&str] = &[
+/// Optional group: ECC and row-remapping facts, led by `pci.bus_id`, the join key.
+/// Columns 1-2 are ECC, 3-6 row remapping.
+const OPTIONAL_FIELDS: &[&str] = &[
     "pci.bus_id",
     "ecc.errors.uncorrected.volatile.total",
     "retired_pages.pending",
-];
-const REMAP_FIELDS: &[&str] = &[
-    "pci.bus_id",
     "remapped_rows.correctable",
     "remapped_rows.uncorrectable",
     "remapped_rows.pending",
     "remapped_rows.failure",
 ];
+/// What is asked when the optional group fails (a driver that predates row remapping
+/// rejects its fields and, with them, the ECC ones): the ECC prefix of
+/// [`OPTIONAL_FIELDS`], decoded with the same columns.
+const ECC_ONLY_FIELDS: &[&str] = &[
+    "pci.bus_id",
+    "ecc.errors.uncorrected.volatile.total",
+    "retired_pages.pending",
+];
 
-/// Runs one `--query-gpu` field list; `nvidia::query` in production.
-type Runner<'a> = dyn Fn(&[&str]) -> Option<Vec<Row>> + 'a;
+/// Runs one `--query-gpu` field list; `nvidia::query_checked` in production.
+type Runner<'a> = dyn Fn(&[&str]) -> nvidia::Probe + 'a;
 
-/// Query every field group and join them per GPU. `None` when not even the minimal core
-/// group answers (no `nvidia-smi`, driver not loaded); a failing optional group only
-/// leaves its fields `null`.
-fn collect_nvidia(run: &Runner<'_>) -> Option<Vec<NvGpu>> {
-    let core = run(CORE_FIELDS).or_else(|| run(CORE_MIN_FIELDS))?;
-    let ident = run(IDENT_FIELDS);
-    let throttle = THROTTLE_PREFIXES.iter().find_map(|prefix| {
+/// What one collection pass learned from `nvidia-smi`.
+#[derive(Debug, Clone, PartialEq)]
+struct NvCollection {
+    /// `None` when not even the minimal core group answered (no `nvidia-smi`, driver not
+    /// loaded, or it hung before answering).
+    gpus: Option<Vec<NvGpu>>,
+    /// Why the remaining queries were skipped: the first run that could not start or hit
+    /// its budget.
+    stopped: Option<ProbeFailure>,
+}
+
+/// The queries of one pass; once a run fails to start or times out, none follow.
+///
+/// One wedged driver hangs every `nvidia-smi` alike, so continuing would spend the
+/// budget again per field group; a pass instead keeps what it already has and skips the
+/// rest.
+struct Session<'a> {
+    run: &'a Runner<'a>,
+    stopped: Option<ProbeFailure>,
+}
+
+impl Session<'_> {
+    /// The rows of one query; `None` when it gave none or the pass already stopped.
+    fn ask(&mut self, fields: &[&str]) -> Option<Vec<Row>> {
+        if self.stopped.is_some() {
+            return None;
+        }
+        match (self.run)(fields) {
+            Ok(rows) => rows,
+            Err(failure) => {
+                self.stopped = Some(failure);
+                None
+            }
+        }
+    }
+}
+
+/// Query the field groups and join them per GPU. At most: the core group (plus its
+/// minimal fallback), the throttle group (once per spelling) and the optional group
+/// (plus its ECC-only fallback). A failing optional group only leaves its fields `null`.
+fn query_nvidia(run: &Runner<'_>) -> NvCollection {
+    let mut session = Session { run, stopped: None };
+    let gpus = query_groups(&mut session);
+    NvCollection {
+        gpus,
+        stopped: session.stopped,
+    }
+}
+
+fn query_groups(session: &mut Session<'_>) -> Option<Vec<NvGpu>> {
+    let core = session
+        .ask(CORE_FIELDS)
+        .or_else(|| session.ask(CORE_MIN_FIELDS))?;
+    let mut throttle = None;
+    for prefix in THROTTLE_PREFIXES {
         let fields: Vec<String> = std::iter::once("pci.bus_id".to_string())
             .chain(THROTTLE_SUFFIXES.iter().map(|s| format!("{prefix}{s}")))
             .collect();
         let refs: Vec<&str> = fields.iter().map(String::as_str).collect();
-        run(&refs)
-    });
-    let ecc = run(ECC_FIELDS);
-    let remap = run(REMAP_FIELDS);
-    Some(join_groups(&core, ident, throttle, ecc, remap))
+        throttle = session.ask(&refs);
+        if throttle.is_some() {
+            break;
+        }
+    }
+    let optional = session
+        .ask(OPTIONAL_FIELDS)
+        .or_else(|| session.ask(ECC_ONLY_FIELDS));
+    Some(join_groups(&core, throttle, optional))
+}
+
+/// The `errors[]` entry for a pass, if it earned one.
+///
+/// A pass that stopped on a timeout always does: the binary exists and is wedged. One
+/// that stopped because `nvidia-smi` could not be started only does when an NVIDIA
+/// adapter was expected to have it, so a host without the driver stays quiet.
+fn nvidia_error(nv: &NvCollection, wants_nvidia_smi: bool) -> Option<String> {
+    match nv.stopped {
+        Some(ProbeFailure::Timeout(budget)) => Some(format!(
+            "nvidia-smi: timed out after {}s; remaining queries skipped",
+            budget.as_secs()
+        )),
+        Some(_) if wants_nvidia_smi => {
+            Some("nvidia-smi: could not be started; remaining queries skipped".to_string())
+        }
+        Some(_) => None,
+        None if nv.gpus.is_none() && wants_nvidia_smi => {
+            Some("nvidia-smi: no usable output".to_string())
+        }
+        None => None,
+    }
 }
 
 /// The row of `rows` for the GPU on `bus_id` (column `bus_col`); falls back to the row at
@@ -525,13 +612,7 @@ fn group_row<'a>(
 }
 
 /// Join the groups by bus id (row index as the fallback) and decode them.
-fn join_groups(
-    core: &[Row],
-    ident: Option<Vec<Row>>,
-    throttle: Option<Vec<Row>>,
-    ecc: Option<Vec<Row>>,
-    remap: Option<Vec<Row>>,
-) -> Vec<NvGpu> {
+fn join_groups(core: &[Row], throttle: Option<Vec<Row>>, optional: Option<Vec<Row>>) -> Vec<NvGpu> {
     let throttle_rows = throttle;
     core.iter()
         .enumerate()
@@ -539,19 +620,15 @@ fn join_groups(
             let bus_id = nvidia::cell_str(row, CORE_BUS_COL).and_then(normalize_bus_id);
             let bus = bus_id.as_deref();
             let pcie = Pcie {
-                gen_current: nvidia::cell_u64(row, 9),
-                gen_max: nvidia::cell_u64(row, 10),
-                width_current: nvidia::cell_u64(row, 11),
-                width_max: nvidia::cell_u64(row, 12),
+                gen_current: nvidia::cell_u64(row, 10),
+                gen_max: nvidia::cell_u64(row, 11),
+                width_current: nvidia::cell_u64(row, 12),
+                width_max: nvidia::cell_u64(row, 13),
             };
-            let pci_id = group_row(&ident, 0, bus, index).and_then(|r| {
-                let id = u32::from_str_radix(
-                    nvidia::cell_str(r, 1)?
-                        .trim_start_matches("0x")
-                        .trim_start_matches("0X"),
-                    16,
-                )
-                .ok()?;
+            let pci_id = nvidia::cell_str(row, CORE_DEVICE_COL).and_then(|cell| {
+                let id =
+                    u32::from_str_radix(cell.trim_start_matches("0x").trim_start_matches("0X"), 16)
+                        .ok()?;
                 // The cell packs `device << 16 | vendor`.
                 Some(format!("{:04x}:{:04x}", id & 0xffff, id >> 16))
             });
@@ -561,17 +638,16 @@ fn join_groups(
                 hw_power_brake_slowdown: nvidia::cell_bool(r, 3),
                 sw_thermal_slowdown: nvidia::cell_bool(r, 4),
             });
-            let ecc_row = group_row(&ecc, 0, bus, index);
-            let remap_row = group_row(&remap, 0, bus, index);
-            let remapped = remap_row.map(|r| Remapped {
-                correctable: nvidia::cell_u64(r, 1),
-                uncorrectable: nvidia::cell_u64(r, 2),
-                pending: flag(r, 3),
-                failure: flag(r, 4),
+            let optional_row = group_row(&optional, 0, bus, index);
+            let remapped = optional_row.map(|r| Remapped {
+                correctable: nvidia::cell_u64(r, 3),
+                uncorrectable: nvidia::cell_u64(r, 4),
+                pending: flag(r, 5),
+                failure: flag(r, 6),
             });
             let ecc = Ecc {
-                uncorrected_volatile: ecc_row.and_then(|r| nvidia::cell_u64(r, 1)),
-                retired_pages_pending: ecc_row.and_then(|r| flag(r, 2)),
+                uncorrected_volatile: optional_row.and_then(|r| nvidia::cell_u64(r, 1)),
+                retired_pages_pending: optional_row.and_then(|r| flag(r, 2)),
                 remapped_rows: remapped.filter(|r| !r.is_empty()),
             };
             NvGpu {
@@ -579,12 +655,12 @@ fn join_groups(
                 uuid: nvidia::cell_str(row, 1).map(str::to_string),
                 bus_id: bus_id.clone(),
                 pci_id,
-                driver_version: nvidia::cell_str(row, 3).map(str::to_string),
-                temperature_c: nvidia::cell_f64(row, 4),
-                utilization_percent: nvidia::cell_f64(row, 5),
-                power_draw_w: nvidia::cell_f64(row, 6),
-                power_limit_w: nvidia::cell_f64(row, 7),
-                fan_target_percent: nvidia::cell_f64(row, 8),
+                driver_version: nvidia::cell_str(row, 4).map(str::to_string),
+                temperature_c: nvidia::cell_f64(row, 5),
+                utilization_percent: nvidia::cell_f64(row, 6),
+                power_draw_w: nvidia::cell_f64(row, 7),
+                power_limit_w: nvidia::cell_f64(row, 8),
+                fan_target_percent: nvidia::cell_f64(row, 9),
                 pcie: Some(pcie).filter(|p| !p.is_empty()),
                 throttle: throttle.filter(|t| !t.is_empty()),
                 ecc: Some(ecc).filter(|e| !e.is_empty()),
@@ -884,6 +960,7 @@ mod sysfs {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -1026,39 +1103,57 @@ mod tests {
 
     // --- nvidia-smi --------------------------------------------------------------
 
-    const CORE_CSV: &str = "NVIDIA GeForce RTX 4080, GPU-4f1c2a6e-8d3b-7c59-1e20-a9b3c4d5e6f7, 00000000:01:00.0, 560.94, 47, 6, 38.52, 320.00, 30, 1, 4, 16, 16\n";
-    const IDENT_CSV: &str = "00000000:01:00.0, 0x270410DE\n";
+    const CORE_CSV: &str = "NVIDIA GeForce RTX 4080, GPU-4f1c2a6e-8d3b-7c59-1e20-a9b3c4d5e6f7, 00000000:01:00.0, 0x270410DE, 560.94, 47, 6, 38.52, 320.00, 30, 1, 4, 16, 16\n";
     const THROTTLE_CSV: &str = "00000000:01:00.0, Not Active, Not Active, Not Active, Not Active\n";
-    const ALL_NA_CSV: &str = "00000000:01:00.0, [N/A], [N/A]\n";
-    const ALL_NA_REMAP_CSV: &str = "00000000:01:00.0, [N/A], [N/A], [N/A], [N/A]\n";
+    const OPTIONAL_NA_CSV: &str = "00000000:01:00.0, [N/A], [N/A], [N/A], [N/A], [N/A], [N/A]\n";
 
     /// A fake `nvidia-smi` answering by the first distinguishing field of the query.
     /// `broken` lists substrings of field lists that make the (fake) driver fail.
     fn fake_runner<'a>(
         outputs: &'a [(&'a str, &'a str)],
         broken: &'a [&'a str],
-    ) -> impl Fn(&[&str]) -> Option<Vec<Row>> + 'a {
+    ) -> impl Fn(&[&str]) -> nvidia::Probe + 'a {
         move |fields: &[&str]| {
             let joined = fields.join(",");
             if broken.iter().any(|b| joined.contains(b)) {
-                return None;
+                return Ok(None);
             }
-            let (_, csv) = outputs.iter().find(|(key, _)| joined.contains(key))?;
+            let Some((_, csv)) = outputs.iter().find(|(key, _)| joined.contains(key)) else {
+                return Ok(None);
+            };
             let rows: Vec<Row> = nvidia::parse_csv(csv)
                 .into_iter()
                 .filter(|r| r.len() == fields.len())
                 .collect();
-            (!rows.is_empty()).then_some(rows)
+            Ok((!rows.is_empty()).then_some(rows))
         }
+    }
+
+    /// `inner`, recording the comma-joined field list of every invocation in `calls`.
+    fn recording<'a>(
+        calls: &'a RefCell<Vec<String>>,
+        inner: impl Fn(&[&str]) -> nvidia::Probe + 'a,
+    ) -> impl Fn(&[&str]) -> nvidia::Probe + 'a {
+        move |fields: &[&str]| {
+            calls.borrow_mut().push(fields.join(","));
+            inner(fields)
+        }
+    }
+
+    /// The GPUs of one pass, ignoring why it may have stopped.
+    fn nv_gpus(run: &Runner<'_>) -> Option<Vec<NvGpu>> {
+        query_nvidia(run).gpus
+    }
+
+    fn timeout() -> nvidia::Probe {
+        Err(ProbeFailure::Timeout(nvidia::QUERY_BUDGET))
     }
 
     fn geforce_outputs() -> Vec<(&'static str, &'static str)> {
         vec![
             ("utilization.gpu", CORE_CSV),
-            ("pci.device_id", IDENT_CSV),
             ("clocks_event_reasons", THROTTLE_CSV),
-            ("ecc.errors", ALL_NA_CSV),
-            ("remapped_rows", ALL_NA_REMAP_CSV),
+            ("ecc.errors", OPTIONAL_NA_CSV),
         ]
     }
 
@@ -1066,7 +1161,7 @@ mod tests {
     fn a_geforce_card_decodes_with_ecc_null() {
         let outputs = geforce_outputs();
         let run = fake_runner(&outputs, &[]);
-        let nv = collect_nvidia(&run).unwrap();
+        let nv = nv_gpus(&run).unwrap();
         assert_eq!(nv.len(), 1);
         let g = &nv[0];
         assert_eq!(g.name.as_deref(), Some("NVIDIA GeForce RTX 4080"));
@@ -1088,30 +1183,94 @@ mod tests {
     }
 
     #[test]
+    fn a_healthy_geforce_costs_three_invocations() {
+        let outputs = geforce_outputs();
+        let calls = RefCell::new(Vec::new());
+        let run = recording(&calls, fake_runner(&outputs, &[]));
+        let nv = query_nvidia(&run);
+        assert!(nv.gpus.is_some());
+        assert_eq!(nv.stopped, None);
+        let calls = calls.borrow().clone();
+        assert_eq!(
+            calls.len(),
+            3,
+            "core (with identity), throttle, ECC + remapped rows: {calls:?}"
+        );
+        assert_eq!(calls[0], CORE_FIELDS.join(","));
+        assert!(calls[1].starts_with("pci.bus_id,clocks_event_reasons."));
+        assert_eq!(calls[2], OPTIONAL_FIELDS.join(","));
+    }
+
+    #[test]
+    fn the_worst_healthy_driver_costs_six_invocations() {
+        // Every fallback fires: the full core group, the new throttle spelling and the
+        // remapped-rows fields are all unknown to this driver.
+        let min_csv = "NVIDIA Tesla P100, GPU-p, 00000000:02:00.0, 0x15F810DE, 470.1, 61\n";
+        let old_throttle = "00000000:02:00.0, Not Active, Not Active, Not Active, Not Active\n";
+        let ecc_only = "00000000:02:00.0, 4, No\n";
+        let outputs = vec![
+            ("temperature.gpu", min_csv),
+            ("clocks_throttle_reasons", old_throttle),
+            ("ecc.errors", ecc_only),
+        ];
+        let run_inner = fake_runner(
+            &outputs,
+            &["utilization.gpu", "clocks_event_reasons", "remapped_rows"],
+        );
+        let calls = RefCell::new(Vec::new());
+        let run = recording(&calls, run_inner);
+        let nv = query_nvidia(&run);
+        assert_eq!(nv.stopped, None);
+        assert_eq!(calls.borrow().len(), 6, "{:?}", calls.borrow());
+        let g = &nv.gpus.unwrap()[0];
+        assert_eq!(g.temperature_c, Some(61.0));
+        assert_eq!(g.throttle.as_ref().unwrap().hw_slowdown, Some(false));
+        assert_eq!(g.ecc.as_ref().unwrap().uncorrected_volatile, Some(4));
+        assert_eq!(g.ecc.as_ref().unwrap().remapped_rows, None);
+    }
+
+    #[test]
+    fn the_minimal_core_group_is_a_prefix_of_the_full_one() {
+        assert_eq!(&CORE_FIELDS[..CORE_MIN_FIELDS.len()], CORE_MIN_FIELDS);
+        assert_eq!(CORE_FIELDS[CORE_BUS_COL], "pci.bus_id");
+        assert_eq!(CORE_FIELDS[CORE_DEVICE_COL], "pci.device_id");
+        assert_eq!(&OPTIONAL_FIELDS[..ECC_ONLY_FIELDS.len()], ECC_ONLY_FIELDS);
+    }
+
+    #[test]
     fn a_failing_core_group_retries_the_minimal_one() {
-        let min_csv = "NVIDIA GeForce GTX 1060, GPU-abc, 00000000:02:00.0, 391.35, 61\n";
+        let min_csv =
+            "NVIDIA GeForce GTX 1060, GPU-abc, 00000000:02:00.0, 0x1C0310DE, 391.35, 61\n";
         // The full core query fails (an unknown field); only the minimal one answers.
         let outputs = vec![("temperature.gpu", min_csv)];
         let run = |fields: &[&str]| {
             if fields.len() > CORE_MIN_FIELDS.len() {
-                return None;
+                return Ok(None);
             }
             fake_runner(&outputs, &[])(fields)
         };
-        let nv = collect_nvidia(&run).unwrap();
+        let nv = nv_gpus(&run).unwrap();
         assert_eq!(nv.len(), 1);
         assert_eq!(nv[0].temperature_c, Some(61.0));
         assert_eq!(nv[0].utilization_percent, None);
         assert_eq!(nv[0].pcie, None);
         assert_eq!(nv[0].throttle, None);
         assert_eq!(nv[0].ecc, None);
-        assert_eq!(nv[0].pci_id, None);
+        assert_eq!(nv[0].pci_id.as_deref(), Some("10de:1c03"));
     }
 
     #[test]
     fn nothing_answering_is_none_not_an_empty_gpu() {
-        let run = |_: &[&str]| None;
-        assert_eq!(collect_nvidia(&run), None);
+        let calls = RefCell::new(Vec::new());
+        let run = recording(&calls, |_: &[&str]| Ok(None));
+        let nv = query_nvidia(&run);
+        assert_eq!(nv.gpus, None);
+        assert_eq!(nv.stopped, None);
+        assert_eq!(
+            calls.borrow().len(),
+            2,
+            "the full and the minimal core group"
+        );
     }
 
     #[test]
@@ -1122,7 +1281,7 @@ mod tests {
         outputs.push(("clocks_throttle_reasons", old));
         // The new spelling is an unknown field to this driver.
         let run = fake_runner(&outputs, &["clocks_event_reasons"]);
-        let nv = collect_nvidia(&run).unwrap();
+        let nv = nv_gpus(&run).unwrap();
         let t = nv[0]
             .throttle
             .as_ref()
@@ -1140,28 +1299,29 @@ mod tests {
             &[
                 "clocks_event_reasons",
                 "clocks_throttle_reasons",
-                "pci.device_id",
+                "ecc.errors",
             ],
         );
-        let nv = collect_nvidia(&run).unwrap();
+        let nv = nv_gpus(&run).unwrap();
         assert_eq!(nv[0].throttle, None);
-        assert_eq!(nv[0].pci_id, None);
+        assert_eq!(nv[0].ecc, None);
         assert_eq!(nv[0].temperature_c, Some(47.0));
+        assert_eq!(
+            nv[0].pci_id.as_deref(),
+            Some("10de:2704"),
+            "identity comes with the core group"
+        );
     }
 
     #[test]
     fn a_datacenter_card_reports_ecc_and_remapped_rows() {
-        let core = "NVIDIA A100-PCIE-40GB, GPU-a100, 00000000:3B:00.0, 535.104, 61, 97, 250.10, 250.00, [N/A], 4, 4, 16, 16\n";
-        let ecc = "00000000:3B:00.0, 3, No\n";
-        let remap = "00000000:3B:00.0, 2, 0, Yes, No\n";
-        let outputs = vec![
-            ("utilization.gpu", core),
-            ("ecc.errors", ecc),
-            ("remapped_rows", remap),
-        ];
+        let core = "NVIDIA A100-PCIE-40GB, GPU-a100, 00000000:3B:00.0, 0x20F110DE, 535.104, 61, 97, 250.10, 250.00, [N/A], 4, 4, 16, 16\n";
+        let optional = "00000000:3B:00.0, 3, No, 2, 0, Yes, No\n";
+        let outputs = vec![("utilization.gpu", core), ("ecc.errors", optional)];
         let run = fake_runner(&outputs, &[]);
-        let g = collect_nvidia(&run).unwrap().remove(0);
+        let g = nv_gpus(&run).unwrap().remove(0);
         assert_eq!(g.bus_id.as_deref(), Some("0000:3b:00.0"));
+        assert_eq!(g.pci_id.as_deref(), Some("10de:20f1"));
         assert_eq!(g.fan_target_percent, None);
         assert_eq!(
             g.ecc,
@@ -1179,9 +1339,27 @@ mod tests {
     }
 
     #[test]
+    fn a_driver_without_remapped_rows_still_reports_ecc() {
+        let core = "NVIDIA Tesla V100, GPU-v100, 00000000:3B:00.0, 0x1DB110DE, 450.1, 61, 97, 250.10, 250.00, [N/A], 3, 3, 16, 16\n";
+        let ecc_only = "00000000:3B:00.0, 5, Yes\n";
+        let outputs = vec![("utilization.gpu", core), ("ecc.errors", ecc_only)];
+        // The remapped-rows fields are unknown, which fails the merged optional query.
+        let run = fake_runner(&outputs, &["remapped_rows"]);
+        let g = nv_gpus(&run).unwrap().remove(0);
+        assert_eq!(
+            g.ecc,
+            Some(Ecc {
+                uncorrected_volatile: Some(5),
+                retired_pages_pending: Some(true),
+                remapped_rows: None,
+            })
+        );
+    }
+
+    #[test]
     fn groups_join_by_bus_id_not_by_row_order() {
-        let core = "GPU A, GPU-a, 00000000:01:00.0, 560.94, 40, 1, 10, 100, 20, 1, 4, 16, 16\n\
-                    GPU B, GPU-b, 00000000:02:00.0, 560.94, 60, 2, 20, 200, 40, 1, 4, 8, 8\n";
+        let core = "GPU A, GPU-a, 00000000:01:00.0, 0x270410DE, 560.94, 40, 1, 10, 100, 20, 1, 4, 16, 16\n\
+                    GPU B, GPU-b, 00000000:02:00.0, 0x270410DE, 560.94, 60, 2, 20, 200, 40, 1, 4, 8, 8\n";
         // The throttle group lists the GPUs in the opposite order.
         let throttle = "00000000:02:00.0, Active, Not Active, Not Active, Not Active\n\
                         00000000:01:00.0, Not Active, Not Active, Not Active, Not Active\n";
@@ -1190,11 +1368,87 @@ mod tests {
             ("clocks_event_reasons", throttle),
         ];
         let run = fake_runner(&outputs, &[]);
-        let nv = collect_nvidia(&run).unwrap();
+        let nv = nv_gpus(&run).unwrap();
         assert_eq!(nv[0].name.as_deref(), Some("GPU A"));
         assert_eq!(nv[0].throttle.as_ref().unwrap().hw_slowdown, Some(false));
         assert_eq!(nv[1].name.as_deref(), Some("GPU B"));
         assert_eq!(nv[1].throttle.as_ref().unwrap().hw_slowdown, Some(true));
+    }
+
+    // --- circuit breaker ---------------------------------------------------------
+
+    #[test]
+    fn a_timed_out_core_query_stops_every_later_invocation() {
+        let calls = RefCell::new(Vec::new());
+        let run = recording(&calls, |_: &[&str]| timeout());
+        let nv = query_nvidia(&run);
+        assert_eq!(calls.borrow().len(), 1, "no minimal retry, no other group");
+        assert_eq!(nv.gpus, None);
+        assert_eq!(
+            nv.stopped,
+            Some(ProbeFailure::Timeout(nvidia::QUERY_BUDGET))
+        );
+        // One entry, whether or not an NVIDIA adapter was expected: a timeout means the
+        // binary exists and is wedged.
+        for wants in [true, false] {
+            assert_eq!(
+                nvidia_error(&nv, wants).as_deref(),
+                Some("nvidia-smi: timed out after 5s; remaining queries skipped")
+            );
+        }
+    }
+
+    #[test]
+    fn a_timeout_after_the_core_group_keeps_the_core_facts() {
+        let outputs = geforce_outputs();
+        let inner = fake_runner(&outputs, &[]);
+        let calls = RefCell::new(Vec::new());
+        let run = recording(&calls, |fields: &[&str]| {
+            if fields.iter().any(|f| f.starts_with("clocks_")) {
+                return timeout();
+            }
+            inner(fields)
+        });
+        let nv = query_nvidia(&run);
+        assert_eq!(
+            calls.borrow().len(),
+            2,
+            "core, then the hung throttle group"
+        );
+        let g = &nv.gpus.as_ref().unwrap()[0];
+        assert_eq!(g.temperature_c, Some(47.0));
+        assert_eq!(g.throttle, None);
+        assert_eq!(g.ecc, None);
+        assert!(nvidia_error(&nv, true).unwrap().contains("timed out"));
+    }
+
+    #[test]
+    fn nvidia_smi_that_cannot_start_is_one_error_only_where_it_was_expected() {
+        let calls = RefCell::new(Vec::new());
+        let run = recording(&calls, |_: &[&str]| Err(ProbeFailure::Spawn));
+        let nv = query_nvidia(&run);
+        assert_eq!(calls.borrow().len(), 1);
+        assert_eq!(nv.gpus, None);
+        assert_eq!(
+            nvidia_error(&nv, true).as_deref(),
+            Some("nvidia-smi: could not be started; remaining queries skipped")
+        );
+        assert_eq!(nvidia_error(&nv, false), None, "no driver, no complaint");
+    }
+
+    #[test]
+    fn a_pass_with_no_failure_has_an_error_only_when_nothing_answered() {
+        let run = |_: &[&str]| Ok(None);
+        let nothing = query_nvidia(&run);
+        assert_eq!(
+            nvidia_error(&nothing, true).as_deref(),
+            Some("nvidia-smi: no usable output")
+        );
+        assert_eq!(nvidia_error(&nothing, false), None);
+
+        let outputs = geforce_outputs();
+        let healthy = query_nvidia(&fake_runner(&outputs, &[]));
+        assert_eq!(nvidia_error(&healthy, true), None);
     }
 
     // --- merging -----------------------------------------------------------------
@@ -1212,9 +1466,12 @@ mod tests {
     fn the_windows_fixture_is_what_the_collector_produces() {
         // The canned `nvidia-smi` answer for a card that reports row remapping (all zeros).
         let mut outputs = geforce_outputs();
-        outputs.retain(|(k, _)| *k != "remapped_rows");
-        outputs.push(("remapped_rows", "00000000:01:00.0, 0, 0, No, No\n"));
-        let nv = collect_nvidia(&fake_runner(&outputs, &[])).unwrap();
+        outputs.retain(|(k, _)| *k != "ecc.errors");
+        outputs.push((
+            "ecc.errors",
+            "00000000:01:00.0, [N/A], [N/A], 0, 0, No, No\n",
+        ));
+        let nv = nv_gpus(&fake_runner(&outputs, &[])).unwrap();
         let (gpus, truncated) = assemble(windows_identity(), nv);
         let actual = section_from(&gpus, truncated, vec![]).into_value();
         let expected = &fixture("telemetry_snapshot.json")["snapshot"]["gpu"];
@@ -1224,7 +1481,7 @@ mod tests {
     #[test]
     fn nvidia_without_a_matching_identity_is_added_on_its_own() {
         let outputs = geforce_outputs();
-        let nv = collect_nvidia(&fake_runner(&outputs, &[])).unwrap();
+        let nv = nv_gpus(&fake_runner(&outputs, &[])).unwrap();
         let (gpus, _) = assemble(Vec::new(), nv);
         assert_eq!(gpus.len(), 1);
         assert_eq!(gpus[0].sources, ["nvidia-smi"]);
@@ -1241,7 +1498,7 @@ mod tests {
         let mut other = Gpu::identity("sysfs", "Intel GPU 4680".into(), "intel");
         other.bus_id = Some("0000:00:02.0".into());
         let outputs = geforce_outputs();
-        let nv = collect_nvidia(&fake_runner(&outputs, &[])).unwrap();
+        let nv = nv_gpus(&fake_runner(&outputs, &[])).unwrap();
         let (gpus, _) = assemble(vec![other, sys], nv);
         assert_eq!(gpus.len(), 2);
         assert_eq!(gpus[0].sources, ["sysfs"]);
@@ -1470,7 +1727,7 @@ mod tests {
         assert_eq!(bare["pcie"], Value::Null);
         assert_eq!(bare["ras"], Value::Null);
         let outputs = geforce_outputs();
-        let nv = collect_nvidia(&fake_runner(&outputs, &[])).unwrap();
+        let nv = nv_gpus(&fake_runner(&outputs, &[])).unwrap();
         let (gpus, _) = assemble(Vec::new(), nv);
         assert_eq!(keys(&gpus[0].to_json()), want);
 
