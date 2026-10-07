@@ -679,11 +679,13 @@ the models, and the assistant's limits
   included in backups. Behind a gateway that holds the provider key, the key can stay
   empty.
 - **Ask kenny**, **Recommendations**, **Forecast prose**, **Reliability event
-  classification**, **Ticket assistant** — one switch each, all on by default. A feature
+  classification**, **Ticket assistant**, **Weekly digest summary** — one switch each, all
+  on by default. A feature
   runs only with AI on, a key or gateway set *and* its own switch on; while it cannot run, the
   dashboard does not show it. The Ask kenny button and ⌘K disappear, a section modal has
   no recommendation block, the forecast shows its plain computed summary (only AI-written
-  prose is marked *AI*), new reliability events stay unclassified, and a ticket's chat is
+  prose is marked *AI*), new reliability events stay unclassified, the weekly digest goes out without its
+  [In short](alerting.md#weekly-digest) line, and a ticket's chat is
   left to operators: on a ticket page the Ask kenny button and the pointer to a pending
   decision disappear (in Discord, kenny says so in the thread). On a ticket, the Ask kenny
   button follows the ticket assistant's switch, not Ask kenny's.
