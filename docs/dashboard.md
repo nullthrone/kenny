@@ -97,7 +97,7 @@ accounts.
 
 <figure markdown>
   ![The Today page](assets/screenshots/today.png)
-  <figcaption>Today: one verdict sentence, the ranked items that need attention, the health donut, the 30-day trend, and six fleet KPIs.</figcaption>
+  <figcaption>Today: one verdict sentence, the ranked items that need attention, the health donut, the 30-day trend, and the fleet KPIs.</figcaption>
 </figure>
 
 The landing view — the fleet in one sentence, not a wall of charts. It is built to be
@@ -122,10 +122,11 @@ read in a few seconds, not studied.
   A host whose only findings are posture counts as healthy.
 - **Fleet health · 30 days** — a trend line of the same mix over the last month, with a
   **full fleet →** link into [Fleet](#fleet).
-- **Six KPI numbers** — the fleet vitals worth a glance even when nothing is flagged:
-  reboots pending, open app updates, failed updates, quarantined threats, OS end-of-life,
-  and disks forecast to fill within 30 days. (Hosts online moved to the header's online
-  count, so it is not repeated here.)
+- **Eight KPI numbers** — the fleet vitals worth a glance even when nothing is flagged:
+  hosts online, reboots pending, open app updates, failed updates, quarantined threats, OS
+  end-of-life, disks forecast to fill within 30 days, and **hardware at risk** — the
+  number of hosts with a [hardware forecast](alerting.md#forecasts) standing (a worn SSD,
+  a first disk error, a slowing fan, a degrading link, a rising error rate).
 
 **"All quiet" is a first-class state**, not an empty placeholder: when nothing ranks for
 attention, the ranked-items list is simply absent and the verdict sentence says so
@@ -216,12 +217,17 @@ operator+.
 ### Forecast
 
 A short, plain-English outlook pinned near the top, rendered in an inverted (ink-on-paper)
-panel: what is likely to need attention on this PC soon, synthesized from the disk-fill
-and battery trends and the inventory changes since yesterday — e.g. *"Drive C: is filling
+panel: what is likely to need attention on this PC soon, synthesized from the disk-fill,
+battery and hardware-wear trends and the inventory changes since yesterday — e.g. *"Drive C: is filling
 steadily and should reach capacity in about 16 days — the growth is in Videos, not system
 files. A reboot has been pending for 9 days; expect update failures if it waits much
 longer."* With AI forecasts on it streams from the model and is marked *AI*; otherwise
-the same panel shows a concise deterministic summary of the same signals, unmarked. See
+the same panel shows a concise deterministic summary of the same signals, unmarked.
+
+Beneath the prose, a **Hardware at risk** list names each device the long-lived history
+flags: the device, a plain sentence about what is happening to it (*"Samsung SSD 980 PRO
+has used 91% of its rated write endurance and may reach it in about 4 months"*) and, for
+the two projections, how far off. It is absent when nothing is at risk. See
 [Alerting & forecasts](alerting.md#forecasts).
 
 ### Availability
@@ -308,6 +314,43 @@ breakdown, a panel lists and manages suppression rules: a manual form takes an *
 note. Removing a fleet-wide rule asks for confirmation, since it re-arms the alarm on
 every PC. See [Alarm suppression](telemetry.md#alarm-suppression) and
 [ADR-0041](adr/0041-reliability-alarm-suppression.md).
+
+### Disk health, hardware errors, GPU and fans
+
+Four sections open a specialized body in the detail modal. Each reads the section's own
+telemetry and, where the server has it, the device's **long-lived history** — a sparkline
+captioned with its span in days and the latest value, from the `hardware` key of
+`GET /api/agent/{id}/trends` — so a number is shown with the direction it is moving. A
+server that sends no history leaves the bodies as plain snapshots.
+
+- **Disk health** (`disk_smart`; `disk` opens the same modal on its volumes first) — the
+  **physical disks**, one card per disk: model, bus and media type, size, health status,
+  `REMOVABLE` and `PREDICTS FAILURE` chips, serial, temperature, power-on time, wear and
+  the uncorrected read/write counters. An NVMe disk adds its **health log** (critical
+  warning, spare capacity, endurance used, media errors, unsafe shutdowns, error-log
+  entries, data written); a disk that reports SMART attributes adds them, named
+  (reallocated, pending and offline-uncorrectable sectors, command timeouts). A disk
+  whose health log could not be read says so, and a disk paused for a protected game is
+  marked. History: endurance used, spare capacity and each error counter. The volumes
+  and largest directories follow.
+- **Hardware errors** — the rule's **findings** (component chip and symptom), the event
+  groups behind them (source, count, last seen, active days, sample), the memory
+  (`edac`) and PCIe (`aer`) counters, and the application-crash summary the instability
+  check uses. A note warns when the event log reaches back less far than the window that
+  was asked for, so a quiet window is not read as a long one. History: corrected, fatal
+  and instability events per day.
+- **GPU** — one card per adapter: driver, temperature, utilization, power, fan, PCIe link,
+  chips for the clock-event reasons that are asserted (hardware slowdown, thermal
+  slowdown, power brake), and the ECC, retired-page, row-remap and RAS counters where the
+  driver reports them. History: the PCIe width reached under load, against the card's
+  maximum.
+- **Fans** — one card per fan: the samples of the speed burst with their mean, the
+  commanded duty and the mode. History: RPM per duty band, which is what exposes a fan
+  that slows down at the same setting.
+
+Where a collector could not read part of a section, the body lists its **probe errors**
+instead of an empty field. On a [Today](#today) row, the action link for these
+sections reads **CHECK DISK**, **CHECK HARDWARE**, **CHECK GPU** and **CHECK FAN**.
 
 ### Local accounts
 
@@ -799,10 +842,12 @@ able to widen what may be run.
 
 ### System
 
-**Log level** (applied immediately) and **snapshot retention** — how long raw telemetry
-snapshots are kept. Snapshots dominate the database's size; lowering retention prunes on
-the next alert cycle (about a minute), and frees space for reuse without shrinking the
-database file.
+**Log level** (applied immediately), **snapshot retention** — how long raw telemetry
+snapshots are kept — and **hardware history retention** — how long the compact per-device
+daily hardware metrics behind the [hardware forecasts](alerting.md#forecasts) are kept
+(730 days by default, at least 30). Snapshots dominate the database's size; lowering
+either retention prunes on the next alert cycle (about a minute), and frees space for
+reuse without shrinking the database file.
 
 ### Users
 

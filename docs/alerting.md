@@ -28,6 +28,7 @@ decides *interruption*, auto-ticket rules decide *work*.
 | An inventory change on the allowlist | **push** | One message now |
 | Any other inventory change | **record** | Nothing (Log page, digest counts) |
 | A disk-fill forecast starts | **daily** | A line in the next daily summary, once per episode |
+| A hardware forecast names a new device at risk | **daily** | A line in the next daily summary; announced again only when a new device or reason joins the set |
 | Weekly digest | **push** | One message a week |
 
 Human channels (ntfy, Discord) receive `push` only. The generic webhook is a machine
@@ -50,11 +51,13 @@ its route (above) decides who hears about it:
   candidate now waits in a `pending:section:<name>` scope and is delivered on the first
   pass that may send it, without the condition having to change again.
 - **Some sections must be confirmed before they alarm.** A section listed in
-  `health_rules.CONFIRM_BEFORE_ALARM` — today `reliability` — has to report the same
-  incident on a **newer** `collected_at` before it notifies. The loop runs every 60 s over
-  a snapshot that changes every ~900 s, and `reliability` reads a rolling 7-day window
-  whose contents shift as events age out of it, so one evaluation over one snapshot was
-  enough to page someone and open a ticket for a finding that was gone by the next push.
+  `health_rules.CONFIRM_BEFORE_ALARM` — today `reliability`, `hardware_errors`, `gpu` and
+  `fans` — has to report the same incident on a **newer** `collected_at` before it
+  notifies. The loop runs every 60 s over a snapshot that changes every ~900 s, and these
+  sections read a rolling event window (`reliability`, `hardware_errors`), flickering clock-event
+  reasons (`gpu`) or a short burst of fan samples (`fans`), so one evaluation over one
+  snapshot was enough to page someone and open a ticket for a finding that was gone by the
+  next push.
   The cost is one push interval of latency on a genuine incident.
 - **A recovery is only announced if the degrading episode was itself announced.** An
   improvement that nobody was told about stays silent, and `crit→warn` updates state
@@ -130,7 +133,8 @@ Two consequences worth knowing:
 
 - A health finding and a disk-fill forecast about the same volume are **one** case. Both
   name the `disk` section, so the forecast attaches to the ticket the acute finding opened,
-  or the other way round.
+  or the other way round. A hardware forecast does the same with the section its device
+  belongs to (`disk_smart`, `gpu`, `fans`, `hardware_errors`).
 - An **inventory change** never shares a ticket with a health finding, even on the same
   section. "a new service appeared" and "a service is failing" are different kinds of fact:
   only the second can come back to `ok`, so only the second has a current state to check.
@@ -141,11 +145,11 @@ condition, its return is news again.
 ### Which events open a ticket is configurable
 
 By default, every genuine alert — a health escalation, a host going missing, a disk-fill
-forecast — opens a ticket, and a recovery, an inventory change, and the weekly digest never
+or hardware forecast — opens a ticket, and a recovery, an inventory change, and the weekly digest never
 do. An operator can narrow or widen that per fleet or per host from **Admin → Alarm
 rules** ([auto-ticket rules](dashboard.md#alarm-rules)), or via the `ticket_rule_*`
 MCP tools. Each rule names an event type (`health` / `offline` / `disk_forecast` /
-`change`), an optional section and host, and a decision: `open_all` (always), `open_crit`
+`hardware_forecast` / `change`), an optional section and host, and a decision: `open_all` (always), `open_crit`
 (only when the subject is `crit`) or `never`.
 
 Two practical cases this solves:
@@ -157,9 +161,9 @@ Two practical cases this solves:
   account is exactly the kind of thing worth a ticket. An `open_all` rule on `change` with
   section `local_accounts` promotes it.
 
-One section departs from the `open_all` default: **a `reliability` warn does not open a
-ticket**, only a `reliability` crit does. What that section warns about is real but not
-urgent — a PC that asks for its BitLocker recovery key on every restart, one unexpected
+Three sections depart from the `open_all` default: **a `reliability`, `hardware_errors`
+or `gpu` warn does not open a ticket**, only a crit does. What those sections warn about is
+real but not urgent — a PC that asks for its BitLocker recovery key on every restart, one unexpected
 restart on an otherwise healthy machine. Those are worth seeing on the host page and worth
 one notification; on a four-host family fleet, one queue item each is what buried the
 queue. Any operator rule still overrides this.
@@ -232,10 +236,34 @@ rather than a scary made-up number:
   `disk_forecast` + `disk`.
 - **Battery drift** — health change as **percent per 30 days**; a meaningful decline
   appears in the digest.
+- **Hardware forecasts** — slow precursors of a hardware failure, read from the
+  [two-year per-device history](telemetry.md#how-telemetry-flows) rather than the 30-day
+  snapshots ([ADR-0070](adr/0070-long-lived-per-device-hardware-history.md)). The health
+  rules judge what a device is doing *now*; these judge which way it is heading. Each
+  names the device and says what is happening in plain words:
+
+    | Reason | Device | Raised when |
+    |--------|--------|-------------|
+    | `wear_out` | SSD | `percentage_used` is projected to reach 100 within **180 days** (same fit gate as the disk forecast, over the last 180 days) or is already there |
+    | `spare_decline` | NVMe | `available_spare` is projected to reach the drive's own safety threshold within **90 days** or already has |
+    | `first_error` | disk | a lifetime counter (media errors, SMART 197 / 198 / 5, uncorrected read/write) left zero and grew within the last **30 days**; a counter that was already non-zero when observation began is a standing fact, not news |
+    | `pcie_width_regression` | GPU | the widest link seen under load was below the card's own historic best on at least 3 of the last 7 days (an x4 slot is by design; only a *drop* counts) |
+    | `fan_drift` | fan | in every duty band with data, the last 7 days' median RPM is at least **12 %** below the fan's own baseline (its first 30 days), on at least 5 of the 7 days — a change of fan curve does not trigger it |
+    | `error_rate_rising` | component | a hardware-error count (events, EDAC or PCIe counters) over the last 7 days is at least twice the weekly rate of the 21 days before, with at least 3 events and two weeks of history |
+
+    A device with no data for 14 days is treated as gone (replaced or removed), not
+    failing; a counter that decreases is a reset, not a recovery. A forecast raises **one
+    `hardware_forecast` alert per host**, routed `daily`, which names every section its
+    devices belong to (`disk_smart`, `gpu`, `fans`, `hardware_errors`) so it shares a ticket
+    with the section's own finding. A device and reason already announced is not news
+    again; a new one is. By default a `hardware_forecast` **opens a ticket** (`open_all`),
+    and an auto-ticket rule can target `hardware_forecast` with one of those sections. The
+    weekly digest lists them under **Hardware at risk**, and Today counts the hosts with
+    one in its **Hardware at risk** KPI.
 
 These same computations feed the per-host **Forecast** panel at the top of
 [the host page](dashboard.md#the-host-page), which synthesizes them (with the inventory
-diff) into a short prose outlook.
+diff) into a short prose outlook and lists the hardware at risk beneath it.
 
 ## Daily summary
 
@@ -243,7 +271,7 @@ What can wait is collected into one message a day at `KENNY_ALERT_DAILY_HOUR` (U
 default 08:00):
 
 - It lists findings routed `daily` since the last summary that are **still open** now: warn
-  findings, missing hosts, disk forecasts. One line per host and section, with the current
+  findings, missing hosts, disk and hardware forecasts. One line per host and section, with the current
   reason and how long it has been open. A finding that came and went in between is left out.
 - A crit that was already pushed is not repeated. It counts towards the `N older finding(s)
   still open` line, which is followed by a link to the Inbox when `KENNY_PUBLIC_URL` is set.
@@ -257,7 +285,7 @@ default 08:00):
 A plain-text weekly summary is scheduled inside the same loop and sent on the same
 channels at low priority. It renders — entirely from data already in the stores — the
 fleet health mix, degraded hosts, 7-day alert / change / crit counts, disk-fill
-forecasts, battery drift, pending reboots / failed updates / OS EOL, and 7-day screen
+forecasts, hardware at risk, battery drift, pending reboots / failed updates / OS EOL, and 7-day screen
 time.
 
 - Scheduled by default **Monday 08:00** (`KENNY_DIGEST_DAY` / `KENNY_DIGEST_HOUR`); the
@@ -337,5 +365,6 @@ See [`setup.md`](setup.md) for the full list.
 - [`itsm.md`](itsm.md) — tickets, the Discord bot, and what an alert-opened ticket looks like
 - [ADR-0027](adr/0027-push-alerting-ntfy-webhook-and-weekly-digest.md) — push alerting & weekly digest
 - [ADR-0067](adr/0067-alert-delivery-is-routed-by-actionability.md) — routes, the daily summary, editing in place
+- [ADR-0070](adr/0070-long-lived-per-device-hardware-history.md) — the per-device hardware history the hardware forecasts are fitted on
 - `kenny-server/kenny_server/ticket_rules.py` — the auto-ticket rule model, and why an
   empty rule table reproduces the coded default

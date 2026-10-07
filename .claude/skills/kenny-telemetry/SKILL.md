@@ -20,10 +20,14 @@ the `telemetry_collect` tool. See `docs/adr/0007-telemetry-push-model-and-sqlite
 - **Store** (`kenny-server/kenny_server/store.py`): SQLite, latest snapshot + ~30 days of
   history per agent, with a retention job.
 - **Health rules** (`kenny-server/kenny_server/health_rules.py`): the authoritative
-  thresholds (e.g. disk > 90% ⇒ crit, Defender scan > 14 days ⇒ warn). Aggregates section
+  thresholds (e.g. disk ≥ 95% ⇒ crit, Defender scan > 14 days ⇒ warn). Aggregates section
   statuses into an overall per-agent health.
-- **Dashboard** (`kenny-server/kenny_server/webui/`): fleet grid of agent tiles (overall
-  traffic-light), drill-down to one agent's sections + history trends, "refresh now".
+- **Dashboard** (`kenny-web/`, a Vite + React + TypeScript app built into
+  `kenny-server/kenny_server/webui/dist/` and shipped in the server; `webui/__init__.py` serves its
+  `/api/*` routes): Today, a fleet grid of agent tiles (overall traffic-light), a host page
+  with each section's detail modal + history trends, "refresh now". A new section needs its
+  body under `kenny-web/src/views/host/sections/`, an entry in `sections.ts`, and the type
+  in `views/host/types.ts`.
 
 ## Sections
 

@@ -7,7 +7,7 @@ commands on them through kenny. For installing and hosting the server, see
 ## What kenny gives you
 
 - A **Today page** — the fleet in one sentence, the items that need attention ranked by
-  consequence, a health donut, a 30-day trend, and six fleet KPIs.
+  consequence, a health donut, a 30-day trend, and the fleet KPIs.
 - A **Fleet page** — a card per machine, worst-first, and a full **host page** per PC:
   every telemetry section, a health trend, inventory changes + forecasts, and the last
   screenshot.
@@ -66,8 +66,8 @@ own per-agent token; you authenticate to the server with the **operator token**.
 The landing view: a plain-English **verdict sentence**, at most **three** items ranked by
 consequence (a critical section beats a warning section, which beats a held approval,
 which beats a stale ticket) with a link straight to the host or ticket behind each one, a
-fleet **health donut**, a **30-day trend**, and **six KPI numbers** (reboots pending,
-open/failed updates, quarantine, EOL, disks filling). When nothing needs attention, the
+fleet **health donut**, a **30-day trend**, and **KPI numbers** (hosts online, reboots pending,
+open/failed updates, quarantine, EOL, disks filling, hardware at risk). When nothing needs attention, the
 page says so plainly instead of showing an empty chart — "all quiet" is a normal, expected
 state, not an error. Full details in the [dashboard reference](dashboard.md#today).
 
