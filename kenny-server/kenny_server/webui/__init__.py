@@ -2706,6 +2706,10 @@ _SECTION_ACTION: dict[str, str] = {
     "time_sync": "CHECK CLOCK",
     "encryption": "REVIEW ENCRYPTION",
     "uptime": "SCHEDULE REBOOT",
+    "disk_smart": "CHECK DISK",
+    "hardware_errors": "CHECK HARDWARE",
+    "gpu": "CHECK GPU",
+    "fans": "CHECK FAN",
 }
 
 # Small enough vocabulary (single digits, the whole fleet in a household) to
