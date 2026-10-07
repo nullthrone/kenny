@@ -443,17 +443,124 @@ def _rule_gpu(
 # =============================================================================
 
 
+# A fan the board drives at or above this duty (%) is being asked to spin; a
+# fan-stop / zero-RPM mode commands ~0 %, so it never reads as a stall.
+_FAN_STALL_MIN_DUTY = 30.0
+# Jitter needs a real burst of running samples and a fan fast enough that a few
+# RPM of tachometer quantisation is not a large fraction of the mean.
+_FAN_JITTER_MIN_SAMPLES = 4
+_FAN_JITTER_MIN_MEAN_RPM = 300.0
+_FAN_JITTER_CV = 0.15
+# Defensive bounds on an unvalidated payload (the contract caps a section at 16
+# fans of 5 samples): anything beyond is ignored, and a reading above the
+# ceiling is malformed rather than a speed.
+_FAN_MAX_FANS = 32
+_FAN_MAX_SAMPLES = 64
+_FAN_MAX_RPM = 1_000_000.0
+_FAN_LABEL_MAX = 64
+
+
+def _fan_samples(value: Any) -> list[float] | None:
+    """The burst as non-negative numbers, or ``None`` when it is unusable.
+
+    One bad entry (a string, ``null``, a negative or absurd reading) makes the
+    whole burst unusable: judging the remainder could invent a stall or a
+    jitter from a partial read.
+    """
+
+    if not isinstance(value, list) or not value:
+        return None
+    samples: list[float] = []
+    for raw in value[:_FAN_MAX_SAMPLES]:
+        rpm = _number(raw)
+        if rpm is None or rpm < 0 or rpm > _FAN_MAX_RPM:
+            return None
+        samples.append(rpm)
+    return samples
+
+
+def _fan_name(fan: dict[str, Any]) -> str:
+    """The board's label for the fan, falling back to its ``key``."""
+
+    for field in ("label", "key"):
+        raw = fan.get(field)
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()[:_FAN_LABEL_MAX]
+    return "unnamed fan"
+
+
+def _judge_fan(fan: dict[str, Any]) -> dict[str, Any]:
+    """One fan's verdict: ``{key, label, status, symptom, mean_rpm, cv}``."""
+
+    key = fan.get("key")
+    name = _fan_name(fan)
+    verdict: dict[str, Any] = {
+        "key": key if isinstance(key, str) else name,
+        "label": name,
+        "status": "ok",
+        "symptom": None,
+        "mean_rpm": None,
+        "cv": None,
+    }
+    samples = _fan_samples(fan.get("rpm_samples"))
+    if samples is None:
+        return verdict
+    verdict["mean_rpm"] = round(math.fsum(samples) / len(samples), 1)
+    duty = _number(fan.get("duty_percent"))
+    if all(rpm == 0 for rpm in samples):
+        if duty is not None and duty >= _FAN_STALL_MIN_DUTY:
+            verdict["status"] = "warn"
+            verdict["symptom"] = (
+                f"Fan {name} has stopped although the board is driving it at {duty:.0f}%"
+            )
+        return verdict
+    running = [rpm for rpm in samples if rpm > 0]
+    if len(running) < _FAN_JITTER_MIN_SAMPLES:
+        return verdict
+    mean = math.fsum(running) / len(running)
+    if mean < _FAN_JITTER_MIN_MEAN_RPM:
+        return verdict
+    # Population stdev: the burst is the whole population we judge, and the
+    # smaller estimate errs toward not alarming on a short burst. The duty is a
+    # single value per snapshot, so it is constant by construction.
+    cv = math.sqrt(math.fsum((rpm - mean) ** 2 for rpm in running) / len(running)) / mean
+    verdict["mean_rpm"] = round(mean, 1)
+    verdict["cv"] = round(cv, 3)
+    if cv > _FAN_JITTER_CV:
+        verdict["status"] = "warn"
+        verdict["symptom"] = (
+            f"Fan {name} speed is unstable (\u00b1{cv * 100:.0f}%) at a constant "
+            "setting \u2014 possible bearing wear"
+        )
+    return verdict
+
+
 def _rule_fans(payload: dict[str, Any], now: datetime) -> "tuple[Status, str] | None":
     """Judge ``fans``: a stalled or unstable fan.
 
-    Will report warn for a stall (every sample 0 RPM while the commanded duty is
-    at least 30 %) and for jitter (a coefficient of variation above ~15 % at a
-    constant duty). Fans flagged ``idle_or_absent`` are not stalls. Drift
-    against a fan's own baseline is the trend layer's job. Defers when no fan is
-    reported.
+    Warn for a stall (every sample 0 RPM while the commanded duty is at least
+    30 %) and for jitter (at least 4 running samples, mean >= 300 RPM, a
+    coefficient of variation above 15 % at the snapshot's single duty). Fans
+    flagged ``idle_or_absent`` are skipped, and a zero-RPM mode (duty ~0 or
+    unreadable) is not a stall. Drift against a fan's own baseline is the trend
+    layer's job. Defers when no fan is left to judge. Malformed fans or samples
+    are never scored.
     """
 
-    return None
+    fans = [
+        f
+        for f in _dicts(payload.get("fans"))[:_FAN_MAX_FANS]
+        if f.get("idle_or_absent") is not True
+    ]
+    if not fans:
+        return None
+    verdicts = [_judge_fan(f) for f in fans]
+    findings = [v for v in verdicts if v["status"] == "warn"]
+    details = {"fans": verdicts}
+    if findings:
+        return "warn", "; ".join(v["symptom"] for v in findings), details
+    noun = "fan" if len(verdicts) == 1 else "fans"
+    return "ok", f"{len(verdicts)} {noun} spinning normally", details
 
 
 # =============================================================================
