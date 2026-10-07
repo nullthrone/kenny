@@ -32,9 +32,10 @@ export interface Finding {
 /**
  * The server verdict's findings, when the rule attached them. The rule's one-line
  * `reason` is already in the modal header; `details.findings` is the itemised
- * list behind it. Tolerant of both a list of sentences and a list of objects
- * (`reason`/`text`/`message`, plus an optional `component` and `status`), and of
- * its absence: a verdict without evidence just has no findings block.
+ * list behind it. The server's `_rule_hardware_errors` emits objects carrying
+ * `symptom`, `component` and `status` (kenny_server/health_rules.py); a list of
+ * sentences or `reason`/`text`/`message` objects is tolerated too, and so is its
+ * absence: a verdict without evidence just has no findings block.
  */
 export function readFindings(details: Record<string, unknown> | undefined): Finding[] {
   const raw = details?.findings
@@ -45,7 +46,7 @@ export function readFindings(details: Record<string, unknown> | undefined): Find
       out.push({ text: item })
     } else if (item && typeof item === 'object') {
       const o = item as Record<string, unknown>
-      const text = [o.reason, o.text, o.message].find((v): v is string => typeof v === 'string' && v.trim() !== '')
+      const text = [o.symptom, o.reason, o.text, o.message].find((v): v is string => typeof v === 'string' && v.trim() !== '')
       if (!text) continue
       const status = typeof o.status === 'string' ? o.status : typeof o.severity === 'string' ? o.severity : ''
       out.push({

@@ -290,6 +290,27 @@ describe('HardwareErrorsBody', () => {
     expect(screen.getByText('Retries on an internal disk')).toBeInTheDocument()
   })
 
+  it('reads the findings shape the server rule emits', () => {
+    // Mirrors kenny_server/health_rules.py::_rule_hardware_errors details entries.
+    const findings = readFindings({
+      findings: [
+        {
+          component: 'storage',
+          severity: 'instability',
+          status: 'warn',
+          symptom: 'A disk keeps retrying reads and writes (4 times over 3 days)',
+          source: 'disk',
+          event_id: 153,
+          active_days: 3,
+          last_seen_age_hours: 5.2,
+        },
+      ],
+    })
+    expect(findings).toEqual([
+      { text: 'A disk keeps retrying reads and writes (4 times over 3 days)', component: 'storage', tone: 'warn' },
+    ])
+  })
+
   it('has no findings block without verdict evidence', () => {
     render(<HardwareErrorsBody hardware={windows} details={undefined} />)
     expect(screen.queryByText('FINDINGS')).not.toBeInTheDocument()
