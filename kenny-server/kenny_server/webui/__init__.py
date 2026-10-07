@@ -760,15 +760,21 @@ def build_api_routes(
         hardware = hardware_history.empty_payload()
         if hw_history is not None:
             now = datetime.now(timezone.utc)
-            # The forecasts see the whole stored history (a fan's baseline is its
-            # first 30 days); the payload carries the last window of it.
-            series = await hw_history.series(agent_id, hardware_history.ALL_TIME)
-            latest = await store.latest(agent_id)
-            labels = hardware_metrics.device_labels(latest["snapshot"] if latest else None)
-            forecasts = await hardware_history.load_forecasts(
-                store, hw_history, agent_id, now=now, series=series, labels=labels
-            )
-            hardware = hardware_history.api_payload(series, labels, forecasts, now=now)
+            try:
+                # The forecasts see the whole stored history (a fan's baseline is
+                # its first 30 days); the payload carries the last window of it.
+                series = await hw_history.series(agent_id, hardware_history.ALL_TIME)
+                latest = await store.latest(agent_id)
+                labels = hardware_metrics.device_labels(latest["snapshot"] if latest else None)
+                forecasts = await hardware_history.load_forecasts(
+                    store, hw_history, agent_id, now=now, series=series, labels=labels
+                )
+                hardware = hardware_history.api_payload(series, labels, forecasts, now=now)
+            except Exception:  # noqa: BLE001 - disk and battery stay useful without it
+                logger.warning(
+                    "hardware history unavailable for %s", agent_id, exc_info=True
+                )
+                hardware = hardware_history.empty_payload()
         return JSONResponse(
             {
                 "agent_id": agent_id,

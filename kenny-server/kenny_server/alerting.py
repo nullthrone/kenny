@@ -87,7 +87,7 @@ from .diffs import CHANGE_KINDS, SPECS, diff_snapshots
 from .health_rules import CONFIRM_BEFORE_ALARM, evaluate_snapshot
 from .notify import Notification, Notifier, doc_sections, resolve_doc
 from .registry import AgentRegistry
-from . import hardware_history
+from . import hardware_history, hardware_metrics
 from .store import AlertStateStore, EventStore, HardwareHistoryStore, TelemetryStore
 from .trends import DISK_FULL_ALERT_DAYS, FORECAST_SECTION, disk_forecast
 
@@ -204,6 +204,11 @@ class AlertEngine:
         # The long-lived per-device history (ADR-0070). Without it the engine
         # neither rolls snapshots up nor raises hardware forecasts.
         self._hw_history = hw_history
+        # agent -> (history version + UTC day it was computed at, forecasts); see
+        # :meth:`hardware_forecasts`.
+        self._forecast_cache: dict[str, tuple[Any, list[dict[str, Any]]]] = {}
+        # The boot-time rollup (see :meth:`start_startup_maintenance`).
+        self._startup_task: asyncio.Task[None] | None = None
         self._alert_state = alert_state
         self._event_store = event_store
         self._registry = registry
@@ -663,7 +668,9 @@ class AlertEngine:
         forecast_note = await self._forecast_alert(agent_id, state, now)
         if forecast_note is not None:
             out.append(forecast_note)
-        hardware_note = await self._hardware_forecast_alert(agent_id, state, now)
+        hardware_note = await self._hardware_forecast_alert(
+            agent_id, state, now, latest["snapshot"]
+        )
         if hardware_note is not None:
             out.append(hardware_note)
         return out
@@ -814,26 +821,49 @@ class AlertEngine:
         )
 
     async def hardware_forecasts(
-        self, agent_id: str, now: datetime | None = None
+        self,
+        agent_id: str,
+        now: datetime | None = None,
+        *,
+        snapshot: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         """The hardware at risk on one host right now (ADR-0070); ``[]`` without
-        a history store or when it cannot be read."""
+        a history store or when it cannot be read.
+
+        Cached per agent until its history changes (``HardwareHistoryStore.version``)
+        or the UTC day turns: the forecasts read the whole retained history, and
+        this is asked for on every new snapshot. ``snapshot`` is the latest one
+        the caller already holds, which names the devices; without it the latest
+        is read once per recomputation.
+        """
 
         if self._hw_history is None:
             return []
+        today = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).date()
+        token = (self._hw_history.version(agent_id), today)
+        hit = self._forecast_cache.get(agent_id)
+        if hit is not None and hit[0] == token:
+            return list(hit[1])
         try:
-            return await hardware_history.load_forecasts(
-                self._store, self._hw_history, agent_id, now=now
+            forecasts = await hardware_history.load_forecasts(
+                self._store,
+                self._hw_history,
+                agent_id,
+                now=now,
+                labels=hardware_metrics.device_labels(snapshot) if snapshot is not None else None,
             )
         except Exception:  # noqa: BLE001 - a forecast must never stop the pass
             logger.exception("hardware forecast failed for %s", agent_id)
             return []
+        self._forecast_cache[agent_id] = (token, forecasts)
+        return list(forecasts)
 
     async def _hardware_forecast_alert(
         self,
         agent_id: str,
         state: dict[str, dict[str, Any]],
         now: datetime,
+        snapshot: dict[str, Any] | None = None,
     ) -> Notification | None:
         """One ``hardware_forecast`` per host, re-sent only when its set grows.
 
@@ -849,7 +879,7 @@ class AlertEngine:
 
         if self._hw_history is None:
             return None
-        forecasts = await self.hardware_forecasts(agent_id, now)
+        forecasts = await self.hardware_forecasts(agent_id, now, snapshot=snapshot)
         current = {f"{f['device_key']}|{f['reason']}" for f in forecasts}
         scope, set_scope = "section:hardware_forecast", "hwforecast:set"
         row, set_row = state.get(scope), state.get(set_scope)
@@ -1250,7 +1280,12 @@ class AlertEngine:
             ]
             texts.setdefault("disk", []).extend(forecast or ["filling up"])
         if "hardware_forecast" in new:
-            at_risk = [f["symptom"] for f in await self.hardware_forecasts(agent_id, now)]
+            at_risk = [
+                f["symptom"]
+                for f in await self.hardware_forecasts(
+                    agent_id, now, snapshot=latest["snapshot"] if latest else None
+                )
+            ]
             texts["hardware"] = at_risk or ["hardware at risk"]
         scope_of = {"disk": "disk_forecast", "hardware": "hardware_forecast"}
         out = []
@@ -1260,6 +1295,27 @@ class AlertEngine:
             age = f" (for {_age(now - since_ts)})" if since_ts else ""
             out.append((agent_id, name, "; ".join(parts) + age))
         return out
+
+    def start_startup_maintenance(self) -> "asyncio.Task[None]":
+        """Roll the hardware history up and prune snapshots in the background.
+
+        Called once by the composition root at boot instead of doing the work
+        inline: the first rollup backfills every stored snapshot and can take a
+        long while on a big database, which must not delay serving. The rollup
+        still precedes the snapshot prune (a day about to age out is rolled up
+        first). The alert loop's first :meth:`_maybe_prune` waits for this task
+        and then skips its own rollup, so the backfill never runs twice in a row.
+        """
+
+        self._startup_task = asyncio.create_task(self._startup_maintenance())
+        return self._startup_task
+
+    async def _startup_maintenance(self) -> None:
+        await self.rollup_hardware_history()
+        try:
+            await self._store.prune()
+        except Exception:  # noqa: BLE001 - best-effort maintenance
+            logger.exception("startup snapshot prune failed")
 
     async def rollup_hardware_history(self, now: datetime | None = None) -> int:
         """Roll every host's snapshots up into the hardware history; rows written.
@@ -1276,6 +1332,15 @@ class AlertEngine:
         except Exception:  # noqa: BLE001
             logger.exception("hardware history rollup failed")
             return 0
+
+    async def _startup_rollup_covers_this_pass(self) -> bool:
+        """Wait for the boot-time rollup, once; True when it just did this pass's rollup."""
+
+        task, self._startup_task = self._startup_task, None
+        if task is None:
+            return False
+        await asyncio.wait({task})  # never raises the task's own outcome
+        return not task.cancelled()
 
     async def _maybe_prune(self, now: datetime | None = None) -> None:
         """Run each prunable store's retention sweep, at most every _PRUNE_EVERY --
@@ -1303,7 +1368,8 @@ class AlertEngine:
         self._last_prune = now
         # Before snapshots are pruned, so a day about to age out is rolled up
         # first (ADR-0070).
-        await self.rollup_hardware_history(now)
+        if not await self._startup_rollup_covers_this_pass():
+            await self.rollup_hardware_history(now)
         for store, key in self._prunables:
             days = self._cfg(key, None) if key is not None else None
             try:

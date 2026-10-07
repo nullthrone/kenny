@@ -9,8 +9,10 @@ one only together with its consumers.
 Device identity decides what counts as one series, so a replaced device starts a
 new one:
 
-* ``disk:<serial>`` -- disks without a serial and removable / USB disks are not
-  tracked (a USB stick's counters say nothing about the host's hardware);
+* ``disk:<serial>`` -- disks without a serial and removable disks (USB, SD;
+  ``hardware_catalog.is_removable_disk``, the definition the ``disk_smart`` rule
+  uses) are not tracked: a USB stick's counters say nothing about the host's
+  hardware;
 * ``gpu:<uuid | bus id | pci id>``;
 * ``fan:<key>`` -- the agent's stable fan key;
 * ``host:<component>`` -- hardware-error counts per component, attributed by
@@ -27,7 +29,7 @@ import math
 import statistics
 from typing import Any, Iterable
 
-from . import hardware_catalog
+from . import hardware_catalog, health_rules
 
 __all__ = [
     "COMPONENT_LABELS",
@@ -83,10 +85,6 @@ FAN_BANDS: tuple[tuple[str, float, float], ...] = (
 )
 # A band's median is only worth storing from this many non-zero samples.
 _MIN_BAND_SAMPLES = 3
-# A fan is considered driven (so zero RPM is a stall) from this duty.
-_STALL_MIN_DUTY = 30.0
-# A GPU counts as loaded -- its PCIe width is meaningful -- from this utilization.
-_GPU_LOADED_PERCENT = 30.0
 _MAX_SAMPLES = 64
 
 _SEVERITY_METRIC = {
@@ -152,9 +150,7 @@ def fallback_label(device_key: str) -> str:
 
 def _disk_key(row: dict[str, Any]) -> str | None:
     serial = _text(row.get("serial"))
-    if serial is None or row.get("removable") is True:
-        return None
-    if str(row.get("bus_type") or "").upper() == "USB":
+    if serial is None or hardware_catalog.is_removable_disk(row):
         return None
     return f"disk:{serial}"
 
@@ -269,7 +265,8 @@ def _extract_gpus(snapshots: Iterable[Any]) -> list[Row]:
             pcie = gpu.get("pcie") if isinstance(gpu.get("pcie"), dict) else {}
             current, maximum = _num(pcie.get("width_current")), _num(pcie.get("width_max"))
             util = _num(gpu.get("utilization_percent"))
-            if current is not None and util is not None and util >= _GPU_LOADED_PERCENT:
+            loaded_from = health_rules.GPU_LOADED_UTILIZATION_PERCENT
+            if current is not None and util is not None and util >= loaded_from:
                 loaded[key] = max(loaded.get(key, current), current)
             if maximum is not None:
                 width_max[key] = max(width_max.get(key, maximum), maximum)
@@ -315,7 +312,7 @@ def _extract_fans(snapshots: Iterable[Any]) -> list[Row]:
             duty = _num(fan.get("duty_percent"))
             running = [v for v in samples if v > 0]
             stalled[key] = stalled.get(key, False) or (
-                not running and duty is not None and duty >= _STALL_MIN_DUTY
+                not running and duty is not None and duty >= health_rules.FAN_STALL_MIN_DUTY
             )
             if duty is not None:
                 for name, low, high in FAN_BANDS:
@@ -355,8 +352,13 @@ def _extract_components(snapshots: list[Any], day: str | None) -> list[Row]:
                 continue
             by_day = group.get("by_day")
             count = _num(by_day.get(day)) if isinstance(by_day, dict) else None
+            count = max(count or 0.0, 0.0)
+            if hit[0] == "storage" and hit[1] == hardware_catalog.INSTABILITY:
+                # Retries on a USB drive or SD card are the user pulling a plug;
+                # the rule sets them aside by the same share (see ``internal_share``).
+                count *= hardware_catalog.internal_share(group.get("details"))
             key = (f"host:{hit[0]}", metric)
-            totals[key] = totals.get(key, 0.0) + max(count or 0.0, 0.0)
+            totals[key] = totals.get(key, 0.0) + count
     sources = latest.get("sources")
     sources = sources if isinstance(sources, list) else []
 

@@ -924,9 +924,10 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         # Load persisted auto-ticket rules before the alert loop
         # below can dispatch a single notification.
         await ticket_rules.load()
-        # Roll the history up before the prune below can age a day out of the snapshots.
-        await alert_engine.rollup_hardware_history()
-        await store.prune()
+        # The hardware-history rollup and the snapshot prune that must follow it
+        # run in the background: the first rollup backfills every stored snapshot
+        # and must not delay serving (ADR-0070).
+        startup_maintenance_task = alert_engine.start_startup_maintenance()
         await presence.prune()
         await event_store.prune()
         await webfilter_store.prune()
@@ -1079,6 +1080,9 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
                 alert_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await alert_task
+            startup_maintenance_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await startup_maintenance_task
             if backup_task is not None:
                 backup_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):

@@ -31,12 +31,13 @@ Status = str  # "ok" | "posture" | "warn" | "crit"
 # ``ok|warn|crit`` (``protocol.Status``); an agent can never send posture.
 _ORDER = {"ok": 0, "posture": 0, "warn": 1, "crit": 2}
 
-# Bus types of media the user plugs in and out: USB drives and SD / MMC card
-# readers. Neither is judged as a disk, and storage retries on them are set aside.
-_REMOVABLE_BUS_TYPES = frozenset({"usb", "sd"})
-
 # Which findings alarm: a section in one of these states is an *incident*.
 INCIDENT_STATUSES: frozenset[str] = frozenset({"warn", "crit"})
+
+#: A GPU counts as loaded -- its PCIe link width is meaningful, a card idles at a
+#: narrow, low-power link -- from this utilization (%). The history rollup records
+#: the widest link seen at or above it.
+GPU_LOADED_UTILIZATION_PERCENT = 30.0
 
 
 def worst(*statuses: Status) -> Status:
@@ -448,8 +449,7 @@ def _rule_disk_smart(
     findings: list[tuple[Status, str, str, str | None, str]] = []
     judged = 0
     for row in rows:
-        bus = (_smart_text(row.get("bus_type")) or "").casefold()
-        if row.get("removable") is True or bus in _REMOVABLE_BUS_TYPES:
+        if hardware_catalog.is_removable_disk(row):
             continue
         judged += 1
         model = (_smart_text(row.get("model")) or "(unknown model)")[:80]
@@ -550,26 +550,6 @@ def _hwe_finding(
         "active_days": act["active_days"] if act else None,
         "last_seen_age_hours": round(age, 1) if age is not None else None,
     }
-
-
-def _hwe_internal_share(details: Any) -> float:
-    """The share of a storage group's events that are *not* on a USB or SD disk.
-
-    ``details.disk_bus_type`` says which bus each sampled event's disk is on.
-    Retries on a USB drive or an SD / MMC card reader are the user pulling a
-    plug, not a failing internal disk. No usable bus information (or
-    ``Unknown``) is judged as internal: silence about the bus is not evidence
-    of removable media.
-    """
-
-    counts = hardware_catalog.detail_counts(details, "disk_bus_type")
-    total = sum(counts.values())
-    if total <= 0:
-        return 1.0
-    removable = sum(
-        n for bus, n in counts.items() if bus.strip().lower() in _REMOVABLE_BUS_TYPES
-    )
-    return (total - removable) / total
 
 
 def _hwe_diversity(payload: dict[str, Any], now: datetime) -> bool:
@@ -712,7 +692,7 @@ def _rule_hardware_errors(
             if active and days >= _HWE_GPU_MIN_DAYS:
                 gpu_resets.append((g, act))
         elif component == "storage":
-            share = _hwe_internal_share(details)
+            share = hardware_catalog.internal_share(details)
             if (
                 active
                 and act["recurring"]
@@ -900,7 +880,7 @@ def _rule_gpu(
 
 # A fan the board drives at or above this duty (%) is being asked to spin; a
 # fan-stop / zero-RPM mode commands ~0 %, so it never reads as a stall.
-_FAN_STALL_MIN_DUTY = 30.0
+FAN_STALL_MIN_DUTY = 30.0
 # Jitter needs a real burst of running samples and a fan fast enough that a few
 # RPM of tachometer quantisation is not a large fraction of the mean.
 _FAN_JITTER_MIN_SAMPLES = 4
@@ -963,7 +943,7 @@ def _judge_fan(fan: dict[str, Any]) -> dict[str, Any]:
     verdict["mean_rpm"] = round(math.fsum(samples) / len(samples), 1)
     duty = _number(fan.get("duty_percent"))
     if all(rpm == 0 for rpm in samples):
-        if duty is not None and duty >= _FAN_STALL_MIN_DUTY:
+        if duty is not None and duty >= FAN_STALL_MIN_DUTY:
             verdict["status"] = "warn"
             verdict["symptom"] = (
                 f"Fan {name} has stopped although the board is driving it at {duty:.0f}%"
