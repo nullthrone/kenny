@@ -484,7 +484,7 @@ mod model {
 /// events' XML and message); everything with a decision in it happens here in Rust so the
 /// Linux tests cover it.
 #[cfg_attr(not(windows), allow(dead_code))]
-mod winevent {
+pub(crate) mod winevent {
     use std::collections::{BTreeMap, HashMap};
     use std::sync::OnceLock;
 
@@ -493,6 +493,7 @@ mod winevent {
 
     use super::model::{level_name, reduce_details, tally, Details, EventGroup};
     use super::query::{self, WinQuery, STORAGE_PROVIDERS, WINDOW_DAYS};
+    use crate::telemetry::collectors::bus_type::bus_type_name;
 
     /// Cap on hardware events one query returns (newest first).
     pub const HW_EVENT_CAP: u32 = 5000;
@@ -950,20 +951,6 @@ try {
         None
     }
 
-    /// Map `Get-PhysicalDisk`'s `BusType` (name, or the numeric enum) to the `disk_smart`
-    /// `bus_type` vocabulary.
-    pub fn normalize_bus_type(raw: &str) -> &'static str {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "nvme" | "17" => "NVMe",
-            "sata" | "ata" | "atapi" | "11" | "3" | "2" => "SATA",
-            "sas" | "10" => "SAS",
-            "usb" | "7" => "USB",
-            "raid" | "8" => "RAID",
-            "scsi" | "iscsi" | "fibre channel" | "fibrechannel" | "1" | "9" | "6" => "SCSI",
-            _ => "Unknown",
-        }
-    }
-
     /// The details one event contributes: `(key, value)` pairs. `disks` maps a disk number
     /// to its raw `BusType`.
     pub fn event_details(
@@ -1010,7 +997,7 @@ try {
             }
             let bus = number
                 .and_then(|n| disks.get(&n.to_string()))
-                .map_or("Unknown", |b| normalize_bus_type(b));
+                .map_or("Unknown", |b| bus_type_name(b));
             out.push(("disk_bus_type", bus.to_string()));
         } else if is("nvlddmkm") {
             let xid = named(&data, &["Xid", "XidCode"])
@@ -1925,26 +1912,6 @@ mod tests {
         let d = winevent::event_details("disk", 7, xml, "", &disks);
         assert_eq!(get(&d, "disk_number"), Some("7"));
         assert_eq!(get(&d, "disk_bus_type"), Some("Unknown"));
-    }
-
-    #[test]
-    fn bus_types_map_to_the_disk_smart_vocabulary() {
-        for (raw, want) in [
-            ("NVMe", "NVMe"),
-            ("17", "NVMe"),
-            ("SATA", "SATA"),
-            ("ATA", "SATA"),
-            ("USB", "USB"),
-            ("SAS", "SAS"),
-            ("RAID", "RAID"),
-            ("SCSI", "SCSI"),
-            ("iSCSI", "SCSI"),
-            ("Virtual", "Unknown"),
-            ("SD", "Unknown"),
-            ("", "Unknown"),
-        ] {
-            assert_eq!(winevent::normalize_bus_type(raw), want, "{raw}");
-        }
     }
 
     #[test]

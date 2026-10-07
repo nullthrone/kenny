@@ -31,6 +31,10 @@ Status = str  # "ok" | "posture" | "warn" | "crit"
 # ``ok|warn|crit`` (``protocol.Status``); an agent can never send posture.
 _ORDER = {"ok": 0, "posture": 0, "warn": 1, "crit": 2}
 
+# Bus types of media the user plugs in and out: USB drives and SD / MMC card
+# readers. Neither is judged as a disk, and storage retries on them are set aside.
+_REMOVABLE_BUS_TYPES = frozenset({"usb", "sd"})
+
 # Which findings alarm: a section in one of these states is an *incident*.
 INCIDENT_STATUSES: frozenset[str] = frozenset({"warn", "crit"})
 
@@ -328,6 +332,7 @@ _SMART_HDD_LIFETIME_ATTRS: tuple[tuple[str, str], ...] = (
     ("198", "has recorded unrecoverable read errors in its lifetime"),
 )
 _SMART_PENDING_SECTORS_SYMPTOM = "has sectors waiting to be reallocated"
+_SMART_NVME_ERROR_MAX = 80
 _SMART_RANK = {"ok": 0, "posture": 1, "warn": 2, "crit": 3}
 _SMART_REASON_MAX_FINDINGS = 3
 _SMART_DETAILS_MAX_FINDINGS = 20
@@ -353,13 +358,16 @@ def _smart_disk_findings(row: dict[str, Any]) -> list[tuple[Status, str]]:
         if symptom not in crit and symptom not in warn and symptom not in posture:
             bucket.append(symptom)
 
+    # A paused row (anti-cheat coexistence) only lacks the raw NVMe health log;
+    # the WMI-sourced SMART flag, the attribute table, the OS health status and
+    # the reliability counters are read as always and are judged as always.
     paused = row.get("paused") is True
     health = (_smart_text(row.get("health_status")) or "").casefold()
     nvme = {} if paused else _as_dict(row.get("nvme"))
-    attrs = {} if paused else _as_dict(row.get("smart_attributes"))
+    attrs = _as_dict(row.get("smart_attributes"))
     is_hdd = _smart_text(row.get("media_type")) == "HDD"
 
-    if not paused and row.get("predictive_failure") is True:
+    if row.get("predictive_failure") is True:
         add(crit, "reports that it is failing")
     if health == "unhealthy":
         add(crit, "reports that it is failing")
@@ -376,11 +384,11 @@ def _smart_disk_findings(row: dict[str, Any]) -> list[tuple[Status, str]]:
     if _smart_positive(attrs.get("197")):
         add(warn, _SMART_PENDING_SECTORS_SYMPTOM)
 
-    if _smart_positive(nvme.get("media_errors")) or (
-        not paused and _smart_positive(row.get("read_errors_uncorrected"))
+    if _smart_positive(nvme.get("media_errors")) or _smart_positive(
+        row.get("read_errors_uncorrected")
     ):
         add(posture, "has recorded unrecoverable read errors in its lifetime")
-    if not paused and _smart_positive(row.get("write_errors_uncorrected")):
+    if _smart_positive(row.get("write_errors_uncorrected")):
         add(posture, "has recorded unrecoverable write errors in its lifetime")
     if is_hdd:
         for attr, symptom in _SMART_HDD_LIFETIME_ATTRS:
@@ -389,6 +397,19 @@ def _smart_disk_findings(row: dict[str, Any]) -> list[tuple[Status, str]]:
     used = _number(nvme.get("percentage_used"))
     if used is not None and used >= _SMART_ENDURANCE_POSTURE_PCT:
         add(posture, f"is at {used:.0f}% of its rated write endurance")
+
+    # An NVMe disk whose health log could not be read is unjudged, never healthy.
+    nvme_error = _smart_text(row.get("nvme_error"))
+    if (
+        not paused
+        and nvme_error
+        and _smart_text(row.get("bus_type")) == "NVMe"
+        and not isinstance(row.get("nvme"), dict)
+    ):
+        add(
+            posture,
+            f"health log could not be read ({nvme_error[:_SMART_NVME_ERROR_MAX]})",
+        )
 
     return (
         [("crit", s) for s in crit]
@@ -406,9 +427,11 @@ def _rule_disk_smart(
     NVMe ``critical_warning`` bits 0/2/3/4; warn for ``health_status`` Warning,
     the temperature bit or SMART 197 above zero; and posture for non-zero
     lifetime media / uncorrected counters (SMART 5/187/198 on HDDs only) and
-    ``percentage_used`` >= 90. Removable and USB disks are excluded. A paused
-    row (anti-cheat coexistence) has no NVMe / SMART reads to judge; only its
-    ``health_status`` counts. Defers (``None``) when no row carries any of the
+    ``percentage_used`` >= 90, and for an NVMe disk whose health log could not be
+    read (``nvme`` null with a ``nvme_error``). Removable, USB and SD disks are
+    excluded. A paused row (anti-cheat coexistence) lacks only the NVMe health
+    log; its ``predictive_failure``, ``smart_attributes`` and ``health_status``
+    are judged like any other row's. Defers (``None``) when no row carries any of the
     0.22 keys (``nvme``, ``smart_attributes``, ``bus_type``) so an old agent's
     own grade stands. Whether a counter is *rising* is the trend layer's job.
 
@@ -425,7 +448,8 @@ def _rule_disk_smart(
     findings: list[tuple[Status, str, str, str | None, str]] = []
     judged = 0
     for row in rows:
-        if row.get("removable") is True or _smart_text(row.get("bus_type")) == "USB":
+        bus = (_smart_text(row.get("bus_type")) or "").casefold()
+        if row.get("removable") is True or bus in _REMOVABLE_BUS_TYPES:
             continue
         judged += 1
         model = (_smart_text(row.get("model")) or "(unknown model)")[:80]
@@ -528,21 +552,24 @@ def _hwe_finding(
     }
 
 
-def _hwe_non_usb_share(details: Any) -> float:
-    """The share of a storage group's events that are *not* on a USB disk.
+def _hwe_internal_share(details: Any) -> float:
+    """The share of a storage group's events that are *not* on a USB or SD disk.
 
     ``details.disk_bus_type`` says which bus each sampled event's disk is on.
-    Retries on a USB drive or card reader are the user pulling a plug, not a
-    failing internal disk. No usable bus information (or ``Unknown``) is judged
-    as internal: silence about the bus is not evidence of USB.
+    Retries on a USB drive or an SD / MMC card reader are the user pulling a
+    plug, not a failing internal disk. No usable bus information (or
+    ``Unknown``) is judged as internal: silence about the bus is not evidence
+    of removable media.
     """
 
     counts = hardware_catalog.detail_counts(details, "disk_bus_type")
     total = sum(counts.values())
     if total <= 0:
         return 1.0
-    usb = sum(n for bus, n in counts.items() if bus.strip().lower() == "usb")
-    return (total - usb) / total
+    removable = sum(
+        n for bus, n in counts.items() if bus.strip().lower() in _REMOVABLE_BUS_TYPES
+    )
+    return (total - removable) / total
 
 
 def _hwe_diversity(payload: dict[str, Any], now: datetime) -> bool:
@@ -685,7 +712,7 @@ def _rule_hardware_errors(
             if active and days >= _HWE_GPU_MIN_DAYS:
                 gpu_resets.append((g, act))
         elif component == "storage":
-            share = _hwe_non_usb_share(details)
+            share = _hwe_internal_share(details)
             if (
                 active
                 and act["recurring"]

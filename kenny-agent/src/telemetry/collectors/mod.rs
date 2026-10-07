@@ -11,6 +11,7 @@ pub mod av_thirdparty;
 pub mod backup_status;
 pub mod battery;
 pub mod browser_extensions;
+pub(crate) mod bus_type;
 pub mod defender;
 pub mod defender_quarantine;
 pub mod disk;
@@ -424,7 +425,7 @@ mod tests {
                         "hw_power_brake_slowdown": false, "sw_thermal_slowdown": false },
                     "ecc": { "uncorrected_volatile": 99_999, "retired_pages_pending": false,
                         "remapped_rows": { "correctable": 99, "uncorrectable": 99,
-                            "pending": 99, "failure": 99 } },
+                            "pending": true, "failure": true } },
                     "ras": { "gfx": { "ue": 99_999, "ce": 99_999 }, "umc": { "ue": 99_999, "ce": 99_999 },
                         "sdma": { "ue": 99_999, "ce": 99_999 }, "mmhub": { "ue": 99_999, "ce": 99_999 } } })),
                 "truncated": true, "errors": [],
@@ -454,6 +455,7 @@ mod tests {
                         "error_log_entries": u64::MAX, "data_units_written": u64::MAX,
                         "power_on_hours": u64::MAX, "temperature_c": 41 },
                     "nvme_error": text("unsupported by driver ", i, 40), "paused": false })),
+                "truncated": true,
             })),
             "logon_failures" => section(json!({
                 "window_hours": 24,

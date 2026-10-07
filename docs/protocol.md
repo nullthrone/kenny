@@ -896,7 +896,8 @@ predict-failure flag (`root\wmi` `MSStorageDriver_FailurePredictStatus`), the AT
 attribute table (`MSStorageDriver_FailurePredictData`) and, for NVMe disks, the NVMe
 health log read from the raw device (log page `0x02`). On Linux (protocol 0.22) the rows
 come from the NVMe admin ioctl (health log `0x02`, needs root) and an opportunistic bounded
-`smartctl --json` for ATA disks, with identity from sysfs/udev:
+`smartctl --json` for ATA disks, with identity from sysfs/udev. The section lists **at most
+16 disks**; `truncated` says the host has more:
 
 ```json
 "disk_smart": {
@@ -913,19 +914,21 @@ come from the NVMe admin ioctl (health log `0x02`, needs root) and an opportunis
                 "error_log_entries": 0, "data_units_written": 18734512,
                 "power_on_hours": 1520, "temperature_c": 41 },
       "nvme_error": null, "paused": false }
-  ]
+  ],
+  "truncated": false
 }
 ```
 
 Per row, in two groups. The first group is the original row and keeps its meaning:
 
 - **`health_status`** — the disk's own `HealthStatus` string (`Healthy`, `Warning`,
-  `Unhealthy`, `Unknown`); Linux has no OS-level verdict and reports `Unknown`.
+  `Unhealthy`, `Unknown`). Linux has no OS-level verdict: it reports `smartctl`'s overall
+  verdict (`Healthy` when `smart_status.passed` is true, `Unhealthy` when false) and
+  `Unknown` when `smartctl` is missing or gave none, and always `Unknown` for an NVMe disk.
 - **`predictive_failure`** — the drive's own SMART predict-failure flag: on Windows
   `MSStorageDriver_FailurePredictStatus.PredictFailure`, on Linux `smartctl`'s
   `smart_status.passed == false`. `null` when the flag is unavailable (no such WMI
-  instance, no `smartctl`, an NVMe disk on Linux, a paused read) — `null` is unknown, not
-  `false`. Before 0.22 the field echoed `health_status ≠ "Healthy"`.
+  instance, no `smartctl`, an NVMe disk on Linux) — `null` is unknown, not `false`. Before 0.22 the field echoed `health_status ≠ "Healthy"`.
 - **`read_errors_total`** — every read error the drive counted, almost all of them
   corrected. Vendors scale it differently, and on some HDDs it is a large number on a
   healthy drive, so it never grades the section.
@@ -933,7 +936,8 @@ Per row, in two groups. The first group is the original row and keeps its meanin
   not recover (on NVMe, the media and data-integrity error count). Non-zero means data was
   lost at least once. On Linux only NVMe disks fill `read_errors_uncorrected` (from the
   NVMe `media_errors`); the other counters are `null` there.
-- **`wear`** — percent of rated endurance used (0–100, SSDs); **`temperature_c`** — °C;
+- **`wear`** — percent of rated endurance used (0–100, SSDs; on Linux the NVMe
+  `percentage_used` clamped to 100); **`temperature_c`** — °C;
   **`power_on_hours`** — hours powered on.
 
 The second group is new in 0.22 and additive:
@@ -941,10 +945,15 @@ The second group is new in 0.22 and additive:
 - **`device_number`** — integer or `null`: the Windows `PhysicalDriveN` number, the join key
   for `hardware_errors` disk events (`details.disk_number`). Always `null` on Linux.
 - **`serial`** — string or `null`: the drive's serial number, stable across reboots.
-- **`bus_type`** — one of `NVMe`, `SATA`, `SAS`, `USB`, `RAID`, `SCSI`, `Unknown`.
+- **`bus_type`** — one of `NVMe`, `SATA`, `SAS`, `USB`, `RAID`, `SCSI`, `SD`, `Unknown`.
+  `SD` is an SD / MMC card reader. On Windows the agent maps the raw `Get-PhysicalDisk`
+  `BusType` (the `STORAGE_BUS_TYPE` numbering): ATA, ATAPI and SATA are `SATA`; SCSI, iSCSI
+  and Fibre Channel are `SCSI`; SD and MMC are `SD`; virtual, Storage Spaces and any other
+  value are `Unknown`. On Linux `nvme*` is `NVMe`, a device under a USB host `USB`,
+  `mmcblk*` `SD`, `sd*` otherwise `SATA`, and anything else `Unknown`.
 - **`media_type`** — one of `SSD`, `HDD`, `Unspecified`.
 - **`size_bytes`** — integer or `null`; **`removable`** — boolean, true for removable media
-  (USB sticks, card readers).
+  (every `USB` and `SD` disk, and any disk Windows flags as removable media).
 - **`temperature_max_c`** — number or `null`: the highest temperature the drive has
   recorded, °C.
 - **`smart_attributes`** — an object or `null`: a map from the ATA attribute id **as a
@@ -959,26 +968,33 @@ The second group is new in 0.22 and additive:
   **`available_spare`**, **`available_spare_threshold`** and **`percentage_used`** (integer
   percent; `percentage_used` may exceed 100), **`media_errors`**, **`unsafe_shutdowns`**,
   **`error_log_entries`**, **`data_units_written`** and **`power_on_hours`** (integers) and
-  **`temperature_c`** (integer °C). The 128-bit NVMe counters saturate to the unsigned
-  64-bit maximum; values above 2^53 lose precision in JavaScript consumers.
+  **`temperature_c`** (integer °C, or `null` when the controller reports 0 K, meaning
+  unset). The 128-bit NVMe counters saturate to the unsigned 64-bit maximum; values above
+  2^53 lose precision in JavaScript consumers.
 - **`nvme_error`** — string or `null`: why `nvme` is `null` on an NVMe disk (for example
   `"unsupported by driver"` behind a RAID/VMD driver or a USB bridge). A non-null
   `nvme_error` is never to be read as a healthy disk.
-- **`paused`** — boolean: the raw-device reads (the NVMe log and the SMART WMI classes) were
-  skipped because anti-cheat coexistence is active (ADR-0035). The counters those reads
-  would have filled — `nvme`, `smart_attributes`, `predictive_failure` — are then `null`, and
-  the server keeps its last value instead of reading the nulls as a change.
+- **`paused`** — boolean: the raw-device NVMe health-log read (opening
+  `\\.\PhysicalDriveN` on Windows, the admin ioctl on Linux) was skipped because anti-cheat
+  coexistence is active (ADR-0035). Only that read is skipped: `nvme` is `null` (with
+  `nvme_error` `null`), while `predictive_failure`, `smart_attributes`, `health_status` and
+  the reliability counters are read as always, so a drive's own failure signals — including
+  Windows' `health_status`, which reflects the drive's critical warnings — still reach the
+  server while a protected game runs.
 
 All counters are lifetime values, and each is `null` when the drive or its driver does not
 report it — `null` is unknown, not zero. The reallocated-sector count appears only as SMART
 attribute `"5"` in `smart_attributes`; `Get-StorageReliabilityCounter` does not expose it.
 
 The section `status` is still the agent's own grade: any disk whose `health_status` is
-neither `Healthy` nor `Unknown` (Linux has no OS verdict) or whose `predictive_failure` is
+neither `Healthy` nor `Unknown` or whose `predictive_failure` is
 true → `crit`; else any disk with a non-zero uncorrected read or write count → `warn`; else
 `ok`. The **server's health rule is
 authoritative** for `disk_smart`: it judges the new fields (`nvme`, `smart_attributes`,
-`bus_type`, `removable`) and its verdict replaces the agent's grade. The agent's grade stands
+`bus_type`, `removable`, `nvme_error`) and its verdict replaces the agent's grade. It sets
+aside `USB` and `SD` disks and any `removable` one, and reports an NVMe disk whose `nvme` is
+`null` with a non-null `nvme_error` (and that is not `paused`) as a standing finding — an
+unreadable health log is never read as a healthy disk. The agent's grade stands
 only for payloads the rule defers on because they have the old row shape (no `nvme` and no
 `smart_attributes` keys, as sent by an agent before 0.22). Where no physical disk can be
 listed the section is `{ "disks": [] }`.
@@ -1023,8 +1039,9 @@ Field rules a consumer may rely on:
   (`null` when unknown). They keep a log that wrapped after three days from reading as
   eleven quiet ones.
 - **`sources`** lists what the agent read: `["event_log"]` on Windows,
-  `["journal", "edac", "aer"]` on Linux (a source it could not read is dropped from the list
-  and named in `errors`).
+  `["journal", "edac", "aer"]` on Linux. A source it could not read is dropped from the list
+  and named in `errors`; an `edac` or `aer` sysfs directory that does not exist (no EDAC
+  driver, no PCI bus directory) is simply not a source — it is dropped without an error.
 - **`groups`** are keyed by `(source, event_id)` and have the same semantics as
   `reliability`'s events: `by_day` keys are UTC calendar dates, `last_seen` is the newest
   member's UTC timestamp (`...Z`), `sample` is the newest member's first message line
@@ -1060,11 +1077,16 @@ Field rules a consumer may rely on:
 - **Linux** groups come from the kernel journal. `source` is the matcher `key` from the
   vector file below (`mce`, `edac`, `nvrm_xid`, `amdgpu_ras`, `block_io`, `nvme`, `ata`,
   `pcie_aer`) and `event_id` is `0`; `details` carries the matcher's capture group where it
-  has one: `xid` for `nvrm_xid`, `device` for `block_io`. `edac` (one entry per memory
-  controller from `/sys/devices/system/edac/mc/mc*/{ce_count,ue_count}`) and `aer` (one
-  entry per PCIe device, from `aer_dev_{correctable,nonfatal,fatal}` `TOTAL_ERR_*`, listed
-  **only if the total is non-zero**) are filled on Linux only, are empty lists on Windows
-  and are capped at 32 entries each.
+  has one: `xid` for `nvrm_xid`, `device` for `block_io`. `edac` and `aer` are filled on Linux only, are empty lists on
+  Windows and are capped at 32 entries each:
+  - an `edac` entry is `{ "controller": "mc0", "ce_count": 3, "ue_count": 0 }` — one per
+    memory controller, from `/sys/devices/system/edac/mc/mc*/{ce_count,ue_count}`, in
+    numeric controller order; the counts are the controller's lifetime corrected and
+    uncorrected error counts (an unreadable counter file reads as `0`);
+  - an `aer` entry is `{ "device": "0000:01:00.0", "correctable": 12, "nonfatal": 0,
+    "fatal": 0 }` — one per PCIe device, from the `TOTAL_ERR_*` lines of
+    `aer_dev_{correctable,nonfatal,fatal}` (the sum of the per-error lines when a file has no
+    total), listed **only if the device's total is non-zero**, most errors first.
 - **Errors versus emptiness.** A probe that fails (a query that errors, a timeout, an
   unreadable log) adds a string to `errors`; a query that matches nothing is **not** an
   error. Off-platform or when nothing can be read, the section carries empty lists and
@@ -1121,11 +1143,13 @@ The `gpu` section inventories the graphics adapters and reports their raw health
 - **`throttle`** — the four clock-event reasons as booleans: `hw_slowdown`,
   `hw_thermal_slowdown`, `hw_power_brake_slowdown` (an external power-brake signal) and
   `sw_thermal_slowdown`; `null` when the driver does not report them.
-- **`ecc`** — `null` on consumer cards, else `uncorrected_volatile` (number or `null`),
-  `retired_pages_pending` (boolean or `null`) and `remapped_rows` (`null` or `correctable`,
-  `uncorrectable`, `pending`, `failure`).
+- **`ecc`** — `null` on cards that report none of it, else `uncorrected_volatile`
+  (integer or `null`), `retired_pages_pending` (boolean or `null`) and `remapped_rows`
+  (`null`, or an object with `correctable` and `uncorrectable` integers and `pending` and
+  `failure` **booleans**, each `null` when the driver does not report it).
 - **`ras`** — amdgpu on Linux only: a map from RAS block (`gfx`, `umc`, `sdma`, …) to its
-  `{ "ue": n, "ce": n }` error counts, `null` elsewhere.
+  `{ "ue": n, "ce": n }` error counts, `null` elsewhere — including an amdgpu device whose
+  `ras` directory holds no counter files.
 - The list is capped at **8** GPUs (`truncated`); `errors` holds the strings of probes that
   failed. A host without a readable GPU reports `gpus: []` and `status: "ok"`.
 
@@ -1151,13 +1175,13 @@ can tell a stable fan from a stalled or unstable one without the agent keeping s
 
 - One collection takes a **burst of 5 samples about `sample_interval_ms` (1000) apart**
   within the single collector call; the agent keeps no state between collections.
-  `rpm_samples` holds those samples in order.
+  `rpm_samples` holds up to 5 samples in order: a sample whose read failed is omitted, so
+  the list can be shorter than 5, and a fan with no successful sample is not listed.
 - Only fans with a **measured** RPM are listed. A fan whose speed is only a commanded
   target (an NVIDIA GPU fan via `nvidia-smi`) is not.
 - **`key`** is stable per fan across pushes: the hwmon chip name plus the fan index
-  (`nct6798.fan2`), a LibreHardwareMonitor sensor identifier, or a GPU UUID plus the fan
-  index. **`label`** is the board's own name for the fan (`CPU_FAN`) or `null`.
-  **`source`** ∈ `hwmon`, `lhm`, `nvml`.
+  (`nct6798.fan2`) or a LibreHardwareMonitor sensor identifier. **`label`** is the board's
+  own name for the fan (`CPU_FAN`) or `null`. **`source`** ∈ `hwmon`, `lhm`.
 - **`duty_percent`** is the commanded PWM duty (0–100) when the agent can read it, else
   `null`. **`mode`** ∈ `pwm`, `dc`, `auto`, `manual`, `unknown`.
 - **`idle_or_absent`** is `true` when every sample is 0 RPM **and** no duty is readable,
@@ -1370,7 +1394,8 @@ agent puts it on the wire in `register.protocol` to select the mutual-auth hands
   (`docs/fixtures/vectors/hardware_event_query.json`). `os_support` gains `cpu`. The
   `disk_smart` rows gain `device_number`, `serial`, `bus_type`, `media_type`, `size_bytes`,
   `removable`, `temperature_max_c`, `smart_attributes`, `nvme`, `nvme_error` and `paused`,
-  and `disk_smart` now also reports on Linux (it was the `n/a` stub). **Semantic change:**
+  the section gains `truncated`, and `disk_smart` now also reports on Linux (it was the
+  `n/a` stub). **Semantic change:**
   `disk_smart.predictive_failure` is now the drive's own SMART predict-failure flag
   (`null` when unavailable) instead of `health_status ≠ "Healthy"`. The server's
   `disk_smart` rule is authoritative where it applies; an agent before 0.22 keeps working

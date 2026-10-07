@@ -339,6 +339,8 @@ def test_other_storage_providers_are_judged_the_same(provider: str, event_id: in
 
 def test_usb_only_storage_retries_are_ignored() -> None:
     assert judge(section(disk153(bus={"USB": 2})))[0] == "ok"
+    assert judge(section(disk153(bus={"SD": 2})))[0] == "ok"
+    assert judge(section(disk153(bus={"SD": 1, "USB": 1})))[0] == "ok"
     assert judge(section(disk153(bus={"usb": 2})))[0] == "ok"
 
 

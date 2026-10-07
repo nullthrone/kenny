@@ -193,7 +193,8 @@
           "nvme_error": null,
           "paused": false
         }
-      ]
+      ],
+      "truncated": false
     },
     "hardware_errors": {
       "status": "ok",
@@ -323,7 +324,16 @@
             "hw_power_brake_slowdown": false,
             "sw_thermal_slowdown": false
           },
-          "ecc": null,
+          "ecc": {
+            "uncorrected_volatile": null,
+            "retired_pages_pending": null,
+            "remapped_rows": {
+              "correctable": 0,
+              "uncorrectable": 0,
+              "pending": false,
+              "failure": false
+            }
+          },
           "ras": null
         }
       ],

@@ -22,6 +22,10 @@ export function activeThrottles(throttle: GpuThrottle | null | undefined): typeo
   return reported.filter(({ key }) => throttle[key] === true)
 }
 
+function yesNo(flag: boolean | null | undefined): string {
+  return flag == null ? DASH : flag ? 'yes' : 'no'
+}
+
 function eccItems(ecc: GpuEcc): StatItem[] {
   const rows = ecc.remapped_rows
   const items: StatItem[] = [
@@ -32,7 +36,7 @@ function eccItems(ecc: GpuEcc): StatItem[] {
     },
     {
       label: 'Retired pages pending',
-      value: ecc.retired_pages_pending == null ? DASH : ecc.retired_pages_pending ? 'yes' : 'no',
+      value: yesNo(ecc.retired_pages_pending),
       tone: ecc.retired_pages_pending === true ? 'alert' : undefined,
     },
   ]
@@ -40,8 +44,8 @@ function eccItems(ecc: GpuEcc): StatItem[] {
     items.push(
       { label: 'Remapped rows (correctable)', value: formatCount(rows.correctable) },
       { label: 'Remapped rows (uncorrectable)', value: formatCount(rows.uncorrectable), tone: isNonZero(rows.uncorrectable) ? 'alert' : undefined },
-      { label: 'Remapped rows (pending)', value: formatCount(rows.pending), tone: isNonZero(rows.pending) ? 'alert' : undefined },
-      { label: 'Row-remap failure', value: formatCount(rows.failure), tone: isNonZero(rows.failure) ? 'alert' : undefined },
+      { label: 'Remapped rows (pending)', value: yesNo(rows.pending), tone: rows.pending === true ? 'alert' : undefined },
+      { label: 'Row-remap failure', value: yesNo(rows.failure), tone: rows.failure === true ? 'alert' : undefined },
     )
   }
   return items
