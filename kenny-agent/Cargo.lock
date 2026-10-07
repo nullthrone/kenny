@@ -741,6 +741,7 @@ dependencies = [
  "embed-manifest",
  "futures-util",
  "getrandom 0.4.3",
+ "libc",
  "png",
  "rand_core",
  "regex",

@@ -779,7 +779,7 @@ def register_tools(
             description=(
                 "Add (or replace) a rule deciding whether an alert event opens a "
                 "ticket (state-changing, operator+). event_type is one of health/"
-                "offline/disk_forecast/change; decision is one of open_all/"
+                "offline/disk_forecast/hardware_forecast/change; decision is one of open_all/"
                 "open_crit/never. section empty/omitted means any section; "
                 "agent_id empty/omitted means fleet-wide."
             ),

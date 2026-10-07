@@ -1173,6 +1173,16 @@ def test_win_update_single_failure_is_warn_and_stale_check_warns() -> None:
         ("time_sync", {"synchronized": "yes", "offset_secs": "far"}),
         ("uptime", {"uptime_secs": "long"}),
         ("win_update", {"recent": [{"kb": None, "result": "failed", "installed_at": 12}], "last_check": 5}),
+        ("disk_smart", {"disks": ["not-a-dict", {"nvme": "oops", "smart_attributes": [1]}]}),
+        ("hardware_errors", {"groups": ["not-a-dict", {"source": 1, "event_id": "x", "count": "3",
+                                                         "by_day": ["2026-06-04"], "last_seen": 5,
+                                                         "details": "oops"}],
+                             "app_crashes": "many", "edac": [None, 3], "aer": "oops"}),
+        ("gpu", {"gpus": ["not-a-dict", {"ecc": "oops", "pcie": [1], "throttle": 7}]}),
+        ("fans", {"fans": ["not-a-dict", {"rpm_samples": "fast", "duty_percent": "high"}]}),
+        ("os_support", {"cpu": "fast", "eol_date": 5}),
+        ("os_support", {"cpu": {"vendor": "GenuineIntel", "family": 6, "model": 183,
+                                "brand": 9, "microcode": [1]}}),
     ],
 )
 def test_malformed_nested_field_never_crashes(section: str, payload: dict) -> None:
@@ -1199,3 +1209,212 @@ def test_unhashable_wire_values_in_set_lookups_do_not_crash() -> None:
         now=NOW,
     )
     assert web["status"] in ("ok", "warn", "crit")
+
+
+# -- group_activity: the shared per-group activity computation ----------------
+
+
+def _activity(group: dict) -> dict:
+    return health_rules.group_activity(group, NOW)
+
+
+def test_group_activity_recent_group_is_active_and_recurring() -> None:
+    act = _activity({
+        "count": 3, "last_seen": "2026-06-04T12:30:00Z",
+        "by_day": {"2026-06-02": 1, "2026-06-04": 2},
+    })
+    assert act == {
+        "count": 3, "active_days": 2, "first_day": "2026-06-02", "last_day": "2026-06-04",
+        "age_hours": 6.0, "recent": True, "active": True, "recurring": True, "burst": False,
+    }
+
+
+def test_group_activity_thresholds() -> None:
+    # 48 h is still recent; just beyond is not.
+    assert _activity({"count": 1, "last_seen": "2026-06-02T18:30:00Z"})["recent"] is True
+    assert _activity({"count": 1, "last_seen": "2026-06-02T18:29:00Z"})["recent"] is False
+    # Three distinct days keep a pattern active until 72 h, no longer.
+    days = {"2026-05-30": 1, "2026-06-01": 1, "2026-06-02": 1}
+    assert _activity({"count": 3, "by_day": days, "last_seen": "2026-06-01T20:00:00Z"})["active"] is True
+    assert _activity({"count": 3, "by_day": days, "last_seen": "2026-06-01T18:00:00Z"})["active"] is False
+    assert _activity({"count": 2, "last_seen": "2026-06-04T00:00:00Z"})["active"] is True
+    # Recurring: two events, or two days; one event on one day is neither.
+    assert _activity({"count": 2})["recurring"] is True
+    assert _activity({"count": 1, "by_day": {"2026-06-01": 1, "2026-06-02": 1}})["recurring"] is True
+    assert _activity({"count": 1, "by_day": {"2026-06-01": 1}})["recurring"] is False
+
+
+def test_group_activity_burst_is_a_concentrated_group_that_stopped() -> None:
+    old_burst = {"count": 10, "by_day": {"2026-05-20": 9, "2026-05-21": 1}, "last_seen": "2026-05-21T10:00:00Z"}
+    assert _activity(old_burst)["burst"] is True
+    assert _activity({**old_burst, "last_seen": "2026-06-04T10:00:00Z"})["burst"] is False
+
+
+def test_group_activity_age_falls_back_to_the_end_of_the_last_day() -> None:
+    act = _activity({"count": 1, "by_day": {"2026-06-03": 1}})
+    assert act["age_hours"] == pytest.approx(18.5)  # 2026-06-04T00:00Z -> NOW
+    assert act["recent"] is True
+
+
+def test_group_activity_without_any_timestamp_is_never_active() -> None:
+    act = _activity({"count": 5})
+    assert act["age_hours"] is None
+    assert act["recent"] is False and act["active"] is False
+    assert act["recurring"] is True
+    assert act["first_day"] is None and act["last_day"] is None
+
+
+@pytest.mark.parametrize(
+    "group",
+    [
+        {}, {"count": "3"}, {"count": float("nan")}, {"count": 10**400}, {"count": True},
+        {"by_day": ["2026-06-04"]}, {"by_day": {"nope": 1, "2026-06-04": "2", "2026-06-03": -1}},
+        {"last_seen": 5}, {"last_seen": "garbage"}, {"last_seen": "2026-06-04T12:00:00"},
+    ],
+)
+def test_group_activity_never_crashes_on_malformed_groups(group: dict) -> None:
+    act = _activity(group)
+    assert act["count"] >= 0
+    assert isinstance(act["active"], bool) and isinstance(act["recurring"], bool)
+
+
+def test_a_naive_last_seen_is_read_as_utc() -> None:
+    naive = _activity({"count": 1, "last_seen": "2026-06-04T12:30:00"})
+    aware = _activity({"count": 1, "last_seen": "2026-06-04T12:30:00Z"})
+    assert naive["age_hours"] == aware["age_hours"] == 6.0
+
+
+def test_reliability_patterns_use_the_shared_activity() -> None:
+    group = {
+        "source": "Microsoft-Windows-Kernel-Power", "event_id": 41, "count": 3,
+        "last_seen": "2026-06-04T12:30:00Z", "by_day": {"2026-06-02": 1, "2026-06-04": 2},
+    }
+    act = _activity(group)
+    (pattern,) = health_rules.reliability_patterns({"events": [group]}, NOW)
+    assert pattern["last_seen_age_hours"] == act["age_hours"]
+    for key in ("active_days", "first_day", "last_day", "active", "recurring", "burst"):
+        assert pattern[key] == act[key]
+
+
+# -- the hardware sections: registered, deferring, wired into the registries --
+
+
+NEW_HARDWARE_SECTIONS = ("disk_smart", "hardware_errors", "gpu", "fans")
+
+
+def test_new_hardware_rules_are_registered() -> None:
+    for name in NEW_HARDWARE_SECTIONS:
+        assert name in health_rules.RULES, name
+    assert {"hardware_errors", "gpu", "fans"} <= health_rules.CONFIRM_BEFORE_ALARM
+    assert health_rules.CONFIRM_BEFORE_ALARM <= set(health_rules.RULES)
+
+
+@pytest.mark.parametrize("name", ["hardware_errors", "gpu", "fans"])
+def test_new_sections_are_not_windows_only(name: str) -> None:
+    assert name not in health_rules.WINDOWS_ONLY_SECTIONS
+
+
+@pytest.mark.parametrize("fixture", ["telemetry_snapshot.json", "telemetry_snapshot_linux.json"])
+def test_golden_fixtures_carry_the_new_sections_and_they_judge_healthy(fixture: str) -> None:
+    """The fixtures report the new sections as ``ok`` with a healthy-looking
+    body; whatever the rules say about them, none of it may alarm. The exception
+    is ``hardware_errors``: its fixture carries real events (retrying disk,
+    a GPU Xid) that its rule rightly flags when judged near their timestamps;
+    ``tests/test_rule_hardware_errors.py`` pins that verdict."""
+
+    snapshot = json.loads((FIXTURES_DIR / fixture).read_text())["snapshot"]
+    agent_os = "windows" if fixture == "telemetry_snapshot.json" else "linux"
+    result = health_rules.evaluate_snapshot(snapshot, agent_os=agent_os, now=NOW)
+    for name in NEW_HARDWARE_SECTIONS:
+        assert name in snapshot, f"{fixture} lost its {name} section"
+        if name == "hardware_errors":
+            continue
+        assert result["sections"][name]["status"] in ("ok", "posture"), (fixture, name)
+    assert result["sections"]["os_support"]["status"] == "ok", fixture
+
+
+@pytest.mark.parametrize("name", NEW_HARDWARE_SECTIONS)
+@pytest.mark.parametrize("payload", [{}, {"disks": [], "groups": [], "gpus": [], "fans": []}])
+def test_hardware_rule_stubs_defer_to_the_agent(name: str, payload: dict) -> None:
+    if name == "hardware_errors" and payload:
+        pytest.skip("hardware_errors judges an empty groups list (ok); see test_rule_hardware_errors.py")
+    for reported in ("ok", "warn"):
+        out = health_rules.evaluate_section(
+            name, {"status": reported, "summary": "agent line", **payload}, now=NOW
+        )
+        assert out["status"] == reported
+        assert out["summary"] == "agent line"
+
+
+# -- os_support: worst-of across the OS and CPU checks ------------------------
+
+
+def _os(**fields: object) -> dict:
+    return health_rules.evaluate_section(
+        "os_support", {"status": "ok", "summary": "Windows 11 Pro", **fields}, now=NOW
+    )
+
+
+_OLD_CPU = {
+    "vendor": "GenuineIntel", "brand": "13th Gen Intel(R) Core(TM) i7-13700K",
+    "family": 6, "model": 183, "stepping": 1, "microcode": "0x123", "microcode_bios": "0x123",
+}
+_CPU_REASON = "The CPU needs a BIOS/microcode update to prevent permanent damage"
+
+
+def test_os_support_eol_behaviour_is_unchanged() -> None:
+    assert _os(eol=True)["reason"] == "OS is end-of-life"
+    assert _os(eol=True)["status"] == "crit"
+    assert _os(eol_date="2026-01-01T00:00:00Z")["reason"] == "OS past end-of-life date"
+    soon = _os(eol_date="2026-07-04T18:30:00Z")
+    assert soon["status"] == "warn" and soon["reason"] == "OS end-of-life in 30d"
+    # Beyond 90 days out, and a flag that is not literally True, defer to the agent.
+    assert _os(eol_date="2027-06-04T00:00:00Z")["summary"] == "Windows 11 Pro"
+    assert _os(eol="yes")["summary"] == "Windows 11 Pro"
+    # eol=True wins over a date, exactly one reason.
+    assert _os(eol=True, eol_date="2026-01-01T00:00:00Z")["reason"] == "OS is end-of-life"
+
+
+def test_os_support_without_a_cpu_defers() -> None:
+    for fields in ({}, {"cpu": None}, {"cpu": {}}):
+        out = _os(**fields)
+        assert out["status"] == "ok" and out["summary"] == "Windows 11 Pro" and "reason" not in out
+
+
+def test_os_support_unaffected_cpu_defers() -> None:
+    amd = {"vendor": "AuthenticAMD", "brand": "AMD Ryzen 9 7950X", "family": 25, "model": 97,
+           "stepping": 2, "microcode": "0xa601206"}
+    mobile = {**_OLD_CPU, "brand": "13th Gen Intel(R) Core(TM) i9-13900HX"}
+    for cpu in (amd, mobile, {**_OLD_CPU, "microcode": None}):
+        out = _os(cpu=cpu)
+        assert out["status"] == "ok" and "reason" not in out, cpu
+
+
+def test_os_support_affected_cpu_with_old_microcode_warns_in_symptom_words() -> None:
+    out = _os(cpu=_OLD_CPU)
+    assert out["status"] == "warn"
+    assert out["reason"] == _CPU_REASON
+    assert out["attention"] is True
+
+
+def test_os_support_affected_cpu_with_fixed_microcode_is_fine() -> None:
+    for microcode in ("0x12b", "0x12B", "0x130"):
+        out = _os(cpu={**_OLD_CPU, "microcode": microcode})
+        assert out["status"] == "ok" and "reason" not in out
+
+
+def test_os_support_takes_the_worst_of_eol_and_microcode_and_joins_the_reasons() -> None:
+    both = _os(eol=True, cpu=_OLD_CPU)
+    assert both["status"] == "crit"
+    assert both["reason"] == f"OS is end-of-life; {_CPU_REASON}"
+    # A warn-level EOL and the microcode warn: still warn, both reasons, check order.
+    soon = _os(eol_date="2026-07-04T18:30:00Z", cpu=_OLD_CPU)
+    assert soon["status"] == "warn"
+    assert soon["reason"] == f"OS end-of-life in 30d; {_CPU_REASON}"
+
+
+def test_os_support_microcode_check_applies_on_linux_too() -> None:
+    out = health_rules.evaluate_section(
+        "os_support", {"status": "ok", "summary": "x", "cpu": _OLD_CPU}, now=NOW, agent_os="linux"
+    )
+    assert out["status"] == "warn"

@@ -17,6 +17,8 @@ import math
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
+from . import hardware_catalog
+
 Status = str  # "ok" | "posture" | "warn" | "crit"
 
 # ``posture`` is a server-side verdict only (ADR-0058): a standing configuration
@@ -31,6 +33,11 @@ _ORDER = {"ok": 0, "posture": 0, "warn": 1, "crit": 2}
 
 # Which findings alarm: a section in one of these states is an *incident*.
 INCIDENT_STATUSES: frozenset[str] = frozenset({"warn", "crit"})
+
+#: A GPU counts as loaded -- its PCIe link width is meaningful, a card idles at a
+#: narrow, low-power link -- from this utilization (%). The history rollup records
+#: the widest link seen at or above it.
+GPU_LOADED_UTILIZATION_PERCENT = 30.0
 
 
 def worst(*statuses: Status) -> Status:
@@ -294,7 +301,713 @@ def _rule_thermals(payload: dict[str, Any], now: datetime) -> "tuple[Status, str
     return "ok", f"Hottest {hottest:.0f}°C"
 
 
-def _rule_os_support(payload: dict[str, Any], now: datetime) -> "tuple[Status, str] | None":
+# =============================================================================
+# disk_smart  (plan Step 1)
+# -----------------------------------------------------------------------------
+# The server's SMART / NVMe health judgement. Constants and helpers private to
+# this rule belong in this block, between this banner and the next one.
+# Each rule below owns its block; do not edit another rule's block.
+# =============================================================================
+
+
+# Keys that only a 0.22+ agent puts on a ``disk_smart`` row. A payload where no
+# row carries any of them has the pre-0.22 shape, and the rule defers.
+_SMART_NEW_ROW_KEYS = ("nvme", "smart_attributes", "bus_type")
+# NVMe ``critical_warning`` bits. Bit 1 (temperature) alone is a warn; the rest
+# mean the drive itself says it can no longer be trusted with data.
+_NVME_CRIT_BITS: tuple[tuple[int, str], ...] = (
+    (0, "has used up its spare capacity"),
+    (2, "reports that its reliability is degraded"),
+    (3, "has switched to read-only to protect its data"),
+    (4, "reports that its power-loss memory backup has failed"),
+)
+_NVME_TEMPERATURE_BIT = 1
+# ``percentage_used`` at or above this is a standing fact (the drive is near
+# its rated end of life), not an event.
+_SMART_ENDURANCE_POSTURE_PCT = 90
+# Lifetime ATA counters that mean something on a spinning disk. SSD vendors
+# scale and use these attributes differently, so they are not judged there.
+_SMART_HDD_LIFETIME_ATTRS: tuple[tuple[str, str], ...] = (
+    ("5", "has reallocated damaged sectors in its lifetime"),
+    ("187", "has recorded unrecoverable read errors in its lifetime"),
+    ("198", "has recorded unrecoverable read errors in its lifetime"),
+)
+_SMART_PENDING_SECTORS_SYMPTOM = "has sectors waiting to be reallocated"
+_SMART_NVME_ERROR_MAX = 80
+_SMART_RANK = {"ok": 0, "posture": 1, "warn": 2, "crit": 3}
+_SMART_REASON_MAX_FINDINGS = 3
+_SMART_DETAILS_MAX_FINDINGS = 20
+
+
+def _smart_text(value: Any) -> str | None:
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _smart_positive(value: Any) -> bool:
+    n = _number(value)
+    return n is not None and n > 0
+
+
+def _smart_disk_findings(row: dict[str, Any]) -> list[tuple[Status, str]]:
+    """``(status, symptom)`` findings for one internal disk, most severe first."""
+
+    crit: list[str] = []
+    warn: list[str] = []
+    posture: list[str] = []
+
+    def add(bucket: list[str], symptom: str) -> None:
+        if symptom not in crit and symptom not in warn and symptom not in posture:
+            bucket.append(symptom)
+
+    # A paused row (anti-cheat coexistence) only lacks the raw NVMe health log;
+    # the WMI-sourced SMART flag, the attribute table, the OS health status and
+    # the reliability counters are read as always and are judged as always.
+    paused = row.get("paused") is True
+    health = (_smart_text(row.get("health_status")) or "").casefold()
+    nvme = {} if paused else _as_dict(row.get("nvme"))
+    attrs = _as_dict(row.get("smart_attributes"))
+    is_hdd = _smart_text(row.get("media_type")) == "HDD"
+
+    if row.get("predictive_failure") is True:
+        add(crit, "reports that it is failing")
+    if health == "unhealthy":
+        add(crit, "reports that it is failing")
+    elif health == "warning":
+        add(warn, "reports a health warning")
+
+    warning_bits = _number(nvme.get("critical_warning"))
+    bits = int(warning_bits) if warning_bits is not None and warning_bits >= 0 else 0
+    for bit, symptom in _NVME_CRIT_BITS:
+        if bits >> bit & 1:
+            add(crit, symptom)
+    if bits >> _NVME_TEMPERATURE_BIT & 1:
+        add(warn, "reports a temperature warning")
+    if _smart_positive(attrs.get("197")):
+        add(warn, _SMART_PENDING_SECTORS_SYMPTOM)
+
+    if _smart_positive(nvme.get("media_errors")) or _smart_positive(
+        row.get("read_errors_uncorrected")
+    ):
+        add(posture, "has recorded unrecoverable read errors in its lifetime")
+    if _smart_positive(row.get("write_errors_uncorrected")):
+        add(posture, "has recorded unrecoverable write errors in its lifetime")
+    if is_hdd:
+        for attr, symptom in _SMART_HDD_LIFETIME_ATTRS:
+            if _smart_positive(attrs.get(attr)):
+                add(posture, symptom)
+    used = _number(nvme.get("percentage_used"))
+    if used is not None and used >= _SMART_ENDURANCE_POSTURE_PCT:
+        add(posture, f"is at {used:.0f}% of its rated write endurance")
+
+    # An NVMe disk whose health log could not be read is unjudged, never healthy.
+    nvme_error = _smart_text(row.get("nvme_error"))
+    if (
+        not paused
+        and nvme_error
+        and _smart_text(row.get("bus_type")) == "NVMe"
+        and not isinstance(row.get("nvme"), dict)
+    ):
+        add(
+            posture,
+            f"health log could not be read ({nvme_error[:_SMART_NVME_ERROR_MAX]})",
+        )
+
+    return (
+        [("crit", s) for s in crit]
+        + [("warn", s) for s in warn]
+        + [("posture", s) for s in posture]
+    )
+
+
+def _rule_disk_smart(
+    payload: dict[str, Any], now: datetime
+) -> "tuple[Status, str] | tuple[Status, str, dict[str, Any]] | None":
+    """Judge ``disk_smart``: the drive's own failure signals, per internal disk.
+
+    Reports crit for ``predictive_failure``, ``health_status`` Unhealthy or
+    NVMe ``critical_warning`` bits 0/2/3/4; warn for ``health_status`` Warning,
+    the temperature bit or SMART 197 above zero; and posture for non-zero
+    lifetime media / uncorrected counters (SMART 5/187/198 on HDDs only) and
+    ``percentage_used`` >= 90, and for an NVMe disk whose health log could not be
+    read (``nvme`` null with a ``nvme_error``). Removable, USB and SD disks are
+    excluded. A paused row (anti-cheat coexistence) lacks only the NVMe health
+    log; its ``predictive_failure``, ``smart_attributes`` and ``health_status``
+    are judged like any other row's. Defers (``None``) when no row carries any of the
+    0.22 keys (``nvme``, ``smart_attributes``, ``bus_type``) so an old agent's
+    own grade stands. Whether a counter is *rising* is the trend layer's job.
+
+    Worst-of across disks; the reason joins up to three findings, most severe
+    first, in symptoms (ADR-0065). ``details`` is ``{"disks": [{model, serial,
+    status, symptom}, ...]}`` -- a dict, because :func:`evaluate_section` only
+    carries dict details.
+    """
+
+    rows = _dicts(payload.get("disks"))
+    if not rows or not any(k in row for row in rows for k in _SMART_NEW_ROW_KEYS):
+        return None
+
+    findings: list[tuple[Status, str, str, str | None, str]] = []
+    judged = 0
+    for row in rows:
+        if hardware_catalog.is_removable_disk(row):
+            continue
+        judged += 1
+        model = (_smart_text(row.get("model")) or "(unknown model)")[:80]
+        serial = _smart_text(row.get("serial"))
+        for status, symptom in _smart_disk_findings(row):
+            findings.append((status, f"Disk {model} {symptom}", model, serial, symptom))
+    if not judged:
+        return "ok", "No internal disks to judge"
+    if not findings:
+        return "ok", f"SMART healthy on {judged} disk(s)"
+
+    findings.sort(key=lambda f: -_SMART_RANK[f[0]])  # stable: disk order kept
+    status = findings[0][0]
+    shown = [f[1] for f in findings[:_SMART_REASON_MAX_FINDINGS]]
+    reason = "; ".join(shown)
+    if len(findings) > len(shown):
+        reason += f" (+{len(findings) - len(shown)} more)"
+    details = {
+        "disks": [
+            {"model": model, "serial": serial, "status": st, "symptom": symptom}
+            for st, _, model, serial, symptom in findings[:_SMART_DETAILS_MAX_FINDINGS]
+        ]
+    }
+    return status, reason, details
+
+
+# =============================================================================
+# hardware_errors  (plan Step 2)
+# -----------------------------------------------------------------------------
+# Component-attributed hardware events. Attribution and severity classes come
+# from ``hardware_catalog``; per-group activity from :func:`group_activity`.
+# Constants and helpers private to this rule belong in this block.
+# =============================================================================
+
+# A graphics-driver reset (a recovered TDR) is only a finding once it has
+# happened on this many distinct days of the window; the same count of days is
+# what separates "the driver has a bad week" from one bad afternoon.
+_HWE_GPU_MIN_DAYS = 3
+# Crash diversity -- many unrelated programs dying of memory-access / illegal-
+# instruction faults -- suggests unstable RAM or CPU rather than one buggy
+# program. Both bars must clear, and a hardware symptom must corroborate.
+_HWE_DIVERSITY_MIN_APPS = 4
+_HWE_DIVERSITY_MIN_CRASHES = 5
+# The reason names at most this many findings, most severe first.
+_HWE_NAMED_FINDINGS = 3
+
+_HWE_RANK = {"crit": 2, "warn": 1, "posture": 0}
+
+# Providers whose groups are the machine going down (Kernel-Power 41, bugcheck
+# records). They attribute and corroborate; they never escalate on their own,
+# because ``reliability`` already scores the crash itself (no double alarm).
+_HWE_CRASH_PROVIDERS = frozenset({"kernel-power", "bugcheck", "wer-systemerrorreporting"})
+# The Windows providers that report a recovered graphics-driver reset.
+_HWE_GPU_RESET_PROVIDERS = frozenset({"display", "nvlddmkm"})
+
+# Who the symptom is about, per component (ADR-0065: name the part, not the
+# event).
+_HWE_SUBJECT = {
+    "cpu": "The processor",
+    "memory": "The memory",
+    "pcie": "A PCIe link",
+    "gpu": "The graphics card",
+    "storage": "A disk",
+    "power": "The power supply",
+    "platform": "The processor interconnect",
+}
+# The components whose errors make a crash-diversity pattern credible, and how
+# the reason names them.
+_HWE_DIVERSITY_NOUN = {"cpu": "processor", "memory": "memory", "platform": "processor interconnect"}
+
+
+def _hwe_span(count: int, days: int) -> str:
+    """``"6 times over 4 days"`` -- how often and how widely, in words."""
+
+    times = f"{count} times" if count != 1 else "once"
+    if days <= 1:
+        return f"{times} in one day"
+    return f"{times} over {days} days"
+
+
+def _hwe_finding(
+    component: str,
+    severity: str,
+    status: Status,
+    symptom: str,
+    source: str,
+    event_id: Any = None,
+    act: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    age = act["age_hours"] if act else None
+    return {
+        "component": component,
+        "severity": severity,
+        "status": status,
+        "symptom": symptom,
+        "source": source,
+        "event_id": event_id if isinstance(event_id, (int, str)) else None,
+        "active_days": act["active_days"] if act else None,
+        "last_seen_age_hours": round(age, 1) if age is not None else None,
+    }
+
+
+def _hwe_diversity(payload: dict[str, Any], now: datetime) -> bool:
+    """True when ``app_crashes`` shows crashes across many programs, in the
+    exception classes that point at hardware (access violation, illegal
+    instruction), and still going on."""
+
+    crashes = payload.get("app_crashes")
+    if not isinstance(crashes, dict):
+        return False
+    if (_number(crashes.get("distinct_apps")) or 0) < _HWE_DIVERSITY_MIN_APPS:
+        return False
+    codes = crashes.get("exception_codes")
+    hits = 0.0
+    if isinstance(codes, dict):
+        for code, n in codes.items():
+            value = _number(n)
+            if value and str(code).strip().lower() in hardware_catalog.CRASH_EXCEPTION_CODES:
+                hits += max(value, 0.0)
+    if hits < _HWE_DIVERSITY_MIN_CRASHES:
+        return False
+    days = sorted(_reliability_by_day(crashes.get("by_day")))
+    if days:  # a crash storm that ended days ago is history, not instability
+        age = _reliability_day_age_hours(days[-1], now)
+        if age is None or age > _RELIABILITY_ACTIVE_MIN_DAYS_MAX_AGE_HOURS:
+            return False
+    return True
+
+
+def _hwe_better(new: dict[str, Any], old: dict[str, Any]) -> bool:
+    def key(f: dict[str, Any]) -> tuple[int, int]:
+        return (_HWE_RANK[f["status"]], f["active_days"] or 0)
+
+    return key(new) > key(old)
+
+
+def _rule_hardware_errors(
+    payload: dict[str, Any], now: datetime
+) -> "tuple[Status, str, dict[str, Any]] | None":
+    """Judge ``hardware_errors``: "risk rising, component X, symptom Y".
+
+    Escalates only on uncorrected hardware errors and Level-3 precursors, so it
+    never double-alarms with ``reliability``: bugcheck / Kernel-Power groups
+    attribute and corroborate but never escalate on their own.
+
+    - crit: an uncorrected-error group (WHEA 18, a hardware Xid) that is active
+      and recurring; an active failed memory test; EDAC uncorrected counts; PCIe
+      uncorrected errors while such a group is also active.
+    - warn: one active uncorrected-error group; repeated graphics-driver resets
+      with corroboration (a GPU bugcheck or a hardware Xid); active, recurring
+      retries on internal disks (USB-only groups are set aside); crash diversity
+      alongside a hardware symptom; PCIe uncorrected errors on their own.
+    - posture: active corrected-error groups, a stale uncorrected one, graphics
+      resets without corroboration. Whether a corrected rate is *rising* is the
+      trend layer's job.
+
+    Reasons are symptoms (ADR-0065), never event ids. Defers (``None``) only
+    when the payload has none of ``groups`` / ``edac`` / ``aer`` (an old or
+    broken agent). Malformed entries are skipped, never raised on.
+    """
+
+    if not any(k in payload for k in ("groups", "edac", "aer")):
+        return None
+
+    findings: dict[tuple[str, str], dict[str, Any]] = {}
+
+    def add(topic: str, finding: dict[str, Any]) -> None:
+        key = (finding["component"], topic)
+        old = findings.get(key)
+        if old is None or _hwe_better(finding, old):
+            findings[key] = finding
+
+    fatal_active = False  # any uncorrected-error group still going on
+    gpu_bugcheck = False  # a GPU-strong bugcheck in a crash group
+    memory_bugcheck = False  # a memory-class bugcheck in a crash group
+    hardware_xid = False
+    # (rank, phrase) of active corrected / uncorrected groups on cpu / memory / platform
+    diversity_support: list[tuple[int, str]] = []
+    gpu_resets: list[tuple[dict[str, Any], dict[str, Any]]] = []
+
+    for g in _dicts(payload.get("groups")):
+        source, event_id, details = g.get("source"), g.get("event_id"), g.get("details")
+        component = hardware_catalog.component_for(source, event_id, details)
+        klass = hardware_catalog.severity_for(source, event_id, details)
+        if component is None or klass is None:
+            continue
+        provider = hardware_catalog.canonical_provider(source)
+        src = str(source)[:80]
+        act = group_activity(g, now)
+        count, days, active = act["count"], act["active_days"], act["active"]
+        if hardware_catalog.hardware_xid_count(details) > 0:
+            hardware_xid = True
+
+        if klass == hardware_catalog.SUPPORTING:
+            if provider in _HWE_CRASH_PROVIDERS:
+                hit = hardware_catalog.bugcheck_attribution(details)
+                if hit == ("gpu", hardware_catalog.STRONG):
+                    gpu_bugcheck = True
+                if hit is not None and hit[0] == "memory":
+                    memory_bugcheck = True
+            continue
+
+        subject = _HWE_SUBJECT.get(component, "The hardware")
+        noun = _HWE_DIVERSITY_NOUN.get(component)
+        if klass == hardware_catalog.FATAL:
+            memtest = provider == "memorydiagnostics-results"
+            symptom = (
+                "The memory test found errors"
+                if memtest
+                else f"{subject} reported uncorrectable hardware errors"
+            )
+            status: Status
+            if active and (memtest or act["recurring"]):
+                # One failed memory test is a definitive result; anything else
+                # has to repeat before it is called critical.
+                status = "crit"
+            elif active:
+                status = "warn"
+            else:
+                status = "posture"
+                symptom += " (not seen recently)"
+            if status != "posture":
+                fatal_active = True
+            if count > 1 and not memtest:
+                symptom += f" ({_hwe_span(count, days)})"
+            add(
+                "memtest" if memtest else "uncorrected",
+                _hwe_finding(component, klass, status, symptom, src, event_id, act),
+            )
+            if active and noun:
+                diversity_support.append((2, f"uncorrectable {noun} errors"))
+        elif klass == hardware_catalog.CORRECTED:
+            if not active:
+                continue
+            symptom = f"{subject} corrects hardware errors (standing)"
+            add("corrected", _hwe_finding(component, klass, "posture", symptom, src, event_id, act))
+            if noun:
+                diversity_support.append((1, f"corrected {noun} errors"))
+        elif provider in _HWE_GPU_RESET_PROVIDERS:
+            if active and days >= _HWE_GPU_MIN_DAYS:
+                gpu_resets.append((g, act))
+        elif component == "storage":
+            share = hardware_catalog.internal_share(details)
+            if (
+                active
+                and act["recurring"]
+                and count * share >= _RELIABILITY_RECURRING_MIN_COUNT
+            ):
+                symptom = f"A disk keeps retrying reads and writes ({_hwe_span(count, days)})"
+                add("storage", _hwe_finding(component, klass, "warn", symptom, src, event_id, act))
+        elif active:
+            # Linux journal lines that name a part without saying whether the
+            # error was corrected (machine-check banner, amdgpu RAS).
+            symptom = f"{subject} reports hardware errors (standing)"
+            add("reports", _hwe_finding(component, klass, "posture", symptom, src, event_id, act))
+
+    for g, act in gpu_resets:
+        symptom = (
+            "The graphics driver crashed and recovered "
+            f"{_hwe_span(act['count'], act['active_days'])}"
+        )
+        status = "warn" if (gpu_bugcheck or hardware_xid) else "posture"
+        add(
+            "gpu_reset",
+            _hwe_finding(
+                "gpu",
+                hardware_catalog.INSTABILITY,
+                status,
+                symptom,
+                str(g.get("source"))[:80],
+                g.get("event_id"),
+                act,
+            ),
+        )
+
+    for entry in _dicts(payload.get("edac")):
+        klass = hardware_catalog.edac_severity(entry)
+        if klass == hardware_catalog.FATAL:
+            fatal_active = True
+            symptom = "The memory reported uncorrectable hardware errors"
+            add("uncorrected", _hwe_finding("memory", klass, "crit", symptom, "edac"))
+        elif klass == hardware_catalog.CORRECTED:
+            symptom = "The memory corrects hardware errors (standing)"
+            add("corrected", _hwe_finding("memory", klass, "posture", symptom, "edac"))
+
+    for entry in _dicts(payload.get("aer")):
+        klass = hardware_catalog.aer_severity(entry)
+        if klass == hardware_catalog.FATAL:
+            # Uncorrected PCIe errors are common on a flaky link; they only
+            # reach crit alongside an uncorrected-error group that is active.
+            symptom = "A PCIe link reported uncorrectable hardware errors"
+            status = "crit" if fatal_active else "warn"
+            add("uncorrected", _hwe_finding("pcie", klass, status, symptom, "aer"))
+        elif klass == hardware_catalog.CORRECTED:
+            symptom = "A PCIe link corrects hardware errors (standing)"
+            add("corrected", _hwe_finding("pcie", klass, "posture", symptom, "aer"))
+
+    if memory_bugcheck:
+        diversity_support.append((0, "memory-related system crashes"))
+    if diversity_support and _hwe_diversity(payload, now):
+        phrase = max(diversity_support)[1]
+        symptom = (
+            f"Programs crash across the board alongside {phrase} "
+            "— possible RAM or CPU instability"
+        )
+        add(
+            "diversity",
+            _hwe_finding(
+                "platform", hardware_catalog.INSTABILITY, "warn", symptom, "app_crashes", 1000
+            ),
+        )
+
+    ordered = sorted(
+        findings.values(),
+        key=lambda f: (-_HWE_RANK[f["status"]], -(f["active_days"] or 0), f["component"]),
+    )
+    window = int(_number(payload.get("window_days")) or 14)
+    if not ordered:
+        effective = _number(payload.get("effective_window_days"))
+        if effective is not None and 0 < effective < window:
+            reason = f"no hardware faults in the {int(effective)}d the event log covers"
+        else:
+            reason = f"no hardware faults in {window}d"
+        return "ok", reason, {"findings": []}
+
+    reason = "; ".join(f["symptom"] for f in ordered[:_HWE_NAMED_FINDINGS])
+    extra = len(ordered) - _HWE_NAMED_FINDINGS
+    if extra > 0:
+        reason += f"; +{extra} more"
+    return ordered[0]["status"], reason, {"findings": ordered}
+
+
+# =============================================================================
+# gpu  (plan Step 3)
+# -----------------------------------------------------------------------------
+# Raw GPU health facts (ECC, retired pages, clock-event reasons). Constants and
+# helpers private to this rule belong in this block.
+# =============================================================================
+
+
+# At most this many findings are spelled out in the one-line reason; the rest
+# are counted. Every finding stays in ``details``.
+_GPU_REASON_NAMED = 3
+_GPU_SEVERITY_RANK = {"crit": 0, "warn": 1, "posture": 2}
+
+
+def _gpu_name(gpu: dict[str, Any]) -> str:
+    name = gpu.get("name")
+    return name.strip() if isinstance(name, str) and name.strip() else "unnamed graphics card"
+
+
+def _gpu_findings(gpu: dict[str, Any]) -> list[tuple[Status, str]]:
+    """``(status, symptom)`` pairs for one adapter.
+
+    The symptom completes the sentence "The graphics card <name> ..." and says
+    what the card is doing, not which counter tripped (ADR-0065).
+    """
+
+    found: list[tuple[Status, str]] = []
+    ecc = _as_dict(gpu.get("ecc"))
+    ras = [_as_dict(block) for block in _as_dict(gpu.get("ras")).values()]
+    remap = _as_dict(ecc.get("remapped_rows"))
+    throttle = _as_dict(gpu.get("throttle"))
+
+    uncorrected = _number(ecc.get("uncorrected_volatile")) or 0
+    if uncorrected > 0 or any((_number(b.get("ue")) or 0) > 0 for b in ras):
+        found.append(("crit", "reported uncorrectable memory errors"))
+    if remap.get("failure") is True:
+        found.append(("crit", "can no longer repair its failing memory"))
+    if ecc.get("retired_pages_pending") is True:
+        found.append(("crit", "has failing memory waiting to be taken out of use"))
+
+    if throttle.get("hw_power_brake_slowdown") is True:
+        found.append(("warn", "is being slowed by a power-delivery signal"))
+    if throttle.get("hw_slowdown") is True and throttle.get("hw_thermal_slowdown") is not True:
+        found.append(("warn", "is being slowed down by the hardware"))
+
+    if throttle.get("hw_thermal_slowdown") is True:
+        found.append(("posture", "is slowing down to stay cool"))
+    if any((_number(b.get("ce")) or 0) > 0 for b in ras):
+        found.append(("posture", "reported corrected memory errors"))
+    if (_number(remap.get("correctable")) or 0) > 0:
+        found.append(("posture", "has had memory rows repaired"))
+    return found
+
+
+def _rule_gpu(
+    payload: dict[str, Any], now: datetime
+) -> "tuple[Status, str, dict[str, Any]] | None":
+    """Judge ``gpu``: a failing card or a starved one.
+
+    Reports crit for uncorrected ECC / RAS errors above zero, a row-remap
+    failure or pending retired pages; warn for an active
+    ``hw_power_brake_slowdown`` (a PSU or cable signal) or a ``hw_slowdown``
+    that is not thermal; posture for ``hw_thermal_slowdown`` (cooling-limited)
+    and corrected-error counters. PCIe link width is judged against the
+    device's own history by the trend layer, never against ``width_max`` here,
+    and ``fan_target_percent`` is a target, not a measurement. The verdict is
+    the worst across adapters; ``details["findings"]`` lists every finding as
+    ``{name, status, symptom}``. Defers when no GPU is reported.
+    """
+
+    gpus = _dicts(payload.get("gpus"))
+    if not gpus:
+        return None
+    findings = [
+        {"name": _gpu_name(gpu), "status": status, "symptom": symptom}
+        for gpu in gpus
+        for status, symptom in _gpu_findings(gpu)
+    ]
+    if not findings:
+        return "ok", "Graphics healthy", {"findings": []}
+    findings.sort(key=lambda f: _GPU_SEVERITY_RANK[f["status"]])  # stable
+    named = findings[:_GPU_REASON_NAMED]
+    reason = "; ".join(f"The graphics card {f['name']} {f['symptom']}" for f in named)
+    if len(findings) > len(named):
+        reason += f"; +{len(findings) - len(named)} more"
+    return findings[0]["status"], reason, {"findings": findings}
+
+
+# =============================================================================
+# fans  (plan Step 4)
+# -----------------------------------------------------------------------------
+# Measured fan speeds in a short burst. Constants and helpers private to this
+# rule belong in this block.
+# =============================================================================
+
+
+# A fan the board drives at or above this duty (%) is being asked to spin; a
+# fan-stop / zero-RPM mode commands ~0 %, so it never reads as a stall.
+FAN_STALL_MIN_DUTY = 30.0
+# Jitter needs a real burst of running samples and a fan fast enough that a few
+# RPM of tachometer quantisation is not a large fraction of the mean.
+_FAN_JITTER_MIN_SAMPLES = 4
+_FAN_JITTER_MIN_MEAN_RPM = 300.0
+_FAN_JITTER_CV = 0.15
+# Defensive bounds on an unvalidated payload (the contract caps a section at 16
+# fans of 5 samples): anything beyond is ignored, and a reading above the
+# ceiling is malformed rather than a speed.
+_FAN_MAX_FANS = 32
+_FAN_MAX_SAMPLES = 64
+_FAN_MAX_RPM = 1_000_000.0
+_FAN_LABEL_MAX = 64
+
+
+def _fan_samples(value: Any) -> list[float] | None:
+    """The burst as non-negative numbers, or ``None`` when it is unusable.
+
+    One bad entry (a string, ``null``, a negative or absurd reading) makes the
+    whole burst unusable: judging the remainder could invent a stall or a
+    jitter from a partial read.
+    """
+
+    if not isinstance(value, list) or not value:
+        return None
+    samples: list[float] = []
+    for raw in value[:_FAN_MAX_SAMPLES]:
+        rpm = _number(raw)
+        if rpm is None or rpm < 0 or rpm > _FAN_MAX_RPM:
+            return None
+        samples.append(rpm)
+    return samples
+
+
+def _fan_name(fan: dict[str, Any]) -> str:
+    """The board's label for the fan, falling back to its ``key``."""
+
+    for field in ("label", "key"):
+        raw = fan.get(field)
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()[:_FAN_LABEL_MAX]
+    return "unnamed fan"
+
+
+def _judge_fan(fan: dict[str, Any]) -> dict[str, Any]:
+    """One fan's verdict: ``{key, label, status, symptom, mean_rpm, cv}``."""
+
+    key = fan.get("key")
+    name = _fan_name(fan)
+    verdict: dict[str, Any] = {
+        "key": key if isinstance(key, str) else name,
+        "label": name,
+        "status": "ok",
+        "symptom": None,
+        "mean_rpm": None,
+        "cv": None,
+    }
+    samples = _fan_samples(fan.get("rpm_samples"))
+    if samples is None:
+        return verdict
+    verdict["mean_rpm"] = round(math.fsum(samples) / len(samples), 1)
+    duty = _number(fan.get("duty_percent"))
+    if all(rpm == 0 for rpm in samples):
+        if duty is not None and duty >= FAN_STALL_MIN_DUTY:
+            verdict["status"] = "warn"
+            verdict["symptom"] = (
+                f"Fan {name} has stopped although the board is driving it at {duty:.0f}%"
+            )
+        return verdict
+    running = [rpm for rpm in samples if rpm > 0]
+    if len(running) < _FAN_JITTER_MIN_SAMPLES:
+        return verdict
+    mean = math.fsum(running) / len(running)
+    if mean < _FAN_JITTER_MIN_MEAN_RPM:
+        return verdict
+    # Population stdev: the burst is the whole population we judge, and the
+    # smaller estimate errs toward not alarming on a short burst. The duty is a
+    # single value per snapshot, so it is constant by construction.
+    cv = math.sqrt(math.fsum((rpm - mean) ** 2 for rpm in running) / len(running)) / mean
+    verdict["mean_rpm"] = round(mean, 1)
+    verdict["cv"] = round(cv, 3)
+    if cv > _FAN_JITTER_CV:
+        verdict["status"] = "warn"
+        verdict["symptom"] = (
+            f"Fan {name} speed is unstable (\u00b1{cv * 100:.0f}%) at a constant "
+            "setting \u2014 possible bearing wear"
+        )
+    return verdict
+
+
+def _rule_fans(payload: dict[str, Any], now: datetime) -> "tuple[Status, str] | None":
+    """Judge ``fans``: a stalled or unstable fan.
+
+    Warn for a stall (every sample 0 RPM while the commanded duty is at least
+    30 %) and for jitter (at least 4 running samples, mean >= 300 RPM, a
+    coefficient of variation above 15 % at the snapshot's single duty). Fans
+    flagged ``idle_or_absent`` are skipped, and a zero-RPM mode (duty ~0 or
+    unreadable) is not a stall. Drift against a fan's own baseline is the trend
+    layer's job. Defers when no fan is left to judge. Malformed fans or samples
+    are never scored.
+    """
+
+    fans = [
+        f
+        for f in _dicts(payload.get("fans"))[:_FAN_MAX_FANS]
+        if f.get("idle_or_absent") is not True
+    ]
+    if not fans:
+        return None
+    verdicts = [_judge_fan(f) for f in fans]
+    findings = [v for v in verdicts if v["status"] == "warn"]
+    details = {"fans": verdicts}
+    if findings:
+        return "warn", "; ".join(v["symptom"] for v in findings), details
+    noun = "fan" if len(verdicts) == 1 else "fans"
+    return "ok", f"{len(verdicts)} {noun} spinning normally", details
+
+
+# =============================================================================
+# os_support
+# =============================================================================
+
+# The microcode finding is worded as a symptom (ADR-0065): the reader needs to
+# know what to do, not which advisory it came from.
+_CPU_MICROCODE_REASON = "The CPU needs a BIOS/microcode update to prevent permanent damage"
+
+
+def _os_support_eol(payload: dict[str, Any], now: datetime) -> "tuple[Status, str] | None":
     if payload.get("eol") is True:
         return "crit", "OS is end-of-life"
     age = _age_days(payload.get("eol_date"), now=now)
@@ -305,6 +1018,30 @@ def _rule_os_support(payload: dict[str, Any], now: datetime) -> "tuple[Status, s
         if age > -90:
             return "warn", f"OS end-of-life in {-age:.0f}d"
     return None
+
+
+def _os_support_microcode(payload: dict[str, Any], now: datetime) -> "tuple[Status, str] | None":
+    if hardware_catalog.raptor_lake_needs_microcode(payload.get("cpu") or {}):
+        return "warn", _CPU_MICROCODE_REASON
+    return None
+
+
+def _rule_os_support(payload: dict[str, Any], now: datetime) -> "tuple[Status, str] | None":
+    """Worst of the OS and CPU checks, with every finding's reason joined.
+
+    ``os_support`` carries the OS edition and the host's CPU identity, so a
+    finding about either lands here (a rule sees only its own section).
+    """
+
+    findings = [
+        f
+        for check in (_os_support_eol, _os_support_microcode)
+        if (f := check(payload, now)) is not None
+    ]
+    if not findings:
+        return None
+    findings.sort(key=lambda f: -_ORDER[f[0]])  # stable: ties keep check order
+    return findings[0][0], "; ".join(reason for _, reason in findings)
 
 
 def _number(value: Any) -> float | None:
@@ -475,6 +1212,58 @@ def _reliability_day_age_hours(day: str, now: datetime) -> float | None:
     return max(0.0, (now - end).total_seconds() / 3600)
 
 
+def group_activity(group: dict[str, Any], now: datetime) -> dict[str, Any]:
+    """Activity of one event group (``count``, ``by_day``, ``last_seen``) as of ``now``.
+
+    Shared by every rule that judges a ``reliability``-shaped group, so "recent",
+    "active" and "recurring" mean one thing everywhere. Pure, tolerant of
+    malformed input, and every value JSON-safe. Fields:
+
+    ``count`` -- the group's event count (``0`` when absent or unusable);
+    ``active_days``, ``first_day``, ``last_day`` -- from ``by_day`` (UTC calendar
+    dates); ``age_hours`` -- from ``last_seen`` against ``now``, falling back to
+    the end of ``last_day``, ``None`` when neither is usable; ``recent``,
+    ``active``, ``recurring``, ``burst`` -- defined by the ``_RELIABILITY_*``
+    constants above.
+    """
+
+    count = int(_number(group.get("count")) or 0)
+    by_day = _reliability_by_day(group.get("by_day"))
+    days = sorted(by_day)
+    first_day = days[0] if days else None
+    last_day = days[-1] if days else None
+
+    last_seen = _parse_ts(group.get("last_seen"))
+    if last_seen is not None and last_seen.tzinfo is None:
+        last_seen = last_seen.replace(tzinfo=timezone.utc)
+    age: float | None
+    if last_seen is not None:
+        age = max(0.0, (now - last_seen).total_seconds() / 3600)
+    elif last_day is not None:
+        age = _reliability_day_age_hours(last_day, now)
+    else:
+        age = None
+
+    recent = age is not None and age <= _RELIABILITY_ACTIVE_WITHIN_HOURS
+    not_stale = age is not None and age <= _RELIABILITY_ACTIVE_MIN_DAYS_MAX_AGE_HOURS
+    active_days = len(days)
+    peak = max(by_day.values(), default=0)
+    return {
+        "count": count,
+        "active_days": active_days,
+        "first_day": first_day,
+        "last_day": last_day,
+        "age_hours": age,
+        "recent": recent,
+        "active": recent or (not_stale and active_days >= _RELIABILITY_ACTIVE_MIN_DAYS),
+        "recurring": (
+            count >= _RELIABILITY_RECURRING_MIN_COUNT
+            or active_days >= _RELIABILITY_RECURRING_MIN_DAYS
+        ),
+        "burst": count > 0 and peak / count >= _RELIABILITY_BURST_SHARE and not recent,
+    }
+
+
 def reliability_patterns(payload: dict[str, Any], now: datetime) -> list[dict[str, Any]]:
     """Derive one impact/activity record per reliability event group.
 
@@ -537,27 +1326,9 @@ def reliability_patterns(payload: dict[str, Any], now: datetime) -> list[dict[st
             impact = "crashed"
             symptom = symptom or _RELIABILITY_CRASH_SYMPTOM
 
-        by_day = _reliability_by_day(e.get("by_day"))
-        days = sorted(by_day)
-        first_day = days[0] if days else None
-        last_day = days[-1] if days else None
-
-        last_seen = _parse_ts(e.get("last_seen"))
-        if last_seen is not None and last_seen.tzinfo is None:
-            last_seen = last_seen.replace(tzinfo=timezone.utc)
-        age: float | None
-        if last_seen is not None:
-            age = max(0.0, (now - last_seen).total_seconds() / 3600)
-        elif last_day is not None:
-            age = _reliability_day_age_hours(last_day, now)
-        else:
-            age = None
-
-        recent = age is not None and age <= _RELIABILITY_ACTIVE_WITHIN_HOURS
-        not_stale = age is not None and age <= _RELIABILITY_ACTIVE_MIN_DAYS_MAX_AGE_HOURS
-        active_days = len(days)
-        peak = max(by_day.values(), default=0)
-        active = recent or (not_stale and active_days >= _RELIABILITY_ACTIVE_MIN_DAYS)
+        act = group_activity(e, now)
+        age = act["age_hours"]
+        active = act["active"]
         out.append(
             {
                 "source": e.get("source"),
@@ -571,16 +1342,13 @@ def reliability_patterns(payload: dict[str, Any], now: datetime) -> list[dict[st
                 "symptom": symptom,
                 "classification_state": state,
                 "suppressed": suppressed,
-                "active_days": active_days,
-                "first_day": first_day,
-                "last_day": last_day,
+                "active_days": act["active_days"],
+                "first_day": act["first_day"],
+                "last_day": act["last_day"],
                 "last_seen_age_hours": round(age, 1) if age is not None else None,
                 "active": active,
-                "recurring": (
-                    count >= _RELIABILITY_RECURRING_MIN_COUNT
-                    or active_days >= _RELIABILITY_RECURRING_MIN_DAYS
-                ),
-                "burst": (count > 0 and peak / count >= _RELIABILITY_BURST_SHARE and not recent),
+                "recurring": act["recurring"],
+                "burst": act["burst"],
                 "scores": (
                     not suppressed and active and impact in _RELIABILITY_SCORING_IMPACTS
                 ),
@@ -1086,6 +1854,10 @@ RULES: dict[str, Rule | OsAwareRule] = {
     "battery": _rule_battery,
     "memory": _rule_memory,
     "thermals": _rule_thermals,
+    "disk_smart": _rule_disk_smart,
+    "hardware_errors": _rule_hardware_errors,
+    "gpu": _rule_gpu,
+    "fans": _rule_fans,
     "os_support": _rule_os_support,
     "web_activity": _rule_web_activity,
     "reliability": _rule_reliability,
@@ -1132,11 +1904,16 @@ OS_AWARE_RULES: frozenset[str] = frozenset({"local_accounts", "services", "uptim
 # finding can appear and vanish between two pushes without anything having
 # happened to the machine. Requiring a newer ``collected_at`` to still agree
 # costs one push interval of latency and removes that whole class of alarm.
+# ``hardware_errors`` (the same rolling event window), ``gpu`` (clock-event
+# reasons that flicker with load) and ``fans`` (a burst of five samples) are
+# transient in the same way.
 #
 # The policy lives here, next to the thresholds it belongs with
 # (``kenny-server/CLAUDE.md``: health thresholds live only in this module);
 # ``alerting`` reads the set and stays free of per-section knowledge.
-CONFIRM_BEFORE_ALARM: frozenset[str] = frozenset({"reliability"})
+CONFIRM_BEFORE_ALARM: frozenset[str] = frozenset(
+    {"reliability", "hardware_errors", "gpu", "fans"}
+)
 
 
 def _is_windows(agent_os: str | None) -> bool:

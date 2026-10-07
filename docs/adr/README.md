@@ -87,3 +87,4 @@ kind of record kenny keeps. What qualifies: *When (not) to write an ADR* in the 
 | [0067](0067-alert-delivery-is-routed-by-actionability.md) | Alert delivery is routed by actionability | proposed |
 | [0068](0068-llm-egress-through-an-operator-configured-gateway.md) | LLM egress through an operator-configured gateway | accepted |
 | [0069](0069-web-filter-enforcement-and-history-per-host.md) | Web filtering is set per host on two axes: enforcement and history | accepted |
+| [0070](0070-long-lived-per-device-hardware-history.md) | Long-lived per-device hardware history | proposed |

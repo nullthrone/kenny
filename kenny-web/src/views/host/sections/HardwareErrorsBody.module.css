@@ -1,0 +1,182 @@
+.summary {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  margin: 0 0 12px;
+}
+
+.findings {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.finding {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: var(--text-sm);
+  overflow-wrap: break-word;
+  min-width: 0;
+}
+
+/* The group tables can outgrow the modal on a phone; they scroll on their own
+   rather than making the whole dialog scroll sideways. */
+.tableWrap {
+  overflow-x: auto;
+  border-top: 1px solid var(--border-strong);
+}
+
+.table {
+  width: 100%;
+  min-width: 440px;
+  border-collapse: collapse;
+  font-size: var(--text-xs);
+}
+
+.table th {
+  text-align: left;
+  font-family: var(--font-display);
+  font-size: 9px;
+  font-weight: 400;
+  letter-spacing: var(--track-caps);
+  color: var(--text-faint);
+  padding: 8px 8px 6px 4px;
+}
+
+.table td {
+  vertical-align: top;
+  padding: 9px 8px 9px 4px;
+  border-top: 1px solid var(--border-line);
+  color: var(--text-muted);
+}
+
+.table tr:first-child td {
+  border-top: none;
+}
+
+.num {
+  text-align: right;
+  font-family: var(--font-mono);
+}
+
+.table td[data-tone='warn'] {
+  color: var(--warn);
+}
+.table td[data-tone='alert'] {
+  color: var(--danger);
+}
+
+.source {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-body);
+  overflow-wrap: anywhere;
+}
+
+.meta {
+  display: flex;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-faint);
+  margin-top: 2px;
+}
+
+.level {
+  font-family: var(--font-display);
+  letter-spacing: var(--track-caps);
+}
+.level[data-tone='warn'] {
+  color: var(--warn);
+}
+.level[data-tone='alert'] {
+  color: var(--danger);
+}
+
+.sample {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-faint);
+  min-width: 160px;
+  overflow-wrap: anywhere;
+}
+
+.toggle {
+  margin-top: 6px;
+  padding: 3px 8px;
+  background: transparent;
+  border: 1px solid var(--border-mid);
+  font-family: var(--font-display);
+  font-size: 9px;
+  letter-spacing: var(--track-caps);
+  color: var(--text-body);
+}
+
+.detailRow td {
+  background: var(--surface-inset);
+}
+
+.details {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.detail {
+  display: grid;
+  grid-template-columns: minmax(90px, 160px) 1fr;
+  gap: 10px;
+  align-items: baseline;
+}
+
+.detail dt {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.detail dd {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+
+.detailValue {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-body);
+  overflow-wrap: anywhere;
+}
+
+.detailCount {
+  color: var(--text-faint);
+}
+
+.detailNote {
+  margin: 8px 0 0;
+  font-size: 10px;
+  color: var(--text-faint);
+}
+
+.codes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 10px 0 0;
+}
+
+.errors {
+  margin: 0;
+  padding-left: 16px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-faint);
+  overflow-wrap: anywhere;
+}

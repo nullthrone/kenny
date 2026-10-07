@@ -26,6 +26,9 @@ import {
   Hourglass,
   KeyRound,
   ListTree,
+  CircuitBoard,
+  Microchip,
+  Fan,
   type LucideIcon as LucideIconType,
 } from 'lucide-react'
 
@@ -71,6 +74,9 @@ const EXTRA_ICONS: Record<string, LucideIconType> = {
   installed_software: Package,
   browser_extensions: Globe,
   battery: Gauge,
+  hardware_errors: CircuitBoard,
+  gpu: Microchip,
+  fans: Fan,
 }
 
 /** A section's problem-card icon. `HardDrive`/`RotateCw` come from the shared,
@@ -78,7 +84,7 @@ const EXTRA_ICONS: Record<string, LucideIconType> = {
  * and finally to a generic glyph if the name matches nothing known. */
 export function sectionIcon(name: string): LucideIcon {
   const key = name.toLowerCase()
-  if (key === 'disk') return HardDrive
+  if (key === 'disk' || key === 'disk_smart') return HardDrive
   if (key === 'reboot_pending') return RotateCw
   return (EXTRA_ICONS[key] as LucideIcon) ?? Cog
 }
@@ -94,7 +100,10 @@ export function sectionIcon(name: string): LucideIcon {
  */
 const NAME_OVERRIDES: Record<string, string> = {
   disk: 'Disk & SMART',
-  disk_smart: 'Disk & SMART',
+  disk_smart: 'Disk health',
+  hardware_errors: 'Hardware errors',
+  gpu: 'GPU',
+  fans: 'Fans',
   cpu: 'CPU & thermals',
   thermals: 'CPU & thermals',
   os_support: 'OS support',
@@ -127,7 +136,7 @@ export function humanizeSectionName(name: string): string {
     .join(' ')
 }
 
-/** These three sections open a specialized, full-edit modal body instead of
+/** These sections open a specialized, full-edit modal body instead of
  * (or alongside) the generic raw-snapshot view — matching per
  * notes/view-endpoint-map.md's Host table. Matched by raw key first (the
  * contract-accurate name), then loosely by substring so a display-label
@@ -147,8 +156,24 @@ export function isReliabilitySection(name: string): boolean {
   return key === 'reliability'
 }
 
+/** `disk` (volumes) and `disk_smart` (physical-disk health) share one body: the
+ * volumes and the physical disks are the two halves of "is this machine's
+ * storage fine", and a flagged `disk_smart` row has nothing else to show. */
 export function isDiskSection(name: string): boolean {
-  return name.toLowerCase() === 'disk'
+  const key = name.toLowerCase()
+  return key === 'disk' || key === 'disk_smart'
+}
+
+export function isHardwareErrorsSection(name: string): boolean {
+  return name.toLowerCase() === 'hardware_errors'
+}
+
+export function isGpuSection(name: string): boolean {
+  return name.toLowerCase() === 'gpu'
+}
+
+export function isFansSection(name: string): boolean {
+  return name.toLowerCase() === 'fans'
 }
 
 /**

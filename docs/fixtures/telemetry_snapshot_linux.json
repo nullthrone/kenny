@@ -106,6 +106,215 @@
       "count": 9,
       "truncated": false
     },
+    "os_support": {
+      "status": "ok",
+      "summary": "Ubuntu 24.04.2 LTS",
+      "name": "Ubuntu",
+      "version": "24.04",
+      "arch": "x86_64",
+      "channel": "stable",
+      "cpu": {
+        "vendor": "AuthenticAMD",
+        "brand": "AMD Ryzen 5 5600G with Radeon Graphics",
+        "family": 25,
+        "model": 80,
+        "stepping": 0,
+        "microcode": "0xa50000c",
+        "microcode_bios": null
+      }
+    },
+    "disk_smart": {
+      "status": "ok",
+      "summary": "SMART healthy",
+      "disks": [
+        {
+          "model": "Samsung SSD 980 PRO 1TB",
+          "health_status": "Unknown",
+          "predictive_failure": null,
+          "wear": 4,
+          "temperature_c": 38,
+          "power_on_hours": 6402,
+          "read_errors_total": null,
+          "read_errors_uncorrected": 0,
+          "write_errors_uncorrected": null,
+          "device_number": null,
+          "serial": "S5GXNX0T123456A",
+          "bus_type": "NVMe",
+          "media_type": "SSD",
+          "size_bytes": 1000204886016,
+          "removable": false,
+          "temperature_max_c": null,
+          "smart_attributes": null,
+          "nvme": {
+            "critical_warning": 0,
+            "available_spare": 100,
+            "available_spare_threshold": 10,
+            "percentage_used": 4,
+            "media_errors": 0,
+            "unsafe_shutdowns": 31,
+            "error_log_entries": 0,
+            "data_units_written": 52118340,
+            "power_on_hours": 6402,
+            "temperature_c": 38
+          },
+          "nvme_error": null,
+          "paused": false
+        }
+      ],
+      "truncated": false
+    },
+    "hardware_errors": {
+      "status": "ok",
+      "summary": "2 hardware-relevant events in 14d",
+      "window_days": 14,
+      "effective_window_days": 14,
+      "oldest_event_utc": "2026-06-02T03:11:09Z",
+      "sources": [
+        "journal",
+        "edac",
+        "aer"
+      ],
+      "groups": [
+        {
+          "source": "nvrm_xid",
+          "event_id": 0,
+          "level": "error",
+          "count": 2,
+          "last_seen": "2026-07-29T22:41:03Z",
+          "by_day": {
+            "2026-07-27": 1,
+            "2026-07-29": 1
+          },
+          "sample": "NVRM: Xid (PCI:0000:01:00): 79, GPU has fallen off the bus.",
+          "details": {
+            "xid": {
+              "79": 2
+            }
+          }
+        }
+      ],
+      "truncated": false,
+      "truncated_count": 0,
+      "edac": [
+        {
+          "controller": "mc0",
+          "ce_count": 3,
+          "ue_count": 0
+        }
+      ],
+      "aer": [
+        {
+          "device": "0000:01:00.0",
+          "correctable": 12,
+          "nonfatal": 0,
+          "fatal": 0
+        }
+      ],
+      "errors": []
+    },
+    "gpu": {
+      "status": "ok",
+      "summary": "1 GPU(s)",
+      "gpus": [
+        {
+          "name": "AMD Radeon RX 7800 XT",
+          "vendor": "amd",
+          "pci_id": "1002:747e",
+          "bus_id": "0000:03:00.0",
+          "uuid": null,
+          "driver_version": null,
+          "sources": [
+            "sysfs"
+          ],
+          "temperature_c": 52,
+          "utilization_percent": 3,
+          "power_draw_w": 28.0,
+          "power_limit_w": 263.0,
+          "fan_target_percent": null,
+          "pcie": {
+            "gen_current": 1,
+            "gen_max": 4,
+            "width_current": 16,
+            "width_max": 16
+          },
+          "throttle": null,
+          "ecc": null,
+          "ras": {
+            "gfx": {
+              "ue": 0,
+              "ce": 0
+            },
+            "umc": {
+              "ue": 0,
+              "ce": 2
+            },
+            "sdma": {
+              "ue": 0,
+              "ce": 0
+            }
+          }
+        }
+      ],
+      "truncated": false,
+      "errors": []
+    },
+    "fans": {
+      "status": "ok",
+      "summary": "3 fans read",
+      "sources_tried": [
+        "hwmon"
+      ],
+      "sample_interval_ms": 1000,
+      "fans": [
+        {
+          "key": "nct6798.fan1",
+          "label": "CPU_FAN",
+          "source": "hwmon",
+          "rpm_samples": [
+            1180,
+            1176,
+            1182,
+            1179,
+            1181
+          ],
+          "duty_percent": 45.0,
+          "mode": "pwm",
+          "idle_or_absent": false
+        },
+        {
+          "key": "nct6798.fan2",
+          "label": "CHA_FAN1",
+          "source": "hwmon",
+          "rpm_samples": [
+            820,
+            818,
+            822,
+            821,
+            819
+          ],
+          "duty_percent": null,
+          "mode": "auto",
+          "idle_or_absent": false
+        },
+        {
+          "key": "nct6798.fan3",
+          "label": "CHA_FAN2",
+          "source": "hwmon",
+          "rpm_samples": [
+            1420,
+            1415,
+            1424,
+            1418,
+            1421
+          ],
+          "duty_percent": null,
+          "mode": "dc",
+          "idle_or_absent": false
+        }
+      ],
+      "truncated": false,
+      "errors": []
+    },
     "defender": {
       "status": "ok",
       "summary": "n/a on this platform"

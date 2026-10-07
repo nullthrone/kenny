@@ -65,6 +65,25 @@
       "uptime_secs": 273600,
       "boot_time_unix": 1780322400
     },
+    "os_support": {
+      "status": "ok",
+      "summary": "Windows 11 Pro",
+      "name": "Windows",
+      "version": "11 (26200)",
+      "build": "26200",
+      "eol": false,
+      "arch": "x86_64",
+      "channel": "stable",
+      "cpu": {
+        "vendor": "GenuineIntel",
+        "brand": "13th Gen Intel(R) Core(TM) i7-13700K",
+        "family": 6,
+        "model": 183,
+        "stepping": 1,
+        "microcode": "0x12b",
+        "microcode_bios": "0x123"
+      }
+    },
     "thermals": {
       "status": "ok",
       "summary": "hottest 61C",
@@ -92,7 +111,25 @@
           "power_on_hours": 8123,
           "read_errors_total": 0,
           "read_errors_uncorrected": 0,
-          "write_errors_uncorrected": 0
+          "write_errors_uncorrected": 0,
+          "device_number": 0,
+          "serial": "S5Y2NX0T123456A",
+          "bus_type": "SATA",
+          "media_type": "SSD",
+          "size_bytes": 1000204886016,
+          "removable": false,
+          "temperature_max_c": 58,
+          "smart_attributes": {
+            "5": 0,
+            "187": 0,
+            "188": 0,
+            "197": 0,
+            "198": 0,
+            "199": 0
+          },
+          "nvme": null,
+          "nvme_error": null,
+          "paused": false
         },
         {
           "model": "ST2000DM008-2FR102",
@@ -103,9 +140,216 @@
           "power_on_hours": 21457,
           "read_errors_total": 184223611,
           "read_errors_uncorrected": 0,
-          "write_errors_uncorrected": 0
+          "write_errors_uncorrected": 0,
+          "device_number": 1,
+          "serial": "WFL0ABCD",
+          "bus_type": "SATA",
+          "media_type": "HDD",
+          "size_bytes": 2000398934016,
+          "removable": false,
+          "temperature_max_c": 51,
+          "smart_attributes": {
+            "5": 0,
+            "187": 0,
+            "188": 0,
+            "197": 0,
+            "198": 0,
+            "199": 0
+          },
+          "nvme": null,
+          "nvme_error": null,
+          "paused": false
+        },
+        {
+          "model": "WD_BLACK SN850X 2000GB",
+          "health_status": "Healthy",
+          "predictive_failure": false,
+          "wear": 2,
+          "temperature_c": 41,
+          "power_on_hours": 1520,
+          "read_errors_total": null,
+          "read_errors_uncorrected": 0,
+          "write_errors_uncorrected": 0,
+          "device_number": 2,
+          "serial": "23012A800123",
+          "bus_type": "NVMe",
+          "media_type": "SSD",
+          "size_bytes": 2000398934016,
+          "removable": false,
+          "temperature_max_c": 74,
+          "smart_attributes": null,
+          "nvme": {
+            "critical_warning": 0,
+            "available_spare": 100,
+            "available_spare_threshold": 10,
+            "percentage_used": 2,
+            "media_errors": 0,
+            "unsafe_shutdowns": 14,
+            "error_log_entries": 0,
+            "data_units_written": 18734512,
+            "power_on_hours": 1520,
+            "temperature_c": 41
+          },
+          "nvme_error": null,
+          "paused": false
         }
-      ]
+      ],
+      "truncated": false
+    },
+    "hardware_errors": {
+      "status": "ok",
+      "summary": "13 hardware-relevant events in 14d",
+      "window_days": 14,
+      "effective_window_days": 14,
+      "oldest_event_utc": "2026-05-12T03:41:09Z",
+      "sources": [
+        "event_log"
+      ],
+      "groups": [
+        {
+          "source": "Microsoft-Windows-WHEA-Logger",
+          "event_id": 19,
+          "level": "warning",
+          "count": 3,
+          "last_seen": "2026-06-03T21:07:44Z",
+          "by_day": {
+            "2026-05-29": 1,
+            "2026-06-01": 1,
+            "2026-06-03": 1
+          },
+          "sample": "A corrected hardware error has occurred.",
+          "details": {
+            "error_source": {
+              "Corrected Machine Check": 3
+            },
+            "error_type": {
+              "Bus/Interconnect Error": 3
+            },
+            "processor_apic_id": {
+              "6": 2,
+              "14": 1
+            }
+          }
+        },
+        {
+          "source": "Display",
+          "event_id": 4101,
+          "level": "warning",
+          "count": 6,
+          "last_seen": "2026-06-04T11:52:30Z",
+          "by_day": {
+            "2026-06-01": 1,
+            "2026-06-02": 2,
+            "2026-06-04": 3
+          },
+          "sample": "Display driver nvlddmkm stopped responding and has successfully recovered.",
+          "details": {
+            "driver": {
+              "nvlddmkm": 6
+            }
+          }
+        },
+        {
+          "source": "disk",
+          "event_id": 153,
+          "level": "warning",
+          "count": 4,
+          "last_seen": "2026-06-03T08:15:02Z",
+          "by_day": {
+            "2026-06-02": 1,
+            "2026-06-03": 3
+          },
+          "sample": "The IO operation at logical block address 0x1a2b3c for Disk 1 was retried.",
+          "details": {
+            "disk_number": {
+              "1": 4
+            },
+            "disk_bus_type": {
+              "SATA": 4
+            }
+          }
+        }
+      ],
+      "truncated": false,
+      "truncated_count": 0,
+      "app_crashes": {
+        "total": 17,
+        "distinct_apps": 5,
+        "distinct_modules": 4,
+        "exception_codes": {
+          "0xc0000005": 11,
+          "0xc0000409": 4,
+          "0xc000001d": 2
+        },
+        "by_day": {
+          "2026-06-01": 4,
+          "2026-06-02": 6,
+          "2026-06-03": 5,
+          "2026-06-04": 2
+        }
+      },
+      "edac": [],
+      "aer": [],
+      "errors": []
+    },
+    "gpu": {
+      "status": "ok",
+      "summary": "1 GPU(s)",
+      "gpus": [
+        {
+          "name": "NVIDIA GeForce RTX 4080",
+          "vendor": "nvidia",
+          "pci_id": "10de:2704",
+          "bus_id": "0000:01:00.0",
+          "uuid": "GPU-4f1c2a6e-8d3b-7c59-1e20-a9b3c4d5e6f7",
+          "driver_version": "560.94",
+          "sources": [
+            "wmi",
+            "nvidia-smi"
+          ],
+          "temperature_c": 47,
+          "utilization_percent": 6,
+          "power_draw_w": 38.5,
+          "power_limit_w": 320.0,
+          "fan_target_percent": 30,
+          "pcie": {
+            "gen_current": 1,
+            "gen_max": 4,
+            "width_current": 16,
+            "width_max": 16
+          },
+          "throttle": {
+            "hw_slowdown": false,
+            "hw_thermal_slowdown": false,
+            "hw_power_brake_slowdown": false,
+            "sw_thermal_slowdown": false
+          },
+          "ecc": {
+            "uncorrected_volatile": null,
+            "retired_pages_pending": null,
+            "remapped_rows": {
+              "correctable": 0,
+              "uncorrectable": 0,
+              "pending": false,
+              "failure": false
+            }
+          },
+          "ras": null
+        }
+      ],
+      "truncated": false,
+      "errors": []
+    },
+    "fans": {
+      "status": "ok",
+      "summary": "0 fans read",
+      "sources_tried": [
+        "lhm_wmi"
+      ],
+      "sample_interval_ms": 1000,
+      "fans": [],
+      "truncated": false,
+      "errors": []
     },
     "reliability": {
       "status": "ok",

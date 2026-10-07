@@ -1,0 +1,26 @@
+{
+  "window_days": 14,
+  "windows": [
+    {"log": "System", "provider": "Microsoft-Windows-WHEA-Logger", "event_ids": [17, 18, 19, 47], "max_level": 4},
+    {"log": "System", "provider": "Display", "event_ids": [4101], "max_level": 3},
+    {"log": "System", "provider": "nvlddmkm", "event_ids": [13, 14, 153], "max_level": 3},
+    {"log": "System", "provider": "storahci", "event_ids": [129], "max_level": 3},
+    {"log": "System", "provider": "stornvme", "event_ids": [11, 129], "max_level": 3},
+    {"log": "System", "provider": "disk", "event_ids": [7, 11, 51, 153], "max_level": 3},
+    {"log": "System", "provider": "Microsoft-Windows-MemoryDiagnostics-Results", "event_ids": [1202], "max_level": 4},
+    {"log": "System", "provider": "Microsoft-Windows-Kernel-Power", "event_ids": [41], "max_level": 1},
+    {"log": "System", "provider": "BugCheck", "event_ids": [1001], "max_level": 2},
+    {"log": "System", "provider": "Microsoft-Windows-WER-SystemErrorReporting", "event_ids": [1001], "max_level": 2},
+    {"log": "Application", "provider": "Application Error", "event_ids": [1000], "max_level": 2, "aggregate": "app_crashes"}
+  ],
+  "linux_kernel_patterns": [
+    {"key": "mce", "regex": "mce: \\[Hardware Error\\]"},
+    {"key": "edac", "regex": "EDAC .*(CE|UE)"},
+    {"key": "nvrm_xid", "regex": "NVRM: Xid \\(.*\\): (\\d+)"},
+    {"key": "amdgpu_ras", "regex": "amdgpu.*(RAS|ras).*(error|uncorrectable|correctable)"},
+    {"key": "block_io", "regex": "I/O error, dev (\\S+)"},
+    {"key": "nvme", "regex": "nvme\\S*: .*(timeout|reset|I/O error)"},
+    {"key": "ata", "regex": "ata\\d+(\\.\\d+)?: failed command"},
+    {"key": "pcie_aer", "regex": "AER: .*(Corrected|Uncorrected)"}
+  ]
+}

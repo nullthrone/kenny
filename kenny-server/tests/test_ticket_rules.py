@@ -539,7 +539,7 @@ def test_protocol_telemetry_sections_are_all_advertised() -> None:
         "uptime", "time_sync", "printers", "wifi_quality", "autostart",
         "web_activity", "screen_time", "installed_software", "browser_extensions",
         "listening_ports", "scheduled_tasks", "local_accounts", "backup_status",
-        "net_quality",
+        "net_quality", "hardware_errors", "gpu", "fans",
     }
     missing = documented - KNOWN_SECTIONS["health"]
     assert not missing, f"documented telemetry sections missing from KNOWN_SECTIONS: {missing}"
@@ -550,7 +550,9 @@ def test_event_types_the_engine_can_emit_are_exactly_the_validated_ones() -> Non
     ticket_rules validates/advertises. Both directions -- new/renamed on
     either side fails this."""
 
-    emitted_by_producers = {"health", "offline", "disk_forecast", "change"}
+    emitted_by_producers = {
+        "health", "offline", "disk_forecast", "hardware_forecast", "change"
+    }
     assert emitted_by_producers == set(EVENT_TYPES)
 
 
@@ -616,3 +618,23 @@ def test_reliability_warn_does_not_ticket_by_default() -> None:
         }
     }
     assert _decide("reliability", "default", rules).open is True
+
+
+def test_hardware_precursors_warn_without_a_ticket_but_a_crit_tickets() -> None:
+    """`hardware_errors` and `gpu` mirror `reliability`: real but not urgent at warn."""
+
+    for section in ("hardware_errors", "gpu"):
+        assert not _decide(
+            {}, kind="alert", event_type="health", sections={section: "warn"}
+        ).open
+        assert _decide({}, kind="alert", event_type="health", sections={section: "crit"}).open
+    # `fans` has no section default: it follows the event type (open_all).
+    assert _decide({}, kind="alert", event_type="health", sections={"fans": "warn"}).open
+
+
+def test_disk_smart_is_advertised_through_its_rule() -> None:
+    from kenny_server import ticket_rules
+
+    assert "disk_smart" in health_rules.RULES
+    assert "disk_smart" not in ticket_rules._EXTRA_HEALTH_SECTIONS
+    assert "disk_smart" in KNOWN_SECTIONS["health"]

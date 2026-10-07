@@ -52,7 +52,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from kenny_server import event_categories, security
+from kenny_server import event_categories, hardware_history, security
 from kenny_server.ticketstore import ASSISTANT_ACTOR
 
 from . import demo_fleet
@@ -103,6 +103,11 @@ async def seed_app(app: Any, base: datetime | None = None) -> SeedResult:
 
         # A seeded desktop capture for the screenshot card + modal.
         state.screenshots.put(host.agent_id, screenshot_b64, "png")
+
+    # The hardware history is rolled up from the snapshots by the alert loop, which
+    # the demo server does not run; do the same pass here so the device series and
+    # the hardware forecasts exist (ADR-0070).
+    await hardware_history.rollup_all(state.store, state.hw_history, now=base)
 
     await _seed_activity(state.event_store, base)
     await _seed_chat_history(state.chat_history_store, base)

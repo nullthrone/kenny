@@ -3,7 +3,8 @@
 ``build_digest`` reduces the operator's week to a coarse overview: the fleet
 health mix, one line per host that needs attention (section names only, no rule
 reasons), 7-day alert and change counts, pending maintenance, posture findings
-per host (ADR-0058) and screen time (ADR-0029). The detail behind every line is
+per host (ADR-0058), hosts with hardware at risk (ADR-0070) and screen time
+(ADR-0029). The detail behind every line is
 on the dashboard, so when the dashboard's public URL is known each host links to
 its host page and the message ends with a link into the fleet view.
 
@@ -14,6 +15,7 @@ collection and no storage beyond its last-sent timestamp (``alert_state`` scope
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -21,10 +23,17 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote
 
+from . import hardware_history, hardware_metrics
 from .health_rules import _dicts, evaluate_snapshot
 from .registry import AgentRegistry
-from .store import EventStore, TelemetryStore
+from .store import EventStore, HardwareHistoryStore, TelemetryStore
 from .trends import DISK_FULL_KPI_DAYS, battery_trend, disk_forecast
+
+logger = logging.getLogger("kenny.digest")
+
+# Which section a hardware forecast's device belongs to, so a host link opens
+# where the forecast's evidence is.
+_FORECAST_SECTION = {"disk": "disk_smart", "gpu": "gpu", "fan": "fans", "component": "hardware_errors"}
 
 _MAX_HOSTS = 8
 _MAX_LIST = 6
@@ -62,6 +71,8 @@ class _Fleet:
     # agent_id -> soonest days-until-full across its volumes
     disk_soonest: dict[str, float] = field(default_factory=dict)
     battery_wear: list[str] = field(default_factory=list)
+    # agent_id -> (section of its first forecast, number of forecasts)
+    hardware_at_risk: dict[str, tuple[str, int]] = field(default_factory=dict)
     screen_hours: list[tuple[str, float]] = field(default_factory=list)
 
 
@@ -89,7 +100,11 @@ def _escape(text: str) -> str:
 
 
 async def _collect(
-    store: TelemetryStore, event_store: EventStore, registry: AgentRegistry, now: datetime
+    store: TelemetryStore,
+    event_store: EventStore,
+    registry: AgentRegistry,
+    now: datetime,
+    hw_history: HardwareHistoryStore | None = None,
 ) -> _Fleet:
     week_ago = now - timedelta(days=7)
     forecast_since = (now - timedelta(days=30)).date().isoformat()
@@ -142,6 +157,21 @@ async def _collect(
         battery = battery_trend(daily)
         if battery and battery["percent_per_30d"] is not None and battery["percent_per_30d"] < -1:
             fleet.battery_wear.append(agent_id)
+        if hw_history is not None:
+            try:
+                at_risk = await hardware_history.load_forecasts(
+                    store,
+                    hw_history,
+                    agent_id,
+                    now=now,
+                    labels=hardware_metrics.device_labels(snapshot),
+                )
+            except Exception:  # noqa: BLE001 - the digest is useful without this line
+                logger.warning("hardware forecast failed for %s", agent_id, exc_info=True)
+                at_risk = []
+            if at_risk:
+                section = _FORECAST_SECTION.get(str(at_risk[0].get("kind")), "")
+                fleet.hardware_at_risk[agent_id] = (section, len(at_risk))
 
         days = _dicts((snapshot.get("screen_time") or {}).get("days"))
         if days:
@@ -231,6 +261,15 @@ def _render(fleet: _Fleet, base_url: str, *, markdown: bool) -> str:
         todo.append(
             "battery wear: " + _capped([host(a, "battery") for a in fleet.battery_wear], _MAX_LIST, ", ")
         )
+    if fleet.hardware_at_risk:
+        todo.append(
+            "hardware at risk: "
+            + _capped(
+                [f"{host(a, section)} ({n})" for a, (section, n) in sorted(fleet.hardware_at_risk.items())],
+                _MAX_LIST,
+                ", ",
+            )
+        )
     if todo:
         lines.append("To do: " + " · ".join(todo))
 
@@ -258,14 +297,17 @@ async def build_digest(
     *,
     now: datetime | None = None,
     base_url: str = "",
+    hw_history: HardwareHistoryStore | None = None,
 ) -> Digest:
     """Render the weekly digest.
 
     ``base_url`` is the dashboard origin links point at; empty means no links.
+    ``hw_history`` (ADR-0070) adds the hosts with hardware at risk to the to-do
+    line; without it, or when a host's forecasts cannot be read, they are left out.
     """
 
     now = now or datetime.now(timezone.utc)
-    fleet = await _collect(store, event_store, registry, now)
+    fleet = await _collect(store, event_store, registry, now, hw_history)
     base = base_url.rstrip("/")
     return Digest(
         title=f"kenny weekly digest - {now.date().isoformat()}",

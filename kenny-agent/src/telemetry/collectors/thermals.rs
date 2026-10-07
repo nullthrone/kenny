@@ -20,6 +20,8 @@
 use serde_json::json;
 
 use crate::protocol::Status;
+#[cfg(any(windows, test))]
+use crate::telemetry::collectors::nvidia;
 use crate::telemetry::Section;
 
 /// Warn/crit thresholds in Celsius.
@@ -78,22 +80,18 @@ fn section_from_sensors(rows: impl IntoIterator<Item = (String, f32)>) -> Sectio
     )
 }
 
-/// Parse `nvidia-smi --query-gpu=name,temperature.gpu --format=csv,noheader,nounits`
-/// output into `(label, temperature_c)` rows. Each non-empty line is `<name>, <temp>`;
-/// the temperature is the last comma-separated field and the name is everything before it
-/// (GPU model names contain no commas). Lines that do not parse are skipped.
+/// Turn parsed `nvidia-smi --query-gpu=name,temperature.gpu` rows (see [`nvidia`]) into
+/// `(label, temperature_c)` rows. A row is `<name>, <temp>`; a missing name falls back to
+/// "GPU", and a row without a temperature (`[N/A]`) or with the wrong shape is skipped.
 #[cfg(any(windows, test))]
-fn parse_nvidia_smi(out: &str) -> Vec<(String, f32)> {
-    out.lines()
-        .filter_map(|line| {
-            let line = line.trim();
-            let idx = line.rfind(',')?;
-            let temp: f32 = line[idx + 1..].trim().parse().ok()?;
-            let name = line[..idx].trim();
-            let label = if name.is_empty() {
-                "GPU".to_string()
-            } else {
-                format!("GPU: {name}")
+fn sensors_from_nvidia_rows(rows: &[nvidia::Row]) -> Vec<(String, f32)> {
+    rows.iter()
+        .filter(|row| row.len() == 2)
+        .filter_map(|row| {
+            let temp = nvidia::cell_f64(row, 1)? as f32;
+            let label = match nvidia::cell_str(row, 0) {
+                Some(name) => format!("GPU: {name}"),
+                None => "GPU".to_string(),
             };
             Some((label, temp))
         })
@@ -194,17 +192,14 @@ Get-CimInstance -Namespace 'root/WMI' -ClassName MSAcpi_ThermalZoneTemperature -
 
     /// NVIDIA GPU temperature via `nvidia-smi`, which ships with the GPU driver and needs
     /// no admin. Absent on machines without an NVIDIA GPU (the binary is not on PATH), in
-    /// which case `run_command` returns `None` and this contributes nothing.
+    /// which case `nvidia::query` returns `None` and this contributes nothing. One run,
+    /// held to `nvidia::QUERY_BUDGET` rather than the 20 s PowerShell budget: this section
+    /// runs beside `gpu`, which makes its own `nvidia-smi` calls, and a sick driver must
+    /// not cost either section more than a few seconds per call.
     fn nvidia_gpu() -> Vec<(String, f32)> {
-        winps::run_command(
-            "nvidia-smi",
-            &[
-                "--query-gpu=name,temperature.gpu",
-                "--format=csv,noheader,nounits",
-            ],
-        )
-        .map(|out| parse_nvidia_smi(&out))
-        .unwrap_or_default()
+        nvidia::query(&["name", "temperature.gpu"])
+            .map(|rows| sensors_from_nvidia_rows(&rows))
+            .unwrap_or_default()
     }
 
     /// Storage/SSD temperatures via `Get-StorageReliabilityCounter`. Drives that do not
@@ -281,15 +276,18 @@ mod tests {
     }
 
     #[test]
-    fn parse_nvidia_smi_reads_name_and_temp() {
-        let rows = parse_nvidia_smi("NVIDIA GeForce RTX 5080, 53\n");
+    fn nvidia_rows_read_name_and_temp() {
+        let rows = sensors_from_nvidia_rows(&nvidia::parse_csv("NVIDIA GeForce RTX 5080, 53\n"));
         assert_eq!(
             rows,
             vec![("GPU: NVIDIA GeForce RTX 5080".to_string(), 53.0)]
         );
 
-        // Multiple GPUs, a blank trailing line, and an unparsable line are handled.
-        let rows = parse_nvidia_smi("GPU A, 40\nGPU B, 61\n\nnot-a-row\n");
+        // Multiple GPUs, a blank trailing line, an unparsable line and a GPU whose
+        // temperature is `[N/A]` are handled.
+        let rows = sensors_from_nvidia_rows(&nvidia::parse_csv(
+            "GPU A, 40\nGPU B, 61\n\nnot-a-row\nGPU C, [N/A]\n",
+        ));
         assert_eq!(
             rows,
             vec![

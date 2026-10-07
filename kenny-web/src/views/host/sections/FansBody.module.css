@@ -1,0 +1,62 @@
+.body {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.body > dl {
+  flex: 1 1 260px;
+  min-width: 0;
+}
+
+.spark {
+  flex: 0 0 96px;
+  width: 96px;
+}
+
+.key {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-faint);
+  overflow-wrap: anywhere;
+}
+
+.unused {
+  margin-top: 16px;
+  border: 1px solid var(--border-line);
+  border-radius: 2px;
+  padding: 0 12px;
+}
+
+.unusedHead {
+  cursor: pointer;
+  padding: 9px 0;
+  font-family: var(--font-display);
+  font-size: 9px;
+  letter-spacing: var(--track-caps-wide);
+  color: var(--text-muted);
+}
+
+.unusedNote {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  margin: 0 0 8px;
+}
+
+.unusedList {
+  margin: 0 0 12px;
+  padding-left: 16px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.errors {
+  margin: 8px 0 0;
+  padding-left: 16px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-faint);
+  overflow-wrap: anywhere;
+}

@@ -319,6 +319,36 @@ class TelemetryStore:
             out.append({"collected_at": r["collected_at"], "snapshot": snapshot})
         return out
 
+    async def snapshots_for_day(
+        self, agent_id: str, day: str, sections: tuple[str, ...]
+    ) -> list[dict[str, Any]]:
+        """Every snapshot collected on UTC ``day`` (``YYYY-MM-DD``), oldest first.
+
+        The hardware-history rollup's input (ADR-0070). Each snapshot is cut down
+        in SQL to the named top-level ``sections`` -- a day holds ~96 snapshots of
+        ~90 KB each and the rollup reads a handful of small sections -- and is
+        returned as ``{"collected_at", "snapshot"}`` *without* the read-path
+        annotators: the rollup wants the agent's raw facts, not annotations.
+        ``sections`` are internal constants, never operator input.
+        """
+
+        start = datetime.fromisoformat(day).date()
+        end = (start + timedelta(days=1)).isoformat()
+        pairs = ", ".join(
+            f"'{name}', json(json_extract(snapshot, '$.{name}'))" for name in sections
+        )
+        async with self._conn.execute(
+            f"SELECT collected_at, json_object({pairs}) AS snapshot FROM snapshots "
+            "WHERE agent_id = ? AND collected_at >= ? AND collected_at < ? "
+            "ORDER BY collected_at ASC, id ASC",
+            (agent_id, start.isoformat(), end),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [
+            {"collected_at": r["collected_at"], "snapshot": json.loads(r["snapshot"])}
+            for r in rows
+        ]
+
     async def known_agents(self) -> list[str]:
         """Return distinct agent_ids that have stored snapshots."""
 
@@ -516,6 +546,175 @@ PRESENCE_END_REASONS: tuple[str, ...] = (
 #: the agent derives ``boot_time_unix`` from now minus uptime, so successive
 #: pushes of one boot jitter by a second or two.
 BOOT_SAME_WITHIN_SECS = 120
+
+
+_HW_SCHEMA = """
+CREATE TABLE IF NOT EXISTS hw_metrics (
+    agent_id   TEXT NOT NULL,
+    device_key TEXT NOT NULL,
+    metric     TEXT NOT NULL,
+    day        TEXT NOT NULL,
+    value      REAL NOT NULL,
+    PRIMARY KEY (agent_id, device_key, metric, day)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS hw_rollup_state (
+    agent_id TEXT PRIMARY KEY,
+    last_day TEXT NOT NULL
+);
+"""
+
+# Its own constant for the same reason as TELEMETRY_RETENTION_DAYS: the catalog
+# default of KENNY_HW_HISTORY_RETENTION_DAYS is asserted against this one.
+HW_HISTORY_RETENTION_DAYS = 730
+
+
+class HardwareHistoryStore:
+    """Per-device daily hardware metrics, kept far longer than snapshots (ADR-0070).
+
+    ``hw_metrics`` holds one real per ``(agent, device, metric, UTC day)``;
+    ``hw_rollup_state`` remembers per agent the last day already rolled up. Both
+    live in the telemetry database file, so the scheduled ``VACUUM INTO`` backup
+    covers them. Filled by the alert loop's daily rollup, never by ``insert``.
+    """
+
+    def __init__(
+        self, db_path: str = DEFAULT_DB_PATH, retention_days: int = HW_HISTORY_RETENTION_DAYS
+    ) -> None:
+        self.db_path = db_path
+        self.retention_days = retention_days
+        self._db: aiosqlite.Connection | None = None
+        # Bumped by every write through this object, so a consumer that caches
+        # something derived from an agent's history knows when it went stale
+        # without reading the database (see :meth:`version`).
+        self._versions: dict[str, int] = {}
+        self._epoch = 0
+
+    def version(self, agent_id: str) -> tuple[int, int]:
+        """A token that changes whenever ``agent_id``'s history does.
+
+        Equal tokens mean nothing was recorded, deleted or pruned through this
+        store since the earlier one; in memory, so asking costs no query.
+        """
+
+        return self._epoch, self._versions.get(agent_id, 0)
+
+    def _touch(self, agent_id: str) -> None:
+        self._versions[agent_id] = self._versions.get(agent_id, 0) + 1
+
+    async def connect(self) -> None:
+        if self._db is not None:
+            return
+        self._db = await aiosqlite.connect(self.db_path)
+        await _configure_connection(self._db)
+        await self._db.executescript(_HW_SCHEMA)
+        await self._db.commit()
+
+    async def close(self) -> None:
+        if self._db is not None:
+            await self._db.close()
+            self._db = None
+
+    @property
+    def _conn(self) -> aiosqlite.Connection:
+        if self._db is None:
+            raise RuntimeError("HardwareHistoryStore is not connected; call connect() first")
+        return self._db
+
+    async def last_day(self, agent_id: str) -> str | None:
+        """The last day rolled up for ``agent_id`` (``YYYY-MM-DD``), or ``None``."""
+
+        async with self._conn.execute(
+            "SELECT last_day FROM hw_rollup_state WHERE agent_id = ?", (agent_id,)
+        ) as cur:
+            row = await cur.fetchone()
+        return row["last_day"] if row else None
+
+    async def record(
+        self,
+        agent_id: str,
+        rows: list[tuple[str, str, str, float]],
+        *,
+        last_day: str,
+    ) -> int:
+        """Upsert ``(device_key, metric, day, value)`` rows and advance the state.
+
+        One ``BEGIN IMMEDIATE`` transaction under :func:`write_lock` per call
+        (ADR-0051): the rows and the new ``last_day`` land together or not at
+        all, so a failed rollup is simply retried from the old state.
+        Idempotent -- the same rows rewrite themselves. Returns the rows written.
+        """
+
+        async with write_lock():
+            await _begin_immediate(self._conn)
+            try:
+                await self._conn.executemany(
+                    "INSERT INTO hw_metrics (agent_id, device_key, metric, day, value) "
+                    "VALUES (?, ?, ?, ?, ?) "
+                    "ON CONFLICT (agent_id, device_key, metric, day) "
+                    "DO UPDATE SET value = excluded.value",
+                    [(agent_id, key, metric, day, value) for key, metric, day, value in rows],
+                )
+                await self._conn.execute(
+                    "INSERT INTO hw_rollup_state (agent_id, last_day) VALUES (?, ?) "
+                    "ON CONFLICT (agent_id) DO UPDATE SET last_day = excluded.last_day",
+                    (agent_id, last_day),
+                )
+                await self._conn.commit()
+            except BaseException:
+                await self._conn.rollback()
+                raise
+            self._touch(agent_id)
+        return len(rows)
+
+    async def series(
+        self, agent_id: str, since_day: str
+    ) -> dict[str, dict[str, list[tuple[str, float]]]]:
+        """``{device_key: {metric: [(day, value), ...]}}`` from ``since_day`` on.
+
+        Days ascend within every series; ``since_day`` is an inclusive
+        ``YYYY-MM-DD`` lower bound.
+        """
+
+        async with self._conn.execute(
+            "SELECT device_key, metric, day, value FROM hw_metrics "
+            "WHERE agent_id = ? AND day >= ? ORDER BY device_key, metric, day",
+            (agent_id, since_day[:10]),
+        ) as cur:
+            rows = await cur.fetchall()
+        out: dict[str, dict[str, list[tuple[str, float]]]] = {}
+        for r in rows:
+            out.setdefault(r["device_key"], {}).setdefault(r["metric"], []).append(
+                (r["day"], r["value"])
+            )
+        return out
+
+    async def prune(
+        self, *, now: datetime | None = None, retention_days: int | None = None
+    ) -> int:
+        """Delete metric rows older than the retention window. Returns rows deleted.
+
+        The rollup state is kept: it is one row per agent and only says which days
+        never need rolling up again.
+        """
+
+        now = now or datetime.now(timezone.utc)
+        days = retention_days if retention_days is not None else self.retention_days
+        cutoff = (now - timedelta(days=days)).date().isoformat()
+        async with write_lock():
+            cur = await self._conn.execute("DELETE FROM hw_metrics WHERE day < ?", (cutoff,))
+            await self._conn.commit()
+        self._epoch += 1
+        return cur.rowcount or 0
+
+    async def delete_agent(self, agent_id: str) -> int:
+        """Delete every metric row and the rollup state of ``agent_id``."""
+
+        async with write_lock():
+            cur = await self._conn.execute("DELETE FROM hw_metrics WHERE agent_id = ?", (agent_id,))
+            await self._conn.execute("DELETE FROM hw_rollup_state WHERE agent_id = ?", (agent_id,))
+            await self._conn.commit()
+        self._touch(agent_id)
+        return cur.rowcount or 0
 
 
 def _presence_ts(value: datetime | None) -> str:
@@ -1341,7 +1540,7 @@ class AlertStateStore:
 
     ``scope`` is ``'offline'``, ``'missing'``, ``'overall'``,
     ``'section:<name>'``, ``'pushed:section:<name>'``, ``'change:<section>'``,
-    ``'digest'`` or ``'daily'``. Persisting the state (rather than keeping it in
+    ``'digest'``, ``'daily'`` or ``'hwforecast:set'``. Persisting the state (rather than keeping it in
     memory) means a server restart does not re-fire alerts for conditions that
     were already notified (ADR-0027). State rows are tiny and pruned implicitly
     by being overwritten.

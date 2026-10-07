@@ -158,6 +158,304 @@ export interface DiskSection extends RawSection {
   top_dirs: DiskTopDir[]
 }
 
+/* ── Physical-disk health (snapshot.disk_smart — docs/protocol.md "disk_smart") ──
+ *
+ * One row per physical disk. Every counter is lifetime and `null`/absent means
+ * "the drive or its driver does not report it", which is unknown, never zero.
+ * The 0.22 fields are additive, so every one is optional: an older agent's row
+ * carries only the first group. */
+
+/** NVMe SMART / health log (page 0x02). 128-bit counters saturate at 2^64-1,
+ * so values above 2^53 lose precision here. */
+export interface DiskNvmeHealth {
+  /** Bitfield: 0 spare below threshold, 1 temperature, 2 reliability, 3 read-only, 4 volatile backup. */
+  critical_warning?: number | null
+  available_spare?: number | null
+  available_spare_threshold?: number | null
+  /** May exceed 100. */
+  percentage_used?: number | null
+  media_errors?: number | null
+  unsafe_shutdowns?: number | null
+  error_log_entries?: number | null
+  data_units_written?: number | null
+  power_on_hours?: number | null
+  temperature_c?: number | null
+}
+
+export interface DiskSmartRow {
+  model?: string | null
+  health_status?: string | null
+  /** The drive's own SMART predict-failure flag; null is unknown, not false. */
+  predictive_failure?: boolean | null
+  wear?: number | null
+  temperature_c?: number | null
+  power_on_hours?: number | null
+  read_errors_total?: number | null
+  read_errors_uncorrected?: number | null
+  write_errors_uncorrected?: number | null
+  device_number?: number | null
+  serial?: string | null
+  bus_type?: string | null
+  media_type?: string | null
+  size_bytes?: number | null
+  removable?: boolean | null
+  temperature_max_c?: number | null
+  /** ATA attribute id (decimal string) → raw value; only ids the drive reports. */
+  smart_attributes?: Record<string, number | null> | null
+  nvme?: DiskNvmeHealth | null
+  /** Why `nvme` is null on an NVMe disk. Never to be read as healthy. */
+  nvme_error?: string | null
+  /** Raw-device reads were skipped while anti-cheat coexistence is active. */
+  paused?: boolean | null
+}
+
+export interface DiskSmartSection extends RawSection {
+  disks?: DiskSmartRow[]
+}
+
+/* ── Hardware errors (snapshot.hardware_errors) ── */
+
+export interface HardwareErrorGroup {
+  source: string
+  event_id: number
+  level: string
+  count: number
+  last_seen?: string | null
+  by_day?: Record<string, number> | null
+  sample?: string | null
+  /** key → { value: count }; counts cover only the newest ~10 events of the group. */
+  details?: Record<string, Record<string, number>> | null
+}
+
+export interface HardwareAppCrashes {
+  total?: number | null
+  distinct_apps?: number | null
+  distinct_modules?: number | null
+  exception_codes?: Record<string, number> | null
+  by_day?: Record<string, number> | null
+}
+
+/** One memory controller (Linux). */
+export interface HardwareEdacEntry {
+  controller: string
+  ce_count?: number | null
+  ue_count?: number | null
+}
+
+/** One PCIe device with a non-zero AER total (Linux). */
+export interface HardwareAerEntry {
+  device: string
+  correctable?: number | null
+  nonfatal?: number | null
+  fatal?: number | null
+}
+
+export interface HardwareErrorsSection extends RawSection {
+  window_days?: number | null
+  /** How far back the queried log really reaches; shorter than `window_days` when the log wrapped. */
+  effective_window_days?: number | null
+  oldest_event_utc?: string | null
+  sources?: string[]
+  groups?: HardwareErrorGroup[]
+  truncated?: boolean
+  truncated_count?: number
+  app_crashes?: HardwareAppCrashes | null
+  edac?: HardwareEdacEntry[]
+  aer?: HardwareAerEntry[]
+  errors?: string[]
+}
+
+/* ── GPU (snapshot.gpu) ── */
+
+export interface GpuPcie {
+  gen_current?: number | null
+  gen_max?: number | null
+  width_current?: number | null
+  width_max?: number | null
+}
+
+export interface GpuThrottle {
+  hw_slowdown?: boolean | null
+  hw_thermal_slowdown?: boolean | null
+  hw_power_brake_slowdown?: boolean | null
+  sw_thermal_slowdown?: boolean | null
+}
+
+export interface GpuEcc {
+  uncorrected_volatile?: number | null
+  retired_pages_pending?: boolean | null
+  remapped_rows?: {
+    correctable?: number | null
+    uncorrectable?: number | null
+    pending?: boolean | null
+    failure?: boolean | null
+  } | null
+}
+
+export interface GpuCard {
+  name: string
+  vendor?: 'nvidia' | 'amd' | 'intel' | 'unknown' | string
+  pci_id?: string | null
+  bus_id?: string | null
+  uuid?: string | null
+  driver_version?: string | null
+  sources?: string[]
+  temperature_c?: number | null
+  utilization_percent?: number | null
+  power_draw_w?: number | null
+  power_limit_w?: number | null
+  /** The driver's *target* fan speed, not a measured one. */
+  fan_target_percent?: number | null
+  pcie?: GpuPcie | null
+  throttle?: GpuThrottle | null
+  ecc?: GpuEcc | null
+  /** amdgpu RAS block → error counts. */
+  ras?: Record<string, { ue?: number | null; ce?: number | null }> | null
+}
+
+export interface GpuSection extends RawSection {
+  gpus?: GpuCard[]
+  truncated?: boolean
+  errors?: string[]
+}
+
+/* ── Fans (snapshot.fans) ── */
+
+export interface FanReading {
+  key: string
+  label?: string | null
+  source?: 'hwmon' | 'lhm' | string
+  /** A burst of samples, in order. */
+  rpm_samples?: number[] | null
+  duty_percent?: number | null
+  mode?: 'pwm' | 'dc' | 'auto' | 'manual' | 'unknown' | string | null
+  /** Every sample 0 RPM and no duty readable: an unused channel, not a stall. */
+  idle_or_absent?: boolean
+}
+
+export interface FansSection extends RawSection {
+  sources_tried?: string[]
+  sample_interval_ms?: number | null
+  fans?: FanReading[]
+  truncated?: boolean
+  errors?: string[]
+}
+
+/* ── Long-lived device history (GET /api/agent/{id}/trends → `hardware`) ──
+ *
+ * Daily per-device series (disk, GPU, fan, component) and the forecasts the
+ * server derived from them. The whole key is optional: a server without
+ * long-lived hardware history omits it, and every consumer renders as it did
+ * before. Shapes: docs/protocol.md does not carry this (it is a dashboard API,
+ * not a wire frame); the server owns it in `kenny_server/webui`. */
+
+export type HardwareDeviceKind = 'disk' | 'gpu' | 'fan' | 'component'
+
+export type HardwareForecastReason =
+  | 'wear_out'
+  | 'spare_decline'
+  | 'first_error'
+  | 'error_rate_rising'
+  | 'pcie_width_regression'
+  | 'fan_drift'
+
+export interface HardwareSeriesPoint {
+  /** UTC calendar day, `YYYY-MM-DD`. */
+  day: string
+  value: number
+}
+
+export interface HardwareDevice {
+  /** `disk:<serial>`, `gpu:<uuid>`, `fan:<fan key>` or `host:<component>`. */
+  device_key: string
+  kind: HardwareDeviceKind | string
+  label: string
+  /** metric name → points, oldest first. */
+  series: Record<string, HardwareSeriesPoint[]>
+}
+
+export interface HardwareForecast {
+  device_key: string
+  kind: HardwareDeviceKind | string
+  label: string
+  reason: HardwareForecastReason | string
+  /** A plain-language sentence, ready to show. */
+  symptom: string
+  /** Days until the projected event; null when the reason has no date (e.g. a first error). */
+  days_until: number | null
+}
+
+export interface HardwareTrends {
+  window_days: number | null
+  devices: HardwareDevice[]
+  forecasts: HardwareForecast[]
+}
+
+/** The `/trends` response; `disk` and `battery` are not read by the dashboard yet. */
+export interface AgentTrends {
+  agent_id?: string
+  disk?: unknown
+  battery?: unknown
+  hardware?: unknown
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function normalizeSeries(raw: unknown): Record<string, HardwareSeriesPoint[]> {
+  const out: Record<string, HardwareSeriesPoint[]> = {}
+  if (!isRecord(raw)) return out
+  for (const [metric, points] of Object.entries(raw)) {
+    if (!Array.isArray(points)) continue
+    const clean = points
+      .filter(
+        (p): p is HardwareSeriesPoint =>
+          isRecord(p) && typeof p.day === 'string' && typeof p.value === 'number' && Number.isFinite(p.value),
+      )
+      .map((p) => ({ day: p.day, value: p.value }))
+      .sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0))
+    if (clean.length > 0) out[metric] = clean
+  }
+  return out
+}
+
+/**
+ * The `hardware` key of a `/trends` response, or null when it is absent or not
+ * an object (an older server). Devices and forecasts that do not carry their
+ * identifying strings are dropped rather than rendered half-empty.
+ */
+export function normalizeHardwareTrends(raw: unknown): HardwareTrends | null {
+  const hw = isRecord(raw) && 'hardware' in raw ? raw.hardware : undefined
+  if (!isRecord(hw)) return null
+  const devices: HardwareDevice[] = (Array.isArray(hw.devices) ? hw.devices : [])
+    .filter((d): d is Record<string, unknown> => isRecord(d) && typeof d.device_key === 'string')
+    .map((d) => ({
+      device_key: d.device_key as string,
+      kind: typeof d.kind === 'string' ? d.kind : 'component',
+      label: typeof d.label === 'string' && d.label ? d.label : (d.device_key as string),
+      series: normalizeSeries(d.series),
+    }))
+  const forecasts: HardwareForecast[] = (Array.isArray(hw.forecasts) ? hw.forecasts : [])
+    .filter(
+      (f): f is Record<string, unknown> =>
+        isRecord(f) && typeof f.device_key === 'string' && typeof f.symptom === 'string' && f.symptom.trim() !== '',
+    )
+    .map((f) => ({
+      device_key: f.device_key as string,
+      kind: typeof f.kind === 'string' ? f.kind : 'component',
+      label: typeof f.label === 'string' && f.label ? f.label : (f.device_key as string),
+      reason: typeof f.reason === 'string' ? f.reason : '',
+      symptom: f.symptom as string,
+      days_until: typeof f.days_until === 'number' && Number.isFinite(f.days_until) ? f.days_until : null,
+    }))
+  return {
+    window_days: typeof hw.window_days === 'number' && Number.isFinite(hw.window_days) ? hw.window_days : null,
+    devices,
+    forecasts,
+  }
+}
+
 /* ── Web filter (GET/PUT/POST/DELETE /api/agent/{id}/webfilter*) ──
  *
  * Categories, schedule and bypass requests (ADR-0055,

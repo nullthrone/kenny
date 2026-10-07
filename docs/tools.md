@@ -339,7 +339,9 @@ are `normal_change` (they hit the ADR-0009 confirm-gate in the Ask kenny overlay
 Auto-ticket rules are also server-only: they decide which alerts open a ticket
 automatically, by default every genuine alert and nothing else. Operator+ on every one of
 these, including the read — an alert-origin ticket is itself operator-only, so a scoped
-`user` has no legitimate use for the rules that decide when one opens.
+`user` has no legitimate use for the rules that decide when one opens. `ticket_rule_set`
+takes an `event_type` of `health`, `offline`, `disk_forecast`, `hardware_forecast` or
+`change`, and a `decision` of `open_all`, `open_crit` or `never`.
 
 | Tool | Arguments | Tier |
 |------|-----------|------|
