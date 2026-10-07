@@ -1317,13 +1317,18 @@ def test_new_sections_are_not_windows_only(name: str) -> None:
 @pytest.mark.parametrize("fixture", ["telemetry_snapshot.json", "telemetry_snapshot_linux.json"])
 def test_golden_fixtures_carry_the_new_sections_and_they_judge_healthy(fixture: str) -> None:
     """The fixtures report the new sections as ``ok`` with a healthy-looking
-    body; whatever the rules say about them, none of it may alarm."""
+    body; whatever the rules say about them, none of it may alarm. The exception
+    is ``hardware_errors``: its fixture carries real events (retrying disk,
+    a GPU Xid) that its rule rightly flags when judged near their timestamps;
+    ``tests/test_rule_hardware_errors.py`` pins that verdict."""
 
     snapshot = json.loads((FIXTURES_DIR / fixture).read_text())["snapshot"]
     agent_os = "windows" if fixture == "telemetry_snapshot.json" else "linux"
     result = health_rules.evaluate_snapshot(snapshot, agent_os=agent_os, now=NOW)
     for name in NEW_HARDWARE_SECTIONS:
         assert name in snapshot, f"{fixture} lost its {name} section"
+        if name == "hardware_errors":
+            continue
         assert result["sections"][name]["status"] in ("ok", "posture"), (fixture, name)
     assert result["sections"]["os_support"]["status"] == "ok", fixture
 
@@ -1331,6 +1336,8 @@ def test_golden_fixtures_carry_the_new_sections_and_they_judge_healthy(fixture: 
 @pytest.mark.parametrize("name", NEW_HARDWARE_SECTIONS)
 @pytest.mark.parametrize("payload", [{}, {"disks": [], "groups": [], "gpus": [], "fans": []}])
 def test_hardware_rule_stubs_defer_to_the_agent(name: str, payload: dict) -> None:
+    if name == "hardware_errors" and payload:
+        pytest.skip("hardware_errors judges an empty groups list (ok); see test_rule_hardware_errors.py")
     for reported in ("ok", "warn"):
         out = health_rules.evaluate_section(
             name, {"status": reported, "summary": "agent line", **payload}, now=NOW
