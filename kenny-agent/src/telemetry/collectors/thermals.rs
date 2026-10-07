@@ -192,7 +192,10 @@ Get-CimInstance -Namespace 'root/WMI' -ClassName MSAcpi_ThermalZoneTemperature -
 
     /// NVIDIA GPU temperature via `nvidia-smi`, which ships with the GPU driver and needs
     /// no admin. Absent on machines without an NVIDIA GPU (the binary is not on PATH), in
-    /// which case `nvidia::query` returns `None` and this contributes nothing.
+    /// which case `nvidia::query` returns `None` and this contributes nothing. One run,
+    /// held to `nvidia::QUERY_BUDGET` rather than the 20 s PowerShell budget: this section
+    /// runs beside `gpu`, which makes its own `nvidia-smi` calls, and a sick driver must
+    /// not cost either section more than a few seconds per call.
     fn nvidia_gpu() -> Vec<(String, f32)> {
         nvidia::query(&["name", "temperature.gpu"])
             .map(|rows| sensors_from_nvidia_rows(&rows))

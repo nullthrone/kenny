@@ -2,7 +2,8 @@
 //!
 //! `nvidia-smi` ships with the NVIDIA driver on both Windows and Linux and needs no
 //! admin rights, so every collector that wants NVIDIA facts asks it through
-//! [`query`]: one bounded `--query-gpu=<fields> --format=csv,noheader,nounits` run,
+//! [`query`]: one `--query-gpu=<fields> --format=csv,noheader,nounits` run held to
+//! [`QUERY_BUDGET`] (every run initialises NVML, so callers keep their run count low),
 //! parsed into cells. A cell the driver does not report (`[N/A]`, `[Not Supported]`)
 //! is `None`, never a string a caller could mistake for a value.
 //!
@@ -13,7 +14,10 @@
 // selectively; not every helper is used on every platform.
 #![allow(dead_code)]
 
+use std::time::Duration;
+
 use super::proc;
+use super::ProbeFailure;
 
 /// One parsed `nvidia-smi` row: a cell per queried field, `None` where the driver
 /// reported nothing.
@@ -72,20 +76,63 @@ pub fn cell_bool(row: &[Option<String>], idx: usize) -> Option<bool> {
     }
 }
 
-/// Run `nvidia-smi --query-gpu=<fields> --format=csv,noheader,nounits` within
-/// [`proc::PROBE_BUDGET`] and parse it: one row per GPU, one cell per field.
+/// Wall-clock budget of one `nvidia-smi` run.
 ///
-/// `None` when `nvidia-smi` is missing, times out, exits non-zero (a driver that is
-/// not loaded exits 9) or prints nothing. A row whose cell count does not match
-/// `fields` is dropped rather than misaligned.
-pub fn query(fields: &[&str]) -> Option<Vec<Vec<Option<String>>>> {
-    let query = format!("--query-gpu={}", fields.join(","));
-    let out = proc::run_ok(
+/// Tighter than the 20 s [`proc::PROBE_BUDGET`] that PowerShell probes get: a healthy
+/// `nvidia-smi` initialises NVML and answers a `--query-gpu` in well under a second (a
+/// few on a many-GPU host that is cold-starting), so 5 s leaves generous headroom while
+/// a wedged driver, which hangs every invocation alike, costs the snapshot 5 s per call
+/// rather than 20 s.
+pub const QUERY_BUDGET: Duration = Duration::from_secs(5);
+
+/// The outcome of one [`query_checked`] run.
+///
+/// `Err` means `nvidia-smi` itself is unavailable or hung ([`ProbeFailure::Spawn`],
+/// [`ProbeFailure::Timeout`]): asking again would hit the same wall, so a caller that
+/// runs several queries stops at the first one. `Ok(None)` means it ran but gave no
+/// rows: an unknown field makes it exit non-zero, a driver that is not loaded exits 9,
+/// and either may still be answered by a different field list.
+pub type Probe = Result<Option<Vec<Row>>, ProbeFailure>;
+
+/// Run `nvidia-smi --query-gpu=<fields> --format=csv,noheader,nounits` within
+/// [`QUERY_BUDGET`] and parse it: one row per GPU, one cell per field.
+///
+/// A row whose cell count does not match `fields` is dropped rather than misaligned.
+pub fn query_checked(fields: &[&str]) -> Probe {
+    match proc::run(
         "nvidia-smi",
-        &[&query, "--format=csv,noheader,nounits"],
-        proc::PROBE_BUDGET,
+        &[&query_arg(fields), FORMAT_ARG],
+        QUERY_BUDGET,
+    )? {
+        out if out.success => Ok(rows_from_stdout(fields, &out.stdout)),
+        _ => Ok(None),
+    }
+}
+
+/// [`query_checked`] for a caller that only wants the rows: `None` when `nvidia-smi` is
+/// missing, times out, exits non-zero (a driver that is not loaded exits 9) or prints
+/// nothing.
+pub fn query(fields: &[&str]) -> Option<Vec<Row>> {
+    let stdout = proc::run_ok(
+        "nvidia-smi",
+        &[&query_arg(fields), FORMAT_ARG],
+        QUERY_BUDGET,
     )?;
-    let rows: Vec<Row> = parse_csv(&out)
+    rows_from_stdout(fields, &stdout)
+}
+
+/// The `--format` argument of every run.
+const FORMAT_ARG: &str = "--format=csv,noheader,nounits";
+
+/// The `--query-gpu` argument for `fields`.
+fn query_arg(fields: &[&str]) -> String {
+    format!("--query-gpu={}", fields.join(","))
+}
+
+/// Rows of a clean run's stdout: those with exactly one cell per queried field, `None`
+/// when there are none.
+fn rows_from_stdout(fields: &[&str], stdout: &str) -> Option<Vec<Row>> {
+    let rows: Vec<Row> = parse_csv(stdout)
         .into_iter()
         .filter(|row| row.len() == fields.len())
         .collect();
@@ -166,6 +213,30 @@ NVIDIA A100-PCIE-40GB, 61, 74.10, 4, Active, Enabled, [Not Supported]
                 None
             ]
         );
+    }
+
+    #[test]
+    fn the_query_budget_is_tighter_than_the_powershell_budget() {
+        assert!(QUERY_BUDGET < proc::PROBE_BUDGET);
+    }
+
+    #[test]
+    fn only_rows_with_one_cell_per_field_are_kept() {
+        let rows = rows_from_stdout(&["a", "b"], "x, 1\nshort\n").unwrap();
+        assert_eq!(rows.len(), 1, "the misaligned row is dropped");
+        assert_eq!(rows_from_stdout(&["a", "b"], "\n"), None);
+        assert_eq!(rows_from_stdout(&["a", "b"], "short\n"), None);
+    }
+
+    #[test]
+    fn a_missing_nvidia_smi_is_unavailable_not_empty() {
+        // CI hosts have no NVIDIA driver; a host that does answers with rows or none,
+        // never with an unavailable probe.
+        match query_checked(&["name"]) {
+            Err(failure) => assert_eq!(failure, ProbeFailure::Spawn),
+            Ok(None) => {}
+            Ok(Some(rows)) => assert!(rows.iter().all(|row| row.len() == 1)),
+        }
     }
 
     #[test]
