@@ -40,28 +40,32 @@ def _no_ambient_ai(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(key, raising=False)
     recommend._cache.clear()
     forecast._cache.clear()
+    event_categories.reset_state()
+    ai._MODELS_WITHOUT_EFFORT.clear()
     yield
     recommend._cache.clear()
     forecast._cache.clear()
+    event_categories.reset_state()
+    ai._MODELS_WITHOUT_EFFORT.clear()
 
 
 # -- the fake gateway -------------------------------------------------------
 
 
-def _message(model: str, text: str) -> dict[str, Any]:
+def _message(model: str, text: str, stop_reason: str = "end_turn") -> dict[str, Any]:
     return {
         "id": "msg_gw",
         "type": "message",
         "role": "assistant",
         "model": model,
         "content": [{"type": "text", "text": text}],
-        "stop_reason": "end_turn",
+        "stop_reason": stop_reason,
         "stop_sequence": None,
         "usage": {"input_tokens": 1, "output_tokens": 1},
     }
 
 
-def _sse(model: str, text: str) -> bytes:
+def _sse(model: str, text: str, stop_reason: str = "end_turn") -> bytes:
     start = _message(model, "")
     start["content"], start["stop_reason"] = [], None
     events = [
@@ -87,7 +91,7 @@ def _sse(model: str, text: str) -> bytes:
             "message_delta",
             {
                 "type": "message_delta",
-                "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+                "delta": {"stop_reason": stop_reason, "stop_sequence": None},
                 "usage": {"output_tokens": 1},
             },
         ),
@@ -104,6 +108,10 @@ class FakeGateway:
     def __init__(self) -> None:
         self.requests: list[dict[str, Any]] = []
         self.reject: tuple[int, dict[str, Any]] | None = None
+        # Answer any request carrying an effort setting with the 400 a model
+        # that predates it gives, as a gateway that does not pass it on would.
+        self.reject_effort = False
+        self.stop_reason = "end_turn"
         gateway = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -119,14 +127,28 @@ class FakeGateway:
                         "body": body,
                     }
                 )
+                stop = gateway.stop_reason
                 if gateway.reject is not None:
                     status, payload = gateway.reject
                     self._send(status, "application/json", json.dumps(payload).encode())
+                elif gateway.reject_effort and "output_config" in body:
+                    payload = {
+                        "type": "error",
+                        "error": {
+                            "type": "invalid_request_error",
+                            "message": "output_config.effort: Extra inputs are not permitted",
+                        },
+                    }
+                    self._send(400, "application/json", json.dumps(payload).encode())
                 elif body.get("stream"):
-                    self._send(200, "text/event-stream", _sse(body["model"], "Diagnosis: fine."))
+                    self._send(
+                        200, "text/event-stream", _sse(body["model"], "Diagnosis: fine.", stop)
+                    )
                 else:
                     self._send(
-                        200, "application/json", json.dumps(_message(body["model"], "ok")).encode()
+                        200,
+                        "application/json",
+                        json.dumps(_message(body["model"], "ok", stop)).encode(),
                     )
 
             def _send(self, status: int, ctype: str, payload: bytes) -> None:
@@ -206,6 +228,60 @@ def test_every_fast_model_call_reaches_the_gateway_as_configured(tmp_path, gatew
         assert req["headers"]["x-gateway-route"] == "fleet"
         assert req["headers"]["x-api-key"] == ai.GATEWAY_PLACEHOLDER_KEY
     assert [bool(r["body"].get("stream")) for r in gateway.requests] == [False, False, True, True]
+    # One request shape for every fast route, valid for current models: an
+    # effort setting, room for reasoning, no sampling parameters (a 400 on
+    # current models) and no assistant prefill (likewise).
+    for req in gateway.requests:
+        body = req["body"]
+        assert body["output_config"] == {"effort": ai.FAST_EFFORT}
+        assert not {"temperature", "top_p", "top_k"} & body.keys()
+        assert body["messages"][-1]["role"] == "user"
+    assert all(r["body"]["max_tokens"] >= 2048 for r in gateway.requests[1:])
+
+
+def test_a_model_that_rejects_effort_is_served_without_it(tmp_path, gateway) -> None:
+    """The rejection is paid once per process; every feature still answers."""
+
+    gateway.reject_effort = True
+    app = build_app(db_path=str(tmp_path / "effort.sqlite"))
+    with TestClient(app) as c:
+        _configure(c, app, gateway)
+        assert c.post("/api/ai/test", headers=_bearer(app)).json() == {"ok": True, "error": None}
+        client = ai.current().client()
+        groups = [{"source": "disk", "event_id": 51, "sample": "bad block"}]
+        asyncio.run(event_categories._classify(client, groups))
+        facts = {"section": "disk", "status": "warn", "summary": "C: 91%", "reason": "C: 91%"}
+        asyncio.run(_drain(recommend.recommend_events(client, facts)))
+
+    with_effort = ["output_config" in r["body"] for r in gateway.requests]
+    assert with_effort == [True, False, False, False]  # probe, its retry, classify, recommend
+
+
+@pytest.mark.parametrize("stop_reason", ["max_tokens", "refusal"])
+def test_an_unusable_answer_is_reported_and_never_cached(tmp_path, gateway, stop_reason) -> None:
+    gateway.stop_reason = stop_reason
+    app = build_app(db_path=str(tmp_path / "unusable.sqlite"))
+    with TestClient(app) as c:
+        _configure(c, app, gateway)
+        client = ai.current().client()
+        facts = {"section": "disk", "status": "warn", "summary": "C: 91%", "reason": "C: 91%"}
+        for events in (
+            recommend.recommend_events(client, facts),
+            forecast.forecast_events(client, forecast.build_facts(None, [], None, [])),
+        ):
+            out = asyncio.run(_collect(events))
+            assert out[-1]["type"] == "error", out
+        groups = [{"source": "disk", "event_id": 51, "sample": "bad block"}]
+        assert asyncio.run(event_categories._classify(client, groups)) is None
+        probe = c.post("/api/ai/test", headers=_bearer(app)).json()
+
+    assert not recommend._cache and not forecast._cache
+    # Being cut off is what a one-token probe expects; a refusal is a finding.
+    assert probe["ok"] is (stop_reason == "max_tokens")
+
+
+async def _collect(events: Any) -> list[dict[str, Any]]:
+    return [ev async for ev in events]
 
 
 async def _drain(events: Any) -> list[dict[str, Any]]:

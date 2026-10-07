@@ -106,7 +106,20 @@ def verdict_model_tag() -> str:
 
     return f"{ai.current().fast_model()}/{_VERDICT_REVISION}"
 
-_MAX_TOKENS = 1024
+
+# Output ceiling for one batch: room for the model's reasoning plus one JSON
+# verdict (~100 tokens) per group, since a batch holds every unclassified
+# pattern at once. Capped where a non-streaming request stays clear of the
+# SDK's HTTP timeout.
+_BASE_TOKENS = 2048
+_TOKENS_PER_GROUP = 160
+_MAX_TOKENS = 16_000
+
+
+def _max_tokens(groups: int) -> int:
+    return min(_MAX_TOKENS, _BASE_TOKENS + _TOKENS_PER_GROUP * groups)
+
+
 # Bounds the in-memory mirror of the persisted table. A real fleet has a few
 # hundred distinct (source, event_id) patterns at most.
 _CACHE_MAX = 4096
@@ -417,15 +430,28 @@ def _user_message(groups: list[dict[str, Any]]) -> dict[str, Any]:
 async def _classify(client: Any, groups: list[dict[str, Any]]) -> list[Classification] | None:
     """One batched fast-model call classifying ``groups``; None on any failure."""
 
+    access = ai.current()
+    request = access.fast_request(_max_tokens(len(groups)))
+    while True:
+        try:
+            resp = await asyncio.to_thread(
+                client.messages.create,
+                **request,
+                system=_cached_system(),
+                messages=[_user_message(groups)],
+            )
+        except Exception as exc:  # noqa: BLE001 - best-effort; caller falls back to defaults
+            if access.drop_effort(request, exc):
+                request = access.fast_request(_max_tokens(len(groups)))
+                continue
+            return None
+        break
     try:
-        resp = await asyncio.to_thread(
-            client.messages.create,
-            model=ai.current().fast_model(),
-            max_tokens=_MAX_TOKENS,
-            system=_cached_system(),
-            messages=[_user_message(groups)],
-        )
-    except Exception:  # noqa: BLE001 - best-effort; caller falls back to defaults
+        ai.check_usable(resp)
+    except ai.UnusableResponse as exc:
+        # A cut-off list could still parse as a prefix of the batch; a refusal
+        # carries no verdicts at all. Either way the defaults stand.
+        logger.warning("classifying %d event group(s) failed: %s", len(groups), exc)
         return None
     return _parse_classifications(_extract_text(resp), len(groups))
 

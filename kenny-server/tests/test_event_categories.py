@@ -484,3 +484,47 @@ def test_schedule_classification_is_a_noop_without_a_key(monkeypatch):
     _run(_scenario())
     assert client.calls[0] == 0
     assert not ec._inflight
+
+
+class _RecordingMessages:
+    def __init__(self, text: str, stop_reason: str) -> None:
+        self._text = text
+        self._stop_reason = stop_reason
+        self.kwargs: list[dict] = []
+
+    def create(self, **kwargs):
+        self.kwargs.append(kwargs)
+        resp = _Resp(self._text)
+        resp.stop_reason = self._stop_reason
+        return resp
+
+
+class _RecordingClient:
+    def __init__(self, text: str, stop_reason: str = "end_turn") -> None:
+        self.messages = _RecordingMessages(text, stop_reason)
+
+
+def _groups(n: int) -> list[dict]:
+    return [{"source": f"s{i}", "event_id": i, "sample": "x"} for i in range(n)]
+
+
+def test_a_batch_gets_output_room_for_every_group():
+    """A batch holds every unclassified pattern at once, so its ceiling grows
+    with it: a fixed one would cut a fresh fleet's first batch off mid-list."""
+
+    verdict = '{"category": "Other", "severity": "notable", "cause": ""}'
+    small, large = _RecordingClient("[" + verdict + "]"), _RecordingClient("[]")
+    _run(ec._classify(small, _groups(1)))
+    _run(ec._classify(large, _groups(500)))
+    one = small.messages.kwargs[0]["max_tokens"]
+    assert one >= 2048
+    assert large.messages.kwargs[0]["max_tokens"] == ec._MAX_TOKENS > one
+
+
+@pytest.mark.parametrize("stop_reason", ["max_tokens", "refusal"])
+def test_a_cut_off_or_declined_batch_keeps_the_defaults(stop_reason):
+    # A truncated array can still parse as the right length when the cut lands
+    # late; it must not be trusted either way.
+    verdict = '{"category": "Disk & storage", "severity": "serious", "cause": ""}'
+    client = _RecordingClient("[" + verdict + "]", stop_reason)
+    assert _run(ec._classify(client, _groups(1))) is None

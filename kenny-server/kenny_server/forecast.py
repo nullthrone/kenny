@@ -39,8 +39,9 @@ from .tools import build_health
 __all__ = ["ai_available", "build_facts", "deterministic_summary", "forecast_events"]
 
 # The fast model (``KENNY_FAST_MODEL``) is sufficient for a few sentences of
-# forecast prose — the same model the AI Recommendation uses.
-_MAX_TOKENS = 300
+# forecast prose — the same model the AI Recommendation uses. The ceiling holds
+# the model's reasoning as well as the ~300-token answer.
+_MAX_TOKENS = 2048
 # Cap how many inventory-change rows enter the facts (and thus the prompt and the
 # fallback). The old panel could grow without bound — a forecast never should.
 _MAX_CHANGES = 20
@@ -343,16 +344,18 @@ async def forecast_events(client: Any, facts: dict[str, Any]) -> AsyncIterator[d
 
     full = ""
     try:
-        with client.messages.stream(
-            model=ai.current().fast_model(),
-            max_tokens=_MAX_TOKENS,
+        for chunk in ai.stream_fast_text(
+            ai.current(),
+            client,
+            _MAX_TOKENS,
             system=_cached_system(),
             messages=[_facts_message(facts)],
-        ) as stream:
-            for chunk in stream.text_stream:
-                full += chunk
-                yield {"type": "text_delta", "text": chunk}
+        ):
+            full += chunk
+            yield {"type": "text_delta", "text": chunk}
     except Exception as exc:  # noqa: BLE001 - surface in-band like the chat stream
+        # Nothing is cached: a cut-off or declined forecast would otherwise be
+        # replayed for as long as the host's facts stay the same.
         yield {"type": "error", "error": str(exc)}
         return
 
