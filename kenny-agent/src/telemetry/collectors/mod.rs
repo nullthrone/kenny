@@ -28,6 +28,7 @@ pub mod memory;
 pub mod net_quality;
 pub mod network;
 pub mod nvidia;
+pub mod nvme;
 pub mod os_support;
 pub mod peripherals;
 pub mod printers;
