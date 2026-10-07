@@ -85,6 +85,10 @@ DEFAULT_DECISION: dict[str, str] = {
 # family fleet that is what buried the queue. A crit there still tickets.
 DEFAULT_SECTION_DECISION: dict[tuple[str, str], str] = {
     ("health", "reliability"): "open_crit",
+    # Same reasoning: a hardware precursor is worth seeing and worth one
+    # notification, and a crit still tickets.
+    ("health", "hardware_errors"): "open_crit",
+    ("health", "gpu"): "open_crit",
 }
 
 # Sections a health snapshot can report a status for but that carry no rule in
@@ -102,7 +106,6 @@ _EXTRA_HEALTH_SECTIONS: frozenset[str] = frozenset(
         "time_sync",
         "printers",
         "wifi_quality",
-        "disk_smart",
         "network",
         "routing",
         "processes",
