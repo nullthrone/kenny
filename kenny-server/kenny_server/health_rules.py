@@ -328,23 +328,319 @@ def _rule_disk_smart(payload: dict[str, Any], now: datetime) -> "tuple[Status, s
 # Constants and helpers private to this rule belong in this block.
 # =============================================================================
 
+# A graphics-driver reset (a recovered TDR) is only a finding once it has
+# happened on this many distinct days of the window; the same count of days is
+# what separates "the driver has a bad week" from one bad afternoon.
+_HWE_GPU_MIN_DAYS = 3
+# Crash diversity -- many unrelated programs dying of memory-access / illegal-
+# instruction faults -- suggests unstable RAM or CPU rather than one buggy
+# program. Both bars must clear, and a hardware symptom must corroborate.
+_HWE_DIVERSITY_MIN_APPS = 4
+_HWE_DIVERSITY_MIN_CRASHES = 5
+# The reason names at most this many findings, most severe first.
+_HWE_NAMED_FINDINGS = 3
+
+_HWE_RANK = {"crit": 2, "warn": 1, "posture": 0}
+
+# Providers whose groups are the machine going down (Kernel-Power 41, bugcheck
+# records). They attribute and corroborate; they never escalate on their own,
+# because ``reliability`` already scores the crash itself (no double alarm).
+_HWE_CRASH_PROVIDERS = frozenset({"kernel-power", "bugcheck", "wer-systemerrorreporting"})
+# The Windows providers that report a recovered graphics-driver reset.
+_HWE_GPU_RESET_PROVIDERS = frozenset({"display", "nvlddmkm"})
+
+# Who the symptom is about, per component (ADR-0065: name the part, not the
+# event).
+_HWE_SUBJECT = {
+    "cpu": "The processor",
+    "memory": "The memory",
+    "pcie": "A PCIe link",
+    "gpu": "The graphics card",
+    "storage": "A disk",
+    "power": "The power supply",
+    "platform": "The processor interconnect",
+}
+# The components whose errors make a crash-diversity pattern credible, and how
+# the reason names them.
+_HWE_DIVERSITY_NOUN = {"cpu": "processor", "memory": "memory", "platform": "processor interconnect"}
+
+
+def _hwe_span(count: int, days: int) -> str:
+    """``"6 times over 4 days"`` -- how often and how widely, in words."""
+
+    times = f"{count} times" if count != 1 else "once"
+    if days <= 1:
+        return f"{times} in one day"
+    return f"{times} over {days} days"
+
+
+def _hwe_finding(
+    component: str,
+    severity: str,
+    status: Status,
+    symptom: str,
+    source: str,
+    event_id: Any = None,
+    act: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    age = act["age_hours"] if act else None
+    return {
+        "component": component,
+        "severity": severity,
+        "status": status,
+        "symptom": symptom,
+        "source": source,
+        "event_id": event_id if isinstance(event_id, (int, str)) else None,
+        "active_days": act["active_days"] if act else None,
+        "last_seen_age_hours": round(age, 1) if age is not None else None,
+    }
+
+
+def _hwe_non_usb_share(details: Any) -> float:
+    """The share of a storage group's events that are *not* on a USB disk.
+
+    ``details.disk_bus_type`` says which bus each sampled event's disk is on.
+    Retries on a USB drive or card reader are the user pulling a plug, not a
+    failing internal disk. No usable bus information (or ``Unknown``) is judged
+    as internal: silence about the bus is not evidence of USB.
+    """
+
+    counts = hardware_catalog.detail_counts(details, "disk_bus_type")
+    total = sum(counts.values())
+    if total <= 0:
+        return 1.0
+    usb = sum(n for bus, n in counts.items() if bus.strip().lower() == "usb")
+    return (total - usb) / total
+
+
+def _hwe_diversity(payload: dict[str, Any], now: datetime) -> bool:
+    """True when ``app_crashes`` shows crashes across many programs, in the
+    exception classes that point at hardware (access violation, illegal
+    instruction), and still going on."""
+
+    crashes = payload.get("app_crashes")
+    if not isinstance(crashes, dict):
+        return False
+    if (_number(crashes.get("distinct_apps")) or 0) < _HWE_DIVERSITY_MIN_APPS:
+        return False
+    codes = crashes.get("exception_codes")
+    hits = 0.0
+    if isinstance(codes, dict):
+        for code, n in codes.items():
+            value = _number(n)
+            if value and str(code).strip().lower() in hardware_catalog.CRASH_EXCEPTION_CODES:
+                hits += max(value, 0.0)
+    if hits < _HWE_DIVERSITY_MIN_CRASHES:
+        return False
+    days = sorted(_reliability_by_day(crashes.get("by_day")))
+    if days:  # a crash storm that ended days ago is history, not instability
+        age = _reliability_day_age_hours(days[-1], now)
+        if age is None or age > _RELIABILITY_ACTIVE_MIN_DAYS_MAX_AGE_HOURS:
+            return False
+    return True
+
+
+def _hwe_better(new: dict[str, Any], old: dict[str, Any]) -> bool:
+    def key(f: dict[str, Any]) -> tuple[int, int]:
+        return (_HWE_RANK[f["status"]], f["active_days"] or 0)
+
+    return key(new) > key(old)
+
 
 def _rule_hardware_errors(
     payload: dict[str, Any], now: datetime
-) -> "tuple[Status, str] | None":
+) -> "tuple[Status, str, dict[str, Any]] | None":
     """Judge ``hardware_errors``: "risk rising, component X, symptom Y".
 
-    Will escalate only on Level-3 precursors and uncorrected hardware errors, so
-    it never double-alarms with ``reliability``: crit for recurring uncorrected
-    errors (WHEA 18, EDAC UE, hardware Xids); warn for repeated graphics-driver
-    resets with hardware corroboration, recurring retries on internal disks and
-    crash diversity that co-occurs with a corrected CPU/memory error; posture
-    for chronic corrected errors. Bugchecks only attribute and corroborate.
-    Reasons are symptoms (ADR-0065). Defers when the section carries no groups
-    key at all (an old agent).
+    Escalates only on uncorrected hardware errors and Level-3 precursors, so it
+    never double-alarms with ``reliability``: bugcheck / Kernel-Power groups
+    attribute and corroborate but never escalate on their own.
+
+    - crit: an uncorrected-error group (WHEA 18, a hardware Xid) that is active
+      and recurring; an active failed memory test; EDAC uncorrected counts; PCIe
+      uncorrected errors while such a group is also active.
+    - warn: one active uncorrected-error group; repeated graphics-driver resets
+      with corroboration (a GPU bugcheck or a hardware Xid); active, recurring
+      retries on internal disks (USB-only groups are set aside); crash diversity
+      alongside a hardware symptom; PCIe uncorrected errors on their own.
+    - posture: active corrected-error groups, a stale uncorrected one, graphics
+      resets without corroboration. Whether a corrected rate is *rising* is the
+      trend layer's job.
+
+    Reasons are symptoms (ADR-0065), never event ids. Defers (``None``) only
+    when the payload has none of ``groups`` / ``edac`` / ``aer`` (an old or
+    broken agent). Malformed entries are skipped, never raised on.
     """
 
-    return None
+    if not any(k in payload for k in ("groups", "edac", "aer")):
+        return None
+
+    findings: dict[tuple[str, str], dict[str, Any]] = {}
+
+    def add(topic: str, finding: dict[str, Any]) -> None:
+        key = (finding["component"], topic)
+        old = findings.get(key)
+        if old is None or _hwe_better(finding, old):
+            findings[key] = finding
+
+    fatal_active = False  # any uncorrected-error group still going on
+    gpu_bugcheck = False  # a GPU-strong bugcheck in a crash group
+    memory_bugcheck = False  # a memory-class bugcheck in a crash group
+    hardware_xid = False
+    # (rank, phrase) of active corrected / uncorrected groups on cpu / memory / platform
+    diversity_support: list[tuple[int, str]] = []
+    gpu_resets: list[tuple[dict[str, Any], dict[str, Any]]] = []
+
+    for g in _dicts(payload.get("groups")):
+        source, event_id, details = g.get("source"), g.get("event_id"), g.get("details")
+        component = hardware_catalog.component_for(source, event_id, details)
+        klass = hardware_catalog.severity_for(source, event_id, details)
+        if component is None or klass is None:
+            continue
+        provider = hardware_catalog.canonical_provider(source)
+        src = str(source)[:80]
+        act = group_activity(g, now)
+        count, days, active = act["count"], act["active_days"], act["active"]
+        if hardware_catalog.hardware_xid_count(details) > 0:
+            hardware_xid = True
+
+        if klass == hardware_catalog.SUPPORTING:
+            if provider in _HWE_CRASH_PROVIDERS:
+                hit = hardware_catalog.bugcheck_attribution(details)
+                if hit == ("gpu", hardware_catalog.STRONG):
+                    gpu_bugcheck = True
+                if hit is not None and hit[0] == "memory":
+                    memory_bugcheck = True
+            continue
+
+        subject = _HWE_SUBJECT.get(component, "The hardware")
+        noun = _HWE_DIVERSITY_NOUN.get(component)
+        if klass == hardware_catalog.FATAL:
+            memtest = provider == "memorydiagnostics-results"
+            symptom = (
+                "The memory test found errors"
+                if memtest
+                else f"{subject} reported uncorrectable hardware errors"
+            )
+            status: Status
+            if active and (memtest or act["recurring"]):
+                # One failed memory test is a definitive result; anything else
+                # has to repeat before it is called critical.
+                status = "crit"
+            elif active:
+                status = "warn"
+            else:
+                status = "posture"
+                symptom += " (not seen recently)"
+            if status != "posture":
+                fatal_active = True
+            if count > 1 and not memtest:
+                symptom += f" ({_hwe_span(count, days)})"
+            add(
+                "memtest" if memtest else "uncorrected",
+                _hwe_finding(component, klass, status, symptom, src, event_id, act),
+            )
+            if active and noun:
+                diversity_support.append((2, f"uncorrectable {noun} errors"))
+        elif klass == hardware_catalog.CORRECTED:
+            if not active:
+                continue
+            symptom = f"{subject} corrects hardware errors (standing)"
+            add("corrected", _hwe_finding(component, klass, "posture", symptom, src, event_id, act))
+            if noun:
+                diversity_support.append((1, f"corrected {noun} errors"))
+        elif provider in _HWE_GPU_RESET_PROVIDERS:
+            if active and days >= _HWE_GPU_MIN_DAYS:
+                gpu_resets.append((g, act))
+        elif component == "storage":
+            share = _hwe_non_usb_share(details)
+            if (
+                active
+                and act["recurring"]
+                and count * share >= _RELIABILITY_RECURRING_MIN_COUNT
+            ):
+                symptom = f"A disk keeps retrying reads and writes ({_hwe_span(count, days)})"
+                add("storage", _hwe_finding(component, klass, "warn", symptom, src, event_id, act))
+        elif active:
+            # Linux journal lines that name a part without saying whether the
+            # error was corrected (machine-check banner, amdgpu RAS).
+            symptom = f"{subject} reports hardware errors (standing)"
+            add("reports", _hwe_finding(component, klass, "posture", symptom, src, event_id, act))
+
+    for g, act in gpu_resets:
+        symptom = (
+            "The graphics driver crashed and recovered "
+            f"{_hwe_span(act['count'], act['active_days'])}"
+        )
+        status = "warn" if (gpu_bugcheck or hardware_xid) else "posture"
+        add(
+            "gpu_reset",
+            _hwe_finding(
+                "gpu",
+                hardware_catalog.INSTABILITY,
+                status,
+                symptom,
+                str(g.get("source"))[:80],
+                g.get("event_id"),
+                act,
+            ),
+        )
+
+    for entry in _dicts(payload.get("edac")):
+        klass = hardware_catalog.edac_severity(entry)
+        if klass == hardware_catalog.FATAL:
+            fatal_active = True
+            symptom = "The memory reported uncorrectable hardware errors"
+            add("uncorrected", _hwe_finding("memory", klass, "crit", symptom, "edac"))
+        elif klass == hardware_catalog.CORRECTED:
+            symptom = "The memory corrects hardware errors (standing)"
+            add("corrected", _hwe_finding("memory", klass, "posture", symptom, "edac"))
+
+    for entry in _dicts(payload.get("aer")):
+        klass = hardware_catalog.aer_severity(entry)
+        if klass == hardware_catalog.FATAL:
+            # Uncorrected PCIe errors are common on a flaky link; they only
+            # reach crit alongside an uncorrected-error group that is active.
+            symptom = "A PCIe link reported uncorrectable hardware errors"
+            status = "crit" if fatal_active else "warn"
+            add("uncorrected", _hwe_finding("pcie", klass, status, symptom, "aer"))
+        elif klass == hardware_catalog.CORRECTED:
+            symptom = "A PCIe link corrects hardware errors (standing)"
+            add("corrected", _hwe_finding("pcie", klass, "posture", symptom, "aer"))
+
+    if memory_bugcheck:
+        diversity_support.append((0, "memory-related system crashes"))
+    if diversity_support and _hwe_diversity(payload, now):
+        phrase = max(diversity_support)[1]
+        symptom = (
+            f"Programs crash across the board alongside {phrase} "
+            "— possible RAM or CPU instability"
+        )
+        add(
+            "diversity",
+            _hwe_finding(
+                "platform", hardware_catalog.INSTABILITY, "warn", symptom, "app_crashes", 1000
+            ),
+        )
+
+    ordered = sorted(
+        findings.values(),
+        key=lambda f: (-_HWE_RANK[f["status"]], -(f["active_days"] or 0), f["component"]),
+    )
+    window = int(_number(payload.get("window_days")) or 14)
+    if not ordered:
+        effective = _number(payload.get("effective_window_days"))
+        if effective is not None and 0 < effective < window:
+            reason = f"no hardware faults in the {int(effective)}d the event log covers"
+        else:
+            reason = f"no hardware faults in {window}d"
+        return "ok", reason, {"findings": []}
+
+    reason = "; ".join(f["symptom"] for f in ordered[:_HWE_NAMED_FINDINGS])
+    extra = len(ordered) - _HWE_NAMED_FINDINGS
+    if extra > 0:
+        reason += f"; +{extra} more"
+    return ordered[0]["status"], reason, {"findings": ordered}
 
 
 # =============================================================================
