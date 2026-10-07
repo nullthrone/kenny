@@ -222,7 +222,9 @@ battery and hardware-wear trends and the inventory changes since yesterday — e
 steadily and should reach capacity in about 16 days — the growth is in Videos, not system
 files. A reboot has been pending for 9 days; expect update failures if it waits much
 longer."* With AI forecasts on it streams from the model and is marked *AI*; otherwise
-the same panel shows a concise deterministic summary of the same signals, unmarked.
+the same panel shows a concise deterministic summary of the same signals, unmarked. An AI
+answer that was cut off, declined by the model or empty ends in an error line rather than
+standing as the forecast, and is not kept: reopening the host asks again.
 
 Beneath the prose, a **Hardware at risk** list names each device the long-lived history
 flags: the device, a plain sentence about what is happening to it (*"Samsung SSD 980 PRO
@@ -269,7 +271,9 @@ what an [Inbox](#inbox) or [Today](#today) row points at:
   short **Diagnosis / Action / Urgency** advisory. If the issue looks fixable with kenny's
   tools, a **Fix via Ask kenny** button opens the [Ask kenny overlay](#ask-kenny) scoped to
   this host with a suggested prompt already in the box — state-changing steps still hit
-  the confirm-gate.
+  the confirm-gate. A recommendation is kept per warning type and replayed for the same
+  warning elsewhere, except one that was cut off, declined or empty: that one ends in an
+  error and is asked for again next time.
 - The section's own structured data as tables and fields — never raw JSON.
 
 ### Healthy · N sections
@@ -665,7 +669,8 @@ the models, and the assistant's limits
 - **Anthropic API key** — a key saved here wins over `ANTHROPIC_API_KEY` in the
   environment. It is never shown back, and it is **not included in backups**: after a
   restore, set it again (or let the environment supply it). **Test connection** sends one
-  single-token message the way every feature does and shows the answer if it fails. The
+  single-token message the way every fast-model feature does — same model id and request
+  shape — and shows the answer if it fails, or that the model declined it. The
   line above the settings says where the key comes from, whether calls go through a
   gateway, and which features are running.
 - **AI gateway URL** and **AI gateway headers** — route every model call through an AI
@@ -684,7 +689,7 @@ the models, and the assistant's limits
   button follows the ticket assistant's switch, not Ask kenny's.
 - **Chat model** — the Anthropic model id for Ask kenny, the ticket assistant, and triage.
 - **Fast model** — the model id for recommendations, forecast prose and reliability-event
-  classification.
+  classification (default `claude-haiku-5-5`).
 - **Discord model** — the model for Discord-driven turns; empty uses the chat model.
 - **Investigate new tickets automatically** (on by default) — kenny runs one read-only
   check on the PC and writes the finding into the ticket before you open it.
