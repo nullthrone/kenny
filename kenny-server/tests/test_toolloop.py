@@ -14,6 +14,7 @@ tunnel stub come from ``test_chat``.
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 from dataclasses import dataclass, field
 from typing import Any
@@ -977,6 +978,118 @@ async def test_the_refusal_is_remembered_for_the_rest_of_the_process(
     # Three calls, not four: the second turn never asks again.
     assert len(client.calls) == 3
     assert "thinking" not in client.calls[2]
+
+
+class _BindsThinking:
+    """A model that runs preserved thinking's history check, as current models
+    do on accounts created since 2026-08-31: each thinking block it returns is
+    signed against the ``system`` prompt in force, and a replay under another
+    one is a 400 before any output."""
+
+    _REFUSAL = (
+        "messages.1.content.0: Invalid `signature` in `thinking` block. The block "
+        "is bound to a different conversation."
+    )
+
+    def __init__(self, scripted: list[_Response]) -> None:
+        self._scripted = scripted
+        self.messages = self
+        self.calls: list[dict[str, Any]] = []
+
+    @staticmethod
+    def _bound_to(system: Any) -> str:
+        return "sig:" + json.dumps(system, sort_keys=True)
+
+    def stream(self, **kwargs: Any) -> Any:
+        self.calls.append(copy.deepcopy(kwargs))
+        current = self._bound_to(kwargs["system"])
+        for message in kwargs["messages"]:
+            for block in message.get("content") if isinstance(message.get("content"), list) else []:
+                if block.get("type") == "thinking" and block.get("signature") != current:
+                    error = Exception(self._REFUSAL)
+                    error.status_code = 400
+                    error.message = self._REFUSAL
+                    raise error
+        response = self._scripted.pop(0)
+        for block in response.content:
+            if getattr(block, "type", None) == "thinking":
+                block.signature = current
+        return FakeAnthropic([response]).messages.stream(**kwargs)
+
+
+class _BriefedPolicy(StubPolicy):
+    """A system prompt with a per-turn part, as the ticket briefing is."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.briefing = "status: new"
+
+    def system_blocks(self, session: Any) -> list[dict[str, Any]]:
+        return [{"type": "text", "text": "stub system prompt"}, {"type": "text", "text": self.briefing}]
+
+
+def _thinking_in(request: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        b
+        for m in request["messages"]
+        if isinstance(m.get("content"), list)
+        for b in m["content"]
+        if b.get("type") == "thinking"
+    ]
+
+
+async def test_a_changed_briefing_does_not_break_the_next_turn(store: TelemetryStore) -> None:
+    """The seam between a per-turn system prompt and the API's binding check,
+    joined: turn two runs under a new briefing, the API refuses turn one's
+    reasoning, and the turn still answers — with reasoning on."""
+
+    executor, _registry, _tunnel = _executor(store)
+    client = _BindsThinking(
+        [
+            _Response([thinking_block("first look"), text_block("one")], "end_turn"),
+            _Response([thinking_block("second look"), text_block("two")], "end_turn"),
+        ]
+    )
+    policy = _BriefedPolicy()
+    session = FakeSession(id="s", messages=[{"role": "user", "content": "first"}])
+
+    await _drive(session, executor, client, policy)
+    session.messages.append({"role": "user", "content": "second"})
+    policy.briefing = "status: in_progress"
+    events = await _drive(session, executor, client, policy)
+
+    assert events[-1]["assistant_text"] == "two"
+    refused, retried = client.calls[1], client.calls[2]
+    assert _thinking_in(refused) and not _thinking_in(retried)
+    assert "thinking" in retried  # reasoning stays on: this was not "cannot think"
+    assert "test-model" not in _MODELS_WITHOUT_THINKING
+    # Turn one's words survive; its stale reasoning left the record for good.
+    assert session.messages[1]["content"] == [{"type": "text", "text": "one"}]
+    assert [b["thinking"] for b in _thinking_in({"messages": session.messages})] == ["second look"]
+
+
+async def test_reasoning_within_a_turn_survives_an_unchanged_briefing(
+    store: TelemetryStore,
+) -> None:
+    """Nothing is stripped while the system prompt holds: the tool round-trip
+    replays the turn's own reasoning and the API accepts it."""
+
+    executor, _registry, _tunnel = _executor(store)
+    client = _BindsThinking(
+        [
+            _Response(
+                [thinking_block("which host?"), tool_use_block("tu1", "list_agents", {})],
+                "tool_use",
+            ),
+            _Response([text_block("one host")], "end_turn"),
+        ]
+    )
+    session = FakeSession(id="s", messages=[{"role": "user", "content": "hosts?"}])
+
+    await _drive(session, executor, client, _BriefedPolicy())
+
+    assert len(client.calls) == 2
+    assert [b["thinking"] for b in _thinking_in(client.calls[1])] == ["which host?"]
 
 
 async def test_an_unrelated_bad_request_is_not_swallowed(store: TelemetryStore) -> None:

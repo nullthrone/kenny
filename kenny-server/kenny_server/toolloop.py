@@ -951,6 +951,53 @@ def _rejects_thinking(exc: Exception) -> bool:
     return "thinking" in str(getattr(exc, "message", "") or exc).lower()
 
 
+def _invalidated_thinking(exc: Exception) -> bool:
+    """Whether ``exc`` is the API refusing a *replayed* thinking block.
+
+    A current model's thinking block is signed together with everything sent
+    before it — ``system``, ``tools`` and earlier messages — and a replay after
+    any of those changed is a 400 on accounts that enforce the check. Both
+    policies rebuild part of ``system`` per turn on purpose (the ticket
+    briefing, the fleet chat's context note), so on such an account the second
+    turn after a change hits this. It also mentions ``thinking``, which is why
+    it is matched before :func:`_rejects_thinking`: read as "this model cannot
+    think" it would switch reasoning off for the process and still fail, since
+    the stale blocks stay in the history.
+    """
+
+    if getattr(exc, "status_code", None) != 400:
+        return False
+    message = str(getattr(exc, "message", "") or exc).lower()
+    return "signature" in message and "thinking" in message
+
+
+def strip_thinking_blocks(messages: list[dict[str, Any]]) -> int:
+    """Remove every thinking block from ``messages`` in place; how many went.
+
+    The words and tool calls of each turn stay. What is lost is the reasoning
+    of earlier turns, which the model can no longer use anyway once the blocks
+    no longer match the conversation; the turn being answered thinks afresh,
+    and its blocks are signed against the ``system`` in force now.
+    """
+
+    removed = 0
+    for message in messages:
+        content = message.get("content")
+        if message.get("role") != "assistant" or not isinstance(content, list):
+            continue
+        kept = [
+            b
+            for b in content
+            if not (isinstance(b, dict) and b.get("type") in ("thinking", "redacted_thinking"))
+        ]
+        if len(kept) != len(content):
+            removed += len(content) - len(kept)
+            # An assistant turn may not be empty; one that only thought keeps
+            # a placeholder rather than breaking the alternation of roles.
+            message["content"] = kept or [{"type": "text", "text": "(no reply)"}]
+    return removed
+
+
 class _ThinkingTags:
     """Folds pseudo-``<thinking>`` prose out of a text stream.
 
@@ -1056,6 +1103,7 @@ def _stream_turn(client: Any, request: dict[str, Any]) -> Iterator[dict[str, Any
 
     model = str(request.get("model", ""))
     with_thinking = model not in _MODELS_WITHOUT_THINKING
+    stripped = False
     while True:
         emitted = False
         try:
@@ -1081,7 +1129,21 @@ def _stream_turn(client: Any, request: dict[str, Any]) -> Iterator[dict[str, Any
                     }
                 yield {"type": "final", "message": stream.get_final_message()}
             return
-        except Exception as exc:  # noqa: BLE001 - re-raised unless it is the thinking 400
+        except Exception as exc:  # noqa: BLE001 - re-raised unless it is a thinking 400
+            if not emitted and not stripped and _invalidated_thinking(exc):
+                # ``request["messages"]`` is the session's own transcript, so
+                # the stale blocks leave the persisted record too and are not
+                # replayed again.
+                removed = strip_thinking_blocks(request.get("messages") or [])
+                if removed:
+                    logger.info(
+                        "model %s refused %d replayed thinking block(s) bound to an "
+                        "earlier system prompt; retrying without them",
+                        model,
+                        removed,
+                    )
+                    stripped = True
+                    continue
             if emitted or not with_thinking or not _rejects_thinking(exc):
                 raise
             logger.info(

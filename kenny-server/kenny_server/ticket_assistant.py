@@ -701,7 +701,10 @@ class TicketPolicy:
         # *after* the breakpoint can bust it. Block 1 (the frozen-target
         # sentence) and ``session.briefing`` both vary per session/turn and
         # must never gain one, for the same reason ``chat.py``'s
-        # ``_context_note`` stays outside its own cached prefix.
+        # ``_context_note`` stays outside its own cached prefix. A changed
+        # briefing also unbinds the reasoning replayed from earlier turns on
+        # current models; the tool loop drops it and retries
+        # (``toolloop._invalidated_thinking``).
         prompt = _TRIAGE_SYSTEM_PROMPT if session.triage else _SYSTEM_PROMPT
         blocks: list[dict[str, Any]] = [
             {"type": "text", "text": prompt, "cache_control": {"type": "ephemeral"}}
