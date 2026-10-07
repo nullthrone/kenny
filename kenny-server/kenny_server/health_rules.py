@@ -355,18 +355,84 @@ def _rule_hardware_errors(
 # =============================================================================
 
 
-def _rule_gpu(payload: dict[str, Any], now: datetime) -> "tuple[Status, str] | None":
-    """Judge ``gpu``: a failing card or a starved one.
+# At most this many findings are spelled out in the one-line reason; the rest
+# are counted. Every finding stays in ``details``.
+_GPU_REASON_NAMED = 3
+_GPU_SEVERITY_RANK = {"crit": 0, "warn": 1, "posture": 2}
 
-    Will report crit for uncorrected ECC above zero, a row-remap failure or
-    pending retired pages; warn for an active ``hw_slowdown`` /
-    ``hw_power_brake_slowdown`` (a PSU or cable signal); posture for
-    ``hw_thermal_slowdown``. PCIe link width is judged against the device's own
-    history by the trend layer, never against ``width_max`` here. Defers when no
-    GPU is reported.
+
+def _gpu_name(gpu: dict[str, Any]) -> str:
+    name = gpu.get("name")
+    return name.strip() if isinstance(name, str) and name.strip() else "unnamed graphics card"
+
+
+def _gpu_findings(gpu: dict[str, Any]) -> list[tuple[Status, str]]:
+    """``(status, symptom)`` pairs for one adapter.
+
+    The symptom completes the sentence "The graphics card <name> ..." and says
+    what the card is doing, not which counter tripped (ADR-0065).
     """
 
-    return None
+    found: list[tuple[Status, str]] = []
+    ecc = _as_dict(gpu.get("ecc"))
+    ras = [_as_dict(block) for block in _as_dict(gpu.get("ras")).values()]
+    remap = _as_dict(ecc.get("remapped_rows"))
+    throttle = _as_dict(gpu.get("throttle"))
+
+    uncorrected = _number(ecc.get("uncorrected_volatile")) or 0
+    if uncorrected > 0 or any((_number(b.get("ue")) or 0) > 0 for b in ras):
+        found.append(("crit", "reported uncorrectable memory errors"))
+    if remap.get("failure") is True:
+        found.append(("crit", "can no longer repair its failing memory"))
+    if ecc.get("retired_pages_pending") is True:
+        found.append(("crit", "has failing memory waiting to be taken out of use"))
+
+    if throttle.get("hw_power_brake_slowdown") is True:
+        found.append(("warn", "is being slowed by a power-delivery signal"))
+    if throttle.get("hw_slowdown") is True and throttle.get("hw_thermal_slowdown") is not True:
+        found.append(("warn", "is being slowed down by the hardware"))
+
+    if throttle.get("hw_thermal_slowdown") is True:
+        found.append(("posture", "is slowing down to stay cool"))
+    if any((_number(b.get("ce")) or 0) > 0 for b in ras):
+        found.append(("posture", "reported corrected memory errors"))
+    if (_number(remap.get("correctable")) or 0) > 0:
+        found.append(("posture", "has had memory rows repaired"))
+    return found
+
+
+def _rule_gpu(
+    payload: dict[str, Any], now: datetime
+) -> "tuple[Status, str, dict[str, Any]] | None":
+    """Judge ``gpu``: a failing card or a starved one.
+
+    Reports crit for uncorrected ECC / RAS errors above zero, a row-remap
+    failure or pending retired pages; warn for an active
+    ``hw_power_brake_slowdown`` (a PSU or cable signal) or a ``hw_slowdown``
+    that is not thermal; posture for ``hw_thermal_slowdown`` (cooling-limited)
+    and corrected-error counters. PCIe link width is judged against the
+    device's own history by the trend layer, never against ``width_max`` here,
+    and ``fan_target_percent`` is a target, not a measurement. The verdict is
+    the worst across adapters; ``details["findings"]`` lists every finding as
+    ``{name, status, symptom}``. Defers when no GPU is reported.
+    """
+
+    gpus = _dicts(payload.get("gpus"))
+    if not gpus:
+        return None
+    findings = [
+        {"name": _gpu_name(gpu), "status": status, "symptom": symptom}
+        for gpu in gpus
+        for status, symptom in _gpu_findings(gpu)
+    ]
+    if not findings:
+        return "ok", "Graphics healthy", {"findings": []}
+    findings.sort(key=lambda f: _GPU_SEVERITY_RANK[f["status"]])  # stable
+    named = findings[:_GPU_REASON_NAMED]
+    reason = "; ".join(f"The graphics card {f['name']} {f['symptom']}" for f in named)
+    if len(findings) > len(named):
+        reason += f"; +{len(findings) - len(named)} more"
+    return findings[0]["status"], reason, {"findings": findings}
 
 
 # =============================================================================
