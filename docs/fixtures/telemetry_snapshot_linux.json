@@ -160,7 +160,8 @@
           "nvme_error": null,
           "paused": false
         }
-      ]
+      ],
+      "truncated": false
     },
     "hardware_errors": {
       "status": "ok",

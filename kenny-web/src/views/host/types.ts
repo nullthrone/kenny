@@ -287,8 +287,8 @@ export interface GpuEcc {
   remapped_rows?: {
     correctable?: number | null
     uncorrectable?: number | null
-    pending?: number | null
-    failure?: number | null
+    pending?: boolean | null
+    failure?: boolean | null
   } | null
 }
 

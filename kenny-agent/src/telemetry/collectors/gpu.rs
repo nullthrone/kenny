@@ -856,7 +856,7 @@ mod sysfs {
         gpu.ras = read_ras(&device.join("ras"));
     }
 
-    /// `ras/*_err_count`; `None` when the directory is absent.
+    /// `ras/*_err_count`; `None` when the directory is absent or holds no counter file.
     fn read_ras(dir: &Path) -> Option<BTreeMap<String, RasCounts>> {
         let entries = fs::read_dir(dir).ok()?;
         let mut blocks = BTreeMap::new();
@@ -873,7 +873,7 @@ mod sysfs {
         while blocks.len() > MAX_RAS_BLOCKS {
             blocks.pop_last();
         }
-        Some(blocks)
+        Some(blocks).filter(|b| !b.is_empty())
     }
 }
 
@@ -1210,7 +1210,10 @@ mod tests {
 
     #[test]
     fn the_windows_fixture_is_what_the_collector_produces() {
-        let outputs = geforce_outputs();
+        // The canned `nvidia-smi` answer for a card that reports row remapping (all zeros).
+        let mut outputs = geforce_outputs();
+        outputs.retain(|(k, _)| *k != "remapped_rows");
+        outputs.push(("remapped_rows", "00000000:01:00.0, 0, 0, No, No\n"));
         let nv = collect_nvidia(&fake_runner(&outputs, &[])).unwrap();
         let (gpus, truncated) = assemble(windows_identity(), nv);
         let actual = section_from(&gpus, truncated, vec![]).into_value();
@@ -1422,6 +1425,25 @@ mod tests {
         assert_eq!(sysfs::parse_ras_counts("ue: 1\n"), None);
         assert_eq!(sysfs::parse_ras_counts("ue: x\nce: 7\n"), None);
         assert_eq!(sysfs::parse_ras_counts(""), None);
+    }
+
+    #[test]
+    fn a_ras_directory_without_counter_files_is_null_not_an_empty_map() {
+        let s = Scratch::new();
+        amd_tree(&s);
+        let with_counters = sysfs::probe(s.path())[0].to_json();
+        assert_eq!(with_counters["ras"]["umc"], json!({ "ue": 0, "ce": 2 }));
+
+        let bare = Scratch::new();
+        amd_tree(&bare);
+        for block in ["gfx", "umc", "sdma"] {
+            fs::remove_file(
+                bare.path()
+                    .join(format!("card1/device/ras/{block}_err_count")),
+            )
+            .unwrap();
+        }
+        assert_eq!(sysfs::probe(bare.path())[0].to_json()["ras"], Value::Null);
     }
 
     #[test]

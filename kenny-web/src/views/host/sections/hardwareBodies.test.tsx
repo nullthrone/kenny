@@ -409,17 +409,42 @@ describe('GpuBody', () => {
     const card = windows.gpus![0]
     render(
       <GpuBody
-        gpu={{ ...windows, gpus: [{ ...card, ecc: { uncorrected_volatile: 3, retired_pages_pending: true, remapped_rows: { correctable: 1, uncorrectable: 0, pending: 0, failure: 0 } } }] }}
+        gpu={{ ...windows, gpus: [{ ...card, ecc: { uncorrected_volatile: 3, retired_pages_pending: true, remapped_rows: { correctable: 1, uncorrectable: 0, pending: true, failure: false } } }] }}
       />,
     )
     expect(screen.getByText('ECC / RETIRED PAGES')).toBeInTheDocument()
     expect(screen.getByText('Uncorrected (volatile)').nextElementSibling).toHaveAttribute('data-tone', 'alert')
     expect(screen.getByText('Retired pages pending').nextElementSibling).toHaveTextContent('yes')
     expect(screen.getByText('Remapped rows (uncorrectable)').nextElementSibling).not.toHaveAttribute('data-tone')
+    // The remap flags are booleans: yes/no, alert only when true.
+    expect(screen.getByText('Remapped rows (pending)').nextElementSibling).toHaveTextContent('yes')
+    expect(screen.getByText('Remapped rows (pending)').nextElementSibling).toHaveAttribute('data-tone', 'alert')
+    expect(screen.getByText('Row-remap failure').nextElementSibling).toHaveTextContent('no')
+    expect(screen.getByText('Row-remap failure').nextElementSibling).not.toHaveAttribute('data-tone')
+  })
+
+  it('shows the fixture card remapped rows as zeros and "no" without an alert', () => {
+    render(<GpuBody gpu={windows} />)
+    expect(screen.getByText('Remapped rows (correctable)').nextElementSibling).toHaveTextContent('0')
+    expect(screen.getByText('Remapped rows (pending)').nextElementSibling).toHaveTextContent('no')
+    expect(screen.getByText('Row-remap failure').nextElementSibling).toHaveTextContent('no')
+    expect(screen.getByText('Row-remap failure').nextElementSibling).not.toHaveAttribute('data-tone')
+  })
+
+  it('shows a failed row remap as an alert', () => {
+    const card = windows.gpus![0]
+    render(
+      <GpuBody
+        gpu={{ ...windows, gpus: [{ ...card, ecc: { remapped_rows: { correctable: 0, uncorrectable: 0, pending: false, failure: true } } }] }}
+      />,
+    )
+    expect(screen.getByText('Row-remap failure').nextElementSibling).toHaveTextContent('yes')
+    expect(screen.getByText('Row-remap failure').nextElementSibling).toHaveAttribute('data-tone', 'alert')
   })
 
   it('shows no ECC block on a consumer card', () => {
-    render(<GpuBody gpu={windows} />)
+    const card = windows.gpus![0]
+    render(<GpuBody gpu={{ ...windows, gpus: [{ ...card, ecc: null }] }} />)
     expect(screen.queryByText('ECC / RETIRED PAGES')).not.toBeInTheDocument()
   })
 

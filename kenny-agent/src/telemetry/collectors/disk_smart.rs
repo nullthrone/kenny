@@ -2,8 +2,8 @@
 //!
 //! Windows: `Get-PhysicalDisk` + `Get-StorageReliabilityCounter` (one PowerShell script),
 //! the SMART WMI classes under `root\wmi`, and the NVMe health log read from
-//! `\\.\PhysicalDriveN`. Linux: sysfs identity, the NVMe admin ioctl and an opportunistic
-//! `smartctl --json`. Row shape and grading: `docs/protocol.md` (the `disk_smart`
+//! `\\.\PhysicalDriveN` (the only read anti-cheat coexistence pauses). Linux: sysfs
+//! identity, the NVMe admin ioctl (paused alike) and an opportunistic `smartctl --json`. Row shape and grading: `docs/protocol.md` (the `disk_smart`
 //! section). The NVMe log decoder is shared and lives in [`super::nvme`].
 
 use crate::telemetry::Section;
@@ -23,7 +23,7 @@ pub fn collect() -> Section {
         Section::with_fields(
             crate::protocol::Status::Ok,
             "n/a on this platform",
-            serde_json::json!({ "disks": [] }),
+            serde_json::json!({ "disks": [], "truncated": false }),
         )
     }
 }
@@ -40,11 +40,16 @@ pub mod core {
     use serde_json::{json, Map, Value};
 
     use crate::protocol::Status;
+    use crate::telemetry::collectors::bus_type::bus_type_name;
     use crate::telemetry::collectors::nvme::NvmeHealth;
     use crate::telemetry::Section;
 
     /// The most disks one snapshot reports (the frame budget).
     pub const MAX_DISKS: usize = 16;
+
+    /// The highest `wear` value: percent of rated endurance, clamped. The raw NVMe
+    /// `percentage_used` may exceed it and stays raw in `nvme`.
+    pub const MAX_WEAR: u64 = 100;
 
     /// The ATA attribute ids kept in `smart_attributes`.
     pub const SMART_IDS: [u8; 6] = [5, 187, 188, 197, 198, 199];
@@ -68,8 +73,9 @@ pub mod core {
 
     /// Row fields read from `Get-PhysicalDisk` itself, paired with the PowerShell
     /// expression each one is read from. `$num` (the `DeviceId` as an integer or
-    /// `$null`), `$bus` (the mapped bus type) and `$removable` (disk numbers of
-    /// removable media) are set by the script before the row is built.
+    /// `$null`), `$bus` (the raw `BusType`, mapped in Rust by [`bus_type_name`]) and
+    /// `$removable` (disk numbers of removable media) are set by the script before the
+    /// row is built.
     pub const DISK_FIELDS: &[(&str, &str)] = &[
         ("model", "[string]$_.FriendlyName"),
         ("health_status", "[string]$_.HealthStatus"),
@@ -89,12 +95,12 @@ pub mod core {
         ),
         (
             "removable",
-            "[bool]($bus -eq 'USB' -or ($null -ne $num -and $removable.ContainsKey($num)))",
+            "[bool]($null -ne $num -and $removable.ContainsKey($num))",
         ),
     ];
 
     /// Script fields filled by the best-effort SMART WMI join (`$null` when the join is
-    /// unmatched or ambiguous, or when the read is paused).
+    /// unmatched or ambiguous).
     pub const SMART_FIELDS: &[(&str, &str)] = &[
         ("predictive_failure", "$predict"),
         (SMART_DATA_FIELD, "$vendor"),
@@ -177,8 +183,6 @@ foreach ($pd in $disks) {
   }
 "#;
 
-    const NO_SMART_ROW: &str = "\n  $predict = $null\n  $vendor = $null\n";
-
     const SCRIPT: &str = r#"
 @@NORM@@
 $removable = @{}
@@ -192,15 +196,7 @@ $disks = @(Get-PhysicalDisk)
 $disks | ForEach-Object {
   $num = $null
   try { $num = [int]$_.DeviceId } catch {}
-  $bus = $(switch ([string]$_.BusType) {
-    'NVMe' { 'NVMe' } '17' { 'NVMe' }
-    'SATA' { 'SATA' } 'ATA' { 'SATA' } '11' { 'SATA' }
-    'SAS' { 'SAS' } '10' { 'SAS' }
-    'USB' { 'USB' } '7' { 'USB' }
-    'RAID' { 'RAID' } '8' { 'RAID' }
-    'SCSI' { 'SCSI' } '3' { 'SCSI' }
-    default { 'Unknown' }
-  })
+  $bus = [string]$_.BusType
   $rc = $null
   try { $rc = $_ | Get-StorageReliabilityCounter -ErrorAction Stop } catch {}
 @@SMART_ROW@@
@@ -210,10 +206,11 @@ $disks | ForEach-Object {
 "#;
 
     /// The PowerShell script: `Get-PhysicalDisk` joined with
-    /// `Get-StorageReliabilityCounter` and, when `include_smart`, the SMART WMI classes.
-    /// One row per disk, built from [`DISK_FIELDS`], [`SMART_FIELDS`] and [`COUNTERS`]
-    /// so the emitted keys cannot drift from the ones the fixture test checks.
-    pub fn script(include_smart: bool) -> String {
+    /// `Get-StorageReliabilityCounter` and the SMART WMI classes. One row per disk, built
+    /// from [`DISK_FIELDS`], [`SMART_FIELDS`] and [`COUNTERS`] so the emitted keys cannot
+    /// drift from the ones the fixture test checks. `bus_type` is the raw `BusType`; the
+    /// agent maps it with [`bus_type_name`].
+    pub fn script() -> String {
         let fields: String = DISK_FIELDS
             .iter()
             .chain(SMART_FIELDS)
@@ -222,15 +219,10 @@ $disks | ForEach-Object {
                 format!("    {field} = if ($rc) {{ $rc.{prop} }} else {{ $null }}\n")
             }))
             .collect();
-        let (prelude, row) = if include_smart {
-            (SMART_PRELUDE, SMART_ROW)
-        } else {
-            ("", NO_SMART_ROW)
-        };
         SCRIPT
             .replace("@@NORM@@", NORM_FUNCTION)
-            .replace("@@PRELUDE@@", prelude)
-            .replace("@@SMART_ROW@@", row)
+            .replace("@@PRELUDE@@", SMART_PRELUDE)
+            .replace("@@SMART_ROW@@", SMART_ROW)
             .replace("@@FIELDS@@", &fields)
     }
 
@@ -315,12 +307,15 @@ $disks | ForEach-Object {
             .all(|prefix| !name.starts_with(prefix))
     }
 
-    /// The `bus_type` of a Linux block device from its name and canonical sysfs path.
+    /// The `bus_type` of a Linux block device from its name and canonical sysfs path
+    /// (`mmcblk*` are SD/MMC cards).
     pub fn linux_bus_type(name: &str, sysfs_path: &str) -> &'static str {
         if name.starts_with("nvme") {
             "NVMe"
         } else if sysfs_path.contains("/usb") {
             "USB"
+        } else if name.starts_with("mmcblk") {
+            "SD"
         } else if name.starts_with("sd") {
             "SATA"
         } else {
@@ -374,27 +369,35 @@ $disks | ForEach-Object {
         }
     }
 
-    /// Complete a script row: decode `smart_attributes`, read the NVMe log through
-    /// `read_nvme` (the disk number in, the decoded log or an `nvme_error` out) and set
-    /// `paused`. Every key of [`ROW_FIELDS`] is present afterwards. A paused read touches
-    /// neither the NVMe device nor the SMART data.
+    /// Complete a script row: map the raw `BusType` to the contract's `bus_type`, decode
+    /// `smart_attributes`, read the NVMe log through `read_nvme` (the disk number in, the
+    /// decoded log or an `nvme_error` out) and set `paused`. Every key of [`ROW_FIELDS`]
+    /// is present afterwards. A paused read skips only `read_nvme` — the raw-device open
+    /// anti-cheat coexistence guards — so `nvme` is `null` and `nvme_error` stays `null`;
+    /// `predictive_failure`, `smart_attributes` and `health_status` come from the SMART
+    /// WMI classes and `Get-PhysicalDisk` exactly as when not paused.
     pub fn finish_windows_row(
         mut row: Map<String, Value>,
         paused: bool,
         read_nvme: &mut dyn FnMut(u32) -> Result<NvmeHealth, String>,
     ) -> Value {
         let vendor = row.remove(SMART_DATA_FIELD);
-        let nvme_disk = row.get("bus_type").and_then(Value::as_str) == Some("NVMe");
+        let bus = bus_type_name(row.get("bus_type").and_then(Value::as_str).unwrap_or(""));
+        row.insert("bus_type".to_string(), json!(bus));
+        // USB sticks and card readers are removable media whatever Win32_DiskDrive says.
+        if matches!(bus, "USB" | "SD") {
+            row.insert("removable".to_string(), json!(true));
+        }
+        let nvme_disk = bus == "NVMe";
 
-        let mut smart_attributes = None;
-        if paused {
-            row.insert("predictive_failure".to_string(), Value::Null);
-        } else if !nvme_disk {
-            smart_attributes = vendor
+        let smart_attributes = if nvme_disk {
+            None
+        } else {
+            vendor
                 .as_ref()
                 .and_then(Value::as_str)
-                .and_then(smart_attributes_from_vendor);
-        }
+                .and_then(smart_attributes_from_vendor)
+        };
 
         let (mut nvme, mut nvme_error) = (None, None);
         if nvme_disk && !paused {
@@ -471,7 +474,10 @@ $disks | ForEach-Object {
         row.insert("model".to_string(), json!(id.model));
         row.insert("health_status".to_string(), json!(health));
         row.insert("predictive_failure".to_string(), json!(verdict.map(|p| !p)));
-        row.insert("wear".to_string(), json!(nvme.map(|h| h.percentage_used)));
+        row.insert(
+            "wear".to_string(),
+            json!(nvme.map(|h| u64::from(h.percentage_used).min(MAX_WEAR))),
+        );
         row.insert(
             "temperature_c".to_string(),
             json!(nvme
@@ -562,18 +568,24 @@ $disks | ForEach-Object {
         (Status::Ok, "SMART healthy".to_string())
     }
 
-    /// The section for already-collected rows (at most [`MAX_DISKS`]).
-    pub fn section_for(mut disks: Vec<Value>) -> Section {
+    /// The section for already-collected rows (at most [`MAX_DISKS`]); `truncated` says
+    /// the host has more disks than the rows cover.
+    pub fn section_for(mut disks: Vec<Value>, truncated: bool) -> Section {
+        let truncated = truncated || disks.len() > MAX_DISKS;
         disks.truncate(MAX_DISKS);
         if disks.is_empty() {
             return Section::with_fields(
                 Status::Ok,
                 "no physical disks listed",
-                json!({ "disks": disks }),
+                json!({ "disks": disks, "truncated": truncated }),
             );
         }
         let (status, summary) = grade(&disks);
-        Section::with_fields(status, summary, json!({ "disks": disks }))
+        Section::with_fields(
+            status,
+            summary,
+            json!({ "disks": disks, "truncated": truncated }),
+        )
     }
 
     #[cfg(test)]
@@ -691,14 +703,27 @@ $disks | ForEach-Object {
 
         #[test]
         fn no_rows_say_so_and_the_cap_holds() {
-            let empty = section_for(vec![]).into_value();
+            let empty = section_for(vec![], false).into_value();
             assert_eq!(empty["summary"], "no physical disks listed");
             assert_eq!(empty["disks"], json!([]));
-            let many = section_for(vec![disk("Healthy", json!(0), json!(0), json!(0)); 20]);
-            assert_eq!(
-                many.into_value()["disks"].as_array().map(Vec::len),
-                Some(MAX_DISKS)
-            );
+            assert_eq!(empty["truncated"], false);
+            let many = section_for(
+                vec![disk("Healthy", json!(0), json!(0), json!(0)); 20],
+                false,
+            )
+            .into_value();
+            assert_eq!(many["disks"].as_array().map(Vec::len), Some(MAX_DISKS));
+            assert_eq!(many["truncated"], true, "rows beyond the cap are dropped");
+            let exact = section_for(
+                vec![disk("Healthy", json!(0), json!(0), json!(0)); 16],
+                false,
+            )
+            .into_value();
+            assert_eq!(exact["truncated"], false);
+            // A collector that stopped reading at the cap says so itself.
+            let capped =
+                section_for(vec![disk("Healthy", json!(0), json!(0), json!(0))], true).into_value();
+            assert_eq!(capped["truncated"], true);
         }
 
         #[test]
@@ -718,47 +743,70 @@ $disks | ForEach-Object {
 
         #[test]
         fn script_emits_every_row_field() {
-            for include_smart in [true, false] {
-                let script = script(include_smart);
-                for field in DISK_FIELDS
-                    .iter()
-                    .chain(COUNTERS)
-                    .chain(SMART_FIELDS)
-                    .map(|(field, _)| *field)
-                {
-                    assert!(
-                        script.contains(&format!("    {field} = ")),
-                        "script lacks {field}"
-                    );
-                }
-                assert!(!script.contains("reallocated_sectors"));
-                assert!(!script.contains("@@"), "unreplaced marker");
+            let script = script();
+            for field in DISK_FIELDS
+                .iter()
+                .chain(COUNTERS)
+                .chain(SMART_FIELDS)
+                .map(|(field, _)| *field)
+            {
                 assert!(
-                    !script.contains('"'),
-                    "double quotes break -Command quoting"
+                    script.contains(&format!("    {field} = ")),
+                    "script lacks {field}"
                 );
             }
+            assert!(!script.contains("reallocated_sectors"));
+            assert!(!script.contains("@@"), "unreplaced marker");
+            assert!(
+                !script.contains('"'),
+                "double quotes break -Command quoting"
+            );
         }
 
         #[test]
-        fn the_smart_wmi_reads_are_in_the_script_only_when_not_paused() {
-            let on = script(true);
-            assert!(on.contains("MSStorageDriver_FailurePredictStatus"));
-            assert!(on.contains("MSStorageDriver_FailurePredictData"));
-            assert!(on.contains("PredictFailure"));
-            assert!(on.contains("VendorSpecific"));
-            let off = script(false);
-            assert!(!off.contains("MSStorageDriver"));
-            assert!(!off.contains("VendorSpecific"));
-            assert!(!off.contains("Get-Disk"));
+        fn the_script_always_reads_the_smart_wmi_classes() {
+            let script = script();
+            assert!(script.contains("MSStorageDriver_FailurePredictStatus"));
+            assert!(script.contains("MSStorageDriver_FailurePredictData"));
+            assert!(script.contains("PredictFailure"));
+            assert!(script.contains("VendorSpecific"));
+            assert!(script.contains("Get-Disk"));
+            // Nothing in the script opens a raw device: that is the agent's NVMe read.
+            assert!(!script.contains("PhysicalDrive"));
         }
 
         #[test]
-        fn the_bus_type_map_covers_the_contract_vocabulary() {
-            let s = script(false);
-            for bus in ["NVMe", "SATA", "SAS", "USB", "RAID", "SCSI", "Unknown"] {
-                assert!(s.contains(&format!("{{ '{bus}' }}")), "no mapping to {bus}");
+        fn the_script_emits_the_raw_bus_type_for_rust_to_map() {
+            let script = script();
+            assert!(script.contains("$bus = [string]$_.BusType"));
+            assert!(
+                !script.contains("switch ([string]$_.BusType)"),
+                "the mapping lives in bus_type_name, not in the script"
+            );
+        }
+
+        #[test]
+        fn usb_and_sd_rows_are_removable_and_the_bus_is_mapped_from_the_raw_value() {
+            for (raw, bus, removable) in [
+                ("7", "USB", true),
+                ("USB", "USB", true),
+                ("12", "SD", true),
+                ("MMC", "SD", true),
+                ("3", "SATA", false),
+                ("1", "SCSI", false),
+                ("17", "NVMe", false),
+                ("Virtual", "Unknown", false),
+            ] {
+                let row = script_row(raw, json!(1), Value::Null);
+                let v = finish_windows_row(row, false, &mut |_| Err("n/a".to_string()));
+                assert_eq!(v["bus_type"], bus, "{raw}");
+                assert_eq!(v["removable"], removable, "{raw}");
             }
+            // Win32_DiskDrive's own removable flag still counts.
+            let mut row = script_row("SATA", json!(1), Value::Null);
+            row.insert("removable".to_string(), json!(true));
+            let v = finish_windows_row(row, false, &mut |_| unreachable!());
+            assert_eq!(v["removable"], true);
         }
 
         /// The contract's example rows are exactly the fields the collector
@@ -776,7 +824,7 @@ $disks | ForEach-Object {
                 assert_eq!(keys, sorted(ROW_FIELDS.iter().copied()));
             }
 
-            assert_eq!(&section_for(rows).into_value(), expected);
+            assert_eq!(&section_for(rows, false).into_value(), expected);
         }
 
         /// The Windows fixture rebuilt from raw reads: the script's row, the decoded
@@ -836,24 +884,35 @@ $disks | ForEach-Object {
         }
 
         #[test]
-        fn a_paused_windows_row_reads_nothing_and_nulls_the_raw_counters() {
+        fn a_paused_windows_row_skips_only_the_nvme_device_read() {
             let row = script_row("NVMe", json!(2), json!("AAAA"));
             let v = finish_windows_row(row, true, &mut |_| panic!("the device was read"));
             assert_eq!(v["paused"], true);
             assert_eq!(v["nvme"], Value::Null);
             assert_eq!(v["nvme_error"], Value::Null);
-            assert_eq!(v["smart_attributes"], Value::Null);
-            assert_eq!(v["predictive_failure"], Value::Null);
-            // The counters from the reliability read are not a raw-device read.
+            // The WMI-sourced and reliability-counter facts are untouched.
+            assert_eq!(v["predictive_failure"], false);
+            assert_eq!(v["health_status"], "Healthy");
             assert_eq!(v["wear"], 2);
             assert_eq!(
                 sorted(v.as_object().unwrap().keys().map(String::as_str)),
                 sorted(ROW_FIELDS.iter().copied())
             );
 
-            let sata = script_row("SATA", json!(0), json!(STANDARD.encode(ata_block(&[]))));
-            let v = finish_windows_row(sata, true, &mut |_| panic!("the device was read"));
-            assert_eq!(v["smart_attributes"], Value::Null);
+            // A failing drive stays failing while paused.
+            let mut failing = script_row(
+                "SATA",
+                json!(0),
+                json!(STANDARD.encode(ata_block(&[(197, 4)]))),
+            );
+            failing.insert("predictive_failure".to_string(), json!(true));
+            failing.insert("health_status".to_string(), json!("Warning"));
+            let v = finish_windows_row(failing, true, &mut |_| panic!("the device was read"));
+            assert_eq!(v["paused"], true);
+            assert_eq!(v["predictive_failure"], true);
+            assert_eq!(v["health_status"], "Warning");
+            assert_eq!(v["smart_attributes"], json!({ "197": 4 }));
+            assert_eq!(grade(&[v]).0, Status::Crit);
         }
 
         #[test]
@@ -1036,6 +1095,26 @@ $disks | ForEach-Object {
         }
 
         #[test]
+        fn wear_is_clamped_to_one_hundred_while_the_nvme_log_stays_raw() {
+            let id = LinuxIdentity {
+                bus_type: "NVMe",
+                media_type: "SSD",
+                ..sata_identity()
+            };
+            for (used, wear) in [(0u8, 0u64), (99, 99), (100, 100), (101, 100), (255, 100)] {
+                let mut log = [0u8; HEALTH_LOG_LEN];
+                log[5] = used;
+                let reads = LinuxReads {
+                    nvme: Some(decode_health_log(&log)),
+                    ..LinuxReads::default()
+                };
+                let v = linux_row(&id, reads, false);
+                assert_eq!(v["wear"], wear, "used {used}");
+                assert_eq!(v["nvme"]["percentage_used"], used, "used {used}");
+            }
+        }
+
+        #[test]
         fn a_linux_row_without_smartctl_is_unknown_not_healthy() {
             let v = linux_row(&sata_identity(), LinuxReads::default(), false);
             assert_eq!(v["health_status"], "Unknown");
@@ -1073,7 +1152,7 @@ $disks | ForEach-Object {
             };
             let row = linux_row(&id, reads, false);
             assert_eq!(&row, want);
-            assert_eq!(&section_for(vec![row]).into_value(), expected);
+            assert_eq!(&section_for(vec![row], false).into_value(), expected);
         }
 
         #[test]
@@ -1122,6 +1201,13 @@ $disks | ForEach-Object {
             assert_eq!(
                 linux_bus_type("vda", "/sys/devices/virtio-pci/virtio2/block/vda"),
                 "Unknown"
+            );
+            assert_eq!(
+                linux_bus_type(
+                    "mmcblk0",
+                    "/sys/devices/pci0000:00/0000:00:1a.0/mmc_host/mmc0/block/mmcblk0"
+                ),
+                "SD"
             );
         }
 
@@ -1186,24 +1272,30 @@ mod windows_impl {
     use crate::telemetry::Section;
 
     pub fn collect() -> Section {
+        // Pausing skips only the raw `\\.\PhysicalDriveN` open of the NVMe health log; the
+        // WMI classes and `Get-PhysicalDisk` are read as always.
         let paused = crate::coexist::game_active();
-        let Some(v) = winps::run_json(&core::script(!paused)) else {
+        let Some(v) = winps::run_json(&core::script()) else {
             return Section::with_fields(
                 crate::protocol::Status::Ok,
                 "SMART unavailable",
-                serde_json::json!({ "disks": [] }),
+                serde_json::json!({ "disks": [], "truncated": false }),
             );
         };
-        let rows = winps::as_array(v)
+        let objects: Vec<_> = winps::as_array(v)
             .into_iter()
             .filter_map(|row| match row {
                 Value::Object(m) => Some(m),
                 _ => None,
             })
+            .collect();
+        let truncated = objects.len() > core::MAX_DISKS;
+        let rows = objects
+            .into_iter()
             .take(core::MAX_DISKS)
             .map(|row| core::finish_windows_row(row, paused, &mut read_nvme_health))
             .collect();
-        core::section_for(rows)
+        core::section_for(rows, truncated)
     }
 
     /// Closes the raw-disk handle.
@@ -1345,11 +1437,14 @@ mod linux_impl {
         let root = Path::new(SYS_BLOCK);
         let mut smartctl_usable = true;
         let mut rows = Vec::new();
-        for name in list_block_devices(root).into_iter().take(core::MAX_DISKS) {
+        let names = list_block_devices(root);
+        let truncated = names.len() > core::MAX_DISKS;
+        for name in names.into_iter().take(core::MAX_DISKS) {
             let identity = read_identity(root, &name);
             let mut reads = LinuxReads::default();
-            if !paused {
-                if identity.bus_type == "NVMe" {
+            // Pausing skips only the raw NVMe admin ioctl, as on Windows.
+            if identity.bus_type == "NVMe" {
+                if !paused {
                     let log = core::nvme_controller(&name)
                         .ok_or_else(|| core::UNSUPPORTED.to_string())
                         .and_then(read_nvme_health);
@@ -1357,20 +1452,20 @@ mod linux_impl {
                         Ok(health) => reads.nvme = Some(health),
                         Err(e) => reads.nvme_error = Some(e),
                     }
-                } else if identity.bus_type == "SATA" && smartctl_usable {
-                    let dev = format!("/dev/{name}");
-                    match proc::run("smartctl", &["--json", "-H", "-A", &dev], PROBE_BUDGET) {
-                        // smartctl signals findings through non-zero exit bits, so the
-                        // exit code is not consulted: stdout is the answer.
-                        Ok(out) => reads.smart = core::parse_smartctl(&out.stdout),
-                        // Not installed, or wedged: stop asking for the remaining disks.
-                        Err(_) => smartctl_usable = false,
-                    }
+                }
+            } else if identity.bus_type == "SATA" && smartctl_usable {
+                let dev = format!("/dev/{name}");
+                match proc::run("smartctl", &["--json", "-H", "-A", &dev], PROBE_BUDGET) {
+                    // smartctl signals findings through non-zero exit bits, so the
+                    // exit code is not consulted: stdout is the answer.
+                    Ok(out) => reads.smart = core::parse_smartctl(&out.stdout),
+                    // Not installed, or wedged: stop asking for the remaining disks.
+                    Err(_) => smartctl_usable = false,
                 }
             }
             rows.push(core::linux_row(&identity, reads, paused));
         }
-        core::section_for(rows)
+        core::section_for(rows, truncated)
     }
 
     /// Physical block devices under `root` (`/sys/block`), sorted by name.

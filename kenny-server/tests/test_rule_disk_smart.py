@@ -216,6 +216,13 @@ def test_posture_never_rolls_up_into_the_host() -> None:
 # -- ignored disks ------------------------------------------------------------
 
 
+def test_sd_card_readers_are_ignored_like_usb() -> None:
+    sd = _sata_disk("Card", "SSD") | {"bus_type": "SD", "predictive_failure": True}
+    assert _rule(sd) == ("ok", "No internal disks to judge")
+    sd_nvme = _nvme_disk("Card2", nvme=None, nvme_error="x") | {"bus_type": "SD"}
+    assert _rule(sd_nvme) == ("ok", "No internal disks to judge")
+
+
 def test_usb_and_removable_disks_are_ignored_entirely() -> None:
     usb = _sata_disk("Stick", "SSD") | {"bus_type": "USB", "predictive_failure": True}
     removable = _sata_disk("Card", "SSD") | {"removable": True, "health_status": "Unhealthy"}
@@ -227,10 +234,8 @@ def test_usb_and_removable_disks_are_ignored_entirely() -> None:
 # -- paused -------------------------------------------------------------------
 
 
-def test_paused_row_skips_nulled_reads_but_still_judges_health_status() -> None:
-    paused = _nvme_disk(
-        "P1", paused=True, nvme=None, predictive_failure=None, health_status="Healthy"
-    )
+def test_paused_nvme_row_has_no_log_but_its_health_status_still_counts() -> None:
+    paused = _nvme_disk("P1", paused=True, nvme=None, predictive_failure=False)
     assert _rule(paused)[0] == "ok"
     warning = paused | {"health_status": "Warning"}
     assert _rule(warning)[0] == "warn"
@@ -238,11 +243,67 @@ def test_paused_row_skips_nulled_reads_but_still_judges_health_status() -> None:
     assert _rule(unhealthy)[0] == "crit"
 
 
-def test_paused_row_ignores_stale_values_in_the_reads_it_skipped() -> None:
-    row = _sata_disk("P2", "HDD", **{"197": 5, "5": 5}) | {
+def test_paused_row_still_judges_the_smart_flag_and_attributes() -> None:
+    # The SMART WMI classes are not paused: a failing disk must not look healthy
+    # because a protected game is running.
+    failing = _sata_disk("P2", "HDD", **{"197": 5, "5": 5}) | {
         "paused": True, "predictive_failure": True, "read_errors_uncorrected": 4,
     }
+    status, reason, *_ = _rule(failing)
+    assert status == "crit"
+    assert reason.startswith("Disk P2 reports that it is failing")
+    assert "has sectors waiting to be reallocated" in reason
+    attrs_only = _sata_disk("P3", "HDD", **{"197": 2}) | {"paused": True}
+    assert _rule(attrs_only)[0] == "warn"
+    nvme_failing = _nvme_disk("P4", paused=True, nvme=None, predictive_failure=True)
+    assert _rule(nvme_failing)[0] == "crit"
+
+
+def test_paused_row_ignores_a_stale_nvme_log_it_could_not_have_read() -> None:
+    row = _nvme_disk("P5", paused=True, nvme=_nvme(critical_warning=4, media_errors=3))
     assert _rule(row)[0] == "ok"
+
+
+# -- nvme_error -----------------------------------------------------------------
+
+
+def test_unreadable_nvme_log_is_a_posture_finding_never_healthy() -> None:
+    row = _nvme_disk("U1", nvme=None, nvme_error="unsupported by driver")
+    status, reason, details = _rule(row)
+    assert status == "posture"
+    assert reason == "Disk U1 health log could not be read (unsupported by driver)"
+    assert details["disks"][0]["status"] == "posture"
+    assert details["disks"][0]["symptom"] == "health log could not be read (unsupported by driver)"
+
+
+def test_unreadable_nvme_log_does_not_outrank_a_real_failure() -> None:
+    row = _nvme_disk("U2", nvme=None, nvme_error="access denied") | {"health_status": "Warning"}
+    status, reason, *_ = _rule(row)
+    assert status == "warn"
+    assert reason.startswith("Disk U2 reports a health warning; ")
+    assert "health log could not be read (access denied)" in reason
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        _nvme_disk("N1", nvme=_nvme(), nvme_error="access denied"),  # log was read
+        _nvme_disk("N2", nvme=None, nvme_error=None),  # nothing to explain
+        _nvme_disk("N3", nvme=None, nvme_error="  "),
+        _nvme_disk("N4", nvme=None, nvme_error="access denied", paused=True),
+        _nvme_disk("N5", nvme=None, nvme_error="access denied", bus_type="SATA"),
+        _nvme_disk("N6", nvme=None, nvme_error="access denied", bus_type="USB"),
+        _nvme_disk("N7", nvme=None, nvme_error="access denied", removable=True),
+    ],
+    ids=["log-read", "no-error", "blank-error", "paused", "not-nvme", "usb", "removable"],
+)
+def test_no_unreadable_log_finding_without_an_unread_nvme_log(row: dict[str, Any]) -> None:
+    assert _rule(row)[0] == "ok"
+
+
+def test_oversized_nvme_error_is_truncated() -> None:
+    reason = _rule(_nvme_disk("U3", nvme=None, nvme_error="x" * 5_000))[1]
+    assert len(reason) < 200
 
 
 # -- aggregation --------------------------------------------------------------
