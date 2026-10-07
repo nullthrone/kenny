@@ -341,6 +341,121 @@ export interface FansSection extends RawSection {
   errors?: string[]
 }
 
+/* ── Long-lived device history (GET /api/agent/{id}/trends → `hardware`) ──
+ *
+ * Daily per-device series (disk, GPU, fan, component) and the forecasts the
+ * server derived from them. The whole key is optional: a server without
+ * long-lived hardware history omits it, and every consumer renders as it did
+ * before. Shapes: docs/protocol.md does not carry this (it is a dashboard API,
+ * not a wire frame); the server owns it in `kenny_server/webui`. */
+
+export type HardwareDeviceKind = 'disk' | 'gpu' | 'fan' | 'component'
+
+export type HardwareForecastReason =
+  | 'wear_out'
+  | 'spare_decline'
+  | 'first_error'
+  | 'error_rate_rising'
+  | 'pcie_width_regression'
+  | 'fan_drift'
+
+export interface HardwareSeriesPoint {
+  /** UTC calendar day, `YYYY-MM-DD`. */
+  day: string
+  value: number
+}
+
+export interface HardwareDevice {
+  /** `disk:<serial>`, `gpu:<uuid>`, `fan:<fan key>` or `host:<component>`. */
+  device_key: string
+  kind: HardwareDeviceKind | string
+  label: string
+  /** metric name → points, oldest first. */
+  series: Record<string, HardwareSeriesPoint[]>
+}
+
+export interface HardwareForecast {
+  device_key: string
+  kind: HardwareDeviceKind | string
+  label: string
+  reason: HardwareForecastReason | string
+  /** A plain-language sentence, ready to show. */
+  symptom: string
+  /** Days until the projected event; null when the reason has no date (e.g. a first error). */
+  days_until: number | null
+}
+
+export interface HardwareTrends {
+  window_days: number | null
+  devices: HardwareDevice[]
+  forecasts: HardwareForecast[]
+}
+
+/** The `/trends` response; `disk` and `battery` are not read by the dashboard yet. */
+export interface AgentTrends {
+  agent_id?: string
+  disk?: unknown
+  battery?: unknown
+  hardware?: unknown
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function normalizeSeries(raw: unknown): Record<string, HardwareSeriesPoint[]> {
+  const out: Record<string, HardwareSeriesPoint[]> = {}
+  if (!isRecord(raw)) return out
+  for (const [metric, points] of Object.entries(raw)) {
+    if (!Array.isArray(points)) continue
+    const clean = points
+      .filter(
+        (p): p is HardwareSeriesPoint =>
+          isRecord(p) && typeof p.day === 'string' && typeof p.value === 'number' && Number.isFinite(p.value),
+      )
+      .map((p) => ({ day: p.day, value: p.value }))
+      .sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0))
+    if (clean.length > 0) out[metric] = clean
+  }
+  return out
+}
+
+/**
+ * The `hardware` key of a `/trends` response, or null when it is absent or not
+ * an object (an older server). Devices and forecasts that do not carry their
+ * identifying strings are dropped rather than rendered half-empty.
+ */
+export function normalizeHardwareTrends(raw: unknown): HardwareTrends | null {
+  const hw = isRecord(raw) && 'hardware' in raw ? raw.hardware : undefined
+  if (!isRecord(hw)) return null
+  const devices: HardwareDevice[] = (Array.isArray(hw.devices) ? hw.devices : [])
+    .filter((d): d is Record<string, unknown> => isRecord(d) && typeof d.device_key === 'string')
+    .map((d) => ({
+      device_key: d.device_key as string,
+      kind: typeof d.kind === 'string' ? d.kind : 'component',
+      label: typeof d.label === 'string' && d.label ? d.label : (d.device_key as string),
+      series: normalizeSeries(d.series),
+    }))
+  const forecasts: HardwareForecast[] = (Array.isArray(hw.forecasts) ? hw.forecasts : [])
+    .filter(
+      (f): f is Record<string, unknown> =>
+        isRecord(f) && typeof f.device_key === 'string' && typeof f.symptom === 'string' && f.symptom.trim() !== '',
+    )
+    .map((f) => ({
+      device_key: f.device_key as string,
+      kind: typeof f.kind === 'string' ? f.kind : 'component',
+      label: typeof f.label === 'string' && f.label ? f.label : (f.device_key as string),
+      reason: typeof f.reason === 'string' ? f.reason : '',
+      symptom: f.symptom as string,
+      days_until: typeof f.days_until === 'number' && Number.isFinite(f.days_until) ? f.days_until : null,
+    }))
+  return {
+    window_days: typeof hw.window_days === 'number' && Number.isFinite(hw.window_days) ? hw.window_days : null,
+    devices,
+    forecasts,
+  }
+}
+
 /* ── Web filter (GET/PUT/POST/DELETE /api/agent/{id}/webfilter*) ──
  *
  * Categories, schedule and bypass requests (ADR-0055,

@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { HostSection } from '../../api/types'
 import { loadSnapshot } from '../../test/contractFixtures'
 import type { RawSection } from './types'
@@ -20,6 +20,7 @@ vi.mock('../../api/client', () => ({
 vi.mock('../../api/sse', () => ({ streamChatEvents: vi.fn(() => () => {}) }))
 
 const { default: SectionModal } = await import('./SectionModal')
+const { api } = await import('../../api/client')
 
 const WINDOWS = loadSnapshot('telemetry_snapshot.json')
 const LINUX = loadSnapshot('telemetry_snapshot_linux.json')
@@ -130,5 +131,58 @@ describe('SectionModal body per section', () => {
   ])('says so when %s is not in the snapshot', (name, message) => {
     open(section(name), null)
     expect(screen.getByText(message)).toBeInTheDocument()
+  })
+})
+
+describe('SectionModal device history', () => {
+  const FAN_TRENDS = {
+    agent_id: 'pc-1',
+    hardware: {
+      window_days: 180,
+      devices: [
+        {
+          device_key: 'fan:nct6798.fan1',
+          kind: 'fan',
+          label: 'CPU_FAN',
+          series: {
+            rpm_duty_50_70: [
+              { day: '2026-06-03', value: 1200 },
+              { day: '2026-06-04', value: 1100 },
+              { day: '2026-06-05', value: 1000 },
+            ],
+          },
+        },
+      ],
+      forecasts: [],
+    },
+  }
+
+  beforeEach(() => {
+    vi.mocked(api.get).mockReset()
+  })
+  afterEach(() => {
+    vi.mocked(api.get).mockImplementation(() => Promise.resolve({}))
+  })
+
+  it('fetches the trends once and hands the matching series to the body', async () => {
+    vi.mocked(api.get).mockResolvedValue(FAN_TRENDS)
+    open(section('fans'), LINUX)
+    expect(await screen.findByRole('img', { name: 'RPM at 50–70 % duty over 3 days' })).toBeInTheDocument()
+    const trendCalls = vi.mocked(api.get).mock.calls.filter(([url]) => String(url).includes('/trends'))
+    expect(trendCalls).toEqual([['/api/agent/pc-1/trends']])
+  })
+
+  it('leaves the body as it was when the server sends no hardware key', async () => {
+    vi.mocked(api.get).mockResolvedValue({ agent_id: 'pc-1', disk: [], battery: null })
+    open(section('fans'), LINUX)
+    expect(screen.getByText('CPU_FAN')).toBeInTheDocument()
+    await waitFor(() => expect(api.get).toHaveBeenCalledWith('/api/agent/pc-1/trends'))
+    expect(screen.queryByText('HISTORY')).not.toBeInTheDocument()
+  })
+
+  it('does not ask for trends on a section that has no history', () => {
+    vi.mocked(api.get).mockResolvedValue({})
+    open(section('some_other_section'), { some_other_section: { status: 'ok', summary: '' } })
+    expect(vi.mocked(api.get).mock.calls.filter(([url]) => String(url).includes('/trends'))).toHaveLength(0)
   })
 })

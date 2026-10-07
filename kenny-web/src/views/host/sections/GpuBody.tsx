@@ -1,10 +1,14 @@
-import type { GpuCard, GpuEcc, GpuSection, GpuThrottle } from '../types'
+import type { GpuCard, GpuEcc, GpuSection, GpuThrottle, HardwareTrends } from '../types'
 import { DASH, finite, formatCount, formatPcieLink, formatPercent, formatTemp, formatWatts, isNonZero } from './hardwareFormat'
 import { EmptyNote, Eyebrow, HwCard, HwCards, HwChip, Note, StatList, Subhead, type StatItem } from './HardwareParts'
+import { HistoryList, HistorySpark } from './HistorySpark'
+import { drawable, findDevice, lastValue } from './hardwareHistory'
 import styles from './GpuBody.module.css'
 
 export interface GpuBodyProps {
   gpu: GpuSection
+  /** The long-lived device history (`/trends` -> `hardware`); absent on an older server. */
+  history?: HardwareTrends | null
 }
 
 const THROTTLE_LABELS: { key: keyof GpuThrottle; label: string; title: string }[] = [
@@ -62,7 +66,28 @@ function pcieIsDownshifted(pcie: GpuCard['pcie']): boolean {
   return (gen[0] !== null && gen[1] !== null && gen[0] < gen[1]) || (width[0] !== null && width[1] !== null && width[0] < width[1])
 }
 
-function GpuCardView({ gpu }: { gpu: GpuCard }) {
+/** The widest PCIe link seen under load per day, against the card's own maximum. */
+function GpuHistory({ gpu, history }: { gpu: GpuCard; history?: HardwareTrends | null }) {
+  const device = findDevice(history, gpu.uuid ? `gpu:${gpu.uuid}` : null, gpu.uuid)
+  const loaded = drawable(device, 'pcie_width_loaded_max')
+  if (!device || !loaded) return null
+  const max = device.series.pcie_width_max
+  return (
+    <>
+      <Subhead>HISTORY</Subhead>
+      <HistoryList>
+        <HistorySpark
+          label="PCIe width under load"
+          points={loaded}
+          reference={max && max.length > 0 ? lastValue(max) : undefined}
+          format={(v) => `×${v}`}
+        />
+      </HistoryList>
+    </>
+  )
+}
+
+function GpuCardView({ gpu, history }: { gpu: GpuCard; history?: HardwareTrends | null }) {
   const throttles = activeThrottles(gpu.throttle)
   const power =
     finite(gpu.power_draw_w) === null && finite(gpu.power_limit_w) === null
@@ -119,6 +144,7 @@ function GpuCardView({ gpu }: { gpu: GpuCard }) {
           <StatList items={rasItems(gpu.ras)} />
         </>
       )}
+      <GpuHistory gpu={gpu} history={history} />
     </HwCard>
   )
 }
@@ -129,7 +155,7 @@ function GpuCardView({ gpu }: { gpu: GpuCard }) {
  * Raw facts only — the agent does not grade this section, so a reading here is
  * context for the server's verdict in the header, never a verdict of its own.
  */
-export default function GpuBody({ gpu }: GpuBodyProps) {
+export default function GpuBody({ gpu, history }: GpuBodyProps) {
   const cards = gpu.gpus ?? []
   const errors = gpu.errors ?? []
   return (
@@ -140,7 +166,7 @@ export default function GpuBody({ gpu }: GpuBodyProps) {
       ) : (
         <HwCards>
           {cards.map((card, i) => (
-            <GpuCardView key={card.uuid || card.bus_id || `${card.name}-${i}`} gpu={card} />
+            <GpuCardView key={card.uuid || card.bus_id || `${card.name}-${i}`} gpu={card} history={history} />
           ))}
         </HwCards>
       )}

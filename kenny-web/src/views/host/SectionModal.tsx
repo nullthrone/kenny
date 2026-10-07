@@ -6,7 +6,7 @@ import { severityColor } from '../../components/tone'
 import { formatSince } from './format'
 import { sectionIcon, humanizeSectionName, isWebFilterSection, isAccountsSection, isReliabilitySection, isDiskSection, isHardwareErrorsSection, isGpuSection, isFansSection } from './sections'
 import { askKenny } from './askKenny'
-import { useWebfilter } from './api'
+import { useHardwareTrends, useWebfilter } from './api'
 import RecommendationBlock from './RecommendationBlock'
 import WebFilterBody from './sections/WebFilterBody'
 import AccountsBody from './sections/AccountsBody'
@@ -41,6 +41,16 @@ export interface SectionModalProps {
 export default function SectionModal({ agentId, section, snapshot, aiEnabled, onClose }: SectionModalProps) {
   const isWebFilter = section !== null && isWebFilterSection(section.name)
   const webfilter = useWebfilter(agentId, isWebFilter)
+  // The device history shares one cached `/trends` query with the forecast
+  // panel; only the four hardware sections read it, and a missing or failed
+  // response just leaves their bodies as they were.
+  const wantsHistory =
+    section !== null &&
+    (isDiskSection(section.name) ||
+      isHardwareErrorsSection(section.name) ||
+      isGpuSection(section.name) ||
+      isFansSection(section.name))
+  const history = useHardwareTrends(agentId, wantsHistory).data ?? null
 
   if (!section) return null
 
@@ -87,23 +97,23 @@ export default function SectionModal({ agentId, section, snapshot, aiEnabled, on
     const diskSmart = snapshot?.disk_smart as DiskSmartSection | undefined
     body =
       disk?.volumes || diskSmart ? (
-        <DiskBody disk={disk} diskSmart={diskSmart} focus={section.name.toLowerCase() === 'disk_smart' ? 'physical' : 'volumes'} />
+        <DiskBody disk={disk} diskSmart={diskSmart} focus={section.name.toLowerCase() === 'disk_smart' ? 'physical' : 'volumes'} history={history} />
       ) : (
         <p className={styles.fallback}>No disk data recorded for this host yet.</p>
       )
   } else if (isHardwareErrorsSection(section.name)) {
     const hardware = raw as HardwareErrorsSection | undefined
     body = hardware ? (
-      <HardwareErrorsBody hardware={hardware} details={section.details} />
+      <HardwareErrorsBody hardware={hardware} details={section.details} history={history} />
     ) : (
       <p className={styles.fallback}>No hardware error data recorded for this host yet.</p>
     )
   } else if (isGpuSection(section.name)) {
     const gpu = raw as GpuSection | undefined
-    body = gpu ? <GpuBody gpu={gpu} /> : <p className={styles.fallback}>No GPU data recorded for this host yet.</p>
+    body = gpu ? <GpuBody gpu={gpu} history={history} /> : <p className={styles.fallback}>No GPU data recorded for this host yet.</p>
   } else if (isFansSection(section.name)) {
     const fans = raw as FansSection | undefined
-    body = fans ? <FansBody fans={fans} /> : <p className={styles.fallback}>No fan data recorded for this host yet.</p>
+    body = fans ? <FansBody fans={fans} history={history} /> : <p className={styles.fallback}>No fan data recorded for this host yet.</p>
   } else {
     body = raw ? <GenericBody data={raw} /> : <p className={styles.fallback}>No further telemetry recorded for this section yet.</p>
   }

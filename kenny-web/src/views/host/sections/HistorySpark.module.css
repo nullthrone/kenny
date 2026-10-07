@@ -1,0 +1,33 @@
+.list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px 20px;
+}
+
+.spark {
+  min-width: 0;
+}
+
+.head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+
+.label {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  min-width: 0;
+}
+
+.latest {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.latest[data-tone='alert'] {
+  color: var(--danger);
+}

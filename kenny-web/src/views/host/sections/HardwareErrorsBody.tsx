@@ -1,14 +1,60 @@
 import { Fragment, useState } from 'react'
-import type { HardwareAerEntry, HardwareAppCrashes, HardwareEdacEntry, HardwareErrorGroup, HardwareErrorsSection } from '../types'
+import type {
+  HardwareAerEntry,
+  HardwareAppCrashes,
+  HardwareEdacEntry,
+  HardwareErrorGroup,
+  HardwareErrorsSection,
+  HardwareTrends,
+} from '../types'
 import { formatRelativeTime } from '../format'
 import { finite, formatCount, isNonZero, sortedDays } from './hardwareFormat'
-import { EmptyNote, Eyebrow, HwChip, Note, StatList, type Tone } from './HardwareParts'
+import { EmptyNote, Eyebrow, HwChip, Note, StatList, Subhead, type Tone } from './HardwareParts'
+import { HistoryList, HistorySpark } from './HistorySpark'
+import { drawable, hasNonZero } from './hardwareHistory'
 import styles from './HardwareErrorsBody.module.css'
 
 export interface HardwareErrorsBodyProps {
   hardware: HardwareErrorsSection
   /** The health rule's structured evidence (`HostSection.details`), when present. */
   details?: Record<string, unknown>
+  /** The long-lived device history (`/trends` -> `hardware`); absent on an older server. */
+  history?: HardwareTrends | null
+}
+
+/** The daily event counts kept per component; the fatal and instability ones read as alarms. */
+const COMPONENT_SERIES: { metric: string; label: string; tone?: 'alert' }[] = [
+  { metric: 'corrected_events', label: 'Corrected events' },
+  { metric: 'fatal_events', label: 'Fatal events', tone: 'alert' },
+  { metric: 'instability_events', label: 'Instability events', tone: 'alert' },
+]
+
+/** Per-component daily event counts, for the components that logged any in the window. */
+function ComponentHistory({ history }: { history?: HardwareTrends | null }) {
+  const components = (history?.devices ?? []).flatMap((device) => {
+    if (device.kind !== 'component') return []
+    const series = COMPONENT_SERIES.flatMap((s) => {
+      const points = drawable(device, s.metric)
+      return points && hasNonZero(points) ? [{ ...s, points }] : []
+    })
+    return series.length > 0 ? [{ device, series }] : []
+  })
+  if (components.length === 0) return null
+  return (
+    <>
+      <Eyebrow>EVENT HISTORY · PER COMPONENT</Eyebrow>
+      {components.map(({ device, series }) => (
+        <div key={device.device_key}>
+          <Subhead>{device.label.toUpperCase()}</Subhead>
+          <HistoryList>
+            {series.map((s) => (
+              <HistorySpark key={s.metric} label={s.label} points={s.points} tone={s.tone} />
+            ))}
+          </HistoryList>
+        </div>
+      ))}
+    </>
+  )
 }
 
 function levelTone(level: string): Tone | undefined {
@@ -272,7 +318,7 @@ function AerTable({ entries }: { entries: HardwareAerEntry[] }) {
  * Deliberately independent of `ReliabilityBody`: no suppression rules and no
  * classifier annotations — these groups carry none.
  */
-export default function HardwareErrorsBody({ hardware, details }: HardwareErrorsBodyProps) {
+export default function HardwareErrorsBody({ hardware, details, history }: HardwareErrorsBodyProps) {
   const findings = readFindings(details)
   const groups = hardware.groups ?? []
   const windowDays = finite(hardware.window_days)
@@ -325,6 +371,7 @@ export default function HardwareErrorsBody({ hardware, details }: HardwareErrors
       {crashes && <AppCrashes crashes={crashes} />}
       {edac.length > 0 && <EdacTable entries={edac} />}
       {aer.length > 0 && <AerTable entries={aer} />}
+      <ComponentHistory history={history} />
 
       {errors.length > 0 && (
         <>

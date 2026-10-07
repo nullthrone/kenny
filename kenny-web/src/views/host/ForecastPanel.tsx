@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { useAiFeature } from '../../api/aiStatus'
 import { streamChatEvents } from '../../api/sse'
+import { useHardwareTrends } from './api'
+import { formatDaysUntil } from './sections/hardwareHistory'
 import styles from './ForecastPanel.module.css'
 
 export interface ForecastPanelProps {
@@ -16,6 +18,11 @@ export interface ForecastPanelProps {
  * there's no "not configured" branch. The label marks AI-written prose as
  * such; the computed summary carries no mark, so a switched-off feature leaves
  * no trace here.
+ *
+ * Below the prose sits the "Hardware at risk" list: the server's own
+ * `hardware.forecasts` from `/api/agent/{id}/trends`, each a plain sentence with
+ * the device it concerns and, when it has a date, how far off. It renders
+ * nothing when the key is absent (an older server) or the list is empty.
  */
 export default function ForecastPanel({ agentId }: ForecastPanelProps) {
   // With AI prose switched off (or no key) the server streams its plain
@@ -25,6 +32,7 @@ export default function ForecastPanel({ agentId }: ForecastPanelProps) {
   const [generatedAt, setGeneratedAt] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [done, setDone] = useState(false)
+  const atRisk = useHardwareTrends(agentId).data?.forecasts ?? []
 
   useEffect(() => {
     const controller = new AbortController()
@@ -66,6 +74,23 @@ export default function ForecastPanel({ agentId }: ForecastPanelProps) {
           ? `Could not generate a forecast: ${error}`
           : text || (done ? 'No forecast text was returned.' : 'Reading the last 30 days…')}
       </p>
+      {atRisk.length > 0 && (
+        <div className={styles.risk}>
+          <span className={styles.eyebrow}>HARDWARE AT RISK</span>
+          <ul className={styles.riskList}>
+            {atRisk.map((f) => {
+              const when = formatDaysUntil(f.days_until)
+              return (
+                <li key={`${f.device_key}#${f.reason}`} className={styles.riskItem}>
+                  <span className={styles.riskDevice}>{f.label}</span>
+                  <span className={styles.riskSymptom}>{f.symptom}</span>
+                  {when && <span className={styles.riskWhen}>{when}</span>}
+                </li>
+              )
+            })}
+          </ul>
+        </div>
+      )}
     </div>
   )
 }
