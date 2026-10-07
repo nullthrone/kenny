@@ -16,7 +16,7 @@ policy out of the ticket lifecycle module, per the project's seam discipline
 Vocabulary:
 
 * ``event_type`` -- which producer raised the notification: ``health``,
-  ``offline``, ``disk_forecast`` or ``change``. Closed and validated; a
+  ``offline``, ``disk_forecast``, ``hardware_forecast`` or ``change``. Closed and validated; a
   notification with `kind in NEVER_TICKETED_KINDS` (``recovery``, ``digest``)
   can never open a ticket, checked *before* any rule is consulted, so no rule
   -- however written -- can violate that invariant.
@@ -54,7 +54,13 @@ __all__ = [
 
 # -- vocabulary --------------------------------------------------------------
 
-EVENT_TYPES: tuple[str, ...] = ("health", "offline", "disk_forecast", "change")
+EVENT_TYPES: tuple[str, ...] = (
+    "health",
+    "offline",
+    "disk_forecast",
+    "hardware_forecast",
+    "change",
+)
 DECISIONS: tuple[str, ...] = ("open_all", "open_crit", "never")
 
 # A notification of this ``kind`` can never open a ticket, no matter what any
@@ -72,6 +78,7 @@ DEFAULT_DECISION: dict[str, str] = {
     "health": "open_all",
     "offline": "open_all",
     "disk_forecast": "open_all",
+    "hardware_forecast": "open_all",
     "change": "never",
 }
 
@@ -129,6 +136,9 @@ KNOWN_SECTIONS: dict[str, frozenset[str]] = {
     # The forecast reports on one section (``AlertEngine._forecast_alert``), so
     # a rule may name it: `ticket_rule_set disk_forecast open_crit --section disk`.
     "disk_forecast": frozenset({"disk"}),
+    # One forecast names every section a device at risk belongs to
+    # (``AlertEngine._hardware_forecast_alert``).
+    "hardware_forecast": frozenset({"disk_smart", "gpu", "fans", "hardware_errors"}),
 }
 
 

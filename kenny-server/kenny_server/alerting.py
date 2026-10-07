@@ -3,7 +3,7 @@
 Periodically re-evaluates every known agent's latest snapshot with the
 authoritative health rules and notifies the operator on *transitions* only:
 ok->warn, ok->crit, warn->crit (escalation), warn/crit->ok (recovery), a host
-going missing, inventory changes and disk forecasts. Thresholds stay
+going missing, inventory changes, disk and hardware forecasts. Thresholds stay
 exclusively in ``health_rules.py``; this module only compares the evaluated
 status against the persisted last-known state (``AlertStateStore``) and
 applies flap suppression:
@@ -32,7 +32,7 @@ interrupts, independently of whether it opens a ticket:
   lines of the same pass as context), an inventory change on the operator's
   allowlist (``KENNY_ALERT_CHANGE_PUSH``), and the recovery of a pushed episode;
 * ``daily`` -- held for one daily summary (``maybe_send_daily``): warn-only
-  findings, a missing host, a disk forecast;
+  findings, a missing host, a disk or hardware forecast;
 * ``record`` -- history and ticket queue only: every other change, the recovery
   of an episode that was never pushed, and any recovery an operator's own write
   caused.
@@ -87,8 +87,9 @@ from .diffs import CHANGE_KINDS, SPECS, diff_snapshots
 from .health_rules import CONFIRM_BEFORE_ALARM, evaluate_snapshot
 from .notify import Notification, Notifier, doc_sections, resolve_doc
 from .registry import AgentRegistry
-from .store import AlertStateStore, EventStore, TelemetryStore
-from .trends import DISK_FULL_ALERT_DAYS, disk_forecast
+from . import hardware_history
+from .store import AlertStateStore, EventStore, HardwareHistoryStore, TelemetryStore
+from .trends import DISK_FULL_ALERT_DAYS, FORECAST_SECTION, disk_forecast
 
 logger = logging.getLogger("kenny.alerting")
 
@@ -197,8 +198,12 @@ class AlertEngine:
         open_ticket: Callable[[Notification], Awaitable[str | None]] | None = None,
         close_ticket: Callable[[Notification], Awaitable[str | None]] | None = None,
         ticket_rules: Any = None,
+        hw_history: HardwareHistoryStore | None = None,
     ) -> None:
         self._store = store
+        # The long-lived per-device history (ADR-0070). Without it the engine
+        # neither rolls snapshots up nor raises hardware forecasts.
+        self._hw_history = hw_history
         self._alert_state = alert_state
         self._event_store = event_store
         self._registry = registry
@@ -658,6 +663,9 @@ class AlertEngine:
         forecast_note = await self._forecast_alert(agent_id, state, now)
         if forecast_note is not None:
             out.append(forecast_note)
+        hardware_note = await self._hardware_forecast_alert(agent_id, state, now)
+        if hardware_note is not None:
+            out.append(hardware_note)
         return out
 
     async def _notify_changes(
@@ -803,6 +811,82 @@ class AlertEngine:
             # ``warn`` matches the severity the priority already implied, so no
             # existing ``open_crit`` rule starts firing because of this.
             sections={"disk": "warn"},
+        )
+
+    async def hardware_forecasts(
+        self, agent_id: str, now: datetime | None = None
+    ) -> list[dict[str, Any]]:
+        """The hardware at risk on one host right now (ADR-0070); ``[]`` without
+        a history store or when it cannot be read."""
+
+        if self._hw_history is None:
+            return []
+        try:
+            return await hardware_history.load_forecasts(
+                self._store, self._hw_history, agent_id, now=now
+            )
+        except Exception:  # noqa: BLE001 - a forecast must never stop the pass
+            logger.exception("hardware forecast failed for %s", agent_id)
+            return []
+
+    async def _hardware_forecast_alert(
+        self,
+        agent_id: str,
+        state: dict[str, dict[str, Any]],
+        now: datetime,
+    ) -> Notification | None:
+        """One ``hardware_forecast`` per host, re-sent only when its set grows.
+
+        The scope is ``section:hardware_forecast`` -- one per agent, so the daily
+        summary and ``_describe`` treat it like the disk forecast. Which
+        ``(device, reason)`` pairs were already announced is kept in
+        ``hwforecast:set`` (its ``status`` is the sorted pairs): a pair that
+        stays true is not news again, a new pair is, a pair that goes away and
+        comes back is. The scope turns ``ok`` when the set empties. Names every
+        section a forecast concerns, so the ticket merges with that section's own
+        finding instead of opening a second one.
+        """
+
+        if self._hw_history is None:
+            return None
+        forecasts = await self.hardware_forecasts(agent_id, now)
+        current = {f"{f['device_key']}|{f['reason']}" for f in forecasts}
+        scope, set_scope = "section:hardware_forecast", "hwforecast:set"
+        row, set_row = state.get(scope), state.get(set_scope)
+        announced = set(((set_row or {}).get("status") or "").split("\n")) - {""}
+        if set_row is None or announced != current:
+            await self._alert_state.upsert(
+                agent_id, set_scope, status="\n".join(sorted(current)), since=now.isoformat()
+            )
+        if not current:
+            if row and row["status"] != "ok":
+                await self._alert_state.upsert(
+                    agent_id,
+                    scope,
+                    status="ok",
+                    since=now.isoformat(),
+                    last_notified_at=row.get("last_notified_at"),
+                )
+            return None
+        fresh = current - announced
+        if not fresh and row and row["status"] == "warn":
+            return None
+        episode_since = row["since"] if row and row["status"] == "warn" else now.isoformat()
+        await self._alert_state.upsert(
+            agent_id, scope, status="warn", since=episode_since, last_notified_at=now.isoformat()
+        )
+        # The new pairs first: they are why this fired.
+        ordered = sorted(forecasts, key=lambda f: (f"{f['device_key']}|{f['reason']}" not in fresh))
+        return Notification(
+            title=f"{agent_id}: hardware at risk",
+            body="\n".join(f["symptom"] for f in ordered),
+            priority="default",
+            tags=["warning"],
+            agent_id=agent_id,
+            kind="alert",
+            event_type="hardware_forecast",
+            route="daily",
+            sections={FORECAST_SECTION[f["kind"]]: "warn" for f in forecasts},
         )
 
     # -- helpers ----------------------------------------------------------------
@@ -1000,7 +1084,11 @@ class AlertEngine:
         from .digest import build_digest
 
         title, body = await build_digest(
-            self._store, self._event_store, self._registry, now=now
+            self._store,
+            self._event_store,
+            self._registry,
+            now=now,
+            hw_history=self._hw_history,
         )
         await self._dispatch(
             Notification(
@@ -1135,14 +1223,18 @@ class AlertEngine:
     ) -> list[tuple[str, str, str]]:
         """Current reason text for each new finding, one line per section.
 
-        A disk forecast is a statement about ``disk`` and shares its line.
+        A disk forecast is a statement about ``disk`` and shares its line. The
+        hardware forecast spans several sections, so it gets one ``hardware`` line
+        of its own, listing each device's symptom.
         """
 
         latest = await self._store.latest(agent_id)
         texts: dict[str, list[str]] = {}
         if latest is not None and "missing" in new:
             texts["missing"] = [f"no telemetry since {latest.get('received_at')}"]
-        sections = [n for n in new if n not in ("missing", "disk_forecast")]
+        sections = [
+            n for n in new if n not in ("missing", "disk_forecast", "hardware_forecast")
+        ]
         if latest is not None and sections:
             agent_os = getattr(self._registry.get(agent_id), "os", "windows")
             evaluation = evaluate_snapshot(latest["snapshot"], agent_os=agent_os, now=now)
@@ -1157,12 +1249,33 @@ class AlertEngine:
                 if f["days_until_full"] is not None and f["days_until_full"] < DISK_FULL_ALERT_DAYS
             ]
             texts.setdefault("disk", []).extend(forecast or ["filling up"])
+        if "hardware_forecast" in new:
+            at_risk = [f["symptom"] for f in await self.hardware_forecasts(agent_id, now)]
+            texts["hardware"] = at_risk or ["hardware at risk"]
+        scope_of = {"disk": "disk_forecast", "hardware": "hardware_forecast"}
         out = []
         for name, parts in texts.items():
-            since_ts = _parse_ts((new.get(name) or new.get("disk_forecast") or {}).get("since"))
+            row = new.get(name) or new.get(scope_of.get(name, "")) or {}
+            since_ts = _parse_ts(row.get("since"))
             age = f" (for {_age(now - since_ts)})" if since_ts else ""
             out.append((agent_id, name, "; ".join(parts) + age))
         return out
+
+    async def rollup_hardware_history(self, now: datetime | None = None) -> int:
+        """Roll every host's snapshots up into the hardware history; rows written.
+
+        Called from :meth:`_maybe_prune` and directly by tests. Best-effort: a
+        failure is logged and never stops the maintenance pass. A no-op without a
+        history store.
+        """
+
+        if self._hw_history is None:
+            return 0
+        try:
+            return await hardware_history.rollup_all(self._store, self._hw_history, now=now)
+        except Exception:  # noqa: BLE001
+            logger.exception("hardware history rollup failed")
+            return 0
 
     async def _maybe_prune(self, now: datetime | None = None) -> None:
         """Run each prunable store's retention sweep, at most every _PRUNE_EVERY --
@@ -1188,6 +1301,9 @@ class AlertEngine:
         if not due and not forced:
             return
         self._last_prune = now
+        # Before snapshots are pruned, so a day about to age out is rolled up
+        # first (ADR-0070).
+        await self.rollup_hardware_history(now)
         for store, key in self._prunables:
             days = self._cfg(key, None) if key is not None else None
             try:

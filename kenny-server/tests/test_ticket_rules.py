@@ -550,7 +550,9 @@ def test_event_types_the_engine_can_emit_are_exactly_the_validated_ones() -> Non
     ticket_rules validates/advertises. Both directions -- new/renamed on
     either side fails this."""
 
-    emitted_by_producers = {"health", "offline", "disk_forecast", "change"}
+    emitted_by_producers = {
+        "health", "offline", "disk_forecast", "hardware_forecast", "change"
+    }
     assert emitted_by_producers == set(EVENT_TYPES)
 
 

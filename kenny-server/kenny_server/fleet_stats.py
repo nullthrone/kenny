@@ -61,6 +61,7 @@ def aggregate_overview(
     *,
     now: datetime | None = None,
     disk_forecasts: dict[str, list[dict[str, Any]]] | None = None,
+    hardware_forecasts: dict[str, list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     """Verdichte the latest per-agent snapshots into chart-ready aggregates.
 
@@ -68,7 +69,8 @@ def aggregate_overview(
     carrying ``members`` for drill-down. ``agents`` is the list assembled by the
     web layer (see :data:`Agent`). ``disk_forecasts`` is the optional per-agent
     ``trends.disk_forecast`` output (this module stays pure — the web layer does
-    the store reads).
+    the store reads). ``hardware_forecasts`` is the per-agent
+    ``trends.hardware_forecasts`` output behind the "Hardware at risk" KPI.
     """
 
     now = now or datetime.now(timezone.utc)
@@ -76,7 +78,7 @@ def aggregate_overview(
         "generated_at": now.isoformat(),
         "agent_count": len(agents),
         "online_count": sum(1 for a in agents if a.get("online")),
-        "kpis": _kpis(agents, disk_forecasts or {}),
+        "kpis": _kpis(agents, disk_forecasts or {}, hardware_forecasts or {}),
         "health": _health_mix(agents),
         "sections": _section_severity(agents),
         "os": _os_inventory(agents),
@@ -159,7 +161,9 @@ def _reliability_categories(agents: list[Agent]) -> dict[str, Any]:
 
 
 def _kpis(
-    agents: list[Agent], disk_forecasts: dict[str, list[dict[str, Any]]] | None = None
+    agents: list[Agent],
+    disk_forecasts: dict[str, list[dict[str, Any]]] | None = None,
+    hardware_forecasts: dict[str, list[dict[str, Any]]] | None = None,
 ) -> list[dict[str, Any]]:
     """Actionable fleet totals — each a single number not shown by any chart."""
 
@@ -179,6 +183,12 @@ def _kpis(
         if filling:
             detail = ", ".join(f"{f['mount']} ~{f['days_until_full']:.0f}d" for f in filling)
             filling_members.append(_member(aid, len(filling), f"filling up: {detail}"))
+
+    at_risk_members: list[dict[str, Any]] = []
+    for aid, forecasts in sorted((hardware_forecasts or {}).items()):
+        if forecasts:
+            detail = "; ".join(f["symptom"] for f in forecasts[:3])
+            at_risk_members.append(_member(aid, len(forecasts), detail))
 
     reboot_members: list[dict[str, Any]] = []
     updates_members: list[dict[str, Any]] = []
@@ -289,6 +299,13 @@ def _kpis(
             "value": len(filling_members),
             "severity": "warn" if filling_members else "ok",
             "members": filling_members,
+        },
+        {
+            "key": "hardware_at_risk",
+            "label": "Hardware at risk",
+            "value": len(at_risk_members),
+            "severity": "warn" if at_risk_members else "ok",
+            "members": at_risk_members,
         },
     ]
 

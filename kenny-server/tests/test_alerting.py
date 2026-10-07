@@ -543,6 +543,21 @@ async def test_engine_emitted_vocabulary_matches_ticket_rules(stores) -> None:
     for i in range(6):
         await insert(store, snapshot(68.0 + 2.0 * i), base + timedelta(days=i), agent_id="pc4")
     record(await engine.evaluate_once(NOW))
+    # hardware_forecast (ADR-0070): a wearing disk, via the real rollup
+    from support.hardware import disk, disk_smart
+    from kenny_server.store import HardwareHistoryStore
+
+    hw = HardwareHistoryStore(store.db_path)
+    await hw.connect()
+    try:
+        engine_hw = make_engine(stores, FakeNotifier(), hw_history=hw)
+        for i in range(20):
+            wear = {"disk_smart": disk_smart(disk("S1", "WD", pct=70.0 + i, spare=100))}
+            await insert(store, wear, NOW - timedelta(days=19 - i, minutes=1), agent_id="pc5")
+        await engine_hw.rollup_hardware_history(NOW)
+        record(await engine_hw.evaluate_once(NOW))
+    finally:
+        await hw.close()
 
     assert seen_event_types  # the scenario battery actually produced something
     assert seen_event_types <= (set(tr.EVENT_TYPES) | {"digest"})

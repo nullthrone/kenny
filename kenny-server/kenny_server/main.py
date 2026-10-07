@@ -57,6 +57,7 @@ from .store import (
     ChatHistoryStore,
     EventClassificationStore,
     EventStore,
+    HardwareHistoryStore,
     PolicyStore,
     PresenceStore,
     ShellAllowStore,
@@ -470,6 +471,8 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
     oauth_store = OAuthStore(db_path)
     registry = AgentRegistry(token_store=token_store, key_store=key_store)
     store = TelemetryStore(db_path)
+    # Per-device daily hardware metrics rolled up from the snapshots (ADR-0070).
+    hw_history = HardwareHistoryStore(db_path)
     event_store = EventStore(db_path)
     # Availability (availability.py): tunnel sessions, server runs and reboots.
     presence = PresenceStore(db_path)
@@ -705,6 +708,8 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
             # Same key as the snapshots: before the presence record begins,
             # availability is rebuilt from snapshot arrival times.
             (presence, "KENNY_TELEMETRY_RETENTION_DAYS"),
+            # Its own, much longer window (ADR-0070).
+            (hw_history, "KENNY_HW_HISTORY_RETENTION_DAYS"),
             (event_store, None),
             (webfilter_store, None),
             (ticket_store, "KENNY_TICKET_RETENTION_DAYS"),
@@ -715,6 +720,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         open_ticket=open_alert_ticket,
         close_ticket=resolve_alert_ticket,
         ticket_rules=ticket_rules,
+        hw_history=hw_history,
     )
 
     # The ticket assistant (dashboard chat +, if configured, Discord) is built
@@ -850,6 +856,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         # before anything else reads config.
         await settings.load()
         await store.connect()
+        await hw_history.connect()
         await presence.connect()
         await token_store.connect()
         await key_store.connect()
@@ -917,6 +924,8 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         # Load persisted auto-ticket rules before the alert loop
         # below can dispatch a single notification.
         await ticket_rules.load()
+        # Roll the history up before the prune below can age a day out of the snapshots.
+        await alert_engine.rollup_hardware_history()
         await store.prune()
         await presence.prune()
         await event_store.prune()
@@ -1095,6 +1104,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
             await user_store.close()
             await oauth_store.close()
             await store.close()
+            await hw_history.close()
             await event_store.close()
             await policy_store.close()
             await shell_allow_store.close()
@@ -1118,6 +1128,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         call_log=call_log,
         screenshots=screenshots,
         event_store=event_store,
+        hw_history=hw_history,
         token_store=token_store,
         policy_store=policy_store,
         policy_engine=policy_engine,
@@ -1159,6 +1170,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         client_factory=client_factory,
         copilot_tickets=copilot_tickets,
         presence=presence,
+        hw_history=hw_history,
         settings=settings,
     )
     # The server-hosted copilot drives arbitrary capability tools over the
@@ -1244,6 +1256,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
     app.state.settings = settings
     app.state.settings_store = settings_store
     app.state.store = store
+    app.state.hw_history = hw_history
     app.state.presence = presence
     app.state.event_store = event_store
     app.state.token_store = token_store
