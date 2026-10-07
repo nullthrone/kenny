@@ -117,6 +117,16 @@ async def test_a_body_without_items_renders_as_is() -> None:
     assert embed["description"] == "b"
 
 
+async def test_a_markdown_rendering_replaces_the_body_on_discord() -> None:
+    captured: list[httpx.Request] = []
+    notifier = DiscordNotifier(
+        "https://discord.example/webhook", client_factory=_capture_factory(captured)
+    )
+    await notifier.send(Notification(title="t", body="pc1", markdown="[pc1](https://k/#/fleet/pc1)"))
+    embed = json.loads(captured[0].content)["embeds"][0]
+    assert embed["description"] == "[pc1](https://k/#/fleet/pc1)"
+
+
 async def test_discord_colors_follow_severity_not_priority() -> None:
     colors: dict[str, int] = {}
     cases = {

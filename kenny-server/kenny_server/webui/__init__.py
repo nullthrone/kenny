@@ -808,9 +808,14 @@ def build_api_routes(
         """Render (but do not send) the weekly digest for a manual check."""
 
         from ..digest import build_digest
+        from ..notify import public_link_base
 
-        title, body = await build_digest(store, event_store, registry, hw_history=hw_history)
-        return JSONResponse({"title": title, "body": body})
+        digest = await build_digest(
+            store, event_store, registry, base_url=public_link_base(), hw_history=hw_history
+        )
+        return JSONResponse(
+            {"title": digest.title, "body": digest.body, "markdown": digest.markdown}
+        )
 
     async def api_notify_test(_request: Request) -> JSONResponse:
         """Send one test message through every configured alert channel.

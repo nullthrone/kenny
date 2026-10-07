@@ -469,21 +469,21 @@ async def test_the_digest_lists_hardware_at_risk(stores) -> None:
     store, events, _, hw = stores
     await put_wear_history(store)
     await hardware_history.rollup_all(store, hw, now=NOW)
-    title, body = await build_digest(store, events, FakeRegistry(), now=NOW, hw_history=hw)
-    line = next(ln for ln in body.splitlines() if ln.startswith("Hardware at risk:"))
-    assert "pc1: WD_BLACK SN850X" in line
+    body = (await build_digest(store, events, FakeRegistry(), now=NOW, hw_history=hw)).body
+    todo = next(ln for ln in body.splitlines() if ln.startswith("To do:"))
+    assert "hardware at risk: pc1 (1)" in todo
 
 
 async def test_the_digest_has_no_block_without_forecasts_or_a_history_store(stores) -> None:
     store, events, _, hw = stores
     await put(store, wearing(10), NOW - timedelta(hours=1))
     await hardware_history.rollup_all(store, hw, now=NOW)
-    _, body = await build_digest(store, events, FakeRegistry(), now=NOW, hw_history=hw)
-    assert "Hardware at risk" not in body
+    body = (await build_digest(store, events, FakeRegistry(), now=NOW, hw_history=hw)).body
+    assert "hardware at risk" not in body
     await put_wear_history(store, agent_id="pc2")
     await hardware_history.rollup_all(store, hw, now=NOW)
-    _, body = await build_digest(store, events, FakeRegistry(), now=NOW)
-    assert "Hardware at risk" not in body
+    body = (await build_digest(store, events, FakeRegistry(), now=NOW)).body
+    assert "hardware at risk" not in body
 
 
 # -- fleet KPI ------------------------------------------------------------------------
@@ -715,13 +715,13 @@ async def test_the_digest_survives_an_unreadable_history(stores, monkeypatch, ca
     store, events, _, hw = stores
     await put_wear_history(store)
     await hardware_history.rollup_all(store, hw, now=NOW)
-    _, healthy = await build_digest(store, events, FakeRegistry(), now=NOW, hw_history=hw)
-    assert "Hardware at risk:" in healthy
+    healthy = (await build_digest(store, events, FakeRegistry(), now=NOW, hw_history=hw)).body
+    assert "hardware at risk:" in healthy
 
     monkeypatch.setattr(hw, "series", _broken)
     with caplog.at_level("WARNING", logger="kenny.digest"):
-        title, body = await build_digest(store, events, FakeRegistry(), now=NOW, hw_history=hw)
-    assert "Hardware at risk" not in body
+        body = (await build_digest(store, events, FakeRegistry(), now=NOW, hw_history=hw)).body
+    assert "hardware at risk" not in body
     assert body.splitlines()[0] == healthy.splitlines()[0]  # the rest is intact
     assert any("hardware forecast failed" in r.message for r in caplog.records)
 

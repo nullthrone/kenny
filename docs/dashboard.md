@@ -623,7 +623,8 @@ alert:
   and touches no cooldown — and lists each channel as `delivered` or
   `failed · <reason>`. With no channel configured, it says so.
 - **Preview digest** (`GET /api/digest/preview`) renders the weekly digest as it would go
-  out now, without sending it.
+  out now, without sending it. The panel shows the plain-text version that ntfy and the
+  webhook receive; the response also carries `markdown`, the linked rendering Discord gets.
 
 ### Alarm rules
 
