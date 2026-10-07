@@ -2363,6 +2363,10 @@ mod tests {
         assert_eq!(linux::parse_aer_total("garbage\n"), None);
     }
 
+    // PCIe device directories in sysfs are named by bus address (`0000:01:00.0`); a
+    // colon is not a valid file-name character on Windows, so the fake tree this
+    // reads can only be built where the reader itself runs.
+    #[cfg(unix)]
     #[test]
     fn aer_lists_only_devices_with_errors_largest_first() {
         let t = TempDir::new("aer");
@@ -2388,6 +2392,10 @@ mod tests {
         assert_eq!(linux::read_aer(&t.0.join("missing")), Ok(None));
     }
 
+    // PCIe device directories in sysfs are named by bus address (`0000:01:00.0`); a
+    // colon is not a valid file-name character on Windows, so the fake tree this
+    // reads can only be built where the reader itself runs.
+    #[cfg(unix)]
     #[test]
     fn the_sysfs_lists_are_capped_at_32() {
         let t = TempDir::new("cap");
@@ -2524,6 +2532,10 @@ mod tests {
         assert_eq!(normalized(section), normalized(expected));
     }
 
+    // PCIe device directories in sysfs are named by bus address (`0000:01:00.0`); a
+    // colon is not a valid file-name character on Windows, so the fake tree this
+    // reads can only be built where the reader itself runs.
+    #[cfg(unix)]
     #[test]
     fn the_linux_fixture_is_what_the_collector_produces() {
         let journal = [
