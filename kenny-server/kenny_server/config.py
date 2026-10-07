@@ -281,6 +281,11 @@ _SPECS: list[SettingSpec] = [
           "Forecast prose", lifecycle="live",
           help="AI wording for the host forecast. Off shows the plain computed "
                "summary instead."),
+    _spec("KENNY_AI_DIGEST_ENABLED", "AI", "bool", "1",
+          "Weekly digest summary", lifecycle="live",
+          help="A one-line reading of the week at the top of the weekly digest: "
+               "which host most needs attention, and why. Off sends the digest's "
+               "lines alone."),
     _spec("KENNY_AI_CLASSIFY_ENABLED", "AI", "bool", "1",
           "Reliability event classification", lifecycle="live",
           help="Classifies Windows reliability events by category and severity. "

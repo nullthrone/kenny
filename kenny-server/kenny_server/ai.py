@@ -39,6 +39,7 @@ FEATURES: dict[str, str] = {
     "classify": "KENNY_AI_CLASSIFY_ENABLED",
     "ticket_assistant": "KENNY_AI_TICKET_ASSISTANT_ENABLED",
     "triage": "KENNY_TRIAGE_ENABLED",
+    "digest": "KENNY_AI_DIGEST_ENABLED",
 }
 
 KEY_SETTING = "ANTHROPIC_API_KEY"
@@ -422,6 +423,27 @@ def check_usable(response: Any) -> None:
     if stop_reason == "refusal":
         logger.warning("fast model declined a request (category %s)", category or "unknown")
     raise UnusableResponse(stop_reason, category)
+
+
+def create_fast(access: AiAccess, client: Any, max_tokens: int, **params: Any) -> Any:
+    """One non-streaming fast-route call, as the shared request shapes it.
+
+    Retries once without the effort setting when the model rejects it
+    (:meth:`AiAccess.drop_effort`) and raises :class:`UnusableResponse` for a
+    response that was cut off or declined. Blocking: run it in a thread.
+    """
+
+    request = access.fast_request(max_tokens)
+    while True:
+        try:
+            response = client.messages.create(**request, **params)
+        except Exception as exc:
+            if access.drop_effort(request, exc):
+                request = access.fast_request(max_tokens)
+                continue
+            raise
+        check_usable(response)
+        return response
 
 
 def stream_fast_text(

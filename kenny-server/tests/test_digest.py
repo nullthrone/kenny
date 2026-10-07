@@ -4,8 +4,12 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import time
+from typing import Any
+
 import pytest
 
+from kenny_server import ai, digest as digest_module
 from kenny_server.alerting import AlertEngine
 from kenny_server.digest import build_digest
 from kenny_server.notify import Notification
@@ -34,6 +38,17 @@ class FakeRegistry:
             online = True
 
         return _A() if agent_id in self._online else None
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_ai(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every digest here is the computed one unless a test asks for the note:
+    an access bound by another test's app, or a key in the environment, would
+    otherwise reach for a model."""
+
+    monkeypatch.setattr(ai, "_current", None)
+    for key in ("ANTHROPIC_API_KEY", ai.BASE_URL_SETTING, ai.FEATURES["digest"], ai.MASTER_SETTING):
+        monkeypatch.delenv(key, raising=False)
 
 
 @pytest.fixture
@@ -281,3 +296,160 @@ async def test_digest_reaches_discord_with_host_links(stores, monkeypatch) -> No
     assert embed["title"] == "kenny weekly digest - 2026-07-06"
     assert "[kids-pc](https://kenny.example/#/fleet/kids-pc?section=disk): disk" in embed["description"]
     assert embed["description"].endswith("[Open kenny](https://kenny.example/#/fleet)")
+
+
+# -- the note ------------------------------------------------------------------
+
+
+class _Text:
+    type = "text"
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+
+class _Reply:
+    def __init__(self, text: str, stop_reason: str) -> None:
+        self.content = [_Text(text)]
+        self.stop_reason = stop_reason
+
+
+class _NoteModel:
+    """Answers ``messages.create`` with one scripted reply; records the request."""
+
+    def __init__(self, text: str = "", *, stop_reason: str = "end_turn", fail: bool = False,
+                 delay: float = 0.0) -> None:
+        self.messages = self
+        self.requests: list[dict[str, Any]] = []
+        self._reply = _Reply(text, stop_reason)
+        self._fail = fail
+        self._delay = delay
+
+    def create(self, **kwargs: Any) -> _Reply:
+        self.requests.append(kwargs)
+        if self._delay:
+            time.sleep(self._delay)
+        if self._fail:
+            raise RuntimeError("connection refused")
+        return self._reply
+
+
+async def _fleet_with_one_struggling_host(store: TelemetryStore) -> None:
+    snapshot = {
+        "disk": {"status": "ok", "summary": "", "volumes": [{"mount": "C:", "percent_used": 96.0}]},
+        "reboot_pending": {"status": "warn", "summary": "", "pending": True, "reasons": ["WU"]},
+    }
+    await store.insert("kids-pc", NOW.isoformat(), snapshot, received_at=NOW.isoformat())
+    await store.insert("nas", NOW.isoformat(), {"disk": {"status": "ok", "summary": "", "volumes": [
+        {"mount": "/", "percent_used": 20.0}]}}, received_at=NOW.isoformat())
+
+
+@pytest.fixture
+def ai_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+
+
+_NOTE = "kids-pc is the one to look at: its system drive is almost full and a reboot is pending."
+
+
+async def test_the_note_leads_the_digest_and_the_lines_stay(stores, ai_on) -> None:
+    store, events, _ = stores
+    await _fleet_with_one_struggling_host(store)
+    model = _NoteModel(_NOTE)
+
+    digest = await build_digest(
+        store, events, FakeRegistry({"kids-pc"}), now=NOW, client_factory=lambda: model
+    )
+
+    lines = digest.body.splitlines()
+    assert lines[0].startswith("2 hosts · 1 online")
+    assert lines[2] == f"In short: {_NOTE}"
+    assert "Needs attention" in digest.body and "1 reboot pending" in digest.body
+    assert f"**In short:** {_NOTE}" in digest.markdown
+    # The model is asked what the lines say, joined per host, in the fast-route shape.
+    request = model.requests[0]
+    assert request["model"] == ai.DEFAULT_FAST_MODEL
+    assert request["output_config"] == {"effort": ai.FAST_EFFORT}
+    facts = request["messages"][-1]["content"]
+    assert "  kids-pc: crit: disk" in facts
+    assert "nas" not in facts.split("hosts:")[1]  # a healthy host has nothing to join
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        _NoteModel(_NOTE, stop_reason="refusal"),
+        _NoteModel(_NOTE, stop_reason="max_tokens"),
+        _NoteModel(fail=True),
+        _NoteModel("   "),
+    ],
+    ids=["refused", "cut-off", "unreachable", "empty"],
+)
+async def test_an_unusable_note_is_left_out(stores, ai_on, model) -> None:
+    store, events, _ = stores
+    await _fleet_with_one_struggling_host(store)
+    plain = await build_digest(store, events, FakeRegistry({"kids-pc"}), now=NOW)
+
+    digest = await build_digest(
+        store, events, FakeRegistry({"kids-pc"}), now=NOW, client_factory=lambda: model
+    )
+
+    assert digest.body == plain.body
+    assert "In short" not in digest.markdown
+
+
+async def test_a_slow_model_does_not_hold_up_the_digest(stores, ai_on, monkeypatch) -> None:
+    store, events, _ = stores
+    await _fleet_with_one_struggling_host(store)
+    monkeypatch.setattr(digest_module, "_NOTE_TIMEOUT_SECONDS", 0.05)
+    model = _NoteModel(_NOTE, delay=0.5)
+
+    started = time.monotonic()
+    digest = await build_digest(
+        store, events, FakeRegistry({"kids-pc"}), now=NOW, client_factory=lambda: model
+    )
+
+    assert time.monotonic() - started < 0.4
+    assert "In short" not in digest.body
+
+
+async def test_the_switch_and_the_key_gate_the_note(stores, monkeypatch) -> None:
+    store, events, _ = stores
+    await _fleet_with_one_struggling_host(store)
+    model = _NoteModel(_NOTE)
+
+    no_key = await build_digest(store, events, FakeRegistry(), now=NOW, client_factory=lambda: model)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setenv(ai.FEATURES["digest"], "0")
+    switched_off = await build_digest(
+        store, events, FakeRegistry(), now=NOW, client_factory=lambda: model
+    )
+
+    assert "In short" not in no_key.body and "In short" not in switched_off.body
+    assert model.requests == []
+
+
+async def test_an_empty_fleet_asks_no_model(stores, ai_on) -> None:
+    store, events, _ = stores
+    model = _NoteModel(_NOTE)
+    digest = await build_digest(store, events, FakeRegistry(), now=NOW, client_factory=lambda: model)
+    assert digest.body == "No agents have reported telemetry yet."
+    assert model.requests == []
+
+
+def test_a_long_note_is_cut_at_a_word() -> None:
+    clipped = digest_module._clip("word " * 200)
+    assert len(clipped) <= digest_module._NOTE_MAX_CHARS + 2
+    assert clipped.endswith("word …")
+
+
+async def test_markup_in_the_note_reaches_discord_as_text(stores, ai_on) -> None:
+    store, events, _ = stores
+    await _fleet_with_one_struggling_host(store)
+    model = _NoteModel("Look at **kids-pc** [now](https://evil.example).")
+
+    digest = await build_digest(
+        store, events, FakeRegistry({"kids-pc"}), now=NOW, client_factory=lambda: model
+    )
+
+    assert "\\*\\*kids-pc\\*\\* \\[now\\]\\(https://evil.example\\)" in digest.markdown
