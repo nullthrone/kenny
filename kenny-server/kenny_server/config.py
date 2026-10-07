@@ -459,6 +459,14 @@ _SPECS: list[SettingSpec] = [
                "cycle (~60s), not on a restart. Deleting rows frees space for "
                "reuse but does not shrink the database file — restore from a "
                "backup (ADR-0039) or VACUUM offline to reclaim disk."),
+    _spec("KENNY_HW_HISTORY_RETENTION_DAYS", "System", "int", "730",
+          "Hardware history retention (days)", lifecycle="live", min=30,
+          help="How long the compact per-device daily hardware metrics are kept "
+               "(ADR-0070): disk wear and error counters, GPU link width, fan "
+               "speed per duty band and hardware-error counts. They are rolled "
+               "up from snapshots once a day and are what wear-out, counter and "
+               "fan-drift forecasts are fitted on, so a short window hides slow "
+               "trends. A few kilobytes per host per month."),
     # -- Environment only (never in the dashboard) -----------------------------
     # Bootstrap, topology, secrets, wire-contract knobs and loop tuning. Several are read
     # before the settings load or at import time; the rest are implementation parameters

@@ -66,7 +66,7 @@ class Notification:
     # existing construction site (and every notifier that ignores them) keeps
     # working unchanged -- an empty ``event_type`` matches no rule and falls
     # through to the coded default in ``ticket_rules.decide``.
-    event_type: str = ""  # "health" | "offline" | "disk_forecast" | "change" | "digest"
+    event_type: str = ""  # "health" | "offline" | "disk_forecast" | "hardware_forecast" | "change" | "digest"
     # section name -> the severity this notification is about ("warn"/"crit"),
     # or "" for a producer with no severity axis (e.g. an inventory change).
     # Empty dict means "no per-section subject": the notification is about

@@ -38,7 +38,7 @@ from ..chat import (
 )
 from ..policy import PolicyEngine
 from ..event_categories import annotate_snapshots
-from .. import findings
+from .. import findings, hardware_history, hardware_metrics
 from ..forecast import build_facts, deterministic_summary, forecast_events
 from ..recommend import recommend_events, warning_facts
 from ..registry import AgentRegistry
@@ -190,6 +190,7 @@ def build_api_routes(
     ticket_store: Any = None,
     notifier_provider: Any = None,
     presence: Any = None,
+    hw_history: Any = None,
 ) -> list[Route]:
     """Build the dashboard's static + JSON routes.
 
@@ -291,6 +292,39 @@ def build_api_routes(
                 _daily_cache.pop(stale_key, None)
         return rows
 
+    _hw_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+
+    async def _hardware_forecasts_cached(
+        agent_id: str, snapshot: dict[str, Any] | None
+    ) -> list[dict[str, Any]]:
+        """The host's hardware at risk (ADR-0070), cached like the daily history.
+
+        ``snapshot`` is the latest one the caller already holds, which names the
+        devices; no history store or an unreadable one means nothing at risk.
+        """
+
+        if hw_history is None:
+            return []
+        now = time.monotonic()
+        hit = _hw_cache.get(agent_id)
+        if hit is not None and now - hit[0] < _DAILY_TTL_SECONDS:
+            return hit[1]
+        try:
+            forecasts = await hardware_history.load_forecasts(
+                store,
+                hw_history,
+                agent_id,
+                labels=hardware_metrics.device_labels(snapshot),
+            )
+        except Exception:  # noqa: BLE001 - a dashboard read never fails on a forecast
+            logger.exception("hardware forecast failed for %s", agent_id)
+            forecasts = []
+        _hw_cache[agent_id] = (now, forecasts)
+        for stale_key, (ts, _) in list(_hw_cache.items()):  # bounded by fleet size
+            if now - ts >= _DAILY_TTL_SECONDS:
+                _hw_cache.pop(stale_key, None)
+        return forecasts
+
     async def api_fleet(request: Request) -> JSONResponse:
         from datetime import datetime, timedelta, timezone
 
@@ -366,11 +400,15 @@ def build_api_routes(
             for agent_id, agent, snapshot, latest in rows
         ]
         disk_forecasts: dict[str, list[dict[str, Any]]] = {}
-        for agent_id in ids:
+        hardware: dict[str, list[dict[str, Any]]] = {}
+        for agent_id, _agent, snapshot, _latest in rows:
             daily = await _daily_latest_cached(agent_id, forecast_since)
             disk_forecasts[agent_id] = trends.disk_forecast(daily)
+            hardware[agent_id] = await _hardware_forecasts_cached(agent_id, snapshot)
         return JSONResponse(
-            fleet_stats.aggregate_overview(agents, disk_forecasts=disk_forecasts)
+            fleet_stats.aggregate_overview(
+                agents, disk_forecasts=disk_forecasts, hardware_forecasts=hardware
+            )
         )
 
     async def api_fleet_trend(request: Request) -> JSONResponse:
@@ -467,12 +505,17 @@ def build_api_routes(
         posture_count = sum(len(findings.posture_sections(a["health"])) for a in agents)
 
         disk_forecasts: dict[str, list[dict[str, Any]]] = {}
+        hardware: dict[str, list[dict[str, Any]]] = {}
+        snapshot_of = {aid: snap for aid, _agent, snap, _latest in rows}
         points_by_agent: dict[str, list[dict[str, Any]]] = {}
         for agent_id in ids:
             agent = registry.get(agent_id)
             agent_os = agent.os if agent else "windows"
             daily = await _daily_latest_cached(agent_id, forecast_since)
             disk_forecasts[agent_id] = trends.disk_forecast(daily)
+            hardware[agent_id] = await _hardware_forecasts_cached(
+                agent_id, snapshot_of.get(agent_id)
+            )
             points_by_agent[agent_id] = [
                 {
                     "collected_at": d["collected_at"],
@@ -483,7 +526,9 @@ def build_api_routes(
                 for d in daily
             ]
 
-        overview = fleet_stats.aggregate_overview(agents, disk_forecasts=disk_forecasts)
+        overview = fleet_stats.aggregate_overview(
+            agents, disk_forecasts=disk_forecasts, hardware_forecasts=hardware
+        )
         trend_raw = fleet_stats.aggregate_trend(points_by_agent, 30)
 
         donut = overview["health"]
@@ -703,7 +748,7 @@ def build_api_routes(
         )
 
     async def api_agent_trends(request: Request) -> JSONResponse:
-        """Disk-full forecast and battery trend over the 30-day daily history."""
+        """Disk-full forecast, battery trend and the per-device hardware history."""
 
         from datetime import datetime, timedelta, timezone
 
@@ -712,11 +757,24 @@ def build_api_routes(
         agent_id = request.path_params["id"]
         since = (datetime.now(timezone.utc) - timedelta(days=30)).date().isoformat()
         daily = await store.daily_latest(agent_id, since)
+        hardware = hardware_history.empty_payload()
+        if hw_history is not None:
+            now = datetime.now(timezone.utc)
+            # The forecasts see the whole stored history (a fan's baseline is its
+            # first 30 days); the payload carries the last window of it.
+            series = await hw_history.series(agent_id, hardware_history.ALL_TIME)
+            latest = await store.latest(agent_id)
+            labels = hardware_metrics.device_labels(latest["snapshot"] if latest else None)
+            forecasts = await hardware_history.load_forecasts(
+                store, hw_history, agent_id, now=now, series=series, labels=labels
+            )
+            hardware = hardware_history.api_payload(series, labels, forecasts, now=now)
         return JSONResponse(
             {
                 "agent_id": agent_id,
                 "disk": trends.disk_forecast(daily),
                 "battery": trends.battery_trend(daily),
+                "hardware": hardware,
             }
         )
 
@@ -745,7 +803,7 @@ def build_api_routes(
 
         from ..digest import build_digest
 
-        title, body = await build_digest(store, event_store, registry)
+        title, body = await build_digest(store, event_store, registry, hw_history=hw_history)
         return JSONResponse({"title": title, "body": body})
 
     async def api_notify_test(_request: Request) -> JSONResponse:
@@ -987,6 +1045,7 @@ def build_api_routes(
             suppression=suppression,
             ticket_rules=ticket_rules,
             presence=presence,
+            hw_history=hw_history,
         )
         await call_log.record(agent_id, "remove_host", {}, ok=True)
         return JSONResponse({"ok": True, "agent_id": agent_id, "purged": result})
@@ -2251,6 +2310,7 @@ def build_chat_routes(
     copilot_tickets: Any = None,
     presence: Any = None,
     settings: Settings | None = None,
+    hw_history: Any = None,
 ) -> list[Route]:
     """Build the server-hosted Claude chat routes.
 
@@ -2556,12 +2616,25 @@ def build_chat_routes(
         baseline = daily_1d[0] if daily_1d else None
         changes = diffs.diff_snapshots(baseline["snapshot"], snapshot) if baseline else []
         agent = registry.get(agent_id)
+        hardware: list[dict[str, Any]] = []
+        if hw_history is not None:
+            try:
+                hardware = await hardware_history.load_forecasts(
+                    store,
+                    hw_history,
+                    agent_id,
+                    now=now,
+                    labels=hardware_metrics.device_labels(snapshot),
+                )
+            except Exception:  # noqa: BLE001 - the forecast stays useful without it
+                logger.exception("hardware forecast failed for %s", agent_id)
         facts = build_facts(
             snapshot,
             trends.disk_forecast(daily_30d),
             trends.battery_trend(daily_30d),
             changes,
             agent_os=agent.os if agent else "windows",
+            hardware=hardware,
         )
 
         if not ai.current().enabled("forecast"):

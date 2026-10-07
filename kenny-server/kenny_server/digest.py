@@ -14,9 +14,10 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from . import hardware_history, hardware_metrics
 from .health_rules import _dicts, evaluate_snapshot
 from .registry import AgentRegistry
-from .store import EventStore, TelemetryStore
+from .store import EventStore, HardwareHistoryStore, TelemetryStore
 from .trends import DISK_FULL_KPI_DAYS, battery_trend, disk_forecast
 
 _MAX_LIST_LINES = 6
@@ -38,8 +39,13 @@ async def build_digest(
     registry: AgentRegistry,
     *,
     now: datetime | None = None,
+    hw_history: HardwareHistoryStore | None = None,
 ) -> tuple[str, str]:
-    """Return ``(title, body)`` for the weekly digest."""
+    """Return ``(title, body)`` for the weekly digest.
+
+    ``hw_history`` (ADR-0070) adds the "Hardware at risk" block; without it the
+    block is simply absent.
+    """
 
     now = now or datetime.now(timezone.utc)
     week_ago = now - timedelta(days=7)
@@ -55,6 +61,7 @@ async def build_digest(
     eol_hosts: list[str] = []
     forecast_lines: list[str] = []
     battery_lines: list[str] = []
+    hardware_lines: list[str] = []
     screen_lines: list[str] = []
 
     for agent_id in agents:
@@ -101,6 +108,15 @@ async def build_digest(
                 forecast_lines.append(
                     f"{agent_id} {f['mount']} full in ~{f['days_until_full']:.0f}d"
                 )
+        if hw_history is not None:
+            for f in await hardware_history.load_forecasts(
+                store,
+                hw_history,
+                agent_id,
+                now=now,
+                labels=hardware_metrics.device_labels(snapshot),
+            ):
+                hardware_lines.append(f"{agent_id}: {f['symptom']}")
         battery = battery_trend(daily)
         if battery and battery["percent_per_30d"] is not None and battery["percent_per_30d"] < -1:
             battery_lines.append(
@@ -145,6 +161,8 @@ async def build_digest(
     lines.append(f"Alerts (7d): {alerts} ({crit_alerts} crit), changes: {changes}.")
     if forecast_lines:
         lines.append("Disks filling: " + "; ".join(forecast_lines[:_MAX_LIST_LINES]))
+    if hardware_lines:
+        lines.append("Hardware at risk: " + "; ".join(hardware_lines[:_MAX_LIST_LINES]))
     if battery_lines:
         lines.append("Batteries: " + "; ".join(battery_lines[:_MAX_LIST_LINES]))
     pending = []

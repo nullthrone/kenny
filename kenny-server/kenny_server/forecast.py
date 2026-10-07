@@ -1,11 +1,11 @@
 """Server-side "AI Forecast" for one agent's near-term outlook.
 
 The agent drill-down opens with a short, plain-English forecast of what is
-likely to need attention on that PC soon — disks trending toward full, battery
-degradation, and notable inventory changes since yesterday — synthesized from
-the cross-snapshot signals the engine already computes (``trends.py``
-disk/battery forecasts and ``diffs.py`` inventory diff) plus the current health
-roll-up. ``build_facts`` caps what it assembles, so neither the prompt nor the
+likely to need attention on that PC soon — disks trending toward full, hardware
+wearing out, battery degradation, and notable inventory changes since yesterday
+— synthesized from the cross-snapshot signals the engine already computes
+(``trends.py`` disk/battery/hardware forecasts and ``diffs.py`` inventory diff)
+plus the current health roll-up. ``build_facts`` caps what it assembles, so neither the prompt nor the
 summary grows with the size of the diff — a drill-down opens with a takeaway, not
 with a table of every delta.
 
@@ -44,6 +44,8 @@ _MAX_TOKENS = 300
 # Cap how many inventory-change rows enter the facts (and thus the prompt and the
 # fallback). The old panel could grow without bound — a forecast never should.
 _MAX_CHANGES = 20
+# Same for the hardware-at-risk rows (ADR-0070).
+_MAX_HARDWARE = 6
 _CACHE_MAX = 256
 # A tiny per-chunk delay on cache replay so a cached forecast still *feels*
 # streamed (bytes flush incrementally rather than in one packet).
@@ -64,6 +66,7 @@ def build_facts(
     changes: list[dict[str, Any]],
     *,
     agent_os: str = "windows",
+    hardware: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Assemble the compact fact set the forecast is generated from.
 
@@ -74,6 +77,9 @@ def build_facts(
 
     ``agent_os`` is forwarded to :func:`tools.build_health` so a non-Windows
     agent's Windows-only sections are not scored as flagged (ADR-0031).
+
+    ``hardware`` is the host's ``trends.hardware_forecasts`` output (ADR-0070);
+    the soonest failures come first, capped at ``_MAX_HARDWARE`` rows.
     """
 
     health = build_health(snapshot, agent_os=agent_os)
@@ -97,6 +103,21 @@ def build_facts(
         key=lambda d: d["days_until_full"],
     )
 
+    at_risk = sorted(
+        hardware or [],
+        key=lambda f: (f.get("days_until") is None, f.get("days_until") or 0.0, f["device_key"]),
+    )
+    hardware_rows = [
+        {
+            "label": f["label"],
+            "kind": f["kind"],
+            "reason": f["reason"],
+            "symptom": f["symptom"],
+            "days_until": f.get("days_until"),
+        }
+        for f in at_risk[:_MAX_HARDWARE]
+    ]
+
     high_priority = sum(
         1 for c in changes if c.get("section") in HIGH_PRIORITY_CHANGE_SECTIONS
     )
@@ -107,6 +128,8 @@ def build_facts(
         "flagged": flagged,
         "disks_filling": disks_filling,
         "battery": battery,
+        "hardware": hardware_rows,
+        "hardware_total": len(at_risk),
         "changes": capped,
         "change_total": len(changes),
         "changes_truncated": max(0, len(changes) - len(capped)),
@@ -149,6 +172,16 @@ def deterministic_summary(facts: dict[str, Any]) -> str:
             filler.append(
                 f"{others} other {_plural(others, 'volume')} "
                 f"{_plural(others, 'is', 'are')} also trending toward full."
+            )
+
+    hardware = facts.get("hardware") or []
+    if hardware:
+        sentences.append(f"{hardware[0]['symptom'].rstrip('.')}.")
+        others = max(facts.get("hardware_total", len(hardware)), len(hardware)) - 1
+        if others:
+            filler.append(
+                f"{others} other {_plural(others, 'hardware item')} "
+                f"{_plural(others, 'is', 'are')} also showing signs of wear or failure."
             )
 
     bat = facts.get("battery")
@@ -194,7 +227,9 @@ _SYSTEM_TEXT = (
     "future.\n\n"
     "Write 2-4 short sentences of prose. Lead with the single most important "
     "thing and put the most urgent item first. If a disk is trending toward "
-    "full, say roughly when. Mention notable inventory changes (new startup "
+    "full, say roughly when. If hardware shows signs of wearing out or failing "
+    "(a worn SSD, a slowing fan, errors becoming more frequent), name it in plain "
+    "words right after any full disk. Mention notable inventory changes (new startup "
     "programs, service changes, and especially local-account or admin changes) "
     "as a brief highlight, never as a list. If nothing needs attention, say so "
     "in one sentence.\n\n"
@@ -228,6 +263,14 @@ def _facts_message(facts: dict[str, Any]) -> dict[str, Any]:
                 f"+{d['slope_percent_per_day']:.2f}%/day, "
                 f"~{d['days_until_full']:.0f} days until full"
             )
+
+    hardware = facts.get("hardware") or []
+    if hardware:
+        total = facts.get("hardware_total", len(hardware))
+        lines.append(f"hardware at risk ({total} total):")
+        for h in hardware:
+            when = f" (~{h['days_until']:.0f} days)" if h.get("days_until") is not None else ""
+            lines.append(f"  {h['symptom']}{when}")
 
     bat = facts.get("battery")
     if bat and bat.get("percent_per_30d") is not None:
