@@ -81,9 +81,15 @@ windows = { version = "0.62", features = [
     # screen_capture pipe hardening (ADR-0018): explicit DACL from SDDL + verifying the
     # pipe server's owning SID on connect (SID string conversion, SD from SDDL).
     "Win32_Security_Authorization",
+    # DeviceIoControl control codes for the raw-disk reads (NVMe health log, ATA SMART).
+    "Win32_System_Ioctl",
 ] }
 # Windows service lifecycle (install/uninstall/run-service + SCM control handler).
 windows-service = "0.8"
+
+# Raw ioctls on Linux (NVMe admin passthrough for the disk_smart health log).
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
 
 [profile.release]
 strip = true
