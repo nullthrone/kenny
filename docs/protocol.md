@@ -1045,7 +1045,10 @@ Field rules a consumer may rely on:
   - `Microsoft-Windows-Kernel-Power` 41: `power_button`, `"true"` or `"false"` — `"true"`
     when `PowerButtonTimestamp` is non-zero, i.e. the user held the power button;
   - the storage providers (`disk`, `storahci`, `stornvme`): `disk_number`, joinable to
-    `disk_smart` rows' `device_number`;
+    `disk_smart` rows' `device_number`, and `disk_bus_type` — that disk's `bus_type` in
+    the `disk_smart` vocabulary (`USB`, `NVMe`, …), or `Unknown` when the event names no
+    disk the agent can resolve — so a rule judging this section alone can set aside
+    retries on USB drives and card readers;
   - `nvlddmkm`: `xid`; `Display` 4101: `driver`.
   Other keys may appear; a consumer ignores keys it does not know.
 - **`app_crashes`** aggregates `Application Error` 1000 in the Application log instead of

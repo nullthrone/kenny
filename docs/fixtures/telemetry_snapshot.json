@@ -262,6 +262,9 @@
           "details": {
             "disk_number": {
               "1": 4
+            },
+            "disk_bus_type": {
+              "SATA": 4
             }
           }
         }
