@@ -224,7 +224,7 @@ export interface DiscordMember {
 
 /* ── Auto-ticket rules ───────────────────────────────────────────────────── */
 
-export type TicketRuleEventType = 'health' | 'offline' | 'disk_forecast' | 'change'
+export type TicketRuleEventType = 'health' | 'offline' | 'disk_forecast' | 'hardware_forecast' | 'change'
 export type TicketRuleDecision = 'open_all' | 'open_crit' | 'never'
 
 export interface TicketRule {

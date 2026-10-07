@@ -245,9 +245,11 @@ describe('GpuBody history sparkline', () => {
     expect(screen.getByText('×8')).toBeInTheDocument()
   })
 
-  it('also matches a device keyed by the bare uuid', () => {
-    const history = trends([device(UUID, 'gpu', { pcie_width_loaded_max: [16, 16, 16] })])
-    render(<GpuBody gpu={gpu} history={history} />)
+  it('matches a card without a uuid by its bus id, as the server keys it', () => {
+    const noUuid = { ...gpu, gpus: (gpu.gpus ?? []).map((g) => ({ ...g, uuid: null })) } as GpuSection
+    const busId = (gpu.gpus ?? [])[0]?.bus_id
+    const history = trends([device(`gpu:${busId}`, 'gpu', { pcie_width_loaded_max: [16, 16, 16] })])
+    render(<GpuBody gpu={noUuid} history={history} />)
     expect(screen.getByRole('img', { name: 'PCIe width under load over 3 days' })).toBeInTheDocument()
   })
 

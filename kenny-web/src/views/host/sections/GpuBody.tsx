@@ -72,7 +72,10 @@ function pcieIsDownshifted(pcie: GpuCard['pcie']): boolean {
 
 /** The widest PCIe link seen under load per day, against the card's own maximum. */
 function GpuHistory({ gpu, history }: { gpu: GpuCard; history?: HardwareTrends | null }) {
-  const device = findDevice(history, gpu.uuid ? `gpu:${gpu.uuid}` : null, gpu.uuid)
+  // The server keys a GPU's history by its first identity field present
+  // (kenny_server/hardware_metrics.py `_gpu_key`): uuid, then bus id, then PCI id.
+  const id = gpu.uuid ?? gpu.bus_id ?? gpu.pci_id
+  const device = findDevice(history, id ? `gpu:${id}` : null)
   const loaded = drawable(device, 'pcie_width_loaded_max')
   if (!device || !loaded) return null
   const max = device.series.pcie_width_max
