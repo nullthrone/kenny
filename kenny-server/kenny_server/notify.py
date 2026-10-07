@@ -80,6 +80,9 @@ class Notification:
     # channel that renders and later edits each finding on its own (Discord).
     # Empty for producers whose body is not a list of section findings.
     items: list[dict[str, str]] = field(default_factory=list)
+    # ``body`` rendered as markdown with links, for a channel that renders
+    # markdown (Discord); empty means the channel shows ``body`` as is.
+    markdown: str = ""
 
 
 class Notifier(Protocol):
@@ -215,7 +218,7 @@ def severity_of(notification: Notification) -> str:
     return "warn"
 
 
-def _public_base() -> str:
+def public_link_base() -> str:
     """The dashboard origin a link in a chat message may point at, or ``""``.
 
     Only an explicitly configured ``KENNY_PUBLIC_URL`` counts: the localhost
@@ -264,7 +267,7 @@ def discord_doc(
             }
             for item in notification.items
         ],
-        "body": notification.body,
+        "body": notification.markdown or notification.body,
         "url": url,
         "created_at": at.isoformat(),
         "resolved_at": None,
@@ -358,7 +361,7 @@ class DiscordNotifier(_HttpNotifier):
         url: str,
         *,
         client_factory: ClientFactory | None = None,
-        base_url: Callable[[], str] = _public_base,
+        base_url: Callable[[], str] = public_link_base,
     ) -> None:
         super().__init__(url, client_factory=client_factory)
         self._base_url = base_url

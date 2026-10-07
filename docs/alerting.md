@@ -254,11 +254,26 @@ default 08:00):
 
 ## Weekly digest
 
-A plain-text weekly summary is scheduled inside the same loop and sent on the same
-channels at low priority. It renders — entirely from data already in the stores — the
-fleet health mix, degraded hosts, 7-day alert / change / crit counts, disk-fill
-forecasts, battery drift, pending reboots / failed updates / OS EOL, and 7-day screen
-time.
+A short weekly overview is scheduled inside the same loop and sent on the same channels
+at low priority. It is a summary to click through, not a report: the detail behind every
+line is on the dashboard. Rendered entirely from data already in the stores, it holds:
+
+- the fleet health mix and how many hosts are online;
+- one line per host that needs attention, with the names of its sections at that
+  severity (crit hosts first, at most 8 lines, the rest as `+N more hosts`). Rule
+  reasons such as KB numbers or percentages are left to the host page;
+- 7-day alert (and crit) and change counts;
+- a to-do line: pending reboots, failed updates and on how many hosts, OS end of life,
+  hosts with a disk filling within 30 days (one entry per host, its soonest volume),
+  and battery wear;
+- posture findings as a count per host;
+- 7-day screen time per host.
+
+When `KENNY_PUBLIC_URL` is set, Discord shows every host name as a link to its host page
+(opened at the relevant section), the alert count as a link to the Log, and a closing
+**Open kenny** link to the fleet. ntfy and the generic webhook get the same overview as
+plain text ending in one `Details:` URL. Without `KENNY_PUBLIC_URL` the digest carries no
+links.
 
 - Scheduled by default **Monday 08:00** (`KENNY_DIGEST_DAY` / `KENNY_DIGEST_HOUR`); the
   last-sent time is persisted so a restart never double-sends, and the first digest
@@ -276,7 +291,7 @@ HTTP POST each):
 |---------|---------|---------|
 | **ntfy** | `KENNY_NTFY_URL` (+ optional `KENNY_NTFY_TOKEN` bearer) | POST body to an ntfy topic; title/priority/tags as headers — works out of the box with the ntfy phone apps |
 | **Generic webhook** | `KENNY_WEBHOOK_URL` | JSON POST (`kind`, `route`, `title`, `body`, `priority`, `tags`, `agent_id`, `event_type`, `sections`, `at`) — every route, not only pushes |
-| **Discord** | `KENNY_DISCORD_WEBHOOK_URL` | A Discord embed with one line per finding, coloured by severity (red crit, amber warn, green resolved, grey informational), a timestamp, and a link to the host page when `KENNY_PUBLIC_URL` is set |
+| **Discord** | `KENNY_DISCORD_WEBHOOK_URL` | A Discord embed with one line per finding, coloured by severity (red crit, amber warn, green resolved, grey informational), a timestamp, and a link to the host page when `KENNY_PUBLIC_URL` is set (in the weekly digest, each host name links to its host page) |
 
 A pushed health alert on Discord is **one message that shows its current state**:
 
