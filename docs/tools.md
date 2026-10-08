@@ -397,7 +397,8 @@ see a host reads that host's audit entries — tool, actor, run id, outcome — 
 them, in the Log page, the host page and the events API alike.
 A change a specialized agent made on its own also names the
 [standing authorization](adr/0072-standing-authorizations-consent-given-ahead.md) that
-permitted it. Entries written before this existed carry no actor and no arguments. Read it in the dashboard's **[Log](dashboard.md#log)** page, filtered to
+permitted it; a server-side change an agent made (a rule it removed) names no PC.
+Entries written before this existed carry no actor and no arguments. Read it in the dashboard's **[Log](dashboard.md#log)** page, filtered to
 the TOOLS chip. See [`dashboard.md`](dashboard.md).
 
 ![The Log page, filtered to tool calls, each tagged read-only or state-changing.](assets/screenshots/log.png)
