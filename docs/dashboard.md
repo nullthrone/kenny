@@ -738,6 +738,19 @@ off is `shadow`, on is `act`.
   ticket it was bound to, its mode and status (`running`, `completed`, `failed`,
   `skipped`), its verdict, the changes it made and proposed (arguments redacted), and its
   token usage.
+- `POST /api/specialized-agents/{agent_id}/runs` with `{"host_id"?}` *(operator+, any
+  credential)* — runs the agent once, now, as a **preview**. A preview is **always
+  `shadow`**, whatever mode the agent is in (an agent in `act` included): the run happens,
+  but a change it attempts is kept as a recommendation and never made, it spends no
+  authorization, and its verdict opens no ticket — so it changes nothing and needs no
+  signed-in superuser. The run's `trigger` is `preview:<username>`. A host-bound agent
+  needs a `host_id` the server knows; an agent that works on no machine takes none. It is
+  refused with `400` for triage, for an agent whose mode is `off` (a preview is no way
+  round that switch), and for a bad target; `409` when the global switch is off or a cap
+  refused the run. It answers `202` with `run_id` as soon as the run is admitted and
+  carries on in the background; watch it at `GET /api/specialized-agents/runs/{run_id}`.
+  Previews count toward the concurrency and token caps like any run, and are ignored by
+  the circuit breaker.
 - `PUT /api/specialized-agents/{agent_id}/mode` with `{"mode": "off" | "shadow" | "act",
   "effective_hash"}` *(superuser, signed in at the dashboard)* — moving an agent to `act`
   is a superuser's decision, so every mode write is. `act` must carry the agent's
@@ -1099,6 +1112,13 @@ not navigate away from wherever you were.
   ticket and look for one already open; it cannot move one — that happens on the
   [ticket itself](#ticket-detail). See
   [ITSM: where a ticket comes from](itsm.md#what-a-ticket-is-and-where-it-comes-from).
+- **Specialized agents** — kenny can read what the [specialized
+  agents](#specialized-agents) have done (recent runs, one run's verdict, changes and
+  proposals) and can propose a preview run of one. A proposal starts nothing: the chat
+  stream carries an `agent_run_proposal` event (`{agent_id, host_id, reason}`), and a run
+  exists only when a person starts it through `POST /api/specialized-agents/{agent_id}/runs`.
+  A preview is always shadow, so it changes nothing on any machine. These tools are not
+  offered on a ticket's own chat.
 - **Composer** — type and **send**; while a turn streams the button becomes **stop**.
   Suggestion chips ("Why is this PC flagged?", "Free up disk space", "Update all
   packages") pre-fill the box. A section modal's **Fix via Ask kenny** button opens the

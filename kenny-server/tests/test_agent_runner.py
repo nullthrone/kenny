@@ -1073,3 +1073,69 @@ async def test_overview_lists_every_catalog_agent_with_mode_and_latest_run(world
     assert overview["triage"]["spec_hash"] == CATALOG["triage"].spec_hash
     assert overview["triage"]["latest_run"]["verdict"] == "phantom"
     assert overview["patcher"]["latest_run"] is None
+
+
+# -- run_generic: preview ------------------------------------------------------
+
+
+async def _preview(world: World, runner: AgentRunner, spec: AgentSpec, *calls: tuple[str, dict]):
+    scripted = [_tool(f"tu{i}", name, args) for i, (name, args) in enumerate(calls)]
+    scripted.append(_text("done"))
+    admitted: list[Any] = []
+    run = await runner.run_generic(
+        spec,
+        host_id=HOST,
+        trigger="preview:op",
+        brief="Preview.",
+        client=FakeAnthropic(scripted),
+        model="test-model",
+        executor=world.executor,
+        preview=True,
+        on_admitted=admitted.append,
+    )
+    return run, admitted
+
+
+async def test_a_preview_of_an_agent_in_act_is_shadow_and_never_acts(world: World) -> None:
+    spec = _patcher()
+    runner = world.runner(catalog=_catalog(spec))
+    await runner.set_mode(
+        "patcher", "act", actor="admin", effective_hash=await runner.live_hash("patcher")
+    )
+    run, admitted = await _preview(world, runner, spec, ("winget_update", {"id": FIREFOX}))
+
+    assert run is not None and (run.status, run.mode, run.trigger) == (
+        "completed", "shadow", "preview:op"
+    )
+    assert world.sent == []  # nothing reached the host
+    assert run.actions == []
+    assert [r["tool"] for r in run.recommendations] == ["winget_update"]
+    # on_admitted saw the row while it was still running.
+    assert [(r.id, r.status) for r in admitted] == [(run.id, "running")]
+    assert await runner.mode_of("patcher") == "act"  # the preview moved nothing
+
+
+async def test_a_preview_starts_nothing_for_an_agent_that_is_off(world: World) -> None:
+    spec = _patcher()
+    runner = world.runner(catalog=_catalog(spec))
+    await runner.set_mode("patcher", "off", actor="admin")
+    run, admitted = await _preview(world, runner, spec, ("winget_list", {}))
+    assert run is None and admitted == [] and await _runs(world) == []
+
+
+async def test_a_preview_needs_its_trigger_and_cannot_be_triage(world: World) -> None:
+    spec = _patcher()
+    runner = world.runner(catalog=_catalog(spec))
+    kwargs: dict[str, Any] = {
+        "host_id": HOST,
+        "brief": "x",
+        "client": FakeAnthropic([]),
+        "model": "m",
+        "executor": world.executor,
+        "preview": True,
+    }
+    with pytest.raises(ValueError, match="preview:"):
+        await runner.run_generic(spec, trigger="on_demand", **kwargs)
+    with pytest.raises(ValueError):
+        await runner.run_generic(CATALOG["triage"], trigger="preview:op", **kwargs)
+    assert await _runs(world) == []

@@ -59,7 +59,7 @@ from typing import Any
 
 from ..tools import CAPABILITY_TOOLS, supports_tool
 from ..webfilter import CATEGORY_KEYS, make_window, schedule_state
-from .runner import AgentRunner
+from .runner import PREVIEW_TRIGGER_PREFIX, AgentRunner
 from .spec import AgentSpec, resolve
 from .store import INTERRUPTED_ERROR, AgentRun
 
@@ -496,6 +496,10 @@ class AgentScheduler:
         history = await self.runner.store.list_runs(agent_id=spec.id, limit=_HISTORY)
         streak = 0
         for run in history:  # newest first
+            # A preview is a person's one-off look in shadow; it neither counts
+            # toward the streak nor ends it.
+            if run.trigger.startswith(PREVIEW_TRIGGER_PREFIX):
+                continue
             if run.status in ("skipped", "running") or interrupted(run):
                 continue
             if not stops_canary(run):

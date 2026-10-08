@@ -10,7 +10,7 @@ from collections.abc import Mapping, Sequence
 from types import MappingProxyType
 
 from ...tool_classes import READ_ONLY, classify
-from ...toolloop import SERVER_TOOLS
+from ...toolloop import COPILOT_AGENT_TOOLS, SERVER_TOOLS
 from ...tools import CAPABILITY_TOOLS
 from ..spec import AgentSpec, SpecError, validate
 from .patch import PATCH
@@ -26,6 +26,11 @@ __all__ = ["CATALOG", "TICKET_SURFACE_TOOLS", "build", "check_dispatchable", "ge
 TICKET_SURFACE_TOOLS: frozenset[str] = frozenset(
     {"ticket_summary", "ticket_triage_verdict", "ticket_draft", "ticket_find"}
 )
+
+
+#: Tools of the dashboard copilot alone. Their ``agent_id`` names a specialized
+#: agent, not a machine, so no run may hold one: the gate would read it as a host.
+COPILOT_ONLY_TOOLS: frozenset[str] = COPILOT_AGENT_TOOLS
 
 
 def _runs_on_a_ticket(spec: AgentSpec) -> bool:
@@ -46,6 +51,11 @@ def check_dispatchable(spec: AgentSpec) -> AgentSpec:
     if undispatchable:
         raise SpecError(
             f"agent {spec.id}: tool(s) {', '.join(undispatchable)} cannot run in the tool loop"
+        )
+    copilot_tools = sorted(spec.tools & COPILOT_ONLY_TOOLS)
+    if copilot_tools:
+        raise SpecError(
+            f"agent {spec.id}: tool(s) {', '.join(copilot_tools)} belong to the copilot, not a run"
         )
     ticket_tools = sorted(spec.tools & TICKET_SURFACE_TOOLS)
     if ticket_tools and not _runs_on_a_ticket(spec):

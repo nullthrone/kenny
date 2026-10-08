@@ -85,7 +85,7 @@ run's own ``session.mode`` is the sole live input.
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -104,6 +104,8 @@ __all__ = [
     "AgentSession",
     "Authorizer",
     "StillActing",
+    "host_bound",
+    "run_target_problem",
 ]
 
 logger = logging.getLogger("kenny.agents.policy")
@@ -144,6 +146,39 @@ def _dispatchable(tool: str) -> bool:
     """Whether the loop routes ``tool`` to what it names, not to a guess."""
 
     return tool in SERVER_TOOLS or tool in CAPABILITY_TOOLS
+
+
+def host_bound(spec: AgentSpec) -> bool:
+    """Whether a run of ``spec`` works on a machine (and so needs one frozen).
+
+    True when the spec names a capability tool (routed to a host) or a
+    host-naming server tool. A server-only agent is host-less: its runs are
+    frozen to no machine, and :meth:`AgentPolicy.resolve_target` refuses it one.
+    """
+
+    return bool(spec.tools & (set(CAPABILITY_TOOLS) | set(HOST_ARG)))
+
+
+def run_target_problem(
+    spec: AgentSpec, host_id: str | None, known_hosts: Iterable[str]
+) -> str | None:
+    """Why ``spec`` cannot be run on ``host_id`` (``None`` is no host), or ``None``.
+
+    Shared by everything that starts a run on a person's request -- the preview
+    route and the copilot's proposal -- so the two cannot disagree about what a
+    valid target is: a host-bound agent takes one known machine, a host-less one
+    takes none.
+    """
+
+    if host_bound(spec):
+        if not host_id:
+            return f"{spec.id} works on a machine; name one"
+        if host_id not in set(known_hosts):
+            return f"no such machine: {host_id}"
+        return None
+    if host_id:
+        return f"{spec.id} works on no machine; leave the host out"
+    return None
 
 
 def _timeout_ceiling(spec: AgentSpec, tool: str) -> float:
@@ -196,6 +231,9 @@ class AgentSession:
     actions: list[dict[str, Any]] = field(default_factory=list)
     _staged_results: list[dict[str, Any]] = field(default_factory=list)
     _queue: list[dict[str, Any]] = field(default_factory=list)
+    #: An on-demand preview run: always ``shadow``, and its verdict opens no
+    #: ticket (a preview is read by the person who asked for it).
+    preview: bool = False
     #: Who acted, for every audit row this run causes. Derived, never passed.
     audit_actor: str = field(init=False)
     #: The run this session belongs to; the session id *is* the run id.
