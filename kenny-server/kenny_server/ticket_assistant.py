@@ -55,6 +55,7 @@ from .tool_classes import (
     profile_allows,
 )
 from .toolloop import (
+    AGENT_VERDICT_TOOL,
     SERVER_TOOLS,
     TICKET_DRAFT_TOOL,
     TICKET_FIND_TOOL,
@@ -105,10 +106,11 @@ logger = logging.getLogger("kenny.tickets.assistant")
 #: across requesters, and this surface is reachable by a host-scoped household
 #: member: leaving it open would be the one place they could read what everyone
 #: else has open, the same objection :data:`FLEET_WIDE_TOOLS` already carries.
+#: ``agent_verdict`` ends a specialized agent's run, which has no ticket.
 #: Subtracted before the triage intersection in :func:`allowed_tools_for`, so
 #: this one line covers an unprompted investigation too.
 EXCLUDED_TOOLS: frozenset[str] = frozenset(
-    {"select_agent", TICKET_DRAFT_TOOL, TICKET_FIND_TOOL}
+    {"select_agent", TICKET_DRAFT_TOOL, TICKET_FIND_TOOL, AGENT_VERDICT_TOOL}
 )
 
 #: Tools that report on the whole fleet rather than one host. Withheld from a

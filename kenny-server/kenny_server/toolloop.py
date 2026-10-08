@@ -59,6 +59,14 @@ _MAX_TOOL_RESULT_CHARS = 100_000
 #: The tool an unprompted triage turn ends with (see ``kenny_server/triage.py``).
 TRIAGE_VERDICT_TOOL = "ticket_triage_verdict"
 
+#: How a specialized agent's run ends (ADR-0071, ADR-0072). Not a ticket tool:
+#: an agent run has no ticket, and its handler (registered by the agent runner)
+#: decides — honouring the run's mode — whether a finding becomes one.
+AGENT_VERDICT_TOOL = "agent_verdict"
+
+#: The fixed outcomes an agent run may report.
+AGENT_VERDICTS: tuple[str, ...] = ("clean", "acted", "actionable", "inconclusive")
+
 #: The two tools the dashboard copilot uses to get a ticket out of a
 #: conversation. Both are READ_ONLY and neither writes a ticket: ``ticket_draft``
 #: proposes one for the operator to correct and submit through the ordinary
@@ -116,7 +124,9 @@ LOOP_EVENT_TYPES: frozenset[str] = frozenset(
 #: emits the whole catalog when a caller passes no allowlist (the dashboard
 #: copilot does exactly that, ``chat.py``), so a tool that belongs to one
 #: surface alone has to be withheld from that default rather than added to it.
-SURFACE_ONLY_TOOLS: frozenset[str] = frozenset({TRIAGE_VERDICT_TOOL, TICKET_SUMMARY_TOOL})
+SURFACE_ONLY_TOOLS: frozenset[str] = frozenset(
+    {TRIAGE_VERDICT_TOOL, TICKET_SUMMARY_TOOL, AGENT_VERDICT_TOOL}
+)
 
 #: Server tools :class:`ToolExecutor` dispatches itself. Guards
 #: :meth:`ToolExecutor.register_server_tool` against shadowing one of them.
@@ -179,6 +189,37 @@ SERVER_TOOLS: dict[str, dict[str, Any]] = {
             },
         },
         "required": ["id"],
+    },
+    AGENT_VERDICT_TOOL: {
+        "description": (
+            "Record what this run found and did, and finish. Call this exactly once, "
+            "as the last thing you do. The server decides what follows from it."
+        ),
+        "properties": {
+            "verdict": {
+                "type": "string",
+                "enum": list(AGENT_VERDICTS),
+                "description": (
+                    "clean: nothing needed doing. acted: you made changes and their "
+                    "tool results say they succeeded. actionable: something needs a "
+                    "person. inconclusive: you could not tell -- say what is missing."
+                ),
+            },
+            "finding": {
+                "type": "string",
+                "description": (
+                    "One or two plain sentences for the household's admin: what is "
+                    "going on, and what (if anything) changed."
+                ),
+            },
+            "evidence": {
+                "type": "string",
+                "description": (
+                    "Which checks you ran and what they showed; name the tools."
+                ),
+            },
+        },
+        "required": ["verdict", "finding", "evidence"],
     },
     TRIAGE_VERDICT_TOOL: {
         "description": (

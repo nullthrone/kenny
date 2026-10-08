@@ -33,7 +33,9 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import dataclass, field
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
+from typing import Any
 
 from ..tool_classes import READ_ONLY, SENSITIVE_TOOLS, TOOL_CLASSES
 
@@ -49,6 +51,8 @@ __all__ = [
     "SpecError",
     "ToolTimeout",
     "Trigger",
+    "effective_hash",
+    "resolve",
     "validate",
 ]
 
@@ -77,8 +81,10 @@ EVENTS: tuple[str, ...] = ("ticket_created",)
 #: its effect; a tool whose effect is decided by its arguments (a shell, an
 #: install) must never be able to claim that exemption. A literal, so this
 #: module stays stdlib-only; ``tests/test_agent_spec.py`` joins it to
-#: ``toolloop.TRIAGE_VERDICT_TOOL``.
-VERDICT_TOOLS: frozenset[str] = frozenset({"ticket_triage_verdict"})
+#: ``toolloop.TRIAGE_VERDICT_TOOL`` and ``toolloop.AGENT_VERDICT_TOOL``.
+VERDICT_TOOLS: frozenset[str] = frozenset({"ticket_triage_verdict", "agent_verdict"})
+
+_PARAM_RE = re.compile(r"^[a-z][a-z0-9_]{0,40}$")
 
 _ID_RE = re.compile(r"^[a-z][a-z0-9_]{1,40}$")
 
@@ -113,13 +119,24 @@ class ArgConstraint:
 
     tool: str
     arg: str
-    allowed: frozenset[str]
+    allowed: frozenset[str] = frozenset()
+    #: When set, the values are not part of the spec but one of the agent's
+    #: parameters (ADR-0072): what an install must be able to set without a code
+    #: change, a package allowlist say. The spec declares *which* argument the
+    #: parameter feeds; :func:`resolve` fills ``allowed`` from the parameter at
+    #: run start. An empty parameter admits nothing — never "everything".
+    param: str | None = None
 
     def admits(self, args: dict[str, object]) -> bool:
         value = args.get(self.arg)
         return isinstance(value, str) and value != "" and value in self.allowed
 
     def to_dict(self) -> dict[str, object]:
+        # A parameter-fed constraint is hashed by its declaration only; its
+        # values are fingerprinted by :func:`effective_hash`, with the rest of
+        # the agent's parameters.
+        if self.param is not None:
+            return {"tool": self.tool, "arg": self.arg, "param": self.param}
         return {"tool": self.tool, "arg": self.arg, "allowed": sorted(self.allowed)}
 
 
@@ -170,6 +187,10 @@ class AgentSpec:
     constraints: tuple[ArgConstraint, ...] = ()
     #: Per-tool ceilings on ``timeout_s``, each at most :data:`MAX_TIMEOUT_S`.
     timeouts: tuple[ToolTimeout, ...] = ()
+    #: The parameters this agent takes (ADR-0072): names only; the values are
+    #: per install, superuser-edited, and fingerprinted by :func:`effective_hash`.
+    #: A ``schedule`` trigger reads its maintenance window from ``window``.
+    params: tuple[str, ...] = ()
     #: Must be true for a spec that names any sensitive tool.
     sensitive_ok: bool = False
     #: The mode a fresh install starts in: ``shadow`` or ``off``. Never ``act``
@@ -195,10 +216,15 @@ class AgentSpec:
                 "prompt": self.prompt,
                 "trigger": self.trigger.to_dict(),
                 "tools": sorted(self.tools),
+                # A re-tier must unbind what was granted against the old tier:
+                # a tool moved down to ``standard_change`` would otherwise run
+                # without the authorization it needed (ADR-0072).
+                "tiers": {t: TOOL_CLASSES.get(t) for t in sorted(self.tools)},
                 "verdict_tool": self.verdict_tool,
                 "budget": self.budget.to_dict(),
                 "constraints": self._sorted_constraints(),
                 "timeouts": self._sorted_timeouts(),
+                "params": sorted(self.params),
                 "sensitive_ok": self.sensitive_ok,
             },
             sort_keys=True,
@@ -240,6 +266,7 @@ class AgentSpec:
             "budget": self.budget.to_dict(),
             "constraints": self._sorted_constraints(),
             "timeouts": self._sorted_timeouts(),
+            "params": sorted(self.params),
             "sensitive_ok": self.sensitive_ok,
             "default_mode": self.default_mode,
             "version": self.version,
@@ -278,7 +305,14 @@ def validate(spec: AgentSpec) -> AgentSpec:
             raise SpecError(f"agent {spec.id}: constraint names {c.tool}, which is not in its tools")
         if TOOL_CLASSES[c.tool] == READ_ONLY:
             raise SpecError(f"agent {spec.id}: constraint on read-only {c.tool} would bound nothing")
-        if not c.arg or not c.allowed or any(not v for v in c.allowed):
+        if c.param is not None:
+            if c.param not in spec.params:
+                raise SpecError(
+                    f"agent {spec.id}: constraint on {c.tool} names undeclared param {c.param!r}"
+                )
+            if any(not isinstance(v, str) or not v for v in c.allowed):
+                raise SpecError(f"agent {spec.id}: param values for {c.tool} must be non-empty")
+        elif not c.arg or not c.allowed or any(not v for v in c.allowed):
             raise SpecError(f"agent {spec.id}: constraint on {c.tool} needs an arg and non-empty values")
         if (c.tool, c.arg) in seen:
             raise SpecError(f"agent {spec.id}: two constraints on {c.tool}.{c.arg}")
@@ -310,6 +344,13 @@ def validate(spec: AgentSpec) -> AgentSpec:
         raise SpecError(
             f"agent {spec.id}: change-tier tool(s) {', '.join(unbounded)} carry no argument constraint"
         )
+    for name in spec.params:
+        if not _PARAM_RE.match(name):
+            raise SpecError(f"agent {spec.id}: param name {name!r} must match {_PARAM_RE.pattern}")
+    if len(set(spec.params)) != len(spec.params):
+        raise SpecError(f"agent {spec.id}: a param is declared twice")
+    if spec.trigger.kind == "schedule" and "window" not in spec.params:
+        raise SpecError(f"agent {spec.id}: a schedule trigger needs a 'window' param")
     if spec.trigger.kind not in TRIGGER_KINDS:
         raise SpecError(f"agent {spec.id}: unknown trigger kind {spec.trigger.kind!r}")
     if spec.trigger.kind == "event" and spec.trigger.event not in EVENTS:
@@ -327,3 +368,56 @@ def validate(spec: AgentSpec) -> AgentSpec:
     if spec.version < 1:
         raise SpecError(f"agent {spec.id}: version must be at least 1")
     return spec
+
+
+def _canonical_params(spec: AgentSpec, params: Mapping[str, Any]) -> dict[str, Any]:
+    """The declared parameters only, in a form whose JSON is stable."""
+
+    out: dict[str, Any] = {}
+    for name in sorted(spec.params):
+        value = params.get(name)
+        if isinstance(value, (list, tuple, set, frozenset)):
+            value = sorted(str(v) for v in value)
+        out[name] = value
+    return out
+
+
+def effective_hash(spec: AgentSpec, params: Mapping[str, Any]) -> str:
+    """What an agent *is* on this install: its spec and its parameter values.
+
+    ``act`` and every standing authorization bind to this, not to the spec hash
+    alone (ADR-0072): widening a package allowlist changes what the agent may
+    do exactly as editing its spec would, and must unbind what was granted.
+    Undeclared keys are ignored, so stray settings cannot move the hash.
+    """
+
+    canonical = json.dumps(
+        {"spec": spec.spec_hash, "params": _canonical_params(spec, params)},
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def resolve(spec: AgentSpec, params: Mapping[str, Any]) -> AgentSpec:
+    """``spec`` with every parameter-fed constraint filled from ``params``.
+
+    Called at run start; the result is what the run's gate enforces, frozen for
+    the run. A missing or empty parameter yields an empty set, which admits
+    nothing. Non-string and empty values are dropped rather than coerced. The
+    spec hash is unchanged (parameter values are not part of it).
+    """
+
+    resolved: list[ArgConstraint] = []
+    for c in spec.constraints:
+        if c.param is None:
+            resolved.append(c)
+            continue
+        raw = params.get(c.param) or ()
+        values = raw if isinstance(raw, (list, tuple, set, frozenset)) else ()
+        resolved.append(
+            replace(c, allowed=frozenset(v for v in values if isinstance(v, str) and v))
+        )
+    return replace(spec, constraints=tuple(resolved))
+

@@ -18,10 +18,12 @@ from kenny_server.agents.spec import (
     SpecError,
     ToolTimeout,
     Trigger,
+    effective_hash,
+    resolve,
     validate,
 )
 from kenny_server.tool_classes import READ_ONLY, SENSITIVE_TOOLS, TOOL_CLASSES
-from kenny_server.toolloop import TRIAGE_VERDICT_TOOL
+from kenny_server.toolloop import AGENT_VERDICT_TOOL, TRIAGE_VERDICT_TOOL
 
 
 def make_spec(**overrides: object) -> AgentSpec:
@@ -103,7 +105,7 @@ def test_no_verdict_tool_is_allowed() -> None:
 def test_the_verdict_tools_are_the_loops_verdict_tool() -> None:
     # spec.py stays stdlib-only, so it names the verdict tool as a literal;
     # joined here to the name the loop and triage actually route.
-    assert VERDICT_TOOLS == frozenset({TRIAGE_VERDICT_TOOL})
+    assert VERDICT_TOOLS == frozenset({TRIAGE_VERDICT_TOOL, AGENT_VERDICT_TOOL})
 
 
 @pytest.mark.parametrize("tool", ["powershell_exec", "winget_update", "diag_services"])
@@ -127,7 +129,8 @@ def test_an_unknown_trigger_kind_is_refused() -> None:
 @pytest.mark.parametrize("kind", TRIGGER_KINDS)
 def test_every_declared_trigger_kind_can_be_expressed(kind: str) -> None:
     event = EVENTS[0] if kind == "event" else None
-    validate(make_spec(trigger=Trigger(kind=kind, event=event)))
+    params = ("window",) if kind == "schedule" else ()
+    validate(make_spec(trigger=Trigger(kind=kind, event=event), params=params))
 
 
 @pytest.mark.parametrize("event", [None, "ticket_deleted", ""])
@@ -138,8 +141,9 @@ def test_an_event_trigger_needs_a_known_event(event: str | None) -> None:
 
 @pytest.mark.parametrize("kind", ["schedule", "on_demand"])
 def test_only_an_event_trigger_names_an_event(kind: str) -> None:
+    params = ("window",) if kind == "schedule" else ()
     with pytest.raises(SpecError, match="only an event trigger"):
-        validate(make_spec(trigger=Trigger(kind=kind, event="ticket_created")))
+        validate(make_spec(trigger=Trigger(kind=kind, event="ticket_created"), params=params))
 
 
 def test_an_unknown_default_mode_is_refused() -> None:
@@ -404,3 +408,58 @@ def test_timeouts_change_the_hash_and_their_order_does_not() -> None:
     tighter = constrained(timeouts=(ToolTimeout(CHANGE_TOOL, 60),))
     assert base.spec_hash != tighter.spec_hash
     assert tighter.spec_hash != constrained(timeouts=(ToolTimeout(CHANGE_TOOL, 90),)).spec_hash
+
+
+# -- parameters (ADR-0072) -------------------------------------------------------
+
+
+def _param_spec(**overrides: object) -> AgentSpec:
+    fields: dict[str, object] = {
+        "params": ("packages",),
+        "constraints": (ArgConstraint(CHANGE_TOOL, "id", param="packages"),),
+    }
+    fields.update(overrides)
+    return constrained(**fields)
+
+
+def test_a_param_fed_constraint_validates_and_hashes_by_declaration() -> None:
+    spec = validate(_param_spec())
+    resolved = resolve(spec, {"packages": ["Git.Git"]})
+    assert resolved.spec_hash == spec.spec_hash
+    assert resolved.constraints[0].admits({"id": "Git.Git"})
+    assert not resolved.constraints[0].admits({"id": "Other.Pkg"})
+
+
+@pytest.mark.parametrize("value", [None, [], "", "Git.Git", [""], [3]])
+def test_a_missing_or_malformed_param_admits_nothing(value: object) -> None:
+    resolved = resolve(_param_spec(), {"packages": value})
+    assert not resolved.constraints[0].admits({"id": "Git.Git"})
+
+
+def test_a_constraint_naming_an_undeclared_param_is_refused() -> None:
+    with pytest.raises(SpecError, match="undeclared param"):
+        validate(_param_spec(params=()))
+
+
+def test_param_values_move_the_effective_hash_but_not_the_spec_hash() -> None:
+    spec = _param_spec()
+    narrow = effective_hash(spec, {"packages": ["Git.Git"]})
+    wide = effective_hash(spec, {"packages": ["Git.Git", "Other.Pkg"]})
+    assert narrow != wide
+    assert effective_hash(spec, {"packages": ["Other.Pkg", "Git.Git"]}) == wide
+    # A key the spec does not declare cannot move it.
+    assert effective_hash(spec, {"packages": ["Git.Git"], "stray": 1}) == narrow
+
+
+def test_a_schedule_trigger_needs_a_window_param() -> None:
+    with pytest.raises(SpecError, match="window"):
+        validate(make_spec(trigger=Trigger(kind="schedule")))
+
+
+def test_the_tier_of_a_named_tool_is_part_of_the_spec_hash(monkeypatch) -> None:
+    import kenny_server.agents.spec as spec_module
+
+    spec = constrained()
+    before = spec.spec_hash
+    monkeypatch.setitem(spec_module.TOOL_CLASSES, CHANGE_TOOL, "normal_change")
+    assert spec.spec_hash != before

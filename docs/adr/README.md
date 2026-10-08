@@ -89,3 +89,4 @@ kind of record kenny keeps. What qualifies: *When (not) to write an ADR* in the 
 | [0069](0069-web-filter-enforcement-and-history-per-host.md) | Web filtering is set per host on two axes: enforcement and history | accepted |
 | [0070](0070-long-lived-per-device-hardware-history.md) | Long-lived per-device hardware history | proposed |
 | [0071](0071-specialized-agents-purpose-bound-unattended-sessions.md) | Specialized agents: kenny runs purpose-bound unattended sessions | accepted |
+| [0072](0072-standing-authorizations-consent-given-ahead.md) | Standing authorizations: autonomy is consent given ahead, never a tier | proposed |

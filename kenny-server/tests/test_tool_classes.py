@@ -73,6 +73,9 @@ SINCE_LEGACY = frozenset(
         # Records a triage verdict and, when the server's preconditions hold,
         # resolves the ticket (kenny_server/triage.py).
         "ticket_triage_verdict",
+        # Ends a specialized agent's run; its handler may open a ticket for a
+        # finding (kenny_server/agents, ADR-0071).
+        "agent_verdict",
     }
 )
 
@@ -174,6 +177,8 @@ def test_standard_change_is_the_short_deliberate_list() -> None:
         # to make one. `normal_change` would hold for an operator who is not
         # coming, parking the ticket on an open gate. See tool_classes.py.
         "ticket_triage_verdict",
+        # Ends an agent run; opening a ticket for a finding is the most it does.
+        "agent_verdict",
     }
 
 
