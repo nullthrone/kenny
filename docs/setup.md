@@ -188,8 +188,8 @@ connected, install the optional dependency first: `pip install -e ".[discord]"`.
 | `KENNY_TRIAGE_RESOLVE` | `0` | Let an investigation set a ticket to `resolved` itself — only for an alert-opened ticket, only on a closing verdict, and only when a read-only check actually ran and succeeded. Off means every verdict is a recommendation. |
 | `KENNY_TRIAGE_MAX_ITERATIONS` | `8` | Model round-trips one investigation may take. Spending them all produces no verdict: the ticket stays open with what was found. |
 | `KENNY_AGENTS_ENABLED` | `1` | Global switch for the [specialized agents](dashboard.md#specialized-agents) kenny runs on its own, triage included. Off means no agent starts, whatever its own mode says. |
-| `KENNY_AGENTS_MAX_CONCURRENT` | `2` | How many agent runs may be in flight at once (minimum 1). A run over the limit is not started and is recorded as `skipped`. |
-| `KENNY_AGENTS_DAILY_TOKENS` | `0` | Input plus output tokens all agent runs together may spend in any 24 hours; `0` means no cap. Once reached, a run is not started and is recorded as `skipped`. |
+| `KENNY_AGENTS_MAX_CONCURRENT` | `2` | How many agent runs may be in flight at once (minimum 1). A run over the limit is not started and is recorded as `skipped`. Triage is exempt: every new ticket is still investigated. |
+| `KENNY_AGENTS_DAILY_TOKENS` | `0` | Tokens (input, output and cached prompt tokens alike) all agent runs together may spend in any 24 hours; `0` means no cap. Once reached, a run is not started and is recorded as `skipped`. |
 
 Every key in this table except the bot token and the two `KENNY_TICKET_SWEEP_*` keys
 (environment-only) is also editable in the dashboard's [Admin](dashboard.md#admin) page:

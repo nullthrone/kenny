@@ -340,8 +340,8 @@ _SPECS: list[SettingSpec] = [
                "many arrive at once; the daily token cap still applies to it."),
     _spec("KENNY_AGENTS_DAILY_TOKENS", "AI", "int", "0",
           "Agent tokens per day", lifecycle="live", min=0,
-          help="Input plus output tokens all agent runs together may spend in "
-               "any 24 hours. Once reached, a run is not started and is recorded "
+          help="Tokens (input, output and cached prompt tokens alike) all agent "
+               "runs together may spend in any 24 hours. Once reached, a run is not started and is recorded "
                "as skipped. 0 means no cap."),
     _spec("KENNY_DISCORD_MAX_TURNS_PER_TICKET", "AI", "int", "40",
           "Assistant turns per ticket", lifecycle="live", min=1,
