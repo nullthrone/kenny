@@ -6,10 +6,14 @@ stores in :mod:`kenny_server.store` (own
 ``CREATE TABLE IF NOT EXISTS`` only, ISO-8601 UTC text timestamps, every write
 under :func:`~kenny_server.store.write_lock`).
 
-* ``agent_settings`` — the operator's chosen mode for each agent id. A missing
-  row means "never chosen"; the caller falls back to the spec's default mode.
+* ``agent_settings`` — per agent id: the operator's chosen mode, the effective
+  hash ``act`` was chosen at (``act_hash``, ADR-0072), and the agent's
+  parameters. A missing row, or an empty ``mode`` (a row that exists only for
+  its parameters), means "mode never chosen"; the caller falls back to the
+  spec's default mode.
 * ``agent_runs`` — one row per started run: what it was bound to (the spec
-  hash), what started it, the mode it ran in, how it ended and what it cost.
+  hash, and the effective hash and frozen parameters it ran with), what started
+  it, the mode it ran in, how it ended and what it cost.
 
 Pure storage. Whether a run may start, and what it may do, is decided elsewhere.
 """
@@ -52,15 +56,20 @@ USAGE_KEYS: tuple[str, ...] = (
     "cache_creation_tokens",
 )
 
-#: What a run that was in flight when the server stopped is marked with.
-INTERRUPTED_ERROR = "interrupted by a server restart"
+#: What a run that did not finish is closed with: cancelled by a graceful
+#: shutdown, or still ``running`` when a dead process was accounted for at the
+#: next start. One constant for both, so whoever reads a run (the scheduler's
+#: circuit breaker) can tell an interruption from a fault.
+INTERRUPTED_ERROR = "the run was interrupted before it finished (cancelled or a server restart)"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS agent_settings (
     agent_id   TEXT PRIMARY KEY,
     mode       TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    updated_by TEXT NOT NULL
+    updated_by TEXT NOT NULL,
+    params     TEXT NOT NULL DEFAULT '{}',
+    act_hash   TEXT
 );
 
 CREATE TABLE IF NOT EXISTS agent_runs (
@@ -83,7 +92,9 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     actions               TEXT NOT NULL DEFAULT '[]',
     recommendations       TEXT NOT NULL DEFAULT '[]',
     started_at            TEXT NOT NULL,
-    finished_at           TEXT
+    finished_at           TEXT,
+    params                TEXT,
+    effective_hash        TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_agent_runs_agent ON agent_runs (agent_id, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_agent_runs_started ON agent_runs (started_at DESC);
@@ -92,8 +103,16 @@ CREATE INDEX IF NOT EXISTS idx_agent_runs_started ON agent_runs (started_at DESC
 _RUN_COLUMNS = (
     "id, agent_id, spec_hash, trigger, subject, host_id, mode, status, verdict, summary, "
     "input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, "
-    "ticket_id, error, actions, recommendations, started_at, finished_at"
+    "ticket_id, error, actions, recommendations, started_at, finished_at, "
+    "params, effective_hash"
 )
+
+#: Columns added after a table was first shipped, with their DDL; added by
+#: :meth:`AgentStore._migrate` to a database that predates them.
+_MIGRATED_COLUMNS: dict[str, dict[str, str]] = {
+    "agent_settings": {"params": "TEXT NOT NULL DEFAULT '{}'", "act_hash": "TEXT"},
+    "agent_runs": {"params": "TEXT", "effective_hash": "TEXT"},
+}
 
 
 def _now_iso() -> str:
@@ -146,12 +165,19 @@ class AgentRun:
     recommendations: list[dict[str, Any]]
     started_at: str
     finished_at: str | None
+    #: The parameters the run's gate enforced, frozen at its start (ADR-0072);
+    #: ``None`` for a run that takes none recorded (triage, older rows).
+    params: dict[str, Any] | None = None
+    #: The effective hash the run was bound to; ``None`` as for ``params``.
+    effective_hash: str | None = None
 
     @classmethod
     def _from_row(cls, row: aiosqlite.Row) -> AgentRun:
         values = {key: row[key] for key in row.keys()}
         values["actions"] = json.loads(values["actions"])
         values["recommendations"] = json.loads(values["recommendations"])
+        if values.get("params") is not None:
+            values["params"] = json.loads(values["params"])
         return cls(**values)
 
     def to_public(self) -> dict[str, Any]:
@@ -179,7 +205,18 @@ class AgentStore:
         self._db = await aiosqlite.connect(self.db_path)
         await _configure_connection(self._db)
         await self._db.executescript(_SCHEMA)
+        await self._migrate()
         await self._db.commit()
+
+    async def _migrate(self) -> None:
+        """Add the columns a database created before them lacks; idempotent."""
+
+        for table, columns in _MIGRATED_COLUMNS.items():
+            async with self._conn.execute(f"PRAGMA table_info({table})") as cur:
+                present = {row["name"] for row in await cur.fetchall()}
+            for column, ddl in columns.items():
+                if column not in present:
+                    await self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
 
     async def close(self) -> None:
         if self._db is not None:
@@ -201,22 +238,113 @@ class AgentStore:
             "SELECT mode FROM agent_settings WHERE agent_id = ?", (agent_id,)
         ) as cur:
             row = await cur.fetchone()
-        return None if row is None else str(row["mode"])
+        return None if row is None or not row["mode"] else str(row["mode"])
 
-    async def set_mode(self, agent_id: str, mode: str, *, actor: str) -> None:
-        """Record ``mode`` as the operator's choice for ``agent_id``."""
+    async def get_act_hash(self, agent_id: str) -> str | None:
+        """The effective hash ``act`` was chosen at, or ``None``."""
+
+        async with self._conn.execute(
+            "SELECT act_hash FROM agent_settings WHERE agent_id = ?", (agent_id,)
+        ) as cur:
+            row = await cur.fetchone()
+        return None if row is None or not row["act_hash"] else str(row["act_hash"])
+
+    async def set_mode(
+        self, agent_id: str, mode: str, *, actor: str, act_hash: str | None = None
+    ) -> None:
+        """Record ``mode`` as the operator's choice for ``agent_id``.
+
+        ``act_hash`` is the effective hash ``act`` binds to (ADR-0072 rule 6);
+        it is stored for ``act`` only and cleared for every other mode. An
+        ``act`` stored without one is bound to nothing, and the runner treats it
+        as ``shadow``.
+        """
 
         _check_mode(mode)
+        bound = act_hash if mode == "act" else None
         async with write_lock():
             await self._conn.execute(
-                "INSERT INTO agent_settings (agent_id, mode, updated_at, updated_by) "
-                "VALUES (?, ?, ?, ?) "
+                "INSERT INTO agent_settings (agent_id, mode, updated_at, updated_by, act_hash) "
+                "VALUES (?, ?, ?, ?, ?) "
                 "ON CONFLICT(agent_id) DO UPDATE SET "
                 "mode=excluded.mode, updated_at=excluded.updated_at, "
-                "updated_by=excluded.updated_by",
-                (agent_id, mode, _now_iso(), actor),
+                "updated_by=excluded.updated_by, act_hash=excluded.act_hash",
+                (agent_id, mode, _now_iso(), actor, bound),
             )
             await self._conn.commit()
+
+    async def demote_unbound(self, agent_id: str, effective_hash: str, *, actor: str) -> bool:
+        """Drop ``agent_id`` from ``act`` to ``shadow`` unless ``act`` is bound to ``effective_hash``.
+
+        Returns whether this call demoted it, so exactly one caller records the
+        drop when several notice it at once.
+        """
+
+        async with write_lock():
+            cur = await self._conn.execute(
+                "UPDATE agent_settings SET mode = 'shadow', act_hash = NULL, "
+                "updated_at = ?, updated_by = ? "
+                "WHERE agent_id = ? AND mode = 'act' "
+                "AND (act_hash IS NULL OR act_hash != ?)",
+                (_now_iso(), actor, agent_id, effective_hash),
+            )
+            changed = cur.rowcount or 0
+            await self._conn.commit()
+        return bool(changed)
+
+    # -- params --------------------------------------------------------------
+
+    async def get_params(self, agent_id: str) -> dict[str, Any]:
+        """``agent_id``'s parameters; ``{}`` while none were ever set."""
+
+        async with self._conn.execute(
+            "SELECT params FROM agent_settings WHERE agent_id = ?", (agent_id,)
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None or not row["params"]:
+            return {}
+        value = json.loads(row["params"])
+        return value if isinstance(value, dict) else {}
+
+    async def set_params(
+        self, agent_id: str, params: Mapping[str, Any], *, actor: str, demote: bool = False
+    ) -> str | None:
+        """Store ``params`` for ``agent_id``; returns the mode stored before.
+
+        With ``demote``, an agent in ``act`` is dropped to ``shadow`` (and its
+        ``act`` binding cleared) in the same transaction as the write, so no
+        call can see the new parameters while still in ``act``. Validating the
+        values is the caller's job. A row created here carries an empty mode
+        ("never chosen").
+        """
+
+        payload = json.dumps(dict(params), sort_keys=True, default=str)
+        async with write_lock():
+            await _begin_immediate(self._conn)
+            try:
+                async with self._conn.execute(
+                    "SELECT mode FROM agent_settings WHERE agent_id = ?", (agent_id,)
+                ) as cur:
+                    row = await cur.fetchone()
+                before = None if row is None or not row["mode"] else str(row["mode"])
+                await self._conn.execute(
+                    "INSERT INTO agent_settings (agent_id, mode, updated_at, updated_by, params) "
+                    "VALUES (?, '', ?, ?, ?) "
+                    "ON CONFLICT(agent_id) DO UPDATE SET params=excluded.params, "
+                    "updated_at=excluded.updated_at, updated_by=excluded.updated_by",
+                    (agent_id, _now_iso(), actor, payload),
+                )
+                if demote and before == "act":
+                    await self._conn.execute(
+                        "UPDATE agent_settings SET mode = 'shadow', act_hash = NULL "
+                        "WHERE agent_id = ?",
+                        (agent_id,),
+                    )
+                await self._conn.commit()
+            except BaseException:
+                await self._conn.rollback()
+                raise
+        return before
 
     # -- runs ----------------------------------------------------------------
 
@@ -230,17 +358,26 @@ class AgentStore:
         subject: str | None = None,
         host_id: str | None = None,
         ticket_id: str | None = None,
+        params: Mapping[str, Any] | None = None,
+        effective_hash: str | None = None,
     ) -> AgentRun:
-        """Open a run in the ``running`` state and return it."""
+        """Open a run in the ``running`` state and return it.
+
+        ``params`` and ``effective_hash`` are what the run is bound to for its
+        whole life (ADR-0072), stored as given.
+        """
 
         _check_mode(mode)
         run_id = uuid.uuid4().hex
+        params_json = (
+            None if params is None else json.dumps(dict(params), sort_keys=True, default=str)
+        )
         async with write_lock():
             await self._conn.execute(
                 "INSERT INTO agent_runs "
                 "(id, agent_id, spec_hash, trigger, subject, host_id, mode, status, "
-                "ticket_id, started_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?)",
+                "ticket_id, started_at, params, effective_hash) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?)",
                 (
                     run_id,
                     agent_id,
@@ -251,6 +388,8 @@ class AgentStore:
                     mode,
                     ticket_id,
                     _now_iso(),
+                    params_json,
+                    effective_hash,
                 ),
             )
             await self._conn.commit()
@@ -341,6 +480,48 @@ class AgentStore:
         async with self._conn.execute(sql, params) as cur:
             rows = await cur.fetchall()
         return [AgentRun._from_row(row) for row in rows]
+
+    async def runs_on_host_since(self, host_id: str, since_iso: str) -> list[AgentRun]:
+        """Every run of any agent on ``host_id`` started at or after ``since_iso``, newest first."""
+
+        async with self._conn.execute(
+            f"SELECT {_RUN_COLUMNS} FROM agent_runs WHERE host_id = ? AND started_at >= ? "
+            "ORDER BY started_at DESC, rowid DESC",
+            (host_id, _normalize_iso(since_iso)),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [AgentRun._from_row(row) for row in rows]
+
+    async def demote_absent(self, agent_ids: Sequence[str], *, actor: str) -> list[str]:
+        """Drop every stored ``act`` whose agent is not in ``agent_ids`` to ``shadow``.
+
+        Returns the ids demoted. Called at startup with the catalog's ids, so an
+        agent a release removed keeps no ``act`` for an identical spec to come
+        back to (ADR-0072 rule 6).
+        """
+
+        keep = sorted(set(agent_ids))
+        absent = f"AND agent_id NOT IN ({', '.join('?' for _ in keep)})" if keep else ""
+        async with write_lock():
+            await _begin_immediate(self._conn)
+            try:
+                async with self._conn.execute(
+                    f"SELECT agent_id FROM agent_settings WHERE mode = 'act' {absent}",
+                    keep,
+                ) as cur:
+                    demoted = sorted(str(row["agent_id"]) for row in await cur.fetchall())
+                if demoted:
+                    await self._conn.execute(
+                        "UPDATE agent_settings SET mode = 'shadow', act_hash = NULL, "
+                        "updated_at = ?, updated_by = ? "
+                        f"WHERE agent_id IN ({', '.join('?' for _ in demoted)})",
+                        (_now_iso(), actor, *demoted),
+                    )
+                await self._conn.commit()
+            except BaseException:
+                await self._conn.rollback()
+                raise
+        return demoted
 
     async def tokens_since(self, since_iso: str, *, agent_id: str | None = None) -> int:
         """Every token of runs started at or after ``since_iso``.

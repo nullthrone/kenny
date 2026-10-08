@@ -31,6 +31,7 @@ import pytest
 from kenny_server.agents.catalog import CATALOG
 from kenny_server.agents.policy import AgentSession
 from kenny_server.agents.runner import (
+    AGENT_CHANGE_QUIET_PERIOD,
     DAILY_TOKENS_SETTING,
     ENABLED_SETTING,
     MAX_CONCURRENT_SETTING,
@@ -39,6 +40,7 @@ from kenny_server.agents.runner import (
     _redacted,
     caused_by_agent,
 )
+from kenny_server.agents.scheduler import interrupted, run_failed
 from kenny_server.agents.spec import AgentSpec, ArgConstraint, Trigger
 from kenny_server.agents.store import INTERRUPTED_ERROR, AgentStore
 from kenny_server.ai import AiAccess
@@ -295,7 +297,9 @@ async def test_set_mode_for_triage_writes_its_settings(world: World) -> None:
     world.settings.on_change("KENNY_TRIAGE_RESOLVE", lambda _v: order.append("resolve"))
     world.settings.on_change("KENNY_TRIAGE_ENABLED", lambda _v: order.append("enabled"))
 
-    assert await runner.set_mode("triage", "act", actor="admin") == "act"
+    assert await runner.set_mode(
+        "triage", "act", actor="admin", effective_hash=await runner.live_hash("triage")
+    ) == "act"
     assert world.settings.get("KENNY_TRIAGE_ENABLED") is True
     assert world.settings.get("KENNY_TRIAGE_RESOLVE") is True
     # Resolve first, so a ticket created between the writes is never run in
@@ -328,7 +332,9 @@ async def test_set_mode_for_triage_writes_its_settings(world: World) -> None:
 async def test_set_mode_for_a_store_backed_agent(world: World) -> None:
     runner = world.runner(catalog=_catalog(_patcher()))
     assert await runner.mode_of("patcher") == "shadow"  # the spec's default
-    assert await runner.set_mode("patcher", "act", actor="admin") == "act"
+    assert await runner.set_mode(
+        "patcher", "act", actor="admin", effective_hash=await runner.live_hash("patcher")
+    ) == "act"
     assert await world.agent_store.get_mode("patcher") == "act"
     assert await runner.mode_of("patcher") == "act"
     async with world.agent_store._conn.execute(
@@ -344,7 +350,9 @@ async def test_set_mode_refuses_an_unknown_agent_or_mode(world: World) -> None:
     with pytest.raises(KeyError):
         await runner.mode_of("nope")
     with pytest.raises(KeyError):
-        await runner.set_mode("nope", "act", actor="admin")
+        await runner.set_mode(
+        "nope", "act", actor="admin", effective_hash=await runner.live_hash("nope")
+    )
     with pytest.raises(ValueError):
         await runner.set_mode("triage", "ACT", actor="admin")
     assert world.settings.get("KENNY_TRIAGE_RESOLVE") is False
@@ -453,6 +461,74 @@ async def test_a_ticket_without_a_machine_starts_nothing(world: World) -> None:
     await runner.on_ticket_created(await world.alert_ticket(agent_id=None))
     assert await _runs(world) == []
     assert world.client.messages.calls == []
+
+
+# -- rule 6: a change's own alert does not start triage ---------------------------
+
+
+async def _patched(world: World, *, act: bool = True) -> tuple[AgentRunner, Any]:
+    """A runner whose ``patcher`` agent has just changed ``HOST`` (or, in shadow, proposed to)."""
+
+    spec = _patcher()
+    runner = world.runner(_tool("t1", "diag_services", {}), _verdict(), _text("done"),
+                          catalog=_catalog(spec))
+    if act:
+        await runner.set_mode(
+            "patcher", "act", actor="admin", effective_hash=await runner.live_hash("patcher")
+        )
+    run, _ = await _generic(world, runner, spec, ("winget_update", {"id": FIREFOX}))
+    assert run is not None
+    return runner, run
+
+
+async def test_a_ticket_on_a_host_an_agent_just_changed_starts_no_triage(world: World) -> None:
+    """A patch breaks a service -> an alert -> an alert-origin ticket: no triage.
+
+    The ticket is not agent-origin, so only the agent's own record of the
+    change can tell that this is the change's effect (ADR-0071 rule 6).
+    """
+
+    runner, change = await _patched(world)
+    assert [a["ok"] for a in change.actions] == [True]
+    ticket = await world.alert_ticket()
+    await runner.on_ticket_created(ticket)
+
+    [skipped] = [r for r in await _runs(world) if r.agent_id == "triage"]
+    assert skipped.status == "skipped"
+    assert (skipped.ticket_id, skipped.host_id, skipped.trigger) == (
+        ticket.id,
+        HOST,
+        TICKET_CREATED_TRIGGER,
+    )
+    assert "patcher" in skipped.error and change.id in skipped.error
+    assert world.client.messages.calls == []  # the triage model was never called
+
+
+async def test_triage_runs_again_once_the_quiet_period_is_over(world: World) -> None:
+    runner, _change = await _patched(world)
+    later = datetime.now(timezone.utc) + AGENT_CHANGE_QUIET_PERIOD + timedelta(minutes=1)
+    runner._now = lambda: later  # type: ignore[method-assign]
+    await runner.on_ticket_created(await world.alert_ticket())
+    [run] = [r for r in await _runs(world) if r.agent_id == "triage"]
+    assert run.status == "completed"
+
+
+async def test_a_change_only_proposed_or_one_that_failed_does_not_stop_triage(
+    world: World,
+) -> None:
+    runner, proposed = await _patched(world, act=False)
+    assert proposed.actions == [] and proposed.recommendations
+    await runner.on_ticket_created(await world.alert_ticket())
+    [run] = [r for r in await _runs(world) if r.agent_id == "triage"]
+    assert run.status == "completed"
+
+
+async def test_a_change_on_another_host_does_not_stop_triage(world: World) -> None:
+    runner, _change = await _patched(world)
+    other = await world.alert_ticket(agent_id="other-pc")
+    await runner.on_ticket_created(other)
+    [run] = [r for r in await _runs(world) if r.agent_id == "triage"]
+    assert run.status == "completed" and run.host_id == "other-pc"
 
 
 async def test_the_global_switch_off_starts_nothing(tmp_path) -> None:
@@ -664,7 +740,9 @@ async def test_run_generic_in_shadow_recommends_and_never_reaches_the_host(world
 async def test_run_generic_in_act_runs_an_allowed_constrained_change(world: World) -> None:
     spec = _patcher()
     runner = world.runner(catalog=_catalog(spec))
-    await runner.set_mode("patcher", "act", actor="admin")
+    await runner.set_mode(
+        "patcher", "act", actor="admin", effective_hash=await runner.live_hash("patcher")
+    )
     run, _ = await _generic(
         world,
         runner,
@@ -804,6 +882,10 @@ async def test_a_cancelled_run_is_closed_and_frees_its_slot(tmp_path) -> None:
 
         [cancelled] = await _runs(w)
         assert cancelled.status == "failed" and cancelled.error
+        # A graceful shutdown is an interruption, not the agent's failure: the
+        # scheduler's circuit breaker must read it as neutral.
+        assert cancelled.error == INTERRUPTED_ERROR
+        assert interrupted(cancelled) and not run_failed(cancelled)
         w.on_send = None
         again, _ = await _generic(w, runner, spec, ("winget_list", {}))
         assert again is not None and again.status == "completed"
@@ -826,7 +908,7 @@ async def test_a_cancelled_triage_run_is_closed(world: World) -> None:
     with pytest.raises(asyncio.CancelledError):
         await task
     [run] = await _runs(world)
-    assert run.status == "failed" and run.error
+    assert run.status == "failed" and run.error == INTERRUPTED_ERROR
 
 
 # -- a run already in flight sees a demotion -----------------------------------
@@ -835,7 +917,9 @@ async def test_a_cancelled_triage_run_is_closed(world: World) -> None:
 async def test_demoting_an_agent_reaches_its_run_in_flight(world: World) -> None:
     spec = _patcher()
     runner = world.runner(catalog=_catalog(spec))
-    await runner.set_mode("patcher", "act", actor="admin")
+    await runner.set_mode(
+        "patcher", "act", actor="admin", effective_hash=await runner.live_hash("patcher")
+    )
 
     async def demote(tool: str, args: dict[str, Any]) -> None:
         if tool == "winget_list":
@@ -857,7 +941,9 @@ async def test_demoting_an_agent_reaches_its_run_in_flight(world: World) -> None
 async def test_the_global_switch_reaches_a_run_in_flight(world: World) -> None:
     spec = _patcher()
     runner = world.runner(catalog=_catalog(spec))
-    await runner.set_mode("patcher", "act", actor="admin")
+    await runner.set_mode(
+        "patcher", "act", actor="admin", effective_hash=await runner.live_hash("patcher")
+    )
 
     async def switch_off(tool: str, args: dict[str, Any]) -> None:
         if tool == "winget_list":

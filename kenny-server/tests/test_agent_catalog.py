@@ -15,6 +15,8 @@ import pytest
 from kenny_server import ticket_assistant, toolloop
 from kenny_server.agents import catalog
 from kenny_server.agents.catalog import CATALOG, build, get
+from kenny_server.agents.catalog.patch import PATCH
+from kenny_server.agents.catalog.posture import POSTURE
 from kenny_server.agents.catalog.triage import TRIAGE
 from kenny_server.agents.spec import (
     AgentSpec,
@@ -86,7 +88,7 @@ def test_build_validates_every_spec_not_just_the_first() -> None:
 def test_import_is_where_the_catalog_is_validated() -> None:
     # CATALOG is built by ``build`` at import, so a bad spec in the module's
     # tuple would stop the server booting. Pin that it goes through build().
-    assert catalog.CATALOG == build((TRIAGE,))
+    assert catalog.CATALOG == build((TRIAGE, PATCH, POSTURE))
 
 
 def test_triage_declares_the_documented_shape() -> None:
@@ -299,3 +301,260 @@ def test_the_triage_tools_read_no_other_host() -> None:
     # them would put fleet-wide reads in the triage spec that it never gets.
     assert not (ticket_assistant.TRIAGE_TOOLS & ticket_assistant.FLEET_WIDE_TOOLS)
     assert not (CATALOG["triage"].tools & ticket_assistant.FLEET_WIDE_TOOLS)
+
+
+# -- the scheduled agents ------------------------------------------------------
+
+PATCH_HOST = "thomas-pc"
+FIREFOX = "Mozilla.Firefox"
+SEVENZIP = "7zip.7zip"
+
+
+@pytest.mark.parametrize("spec", [PATCH, POSTURE], ids=lambda s: s.id)
+def test_a_scheduled_agent_is_valid_dispatchable_and_ships_in_shadow(spec: AgentSpec) -> None:
+    assert CATALOG[spec.id] is spec
+    assert validate(spec) is spec
+    assert catalog.check_dispatchable(spec) is spec
+    assert spec.trigger == Trigger(kind="schedule")
+    assert spec.default_mode == "shadow"
+    assert spec.verdict_tool == toolloop.AGENT_VERDICT_TOOL
+    assert toolloop.AGENT_VERDICT_TOOL in spec.tools
+    assert spec.sensitive_ok is False
+    assert spec.title and spec.description
+
+
+@pytest.mark.parametrize("spec", [PATCH, POSTURE], ids=lambda s: s.id)
+def test_the_scheduler_can_read_what_a_scheduled_agent_declares(spec: AgentSpec) -> None:
+    # The scheduler reads exactly these two parameters of every schedule agent.
+    assert {"window", "hosts"} <= set(spec.params)
+
+
+@pytest.mark.parametrize("spec", [PATCH, POSTURE], ids=lambda s: s.id)
+def test_a_prompt_names_only_tools_the_agent_has(spec: AgentSpec) -> None:
+    from kenny_server.tool_classes import TOOL_CLASSES
+
+    named = {t for t in TOOL_CLASSES if t in spec.prompt}
+    assert named <= spec.tools, f"prompt names {sorted(named - spec.tools)}"
+    # ... and says what a model must hear about tool output (ADR-0023).
+    assert "untrusted" in spec.prompt
+
+
+def test_the_patch_agent_declares_the_documented_shape() -> None:
+    assert PATCH.id == "patch"
+    assert PATCH.params == ("window", "hosts", "packages", "require_idle")
+    assert PATCH.tools == {"winget_list", "winget_update", "agent_verdict"}
+    assert PATCH.constraints == (ArgConstraint("winget_update", "id", param="packages"),)
+    assert [(t.tool, t.max_s) for t in PATCH.timeouts] == [("winget_update", 600)]
+    assert {t for t in PATCH.tools if classify(t) != READ_ONLY} == {"winget_update", "agent_verdict"}
+
+
+def test_every_argument_of_winget_update_is_bound_or_the_one_free_one() -> None:
+    # The gate refuses any argument no constraint binds except timeout_s. If the
+    # agent's protocol grows another argument for winget_update, this fails.
+    declared = {a.rstrip("?") for a in CAPABILITY_TOOLS["winget_update"]}
+    bound = {c.arg for c in PATCH.constraints_for("winget_update")}
+    assert declared - bound <= {"timeout_s"}
+
+
+def test_the_patch_allowlist_is_a_parameter_so_widening_it_unbinds_the_agent() -> None:
+    from kenny_server.agents.spec import effective_hash
+
+    narrow = effective_hash(PATCH, {"packages": [FIREFOX]})
+    wide = effective_hash(PATCH, {"packages": [FIREFOX, SEVENZIP]})
+    assert narrow != wide
+    assert effective_hash(PATCH, {"packages": [SEVENZIP, FIREFOX]}) == wide  # order is not content
+
+
+def test_the_posture_agent_has_no_change_tool_but_its_verdict() -> None:
+    assert POSTURE.tools == {"diag_autostart", "diag_services", "agent_snapshot", "agent_verdict"}
+    assert POSTURE.constraints == () and POSTURE.timeouts == ()
+    assert {t for t in POSTURE.tools if classify(t) != READ_ONLY} == {"agent_verdict"}
+    assert POSTURE.params == ("window", "hosts")
+
+
+def test_the_scheduled_agents_read_no_other_host() -> None:
+    assert not (POSTURE.tools & ticket_assistant.FLEET_WIDE_TOOLS)
+    assert not (PATCH.tools & ticket_assistant.FLEET_WIDE_TOOLS)
+
+
+# The patch spec's gate behaviour, through the real AgentPolicy.
+
+
+def _patch_session(packages, mode: str = "act"):
+    from kenny_server.agents.policy import AgentSession
+    from kenny_server.agents.spec import resolve
+
+    params = {} if packages is None else {"packages": packages}
+    return AgentSession(id="run-1", spec=resolve(PATCH, params), mode=mode, agent_id=PATCH_HOST)
+
+
+async def _gate(session, tool: str, args: dict):
+    from kenny_server.agents.policy import AgentPolicy
+
+    return await AgentPolicy(session).gate(session, tool, dict(args), PATCH_HOST)
+
+
+async def test_an_allowlisted_package_updates_in_act() -> None:
+    from kenny_server.toolloop import Allow
+
+    session = _patch_session([FIREFOX])
+    decision = await _gate(session, "winget_update", {"id": FIREFOX, "timeout_s": 600})
+    assert isinstance(decision, Allow)
+    assert [a["args"] for a in session.actions] == [{"id": FIREFOX, "timeout_s": 600}]
+
+
+async def test_another_package_is_refused_by_constraint() -> None:
+    from kenny_server.toolloop import Deny
+
+    session = _patch_session([FIREFOX])
+    decision = await _gate(session, "winget_update", {"id": SEVENZIP})
+    assert isinstance(decision, Deny) and decision.code == "constraint"
+    assert session.actions == [] and session.recommendations == []
+
+
+@pytest.mark.parametrize("packages", [[], None, [""], [7], "Mozilla.Firefox"])
+async def test_an_empty_or_missing_allowlist_admits_nothing(packages) -> None:
+    from kenny_server.toolloop import Deny
+
+    session = _patch_session(packages)
+    for args in ({"id": FIREFOX}, {"id": ""}, {}):
+        decision = await _gate(session, "winget_update", args)
+        assert isinstance(decision, Deny) and decision.code == "constraint", args
+    assert session.actions == []
+
+
+async def test_update_everything_is_not_possible_without_an_id() -> None:
+    from kenny_server.toolloop import Deny
+
+    session = _patch_session([FIREFOX])
+    decision = await _gate(session, "winget_update", {"timeout_s": 600})
+    assert isinstance(decision, Deny) and decision.code == "constraint"
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        {"id": FIREFOX, "version": "1.0"},
+        {"id": FIREFOX, "all": True},
+        {"id": FIREFOX, "timeout_s": 601},
+        {"id": FIREFOX, "timeout_s": "600"},
+        {"id": FIREFOX, "agent_id": "bob-pc"},
+    ],
+)
+async def test_nothing_else_may_ride_along_with_an_allowed_package(args: dict) -> None:
+    from kenny_server.toolloop import Deny
+
+    session = _patch_session([FIREFOX])
+    decision = await _gate(session, "winget_update", args)
+    assert isinstance(decision, Deny) and decision.code in ("constraint", "out_of_scope")
+    assert session.actions == []
+
+
+async def test_in_shadow_the_allowed_update_is_only_a_recommendation() -> None:
+    from kenny_server.toolloop import Deny
+
+    session = _patch_session([FIREFOX], mode="shadow")
+    decision = await _gate(session, "winget_update", {"id": FIREFOX, "timeout_s": 600})
+    assert isinstance(decision, Deny) and decision.code == "shadow"
+    assert session.actions == []
+    assert [r["args"]["id"] for r in session.recommendations] == [FIREFOX]
+
+
+async def test_install_and_uninstall_are_not_available_to_the_patch_agent() -> None:
+    from kenny_server.toolloop import Deny
+
+    session = _patch_session([FIREFOX])
+    for tool in ("winget_install", "winget_uninstall", "shell_exec", "powershell_exec"):
+        decision = await _gate(session, tool, {"id": FIREFOX})
+        assert isinstance(decision, Deny) and decision.code == "forbidden"
+
+
+async def test_the_verdict_and_the_read_are_allowed_in_both_modes() -> None:
+    from kenny_server.toolloop import Allow
+
+    for mode in ("shadow", "act"):
+        session = _patch_session([], mode=mode)
+        assert isinstance(await _gate(session, "winget_list", {}), Allow)
+        verdict = {"verdict": "clean", "finding": "-", "evidence": "-"}
+        assert isinstance(await _gate(session, "agent_verdict", verdict), Allow)
+
+
+async def test_the_posture_agent_cannot_change_anything() -> None:
+    from kenny_server.agents.policy import AgentPolicy, AgentSession
+    from kenny_server.toolloop import Allow, Deny
+
+    session = AgentSession(id="run-2", spec=POSTURE, mode="act", agent_id=PATCH_HOST)
+    policy = AgentPolicy(session)
+    for tool in ("diag_autostart", "diag_services"):
+        assert isinstance(await policy.gate(session, tool, {}, PATCH_HOST), Allow)
+    snapshot = await policy.gate(
+        session, "agent_snapshot", {"id": PATCH_HOST, "section": "local_accounts"}, None
+    )
+    assert isinstance(snapshot, Allow)
+    for tool, args in (
+        ("winget_update", {"id": FIREFOX}),
+        ("account_set_admin", {"principal": "kid", "admin": True}),
+        ("shell_exec", {"command": "id"}),
+    ):
+        decision = await policy.gate(session, tool, dict(args), PATCH_HOST)
+        assert isinstance(decision, Deny) and decision.code == "forbidden"
+    # Another machine's snapshot is not its to read.
+    other = await policy.gate(session, "agent_snapshot", {"id": "bob-pc"}, None)
+    assert isinstance(other, Deny) and other.code == "out_of_scope"
+
+
+async def test_joined_the_real_loop_sends_only_the_allowlisted_update(tmp_path) -> None:
+    """Two update requests through ``drive_events``: one reaches the wire, one does not."""
+
+    from kenny_server.agents.policy import AgentPolicy
+    from test_chat import FakeAnthropic, _Response, text_block, tool_use_block
+
+    telemetry = TelemetryStore(db_path=str(tmp_path / "patch.sqlite"))
+    await telemetry.connect()
+    try:
+        registry = AgentRegistry(tokens={PATCH_HOST: "t"})
+        tunnel = AgentTunnel(registry, telemetry, EventStore(db_path=telemetry.db_path))
+        sent: list[tuple[str, str, dict]] = []
+
+        async def send_request(agent_id: str, tool: str, args: dict, timeout_s: float):
+            sent.append((agent_id, tool, dict(args)))
+            return {"ok": True, "log": "updated", "packages": []}
+
+        tunnel.send_request = send_request  # type: ignore[method-assign]
+        executor = ToolExecutor(
+            registry=registry,
+            store=telemetry,
+            tunnel=tunnel,
+            call_log=CallLog(),
+            screenshots=ScreenshotStore(),
+        )
+        session = _patch_session([FIREFOX])
+        session.messages.append({"role": "user", "content": "start"})
+        client = FakeAnthropic(
+            [
+                _Response(
+                    [
+                        tool_use_block("a", "winget_update", {"id": SEVENZIP, "timeout_s": 600}),
+                        tool_use_block("b", "winget_update", {"id": FIREFOX, "timeout_s": 600}),
+                    ],
+                    "tool_use",
+                ),
+                _Response([text_block("done")], "end_turn"),
+            ]
+        )
+        events = [
+            ev
+            async for ev in toolloop.drive_events(
+                session,
+                executor,
+                client=client,
+                model="m",
+                policy=AgentPolicy(session),
+                max_iterations=PATCH.budget.max_iterations,
+            )
+        ]
+        assert sent == [(PATCH_HOST, "winget_update", {"id": FIREFOX, "timeout_s": 600})]
+        denied = [e for e in events if e["type"] == "denied"]
+        assert [e["args"]["id"] for e in denied] == [SEVENZIP]
+    finally:
+        await telemetry.close()

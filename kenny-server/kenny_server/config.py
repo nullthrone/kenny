@@ -343,6 +343,11 @@ _SPECS: list[SettingSpec] = [
           help="Tokens (input, output and cached prompt tokens alike) all agent "
                "runs together may spend in any 24 hours. Once reached, a run is not started and is recorded "
                "as skipped. 0 means no cap."),
+    _spec("KENNY_AGENTS_SCHEDULE_INTERVAL_SECS", "AI", "int", "300",
+          "Scheduled agents check (s)", lifecycle="live", min=60,
+          help="How often kenny checks whether a scheduled agent is due. The "
+               "agent's own maintenance window decides whether it runs; this is "
+               "only how finely kenny looks."),
     _spec("KENNY_DISCORD_MAX_TURNS_PER_TICKET", "AI", "int", "40",
           "Assistant turns per ticket", lifecycle="live", min=1,
           help="Hard cap on the turns the ticket assistant takes on one ticket, "

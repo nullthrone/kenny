@@ -19,6 +19,7 @@ from typing import Any
 import pytest
 
 from kenny_server.agents import policy as policy_module
+from kenny_server.agents.authorizations import NEVER_AUTHORIZED, Authorization
 from kenny_server.agents.policy import HOST_ARG, MAX_TIMEOUT_S, AgentPolicy, AgentSession
 from kenny_server.agents.spec import ToolTimeout
 from kenny_server.agents.spec import VERDICT_TOOLS, AgentSpec, ArgConstraint, SpecError, Trigger
@@ -67,11 +68,37 @@ def _session(mode: str = "shadow", agent_id: str | None = HOST, **spec: Any) -> 
     return AgentSession(id="run-1", spec=_spec(**spec), mode=mode, agent_id=agent_id)
 
 
+AUTH_ID = "auth-1"
+
+
+def _grant(agent: str, tool: str, auth_id: str = AUTH_ID) -> Authorization:
+    """A live authorization as the store would return it."""
+
+    return Authorization(
+        id=auth_id,
+        agent_id=agent,
+        effective_hash="h",
+        tool=tool,
+        scope=[HOST],
+        max_attempts_per_day=1,
+        expires_at="2999-01-01T00:00:00.000000+00:00",
+        granted_by="admin",
+        granted_at="2026-10-08T00:00:00.000000+00:00",
+        revoked_at=None,
+        revoked_by=None,
+        voided_at=None,
+        voided_by=None,
+        note="",
+    )
+
+
 def _yes(calls: list[tuple[Any, ...]] | None = None) -> Any:
-    async def authorizer(session: Any, tool: str, args: dict[str, Any], agent_id: Any) -> bool:
+    async def authorizer(
+        session: Any, tool: str, args: dict[str, Any], agent_id: Any
+    ) -> Authorization:
         if calls is not None:
             calls.append((session, tool, args, agent_id))
-        return True
+        return _grant(session.spec.id, tool)
 
     return authorizer
 
@@ -378,7 +405,7 @@ async def test_a_constraint_on_one_argument_leaves_no_other_free(mode: str) -> N
     assert session.recommendations == [] and session.actions == []
 
 
-async def test_every_argument_bound_runs() -> None:
+async def test_every_argument_bound_passes_the_constraints() -> None:
     session = _session(
         mode="act",
         tools=frozenset({"agent_update"}),
@@ -387,7 +414,10 @@ async def test_every_argument_bound_runs() -> None:
         ),
     )
     policy = AgentPolicy(session, authorizer=_yes())
-    assert await _gate(policy, session, "agent_update", dict(_AGENT_UPDATE)) == Allow()
+    # Past the constraints, and still never run: agent_update is never authorized
+    # ahead, whatever the authorizer answers (ADR-0072 rule 1).
+    decision = await _gate(policy, session, "agent_update", dict(_AGENT_UPDATE))
+    assert isinstance(decision, Deny) and decision.code == "not_authorized"
     decision = await _gate(
         policy, session, "agent_update", {**_AGENT_UPDATE, "url": "https://evil.example/x.exe"}
     )
@@ -462,7 +492,7 @@ async def test_a_spec_timeout_narrows_the_ceiling_for_its_tool_only() -> None:
         other,
         "winget_install",
         {"id": SEVENZIP, "timeout_s": MAX_TIMEOUT_S},
-    ) == Allow()
+    ) == Allow(authorization_id=AUTH_ID)
 
 
 async def test_a_verdict_exemption_for_a_non_verdict_tool_is_forbidden(monkeypatch) -> None:
@@ -618,15 +648,33 @@ async def test_act_runs_a_normal_change_the_authorizer_allows() -> None:
     session = _session(mode="act")
     policy = AgentPolicy(session, authorizer=_yes(calls))
     args = {"id": SEVENZIP}
-    assert await _gate(policy, session, "winget_install", args) == Allow()
-    assert session.actions[0]["tool_class"] == NORMAL_CHANGE
+    assert await _gate(policy, session, "winget_install", args) == Allow(authorization_id=AUTH_ID)
+    # The action names the authorization that let it run (ADR-0072 rule 5).
+    assert session.actions == [
+        {"tool": "winget_install", "args": {"id": SEVENZIP}, "agent_id": HOST,
+         "tool_class": NORMAL_CHANGE, "authorization_id": AUTH_ID}
+    ]
     assert calls == [(session, "winget_install", {"id": SEVENZIP}, HOST)]
     # The authorizer is handed a copy: it cannot change what runs.
     assert calls[0][2] is not args
 
 
-@pytest.mark.parametrize("answer", [False, None, "yes", 1])
-async def test_only_an_explicit_true_authorizes(answer: Any) -> None:
+@pytest.mark.parametrize(
+    "answer",
+    [
+        False,
+        None,
+        "yes",
+        1,
+        True,
+        AUTH_ID,
+        _grant("patcher", "winget_install", auth_id=""),
+        _grant("another_agent", "winget_install"),
+        _grant("patcher", "winget_update"),
+    ],
+    ids=["false", "none", "str", "one", "true", "bare-id", "empty-id", "other-agent", "other-tool"],
+)
+async def test_only_an_authorization_for_this_agent_and_tool_authorizes(answer: Any) -> None:
     async def authorizer(*_a: Any) -> Any:
         return answer
 
@@ -647,6 +695,26 @@ async def test_an_authorizer_that_fails_has_not_authorized() -> None:
         AgentPolicy(session, authorizer=authorizer), session, "winget_install", {"id": SEVENZIP}
     )
     assert isinstance(decision, Deny) and decision.code == "not_authorized"
+
+
+@pytest.mark.parametrize("tool", sorted(NEVER_AUTHORIZED))
+async def test_a_never_authorized_tool_is_refused_without_asking(tool: str) -> None:
+    """Even an authorizer that says yes to everything is not consulted for these."""
+
+    calls: list[tuple[Any, ...]] = []
+    # Every argument bound, so the call gets past step 4 and reaches step 8.
+    arg_names = [a.rstrip("?") for a in CAPABILITY_TOOLS[tool] if a.rstrip("?") != "timeout_s"]
+    session = _session(
+        mode="act",
+        tools=frozenset({tool}),
+        constraints=tuple(ArgConstraint(tool, a, frozenset({"v"})) for a in arg_names),
+    )
+    policy = AgentPolicy(session, authorizer=_yes(calls))
+    decision = await _gate(policy, session, tool, {a: "v" for a in arg_names})
+    assert isinstance(decision, Deny) and decision.code == "not_authorized"
+    assert calls == []
+    assert session.actions == []
+    assert [r["tool"] for r in session.recommendations] == [tool]
 
 
 async def test_the_authorizer_is_not_asked_about_a_standard_change() -> None:
@@ -878,6 +946,7 @@ async def test_joined_act_installs_only_with_an_authorization(store: TelemetrySt
     )
     assert rig.sent == [{"agent_id": HOST, "tool": "winget_install", "args": {"id": SEVENZIP}}]
     assert _error_code(_results_fed_back(client)["tu0"]) is None
+    assert session.actions[0]["authorization_id"] == AUTH_ID
     _assert_never_held(events, session)
 
 

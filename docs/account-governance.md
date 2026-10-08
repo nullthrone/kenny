@@ -125,7 +125,11 @@ support conversation can reach.
 [Log](dashboard.md#log) page, filtered to the TOOLS chip — naming who made it and with its
 arguments, which only operators and above can read; the `password` of `account_create` is
 stored as `[redacted]`, never in clear. Script and command bodies are kept as a SHA-256
-and a length, not as text, and a list of arguments is cut at 50 items.
+and a length, not as text, and a list of arguments is cut at 50 items. No
+[specialized agent](dashboard.md#specialized-agents) makes an account change on its own
+unless a superuser granted it a
+[standing authorization](adr/0072-standing-authorizations-consent-given-ahead.md) for that
+tool on that PC, and the audit entry then names the authorization.
 
 !!! note "Monitoring is the guarantee, enforcement is best-effort"
     All of these actions are refused while the person at the machine has **remote control

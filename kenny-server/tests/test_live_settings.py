@@ -116,6 +116,9 @@ READ_PER_USE = {
     "KENNY_AGENTS_ENABLED",
     "KENNY_AGENTS_MAX_CONCURRENT",
     "KENNY_AGENTS_DAILY_TOKENS",
+    # Read by ``agents.scheduler.AgentScheduler.run`` through its interval getter
+    # after every pass.
+    "KENNY_AGENTS_SCHEDULE_INTERVAL_SECS",
 }
 
 
@@ -143,11 +146,28 @@ def _build(db_path: str) -> Any:
     return build_app(db_path=db_path, client_factory=_FakeAnthropic)
 
 
+def _signed_in(c: TestClient) -> dict[str, str]:
+    """Sign a superuser in on ``c`` at a browser; the headers that then ride the cookie.
+
+    The sweeps below write every bound key, and switching unattended action on
+    (``KENNY_TRIAGE_RESOLVE``) is consent a token cannot give (ADR-0072).
+    """
+
+    c.post("/setup", data={"username": "admin", "password": "pw-123456"}, follow_redirects=False)
+    c.cookies.clear()
+    r = c.post(
+        "/login", data={"username": "admin", "password": "pw-123456"}, follow_redirects=False
+    )
+    assert r.status_code == 303, r.text
+    return {}
+
+
 def test_a_dashboard_write_reaches_the_running_consumer(tmp_path) -> None:
     app = _build(str(tmp_path / "live.sqlite"))
     with TestClient(app) as c:
+        h = _signed_in(c)
         for key, (value, read) in BOUND.items():
-            r = c.put(f"/api/settings/{key}", headers=_bearer(app), json={"value": value})
+            r = c.put(f"/api/settings/{key}", headers=h, json={"value": value})
             assert r.status_code == 200, (key, r.text)
             assert read(app.state) == _expected(key), key
 
@@ -156,9 +176,10 @@ def test_an_override_stored_before_boot_is_in_force_after_it(tmp_path) -> None:
     db_path = str(tmp_path / "boot.sqlite")
     first = _build(db_path)
     with TestClient(first) as c:
+        h = _signed_in(c)
         for key, (value, _read) in BOUND.items():
             assert c.put(
-                f"/api/settings/{key}", headers=_bearer(first), json={"value": value}
+                f"/api/settings/{key}", headers=h, json={"value": value}
             ).status_code == 200
 
     second = _build(db_path)

@@ -13,6 +13,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from kenny_server.agents.catalog import CATALOG
+from kenny_server.auth import COOKIE_NAME
 from kenny_server.main import build_app
 
 
@@ -25,6 +26,7 @@ def _env(monkeypatch: pytest.MonkeyPatch) -> None:
     for key in ("KENNY_TRIAGE_ENABLED", "KENNY_TRIAGE_RESOLVE", "KENNY_AGENTS_ENABLED"):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-not-a-real-key")
+    monkeypatch.setenv("KENNY_OPERATOR_TOKEN", LEGACY_TOKEN)
 
 
 def _pat_for(c: TestClient, username: str) -> str:
@@ -53,6 +55,31 @@ def _app_with_operator(tmp_path) -> tuple[Any, dict[str, str]]:
 
 def _h(pat: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {pat}"}
+
+
+#: The legacy shared operator token this module's app accepts (``_env``).
+LEGACY_TOKEN = "legacy-shared-token"
+
+#: Headers for a request a signed-in browser makes: none, the session cookie
+#: :func:`_login` left on the client does the work.
+BROWSER: dict[str, str] = {}
+
+
+def _login(c: TestClient, username: str = "admin") -> None:
+    """Sign ``username`` in on ``c`` as a browser does, leaving its session cookie."""
+
+    c.cookies.clear()
+    r = c.post(
+        "/login", data={"username": username, "password": "pw-123456"}, follow_redirects=False
+    )
+    assert r.status_code in (302, 303), r.text
+
+
+def _shown_hash(c: TestClient, agent_id: str, headers: dict[str, str] = BROWSER) -> str:
+    """The ``effective_hash`` the dashboard shows for ``agent_id``."""
+
+    agents = {a["id"]: a for a in c.get("/api/specialized-agents", headers=headers).json()["agents"]}
+    return agents[agent_id]["effective_hash"]
 
 
 def test_an_operator_reads_the_agents_and_their_runs(tmp_path) -> None:
@@ -115,8 +142,13 @@ def test_an_operator_cannot_choose_a_mode(tmp_path) -> None:
 def test_a_superuser_moves_triage_through_its_settings(tmp_path) -> None:
     app, pats = _app_with_operator(tmp_path)
     with TestClient(app) as c:
-        h = _h(pats["admin"])
-        r = c.put("/api/specialized-agents/triage/mode", json={"mode": "act"}, headers=h)
+        _login(c)
+        h = BROWSER
+        r = c.put(
+            "/api/specialized-agents/triage/mode",
+            json={"mode": "act", "effective_hash": _shown_hash(c, "triage")},
+            headers=h,
+        )
         assert r.status_code == 200
         assert r.json() == {"agent_id": "triage", "mode": "act", "requested": "act"}
         # The settings the Admin page shows, and the live consumer they drive.
@@ -149,9 +181,10 @@ def test_a_superuser_moves_triage_through_its_settings(tmp_path) -> None:
 
 
 def test_bad_mode_writes(tmp_path) -> None:
-    app, pats = _app_with_operator(tmp_path)
+    app, _pats = _app_with_operator(tmp_path)
     with TestClient(app) as c:
-        h = _h(pats["admin"])
+        _login(c)
+        h = BROWSER
         assert c.put("/api/specialized-agents/nope/mode", json={"mode": "act"}, headers=h).status_code == 404
         assert c.put("/api/specialized-agents/triage/mode", json={"mode": "ACT"}, headers=h).status_code == 400
         assert c.put("/api/specialized-agents/triage/mode", json={}, headers=h).status_code == 400
@@ -179,3 +212,82 @@ def test_specialized_agent_routes_are_not_in_the_host_enroll_exemption(tmp_path)
         # The host namespace is untouched: a host may be named "runs".
         r = c.post("/api/agents/runs/token", follow_redirects=False)
         assert r.status_code == 401
+
+
+# -- consent is a person's, about what they were shown --------------------------------
+
+
+def test_act_names_the_hash_the_superuser_was_shown(tmp_path) -> None:
+    app, _pats = _app_with_operator(tmp_path)
+    with TestClient(app) as c:
+        _login(c)
+        url = "/api/specialized-agents/triage/mode"
+        r = c.put(url, json={"mode": "act"}, headers=BROWSER)
+        assert r.status_code == 400 and "effective_hash" in r.json()["error"]
+        r = c.put(url, json={"mode": "act", "effective_hash": 7}, headers=BROWSER)
+        assert r.status_code == 400
+        r = c.put(url, json={"mode": "act", "effective_hash": "0" * 64}, headers=BROWSER)
+        assert r.status_code == 409
+        assert app.state.settings.get("KENNY_TRIAGE_RESOLVE") is False
+        # Leaving act needs no hash: nothing is consented to.
+        assert c.put(url, json={"mode": "shadow"}, headers=BROWSER).status_code == 200
+
+
+def use_credential(c: TestClient, kind: str, pats: dict[str, str]) -> dict[str, str]:
+    """Drop the browser session on ``c``; the headers that present superuser ``kind`` instead."""
+
+    c.cookies.clear()
+    if kind == "pat":
+        return _h(pats["admin"])
+    if kind == "legacy_bearer":
+        return _h(LEGACY_TOKEN)
+    assert kind == "legacy_cookie"
+    c.cookies.set(COOKIE_NAME, LEGACY_TOKEN)
+    return BROWSER
+
+
+#: Every superuser credential that is not a person at a browser.
+NOT_A_BROWSER = ["pat", "legacy_bearer", "legacy_cookie"]
+
+
+@pytest.mark.parametrize("kind", NOT_A_BROWSER)
+def test_a_mode_change_needs_a_person_at_a_browser(tmp_path, kind: str) -> None:
+    app, pats = _app_with_operator(tmp_path)
+    with TestClient(app) as c:
+        _login(c)
+        shown = _shown_hash(c, "triage")
+        h = use_credential(c, kind, pats)
+        # Reads stay open to every superuser credential.
+        assert c.get("/api/specialized-agents", headers=h).status_code == 200
+        url = "/api/specialized-agents/triage/mode"
+        r = c.put(url, json={"mode": "act", "effective_hash": shown}, headers=h)
+        assert r.status_code == 403, (kind, r.text)
+        assert "dashboard" in r.json()["error"]
+        assert c.put(url, json={"mode": "off"}, headers=h).status_code == 403
+        assert app.state.settings.get("KENNY_TRIAGE_RESOLVE") is False
+        assert app.state.settings.get("KENNY_TRIAGE_ENABLED") is True
+
+
+def _request_as(principal: Any) -> Any:
+    from starlette.requests import Request
+
+    return Request({"type": "http", "kenny_principal": principal, "headers": []})
+
+
+def test_only_an_account_on_a_browser_session_is_a_person() -> None:
+    from kenny_server.auth import Principal, _env_principal
+    from kenny_server.webui import _person_at_a_browser
+
+    def su(**kw: Any) -> Principal:
+        return Principal(user_id=1, username="admin", role="superuser", **kw)
+
+    assert _person_at_a_browser(_request_as(su(session_id="cookie")))
+    assert not _person_at_a_browser(_request_as(su(pat_id="p")))
+    assert not _person_at_a_browser(_request_as(su(oauth_token_id="o", oauth_client_id="claude")))
+    assert not _person_at_a_browser(_request_as(su(session_id="cookie", pat_id="p")))
+    assert not _person_at_a_browser(_request_as(su(session_id="cookie", oauth_token_id="o")))
+    assert not _person_at_a_browser(_request_as(su()))
+    assert not _person_at_a_browser(_request_as(_env_principal()))
+    no_account = Principal(user_id=None, username="x", role="superuser", session_id="cookie")
+    assert not _person_at_a_browser(_request_as(no_account))
+    assert not _person_at_a_browser(_request_as(None))

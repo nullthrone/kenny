@@ -32,7 +32,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sqlite3
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -579,8 +579,13 @@ class TicketService:
         reason: str = "",
         id: str | None = None,
         dedup_key: str = "",
+        fields: Mapping[str, Any] | None = None,
     ) -> Ticket:
         """Mint a ticket in state ``new`` and record its genesis event.
+
+        ``fields`` are added to the genesis event's own (``origin`` and
+        ``agent_id``, which they never override): what the record needs beside
+        the actor's name, such as the run an agent opened the ticket from.
 
         ``agent_id`` is frozen here: it is the routing target every later tool
         call is checked against, and only :meth:`reassign` may change it.
@@ -620,7 +625,7 @@ class TicketService:
             from_state=None,
             to_state="new",
             summary=reason or "ticket created",
-            fields={"origin": origin, "agent_id": agent_id},
+            fields={**dict(fields or {}), "origin": origin, "agent_id": agent_id},
             now=stamp,
         )
         # Last, and only once the ticket is durably on the record: the

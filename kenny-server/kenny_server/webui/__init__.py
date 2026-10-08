@@ -52,6 +52,8 @@ from ..store import (
 from ..tokenstore import AgentTokenStore
 from ..tools import CallLog, ScreenshotStore, build_health, health_for, supports_tool
 from ..tunnel import AgentTunnel, ToolError
+from ..agents.authorizations import BUDGET_WINDOW, AuthorizationError
+from ..agents.runner import HashMismatch
 from ..webfilter import (
     BYPASS_REQUEST_CATEGORY,
     ListTooLargeError,
@@ -115,6 +117,41 @@ _RESERVED_PREFIXES = (
     "/logout",
     "/setup",
 )
+
+
+#: Settings whose truthy value lets an agent act on its own: triage resolving
+#: tickets (its ``act``), and the global switch every agent's runs need.
+_AUTONOMY_SETTINGS: frozenset[str] = frozenset({"KENNY_TRIAGE_RESOLVE", "KENNY_AGENTS_ENABLED"})
+
+
+def _person_at_a_browser(request: Request) -> bool:
+    """Whether this request comes from a signed-in account's browser session.
+
+    A real account (``user_id``) on a dashboard session cookie (``session_id``),
+    and none of the bearer credentials: not a personal access token, not an
+    OAuth token, not the legacy shared token. Those are what Claude and scripts
+    hold for ``/mcp`` and the API, so a write that is a person's consent must
+    not be reachable with them.
+    """
+
+    principal = principal_of(request)
+    return (
+        principal is not None
+        and principal.user_id is not None
+        and bool(principal.session_id)
+        and not principal.pat_id
+        and not principal.oauth_token_id
+        and not principal.is_env_token
+    )
+
+
+#: The refusal of a consent write made with anything but a browser session.
+_NOT_A_PERSON = {
+    "error": (
+        "a person must do this from the dashboard, signed in to their own account; "
+        "API tokens, OAuth tokens and the shared operator token cannot"
+    )
+}
 
 
 def _actor_of(request: Request) -> str | None:
@@ -1351,6 +1388,21 @@ def build_api_routes(
             # web filter was never configured (ADR-0069).
             await tunnel.broadcast_policy()
 
+    def _would_widen_autonomy(key: str, raw: str) -> bool:
+        """Whether writing ``raw`` to ``key`` turns unattended action *on* (ADR-0072).
+
+        Switching an agent's autonomy on is consent, so it takes a person at a
+        browser exactly like promoting an agent to ``act``; switching it off is
+        never a widening and stays open to any superuser credential.
+        """
+
+        if key not in _AUTONOMY_SETTINGS:
+            return False
+        try:
+            return bool(CATALOG[key].parse(raw))
+        except Exception:  # noqa: BLE001 - an unparsable value is refused later anyway
+            return False
+
     async def api_settings_set(request: Request) -> JSONResponse:
         """Set one override. 400 unknown/invalid, 403 env-only, else apply."""
 
@@ -1373,6 +1425,8 @@ def build_api_routes(
         if "value" not in body:
             return JSONResponse({"error": "value is required"}, status_code=400)
         raw = "" if body["value"] is None else str(body["value"])
+        if _would_widen_autonomy(key, raw) and not _person_at_a_browser(request):
+            return JSONResponse(_NOT_A_PERSON, status_code=403)
         try:
             await settings.set(key, raw)
         except SettingNotWritable as exc:
@@ -1395,6 +1449,11 @@ def build_api_routes(
             return JSONResponse(
                 {"error": f"{key} is managed via the environment"}, status_code=403
             )
+        if key in _AUTONOMY_SETTINGS and not _person_at_a_browser(request):
+            # Resetting falls back to the environment or the default — "on" for
+            # the global agent switch — so it may widen autonomy: the same
+            # consent as setting it, whatever the value it lands on.
+            return JSONResponse(_NOT_A_PERSON, status_code=403)
         await settings.reset(key)
         await _after_setting_write(key)
         return JSONResponse(settings.describe_one(key))
@@ -1403,6 +1462,10 @@ def build_api_routes(
     # Reading the catalog and the run history is operator+; choosing a mode is
     # superuser-only, because moving an agent to ``act`` is a superuser's
     # decision and every other mode write moves it towards or away from that.
+    # Every write here (mode, grant, revoke, parameters) is consent, so it also
+    # needs a person at a browser (``_person_at_a_browser``), and ``act`` and a
+    # grant name the ``effective_hash`` that person was shown: a 409 when the
+    # agent has changed since, never a binding to whatever it is now.
 
     _AGENTS_UNAVAILABLE = {"error": "agents not configured"}
     _MAX_RUNS_LIMIT = 500
@@ -1442,11 +1505,33 @@ def build_api_routes(
             return JSONResponse({"error": "run not found"}, status_code=404)
         return JSONResponse(run.to_public())
 
+    def _reviewed_hash(body: Any) -> tuple[str | None, JSONResponse | None]:
+        """The ``effective_hash`` a consent write names, or its 400."""
+
+        value = body.get("effective_hash") if isinstance(body, dict) else None
+        if not isinstance(value, str) or not value:
+            return None, JSONResponse(
+                {
+                    "error": "effective_hash is required: the agent's effective_hash "
+                    "as GET /api/specialized-agents showed it"
+                },
+                status_code=400,
+            )
+        return value, None
+
+    def _changed(exc: HashMismatch) -> JSONResponse:
+        return JSONResponse({"error": str(exc)}, status_code=409)
+
     async def api_agent_mode(request: Request) -> JSONResponse:
-        """Choose an agent's mode (``{"mode": "off"|"shadow"|"act"}``)."""
+        """Choose an agent's mode (``{"mode": "off"|"shadow"|"act", "effective_hash"}``).
+
+        ``effective_hash`` is required for ``act`` only.
+        """
 
         if agents is None:
             return JSONResponse(_AGENTS_UNAVAILABLE, status_code=503)
+        if not _person_at_a_browser(request):
+            return JSONResponse(_NOT_A_PERSON, status_code=403)
         agent_id = request.path_params["agent_id"]
         if agent_id not in agents.catalog:
             return JSONResponse({"error": f"unknown agent {agent_id}"}, status_code=404)
@@ -1457,13 +1542,168 @@ def build_api_routes(
         mode = body.get("mode") if isinstance(body, dict) else None
         if not isinstance(mode, str):
             return JSONResponse({"error": "mode is required"}, status_code=400)
+        reviewed: str | None = None
+        if mode == "act":
+            reviewed, refused = _reviewed_hash(body)
+            if refused is not None:
+                return refused
         try:
-            effective = await agents.set_mode(agent_id, mode, actor=_actor_of(request) or "unknown")
+            effective = await agents.set_mode(
+                agent_id, mode, actor=_actor_of(request) or "unknown", effective_hash=reviewed
+            )
         except KeyError:
             return JSONResponse({"error": f"unknown agent {agent_id}"}, status_code=404)
+        except HashMismatch as exc:
+            return _changed(exc)
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
         return JSONResponse({"agent_id": agent_id, "mode": effective, "requested": mode})
+
+    # Standing authorizations and parameters (ADR-0072). Reading them is an
+    # operator's; granting, revoking and editing a superuser's. A ``user`` never
+    # reaches either, and none of this is ever handed to a model.
+
+    _AUTHORIZATIONS_UNAVAILABLE = {"error": "standing authorizations not configured"}
+
+    def _agent_or_404(request: Request) -> tuple[str, JSONResponse | None]:
+        if agents is None:
+            return "", JSONResponse(_AGENTS_UNAVAILABLE, status_code=503)
+        agent_id = request.path_params["agent_id"]
+        if agent_id not in agents.catalog:
+            return agent_id, JSONResponse({"error": f"unknown agent {agent_id}"}, status_code=404)
+        return agent_id, None
+
+    async def _authorization_public(authorization: Any) -> dict[str, Any]:
+        now = agents.now()
+        out = authorization.to_public(now)
+        out["attempts_last_24h"] = await agents.authorizations.uses_since(
+            authorization.id, now - BUDGET_WINDOW
+        )
+        return out
+
+    async def api_agent_authorizations(request: Request) -> JSONResponse:
+        """Every standing authorization of one agent, dead ones included."""
+
+        agent_id, refused = _agent_or_404(request)
+        if refused is not None:
+            return refused
+        if agents.authorizations is None:
+            return JSONResponse(_AUTHORIZATIONS_UNAVAILABLE, status_code=503)
+        rows = await agents.authorizations.list(agent_id)
+        return JSONResponse(
+            {
+                "agent_id": agent_id,
+                "effective_hash": await agents.live_hash(agent_id),
+                "authorizations": [await _authorization_public(a) for a in rows],
+            }
+        )
+
+    async def api_agent_authorization_grant(request: Request) -> JSONResponse:
+        """Grant one (``{tool, scope, max_attempts_per_day, expires_at, note, effective_hash}``).
+
+        Bound to ``effective_hash``, the agent as the superuser granting was
+        shown it; a 409 when the agent has changed since.
+        """
+
+        if agents is not None and not _person_at_a_browser(request):
+            return JSONResponse(_NOT_A_PERSON, status_code=403)
+        agent_id, refused = _agent_or_404(request)
+        if refused is not None:
+            return refused
+        if agents.authorizations is None:
+            return JSONResponse(_AUTHORIZATIONS_UNAVAILABLE, status_code=503)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - malformed JSON
+            return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
+        tool = body.get("tool")
+        if not isinstance(tool, str) or not tool:
+            return JSONResponse({"error": "tool is required"}, status_code=400)
+        note = body.get("note") or ""
+        if not isinstance(note, str):
+            return JSONResponse({"error": "note must be text"}, status_code=400)
+        reviewed, refused = _reviewed_hash(body)
+        if refused is not None:
+            return refused
+        try:
+            granted = await agents.grant(
+                agent_id,
+                tool=tool,
+                scope=body.get("scope"),
+                max_attempts_per_day=body.get("max_attempts_per_day"),
+                expires_at=body.get("expires_at"),
+                actor=_actor_of(request) or "unknown",
+                effective_hash=reviewed,
+                note=note,
+            )
+        except HashMismatch as exc:
+            return _changed(exc)
+        except (AuthorizationError, ValueError) as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        return JSONResponse(await _authorization_public(granted), status_code=201)
+
+    async def api_agent_authorization_revoke(request: Request) -> JSONResponse:
+        """Revoke one; the next call it would have covered is refused."""
+
+        if agents is not None and not _person_at_a_browser(request):
+            return JSONResponse(_NOT_A_PERSON, status_code=403)
+        agent_id, refused = _agent_or_404(request)
+        if refused is not None:
+            return refused
+        if agents.authorizations is None:
+            return JSONResponse(_AUTHORIZATIONS_UNAVAILABLE, status_code=503)
+        auth_id = request.path_params["auth_id"]
+        found = await agents.authorizations.get(auth_id)
+        if found is None or found.agent_id != agent_id:
+            return JSONResponse({"error": "authorization not found"}, status_code=404)
+        revoked = await agents.authorizations.revoke(
+            auth_id, _actor_of(request) or "unknown", now=agents.now()
+        )
+        return JSONResponse(await _authorization_public(revoked))
+
+    async def api_agent_params(request: Request) -> JSONResponse:
+        """One agent's parameters, the names its spec declares, and its effective hash."""
+
+        agent_id, refused = _agent_or_404(request)
+        if refused is not None:
+            return refused
+        return JSONResponse(
+            {
+                "agent_id": agent_id,
+                "declared": sorted(agents.catalog[agent_id].params),
+                "params": await agents.get_params(agent_id),
+                "effective_hash": await agents.live_hash(agent_id),
+            }
+        )
+
+    async def api_agent_params_set(request: Request) -> JSONResponse:
+        """Replace one agent's parameters (``{"params": {...}}``).
+
+        A change of the effective hash drops the agent to ``shadow`` and voids
+        its authorizations (ADR-0072 rule 6).
+        """
+
+        if agents is not None and not _person_at_a_browser(request):
+            return JSONResponse(_NOT_A_PERSON, status_code=403)
+        agent_id, refused = _agent_or_404(request)
+        if refused is not None:
+            return refused
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - malformed JSON
+            return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        params = body.get("params") if isinstance(body, dict) else None
+        if not isinstance(params, dict):
+            return JSONResponse({"error": "params must be an object"}, status_code=400)
+        try:
+            result = await agents.set_params(
+                agent_id, params, actor=_actor_of(request) or "unknown"
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        return JSONResponse({"agent_id": agent_id, **result})
 
     # -- DB backup/restore ---------------------------------------------------
     # Superuser-only (**su below): destructive (restore overwrites the live DB
@@ -2207,6 +2447,26 @@ def build_api_routes(
         Route("/api/specialized-agents/runs", guard(api_agent_runs, **op)),
         Route("/api/specialized-agents/runs/{run_id}", guard(api_agent_run, **op)),
         Route("/api/specialized-agents/{agent_id}/mode", guard(api_agent_mode, **su), methods=["PUT"]),
+        Route(
+            "/api/specialized-agents/{agent_id}/authorizations",
+            guard(api_agent_authorizations, **op),
+        ),
+        Route(
+            "/api/specialized-agents/{agent_id}/authorizations",
+            guard(api_agent_authorization_grant, **su),
+            methods=["POST"],
+        ),
+        Route(
+            "/api/specialized-agents/{agent_id}/authorizations/{auth_id}",
+            guard(api_agent_authorization_revoke, **su),
+            methods=["DELETE"],
+        ),
+        Route("/api/specialized-agents/{agent_id}/params", guard(api_agent_params, **op)),
+        Route(
+            "/api/specialized-agents/{agent_id}/params",
+            guard(api_agent_params_set, **su),
+            methods=["PUT"],
+        ),
         Route("/api/settings", guard(api_settings_list, **su)),
         Route("/api/settings/{key}", guard(api_settings_set, **su), methods=["PUT"]),
         Route(
@@ -2438,15 +2698,16 @@ def build_chat_routes(
     if copilot_tickets is not None:
         copilot_tickets.register_tools(executor)
 
-    def stamp_actor(session: Any, request: Request) -> None:
-        """Name the requesting operator on ``session`` before it drives a tool.
+    def driver_of(request: Request) -> str | None:
+        """The operator driving *this* request's turn, for its audit rows.
 
-        Set on every request, not once at creation: a session id is not bound
-        to a user, so the audit trail must name whoever is driving *this* turn.
+        Passed down per call, never stored on the session: a session id is not
+        bound to a user, and two operators driving one conversation at once
+        must each be audited as themselves.
         """
 
         principal = principal_of(request)
-        session.audit_actor = principal.username if principal is not None else None
+        return principal.username if principal is not None else None
 
     async def api_chat(request: Request) -> JSONResponse:
         try:
@@ -2478,11 +2739,10 @@ def build_chat_routes(
         # a stale agent.
         agent_id = str(body.get("agent_id", "")).strip()
         session.agent_id = agent_id or None
-        stamp_actor(session, request)
         try:
             result = await run_turn(
                 session, message, executor=executor, client=client_factory(),
-                model=_chat_model(request),
+                model=_chat_model(request), actor=driver_of(request),
             )
         except Exception as exc:  # noqa: BLE001 - surface to the UI
             return JSONResponse({"error": str(exc), "session_id": session.id}, status_code=502)
@@ -2503,11 +2763,10 @@ def build_chat_routes(
         if session.pending is None:
             return JSONResponse({"error": "no pending confirmation"}, status_code=409)
         approve = bool(body.get("approve", False))
-        stamp_actor(session, request)
         try:
             result = await confirm_pending(
                 session, approve=approve, executor=executor, client=client_factory(),
-                model=_chat_model(request),
+                model=_chat_model(request), actor=driver_of(request),
             )
         except Exception as exc:  # noqa: BLE001 - surface to the UI
             return JSONResponse({"error": str(exc), "session_id": session.id}, status_code=502)
@@ -2548,14 +2807,15 @@ def build_chat_routes(
         # it back to None) so it never lags the dashboard's current selection.
         agent_id = str(body.get("agent_id", "")).strip()
         session.agent_id = agent_id or None
-        stamp_actor(session, request)
         client = client_factory()
         model = _chat_model(request)
+        actor = driver_of(request)
 
         async def gen() -> Any:
             try:
                 async for ev in run_turn_events(
-                    session, message, executor=executor, client=client, model=model
+                    session, message, executor=executor, client=client, model=model,
+                    actor=actor,
                 ):
                     yield _sse(ev)
             except Exception as exc:  # noqa: BLE001 - surface to the UI in-band
@@ -2584,14 +2844,15 @@ def build_chat_routes(
         if session.pending is None:
             return JSONResponse({"error": "no pending confirmation"}, status_code=409)
         approve = bool(body.get("approve", False))
-        stamp_actor(session, request)
         client = client_factory()
         model = _chat_model(request)
+        actor = driver_of(request)
 
         async def gen() -> Any:
             try:
                 async for ev in confirm_pending_events(
-                    session, approve=approve, executor=executor, client=client, model=model
+                    session, approve=approve, executor=executor, client=client, model=model,
+                    actor=actor,
                 ):
                     yield _sse(ev)
             except Exception as exc:  # noqa: BLE001 - surface to the UI in-band
