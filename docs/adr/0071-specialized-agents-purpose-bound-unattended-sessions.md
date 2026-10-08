@@ -1,6 +1,6 @@
 # 0071. Specialized agents: kenny runs purpose-bound unattended sessions
 
-- Status: proposed
+- Status: accepted
 - Boundary moved: **the agent/session model** — the unattended session stops being one
   hand-built special case (triage) and becomes a declared kind: any number of agents, each
   with its own prompt, trigger, closed tool set and budget, run under a service identity
@@ -48,7 +48,8 @@ one fails closed. The binding rules:
    constraint lists the exact values an argument may take; an omitted or empty argument
    never matches (an absent selector usually means "everything" — `winget_update` without
    `id` upgrades every package), and an argument no constraint names is refused, so
-   binding `version` cannot leave `url` free. A limit stated only in the prompt is a limit
+   binding `version` cannot leave `url` free. The one free argument, `timeout_s`, is bounded
+   per tool by the spec, never above a global ten minutes. A limit stated only in the prompt is a limit
    the model enforces, which ADR-0056 rules out. Only a fixed set of server-side verdict
    tools is exempt, because their own handler decides their effect.
 3. **`spec_hash` fingerprints what the agent does** (prompt, trigger, tools, constraints,

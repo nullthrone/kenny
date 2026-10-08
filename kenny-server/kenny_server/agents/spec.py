@@ -39,6 +39,7 @@ from ..tool_classes import READ_ONLY, SENSITIVE_TOOLS, TOOL_CLASSES
 
 __all__ = [
     "EVENTS",
+    "MAX_TIMEOUT_S",
     "MODES",
     "TRIGGER_KINDS",
     "VERDICT_TOOLS",
@@ -46,6 +47,7 @@ __all__ = [
     "ArgConstraint",
     "Budget",
     "SpecError",
+    "ToolTimeout",
     "Trigger",
     "validate",
 ]
@@ -57,6 +59,12 @@ __all__ = [
 #:   a change is refused at the gate and kept as a recommendation.
 #: * ``act`` — a change runs when the gate allows it.
 MODES: tuple[str, ...] = ("off", "shadow", "act")
+
+#: The longest ``timeout_s`` any change-tier call of an agent run may ask for,
+#: in seconds. A spec narrows it per tool (:class:`ToolTimeout`); nothing widens
+#: it. ``timeout_s`` is the one argument no constraint binds, and unbounded it
+#: would let a run park on one call indefinitely.
+MAX_TIMEOUT_S = 600
 
 #: What starts a run.
 TRIGGER_KINDS: tuple[str, ...] = ("event", "schedule", "on_demand")
@@ -116,6 +124,21 @@ class ArgConstraint:
 
 
 @dataclass(frozen=True)
+class ToolTimeout:
+    """The longest ``timeout_s`` this agent's calls of one change-tier tool may ask for.
+
+    A fast tool (a DNS flush) gets seconds, a slow one (a package update)
+    minutes; a tool without one is bounded by :data:`MAX_TIMEOUT_S` alone.
+    """
+
+    tool: str
+    max_s: int
+
+    def to_dict(self) -> dict[str, object]:
+        return {"tool": self.tool, "max_s": self.max_s}
+
+
+@dataclass(frozen=True)
 class Budget:
     """What bounds one run, independent of what the model decides to do."""
 
@@ -145,6 +168,8 @@ class AgentSpec:
     #: hold for a call to that tool to run. A change-tier tool other than the
     #: verdict tool must carry at least one (see :func:`validate`).
     constraints: tuple[ArgConstraint, ...] = ()
+    #: Per-tool ceilings on ``timeout_s``, each at most :data:`MAX_TIMEOUT_S`.
+    timeouts: tuple[ToolTimeout, ...] = ()
     #: Must be true for a spec that names any sensitive tool.
     sensitive_ok: bool = False
     #: The mode a fresh install starts in: ``shadow`` or ``off``. Never ``act``
@@ -173,6 +198,7 @@ class AgentSpec:
                 "verdict_tool": self.verdict_tool,
                 "budget": self.budget.to_dict(),
                 "constraints": self._sorted_constraints(),
+                "timeouts": self._sorted_timeouts(),
                 "sensitive_ok": self.sensitive_ok,
             },
             sort_keys=True,
@@ -186,8 +212,19 @@ class AgentSpec:
             key=lambda d: (str(d["tool"]), str(d["arg"])),
         )
 
+    def _sorted_timeouts(self) -> list[dict[str, object]]:
+        return sorted((t.to_dict() for t in self.timeouts), key=lambda d: str(d["tool"]))
+
     def constraints_for(self, tool: str) -> tuple[ArgConstraint, ...]:
         return tuple(c for c in self.constraints if c.tool == tool)
+
+    def timeout_for(self, tool: str) -> int:
+        """The longest ``timeout_s`` a call of ``tool`` may carry in this agent."""
+
+        for t in self.timeouts:
+            if t.tool == tool:
+                return t.max_s
+        return MAX_TIMEOUT_S
 
     def to_public(self) -> dict[str, object]:
         """The catalog entry as the dashboard and the API show it."""
@@ -202,6 +239,7 @@ class AgentSpec:
             "verdict_tool": self.verdict_tool,
             "budget": self.budget.to_dict(),
             "constraints": self._sorted_constraints(),
+            "timeouts": self._sorted_timeouts(),
             "sensitive_ok": self.sensitive_ok,
             "default_mode": self.default_mode,
             "version": self.version,
@@ -245,6 +283,21 @@ def validate(spec: AgentSpec) -> AgentSpec:
         if (c.tool, c.arg) in seen:
             raise SpecError(f"agent {spec.id}: two constraints on {c.tool}.{c.arg}")
         seen.add((c.tool, c.arg))
+    timed: set[str] = set()
+    for t in spec.timeouts:
+        if t.tool not in spec.tools:
+            raise SpecError(f"agent {spec.id}: timeout names {t.tool}, which is not in its tools")
+        if TOOL_CLASSES[t.tool] == READ_ONLY:
+            raise SpecError(f"agent {spec.id}: timeout on read-only {t.tool} would bound nothing")
+        if isinstance(t.max_s, bool) or not isinstance(t.max_s, int):
+            raise SpecError(f"agent {spec.id}: timeout on {t.tool} must be whole seconds")
+        if not 1 <= t.max_s <= MAX_TIMEOUT_S:
+            raise SpecError(
+                f"agent {spec.id}: timeout on {t.tool} must be 1 to {MAX_TIMEOUT_S} seconds"
+            )
+        if t.tool in timed:
+            raise SpecError(f"agent {spec.id}: two timeouts on {t.tool}")
+        timed.add(t.tool)
     # A change the agent may make with any arguments at all is the tier acting
     # as the permission, which ADR-0045 forbids. The verdict tool is exempt: its
     # effect is decided server-side by its own handler, not by its arguments.

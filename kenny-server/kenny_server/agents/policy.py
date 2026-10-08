@@ -41,7 +41,8 @@ and the one host the run was frozen to.
    naming its tool, and may carry no argument its catalog entry does not
    declare and no argument a constraint does not bind — binding one argument
    leaves no other free. The one exception is ``timeout_s``, which must be an
-   integer from 1 to :data:`MAX_TIMEOUT_S` (or the tool's own forwarding floor,
+   integer from 1 to the spec's ceiling for that tool — at most
+   :data:`~.spec.MAX_TIMEOUT_S` — (or the tool's own forwarding floor,
    if higher). Before the mode branch on purpose: a call outside the constraints
    is not something this agent may do at all, so it is not a recommendation
    either — recording it as one would put an unreviewable change in front of a
@@ -86,7 +87,7 @@ from ..tool_classes import NORMAL_CHANGE, READ_ONLY, STANDARD_CHANGE, classify
 from ..toolloop import SERVER_TOOLS, Allow, Deny, PendingCall, build_tool_schemas
 from ..tools import CAPABILITY_TOOLS, forward_timeout_s
 from ..tunnel import ToolError
-from .spec import VERDICT_TOOLS, AgentSpec, validate
+from .spec import MAX_TIMEOUT_S, VERDICT_TOOLS, AgentSpec, validate
 
 __all__ = [
     "HOST_ARG",
@@ -116,13 +117,6 @@ HOST_ARG: dict[str, str] = {
     "ticket_find": "agent_id",
 }
 
-#: The longest per-call ``timeout_s`` a change-tier call of an agent run may ask
-#: for, in seconds, unless the tool's own forwarding floor
-#: (:func:`~kenny_server.tools.forward_timeout_s`) is higher. ``timeout_s`` is
-#: the one argument no constraint binds; this bound keeps it from parking a run
-#: on one call indefinitely.
-MAX_TIMEOUT_S = 600
-
 #: Asked whether a ``normal_change`` may run in ``act``:
 #: ``authorizer(session, tool, args, agent_id) -> bool``. Only ``True`` allows.
 Authorizer = Callable[["AgentSession", str, dict[str, Any], str | None], Awaitable[bool]]
@@ -138,10 +132,16 @@ def _dispatchable(tool: str) -> bool:
     return tool in SERVER_TOOLS or tool in CAPABILITY_TOOLS
 
 
-def _timeout_ceiling(tool: str) -> float:
-    """The largest ``timeout_s`` an agent's change-tier call of ``tool`` may carry."""
+def _timeout_ceiling(spec: AgentSpec, tool: str) -> float:
+    """The largest ``timeout_s`` an agent's change-tier call of ``tool`` may carry.
 
-    return max(float(MAX_TIMEOUT_S), forward_timeout_s(tool, {"timeout_s": 0}))
+    The spec's per-tool ceiling (at most :data:`~.spec.MAX_TIMEOUT_S`), unless
+    the tool's own forwarding floor (:func:`~kenny_server.tools.forward_timeout_s`)
+    is higher: asking for the floor is never a widening, the call waits that
+    long whatever it asks for.
+    """
+
+    return max(float(spec.timeout_for(tool)), forward_timeout_s(tool, {"timeout_s": 0}))
 
 
 def _declared_args(tool: str) -> frozenset[str]:
@@ -343,7 +343,7 @@ class AgentPolicy:
             )
         if "timeout_s" in args:
             value = args["timeout_s"]
-            ceiling = _timeout_ceiling(tool)
+            ceiling = _timeout_ceiling(self._spec, tool)
             if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= ceiling:
                 return (
                     f"{tool}: timeout_s={value!r} is not a whole number of seconds "

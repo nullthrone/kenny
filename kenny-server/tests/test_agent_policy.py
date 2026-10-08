@@ -20,6 +20,7 @@ import pytest
 
 from kenny_server.agents import policy as policy_module
 from kenny_server.agents.policy import HOST_ARG, MAX_TIMEOUT_S, AgentPolicy, AgentSession
+from kenny_server.agents.spec import ToolTimeout
 from kenny_server.agents.spec import VERDICT_TOOLS, AgentSpec, ArgConstraint, SpecError, Trigger
 from kenny_server.ticket_assistant import FLEET_WIDE_TOOLS
 from kenny_server.registry import AgentRegistry
@@ -444,6 +445,24 @@ async def test_timeout_s_within_bounds_needs_no_constraint(timeout_s: int) -> No
     policy = AgentPolicy(session)
     args = {"id": FIREFOX, "timeout_s": timeout_s}
     assert await _gate(policy, session, "winget_update", args) == Allow()
+
+
+async def test_a_spec_timeout_narrows_the_ceiling_for_its_tool_only() -> None:
+    session = _session(mode="act", timeouts=(ToolTimeout("winget_update", 120),))
+    policy = AgentPolicy(session)
+    over = await _gate(policy, session, "winget_update", {"id": FIREFOX, "timeout_s": 121})
+    assert isinstance(over, Deny) and over.code == "constraint"
+    assert await _gate(
+        policy, session, "winget_update", {"id": FIREFOX, "timeout_s": 120}
+    ) == Allow()
+    # Another tool of the same spec keeps the global ceiling.
+    other = _session(mode="act", timeouts=(ToolTimeout("winget_update", 120),))
+    assert await _gate(
+        AgentPolicy(other, authorizer=_yes()),
+        other,
+        "winget_install",
+        {"id": SEVENZIP, "timeout_s": MAX_TIMEOUT_S},
+    ) == Allow()
 
 
 async def test_a_verdict_exemption_for_a_non_verdict_tool_is_forbidden(monkeypatch) -> None:
