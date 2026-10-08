@@ -16,6 +16,9 @@ not by the arguments the model chose: the gate lets it through in ``shadow`` and
   would be unreadable; it changes nothing on any host. While an agent-origin
   ticket for the same ``(agent, host)`` is still open, the new finding is
   appended to it as a note instead of opening a second one.
+* A **preview** run (an on-demand shadow run a person asked for) opens no ticket
+  and appends to none: its verdict is recorded on the run, which the person who
+  started it is looking at.
 * ``acted`` does **not** open a ticket. The run record already says what changed
   (its actions, with the authorization each names), and a ticket for every
   routine update night is the noise tickets were taught not to be. A run that
@@ -117,7 +120,10 @@ class AgentVerdictService:
 
         ticket: Ticket | None = None
         appended = False
-        if verdict in TICKET_VERDICTS:
+        # A preview is read by the person who asked for it, on the run record;
+        # it must not open (or add to) a ticket nobody asked for.
+        previewing = bool(getattr(session, "preview", False))
+        if verdict in TICKET_VERDICTS and not previewing:
             try:
                 ticket, appended = await self._report(session, verdict, finding, evidence)
             except Exception as exc:  # noqa: BLE001 - surfaced to the model, logged for the operator
@@ -132,6 +138,8 @@ class AgentVerdictService:
             "ticket_id": ticket.id if ticket is not None else None,
         }
         result: dict[str, Any] = {"recorded": True, "verdict": verdict}
+        if previewing and verdict in TICKET_VERDICTS:
+            result["note"] = "this is a preview run: the finding is recorded on the run, no ticket was opened"
         if ticket is not None:
             result["ticket"] = f"#{ticket.number}"
             result["note"] = (

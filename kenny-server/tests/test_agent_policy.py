@@ -28,6 +28,7 @@ from kenny_server.registry import AgentRegistry
 from kenny_server.store import EventStore, TelemetryStore
 from kenny_server.tool_classes import NORMAL_CHANGE, READ_ONLY, STANDARD_CHANGE, TOOL_CLASSES
 from kenny_server.toolloop import (
+    COPILOT_AGENT_TOOLS,
     SERVER_TOOLS,
     TRIAGE_VERDICT_TOOL,
     Allow,
@@ -771,6 +772,11 @@ def test_every_host_naming_server_tool_is_pinned() -> None:
     for name, schema in SERVER_TOOLS.items():
         props = schema["properties"]
         named = [k for k in ("id", "agent_id") if k in props]
+        if name in COPILOT_AGENT_TOOLS:
+            # Their ``agent_id`` is a specialized agent, not a machine, so it is
+            # not pinned -- and no run may hold them: the catalog refuses a spec
+            # naming one (tests/test_copilot_agents.py joins that half).
+            continue
         if named:
             assert name in HOST_ARG, f"{name} names a host in {named} and is not pinned"
             assert HOST_ARG[name] in named

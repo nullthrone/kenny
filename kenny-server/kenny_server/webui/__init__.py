@@ -53,7 +53,8 @@ from ..tokenstore import AgentTokenStore
 from ..tools import CallLog, ScreenshotStore, build_health, health_for, supports_tool
 from ..tunnel import AgentTunnel, ToolError
 from ..agents.authorizations import BUDGET_WINDOW, AuthorizationError
-from ..agents.runner import HashMismatch
+from ..agents.policy import run_target_problem
+from ..agents.runner import HashMismatch, PreviewRefused, surface_refusal
 from ..webfilter import (
     BYPASS_REQUEST_CATEGORY,
     ListTooLargeError,
@@ -1505,6 +1506,77 @@ def build_api_routes(
             return JSONResponse({"error": "run not found"}, status_code=404)
         return JSONResponse(run.to_public())
 
+    async def api_agent_preview(request: Request) -> JSONResponse:
+        """Preview an agent once (``{"host_id"?}``): always a shadow run, in the background.
+
+        Operator+ with any credential, not only a browser session: a preview
+        changes nothing on any host -- the run is forced to ``shadow`` however
+        the agent is set, a change is only recorded as a recommendation and a
+        verdict opens no ticket. It is refused for triage and for an agent that
+        is ``off``. Answers 202 with the run's id as soon as the run is
+        admitted; the model is never waited for (the run takes minutes). Watch
+        it at ``GET /api/specialized-agents/runs/{run_id}``.
+        """
+
+        if agents is None:
+            return JSONResponse(_AGENTS_UNAVAILABLE, status_code=503)
+        agent_id = request.path_params["agent_id"]
+        spec = agents.catalog.get(agent_id)
+        if spec is None:
+            return JSONResponse({"error": f"unknown agent {agent_id}"}, status_code=404)
+        raw = await request.body()
+        body: Any = {}
+        if raw.strip():
+            try:
+                body = json.loads(raw)
+            except ValueError:
+                return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
+        raw_host = body.get("host_id")
+        if raw_host is not None and not isinstance(raw_host, str):
+            return JSONResponse({"error": "host_id must be a string"}, status_code=400)
+        host_id = (raw_host or "").strip() or None
+        refused = surface_refusal(spec)
+        if refused is not None:
+            return JSONResponse({"error": refused}, status_code=400)
+        if await agents.mode_of(spec.id) == "off":
+            return JSONResponse(
+                {"error": f"{spec.id} is off; a preview does not override that"}, status_code=400
+            )
+        known = {a.agent_id for a in registry.list()} | set(await store.known_agents())
+        problem = run_target_problem(spec, host_id, known)
+        if problem is not None:
+            return JSONResponse({"error": problem}, status_code=400)
+        try:
+            run = await agents.start_preview(
+                spec, host_id=host_id, requested_by=_actor_of(request) or "unknown"
+            )
+        except PreviewRefused as exc:
+            return JSONResponse(
+                {"error": str(exc)}, status_code=409 if exc.conflict else 400
+            )
+        except RuntimeError as exc:  # no executor / model / client configured
+            return JSONResponse({"error": str(exc)}, status_code=503)
+        if run is None:
+            return JSONResponse(
+                {"error": "the agent could not start (agents or AI are switched off)"},
+                status_code=409,
+            )
+        if run.status == "skipped":
+            return JSONResponse({"error": run.error, "run_id": run.id}, status_code=409)
+        return JSONResponse(
+            {
+                "run_id": run.id,
+                "agent_id": run.agent_id,
+                "host_id": run.host_id,
+                "mode": run.mode,
+                "trigger": run.trigger,
+                "status": run.status,
+            },
+            status_code=202,
+        )
+
     def _reviewed_hash(body: Any) -> tuple[str | None, JSONResponse | None]:
         """The ``effective_hash`` a consent write names, or its 400."""
 
@@ -2446,6 +2518,11 @@ def build_api_routes(
         Route("/api/specialized-agents", guard(api_agents_list, **op)),
         Route("/api/specialized-agents/runs", guard(api_agent_runs, **op)),
         Route("/api/specialized-agents/runs/{run_id}", guard(api_agent_run, **op)),
+        Route(
+            "/api/specialized-agents/{agent_id}/runs",
+            guard(api_agent_preview, **op),
+            methods=["POST"],
+        ),
         Route("/api/specialized-agents/{agent_id}/mode", guard(api_agent_mode, **su), methods=["PUT"]),
         Route(
             "/api/specialized-agents/{agent_id}/authorizations",
@@ -2665,6 +2742,7 @@ def build_chat_routes(
     presence: Any = None,
     settings: Settings | None = None,
     hw_history: Any = None,
+    copilot_agents: Any = None,
 ) -> list[Route]:
     """Build the server-hosted Claude chat routes.
 
@@ -2683,7 +2761,8 @@ def build_chat_routes(
     ``copilot_tickets`` registers ``ticket_draft``/``ticket_find`` on the
     executor. Optional the way ``tools.py`` treats an unconfigured service: a
     server without it simply never offers those two names, and nothing else
-    about the copilot changes.
+    about the copilot changes. ``copilot_agents`` does the same for
+    ``agent_run_list``/``agent_run_get``/``agent_run_propose``.
     """
 
     executor = ChatExecutor(
@@ -2697,6 +2776,8 @@ def build_chat_routes(
     )
     if copilot_tickets is not None:
         copilot_tickets.register_tools(executor)
+    if copilot_agents is not None:
+        copilot_agents.register_tools(executor)
 
     def driver_of(request: Request) -> str | None:
         """The operator driving *this* request's turn, for its audit rows.

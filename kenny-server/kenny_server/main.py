@@ -87,6 +87,7 @@ from .tunnel import AgentTunnel
 from .update_manager import UpdateManager, record_agent_fetch, update_check_loop
 from .userstore import UserStore
 from .webfilter import ExternalListCache, WebFilterService
+from .copilot_agents import CopilotAgents
 from .copilot_tickets import CopilotTickets, evidence_from_session
 from .webui import _anthropic_client, build_api_routes, build_chat_routes
 from .webui.authz import guard
@@ -1155,6 +1156,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
                 agent_schedule_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await agent_schedule_task
+            await agent_runner.cancel_previews()
             startup_maintenance_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await startup_maintenance_task
@@ -1251,6 +1253,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         history_store=chat_history_store,
         client_factory=client_factory,
         copilot_tickets=copilot_tickets,
+        copilot_agents=CopilotAgents(runner=agent_runner, registry=registry, store=store),
         presence=presence,
         hw_history=hw_history,
         settings=settings,

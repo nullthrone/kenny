@@ -1093,3 +1093,21 @@ async def test_joined_a_scheduled_posture_run_reports_through_the_real_runner(
         assert await sched.pass_once() == []
     finally:
         await ticket_store.close()
+
+
+async def test_previews_neither_count_toward_nor_break_the_breaker_streak(w: World) -> None:
+    _posture(w, WIN_A)
+    await w.runner.set_mode(
+        "posture", "act", actor="admin", effective_hash=await w.runner.live_hash("posture")
+    )
+    w.runner.script[WIN_A] = FAILED
+    sched = w.scheduler()
+    await _nights(w, sched, 2)
+    # A person previews the agent in between, and it goes well.
+    preview = await w.agent_store.start_run(
+        agent_id="posture", spec_hash="h", trigger="preview:op", mode="shadow", host_id=WIN_A
+    )
+    await w.agent_store.finish_run(preview.id, status="completed", verdict="clean")
+    outcomes = await sched.pass_once()
+    assert [o.kind for o in outcomes] == ["ran", "tripped"]
+    assert await w.runner.mode_of("posture") == "shadow"

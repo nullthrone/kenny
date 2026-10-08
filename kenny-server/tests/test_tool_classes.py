@@ -150,6 +150,14 @@ def test_catalog_exhaustive() -> None:
     assert not stale, f"tiers for unknown tools: {sorted(stale)}"
 
 
+def test_the_copilot_agent_tools_are_in_the_catalog_and_read_only() -> None:
+    """They are classified (so exhaustiveness holds) and none of them changes anything."""
+
+    for name in ("agent_run_list", "agent_run_get", "agent_run_propose"):
+        assert name in chat.SERVER_TOOLS
+        assert TOOL_CLASSES[name] == READ_ONLY
+
+
 def test_every_tier_is_one_of_the_three() -> None:
     assert set(TOOL_CLASSES.values()) <= {READ_ONLY, STANDARD_CHANGE, NORMAL_CHANGE}
 

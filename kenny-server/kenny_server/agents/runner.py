@@ -106,6 +106,13 @@ TRIAGE_AGENT_ID = "triage"
 #: The ``trigger`` a ticket-creation run is recorded with.
 TICKET_CREATED_TRIGGER = "event:ticket_created"
 
+#: The ``trigger`` of an on-demand preview run is this followed by the username
+#: of whoever asked for it. Nothing scheduled reads it back as a run of its own.
+PREVIEW_TRIGGER_PREFIX = "preview:"
+
+#: Longest username kept in a preview run's ``trigger``.
+_MAX_PREVIEWER = 64
+
 #: The global switch, and the two caps every run is checked against.
 ENABLED_SETTING = "KENNY_AGENTS_ENABLED"
 MAX_CONCURRENT_SETTING = "KENNY_AGENTS_MAX_CONCURRENT"
@@ -135,6 +142,14 @@ WINDOW_PARAM = "window"
 #: Ceiling on one list parameter's length and on one value's length.
 _MAX_PARAM_VALUES = 200
 _MAX_PARAM_VALUE_LEN = 200
+
+
+class PreviewRefused(ValueError):
+    """A preview request that must not run; ``conflict`` marks a state, not a bad request."""
+
+    def __init__(self, message: str, *, conflict: bool = False) -> None:
+        super().__init__(message)
+        self.conflict = conflict
 
 
 class HashMismatch(ValueError):
@@ -200,6 +215,39 @@ def validate_params(spec: AgentSpec, params: Any) -> dict[str, Any]:
             raise ValueError(f"a value of {name} is longer than {_MAX_PARAM_VALUE_LEN}")
         out[name] = sorted({v.strip() for v in value})
     return out
+
+
+def surface_refusal(spec: AgentSpec) -> str | None:
+    """Why ``spec`` can never be previewed (it runs on a ticket's own surface), or ``None``."""
+
+    if spec.id == TRIAGE_AGENT_ID or (
+        spec.trigger.kind == "event" and spec.trigger.event == "ticket_created"
+    ):
+        return f"{spec.id} runs on a ticket's own surface and cannot be previewed"
+    return None
+
+
+def _preview_brief(spec: AgentSpec, host_id: str | None, params: Mapping[str, Any]) -> str:
+    """The one message that starts a preview run.
+
+    Says it is a preview, so the agent reports what it finds and what it would
+    do; the gate (always ``shadow`` here) is what stops a change, not this text.
+    """
+
+    where = f' on the machine "{host_id}"' if host_id else ""
+    lines = [
+        f"On-demand preview of the {spec.title.lower()} run{where}, requested by a person. "
+        "Investigate as you normally would; any change you attempt is recorded as a "
+        "recommendation and not made."
+    ]
+    packages = params.get("packages")
+    if "packages" in spec.params and isinstance(packages, (list, tuple, set, frozenset)):
+        allowed = sorted({p for p in packages if isinstance(p, str) and p})
+        if allowed:
+            lines.append("Package ids you may update: " + ", ".join(allowed) + ".")
+        else:
+            lines.append("No package is allowed to be updated; update nothing.")
+    return "\n".join(lines)
 
 
 def _declared(spec: AgentSpec, params: Mapping[str, Any]) -> dict[str, Any]:
@@ -291,6 +339,9 @@ class AgentRunner:
         #: not ``agent_runs``: a row a failed close left ``running`` must not
         #: hold a slot until the next restart.
         self._in_flight = 0
+        #: Preview runs still going. The event loop keeps only a weak reference
+        #: to a task, so a fire-and-forget one can be collected mid-run.
+        self._previews: set[asyncio.Task[None]] = set()
         #: The standing authorizations (ADR-0072) a run's ``normal_change`` is
         #: matched against. Without a store no ``normal_change`` ever runs.
         self.authorizations = authorizations
@@ -877,8 +928,21 @@ class AgentRunner:
         executor: ToolExecutor | None = None,
         authorizer: Authorizer | None = None,
         act_until: datetime | None = None,
+        preview: bool = False,
+        on_admitted: Callable[[AgentRun], None] | None = None,
     ) -> AgentRun | None:
         """Run ``spec`` once on ``host_id`` through the agent gate.
+
+        ``preview`` makes this an on-demand preview: the run is **always**
+        ``shadow``, whatever mode is stored (a change is refused at the gate and
+        kept as a recommendation, a verdict opens no ticket), it never spends an
+        authorization, and no change can start in it even if the agent is in
+        ``act``. Its ``trigger`` is
+        ``preview:<who asked>`` (:data:`PREVIEW_TRIGGER_PREFIX`). Triage cannot be
+        previewed (it runs on a ticket's own surface), and an agent whose stored
+        mode is ``off`` starts nothing -- a preview is no way round a
+        superuser's switch. ``on_admitted`` is called with the run row as soon
+        as it is opened (also when a cap skipped it), before the model is called.
 
         ``act_until`` is the moment from which no change of this run may start
         (the end of the maintenance window a scheduled run belongs to): from
@@ -918,6 +982,8 @@ class AgentRunner:
             raise ValueError(f"agent {spec.id} is not in the catalog")
         if known.spec_hash != spec.spec_hash:
             raise ValueError(f"agent {spec.id}: spec differs from the catalog entry")
+        if preview and not trigger.startswith(PREVIEW_TRIGGER_PREFIX):
+            raise ValueError(f"a preview run's trigger starts with {PREVIEW_TRIGGER_PREFIX!r}")
         executor = executor if executor is not None else self._executor
         if executor is None:
             raise RuntimeError("run_generic needs an executor; call configure() first")
@@ -936,6 +1002,10 @@ class AgentRunner:
         mode = await self._mode_for(spec)
         if mode == "off":
             return None
+        if preview:
+            # Forced, after the ``off`` check above: a preview observes what the
+            # agent would do, it is never a way to make it do anything.
+            mode = "shadow"
         run, admitted = await self._admit(
             spec,
             mode,
@@ -946,6 +1016,8 @@ class AgentRunner:
             params=params,
             run_hash=run_hash,
         )
+        if on_admitted is not None:
+            on_admitted(run)
         if not admitted:
             return run
 
@@ -956,6 +1028,8 @@ class AgentRunner:
         finished: AgentRun | None = None
 
         async def still_acting() -> bool:
+            if preview:
+                return False
             if act_until is not None and self._now() >= act_until:
                 return False
             if not self.enabled() or await self._mode_for(spec) != "act":
@@ -967,7 +1041,7 @@ class AgentRunner:
             _session: AgentSession, tool: str, _args: dict[str, Any], target: str | None
         ) -> Authorization | None:
             store = self.authorizations
-            if store is None or await self.live_hash(spec.id) != run_hash:
+            if preview or store is None or await self.live_hash(spec.id) != run_hash:
                 return None
             return await store.consume(
                 agent_id=spec.id,
@@ -983,7 +1057,11 @@ class AgentRunner:
                 assert self._client_factory is not None  # checked above
                 client = self._client_factory()
             session = AgentSession(
-                id=run.id, spec=resolve(spec, params), mode=mode, agent_id=host_id
+                id=run.id,
+                spec=resolve(spec, params),
+                mode=mode,
+                agent_id=host_id,
+                preview=preview,
             )
             session.usage = meter
             session.messages.append({"role": "user", "content": brief})
@@ -1030,6 +1108,86 @@ class AgentRunner:
                 recommendations=_redacted(recommendations),
             )
         return finished
+
+    # -- an on-demand preview ------------------------------------------------
+
+    async def start_preview(
+        self, spec: AgentSpec, *, host_id: str | None, requested_by: str
+    ) -> AgentRun | None:
+        """Start one preview run of ``spec`` in the background; return its row.
+
+        Returns as soon as the run is *admitted* -- the row exists and is
+        ``running`` (or ``skipped`` by a cap) -- and never waits for the model.
+        The run itself continues in a task this runner holds until it ends; it
+        records its own outcome (``failed`` included) and nothing observes it
+        but the run row. ``None`` when nothing could start (the global switch
+        or the AI master switch went off, or the mode turned ``off``, between
+        the caller's checks and here).
+
+        Raises :class:`PreviewRefused` for a request that must not run at all:
+        triage and any agent that runs on a ticket's own surface, an agent whose
+        mode is ``off``, and the global switch off. ``host_id`` is the caller's
+        to validate (:func:`~kenny_server.agents.policy.run_target_problem`).
+        """
+
+        why = surface_refusal(spec)
+        if why is not None:
+            raise PreviewRefused(why)
+        if spec.id not in self.catalog:
+            raise PreviewRefused(f"unknown agent {spec.id}")
+        if await self._mode_for(spec) == "off":
+            raise PreviewRefused(f"{spec.id} is off; a preview does not override that")
+        if not self.enabled():
+            raise PreviewRefused("agents are switched off", conflict=True)
+
+        trigger = f"{PREVIEW_TRIGGER_PREFIX}{requested_by.strip()[:_MAX_PREVIEWER] or 'unknown'}"
+        loop = asyncio.get_running_loop()
+        admitted: asyncio.Future[AgentRun | None] = loop.create_future()
+
+        def on_admitted(run: AgentRun) -> None:
+            if not admitted.done():
+                admitted.set_result(run)
+
+        async def go() -> None:
+            try:
+                await self.run_generic(
+                    spec,
+                    host_id=host_id,
+                    trigger=trigger,
+                    brief=_preview_brief(spec, host_id, await self.get_params(spec.id)),
+                    preview=True,
+                    on_admitted=on_admitted,
+                )
+            except Exception as exc:  # noqa: BLE001 - reported to the caller if still waiting
+                logger.exception("agent %s preview failed to start", spec.id)
+                if not admitted.done():
+                    admitted.set_exception(exc)
+            finally:
+                if not admitted.done():
+                    admitted.set_result(None)
+
+        task = asyncio.create_task(go(), name=f"agent-preview-{spec.id}")
+        self._previews.add(task)
+        task.add_done_callback(self._previews.discard)
+        return await admitted
+
+    async def wait_previews(self) -> None:
+        """Wait for every preview run still going (shutdown and tests)."""
+
+        while self._previews:
+            await asyncio.gather(*list(self._previews), return_exceptions=True)
+
+    async def cancel_previews(self) -> None:
+        """Stop every preview run still going (server shutdown).
+
+        Each closes its own row as ``failed`` / interrupted on the way out, the
+        same as a scheduled run cut off by a restart.
+        """
+
+        tasks = list(self._previews)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     def _ai_ready(self) -> bool:
         if self.ai_access is None:

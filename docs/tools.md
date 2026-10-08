@@ -312,6 +312,29 @@ A ticket opened from a draft records what the conversation had already checked: 
 `note` row naming the successful read-only calls from that chat session, composed on the
 server from the session itself rather than sent by the browser.
 
+The overlay also has a window onto the [specialized
+agents](dashboard.md#specialized-agents)
+([ADR-0071](adr/0071-specialized-agents-purpose-bound-unattended-sessions.md)). All three
+tools are `read_only`: two read the run history, and the third *proposes* a run and starts
+nothing, the way `ticket_draft` proposes a ticket. The chat stream turns a successful
+`agent_run_propose` into an `agent_run_proposal` event carrying `agent_id`, `host_id` and
+`reason`; a run exists only when a person starts it through `POST
+/api/specialized-agents/{agent_id}/runs`, which always runs the agent in `shadow`. A run's
+`summary`, `error` and recorded arguments were produced while an agent read a monitored
+machine, so `agent_run_get` returns them as data beside a note saying so. The tools read runs
+across every host, so they are withheld from every ticket-bound and unprompted turn and no
+agent may name them; they are not registered over MCP.
+
+| Tool | Arguments | Tier |
+|------|-----------|------|
+| `agent_run_list` | `agent_id?` (a specialized agent such as `posture`), `limit?` (1–50, default 10) | `read_only` |
+| `agent_run_get` | `run_id` | `read_only` (redacted record; its text is untrusted data) |
+| `agent_run_propose` | `agent_id`, `host_id?`, `reason` | `read_only` (starts nothing) |
+
+A proposal is refused for an unknown agent, triage, an agent whose mode is `off`, a machine
+the server does not know, a missing machine for an agent that works on one, and a machine
+given to an agent that works on none.
+
 The server-side web-filter tools are also server-only. `webfilter_get` and
 `web_activity_query` are `read_only`; `webfilter_set` and `webfilter_push` change state,
 but at different tiers — `webfilter_set` changes *what* the server enforces,
