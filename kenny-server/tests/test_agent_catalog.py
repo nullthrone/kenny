@@ -194,3 +194,35 @@ async def test_the_verdict_tool_is_offered_to_the_real_session(world: _World) ->
     verdict = CATALOG["triage"].verdict_tool
     assert verdict is not None
     assert verdict in session.allowed_tools
+
+
+def test_a_spec_naming_an_mcp_only_tool_is_refused() -> None:
+    from kenny_server.agents.catalog import build
+    from kenny_server.agents.spec import AgentSpec, SpecError, Trigger
+
+    spec = AgentSpec(
+        id="mcp_only",
+        title="t",
+        description="d",
+        prompt="p",
+        trigger=Trigger(kind="on_demand"),
+        tools=frozenset({"reliability_suppression_list"}),
+    )
+    with pytest.raises(SpecError, match="cannot run in the tool loop"):
+        build((spec,))
+
+
+def test_ticket_tools_are_refused_off_a_ticket_surface() -> None:
+    from kenny_server.agents.catalog import build
+    from kenny_server.agents.spec import AgentSpec, SpecError, Trigger
+
+    spec = AgentSpec(
+        id="no_ticket",
+        title="t",
+        description="d",
+        prompt="p",
+        trigger=Trigger(kind="on_demand"),
+        tools=frozenset({"agent_health", "ticket_summary"}),
+    )
+    with pytest.raises(SpecError, match="need a ticket's surface"):
+        build((spec,))

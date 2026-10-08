@@ -40,12 +40,14 @@ and the one host the run was frozen to.
    no constraint is refused here unless it is the verdict tool, whose effect its
    own handler decides; :func:`~kenny_server.agents.spec.validate` refuses such
    a spec at load, and the policy re-validates rather than trusting that it ran.
-5. *Change in ``shadow`` -> ``shadow``*, recorded in
+5. *The verdict tool -> allow*, in either mode: it is how a run reports, and
+   its own handler decides — honouring ``session.mode`` — what follows.
+6. *Change in ``shadow`` -> ``shadow``*, recorded in
    ``session.recommendations``. The whole run happens; nothing changes.
-6. *``standard_change`` in ``act`` -> allow*, recorded in ``session.actions``.
+7. *``standard_change`` in ``act`` -> allow*, recorded in ``session.actions``.
    The tier alone never grants this (ADR-0045): the constraints a person
    reviewed bound it, and putting the agent in ``act`` was that person's call.
-7. *``normal_change`` in ``act`` -> the authorizer decides.* Only an explicit
+8. *``normal_change`` in ``act`` -> the authorizer decides.* Only an explicit
    ``True`` allows; no authorizer, a falsy answer or an exception is
    ``not_authorized`` plus a recommendation.
 
@@ -168,7 +170,7 @@ class AgentPolicy:
         self._mode = session.mode
         self._host = session.agent_id
         self._authorizer = authorizer
-        schemas = build_tool_schemas(allowed=frozenset(self._spec.tools))
+        schemas = build_tool_schemas(allowed=frozenset(self._spec.tools), unattended=True)
         if schemas:
             schemas[-1] = {**schemas[-1], "cache_control": {"type": "ephemeral"}}
         self._schemas = schemas
@@ -317,7 +319,7 @@ class AgentPolicy:
     async def gate(
         self, session: AgentSession, tool: str, args: dict[str, Any], agent_id: str | None
     ) -> Allow | Deny:
-        """Steps 1-7 of the module docstring, in that order and no other."""
+        """Steps 1-8 of the module docstring, in that order and no other."""
 
         self._own(session)
         if tool not in self._spec.tools or not _dispatchable(tool):
@@ -334,6 +336,12 @@ class AgentPolicy:
         reason = self._constraint_violation(tool, args)
         if reason is not None:
             return Deny("constraint", reason)
+
+        if tool == self._spec.verdict_tool:
+            # How a run reports what it found, in either mode. Its effect is its
+            # handler's to decide, and that handler must honour ``session.mode``
+            # itself — refusing it in shadow would make a shadow run unreadable.
+            return Allow()
 
         acting = self._mode == "act" and session.mode == "act"
         if not acting:

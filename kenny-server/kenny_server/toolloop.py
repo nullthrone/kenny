@@ -409,7 +409,9 @@ def _capability_schema(tool: str, arg_keys: list[str]) -> dict[str, Any]:
     return {"type": "object", "properties": properties, "required": required}
 
 
-def build_tool_schemas(allowed: frozenset[str] | None = None) -> list[dict[str, Any]]:
+def build_tool_schemas(
+    allowed: frozenset[str] | None = None, *, unattended: bool = False
+) -> list[dict[str, Any]]:
     """Anthropic tool schemas for every server-only + capability tool.
 
     Deterministic order (server tools first, then capability tools in catalog
@@ -418,7 +420,18 @@ def build_tool_schemas(allowed: frozenset[str] | None = None) -> list[dict[str, 
     ``allowed``, when given, narrows the emitted set to those names (a surface
     that exposes only part of the catalog). ``None`` — the default — emits the
     full catalog exactly as before.
+
+    ``unattended`` describes the tools as an agent run sees them (ADR-0071):
+    nobody confirms anything there, and a run is fixed to one host, so the
+    confirmation note and the per-call ``agent_id`` override would both tell
+    the model something false.
     """
+
+    note = (
+        " (state-changing — runs only within this agent's limits)"
+        if unattended
+        else " (state-changing — requires operator confirmation)"
+    )
 
     schemas: list[dict[str, Any]] = []
     for name, spec in SERVER_TOOLS.items():
@@ -427,9 +440,7 @@ def build_tool_schemas(allowed: frozenset[str] | None = None) -> list[dict[str, 
                 continue
         elif name not in allowed:
             continue
-        gated = (
-            " (state-changing — requires operator confirmation)" if is_state_changing(name) else ""
-        )
+        gated = note if is_state_changing(name) else ""
         schemas.append(
             {
                 "name": name,
@@ -444,19 +455,22 @@ def build_tool_schemas(allowed: frozenset[str] | None = None) -> list[dict[str, 
     for name, arg_keys in CAPABILITY_TOOLS.items():
         if allowed is not None and name not in allowed:
             continue
-        gated = (
-            " (state-changing — requires operator confirmation)" if is_state_changing(name) else ""
-        )
+        gated = note if is_state_changing(name) else ""
         arg_note = f" (args: {', '.join(arg_keys)})" if arg_keys else ""
-        desc = (
-            f"Run `{name}` on the currently selected agent{arg_note}. "
-            f"Pass agent_id to target a different host for this one call.{gated}"
-        )
+        input_schema = _capability_schema(name, arg_keys)
+        if unattended:
+            desc = f"Run `{name}` on this run's machine{arg_note}.{gated}"
+            input_schema["properties"].pop("agent_id", None)
+        else:
+            desc = (
+                f"Run `{name}` on the currently selected agent{arg_note}. "
+                f"Pass agent_id to target a different host for this one call.{gated}"
+            )
         schemas.append(
             {
                 "name": name,
                 "description": desc,
-                "input_schema": _capability_schema(name, arg_keys),
+                "input_schema": input_schema,
             }
         )
     return schemas

@@ -332,18 +332,27 @@ async def test_the_constraint_sees_the_args_without_the_routing_override() -> No
     assert args == {"id": FIREFOX, "timeout_s": 600}
 
 
-async def test_the_verdict_tool_needs_no_constraint() -> None:
-    tools = frozenset({"agent_health", TRIAGE_VERDICT_TOOL})
-    act = _session(mode="act", tools=tools, constraints=(), verdict_tool=TRIAGE_VERDICT_TOOL)
-    args = {"verdict": "phantom", "finding": "f", "evidence": "e"}
-    assert await _gate(AgentPolicy(act), act, TRIAGE_VERDICT_TOOL, dict(args)) == Allow()
-    assert act.actions[0]["tool_class"] == STANDARD_CHANGE
+async def test_the_verdict_tool_runs_in_both_modes_and_is_not_an_action() -> None:
+    """The verdict is how a run reports; a shadow run must still be able to.
 
-    # Classified like any other standard change: shadow records it.
-    shadow = _session(tools=tools, constraints=(), verdict_tool=TRIAGE_VERDICT_TOOL)
-    decision = await _gate(AgentPolicy(shadow), shadow, TRIAGE_VERDICT_TOOL, dict(args))
-    assert isinstance(decision, Deny) and decision.code == "shadow"
-    assert shadow.recommendations[0]["tool"] == TRIAGE_VERDICT_TOOL
+    It needs no constraint, is never a recommendation, and is not counted as a
+    change the run made: what the verdict leads to is its handler's decision,
+    taken with the session's mode in hand.
+    """
+
+    tools = frozenset({"agent_health", TRIAGE_VERDICT_TOOL})
+    args = {"verdict": "phantom", "finding": "f", "evidence": "e"}
+    for mode in ("act", "shadow"):
+        session = _session(mode=mode, tools=tools, constraints=(), verdict_tool=TRIAGE_VERDICT_TOOL)
+        assert await _gate(AgentPolicy(session), session, TRIAGE_VERDICT_TOOL, dict(args)) == Allow()
+        assert session.actions == [] and session.recommendations == []
+
+
+async def test_unattended_schemas_offer_no_host_override_and_promise_no_confirmation() -> None:
+    session = _session(mode="act")
+    for schema in AgentPolicy(session).tool_schemas():
+        assert "agent_id" not in schema["input_schema"]["properties"], schema["name"]
+        assert "operator confirmation" not in schema["description"], schema["name"]
 
 
 # -- step 5: shadow ------------------------------------------------------------
