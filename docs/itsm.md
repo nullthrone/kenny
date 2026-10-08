@@ -285,7 +285,7 @@ to investigate with.
 Triage is kenny's first [specialized agent](dashboard.md#specialized-agents), `triage`:
 each investigation is one run, bound by the global agent switch and caps in **Admin → AI**
 and recorded with its verdict and token usage in the agent run history
-(`GET /api/agents/runs?agent_id=triage`). Its host calls are audited as `agent:triage`
+(`GET /api/specialized-agents/runs?agent_id=triage`). Its host calls are audited as `agent:triage`
 under that run's id; on the ticket's own timeline it still appears as triage. A ticket an
 agent's own action opened is never investigated, so one agent's effect cannot start
 another.

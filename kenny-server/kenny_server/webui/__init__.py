@@ -63,7 +63,7 @@ from ..webfilter import (
     requested_domains,
     validate_categories,
 )
-from .authz import guard, principal_of, visible_ids
+from .authz import guard, principal_of, strip_audit_args, strip_audit_rows, visible_ids
 
 logger = logging.getLogger("kenny.webui")
 
@@ -205,7 +205,7 @@ def build_api_routes(
     ``client_factory`` builds the Anthropic client for read-path event
     categorization; defaults to :func:`_anthropic_client` (injected in tests).
     ``agents`` is the :class:`~kenny_server.agents.runner.AgentRunner` behind
-    ``/api/agents*``; without one those routes answer 503.
+    ``/api/specialized-agents*``; without one those routes answer 503.
     """
 
     _APPLIES_TO = {"powershell", "posix", "self_protection", "path"}
@@ -665,7 +665,7 @@ def build_api_routes(
         rows = await event_store.query_log(
             kind=store_kind, q=q, agent_ids=agent_ids, before=before, limit=limit
         )
-        log_rows = [_log_row(r) for r in rows]
+        log_rows = [_log_row(r) for r in strip_audit_rows(principal, rows)]
         next_cursor = (
             _encode_log_cursor(rows[-1]["at"], rows[-1]["id"]) if len(rows) == limit else None
         )
@@ -717,8 +717,11 @@ def build_api_routes(
                 # sections: a key is set and recommendations are switched on.
                 "ai_enabled": ai.current().enabled("recommend"),
                 "history": hist_points,
+                # Arguments of audited calls are shown to operator+ only.
                 "call_log": [
-                    c for c in await call_log.list() if c["agent_id"] == agent_id
+                    strip_audit_args(principal_of(request), c)
+                    for c in await call_log.list()
+                    if c["agent_id"] == agent_id
                 ],
             }
         )
@@ -1010,7 +1013,7 @@ def build_api_routes(
         )
         if principal is not None and principal.scoped:
             entries = [e for e in entries if principal.may_see(e.get("agent_id"))]
-        return JSONResponse({"entries": entries})
+        return JSONResponse({"entries": strip_audit_rows(principal, entries)})
 
     async def api_rotate_token(request: Request) -> JSONResponse:
         """Mint (or rotate) a per-agent token. Inherits /api operator auth.
@@ -2200,10 +2203,10 @@ def build_api_routes(
             guard(api_suppression_remove, **op),
             methods=["DELETE"],
         ),
-        Route("/api/agents", guard(api_agents_list, **op)),
-        Route("/api/agents/runs", guard(api_agent_runs, **op)),
-        Route("/api/agents/runs/{run_id}", guard(api_agent_run, **op)),
-        Route("/api/agents/{agent_id}/mode", guard(api_agent_mode, **su), methods=["PUT"]),
+        Route("/api/specialized-agents", guard(api_agents_list, **op)),
+        Route("/api/specialized-agents/runs", guard(api_agent_runs, **op)),
+        Route("/api/specialized-agents/runs/{run_id}", guard(api_agent_run, **op)),
+        Route("/api/specialized-agents/{agent_id}/mode", guard(api_agent_mode, **su), methods=["PUT"]),
         Route("/api/settings", guard(api_settings_list, **su)),
         Route("/api/settings/{key}", guard(api_settings_set, **su), methods=["PUT"]),
         Route(

@@ -720,16 +720,16 @@ recommendation) or `act`. Triage's mode is its two settings above: *Investigate 
 tickets automatically* off (or AI unavailable) is `off`, *Let triage resolve a ticket*
 off is `shadow`, on is `act`.
 
-- `GET /api/agents` *(operator+)* — the global switch (`enabled`) and every agent in the
+- `GET /api/specialized-agents` *(operator+)* — the global switch (`enabled`) and every agent in the
   catalog: its declaration (tools and their tiers, argument constraints, budget,
   `spec_hash`), its current `mode`, and its latest run.
-- `GET /api/agents/runs?agent_id=&limit=` *(operator+)* — runs newest first, optionally
+- `GET /api/specialized-agents/runs?agent_id=&limit=` *(operator+)* — runs newest first, optionally
   for one agent (`limit` defaults to 50, at most 500).
-- `GET /api/agents/runs/{run_id}` *(operator+)* — one run: what started it, the host or
+- `GET /api/specialized-agents/runs/{run_id}` *(operator+)* — one run: what started it, the host or
   ticket it was bound to, its mode and status (`running`, `completed`, `failed`,
   `skipped`), its verdict, the changes it made and proposed (arguments redacted), and its
   token usage.
-- `PUT /api/agents/{agent_id}/mode` with `{"mode": "off" | "shadow" | "act"}`
+- `PUT /api/specialized-agents/{agent_id}/mode` with `{"mode": "off" | "shadow" | "act"}`
   *(superuser only)* — moving an agent to `act` is a superuser's decision, so every mode
   write is. For triage it writes the two settings above, exactly as this page does. The
   answer carries the mode now in force, which for triage stays `off` while no API key or
