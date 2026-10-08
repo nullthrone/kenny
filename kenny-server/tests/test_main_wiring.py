@@ -948,3 +948,32 @@ def test_each_boot_is_a_server_run_closed_on_shutdown(tmp_path) -> None:
             app2.state.presence.runs("2000-01-01", "2100-01-01")
         )
         assert [r["current"] for r in runs] == [False, True]
+
+
+def test_specialized_agents_are_wired_end_to_end(tmp_path) -> None:
+    """The scheduler, the verdict tool and standing authorizations reach the app.
+
+    Joined at the app: a scheduled run's verdict call must find its handler on
+    the executor the runner forwards through, and a granted authorization must
+    be the store the runner consumes from — each half alone would pass its own
+    unit tests and still fail in production.
+    """
+
+    from kenny_server.toolloop import AGENT_VERDICT_TOOL
+
+    app = build_app(db_path=str(tmp_path / "agents.sqlite"))
+    runner = app.state.agents
+    assert runner.authorizations is app.state.agent_authorizations
+    scheduler = app.state.agent_scheduler
+    assert scheduler.runner is runner
+    assert AGENT_VERDICT_TOOL in scheduler.executor.server_tool_handlers
+
+    with TestClient(app) as c:
+        h = _bearer(app)
+        listing = c.get("/api/specialized-agents", headers=h)
+        assert listing.status_code == 200
+        ids = {a["id"] for a in listing.json()["agents"]}
+        assert {"triage", "patch", "posture"} <= ids
+        assert (
+            c.get("/api/specialized-agents/patch/authorizations", headers=h).status_code == 200
+        )

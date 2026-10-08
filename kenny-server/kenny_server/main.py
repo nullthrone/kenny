@@ -68,8 +68,12 @@ from .store import (
     UpdateStore,
     WebFilterStore,
 )
+from .agents.authorizations import AuthorizationStore
 from .agents.runner import AgentRunner
+from .agents.scheduler import INTERVAL_SETTING as AGENT_SCHEDULE_SETTING
+from .agents.scheduler import AgentScheduler
 from .agents.store import AgentStore
+from .agents.verdict import register as register_agent_verdict
 from .ticket_alerts import TicketAlertReader
 from .ticket_assistant import TicketAssistant
 from .ticket_rules import TicketRuleList
@@ -757,8 +761,38 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
     # runner every run starts through. Built on every server; the ``triage``
     # agent is attached below once there is an assistant for it to run on.
     agent_store = AgentStore(db_path)
+    agent_authorizations = AuthorizationStore(db_path)
     agent_runner = AgentRunner(
-        store=agent_store, settings=settings, ai_access=ai_access, event_store=event_store
+        store=agent_store,
+        settings=settings,
+        ai_access=ai_access,
+        event_store=event_store,
+        authorizations=agent_authorizations,
+    )
+    # The executor agent runs forward through: its own instance, so the one
+    # tool only agent runs end with is registered nowhere a person's session
+    # reaches. The model is read at each run start, like the chat's.
+    agent_executor = ToolExecutor(
+        registry=registry,
+        store=store,
+        tunnel=tunnel,
+        call_log=call_log,
+        screenshots=screenshots,
+        presence=presence,
+        settings=settings,
+    )
+    register_agent_verdict(agent_executor, tickets=ticket_service)
+    agent_runner.configure(
+        executor=agent_executor,
+        client_factory=client_factory,
+        model=lambda: str(settings.get("KENNY_CHAT_MODEL")),
+    )
+
+    async def _agent_params(agent_id: str) -> dict[str, Any]:
+        return dict(await agent_runner.get_params(agent_id))
+
+    agent_scheduler = AgentScheduler(
+        agent_runner, agent_runner.catalog, _agent_params, agent_executor
     )
     ticket_assistant: TicketAssistant | None = None
     triage: TriageService | None = None
@@ -910,6 +944,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         await ticket_store.connect()
         await discord_identities.connect()
         await agent_store.connect()
+        await agent_authorizations.connect()
         # Nothing runs yet, so a run still open belongs to a dead process.
         await agent_runner.startup()
         # Telemetry retention (ADR-0051) is re-read here, after the overrides
@@ -993,6 +1028,14 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         if alert_secs > 0:
             alert_delay = float(settings.get("KENNY_ALERT_INITIAL_DELAY"))
             alert_task = asyncio.create_task(alert_engine.run(alert_secs, alert_delay))
+        # Scheduled specialized agents (ADR-0071). Nothing runs unless an agent
+        # has a window, hosts and a mode other than off; the cadence is live.
+        agent_schedule_task: asyncio.Task | None = asyncio.create_task(
+            agent_scheduler.run(
+                lambda: int(settings.get(AGENT_SCHEDULE_SETTING)),
+                initial_delay_s=float(settings.get("KENNY_ALERT_INITIAL_DELAY")),
+            )
+        )
         # Periodic DB backup loop (see backup.py). Always started: the cadence,
         # including 0 = paused, is re-read inside the loop.
         backup_delay = float(settings.get("KENNY_BACKUP_INITIAL_DELAY"))
@@ -1108,6 +1151,10 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
                 alert_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await alert_task
+            if agent_schedule_task is not None:
+                agent_schedule_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await agent_schedule_task
             startup_maintenance_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await startup_maintenance_task
@@ -1150,6 +1197,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
             await update_store.close()
             await ticket_store.close()
             await discord_identities.close()
+            await agent_authorizations.close()
             await agent_store.close()
             await settings_store.close()
 
@@ -1326,6 +1374,8 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
     app.state.triage = triage
     app.state.agents = agent_runner
     app.state.agent_store = agent_store
+    app.state.agent_authorizations = agent_authorizations
+    app.state.agent_scheduler = agent_scheduler
     # Replaced by the lifespan with the tasks it actually started (if any).
     app.state.ticket_task = None
     app.state.discord_task = None
