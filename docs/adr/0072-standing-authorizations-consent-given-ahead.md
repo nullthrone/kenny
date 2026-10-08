@@ -41,16 +41,21 @@ binding rules:
 1. **Never authorizable: `shell_exec`, `powershell_exec`, `agent_update`.** A free-text
    script cannot be bound to values; an agent binary's consent model is the pinned
    campaign (ADR-0040). The list is a literal in code, refused at grant and at match.
-2. **Only a superuser grants or revokes; every grant expires** (at most 180 days).
-   Operators may read authorizations; users may not. None is ever shown to a model: the
-   refusal message is the boundary (ADR-0023).
+2. **Only a person grants, and only for what they saw.** Granting, revoking, editing an
+   agent's parameters and promoting it to `act` need a superuser signed in to the
+   dashboard — not a token, which is what a model holds — and name the effective hash the
+   person was shown; a different live hash refuses the request. Every grant expires (at
+   most 180 days). Operators may read authorizations; users may not. None is ever shown to
+   a model: the refusal message is the boundary (ADR-0023).
 3. **It narrows, never widens.** It is consulted at gate step 8 only, after the spec's
    constraints (ADR-0071) have bound every argument; it cannot pre-authorize a run or
    reach a tier the agent's spec does not name. Only the agent surface consults it — no
    ticket, copilot or MCP gate ever does.
 4. **Consume, then execute.** A match records an attempt atomically before the call runs,
    and a failed call still counts, so two runs cannot both spend the last attempt.
-   Revoking reaches the next call; a call already forwarded cannot be recalled.
+   Revoking reaches the next call; a call already forwarded cannot be recalled. A
+   scheduled agent's maintenance window bounds its consent in time: no host is started,
+   and no change is made, once the window has closed.
 5. **Every autonomous change names its authorization.** The id is stamped into the run's
    actions and the audit entry. A refused change becomes a recommendation, which names
    none: a person may act on it themselves through the ordinary confirm-gate, as
