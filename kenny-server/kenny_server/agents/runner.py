@@ -38,6 +38,21 @@ the runner hands each run a live predicate (the global switch on and the
 agent's mode ``act``) — the gate's ``still_acting`` for a generic run,
 ``TriageService.still_acting`` for triage's verdict — so demoting an agent or
 switching every agent off reaches a run already in flight.
+
+**``act`` binds to the effective hash** (ADR-0072 rule 6): the spec hash
+combined with the agent's parameters
+(:func:`~kenny_server.agents.spec.effective_hash`). Choosing ``act`` stores the
+hash it was chosen at; an agent is in ``act`` only while that stored hash
+equals the live one, computed from the catalog entry and the stored parameters
+on every read. The first read that finds them apart drops the agent to
+``shadow`` for good (a code rollback does not promote it again), records who
+and why on the event log, and voids every authorization bound to another hash.
+A parameter edit (:meth:`AgentRunner.set_params`) does the same at once. A
+generic run freezes its parameters and effective hash at start, and its
+``still_acting`` also turns false once the live hash moves away from the run's.
+
+Triage is outside that binding: its mode is its settings, and it takes no
+parameters.
 """
 
 from __future__ import annotations
@@ -52,9 +67,11 @@ from ..ticketstore import AGENT_ORIGIN, Ticket
 from ..tool_classes import READ_ONLY, classify
 from ..toolloop import ToolExecutor, UsageMeter, drive_events
 from ..tools import redact_audit_args
+from ..webfilter import DAY_KEYS, format_hhmm, parse_recurrence
+from .authorizations import Authorization, AuthorizationStore
 from .catalog import CATALOG, check_dispatchable
 from .policy import AgentPolicy, AgentSession, Authorizer
-from .spec import MODES, AgentSpec, validate
+from .spec import MODES, AgentSpec, effective_hash, resolve, validate
 from .store import AgentRun, AgentStore
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -96,6 +113,72 @@ _MAX_TEXT = 2000
 
 #: What a run that left without finishing (cancelled, interrupted) is closed with.
 _INTERRUPTED = "the run was interrupted before it finished"
+
+#: The actor recorded when the server, not a person, drops an agent to shadow.
+_SYSTEM_ACTOR = "system"
+
+#: The parameter a ``schedule`` trigger reads its maintenance window from.
+WINDOW_PARAM = "window"
+
+#: Ceiling on one list parameter's length and on one value's length.
+_MAX_PARAM_VALUES = 200
+_MAX_PARAM_VALUE_LEN = 200
+
+
+def validate_params(spec: AgentSpec, params: Any) -> dict[str, Any]:
+    """``params`` checked against what ``spec`` declares, normalised; else :class:`ValueError`.
+
+    Keys must be among ``spec.params``. ``window`` is a mapping
+    ``{days, start, end[, tz]}`` validated by the web filter's own parser
+    (:func:`~kenny_server.webfilter.parse_recurrence`) and stored normalised
+    (``days`` as weekday keys, times as ``HH:MM``, the zone filled in). Every
+    other parameter is a list of non-empty strings, deduplicated and sorted, so
+    the same set always yields the same effective hash. An empty list is kept:
+    it admits nothing.
+    """
+
+    if not isinstance(params, Mapping):
+        raise ValueError("params must be an object")
+    unknown = sorted(str(k) for k in params if k not in spec.params)
+    if unknown:
+        raise ValueError(f"agent {spec.id} takes no parameter(s) {', '.join(unknown)}")
+    out: dict[str, Any] = {}
+    for name, value in params.items():
+        if name == WINDOW_PARAM:
+            if not isinstance(value, Mapping):
+                raise ValueError("window must be an object with days, start and end")
+            extra = sorted(str(k) for k in value if k not in ("days", "start", "end", "tz"))
+            if extra:
+                raise ValueError(f"window takes no field(s) {', '.join(extra)}")
+            days, start_min, end_min, zone = parse_recurrence(
+                days=value.get("days"),
+                start=value.get("start"),
+                end=value.get("end"),
+                tz=value.get("tz"),
+            )
+            out[name] = {
+                "days": [DAY_KEYS[d] for d in days],
+                "start": format_hhmm(start_min),
+                "end": format_hhmm(end_min),
+                "tz": zone,
+            }
+            continue
+        if not isinstance(value, (list, tuple)):
+            raise ValueError(f"{name} must be a list of values")
+        if len(value) > _MAX_PARAM_VALUES:
+            raise ValueError(f"{name} takes at most {_MAX_PARAM_VALUES} values")
+        if any(not isinstance(v, str) or not v.strip() for v in value):
+            raise ValueError(f"every value of {name} must be a non-empty string")
+        if any(len(v) > _MAX_PARAM_VALUE_LEN for v in value):
+            raise ValueError(f"a value of {name} is longer than {_MAX_PARAM_VALUE_LEN}")
+        out[name] = sorted({v.strip() for v in value})
+    return out
+
+
+def _declared(spec: AgentSpec, params: Mapping[str, Any]) -> dict[str, Any]:
+    """The stored parameters ``spec`` still declares; stray keys left behind."""
+
+    return {name: params[name] for name in spec.params if name in params}
 
 
 def _clip(value: Any, limit: int = _MAX_TEXT) -> str | None:
@@ -163,6 +246,7 @@ class AgentRunner:
         catalog: Mapping[str, AgentSpec] = CATALOG,
         event_store: Any = None,
         now: Callable[[], datetime] | None = None,
+        authorizations: AuthorizationStore | None = None,
     ) -> None:
         self.store = store
         self.settings = settings
@@ -180,6 +264,40 @@ class AgentRunner:
         #: not ``agent_runs``: a row a failed close left ``running`` must not
         #: hold a slot until the next restart.
         self._in_flight = 0
+        #: The standing authorizations (ADR-0072) a run's ``normal_change`` is
+        #: matched against. Without a store no ``normal_change`` ever runs.
+        self.authorizations = authorizations
+        #: What :meth:`run_generic` uses when its caller passes none
+        #: (:meth:`configure`).
+        self._executor: ToolExecutor | None = None
+        self._client_factory: Callable[[], Any] | None = None
+        self._model: str | Callable[[], str] | None = None
+
+    def now(self) -> datetime:
+        """The runner's clock (injected in tests); what expiry and budgets are judged by."""
+
+        return self._now()
+
+    def configure(
+        self,
+        *,
+        executor: ToolExecutor | None = None,
+        client_factory: Callable[[], Any] | None = None,
+        model: str | Callable[[], str] | None = None,
+    ) -> None:
+        """Set what a run started without explicit ``client``/``model``/``executor`` uses.
+
+        ``model`` may be a callable, read at each run start, so a live setting
+        (``KENNY_CHAT_MODEL``) reaches the next run. Arguments left ``None``
+        keep what was configured before.
+        """
+
+        if executor is not None:
+            self._executor = executor
+        if client_factory is not None:
+            self._client_factory = client_factory
+        if model is not None:
+            self._model = model
 
     @property
     def triage(self) -> TriageService | None:
@@ -208,6 +326,14 @@ class AgentRunner:
             logger.warning("%d agent run(s) were interrupted by a restart", interrupted)
         cutoff = self._now() - timedelta(days=RUN_RETENTION_DAYS)
         await self.store.prune(cutoff.isoformat())
+        # A new release can change what an agent is (its spec, a tool's tier).
+        # Unbind what was granted against the old one before anything runs,
+        # whatever mode the agent is in, so a later rollback revives nothing.
+        for spec in self.catalog.values():
+            live = await self.live_hash(spec.id)
+            if live is not None:
+                await self._void_others(spec.id, live, _SYSTEM_ACTOR)
+            await self._mode_for(spec)
 
     # -- modes ---------------------------------------------------------------
 
@@ -233,11 +359,61 @@ class AgentRunner:
             return "off"
         return "act" if self.settings.get(_TRIAGE_RESOLVE) else "shadow"
 
+    async def live_hash(self, agent_id: str) -> str | None:
+        """What ``agent_id`` is right now: its catalog spec and stored parameters.
+
+        ``None`` for an id the catalog no longer has.
+        """
+
+        spec = self.catalog.get(agent_id)
+        if spec is None:
+            return None
+        params = {} if spec.id == TRIAGE_AGENT_ID else await self.store.get_params(spec.id)
+        return effective_hash(spec, params)
+
     async def _mode_for(self, spec: AgentSpec) -> str:
         if spec.id == TRIAGE_AGENT_ID:
             return self._triage_mode()
         stored = await self.store.get_mode(spec.id)
-        return stored if stored in MODES else spec.default_mode
+        mode = stored if stored in MODES else spec.default_mode
+        if mode != "act":
+            return mode
+        live = await self.live_hash(spec.id)
+        if live is not None and await self.store.get_act_hash(spec.id) == live:
+            return "act"
+        # ``act`` was chosen for something this agent no longer is. Exactly one
+        # caller wins the conditional demotion and records it.
+        if await self.store.demote_unbound(spec.id, live or "", actor=_SYSTEM_ACTOR):
+            logger.warning(
+                "agent %s: its effective hash changed since act was chosen; dropped to shadow",
+                spec.id,
+            )
+            await self._record_event(
+                spec.id,
+                f"agent {spec.id}: mode set to shadow by {_SYSTEM_ACTOR}: "
+                "its effective hash changed since act was chosen",
+                {"mode": "shadow", "actor": _SYSTEM_ACTOR, "effective_hash": live},
+                level="warning",
+            )
+            if live is not None:
+                await self._void_others(spec.id, live, _SYSTEM_ACTOR)
+        return "shadow"
+
+    async def _void_others(self, agent_id: str, live: str, actor: str) -> int:
+        """Void ``agent_id``'s authorizations bound to any hash but ``live``; record it."""
+
+        if self.authorizations is None:
+            return 0
+        voided = await self.authorizations.void_other_hashes(agent_id, live, actor)
+        if voided:
+            await self._record_event(
+                agent_id,
+                f"agent {agent_id}: {voided} authorization(s) voided by {actor}: "
+                "bound to what the agent no longer is",
+                {"voided": voided, "actor": actor, "effective_hash": live},
+                level="warning",
+            )
+        return voided
 
     async def mode_of(self, agent_id: str) -> str:
         """The mode ``agent_id`` runs in now; :class:`KeyError` for an unknown id."""
@@ -269,7 +445,9 @@ class AgentRunner:
             await self.settings.set(_TRIAGE_RESOLVE, "1" if mode == "act" else "0")
             await self.settings.set(_TRIAGE_ENABLED, "0" if mode == "off" else "1")
         else:
-            await self.store.set_mode(spec.id, mode, actor=actor)
+            # ``act`` is chosen for what the agent is now; it binds to that.
+            bound = await self.live_hash(spec.id) if mode == "act" else None
+            await self.store.set_mode(spec.id, mode, actor=actor, act_hash=bound)
         await self._record_mode_change(spec.id, mode, actor)
         return await self._mode_for(spec)
 
@@ -280,7 +458,17 @@ class AgentRunner:
         ``agent_settings`` row keeps only the latest choice.
         """
 
-        message = f"agent {agent_id}: mode set to {mode} by {actor}"
+        await self._record_event(
+            agent_id,
+            f"agent {agent_id}: mode set to {mode} by {actor}",
+            {"mode": mode, "actor": actor},
+        )
+
+    async def _record_event(
+        self, agent_id: str, message: str, fields: Mapping[str, Any], *, level: str = "info"
+    ) -> None:
+        """One row on the event log about ``agent_id``; losing it never undoes the change."""
+
         if self.event_store is None:
             logger.info(message)
             return
@@ -288,13 +476,102 @@ class AgentRunner:
             await self.event_store.insert_log(
                 source="server",
                 at=self._now().isoformat(),
-                level="info",
+                level=level,
                 target=logger.name,
                 message=message,
-                fields={"agent": agent_id, "mode": mode, "actor": actor},
+                fields={"agent": agent_id, **fields},
             )
-        except Exception:  # noqa: BLE001 - the mode is set; losing its record must not undo it
-            logger.warning("failed to record the mode change of agent %s", agent_id, exc_info=True)
+        except Exception:  # noqa: BLE001 - the change is made; losing its record must not undo it
+            logger.warning("failed to record a change of agent %s", agent_id, exc_info=True)
+
+    # -- parameters ----------------------------------------------------------
+
+    async def get_params(self, agent_id: str) -> dict[str, Any]:
+        """``agent_id``'s parameters as its spec declares them; :class:`KeyError` if unknown."""
+
+        spec = self.spec(agent_id)
+        if spec.id == TRIAGE_AGENT_ID:
+            return {}
+        return _declared(spec, await self.store.get_params(spec.id))
+
+    async def set_params(
+        self, agent_id: str, params: Mapping[str, Any], *, actor: str
+    ) -> dict[str, Any]:
+        """Replace ``agent_id``'s parameters; returns ``{params, effective_hash, mode, voided}``.
+
+        A change of the effective hash drops an agent in ``act`` to ``shadow``
+        (in the same write as the parameters) and voids every authorization
+        bound to another hash — first, so no attempt can be spent against what
+        the agent used to be (ADR-0072 rule 6). Writing the parameters it
+        already has changes nothing. Raises :class:`KeyError` for an unknown
+        agent and :class:`ValueError` for parameters its spec does not take.
+        """
+
+        spec = self.spec(agent_id)
+        clean = validate_params(spec, params)
+        before_hash = await self.live_hash(spec.id)
+        after_hash = effective_hash(spec, clean)
+        changed = before_hash != after_hash
+        voided = await self._void_others(spec.id, after_hash, actor) if changed else 0
+        before_mode = await self.store.set_params(spec.id, clean, actor=actor, demote=changed)
+        if changed:
+            await self._record_event(
+                spec.id,
+                f"agent {spec.id}: parameters changed by {actor}",
+                {"actor": actor, "params": clean, "effective_hash": after_hash},
+            )
+            if before_mode == "act":
+                await self._record_event(
+                    spec.id,
+                    f"agent {spec.id}: mode set to shadow by {actor}: its parameters changed",
+                    {"mode": "shadow", "actor": actor, "effective_hash": after_hash},
+                )
+        return {
+            "params": clean,
+            "effective_hash": after_hash,
+            "mode": await self._mode_for(spec),
+            "voided": voided,
+        }
+
+    # -- standing authorizations ---------------------------------------------
+
+    def _authorizations(self) -> AuthorizationStore:
+        if self.authorizations is None:
+            raise RuntimeError("standing authorizations are not configured")
+        return self.authorizations
+
+    async def grant(
+        self,
+        agent_id: str,
+        *,
+        tool: str,
+        scope: Any,
+        max_attempts_per_day: Any,
+        expires_at: Any,
+        actor: str,
+        note: str = "",
+    ) -> Authorization:
+        """Grant ``agent_id`` a standing authorization bound to its *current* effective hash.
+
+        Raises :class:`KeyError` for an unknown agent and
+        :class:`~kenny_server.agents.authorizations.AuthorizationError` for a
+        grant the store refuses. Who may call this is the API's to enforce.
+        """
+
+        spec = self.spec(agent_id)
+        live = await self.live_hash(spec.id)
+        assert live is not None  # self.spec() found it in the catalog
+        return await self._authorizations().grant(
+            spec=spec,
+            effective_hash=live,
+            tool=tool,
+            scope=scope,
+            max_attempts_per_day=max_attempts_per_day,
+            expires_at=expires_at,
+            granted_by=actor,
+            note=note,
+            now=self._now(),
+        )
 
     # -- what the API shows --------------------------------------------------
 
@@ -304,10 +581,20 @@ class AgentRunner:
         out: list[dict[str, Any]] = []
         for spec in self.catalog.values():
             latest = await self.store.list_runs(agent_id=spec.id, limit=1)
+            mode = await self._mode_for(spec)
+            live = await self.live_hash(spec.id)
+            if spec.id == TRIAGE_AGENT_ID:
+                # Triage's ``act`` is its settings, not a binding to a hash.
+                bound: bool | None = None
+            else:
+                bound = mode == "act" and await self.store.get_act_hash(spec.id) == live
             out.append(
                 {
                     **spec.to_public(),
-                    "mode": await self._mode_for(spec),
+                    "mode": mode,
+                    "params": await self.get_params(spec.id),
+                    "effective_hash": live,
+                    "act_bound": bound,
                     "latest_run": latest[0].to_public() if latest else None,
                 }
             )
@@ -344,6 +631,8 @@ class AgentRunner:
         host_id: str | None,
         ticket_id: str | None = None,
         counted: bool,
+        params: Mapping[str, Any] | None = None,
+        run_hash: str | None = None,
     ) -> tuple[AgentRun, bool]:
         """Open the run row; ``(row, False)`` when a cap refused it (row ``skipped``).
 
@@ -361,6 +650,8 @@ class AgentRunner:
                 subject=subject,
                 host_id=host_id,
                 ticket_id=ticket_id,
+                params=params,
+                effective_hash=run_hash,
             )
             if reason is None:
                 if counted:
@@ -456,12 +747,23 @@ class AgentRunner:
         host_id: str | None,
         trigger: str,
         brief: str,
-        client: Any,
-        model: str,
-        executor: ToolExecutor,
+        client: Any = None,
+        model: str | None = None,
+        executor: ToolExecutor | None = None,
         authorizer: Authorizer | None = None,
     ) -> AgentRun | None:
         """Run ``spec`` once on ``host_id`` through the agent gate.
+
+        ``client``, ``model`` and ``executor`` default to what :meth:`configure`
+        set; :class:`RuntimeError` if neither supplies one. ``authorizer``
+        defaults to spending an attempt of a standing authorization bound to
+        this run's effective hash (:meth:`AuthorizationStore.consume`); without
+        an authorization store no ``normal_change`` runs.
+
+        The run's parameters are read once at start, resolved into the spec its
+        gate enforces (:func:`~kenny_server.agents.spec.resolve`), and stored on
+        the run row with the effective hash they make; a parameter edit during
+        the run does not reach its constraints, it ends its ``act``.
 
         Returns the finished run row — ``completed``, ``failed`` or a cap's
         ``skipped`` — or ``None`` when the run was never started because the
@@ -485,8 +787,21 @@ class AgentRunner:
             raise ValueError(f"agent {spec.id} is not in the catalog")
         if known.spec_hash != spec.spec_hash:
             raise ValueError(f"agent {spec.id}: spec differs from the catalog entry")
+        executor = executor if executor is not None else self._executor
+        if executor is None:
+            raise RuntimeError("run_generic needs an executor; call configure() first")
+        if model is None:
+            model = self._model() if callable(self._model) else self._model
+        if not model:
+            raise RuntimeError("run_generic needs a model; call configure() first")
+        if client is None and self._client_factory is None:
+            raise RuntimeError("run_generic needs a client; call configure() first")
         if not self.enabled() or not self._ai_ready():
             return None
+        # Parameters before the mode: if they change in between, the mode read
+        # sees the newer hash and ``still_acting`` catches the difference.
+        params = _declared(spec, await self.store.get_params(spec.id))
+        run_hash = effective_hash(spec, params)
         mode = await self._mode_for(spec)
         if mode == "off":
             return None
@@ -497,6 +812,8 @@ class AgentRunner:
             subject=f"host:{host_id}" if host_id else None,
             host_id=host_id,
             counted=True,
+            params=params,
+            run_hash=run_hash,
         )
         if not admitted:
             return run
@@ -508,13 +825,40 @@ class AgentRunner:
         finished: AgentRun | None = None
 
         async def still_acting() -> bool:
-            return self.enabled() and await self._mode_for(spec) == "act"
+            if not self.enabled() or await self._mode_for(spec) != "act":
+                return False
+            # Bound to what the agent was when this run started.
+            return await self.live_hash(spec.id) == run_hash
+
+        async def consume(
+            _session: AgentSession, tool: str, _args: dict[str, Any], target: str | None
+        ) -> Authorization | None:
+            store = self.authorizations
+            if store is None or await self.live_hash(spec.id) != run_hash:
+                return None
+            return await store.consume(
+                agent_id=spec.id,
+                effective_hash=run_hash,
+                tool=tool,
+                host_id=target,
+                run_id=run.id,
+                now=self._now(),
+            )
 
         try:
-            session = AgentSession(id=run.id, spec=spec, mode=mode, agent_id=host_id)
+            if client is None:
+                assert self._client_factory is not None  # checked above
+                client = self._client_factory()
+            session = AgentSession(
+                id=run.id, spec=resolve(spec, params), mode=mode, agent_id=host_id
+            )
             session.usage = meter
             session.messages.append({"role": "user", "content": brief})
-            policy = AgentPolicy(session, authorizer=authorizer, still_acting=still_acting)
+            policy = AgentPolicy(
+                session,
+                authorizer=authorizer if authorizer is not None else consume,
+                still_acting=still_acting,
+            )
             async for event in drive_events(
                 session,
                 executor,

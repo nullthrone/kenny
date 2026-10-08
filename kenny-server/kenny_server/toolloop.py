@@ -352,7 +352,14 @@ SERVER_TOOLS: dict[str, dict[str, Any]] = {
 
 @dataclass(frozen=True)
 class Allow:
-    """Execute the call now."""
+    """Execute the call now.
+
+    ``authorization_id`` names the standing authorization that let an agent
+    run a ``normal_change`` (ADR-0072); the loop carries it to the audit row.
+    ``None`` for every other allow.
+    """
+
+    authorization_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -797,6 +804,7 @@ class ToolExecutor:
         agent_id: str,
         actor: str | None = None,
         run_id: str | None = None,
+        authorization_id: str | None = None,
     ) -> dict[str, Any]:
         """Forward a capability tool to ``agent_id`` (read-only or confirmed).
 
@@ -807,7 +815,8 @@ class ToolExecutor:
         forwarded call (ADR-0038).
 
         ``actor`` and ``run_id`` say who made the call and in which autonomous
-        run; they go to the audit trail unchanged.
+        run, and ``authorization_id`` which standing authorization let an agent
+        make it (ADR-0072); all three go to the audit trail unchanged.
         """
 
         if not agent_id:
@@ -823,20 +832,40 @@ class ToolExecutor:
         except (TypeError, ValueError):
             message = f"timeout_s must be a number, got {args.get('timeout_s')!r}"
             await self.call_log.record(
-                agent_id, tool, args, ok=False, error=message, actor=actor, run_id=run_id
+                agent_id,
+                tool,
+                args,
+                ok=False,
+                error=message,
+                actor=actor,
+                run_id=run_id,
+                authorization_id=authorization_id,
             )
             raise ToolError("bad_args", message)
         try:
             result = await self.tunnel.send_request(agent_id, tool, args, timeout_s)
             await self.call_log.record(
-                agent_id, tool, args, ok=True, actor=actor, run_id=run_id
+                agent_id,
+                tool,
+                args,
+                ok=True,
+                actor=actor,
+                run_id=run_id,
+                authorization_id=authorization_id,
             )
             if tool == "screen_capture" and isinstance(result, dict) and "image_b64" in result:
                 self.screenshots.put(agent_id, result["image_b64"], result.get("format", "png"))
             return result
         except ToolError as exc:
             await self.call_log.record(
-                agent_id, tool, args, ok=False, error=exc.message, actor=actor, run_id=run_id
+                agent_id,
+                tool,
+                args,
+                ok=False,
+                error=exc.message,
+                actor=actor,
+                run_id=run_id,
+                authorization_id=authorization_id,
             )
             raise
 
@@ -986,6 +1015,8 @@ async def _execute_one(
     *,
     session: Any,
     agent_id: str | None = None,
+    actor: str | None = None,
+    authorization_id: str | None = None,
 ) -> tuple[dict[str, Any], bool]:
     """Run one tool, returning (result_payload, is_error).
 
@@ -994,16 +1025,27 @@ async def _execute_one(
     (:class:`PendingCall.agent_id`) is reused rather than re-resolved (the
     original ``args`` no longer carry any explicit override by then, since
     :func:`_resolve_chat_target` already popped it).
+
+    ``actor`` names who is driving *this* call; without one the session's own
+    identity (:func:`_audit_identity`) is used. Passed per call rather than set
+    on the session because a session id is not bound to one person: two
+    operators driving the same conversation at once must each be audited as
+    themselves. ``authorization_id`` is the gate's (:class:`Allow`).
     """
 
     try:
         if tool in SERVER_TOOLS:
             return await executor.run_server_tool(tool, args, session=session), False
         target = agent_id or _resolve_chat_target(session, args)
-        actor, run_id = _audit_identity(session)
+        session_actor, run_id = _audit_identity(session)
         return (
             await executor.run_capability(
-                tool, args, agent_id=target, actor=actor, run_id=run_id
+                tool,
+                args,
+                agent_id=target,
+                actor=actor or session_actor,
+                run_id=run_id,
+                authorization_id=authorization_id,
             ),
             False,
         )
@@ -1301,8 +1343,13 @@ async def drive_events(
     model: str,
     policy: LoopPolicy,
     max_iterations: int = _MAX_ITERATIONS,
+    actor: str | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Run the tool-use loop, yielding structured events as they happen.
+
+    ``actor`` names who drives this turn on the audit trail of every call it
+    forwards; ``None`` falls back to the session's own identity (an agent run's
+    ``audit_actor``, a ticket session's principal).
 
     This is the single source of truth for the loop. It yields, in order:
 
@@ -1421,7 +1468,13 @@ async def drive_events(
 
             yield _tool_started_event(tool, args, target, auto_run=True)
             payload, is_error = await _execute_one(
-                executor, tool, args, session=session, agent_id=target
+                executor,
+                tool,
+                args,
+                session=session,
+                agent_id=target,
+                actor=actor,
+                authorization_id=decision.authorization_id,
             )
             event: dict[str, Any] = {
                 "type": "tool_result",
@@ -1590,9 +1643,12 @@ def stage_missing_tool_results(
 
 
 async def confirmation_events(
-    session: Any, *, approve: bool, executor: ToolExecutor
+    session: Any, *, approve: bool, executor: ToolExecutor, actor: str | None = None
 ) -> AsyncIterator[dict[str, Any]]:
     """Resolve the pending call, yielding what the surface should show as it goes.
+
+    ``actor`` is the person deciding, audited on the confirmed call as in
+    :func:`drive_events`.
 
     On approve this yields ``tool_started`` *before* running the tool and the
     ``tool_result`` after it, which is the whole reason it is a generator: the
@@ -1618,7 +1674,12 @@ async def confirmation_events(
             auto_run=False,
         )
         payload, is_error = await _execute_one(
-            executor, pending.tool, pending.args, session=session, agent_id=pending.agent_id
+            executor,
+            pending.tool,
+            pending.args,
+            session=session,
+            agent_id=pending.agent_id,
+            actor=actor,
         )
         session._staged_results.append(
             _tool_result_block(pending.tool_use_id, payload, is_error=is_error)
@@ -1655,7 +1716,7 @@ async def confirmation_events(
 
 
 async def apply_confirmation(
-    session: Any, *, approve: bool, executor: ToolExecutor
+    session: Any, *, approve: bool, executor: ToolExecutor, actor: str | None = None
 ) -> dict[str, Any]:
     """:func:`confirmation_events` for a caller that cannot stream.
 
@@ -1666,7 +1727,9 @@ async def apply_confirmation(
     """
 
     resume_event: dict[str, Any] | None = None
-    async for event in confirmation_events(session, approve=approve, executor=executor):
+    async for event in confirmation_events(
+        session, approve=approve, executor=executor, actor=actor
+    ):
         resume_event = event
     assert resume_event is not None  # the generator always ends with one
     return resume_event
