@@ -588,17 +588,19 @@ where [alerts](alerting.md) land as an audit trail, and where the
 
 <figure markdown>
   ![The Admin page](assets/screenshots/admin.png)
-  <figcaption>Admin with Alerts & notifications open; the section nav lists Alerts & notifications, Alarm rules, AI, Tickets, Discord, Backup, Updates, Web filter, Shell policy, System, and Users.</figcaption>
+  <figcaption>Admin with Alerts & notifications open; the section nav lists Alerts & notifications, Alarm rules, AI, Specialized agents, Tickets, Discord, Backup, Updates, Web filter, Shell policy, System, and Users.</figcaption>
 </figure>
 
 *(`#/admin/{section}` — a superuser sees every section; an operator sees only
-[Updates](#updates) and [Alarm rules](#alarm-rules))*
+[Updates](#updates), [Alarm rules](#alarm-rules) and
+[Specialized agents](#specialized-agents-view))*
 
 A left section nav picks one section at a time: **Alerts & notifications**, **Alarm
-rules**, **AI**, **Tickets**, **Discord**, **Backup**, **Updates**, **Web filter**,
-**Shell policy**, **System**, and **Users**. Every section except Alarm rules and Users is
-a group of `config.py`'s settings catalog, in the catalog's order; Alarm rules sits right
-after the alerts it governs.
+rules**, **AI**, **Specialized agents**, **Tickets**, **Discord**, **Backup**,
+**Updates**, **Web filter**, **Shell policy**, **System**, and **Users**. Every section
+except Alarm rules, Specialized agents and Users is a group of `config.py`'s settings
+catalog, in the catalog's order; Alarm rules sits right after the alerts it governs and
+Specialized agents right after AI, whose settings hold the global switch for every agent.
 
 **Everything Admin shows can be changed there.** `GET /api/settings` lists only the
 settings the dashboard can write. Bootstrap, network, auth and secret settings, and the
@@ -788,6 +790,72 @@ Each server start marks a run the previous process left open as `failed`, delete
 runs older than 90 days, and voids every authorization bound to what an agent no longer is.
 For an agent no longer in the catalog it voids every authorization and drops a stored `act`
 to `shadow`, so an agent removed and shipped again later starts over in `shadow`.
+
+### Specialized agents view
+
+<figure markdown>
+  ![The Specialized agents list](assets/screenshots/admin-agents.png)
+  <figcaption>The agent list: each agent's mode, effective hash and latest run.</figcaption>
+</figure>
+
+*(`#/admin/agents`, one agent at `#/admin/agents/{id}` — operator+ reads and may start a
+preview; changing an agent is a superuser's, signed in at the dashboard)*
+
+The view for the agents kenny runs on its own
+([ADR-0071](adr/0071-specialized-agents-purpose-bound-unattended-sessions.md)); the API it
+reads is described under [AI → Specialized agents](#specialized-agents). A banner appears
+when the global switch (Admin → AI) is off: no agent starts, whatever its mode says.
+
+**The list** shows, per agent, its title and description, what triggers it, a **mode
+badge** (`OFF`, `SHADOW`, `ACT`, plus `ACT UNBOUND` when a stored `act` no longer matches
+the agent's effective hash), the effective hash in short form and the latest run with its
+status. A title opens the agent.
+
+<figure markdown>
+  ![One agent: tools, parameters, runs and a run record](assets/screenshots/admin-agent-detail.png)
+  <figcaption>One agent: what it may do, its mode, parameters, standing authorizations, preview and runs, with a run record open.</figcaption>
+</figure>
+
+**One agent**, top to bottom:
+
+- **What it may do** — its tools, each with a tier badge (`READ-ONLY`, `STANDARD CHANGE`,
+  `NORMAL CHANGE`); its argument constraints, each marked **literal** (values the spec
+  fixes), **param** (values an admin sets under Parameters, shown with their current
+  value) or **evidence** (values the server computes at run start from its own records);
+  and the per-tool timeouts. An omitted or empty argument never satisfies a constraint.
+- **Mode** — `OFF`, `SHADOW`, `ACT`. Choosing `ACT` first asks for confirmation, which
+  names the hash being bound, and the request carries exactly the effective hash the page
+  shows. If the agent changed since the page loaded the server answers `409` and the page
+  says *the agent changed since you loaded it — reload and review it*, with a **Reload**
+  button; a `403` reads *sign in to the dashboard as a superuser* (a token, an OAuth token
+  or the shared operator token cannot make this choice). Operators see the mode but not
+  the controls.
+- **Parameters** — what an install sets without a code change: the maintenance
+  **window** (days, start, end, time zone), the **hosts** (a checkbox per enrolled PC; an
+  empty selection means none, never all), the **allowed package ids** (one per line) and
+  whether to **only run when nobody is signed in**. Only the parameters an agent
+  declares appear; triage takes none. Saving a change to these values drops the agent back to
+  `shadow` and voids its standing authorizations for good — the page says so above the
+  save button and reports what the server did afterwards.
+- **Standing authorizations** — a table of tool, scope (PCs or `the server`),
+  attempts per PC per day (with the attempts spent in the last 24 hours), expiry, who
+  granted it and its state: `LIVE`, `REVOKED`, `VOIDED` (the agent changed) or
+  `EXPIRED`. A superuser can **revoke** a live one and **grant** a new one: the tool list
+  holds only the agent's `normal_change` tools (`shell_exec`, `powershell_exec` and
+  `agent_update` can never be authorized), the scope must name at least one PC or be the
+  server, and it expires in 1 to 180 days. A grant is bound to the hash the page shows;
+  a `409` is explained as above.
+- **Preview** — **Run preview** starts one run of the agent in `shadow`, whatever its
+  mode. **A preview never changes anything**: every change it would make is only recorded
+  as a recommendation. It spends model tokens. An agent that works on PCs asks which PC
+  first. An agent that starts from a new ticket has no preview. On a server that does not
+  offer preview runs yet the button answers with that, and nothing else changes.
+- **Runs** — the agent's recent runs, newest first. **Details** opens a run: its status
+  and mode, what started it, the PC or ticket it was bound to, the hash it ran under, its
+  verdict and finding, any error, the token usage, the **actions** it took (tool,
+  redacted arguments, tier, result and the id of the authorization it ran under) and the
+  **recommendations** it was not allowed to carry out. A person can do a recommendation
+  through the ordinary confirm step, as themselves.
 
 ### Tickets
 
@@ -1145,7 +1213,7 @@ and the "see the dashboard" links kenny has already posted into Discord all keep
   dashboard is legible without colour.
 - **Deep links** — every view is a URL hash you can bookmark or share: `#/today`,
   `#/fleet`, `#/fleet/{host}`, `#/fleet/{host}?section={name}`, `#/inbox`,
-  `#/inbox/{group}`, `#/inbox/ticket/{id}`, `#/log`, `#/admin/{section}`, `#/profile`. See
+  `#/inbox/{group}`, `#/inbox/ticket/{id}`, `#/log`, `#/admin/{section}`, `#/admin/agents/{agent}`, `#/profile`. See
   [Old bookmarks & redirects](#old-bookmarks-redirects) above for what still works from
   before.
 - **Keyboard & motion** — Escape closes modals and the Ask kenny overlay; ⌘K/Ctrl+K opens
