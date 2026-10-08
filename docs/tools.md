@@ -312,6 +312,29 @@ A ticket opened from a draft records what the conversation had already checked: 
 `note` row naming the successful read-only calls from that chat session, composed on the
 server from the session itself rather than sent by the browser.
 
+The overlay also has a window onto the [specialized
+agents](dashboard.md#specialized-agents)
+([ADR-0071](adr/0071-specialized-agents-purpose-bound-unattended-sessions.md)). All three
+tools are `read_only`: two read the run history, and the third *proposes* a run and starts
+nothing, the way `ticket_draft` proposes a ticket. The chat stream turns a successful
+`agent_run_propose` into an `agent_run_proposal` event carrying `agent_id`, `host_id` and
+`reason`; a run exists only when a person starts it through `POST
+/api/specialized-agents/{agent_id}/runs`, which always runs the agent in `shadow`. A run's
+`summary`, `error` and recorded arguments were produced while an agent read a monitored
+machine, so `agent_run_get` returns them as data beside a note saying so. The tools read runs
+across every host, so they are withheld from every ticket-bound and unprompted turn and no
+agent may name them; they are not registered over MCP.
+
+| Tool | Arguments | Tier |
+|------|-----------|------|
+| `agent_run_list` | `agent_id?` (a specialized agent such as `posture`), `limit?` (1–50, default 10) | `read_only` |
+| `agent_run_get` | `run_id` | `read_only` (redacted record; its text is untrusted data) |
+| `agent_run_propose` | `agent_id`, `host_id?`, `reason` | `read_only` (starts nothing) |
+
+A proposal is refused for an unknown agent, triage, an agent whose mode is `off`, a machine
+the server does not know, a missing machine for an agent that works on one, and a machine
+given to an agent that works on none.
+
 The server-side web-filter tools are also server-only. `webfilter_get` and
 `web_activity_query` are `read_only`; `webfilter_set` and `webfilter_push` change state,
 but at different tiers — `webfilter_set` changes *what* the server enforces,
@@ -349,6 +372,14 @@ takes an `event_type` of `health`, `offline`, `disk_forecast`, `hardware_forecas
 | `ticket_rule_set` | `event_type`, `decision`, `section?`, `agent_id?`, `note?` | `normal_change` |
 | `ticket_rule_remove` | `rule_id` | `normal_change` |
 
+The [config-hygiene agent](dashboard.md#specialized-agents) reaches the list and remove
+tools of both families as well — and nothing else does outside MCP: they are registered
+only on the executor agent runs forward through, never offered to Ask kenny or a ticket.
+There the lists take no `agent_id` and mark each rule `unused`/`removable`, and a removal
+is limited to the ids the server's own hit records show unused for 90 days and whose
+removal can only make kenny louder; it runs only under a `server`-scoped
+[standing authorization](adr/0072-standing-authorizations-consent-given-ahead.md).
+
 ## Auditing
 
 Every forwarded capability call is appended to the **tool-call audit log**, annotated
@@ -374,7 +405,8 @@ see a host reads that host's audit entries — tool, actor, run id, outcome — 
 them, in the Log page, the host page and the events API alike.
 A change a specialized agent made on its own also names the
 [standing authorization](adr/0072-standing-authorizations-consent-given-ahead.md) that
-permitted it. Entries written before this existed carry no actor and no arguments. Read it in the dashboard's **[Log](dashboard.md#log)** page, filtered to
+permitted it; a server-side change an agent made (a rule it removed) names no PC.
+Entries written before this existed carry no actor and no arguments. Read it in the dashboard's **[Log](dashboard.md#log)** page, filtered to
 the TOOLS chip. See [`dashboard.md`](dashboard.md).
 
 ![The Log page, filtered to tool calls, each tagged read-only or state-changing.](assets/screenshots/log.png)

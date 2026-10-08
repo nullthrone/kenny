@@ -146,6 +146,14 @@ TOOL_CLASSES: dict[str, str] = {
     # ticket -- and would hold a call that changes nothing if they said no.
     "ticket_draft": READ_ONLY,
     "ticket_find": READ_ONLY,
+    # -- the copilot's window onto specialized agents (ADR-0071) -------------
+    # Two reads of the run history, and a proposal. READ_ONLY all three, and the
+    # proposal has to be: it starts no run -- its whole output is a card the
+    # operator presses, so the consent is given there, once. (A preview is a
+    # shadow run in any case: it changes nothing on any host.)
+    "agent_run_list": READ_ONLY,
+    "agent_run_get": READ_ONLY,
+    "agent_run_propose": READ_ONLY,
 }
 
 #: Every tool that only observes. Derived, never hand-listed, so a tool added to

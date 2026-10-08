@@ -24,7 +24,7 @@ function ParamRedirect({ build }: { build: (params: Readonly<Record<string, stri
  * The complete route table, per the brief:
  *
  *   #/today  #/fleet  #/fleet/:host  #/inbox  #/inbox/:group
- *   #/inbox/ticket/:id  #/log  #/admin/:section  #/profile
+ *   #/inbox/ticket/:id  #/log  #/admin/:section  #/admin/agents/:agent  #/profile
  *
  * plus redirects for every old route published as a bookmarkable deep link
  * (notes/api-contract-actual.md §5), so none of them 404:
@@ -70,6 +70,8 @@ export default function AppRoutes() {
 
         <Route path="log" element={<Log />} />
         <Route path="admin/:section" element={<Admin />} />
+        {/* One item inside a section: #/admin/agents/{agent id}. */}
+        <Route path="admin/:section/:detail" element={<Admin />} />
         {/* Bare #/admin renders the section nav and resolves to the first group the
             server returns. The section list is server-derived (config.GROUP_ORDER →
             group_slug) — there is no hardcoded slug to redirect to. */}

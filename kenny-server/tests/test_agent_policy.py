@@ -28,6 +28,7 @@ from kenny_server.registry import AgentRegistry
 from kenny_server.store import EventStore, TelemetryStore
 from kenny_server.tool_classes import NORMAL_CHANGE, READ_ONLY, STANDARD_CHANGE, TOOL_CLASSES
 from kenny_server.toolloop import (
+    COPILOT_AGENT_TOOLS,
     SERVER_TOOLS,
     TRIAGE_VERDICT_TOOL,
     Allow,
@@ -159,9 +160,9 @@ def test_schemas_are_exactly_the_spec_with_the_last_one_cached() -> None:
 def test_a_spec_tool_the_loop_cannot_dispatch_has_no_schema() -> None:
     # Classified (so the spec loads) but MCP-only: the loop would forward it to
     # the host as if it were a capability.
-    assert "reliability_suppression_list" in TOOL_CLASSES
-    assert "reliability_suppression_list" not in set(SERVER_TOOLS) | set(CAPABILITY_TOOLS)
-    policy = AgentPolicy(_session(tools=frozenset({"winget_list", "reliability_suppression_list"}),
+    assert "webfilter_get" in TOOL_CLASSES
+    assert "webfilter_get" not in set(SERVER_TOOLS) | set(CAPABILITY_TOOLS)
+    policy = AgentPolicy(_session(tools=frozenset({"winget_list", "webfilter_get"}),
                                   constraints=()))
     assert {s["name"] for s in policy.tool_schemas()} == {"winget_list"}
 
@@ -213,10 +214,10 @@ async def test_forbidden_wins_even_without_a_host() -> None:
 
 
 async def test_a_spec_tool_the_loop_cannot_dispatch_is_forbidden() -> None:
-    session = _session(tools=frozenset({"winget_list", "reliability_suppression_list"}),
+    session = _session(tools=frozenset({"winget_list", "webfilter_get"}),
                        constraints=())
     policy = AgentPolicy(session)
-    decision = await _gate(policy, session, "reliability_suppression_list", {})
+    decision = await _gate(policy, session, "webfilter_get", {})
     assert isinstance(decision, Deny) and decision.code == "forbidden"
 
 
@@ -771,6 +772,11 @@ def test_every_host_naming_server_tool_is_pinned() -> None:
     for name, schema in SERVER_TOOLS.items():
         props = schema["properties"]
         named = [k for k in ("id", "agent_id") if k in props]
+        if name in COPILOT_AGENT_TOOLS:
+            # Their ``agent_id`` is a specialized agent, not a machine, so it is
+            # not pinned -- and no run may hold them: the catalog refuses a spec
+            # naming one (tests/test_copilot_agents.py joins that half).
+            continue
         if named:
             assert name in HOST_ARG, f"{name} names a host in {named} and is not pinned"
             assert HOST_ARG[name] in named

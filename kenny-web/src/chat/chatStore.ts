@@ -264,6 +264,40 @@ class ChatStore {
     }))
   }
 
+  /**
+   * Start the preview run an agent-run card is offering.
+   *
+   * The POST is the specialized-agents view's own (a preview is always shadow:
+   * it changes nothing on any PC). A refusal (400/409/503) throws with the
+   * server's text so the card can show it; the row stays pending.
+   */
+  startAgentRun = async (itemId: string, agentId: string, hostId: string): Promise<void> => {
+    const res = await api.post<{ run_id: string }>(
+      `/api/specialized-agents/${encodeURIComponent(agentId)}/runs`,
+      hostId ? { host_id: hostId } : {},
+    )
+    this.update((st) => ({
+      ...st,
+      items: st.items.map((it) =>
+        it.kind === 'agent_proposal' && it.id === itemId
+          ? { ...it, resolution: 'started' as const, runId: res.run_id }
+          : it,
+      ),
+    }))
+  }
+
+  /** Put an agent-run offer away unstarted. The row stays: the offer was made and declined. */
+  dismissAgentRun = (itemId: string): void => {
+    this.update((st) => ({
+      ...st,
+      items: st.items.map((it) =>
+        it.kind === 'agent_proposal' && it.id === itemId
+          ? { ...it, resolution: 'dismissed' as const }
+          : it,
+      ),
+    }))
+  }
+
   private runStream = async (
     url: string,
     body: ChatStreamRequest | ChatConfirmRequest | TicketChatRequest | TicketDecisionRequest,

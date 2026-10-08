@@ -4,6 +4,7 @@ import type { TicketDraftCardProps } from './TicketDraftCard'
 import { Check, X, ICON_STROKE_WIDTH } from '../icons'
 import Markdown from '../Markdown/Markdown'
 import TicketDraftCard from './TicketDraftCard'
+import AgentRunProposalCard, { type AgentRunProposalCardProps } from './AgentRunProposalCard'
 import styles from './Transcript.module.css'
 
 /**
@@ -56,6 +57,10 @@ export interface TranscriptProps {
   onCreateDraft?: TicketDraftCardProps['onCreate']
   /** Puts a draft away unfiled. */
   onDismissDraft?: TicketDraftCardProps['onDismiss']
+  /** Starts the preview run a proposal card offers. */
+  onStartAgentRun?: AgentRunProposalCardProps['onStart']
+  /** Puts a proposal away unstarted. */
+  onDismissAgentRun?: AgentRunProposalCardProps['onDismiss']
 }
 
 /**
@@ -76,6 +81,8 @@ export default function Transcript({
   openToolItemId = null,
   onCreateDraft,
   onDismissDraft,
+  onStartAgentRun,
+  onDismissAgentRun,
 }: TranscriptProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -206,6 +213,21 @@ export default function Transcript({
                 ticketNumber={item.ticketNumber}
                 onCreate={onCreateDraft ?? (async () => undefined)}
                 onDismiss={onDismissDraft ?? (() => undefined)}
+              />
+            )
+
+          case 'agent_proposal':
+            return (
+              <AgentRunProposalCard
+                key={item.id}
+                itemId={item.id}
+                agentId={item.agentId}
+                hostId={item.hostId}
+                reason={item.reason}
+                resolution={item.resolution}
+                runId={item.runId}
+                onStart={onStartAgentRun ?? (async () => undefined)}
+                onDismiss={onDismissAgentRun ?? (() => undefined)}
               />
             )
 

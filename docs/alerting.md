@@ -82,7 +82,9 @@ conditions that were already notified.
     So the alert loop, the weekly digest below, the fleet list and the dashboard all reach
     one verdict per host: a reboot storm that wrote 80 identical errors a week ago never
     pages anyone, and a pattern firing every day does. An operator-suppressed pattern
-    (ADR-0041) is excluded from that scoring everywhere it runs. See the `reliability` row
+    (ADR-0041) is excluded from that scoring everywhere it runs. Each suppression rule
+    records when it last matched an event (`last_matched_at`, the event's own last-seen
+    time) and how often the server applied it (`match_count`). See the `reliability` row
     in [telemetry.md](telemetry.md#telemetry-sections) and
     [Alarm suppression](telemetry.md#alarm-suppression).
 
@@ -150,7 +152,11 @@ do. An operator can narrow or widen that per fleet or per host from **Admin → 
 rules** ([auto-ticket rules](dashboard.md#alarm-rules)), or via the `ticket_rule_*`
 MCP tools. Each rule names an event type (`health` / `offline` / `disk_forecast` /
 `hardware_forecast` / `change`), an optional section and host, and a decision: `open_all` (always), `open_crit`
-(only when the subject is `crit`) or `never`.
+(only when the subject is `crit`) or `never`. Each rule records when it last decided an
+alert (`last_matched_at`) and how often (`match_count`) — a `never` rule that kept a
+ticket closed counts as much as one that opened it — which is what the
+[rule-hygiene agent](dashboard.md#specialized-agents) reads to find rules that no longer
+do anything.
 
 Two practical cases this solves:
 

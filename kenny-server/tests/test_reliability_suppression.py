@@ -240,7 +240,7 @@ async def test_telemetry_store_annotate_hook_fires_on_every_read(tmp_path) -> No
     try:
         calls = []
 
-        def annotate(agent_id, snapshot):
+        def annotate(agent_id, snapshot, received_at=None):
             calls.append(agent_id)
             snapshot["marked"] = True
 

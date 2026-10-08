@@ -55,7 +55,9 @@ from .tool_classes import (
     profile_allows,
 )
 from .toolloop import (
+    AGENT_ONLY_TOOLS,
     AGENT_VERDICT_TOOL,
+    COPILOT_AGENT_TOOLS,
     SERVER_TOOLS,
     TICKET_DRAFT_TOOL,
     TICKET_FIND_TOOL,
@@ -106,11 +108,19 @@ logger = logging.getLogger("kenny.tickets.assistant")
 #: across requesters, and this surface is reachable by a host-scoped household
 #: member: leaving it open would be the one place they could read what everyone
 #: else has open, the same objection :data:`FLEET_WIDE_TOOLS` already carries.
-#: ``agent_verdict`` ends a specialized agent's run, which has no ticket.
+#: ``agent_verdict`` ends a specialized agent's run, which has no ticket, and
+#: the operator-rule tools (``toolloop.AGENT_ONLY_TOOLS``) are dispatched for
+#: agent runs alone: a ticket is about one machine, and those rules are fleet
+#: policy.
 #: Subtracted before the triage intersection in :func:`allowed_tools_for`, so
 #: this one line covers an unprompted investigation too.
-EXCLUDED_TOOLS: frozenset[str] = frozenset(
-    {"select_agent", TICKET_DRAFT_TOOL, TICKET_FIND_TOOL, AGENT_VERDICT_TOOL}
+#: The copilot's three agent-run tools read every agent's runs across hosts, with
+#: the changes each made or proposed: fleet-wide, so withheld for the reason
+#: ``ticket_find`` is.
+EXCLUDED_TOOLS: frozenset[str] = (
+    frozenset({"select_agent", TICKET_DRAFT_TOOL, TICKET_FIND_TOOL, AGENT_VERDICT_TOOL})
+    | COPILOT_AGENT_TOOLS
+    | AGENT_ONLY_TOOLS
 )
 
 #: Tools that report on the whole fleet rather than one host. Withheld from a
@@ -512,7 +522,7 @@ def _narrower_role(a: str | None, b: str | None) -> str:
 #: the loop cannot route. (The session's allowlist was already intersected with
 #: the routable tools in :func:`allowed_tools_for`; this changes no call.)
 TRIAGE_TOOLS: frozenset[str] = (
-    (READ_ONLY_TOOLS - SENSITIVE_TOOLS - FLEET_WIDE_TOOLS - {TICKET_SUMMARY_TOOL})
+    (READ_ONLY_TOOLS - SENSITIVE_TOOLS - FLEET_WIDE_TOOLS - {TICKET_SUMMARY_TOOL} - COPILOT_AGENT_TOOLS)
     & (frozenset(SERVER_TOOLS) | frozenset(CAPABILITY_TOOLS))
 ) | {TRIAGE_VERDICT_TOOL}
 

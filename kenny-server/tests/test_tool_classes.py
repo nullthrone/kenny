@@ -79,8 +79,9 @@ SINCE_LEGACY = frozenset(
     }
 )
 
-# The MCP-only server tools registered in ``tools.py`` (neither forwarded
-# capabilities nor part of ``chat.SERVER_TOOLS``).
+# The server tools registered for MCP in ``tools.py`` (no forwarded
+# capabilities). Those in ``toolloop.AGENT_ONLY_TOOLS`` are also part of
+# ``chat.SERVER_TOOLS``, dispatched in the loop for agent runs alone.
 MCP_ONLY_SERVER_TOOLS = frozenset(
     {
         "webfilter_get",
@@ -148,6 +149,14 @@ def test_catalog_exhaustive() -> None:
     # And no tier entry names a tool that does not exist anywhere.
     stale = set(TOOL_CLASSES) - catalog
     assert not stale, f"tiers for unknown tools: {sorted(stale)}"
+
+
+def test_the_copilot_agent_tools_are_in_the_catalog_and_read_only() -> None:
+    """They are classified (so exhaustiveness holds) and none of them changes anything."""
+
+    for name in ("agent_run_list", "agent_run_get", "agent_run_propose"):
+        assert name in chat.SERVER_TOOLS
+        assert TOOL_CLASSES[name] == READ_ONLY
 
 
 def test_every_tier_is_one_of_the_three() -> None:

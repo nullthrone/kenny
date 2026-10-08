@@ -12,7 +12,8 @@ under :func:`~kenny_server.store.write_lock`).
   its parameters), means "mode never chosen"; the caller falls back to the
   spec's default mode.
 * ``agent_runs`` — one row per started run: what it was bound to (the spec
-  hash, and the effective hash and frozen parameters it ran with), what started
+  hash, the effective hash and frozen parameters it ran with, and the evidence
+  its constraints were fed at start), what started
   it, the mode it ran in, how it ended and what it cost.
 
 Pure storage. Whether a run may start, and what it may do, is decided elsewhere.
@@ -94,7 +95,8 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     started_at            TEXT NOT NULL,
     finished_at           TEXT,
     params                TEXT,
-    effective_hash        TEXT
+    effective_hash        TEXT,
+    evidence              TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_agent_runs_agent ON agent_runs (agent_id, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_agent_runs_started ON agent_runs (started_at DESC);
@@ -104,14 +106,14 @@ _RUN_COLUMNS = (
     "id, agent_id, spec_hash, trigger, subject, host_id, mode, status, verdict, summary, "
     "input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, "
     "ticket_id, error, actions, recommendations, started_at, finished_at, "
-    "params, effective_hash"
+    "params, effective_hash, evidence"
 )
 
 #: Columns added after a table was first shipped, with their DDL; added by
 #: :meth:`AgentStore._migrate` to a database that predates them.
 _MIGRATED_COLUMNS: dict[str, dict[str, str]] = {
     "agent_settings": {"params": "TEXT NOT NULL DEFAULT '{}'", "act_hash": "TEXT"},
-    "agent_runs": {"params": "TEXT", "effective_hash": "TEXT"},
+    "agent_runs": {"params": "TEXT", "effective_hash": "TEXT", "evidence": "TEXT"},
 }
 
 
@@ -170,14 +172,19 @@ class AgentRun:
     params: dict[str, Any] | None = None
     #: The effective hash the run was bound to; ``None`` as for ``params``.
     effective_hash: str | None = None
+    #: The values server code computed at run start for the run's
+    #: evidence-fed constraints (ADR-0072 rule 6), by evidence name, frozen
+    #: for the run; ``None`` for a run whose agent takes none.
+    evidence: dict[str, list[str]] | None = None
 
     @classmethod
     def _from_row(cls, row: aiosqlite.Row) -> AgentRun:
         values = {key: row[key] for key in row.keys()}
         values["actions"] = json.loads(values["actions"])
         values["recommendations"] = json.loads(values["recommendations"])
-        if values.get("params") is not None:
-            values["params"] = json.loads(values["params"])
+        for key in ("params", "evidence"):
+            if values.get(key) is not None:
+                values[key] = json.loads(values[key])
         return cls(**values)
 
     def to_public(self) -> dict[str, Any]:
@@ -360,11 +367,12 @@ class AgentStore:
         ticket_id: str | None = None,
         params: Mapping[str, Any] | None = None,
         effective_hash: str | None = None,
+        evidence: Mapping[str, Sequence[str]] | None = None,
     ) -> AgentRun:
         """Open a run in the ``running`` state and return it.
 
-        ``params`` and ``effective_hash`` are what the run is bound to for its
-        whole life (ADR-0072), stored as given.
+        ``params``, ``effective_hash`` and ``evidence`` are what the run is
+        bound to for its whole life (ADR-0072), stored as given.
         """
 
         _check_mode(mode)
@@ -372,12 +380,17 @@ class AgentStore:
         params_json = (
             None if params is None else json.dumps(dict(params), sort_keys=True, default=str)
         )
+        evidence_json = (
+            None
+            if evidence is None
+            else json.dumps({k: sorted(v) for k, v in evidence.items()}, sort_keys=True)
+        )
         async with write_lock():
             await self._conn.execute(
                 "INSERT INTO agent_runs "
                 "(id, agent_id, spec_hash, trigger, subject, host_id, mode, status, "
-                "ticket_id, started_at, params, effective_hash) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?)",
+                "ticket_id, started_at, params, effective_hash, evidence) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?)",
                 (
                     run_id,
                     agent_id,
@@ -390,6 +403,7 @@ class AgentStore:
                     _now_iso(),
                     params_json,
                     effective_hash,
+                    evidence_json,
                 ),
             )
             await self._conn.commit()
@@ -480,6 +494,39 @@ class AgentStore:
         async with self._conn.execute(sql, params) as cur:
             rows = await cur.fetchall()
         return [AgentRun._from_row(row) for row in rows]
+
+    async def scheduled_runs(self, agent_id: str, *, prefix: str) -> list[AgentRun]:
+        """Every run of ``agent_id`` whose ``trigger`` starts with ``prefix``, newest first.
+
+        The scheduler's whole history (``scheduler.SCHEDULE_TRIGGER_PREFIX``),
+        selected in SQL, so no number of runs of another kind -- previews a
+        person can start at will -- can push a scheduled run out of it. Bounded
+        by run retention, not by a count.
+        """
+
+        if not prefix or any(ch in prefix for ch in "%_\\"):
+            raise ValueError(f"not a plain trigger prefix: {prefix!r}")
+        async with self._conn.execute(
+            f"SELECT {_RUN_COLUMNS} FROM agent_runs "
+            "WHERE agent_id = ? AND trigger LIKE ? AND substr(trigger, 1, ?) = ? "
+            "ORDER BY started_at DESC, rowid DESC",
+            (agent_id, f"{prefix}%", len(prefix), prefix),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [AgentRun._from_row(row) for row in rows]
+
+    async def count_runs_since(self, agent_id: str, *, prefix: str, since_iso: str) -> int:
+        """How many runs of ``agent_id`` with a ``trigger`` starting ``prefix`` began at or after ``since_iso``."""
+
+        if not prefix or any(ch in prefix for ch in "%_\\"):
+            raise ValueError(f"not a plain trigger prefix: {prefix!r}")
+        async with self._conn.execute(
+            "SELECT COUNT(*) FROM agent_runs WHERE agent_id = ? AND trigger LIKE ? "
+            "AND substr(trigger, 1, ?) = ? AND started_at >= ?",
+            (agent_id, f"{prefix}%", len(prefix), prefix, _normalize_iso(since_iso)),
+        ) as cur:
+            row = await cur.fetchone()
+        return int(row[0]) if row else 0
 
     async def runs_on_host_since(self, host_id: str, since_iso: str) -> list[AgentRun]:
         """Every run of any agent on ``host_id`` started at or after ``since_iso``, newest first."""
