@@ -1,4 +1,4 @@
-"""``/api/agents*``: who may read the agents, who may choose their mode (ADR-0071).
+"""``/api/specialized-agents*``: who may read the agents, who may choose their mode (ADR-0071).
 
 Through the real composition root, so the guard, the runner, the settings and
 the triage binding are the ones the server runs: a mode written here for triage
@@ -59,7 +59,7 @@ def test_an_operator_reads_the_agents_and_their_runs(tmp_path) -> None:
     app, pats = _app_with_operator(tmp_path)
     with TestClient(app) as c:
         h = _h(pats["op"])
-        r = c.get("/api/agents", headers=h)
+        r = c.get("/api/specialized-agents", headers=h)
         assert r.status_code == 200
         body = r.json()
         assert body["enabled"] is True
@@ -69,18 +69,18 @@ def test_an_operator_reads_the_agents_and_their_runs(tmp_path) -> None:
         assert triage["mode"] == "shadow"  # enabled, resolve off by default
         assert triage["spec_hash"] == CATALOG["triage"].spec_hash
         assert triage["latest_run"] is None
-        assert c.get("/api/agents/runs", headers=h).json() == {"runs": []}
+        assert c.get("/api/specialized-agents/runs", headers=h).json() == {"runs": []}
 
         run = c.portal.call(
             lambda: app.state.agent_store.start_run(
                 agent_id="triage", spec_hash="h", trigger="t", mode="shadow"
             )
         )
-        listed = c.get("/api/agents/runs?agent_id=triage&limit=5", headers=h).json()["runs"]
+        listed = c.get("/api/specialized-agents/runs?agent_id=triage&limit=5", headers=h).json()["runs"]
         assert [r["id"] for r in listed] == [run.id]
-        one = c.get(f"/api/agents/runs/{run.id}", headers=h)
+        one = c.get(f"/api/specialized-agents/runs/{run.id}", headers=h)
         assert one.status_code == 200 and one.json()["status"] == "running"
-        again = {a["id"]: a for a in c.get("/api/agents", headers=h).json()["agents"]}
+        again = {a["id"]: a for a in c.get("/api/specialized-agents", headers=h).json()["agents"]}
         assert again["triage"]["latest_run"]["id"] == run.id
 
 
@@ -88,26 +88,26 @@ def test_a_user_reads_nothing(tmp_path) -> None:
     app, pats = _app_with_operator(tmp_path)
     with TestClient(app) as c:
         h = _h(pats["kid"])
-        assert c.get("/api/agents", headers=h).status_code == 403
-        assert c.get("/api/agents/runs", headers=h).status_code == 403
-        assert c.get("/api/agents/runs/x", headers=h).status_code == 403
-        assert c.put("/api/agents/triage/mode", json={"mode": "act"}, headers=h).status_code == 403
+        assert c.get("/api/specialized-agents", headers=h).status_code == 403
+        assert c.get("/api/specialized-agents/runs", headers=h).status_code == 403
+        assert c.get("/api/specialized-agents/runs/x", headers=h).status_code == 403
+        assert c.put("/api/specialized-agents/triage/mode", json={"mode": "act"}, headers=h).status_code == 403
 
 
 def test_unknown_agents_runs_and_bad_queries(tmp_path) -> None:
     app, pats = _app_with_operator(tmp_path)
     with TestClient(app) as c:
         h = _h(pats["op"])
-        assert c.get("/api/agents/runs?agent_id=nope", headers=h).status_code == 404
-        assert c.get("/api/agents/runs?limit=many", headers=h).status_code == 400
-        assert c.get("/api/agents/runs?limit=0", headers=h).status_code == 400
-        assert c.get("/api/agents/runs/nope", headers=h).status_code == 404
+        assert c.get("/api/specialized-agents/runs?agent_id=nope", headers=h).status_code == 404
+        assert c.get("/api/specialized-agents/runs?limit=many", headers=h).status_code == 400
+        assert c.get("/api/specialized-agents/runs?limit=0", headers=h).status_code == 400
+        assert c.get("/api/specialized-agents/runs/nope", headers=h).status_code == 404
 
 
 def test_an_operator_cannot_choose_a_mode(tmp_path) -> None:
     app, pats = _app_with_operator(tmp_path)
     with TestClient(app) as c:
-        r = c.put("/api/agents/triage/mode", json={"mode": "act"}, headers=_h(pats["op"]))
+        r = c.put("/api/specialized-agents/triage/mode", json={"mode": "act"}, headers=_h(pats["op"]))
         assert r.status_code == 403
         assert app.state.settings.get("KENNY_TRIAGE_RESOLVE") is False
 
@@ -116,24 +116,24 @@ def test_a_superuser_moves_triage_through_its_settings(tmp_path) -> None:
     app, pats = _app_with_operator(tmp_path)
     with TestClient(app) as c:
         h = _h(pats["admin"])
-        r = c.put("/api/agents/triage/mode", json={"mode": "act"}, headers=h)
+        r = c.put("/api/specialized-agents/triage/mode", json={"mode": "act"}, headers=h)
         assert r.status_code == 200
         assert r.json() == {"agent_id": "triage", "mode": "act", "requested": "act"}
         # The settings the Admin page shows, and the live consumer they drive.
         assert app.state.settings.get("KENNY_TRIAGE_RESOLVE") is True
         assert app.state.triage.resolve_enabled is True
         assert c.portal.call(app.state.agents.mode_of, "triage") == "act"
-        assert {a["id"]: a for a in c.get("/api/agents", headers=h).json()["agents"]}[
+        assert {a["id"]: a for a in c.get("/api/specialized-agents", headers=h).json()["agents"]}[
             "triage"
         ]["mode"] == "act"
 
-        r = c.put("/api/agents/triage/mode", json={"mode": "off"}, headers=h)
+        r = c.put("/api/specialized-agents/triage/mode", json={"mode": "off"}, headers=h)
         assert r.status_code == 200 and r.json()["mode"] == "off"
         assert app.state.settings.get("KENNY_TRIAGE_ENABLED") is False
         # The binding follows: a new ticket no longer reaches the runner.
         assert app.state.tickets._triage is None
 
-        r = c.put("/api/agents/triage/mode", json={"mode": "shadow"}, headers=h)
+        r = c.put("/api/specialized-agents/triage/mode", json={"mode": "shadow"}, headers=h)
         assert r.json()["mode"] == "shadow"
         assert app.state.tickets._triage is not None
         assert app.state.settings.get("KENNY_TRIAGE_RESOLVE") is False
@@ -152,15 +152,30 @@ def test_bad_mode_writes(tmp_path) -> None:
     app, pats = _app_with_operator(tmp_path)
     with TestClient(app) as c:
         h = _h(pats["admin"])
-        assert c.put("/api/agents/nope/mode", json={"mode": "act"}, headers=h).status_code == 404
-        assert c.put("/api/agents/triage/mode", json={"mode": "ACT"}, headers=h).status_code == 400
-        assert c.put("/api/agents/triage/mode", json={}, headers=h).status_code == 400
-        assert c.put("/api/agents/triage/mode", json=["act"], headers=h).status_code == 400
+        assert c.put("/api/specialized-agents/nope/mode", json={"mode": "act"}, headers=h).status_code == 404
+        assert c.put("/api/specialized-agents/triage/mode", json={"mode": "ACT"}, headers=h).status_code == 400
+        assert c.put("/api/specialized-agents/triage/mode", json={}, headers=h).status_code == 400
+        assert c.put("/api/specialized-agents/triage/mode", json=["act"], headers=h).status_code == 400
         r = c.put(
-            "/api/agents/triage/mode",
+            "/api/specialized-agents/triage/mode",
             content=b"not json",
             headers={**h, "Content-Type": "application/json"},
         )
         assert r.status_code == 400
         assert app.state.settings.get("KENNY_TRIAGE_RESOLVE") is False
         assert app.state.settings.get("KENNY_TRIAGE_ENABLED") is True
+
+
+def test_specialized_agent_routes_are_not_in_the_host_enroll_exemption(tmp_path) -> None:
+    """``/api/agents/<host>/enroll`` is open to the agent's own token; the specialized
+    agents live under a different prefix so no path of theirs can match it."""
+
+    app, _ = _app_with_operator(tmp_path)
+    with TestClient(app) as c:
+        c.cookies.clear()
+        for method in ("get", "post", "put"):
+            r = getattr(c, method)("/api/specialized-agents/runs/enroll", follow_redirects=False)
+            assert r.status_code == 401, method
+        # The host namespace is untouched: a host may be named "runs".
+        r = c.post("/api/agents/runs/token", follow_redirects=False)
+        assert r.status_code == 401
