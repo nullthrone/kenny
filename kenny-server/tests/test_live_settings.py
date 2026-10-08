@@ -116,6 +116,9 @@ READ_PER_USE = {
     "KENNY_AGENTS_ENABLED",
     "KENNY_AGENTS_MAX_CONCURRENT",
     "KENNY_AGENTS_DAILY_TOKENS",
+    # Read by ``agents.scheduler.AgentScheduler.run`` through its interval getter
+    # after every pass.
+    "KENNY_AGENTS_SCHEDULE_INTERVAL_SECS",
 }
 
 

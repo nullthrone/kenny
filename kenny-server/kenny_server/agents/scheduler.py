@@ -1,0 +1,488 @@
+"""Starts the specialized agents whose trigger is a schedule (ADR-0071, ADR-0072).
+
+One pass looks at every catalog agent with a ``schedule`` trigger and, for each
+host the install named, decides whether a run is due *now*. Everything here is
+deterministic server code; the model is only ever started, never asked.
+
+**When a run is due.** The agent's ``window`` parameter is a recurring
+maintenance window (weekday/time/zone, parsed by :mod:`kenny_server.webfilter`'s
+own ``make_window`` and ``schedule_state``, not a second parser). Outside it
+nothing starts. Inside it, each host in the agent's ``hosts`` parameter runs
+**once per window occurrence**; an empty or missing ``hosts`` is no host, never
+"all". "Already ran" is read off ``agent_runs``: a run is recorded with the
+trigger ``schedule:<end of the occurrence>``, so the answer survives a restart
+without a table of its own. A run that failed also counts as having run — a
+broken agent retries at the next occurrence, not every pass.
+
+**Canary order.** Hosts run one after another in sorted order. The pass for an
+agent stops at the first run that failed, or that ended ``actionable`` or
+``inconclusive`` *after a change* (an action the gate allowed that did not fail).
+The stop outlasts the pass: while any run of this occurrence stopped the
+canary, the agent starts nothing else until the next occurrence, so the next
+pass cannot walk past a host that went wrong.
+
+**Circuit breaker.** After :data:`BREAKER_THRESHOLD` consecutive failed runs of
+one agent that is in ``act``, it is moved to ``shadow`` as
+``system:circuit-breaker`` and a warning goes on the event log. A run counts as
+failed when it ended ``failed`` or a change it made errored. Refusals that are
+an outcome rather than a fault — the agent's ``disabled`` kill switch, its
+``blocked`` guard, a ``paused`` game session — never count, and neither does a
+run a restart interrupted.
+
+**Preconditions, before any run.** A host that is offline, or whose OS cannot
+serve a tool the agent names, is skipped. An agent whose ``require_idle``
+parameter is not off asks the host itself — ``remotehelp_status``, called here
+as ``agent:<id>``, not by the model — whether somebody is signed in, and
+skips the host unless the answer is a clear *no*: a failed check is "do not
+disturb". A skip is recorded once per occurrence as a ``skipped`` run with the
+reason and is retried at the next pass; it is not a failure.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import inspect
+import logging
+from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any
+
+from ..tools import CAPABILITY_TOOLS, supports_tool
+from ..webfilter import CATEGORY_KEYS, make_window, schedule_state
+from .runner import AgentRunner
+from .spec import AgentSpec, resolve
+from .store import INTERRUPTED_ERROR, AgentRun
+
+logger = logging.getLogger("kenny.agents.scheduler")
+
+__all__ = [
+    "BENIGN_REFUSALS",
+    "BREAKER_ACTOR",
+    "BREAKER_THRESHOLD",
+    "INTERVAL_SETTING",
+    "MIN_INTERVAL_S",
+    "SCHEDULE_TRIGGER_PREFIX",
+    "AgentScheduler",
+    "Outcome",
+    "host_supports",
+    "made_change",
+    "run_failed",
+    "stops_canary",
+]
+
+#: The live setting a pass's cadence is read from (``config.py``).
+INTERVAL_SETTING = "KENNY_AGENTS_SCHEDULE_INTERVAL_SECS"
+
+#: The shortest cadence a loop honours, whatever the setting says.
+MIN_INTERVAL_S = 60
+
+#: The ``trigger`` of a scheduled run is this plus the end of the window
+#: occurrence it belongs to (UTC, ISO-8601): one occurrence, one trigger.
+SCHEDULE_TRIGGER_PREFIX = "schedule:"
+
+#: Consecutive failed runs of one agent that move it back to ``shadow``.
+BREAKER_THRESHOLD = 3
+
+#: Who the circuit breaker acts as when it demotes an agent.
+BREAKER_ACTOR = "system:circuit-breaker"
+
+#: Error codes of a change that was *refused*, not one that broke: the agent's
+#: remote-control kill switch (``disabled``), its deterministic safety guard
+#: (``blocked``) and a game-scoped pause (``paused``). An outcome to read, not
+#: a failure to count.
+BENIGN_REFUSALS: frozenset[str] = frozenset({"disabled", "blocked", "paused"})
+
+#: Verdicts after which a run that changed something stops the canary.
+_STOPPING_VERDICTS: frozenset[str] = frozenset({"actionable", "inconclusive"})
+
+#: Run statuses that mean "this host has had its run for this occurrence".
+_DONE_STATUSES: frozenset[str] = frozenset({"running", "completed", "failed"})
+
+#: How many recent runs of one agent a pass reads back. Enough for every host of
+#: a household fleet over a window plus the breaker's streak.
+_HISTORY = 500
+
+#: The OS that can serve a tool, where :func:`kenny_server.tools.supports_tool`
+#: does not say (it lists the tools the *agent binary* refuses by name; a
+#: ``winget_*`` call on Linux is refused by the agent at run time, which is too
+#: late for a scheduled run). Entries here are redundant once ``tools`` scopes
+#: the tool itself.
+_TOOL_OS: dict[str, frozenset[str]] = {
+    "winget_list": frozenset({"windows"}),
+    "winget_update": frozenset({"windows"}),
+}
+
+#: Spellings of "off" a ``require_idle`` parameter may carry.
+_FALSE_WORDS = frozenset({"false", "0", "no", "off", ""})
+
+
+@dataclass(frozen=True)
+class Outcome:
+    """What one pass did for one host of one agent."""
+
+    agent_id: str
+    host_id: str
+    #: ``ran`` | ``skipped`` | ``halted`` | ``tripped``
+    kind: str
+    detail: str = ""
+    run: AgentRun | None = None
+
+
+# -- reading a finished run ----------------------------------------------------
+
+
+def run_failed(run: AgentRun) -> bool:
+    """Whether ``run`` counts as a failure (and toward the circuit breaker).
+
+    ``failed`` outright, or a change it made that errored for any reason other
+    than a refusal that is an outcome (:data:`BENIGN_REFUSALS`). A run the
+    server's restart interrupted is not the agent's fault and is not one.
+    """
+
+    if run.status == "failed":
+        return run.error != INTERRUPTED_ERROR
+    if run.status != "completed":
+        return False
+    return any(
+        a.get("ok") is False and a.get("code") not in BENIGN_REFUSALS for a in run.actions
+    )
+
+
+def made_change(run: AgentRun) -> bool:
+    """Whether ``run`` changed something: an action the gate allowed that did not fail."""
+
+    return any(a.get("ok") is not False for a in run.actions)
+
+
+def stops_canary(run: AgentRun) -> bool:
+    """Whether the hosts after ``run`` must wait for a person."""
+
+    if run_failed(run):
+        return True
+    return run.verdict in _STOPPING_VERDICTS and made_change(run)
+
+
+# -- the host ------------------------------------------------------------------
+
+
+def host_supports(spec: AgentSpec, os_name: str | None) -> bool:
+    """Whether a host running ``os_name`` can serve every capability ``spec`` names."""
+
+    name = (os_name or "").lower()
+    for tool in spec.tools:
+        if tool not in CAPABILITY_TOOLS:
+            continue
+        if not supports_tool(tool, name):
+            return False
+        scoped = _TOOL_OS.get(tool)
+        if scoped is not None and name not in scoped:
+            return False
+    return True
+
+
+def _hosts(params: Mapping[str, Any]) -> list[str]:
+    """The hosts an agent may run on: sorted, unique, and empty unless named."""
+
+    raw = params.get("hosts")
+    if isinstance(raw, str):
+        raw = raw.split(",")
+    if not isinstance(raw, (list, tuple, set, frozenset)):
+        return []
+    return sorted({h.strip() for h in raw if isinstance(h, str) and h.strip()})
+
+
+def _idle_required(params: Mapping[str, Any]) -> bool:
+    """Whether to check the host is unattended: yes, unless the parameter says no."""
+
+    value = params.get("require_idle")
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return value.strip().lower() not in _FALSE_WORDS
+    return bool(value)
+
+
+def _packages(params: Mapping[str, Any]) -> list[str]:
+    raw = params.get("packages")
+    if not isinstance(raw, (list, tuple, set, frozenset)):
+        return []
+    return sorted({p for p in raw if isinstance(p, str) and p})
+
+
+class AgentScheduler:
+    """Starts the scheduled agents; one :meth:`pass_once` per cadence tick.
+
+    ``params_of(agent_id)`` is the agent's stored parameters (superuser-edited,
+    ADR-0072). ``executor`` is used to ask a host whether it is idle and for the
+    registry that says whether it is online and which OS it runs. ``client`` and
+    ``model`` are handed to the runner only if given, and only if its
+    ``run_generic`` takes them.
+    """
+
+    def __init__(
+        self,
+        runner: AgentRunner,
+        catalog: Mapping[str, AgentSpec],
+        params_of: Callable[[str], Awaitable[Mapping[str, Any]]],
+        executor: Any,
+        *,
+        now: Callable[[], datetime] | None = None,
+        client: Any = None,
+        model: str | None = None,
+        breaker_threshold: int = BREAKER_THRESHOLD,
+    ) -> None:
+        self.runner = runner
+        self.catalog = catalog
+        self.params_of = params_of
+        self.executor = executor
+        self._now = now or (lambda: datetime.now(timezone.utc))
+        self._client = client
+        self._model = model
+        self._breaker_threshold = max(1, int(breaker_threshold))
+        # One pass at a time: a pass can outlast the cadence (a package update
+        # runs for minutes) and two must not both decide a host is due.
+        self._pass_lock = asyncio.Lock()
+        accepted = inspect.signature(runner.run_generic).parameters
+        self._takes_any = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in accepted.values())
+        self._accepted = frozenset(accepted)
+
+    # -- the loop ------------------------------------------------------------
+
+    async def run(
+        self, interval_s: Callable[[], float | int], initial_delay_s: float = 10.0
+    ) -> None:
+        """Run a pass every ``interval_s()`` seconds, forever.
+
+        The cadence is read again after every pass, so changing the setting
+        retimes the running loop, and is never shorter than
+        :data:`MIN_INTERVAL_S`. A pass that raises is logged and the loop goes
+        on (as ``AlertEngine.run`` does).
+        """
+
+        await asyncio.sleep(initial_delay_s)
+        while True:
+            try:
+                await self.pass_once()
+            except Exception:  # noqa: BLE001 - never let the loop die
+                logger.exception("agent schedule pass failed")
+            try:
+                interval = float(interval_s())
+            except Exception:  # noqa: BLE001 - a bad setting must not stop the loop
+                interval = float(MIN_INTERVAL_S)
+            await asyncio.sleep(max(float(MIN_INTERVAL_S), interval))
+
+    # -- one pass --------------------------------------------------------------
+
+    async def pass_once(self) -> list[Outcome]:
+        """Start whatever is due now; return what was done, in order."""
+
+        async with self._pass_lock:
+            if not self.runner.enabled():
+                return []
+            outcomes: list[Outcome] = []
+            for spec in sorted(self.catalog.values(), key=lambda s: s.id):
+                if spec.trigger.kind != "schedule":
+                    continue
+                try:
+                    outcomes += await self._pass_agent(spec)
+                except Exception:  # noqa: BLE001 - one agent's fault must not skip the others
+                    logger.exception("schedule pass for agent %s failed", spec.id)
+            return outcomes
+
+    def _occurrence(self, spec: AgentSpec, raw: Any, at: datetime) -> str | None:
+        """The trigger for the window occurrence open at ``at``, or ``None``.
+
+        ``None`` for no window, an unreadable one, or one that is closed:
+        a window nobody can interpret never means "always".
+        """
+
+        if not isinstance(raw, Mapping):
+            return None
+        try:
+            window = make_window(
+                spec.id,
+                days=raw.get("days"),
+                start=raw.get("start"),
+                end=raw.get("end"),
+                # Windows are shared with the web filter, which wants a category;
+                # none is used here, the window is only a time span.
+                categories=CATEGORY_KEYS[:1],
+                tz=raw.get("tz") or raw.get("timezone"),
+            )
+        except (ValueError, TypeError) as exc:
+            logger.warning("agent %s: its maintenance window is unreadable (%s)", spec.id, exc)
+            return None
+        state = schedule_state({}, [window], at=at)
+        if not state["active_windows"]:
+            return None
+        # The window's end identifies the occurrence for as long as it is open.
+        return f"{SCHEDULE_TRIGGER_PREFIX}{state['next_change_at'] or window.id}"
+
+    async def _pass_agent(self, spec: AgentSpec) -> list[Outcome]:
+        mode = await self.runner.mode_of(spec.id)
+        if mode == "off":
+            return []
+        params = await self.params_of(spec.id)
+        trigger = self._occurrence(spec, params.get("window"), self._now())
+        if trigger is None:
+            return []
+        hosts = _hosts(params)
+        if not hosts:
+            return []
+        history = await self.runner.store.list_runs(agent_id=spec.id, limit=_HISTORY)
+        mine = [r for r in history if r.trigger == trigger]
+        if any(stops_canary(r) for r in mine):
+            return [Outcome(spec.id, "", "halted", "an earlier run of this window stopped the canary")]
+        ran = {r.host_id for r in mine if r.status in _DONE_STATUSES}
+        skipped = {(r.host_id, r.error) for r in mine if r.status == "skipped"}
+
+        outcomes: list[Outcome] = []
+        for host in hosts:
+            if host in ran:
+                continue
+            reason = await self._unready(spec, host, params)
+            if reason is not None:
+                if (host, reason) not in skipped:
+                    await self._record_skip(spec, mode, trigger, host, reason)
+                    skipped.add((host, reason))
+                outcomes.append(Outcome(spec.id, host, "skipped", reason))
+                continue
+            run = await self._run(spec, host, trigger, params)
+            if run is None:
+                # The global switch, the AI switch or the mode went off meanwhile.
+                break
+            if run.status == "skipped":
+                # A global cap refused it (and has recorded why); it would
+                # refuse the next host too.
+                outcomes.append(Outcome(spec.id, host, "skipped", run.error or "", run))
+                break
+            outcomes.append(Outcome(spec.id, host, "ran", run.status, run))
+            tripped = run_failed(run) and await self._maybe_trip(spec)
+            if tripped:
+                outcomes.append(Outcome(spec.id, host, "tripped", "back to shadow", run))
+            if stops_canary(run):
+                break
+        return outcomes
+
+    # -- preconditions ---------------------------------------------------------
+
+    async def _unready(
+        self, spec: AgentSpec, host: str, params: Mapping[str, Any]
+    ) -> str | None:
+        """Why ``host`` must not be run on now, or ``None``."""
+
+        agent = self.executor.registry.get(host)
+        if agent is None or not agent.online:
+            return "the machine is offline"
+        if not host_supports(spec, getattr(agent, "os", None)):
+            return f"this agent does not run on {getattr(agent, 'os', 'this')} machines"
+        if "require_idle" in spec.params and _idle_required(params):
+            return await self._not_idle(spec, host)
+        return None
+
+    async def _not_idle(self, spec: AgentSpec, host: str) -> str | None:
+        """``None`` only when the host itself says nobody is signed in."""
+
+        try:
+            status = await self.executor.run_capability(
+                "remotehelp_status", {}, agent_id=host, actor=f"agent:{spec.id}"
+            )
+        except Exception as exc:  # noqa: BLE001 - a check that fails is "do not disturb"
+            return f"could not tell whether anyone is using the machine ({type(exc).__name__})"
+        if isinstance(status, Mapping) and status.get("interactive_session") is False:
+            return None
+        if isinstance(status, Mapping) and status.get("interactive_session") is True:
+            return "someone is signed in at the machine"
+        return "could not tell whether anyone is using the machine"
+
+    async def _record_skip(
+        self, spec: AgentSpec, mode: str, trigger: str, host: str, reason: str
+    ) -> None:
+        """Leave a ``skipped`` run so a person can see the host was passed over, and why."""
+
+        store = self.runner.store
+        run = await store.start_run(
+            agent_id=spec.id,
+            spec_hash=spec.spec_hash,
+            trigger=trigger,
+            mode=mode,
+            subject=f"host:{host}",
+            host_id=host,
+        )
+        await store.finish_run(run.id, status="skipped", error=reason)
+
+    # -- a run -----------------------------------------------------------------
+
+    async def _run(
+        self, spec: AgentSpec, host: str, trigger: str, params: Mapping[str, Any]
+    ) -> AgentRun | None:
+        kwargs: dict[str, Any] = {
+            "host_id": host,
+            "trigger": trigger,
+            "brief": _brief(spec, host, params),
+        }
+        for name, value in (
+            ("client", self._client),
+            ("model", self._model),
+            ("executor", self.executor),
+        ):
+            if value is not None and (self._takes_any or name in self._accepted):
+                kwargs[name] = value
+        # Resolved here as well as in the runner: what the run's gate enforces
+        # is this spec with the allowlist filled in from the stored parameters.
+        return await self.runner.run_generic(resolve(spec, params), **kwargs)
+
+    async def _maybe_trip(self, spec: AgentSpec) -> bool:
+        """Move ``spec`` to ``shadow`` after N consecutive failed runs while in ``act``."""
+
+        history = await self.runner.store.list_runs(agent_id=spec.id, limit=_HISTORY)
+        streak = 0
+        for run in history:  # newest first
+            if run.status in ("skipped", "running") or (
+                run.status == "failed" and run.error == INTERRUPTED_ERROR
+            ):
+                continue
+            if not run_failed(run):
+                break
+            streak += 1
+        if streak < self._breaker_threshold:
+            return False
+        if await self.runner.mode_of(spec.id) != "act":
+            return False
+        await self.runner.set_mode(spec.id, "shadow", actor=BREAKER_ACTOR)
+        message = (
+            f"agent {spec.id}: {streak} runs in a row failed; moved back to shadow "
+            f"by the circuit breaker"
+        )
+        logger.warning(message)
+        event_store = getattr(self.runner, "event_store", None)
+        if event_store is not None:
+            try:
+                await event_store.insert_log(
+                    source="server",
+                    at=self._now().isoformat(),
+                    level="warning",
+                    target=logger.name,
+                    message=message,
+                    fields={"agent": spec.id, "failed_in_a_row": streak, "actor": BREAKER_ACTOR},
+                )
+            except Exception:  # noqa: BLE001 - the demotion stands; losing its record must not undo it
+                logger.warning("failed to record the circuit breaker for %s", spec.id, exc_info=True)
+        return True
+
+
+def _brief(spec: AgentSpec, host: str, params: Mapping[str, Any]) -> str:
+    """The one message that starts a scheduled run.
+
+    Facts the run needs to be efficient, not limits: the gate enforces those.
+    """
+
+    lines = [f"Scheduled {spec.title.lower()} run on the machine \"{host}\"."]
+    if "packages" in spec.params:
+        packages = _packages(params)
+        if packages:
+            lines.append("Package ids you may update: " + ", ".join(packages) + ".")
+        else:
+            lines.append("No package is allowed to be updated; update nothing.")
+    return "\n".join(lines)
