@@ -388,6 +388,11 @@ export interface SpecializedAgent {
   trigger: AgentTrigger
   tools: string[]
   tool_classes: Record<string, ToolTier>
+  /**
+   * Where each tool runs: on a PC (`'host'`) or on the server (`'server'`). Absent on a
+   * server that predates it; a consumer then offers both.
+   */
+  tool_targets?: Record<string, 'host' | 'server'>
   verdict_tool: string | null
   budget: { max_iterations: number }
   constraints: AgentConstraint[]

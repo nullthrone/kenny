@@ -526,6 +526,17 @@ export type ChatEvent =
    * the first one already covers.
    */
   | { type: 'ticket_draft'; title: string; summary: string; agent_id: string }
+  /**
+   * Kenny proposed a specialized agent's preview run. NOTHING has started: this
+   * is an offer for the operator to accept through the ordinary
+   * `POST /api/specialized-agents/{agent_id}/runs`, which is the only place a
+   * run is started from here (ADR-0063: the copilot proposes, a person acts).
+   *
+   * `host_id` is `''` for an agent that is not bound to a PC. Like
+   * `ticket_draft` it comes from the live chat stream only; history replay
+   * never re-offers it.
+   */
+  | { type: 'agent_run_proposal'; agent_id: string; host_id: string; reason: string }
 
 /**
  * `POST /api/chat/stream`.
