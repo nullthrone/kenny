@@ -282,8 +282,17 @@ stays off while the AI master switch there is off, and without an Anthropic API 
 AI gateway (Admin → AI, or `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL`) — there is nothing
 to investigate with.
 
+Triage is kenny's first [specialized agent](dashboard.md#specialized-agents), `triage`:
+each investigation is one run, bound by the global agent switch and caps in **Admin → AI**
+and recorded with its verdict and token usage in the agent run history
+(`GET /api/agents/runs?agent_id=triage`). Its host calls are audited as `agent:triage`
+under that run's id; on the ticket's own timeline it still appears as triage. A ticket an
+agent's own action opened is never investigated, so one agent's effect cannot start
+another.
+
 See [ADR-0056](adr/0056-unprompted-ticket-triage.md) for the reasoning and the three
-controls that bound it.
+controls that bound it, and
+[ADR-0071](adr/0071-specialized-agents-purpose-bound-unattended-sessions.md) for agents.
 
 ## Operator approval vs. user consent — two different questions
 
