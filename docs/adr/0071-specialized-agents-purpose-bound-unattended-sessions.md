@@ -38,35 +38,48 @@ one of them identically?
 ## Decision Outcome
 
 An agent is an `AgentSpec` (`kenny_server/agents/spec.py`): id, prompt, trigger
-(`event` | `schedule` | `on_demand`), an **explicit, closed tool set**, an optional verdict
-tool, and a budget. Specs are validated at load and a bad one fails closed:
+(`event` | `schedule` | `on_demand`), an **explicit, closed tool set**, argument
+constraints, an optional verdict tool, and a budget. Specs are validated at load and a bad
+one fails closed. The binding rules:
 
-1. **Every tool must be classified** in `TOOL_CLASSES`; an unknown name refuses the spec.
-   Nothing is derived from a profile.
-2. **Sensitive tools are opt-in** (`sensitive_ok`).
-3. **`spec_hash` fingerprints what the agent does** (prompt, trigger, tools, budget,
-   version). Anything later granted to an agent binds to that hash, so editing a spec is
-   never a silent widening of something a person agreed to.
+1. **Every tool is classified** in `TOOL_CLASSES`; an unknown name refuses the spec.
+   Nothing is derived from a profile. Sensitive tools are opt-in (`sensitive_ok`).
+2. **Every change-tier tool carries argument constraints, enforced in code on every
+   call.** Exact, enumerated values; an omitted or empty argument never matches (an absent
+   selector usually means "everything" — `winget_update` without `id` upgrades every
+   package). A limit stated only in the prompt is a limit the model enforces, which
+   ADR-0056 rules out. The verdict tool is exempt: its own handler decides its effect.
+3. **`spec_hash` fingerprints what the agent does** (prompt, trigger, tools, constraints,
+   budget, version). Anything granted to an agent binds to it, so editing a spec is never
+   a silent widening of something a person agreed to.
+4. **One run, one host.** A run is frozen to one host (or none, for a server-only agent);
+   a call naming another host — an `agent_id` override or a host `id` — is refused, not
+   retargeted: nobody is present to read a retarget record.
+5. **The principal is never an operator.** A run acts as `agent:<id>`, host-scoped like
+   triage's, so no exemption written for a person present applies to it.
+6. **An agent's effect never starts another agent**, and a global cap bounds concurrent
+   runs and daily tokens, checked before the model is called. Otherwise a change that
+   breaks a service raises an alert, opens a ticket and starts the next run.
 
 Each agent has a **mode**: `off`, `shadow` (the whole run happens; a change is refused at
 the gate and kept as a recommendation) or `act`. A new agent starts in `shadow`; moving one
-to `act` is a superuser's decision. Every run is **frozen to one host** (or to none, for a
-server-only agent), runs as the service actor `agent:<id>`, and leaves an `agent_runs`
-record with its outcome and token usage. A global switch stops every agent at once.
+to `act` is a superuser's decision. Every run leaves an `agent_runs` record — mode,
+verdict, the changes it made and proposed, token usage — and a global switch stops every
+agent at once.
 
 The generic gate (`agents.policy.AgentPolicy`) answers in one fixed order: not in the spec
-→ deny; outside the frozen host → deny; read-only → allow; change in `shadow` → deny and
-recommend; `standard_change` in `act` → allow; `normal_change` in `act` → allow only when
-an authorizer says yes, else deny and recommend. **It never holds**: there is nobody present
-to answer a hold, and a held call parks a run forever (ADR-0056's reason for withholding).
+→ deny; another host → deny; read-only → allow; constraint not met → deny; change in
+`shadow` → deny and recommend; `standard_change` in `act` → allow; `normal_change` in `act`
+→ allow only when an authorizer says yes, else deny and recommend. **It never holds**: no
+one is present to answer, and a held call parks a run forever (ADR-0056).
 
 Triage becomes catalog entry `triage`, unchanged in behaviour: it keeps its ticket surface,
-its prompt and `may_resolve`; its existing `KENNY_TRIAGE_*` settings remain the source of its
-mode (`ENABLED` off → `off`; `RESOLVE` off → `shadow`; on → `act`).
+its prompt and `may_resolve`; its `KENNY_TRIAGE_*` settings remain the source of its mode
+(`ENABLED` off → `off`; `RESOLVE` off → `shadow`; on → `act`).
 
-The forwarded-call audit now names who acted — the agent actor, the operator driving the
-copilot, the MCP principal — with the run id and redacted arguments, because "kenny did
-it" is not an answer once kenny acts on its own.
+The forwarded-call audit names who acted — the agent actor, the operator driving the
+copilot, the MCP principal — with the run id and redacted arguments: "kenny did it" is
+not an answer once kenny acts on its own.
 
 ### Consequences
 
@@ -77,9 +90,9 @@ it" is not an answer once kenny acts on its own.
 - Bad / accepted, because kenny now spends tokens on work nobody asked for in proportion to
   the number of enabled agents; bounded per run by the budget and globally by the switch.
 - Bad / accepted, because a `standard_change` runs in `act` without a per-call decision.
-  That is the meaning ADR-0045 gave the tier — routine, reversible, low blast radius — and
-  the mode switch is the person's decision that this agent may use it.
-- Out of scope here: what may authorize a `normal_change` (ADR-0072), and a dashboard
+  It is bounded by the spec's constraints, which a person reviewed with the spec, and the
+  mode switch is the person's decision that this agent may use them — never the tier alone.
+- Out of scope here: what may authorize a `normal_change` (a separate record), and a dashboard
   builder for agents defined as data.
 
 ## More Information
