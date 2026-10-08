@@ -372,6 +372,14 @@ takes an `event_type` of `health`, `offline`, `disk_forecast`, `hardware_forecas
 | `ticket_rule_set` | `event_type`, `decision`, `section?`, `agent_id?`, `note?` | `normal_change` |
 | `ticket_rule_remove` | `rule_id` | `normal_change` |
 
+The [config-hygiene agent](dashboard.md#specialized-agents) reaches the list and remove
+tools of both families as well — and nothing else does outside MCP: they are registered
+only on the executor agent runs forward through, never offered to Ask kenny or a ticket.
+There the lists take no `agent_id` and mark each rule `unused`/`removable`, and a removal
+is limited to the ids the server's own hit records show unused for 90 days and whose
+removal can only make kenny louder; it runs only under a `server`-scoped
+[standing authorization](adr/0072-standing-authorizations-consent-given-ahead.md).
+
 ## Auditing
 
 Every forwarded capability call is appended to the **tool-call audit log**, annotated
