@@ -306,12 +306,17 @@ class CallLog:
         error: str | None = None,
         actor: str | None = None,
         run_id: str | None = None,
+        authorization_id: str | None = None,
     ) -> None:
         """Record one forwarded call.
 
-        ``actor`` names who made it (operator username, or an agent identity) and
-        ``run_id`` the autonomous run it belongs to; both, plus the redacted
-        ``args``, are persisted in the event's ``fields`` JSON.
+        ``actor`` names who made it (operator username, or an agent identity),
+        ``run_id`` the autonomous run it belongs to, and ``authorization_id``
+        the standing authorization that let an agent make it (ADR-0072); all
+        three, plus the redacted ``args``, are persisted in the event's
+        ``fields`` JSON. The authorization id sits beside ``args``, not in it:
+        it is the server's record of why the call ran, not something the
+        caller sent, so it is neither redacted nor stripped from a reader.
         """
 
         safe_args = redact_audit_args(args)
@@ -326,7 +331,12 @@ class CallLog:
                     tool=tool,
                     ok=ok,
                     error=error,
-                    fields={"actor": actor, "run_id": run_id, "args": safe_args},
+                    fields={
+                        "actor": actor,
+                        "run_id": run_id,
+                        "authorization_id": authorization_id,
+                        "args": safe_args,
+                    },
                 )
             except Exception:
                 logger.warning(
@@ -346,6 +356,7 @@ class CallLog:
                 "error": error,
                 "actor": actor,
                 "run_id": run_id,
+                "authorization_id": authorization_id,
             }
         )
 
@@ -362,6 +373,7 @@ class CallLog:
                     # Rows written before the audit identity existed have no fields.
                     "actor": (r.get("fields") or {}).get("actor"),
                     "run_id": (r.get("fields") or {}).get("run_id"),
+                    "authorization_id": (r.get("fields") or {}).get("authorization_id"),
                     "args": (r.get("fields") or {}).get("args"),
                 }
                 for r in rows

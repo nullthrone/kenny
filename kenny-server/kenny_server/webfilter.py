@@ -848,6 +848,27 @@ class ScheduleWindow:
         }
 
 
+def parse_recurrence(
+    *, days: Any, start: Any, end: Any, tz: str | None = None
+) -> tuple[tuple[int, ...], int, int, str]:
+    """Validate the *when* of a recurring window: ``(days, start_min, end_min, tz)``.
+
+    The part of :func:`make_window` that is not about categories, shared with
+    every other recurring window kenny reads unattended (an agent's
+    maintenance window, ADR-0072), so there is one parser for "which days,
+    from when to when, in which zone". Raises :class:`ValueError` as
+    :func:`make_window` does.
+    """
+
+    start_min = parse_hhmm(start)
+    end_min = parse_hhmm(end)
+    if start_min == end_min:
+        raise ValueError("a window's start and end must differ")
+    zone = (tz or default_timezone()).strip()
+    resolve_timezone(zone)
+    return parse_days(days), start_min, end_min, zone
+
+
 def make_window(
     agent_id: str,
     *,
@@ -872,17 +893,14 @@ def make_window(
     keys = validate_categories(categories)
     if not keys:
         raise ValueError("a window must name at least one category")
-    start_min = parse_hhmm(start)
-    end_min = parse_hhmm(end)
-    if start_min == end_min:
-        raise ValueError("a window's start and end must differ")
-    zone = (tz or default_timezone()).strip()
-    resolve_timezone(zone)
+    day_indices, start_min, end_min, zone = parse_recurrence(
+        days=days, start=start, end=end, tz=tz
+    )
     return ScheduleWindow(
         id=window_id or uuid.uuid4().hex[:12],
         agent_id=agent_id,
         label=str(label or "").strip()[:80],
-        days=parse_days(days),
+        days=day_indices,
         start_min=start_min,
         end_min=end_min,
         categories=keys,

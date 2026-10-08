@@ -734,9 +734,39 @@ off is `shadow`, on is `act`.
   write is. For triage it writes the two settings above, exactly as this page does. The
   answer carries the mode now in force, which for triage stays `off` while no API key or
   gateway is configured. Each change is written to the event log with who made it.
+- `GET /api/specialized-agents/{agent_id}/params` *(operator+)* — the parameters the agent's
+  spec declares, their values on this install, and the agent's `effective_hash`.
+- `PUT /api/specialized-agents/{agent_id}/params` with `{"params": {...}}` *(superuser only)*
+  — replaces them. A list parameter (a package allowlist) is a list of non-empty strings;
+  `window` is `{"days", "start", "end", "tz"}`, read like a web-filter schedule window.
+- `GET /api/specialized-agents/{agent_id}/authorizations` *(operator+)* — the agent's
+  standing authorizations, revoked, voided and expired ones included, each with its status
+  and the attempts spent per host in the last 24 hours.
+- `POST /api/specialized-agents/{agent_id}/authorizations` with `{"tool", "scope",
+  "max_attempts_per_day", "expires_at", "note"}` *(superuser only)* — grants one, bound to
+  the agent's effective hash at that moment. `scope` is a list of host ids, or `"server"`
+  for a change that touches no host.
+- `DELETE /api/specialized-agents/{agent_id}/authorizations/{auth_id}` *(superuser only)* —
+  revokes one; the next call it would have covered is refused.
 
-Each server start marks a run the previous process left open as `failed` and deletes
-finished runs older than 90 days.
+`act` is bound to the agent's **effective hash**: its spec (including the tier of every
+tool it names) together with its parameters. A parameter edit that changes the hash, or a
+release that changes the spec, drops the agent to `shadow` at once, a run in flight
+included, and it stays there until a superuser chooses `act` again; `GET
+/api/specialized-agents` shows each agent's `params`, `effective_hash` and whether `act` is
+bound (`act_bound`).
+
+A `normal_change` an agent in `act` makes runs only under a standing authorization
+([ADR-0072](adr/0072-standing-authorizations-consent-given-ahead.md)): one tool, named hosts
+(an empty list is never "all"), an attempt budget per host per rolling 24 hours, an expiry
+at most 180 days out. `shell_exec`, `powershell_exec` and `agent_update` can never be
+authorized. An attempt is spent before the call runs, a failed call still counts, and the
+run's actions and the audit entry name the authorization; without one the change is kept
+as a recommendation. A change of the effective hash voids the agent's authorizations for
+good, so neither a parameter edit nor a code rollback revives them.
+
+Each server start marks a run the previous process left open as `failed`, deletes finished
+runs older than 90 days, and voids every authorization bound to what an agent no longer is.
 
 ### Tickets
 

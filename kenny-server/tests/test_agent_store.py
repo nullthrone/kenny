@@ -72,6 +72,8 @@ async def test_schema_has_the_documented_columns_and_indexes(store: AgentStore) 
             "mode",
             "updated_at",
             "updated_by",
+            "params",
+            "act_hash",
         ]
     async with store._conn.execute("PRAGMA index_list(agent_runs)") as cur:
         indexes = {r["name"] for r in await cur.fetchall()}
@@ -476,3 +478,87 @@ async def test_the_table_matches_the_dataclass_on_a_fresh_db(tmp_path) -> None:
     with sqlite3.connect(path) as db:
         cols = [r[1] for r in db.execute("PRAGMA table_info(agent_runs)")]
     assert cols == [f.name for f in fields(AgentRun)]
+
+
+# -- parameters and the act binding (ADR-0072) ---------------------------------
+
+
+async def test_a_database_from_before_parameters_is_migrated(tmp_path) -> None:
+    path = str(tmp_path / "old.sqlite")
+    with sqlite3.connect(path) as db:
+        db.executescript(
+            """
+            CREATE TABLE agent_settings (
+                agent_id TEXT PRIMARY KEY, mode TEXT NOT NULL,
+                updated_at TEXT NOT NULL, updated_by TEXT NOT NULL
+            );
+            INSERT INTO agent_settings VALUES ('patcher', 'act', '2026-01-01', 'admin');
+            CREATE TABLE agent_runs (
+                id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, spec_hash TEXT NOT NULL,
+                trigger TEXT NOT NULL, subject TEXT, host_id TEXT, mode TEXT NOT NULL,
+                status TEXT NOT NULL, verdict TEXT, summary TEXT,
+                input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+                ticket_id TEXT, error TEXT, actions TEXT NOT NULL DEFAULT '[]',
+                recommendations TEXT NOT NULL DEFAULT '[]', started_at TEXT NOT NULL,
+                finished_at TEXT
+            );
+            INSERT INTO agent_runs (id, agent_id, spec_hash, trigger, mode, status, started_at)
+            VALUES ('r-old', 'patcher', 'h', 't', 'shadow', 'completed', '2026-01-01');
+            """
+        )
+    s = AgentStore(path)
+    await s.connect()
+    try:
+        old = await s.get_run("r-old")
+        assert old is not None and (old.params, old.effective_hash) == (None, None)
+        assert await s.get_params("patcher") == {}
+        # An ``act`` chosen before act was bound to a hash is bound to nothing.
+        assert (await s.get_mode("patcher"), await s.get_act_hash("patcher")) == ("act", None)
+        await s.close()
+        await s.connect()  # idempotent
+    finally:
+        await s.close()
+    with sqlite3.connect(path) as db:
+        cols = [r[1] for r in db.execute("PRAGMA table_info(agent_runs)")]
+    assert cols == [f.name for f in fields(AgentRun)]
+
+
+async def test_params_round_trip_without_choosing_a_mode(store: AgentStore) -> None:
+    assert await store.set_params("patcher", {"packages": ["a"]}, actor="admin") is None
+    assert await store.get_params("patcher") == {"packages": ["a"]}
+    # A row that exists only for its parameters has chosen no mode.
+    assert await store.get_mode("patcher") is None
+
+
+async def test_set_params_demotes_act_in_the_same_write(store: AgentStore) -> None:
+    await store.set_mode("patcher", "act", actor="admin", act_hash="h1")
+    assert await store.get_act_hash("patcher") == "h1"
+    assert await store.set_params("patcher", {"p": ["x"]}, actor="admin") == "act"
+    assert await store.get_mode("patcher") == "act"  # no demote asked for
+    assert await store.set_params("patcher", {"p": ["y"]}, actor="root", demote=True) == "act"
+    assert (await store.get_mode("patcher"), await store.get_act_hash("patcher")) == (
+        "shadow",
+        None,
+    )
+
+
+async def test_act_hash_is_kept_for_act_only(store: AgentStore) -> None:
+    await store.set_mode("patcher", "act", actor="admin", act_hash="h1")
+    await store.set_mode("patcher", "shadow", actor="admin", act_hash="h1")
+    assert await store.get_act_hash("patcher") is None
+
+
+async def test_demote_unbound_demotes_once_and_spares_a_bound_act(store: AgentStore) -> None:
+    await store.set_mode("patcher", "act", actor="admin", act_hash="h1")
+    assert await store.demote_unbound("patcher", "h1", actor="system") is False
+    assert await store.demote_unbound("patcher", "h2", actor="system") is True
+    assert await store.demote_unbound("patcher", "h2", actor="system") is False
+    assert await store.get_mode("patcher") == "shadow"
+
+
+async def test_a_run_records_its_frozen_params_and_effective_hash(store: AgentStore) -> None:
+    run = await start(store, params={"packages": ["a"]}, effective_hash="e1")
+    assert (run.params, run.effective_hash) == ({"packages": ["a"]}, "e1")
+    assert run.to_public()["params"] == {"packages": ["a"]}

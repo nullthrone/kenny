@@ -57,9 +57,15 @@ and the one host the run was frozen to.
 7. *``standard_change`` in ``act`` -> allow*, recorded in ``session.actions``.
    The tier alone never grants this (ADR-0045): the constraints a person
    reviewed bound it, and putting the agent in ``act`` was that person's call.
-8. *``normal_change`` in ``act`` -> the authorizer decides.* Only an explicit
-   ``True`` allows; no authorizer, a falsy answer or an exception is
-   ``not_authorized`` plus a recommendation.
+8. *``normal_change`` in ``act`` -> the authorizer decides.* Only an
+   :class:`~kenny_server.agents.authorizations.Authorization` for this agent and
+   this tool allows, and its id is stamped into the action record and the
+   :class:`~kenny_server.toolloop.Allow` (so the loop names it on the audit row,
+   ADR-0072 rule 5). No authorizer, any other answer (``True`` included) or an
+   exception is ``not_authorized`` plus a recommendation, which names no
+   authorization. A tool in
+   :data:`~kenny_server.agents.authorizations.NEVER_AUTHORIZED` is refused
+   here without asking: the authorizer is not trusted to know that list.
 
 **It never holds.** A ``Hold`` waits for a human, and an unattended session has
 none to answer it (ADR-0056); :meth:`AgentPolicy.on_hold` raises so that a hold
@@ -87,6 +93,7 @@ from ..tool_classes import NORMAL_CHANGE, READ_ONLY, STANDARD_CHANGE, classify
 from ..toolloop import SERVER_TOOLS, Allow, Deny, PendingCall, build_tool_schemas
 from ..tools import CAPABILITY_TOOLS, forward_timeout_s
 from ..tunnel import ToolError
+from .authorizations import NEVER_AUTHORIZED, Authorization
 from .spec import MAX_TIMEOUT_S, VERDICT_TOOLS, AgentSpec, validate
 
 __all__ = [
@@ -118,8 +125,14 @@ HOST_ARG: dict[str, str] = {
 }
 
 #: Asked whether a ``normal_change`` may run in ``act``:
-#: ``authorizer(session, tool, args, agent_id) -> bool``. Only ``True`` allows.
-Authorizer = Callable[["AgentSession", str, dict[str, Any], str | None], Awaitable[bool]]
+#: ``authorizer(session, tool, args, agent_id) -> Authorization | None``. Only an
+#: :class:`~kenny_server.agents.authorizations.Authorization` naming this agent
+#: and this tool allows; the runner's default spends an attempt of one
+#: (:meth:`~kenny_server.agents.authorizations.AuthorizationStore.consume`)
+#: before answering, so the answer is already paid for when the call runs.
+Authorizer = Callable[
+    ["AgentSession", str, dict[str, Any], str | None], Awaitable["Authorization | None"]
+]
 
 #: Asked before every change whether the run may still act: ``still_acting() ->
 #: bool``. Only ``True`` keeps it acting; ``False`` or an exception does not.
@@ -364,19 +377,37 @@ class AgentPolicy:
         args: dict[str, Any],
         agent_id: str | None,
         tier: str,
+        authorization_id: str | None = None,
     ) -> None:
-        into.append({"tool": tool, "args": dict(args), "agent_id": agent_id, "tool_class": tier})
+        entry: dict[str, Any] = {
+            "tool": tool,
+            "args": dict(args),
+            "agent_id": agent_id,
+            "tool_class": tier,
+        }
+        if authorization_id is not None:
+            entry["authorization_id"] = authorization_id
+        into.append(entry)
 
     async def _authorized(
         self, session: AgentSession, tool: str, args: dict[str, Any], agent_id: str | None
-    ) -> bool:
-        if self._authorizer is None:
-            return False
+    ) -> Authorization | None:
+        if self._authorizer is None or tool in NEVER_AUTHORIZED:
+            return None
         try:
-            return (await self._authorizer(session, tool, dict(args), agent_id)) is True
+            answer = await self._authorizer(session, tool, dict(args), agent_id)
         except Exception:  # noqa: BLE001 - an authorizer that fails has not authorized
             logger.exception("agent run %s: authorizer failed for %s; refusing", session.id, tool)
-            return False
+            return None
+        if (
+            isinstance(answer, Authorization)
+            and isinstance(answer.id, str)
+            and answer.id
+            and answer.tool == tool
+            and answer.agent_id == self._spec.id
+        ):
+            return answer
+        return None
 
     async def _acting(self, session: AgentSession) -> bool:
         """Whether a change may run now: ``act`` at start, now, and still live."""
@@ -433,9 +464,11 @@ class AgentPolicy:
             return Allow()
 
         # NORMAL_CHANGE, and anything ``classify`` failed closed on.
-        if tier == NORMAL_CHANGE and await self._authorized(session, tool, args, agent_id):
-            self._record(session.actions, tool, args, agent_id, tier)
-            return Allow()
+        if tier == NORMAL_CHANGE:
+            grant = await self._authorized(session, tool, args, agent_id)
+            if grant is not None:
+                self._record(session.actions, tool, args, agent_id, tier, grant.id)
+                return Allow(authorization_id=grant.id)
         self._record(session.recommendations, tool, args, agent_id, tier)
         return Deny(
             "not_authorized",
