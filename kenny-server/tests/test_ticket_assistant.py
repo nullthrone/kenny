@@ -25,16 +25,18 @@ from kenny_server.store import EventStore, TelemetryStore
 from kenny_server.ticket_assistant import (
     _MAX_TRAIL_ERROR_CHARS,
     _MAX_TRAIL_TEXT_CHARS,
+    ROUTABLE_TOOLS,
     TRIAGE_TOOLS,
     TicketAssistant,
     TicketPolicy,
+    allowed_tools_for,
 )
 from kenny_server.ticket_timeline import project
 from kenny_server.ticketstore import ASSISTANT_ACTOR, TicketStore
 from kenny_server.tickets import TicketService
-from kenny_server.tool_classes import STANDARD_CHANGE, classify
+from kenny_server.tool_classes import NORMAL_CHANGE, PROFILES, STANDARD_CHANGE, TOOL_CLASSES, classify
 from kenny_server.tools import CallLog, ScreenshotStore
-from kenny_server.toolloop import Allow, Hold, ToolExecutor
+from kenny_server.toolloop import Allow, Deny, Hold, ToolExecutor, build_tool_schemas
 from kenny_server.tunnel import AgentTunnel
 from kenny_server.userstore import UserStore
 
@@ -583,6 +585,62 @@ async def test_consent_is_checked_before_the_change_tier(world: World) -> None:
         if e.kind == "tool_call" and "standard change" in e.summary
     ]
     assert len(autonomous) == 1
+
+
+# -- the allowlist never names a tool the loop cannot route -----------------------
+
+#: Classified (so the ``operator`` profile carries them) but served only over MCP.
+_MCP_ONLY_TOOLS = ("webfilter_set", "ticket_rule_set", "reliability_suppression_add")
+
+
+@pytest.mark.parametrize("profile", [None, *PROFILES])
+@pytest.mark.parametrize("snapshot_profile", [None, *PROFILES])
+@pytest.mark.parametrize("scoped", [False, True])
+@pytest.mark.parametrize("triage", [False, True])
+def test_every_allowed_tool_is_one_the_loop_routes(
+    profile: str | None, snapshot_profile: str | None, scoped: bool, triage: bool
+) -> None:
+    allowed = allowed_tools_for(
+        profile=profile, snapshot_profile=snapshot_profile, scoped=scoped, triage=triage
+    )
+
+    assert allowed <= ROUTABLE_TOOLS
+    # Nothing allowed is schema-less: the model is shown exactly the allowlist.
+    assert {s["name"] for s in build_tool_schemas(allowed=allowed)} == allowed
+
+
+def test_the_operator_profile_is_wider_than_what_a_ticket_may_reach() -> None:
+    """Pins that the intersection is doing work: the profile does carry the
+    MCP-only tools, and the ticket allowlist still does not."""
+
+    allowed = allowed_tools_for(profile="operator", scoped=False)
+
+    for tool in _MCP_ONLY_TOOLS:
+        assert tool in PROFILES["operator"] and tool in TOOL_CLASSES
+        assert tool not in ROUTABLE_TOOLS
+        assert tool not in allowed
+
+
+@pytest.mark.parametrize("tool", _MCP_ONLY_TOOLS)
+async def test_an_mcp_only_tool_is_forbidden_not_held_for_an_operator_profile(
+    world: World, tool: str
+) -> None:
+    """Joined through the real gate: these are ``normal_change`` tools, so were
+    they allowed they would be *held* for approval and, once approved, forwarded
+    to the host as a capability request that cannot work."""
+
+    await world.users.set_capability_profile(world.root["id"], "operator")
+    ticket = await _open_ticket(world, profile_snapshot=None)
+    assistant = world.assistant()
+    session = await assistant.session_for(ticket, actor=world.root_principal())
+    assert session is not None
+    policy = TicketPolicy(world.tickets, session)
+
+    assert classify(tool) == NORMAL_CHANGE
+    decision = await policy.gate(session, tool, {}, AGENT)
+
+    assert isinstance(decision, Deny) and decision.code == "forbidden"
+    assert world.sent == []
 
 
 # -- append_message: verbatim text, capped ---------------------------------------
