@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from types import MappingProxyType
 
+from ...tool_classes import READ_ONLY, classify
 from ...toolloop import SERVER_TOOLS
 from ...tools import CAPABILITY_TOOLS
 from ..spec import AgentSpec, SpecError, validate
@@ -49,6 +50,21 @@ def check_dispatchable(spec: AgentSpec) -> AgentSpec:
         raise SpecError(
             f"agent {spec.id}: ticket tool(s) {', '.join(ticket_tools)} need a ticket's surface"
         )
+    # The gate refuses a change-tier call carrying any argument no constraint
+    # binds, so a required argument left unbound is a tool the agent names but
+    # could never call within its own bounds — a spec that misleads its reader.
+    for tool in sorted(spec.tools & frozenset(CAPABILITY_TOOLS)):
+        if classify(tool) == READ_ONLY:
+            continue
+        bound = {c.arg for c in spec.constraints_for(tool)}
+        unbound = sorted(
+            raw for raw in CAPABILITY_TOOLS[tool] if not raw.endswith("?") and raw not in bound
+        )
+        if unbound:
+            raise SpecError(
+                f"agent {spec.id}: {tool}'s required argument(s) {', '.join(unbound)} "
+                "carry no constraint"
+            )
     return spec
 
 

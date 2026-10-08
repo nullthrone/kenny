@@ -10,6 +10,7 @@ from kenny_server.agents.spec import (
     EVENTS,
     MODES,
     TRIGGER_KINDS,
+    VERDICT_TOOLS,
     AgentSpec,
     ArgConstraint,
     Budget,
@@ -18,6 +19,7 @@ from kenny_server.agents.spec import (
     validate,
 )
 from kenny_server.tool_classes import READ_ONLY, SENSITIVE_TOOLS, TOOL_CLASSES
+from kenny_server.toolloop import TRIAGE_VERDICT_TOOL
 
 
 def make_spec(**overrides: object) -> AgentSpec:
@@ -96,6 +98,25 @@ def test_no_verdict_tool_is_allowed() -> None:
     validate(make_spec(tools=frozenset({"diag_services"}), verdict_tool=None))
 
 
+def test_the_verdict_tools_are_the_loops_verdict_tool() -> None:
+    # spec.py stays stdlib-only, so it names the verdict tool as a literal;
+    # joined here to the name the loop and triage actually route.
+    assert VERDICT_TOOLS == frozenset({TRIAGE_VERDICT_TOOL})
+
+
+@pytest.mark.parametrize("tool", ["powershell_exec", "winget_update", "diag_services"])
+def test_only_a_verdict_tool_may_be_the_verdict_tool(tool: str) -> None:
+    """The verdict exemption must not be a way to name an unconstrained change.
+
+    ``powershell_exec`` as the verdict tool used to validate and then run in
+    shadow with no constraint at all.
+    """
+
+    spec = make_spec(tools=frozenset({"diag_services", tool}), verdict_tool=tool)
+    with pytest.raises(SpecError, match="not a verdict tool"):
+        validate(spec)
+
+
 def test_an_unknown_trigger_kind_is_refused() -> None:
     with pytest.raises(SpecError, match="trigger kind"):
         validate(make_spec(trigger=Trigger(kind="webhook")))
@@ -124,9 +145,17 @@ def test_an_unknown_default_mode_is_refused() -> None:
         validate(make_spec(default_mode="yolo"))
 
 
-@pytest.mark.parametrize("mode", MODES)
-def test_every_mode_is_a_valid_default(mode: str) -> None:
+@pytest.mark.parametrize("mode", [m for m in MODES if m != "act"])
+def test_off_and_shadow_are_valid_defaults(mode: str) -> None:
     validate(make_spec(default_mode=mode))
+
+
+def test_act_is_never_a_default_mode() -> None:
+    # Moving an agent to act is a superuser's decision; a spec that shipped in
+    # act would make it for every fresh install.
+    assert "act" in MODES
+    with pytest.raises(SpecError, match="default mode act"):
+        validate(make_spec(default_mode="act"))
 
 
 @pytest.mark.parametrize("n", [0, -1])

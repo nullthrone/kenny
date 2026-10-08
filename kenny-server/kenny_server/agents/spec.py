@@ -41,6 +41,7 @@ __all__ = [
     "EVENTS",
     "MODES",
     "TRIGGER_KINDS",
+    "VERDICT_TOOLS",
     "AgentSpec",
     "ArgConstraint",
     "Budget",
@@ -62,6 +63,14 @@ TRIGGER_KINDS: tuple[str, ...] = ("event", "schedule", "on_demand")
 
 #: The server events an ``event`` trigger may name.
 EVENTS: tuple[str, ...] = ("ticket_created",)
+
+#: The only tools a spec may name as its verdict tool. The verdict tool is
+#: exempt from argument constraints because its own server-side handler decides
+#: its effect; a tool whose effect is decided by its arguments (a shell, an
+#: install) must never be able to claim that exemption. A literal, so this
+#: module stays stdlib-only; ``tests/test_agent_spec.py`` joins it to
+#: ``toolloop.TRIAGE_VERDICT_TOOL``.
+VERDICT_TOOLS: frozenset[str] = frozenset({"ticket_triage_verdict"})
 
 _ID_RE = re.compile(r"^[a-z][a-z0-9_]{1,40}$")
 
@@ -128,7 +137,8 @@ class AgentSpec:
     prompt: str
     trigger: Trigger
     tools: frozenset[str]
-    #: The tool a run ends by calling; its result is the run's verdict.
+    #: The tool a run ends by calling; its result is the run's verdict. One of
+    #: :data:`VERDICT_TOOLS`.
     verdict_tool: str | None = None
     budget: Budget = field(default_factory=Budget)
     #: Argument constraints on change-tier tools; every one naming a tool must
@@ -137,7 +147,8 @@ class AgentSpec:
     constraints: tuple[ArgConstraint, ...] = ()
     #: Must be true for a spec that names any sensitive tool.
     sensitive_ok: bool = False
-    #: The mode a fresh install starts in. ``shadow`` unless there is a reason.
+    #: The mode a fresh install starts in: ``shadow`` or ``off``. Never ``act``
+    #: — moving an agent to ``act`` is a superuser's decision, not a default.
     default_mode: str = "shadow"
     #: Bumped by hand when behaviour changes in a way the hash cannot see
     #: (e.g. server-side code the agent's verdict tool runs).
@@ -216,6 +227,11 @@ def validate(spec: AgentSpec) -> AgentSpec:
             f"agent {spec.id}: names sensitive tool(s) {', '.join(sensitive)} "
             "without sensitive_ok"
         )
+    if spec.verdict_tool is not None and spec.verdict_tool not in VERDICT_TOOLS:
+        raise SpecError(
+            f"agent {spec.id}: {spec.verdict_tool} is not a verdict tool "
+            f"(one of {', '.join(sorted(VERDICT_TOOLS))})"
+        )
     if spec.verdict_tool is not None and spec.verdict_tool not in spec.tools:
         raise SpecError(f"agent {spec.id}: verdict tool {spec.verdict_tool} is not in its tools")
     seen: set[tuple[str, str]] = set()
@@ -249,6 +265,10 @@ def validate(spec: AgentSpec) -> AgentSpec:
         raise SpecError(f"agent {spec.id}: only an event trigger names an event")
     if spec.default_mode not in MODES:
         raise SpecError(f"agent {spec.id}: unknown default mode {spec.default_mode!r}")
+    if spec.default_mode == "act":
+        # A spec that starts in ``act`` would put a fresh install's agent to
+        # work without anybody having chosen that; ``act`` is set, never shipped.
+        raise SpecError(f"agent {spec.id}: default mode act; moving to act is a superuser's choice")
     if spec.budget.max_iterations < 1:
         raise SpecError(f"agent {spec.id}: max_iterations must be at least 1")
     if spec.version < 1:

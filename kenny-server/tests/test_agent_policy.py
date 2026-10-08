@@ -18,8 +18,10 @@ from typing import Any
 
 import pytest
 
-from kenny_server.agents.policy import HOST_ARG, AgentPolicy, AgentSession
-from kenny_server.agents.spec import AgentSpec, ArgConstraint, SpecError, Trigger
+from kenny_server.agents import policy as policy_module
+from kenny_server.agents.policy import HOST_ARG, MAX_TIMEOUT_S, AgentPolicy, AgentSession
+from kenny_server.agents.spec import VERDICT_TOOLS, AgentSpec, ArgConstraint, SpecError, Trigger
+from kenny_server.ticket_assistant import FLEET_WIDE_TOOLS
 from kenny_server.registry import AgentRegistry
 from kenny_server.store import EventStore, TelemetryStore
 from kenny_server.tool_classes import NORMAL_CHANGE, READ_ONLY, STANDARD_CHANGE, TOOL_CLASSES
@@ -191,11 +193,30 @@ async def test_a_spec_tool_the_loop_cannot_dispatch_is_forbidden() -> None:
 
 
 async def test_fleet_wide_tools_are_reachable_only_when_named() -> None:
-    session = _session(tools=frozenset({"winget_list", "list_agents"}), constraints=())
+    session = _session(agent_id=None, tools=frozenset({"winget_list", "list_agents"}),
+                       constraints=())
     policy = AgentPolicy(session)
     assert await _gate(policy, session, "list_agents", {}) == Allow()
     decision = await _gate(policy, session, "fleet_overview", {})
     assert isinstance(decision, Deny) and decision.code == "forbidden"
+
+
+@pytest.mark.parametrize("tool", sorted(FLEET_WIDE_TOOLS))
+async def test_a_fleet_wide_read_is_out_of_scope_on_a_run_frozen_to_a_host(tool: str) -> None:
+    """Reading every host is the escape the one-host rule exists to stop.
+
+    ``list_agents``/``fleet_overview`` name no host, so step 2's host checks had
+    nothing to compare and the read was allowed on a frozen run.
+    """
+
+    tools = frozenset({"winget_list", "list_agents", "fleet_overview"})
+    frozen = _session(mode="act", tools=tools, constraints=())
+    policy = AgentPolicy(frozen)
+    decision = await _gate(policy, frozen, tool, {})
+    assert isinstance(decision, Deny) and decision.code == "out_of_scope"
+    # A host-less, server-only run that names it may still use it.
+    hostless = _session(mode="act", agent_id=None, tools=tools, constraints=())
+    assert await _gate(AgentPolicy(hostless), hostless, tool, {}) == Allow()
 
 
 # -- step 2: another host ------------------------------------------------------
@@ -332,6 +353,119 @@ async def test_the_constraint_sees_the_args_without_the_routing_override() -> No
     assert args == {"id": FIREFOX, "timeout_s": 600}
 
 
+_AGENT_UPDATE = {
+    "version": "1.2.3",
+    "url": "https://releases.example/kenny-agent-1.2.3.exe",
+    "sha256": "ab" * 32,
+}
+
+
+@pytest.mark.parametrize("mode", ["shadow", "act"])
+async def test_a_constraint_on_one_argument_leaves_no_other_free(mode: str) -> None:
+    """Binding ``version`` must not leave ``url``/``sha256`` to the model."""
+
+    session = _session(
+        mode=mode,
+        tools=frozenset({"agent_update"}),
+        constraints=(ArgConstraint("agent_update", "version", frozenset({"1.2.3"})),),
+    )
+    policy = AgentPolicy(session, authorizer=_yes())
+    evil = {**_AGENT_UPDATE, "url": "https://evil.example/x.exe"}
+    decision = await _gate(policy, session, "agent_update", evil)
+    assert isinstance(decision, Deny) and decision.code == "constraint"
+    assert "url" in decision.message and "sha256" in decision.message
+    assert session.recommendations == [] and session.actions == []
+
+
+async def test_every_argument_bound_runs() -> None:
+    session = _session(
+        mode="act",
+        tools=frozenset({"agent_update"}),
+        constraints=tuple(
+            ArgConstraint("agent_update", k, frozenset({v})) for k, v in _AGENT_UPDATE.items()
+        ),
+    )
+    policy = AgentPolicy(session, authorizer=_yes())
+    assert await _gate(policy, session, "agent_update", dict(_AGENT_UPDATE)) == Allow()
+    decision = await _gate(
+        policy, session, "agent_update", {**_AGENT_UPDATE, "url": "https://evil.example/x.exe"}
+    )
+    assert isinstance(decision, Deny) and decision.code == "constraint"
+
+
+@pytest.mark.parametrize("enabled", [True, False, "true", None])
+async def test_an_unbound_or_boolean_argument_is_refused(enabled: Any) -> None:
+    """A boolean can never satisfy a constraint, so it can never slip through one."""
+
+    session = _session(
+        mode="act",
+        tools=frozenset({"account_set_enabled"}),
+        constraints=(ArgConstraint("account_set_enabled", "principal", frozenset({"kid"})),),
+    )
+    policy = AgentPolicy(session, authorizer=_yes())
+    decision = await _gate(
+        policy, session, "account_set_enabled", {"principal": "kid", "enabled": enabled}
+    )
+    assert isinstance(decision, Deny) and decision.code == "constraint"
+
+    bound = _session(
+        mode="act",
+        tools=frozenset({"account_set_enabled"}),
+        constraints=(
+            ArgConstraint("account_set_enabled", "principal", frozenset({"kid"})),
+            ArgConstraint("account_set_enabled", "enabled", frozenset({"false"})),
+        ),
+    )
+    decision = await _gate(
+        AgentPolicy(bound, authorizer=_yes()),
+        bound,
+        "account_set_enabled",
+        {"principal": "kid", "enabled": False},
+    )
+    assert isinstance(decision, Deny) and decision.code == "constraint"
+
+
+@pytest.mark.parametrize(
+    "timeout_s", [0, -1, MAX_TIMEOUT_S + 1, 10**9, "30", 30.5, True, None, [30]]
+)
+async def test_timeout_s_must_be_a_bounded_whole_number(timeout_s: Any) -> None:
+    session = _session(mode="act")
+    policy = AgentPolicy(session)
+    decision = await _gate(
+        policy, session, "winget_update", {"id": FIREFOX, "timeout_s": timeout_s}
+    )
+    assert isinstance(decision, Deny) and decision.code == "constraint", timeout_s
+    assert session.actions == [] and session.recommendations == []
+
+
+@pytest.mark.parametrize("timeout_s", [1, 30, MAX_TIMEOUT_S])
+async def test_timeout_s_within_bounds_needs_no_constraint(timeout_s: int) -> None:
+    session = _session(mode="act")
+    policy = AgentPolicy(session)
+    args = {"id": FIREFOX, "timeout_s": timeout_s}
+    assert await _gate(policy, session, "winget_update", args) == Allow()
+
+
+async def test_a_verdict_exemption_for_a_non_verdict_tool_is_forbidden(monkeypatch) -> None:
+    """Even with ``validate`` bypassed, a shell never gets the verdict exemption."""
+
+    monkeypatch.setattr(policy_module, "validate", lambda spec: spec)
+    assert "powershell_exec" not in VERDICT_TOOLS
+    for mode in ("shadow", "act"):
+        session = _session(
+            mode=mode,
+            tools=frozenset({"powershell_exec"}),
+            constraints=(),
+            verdict_tool="powershell_exec",
+        )
+        policy = AgentPolicy(session, authorizer=_yes())
+        decision = await _gate(
+            policy, session, "powershell_exec", {"script": "Remove-Item C:\\ -Recurse"}
+        )
+        assert isinstance(decision, Deny) and decision.code == "forbidden", mode
+        assert session.actions == [] and session.recommendations == []
+
+
 async def test_the_verdict_tool_runs_in_both_modes_and_is_not_an_action() -> None:
     """The verdict is how a run reports; a shadow run must still be able to.
 
@@ -388,6 +522,53 @@ async def test_demoting_a_run_mid_way_takes_effect_and_promoting_does_not() -> N
     policy = AgentPolicy(shadow)
     shadow.mode = "act"
     decision = await _gate(policy, shadow, "winget_update", {"id": FIREFOX})
+    assert isinstance(decision, Deny) and decision.code == "shadow"
+
+
+async def test_still_acting_is_asked_before_every_change() -> None:
+    """The live predicate is how a demotion or the global switch reaches a run."""
+
+    live = {"acting": True}
+    asked: list[str] = []
+
+    async def still_acting() -> bool:
+        asked.append("asked")
+        return live["acting"]
+
+    session = _session(mode="act")
+    policy = AgentPolicy(session, still_acting=still_acting)
+    assert await _gate(policy, session, "winget_update", {"id": FIREFOX}) == Allow()
+    live["acting"] = False
+    decision = await _gate(policy, session, "winget_update", {"id": FIREFOX})
+    assert isinstance(decision, Deny) and decision.code == "shadow"
+    assert [a["tool"] for a in session.actions] == ["winget_update"]
+    assert [r["tool"] for r in session.recommendations] == ["winget_update"]
+    # Reads never ask: they run in shadow too.
+    assert await _gate(policy, session, "winget_list", {}) == Allow()
+    assert asked == ["asked", "asked"]
+
+
+@pytest.mark.parametrize("answer", ["raise", None, 1, "yes"])
+async def test_a_still_acting_that_fails_or_hedges_is_not_acting(answer: Any) -> None:
+    async def still_acting() -> Any:
+        if answer == "raise":
+            raise RuntimeError("settings unavailable")
+        return answer
+
+    session = _session(mode="act")
+    policy = AgentPolicy(session, authorizer=_yes(), still_acting=still_acting)
+    decision = await _gate(policy, session, "winget_install", {"id": SEVENZIP})
+    assert isinstance(decision, Deny) and decision.code == "shadow"
+    assert len(session.recommendations) == 1 and session.actions == []
+
+
+async def test_still_acting_cannot_promote_a_shadow_run() -> None:
+    async def still_acting() -> bool:
+        return True
+
+    session = _session()
+    policy = AgentPolicy(session, still_acting=still_acting)
+    decision = await _gate(policy, session, "winget_update", {"id": FIREFOX})
     assert isinstance(decision, Deny) and decision.code == "shadow"
 
 
@@ -691,6 +872,17 @@ async def test_joined_a_tool_outside_the_spec_is_forbidden(store: TelemetryStore
     )
     assert rig.sent == []
     assert _error_code(_results_fed_back(client)["tu0"]) == "forbidden"
+    _assert_never_held(events, session)
+
+
+async def test_joined_a_fleet_wide_read_never_runs_on_a_frozen_run(store: TelemetryStore) -> None:
+    rig = Rig(store)
+    session = _session(tools=frozenset({"winget_list", "list_agents", "fleet_overview"}),
+                       constraints=())
+    events, client = await rig.run(session, [("list_agents", {}), ("fleet_overview", {})])
+    fed = _results_fed_back(client)
+    assert [_error_code(fed[f"tu{i}"]) for i in range(2)] == ["out_of_scope", "out_of_scope"]
+    assert not [e for e in events if e["type"] == "tool_result"]
     _assert_never_held(events, session)
 
 

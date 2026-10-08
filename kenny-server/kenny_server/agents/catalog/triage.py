@@ -25,6 +25,7 @@ TRIAGE = AgentSpec(
     trigger=Trigger(kind="event", event="ticket_created"),
     tools=ticket_assistant.TRIAGE_TOOLS,
     verdict_tool=toolloop.TRIAGE_VERDICT_TOOL,
+    # The hash binds the default; KENNY_TRIAGE_MAX_ITERATIONS may move the live cap per install.
     budget=Budget(max_iterations=DEFAULT_MAX_ITERATIONS),
     default_mode="shadow",
 )
