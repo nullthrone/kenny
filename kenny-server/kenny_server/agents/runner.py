@@ -54,7 +54,7 @@ on every read. The first read that finds them apart drops the agent to
 ``shadow`` for good (a code rollback does not promote it again), records who
 and why on the event log, and voids every authorization bound to another hash.
 A parameter edit (:meth:`AgentRunner.set_params`) does the same at once. A
-generic run freezes its parameters and effective hash at start, and its
+generic run freezes its parameters, effective hash and evidence at start, and its
 ``still_acting`` also turns false once the live hash moves away from the run's,
 and, for a scheduled run, once its maintenance window has closed
 (``act_until``).
@@ -67,7 +67,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -79,7 +79,16 @@ from ..webfilter import DAY_KEYS, format_hhmm, parse_recurrence
 from .authorizations import Authorization, AuthorizationStore
 from .catalog import CATALOG, check_dispatchable
 from .policy import AgentPolicy, AgentSession, Authorizer
-from .spec import MODES, AgentSpec, effective_hash, param_kind, resolve, validate
+from .spec import (
+    MODES,
+    AgentSpec,
+    effective_hash,
+    evidence_names,
+    param_kind,
+    resolve,
+    validate,
+    with_evidence,
+)
 from .store import INTERRUPTED_ERROR, AgentRun, AgentStore
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -94,9 +103,14 @@ __all__ = [
     "TICKET_CREATED_TRIGGER",
     "TRIAGE_AGENT_ID",
     "AgentRunner",
+    "EvidenceProvider",
     "HashMismatch",
     "caused_by_agent",
 ]
+
+#: Computes, from the server's own records, the values an evidence-fed
+#: constraint admits (ADR-0072 rule 6): ``provider() -> iterable of str``.
+EvidenceProvider = Callable[[], Awaitable[Iterable[str]]]
 
 logger = logging.getLogger("kenny.agents")
 
@@ -225,6 +239,23 @@ def caused_by_agent(ticket: Ticket) -> bool:
     return ticket.origin == AGENT_ORIGIN
 
 
+def _evidence_brief(spec: AgentSpec, evidence: Mapping[str, Sequence[str]]) -> str:
+    """The run's frozen evidence, told to the model as facts, one line per constraint.
+
+    The gate enforces the same values whatever the model makes of this; saying
+    them only spares the run guessing at what the server will accept.
+    """
+
+    lines = ["The server computed these values from its own records when this run started:"]
+    for c in sorted(spec.constraints, key=lambda c: (c.tool, c.arg)):
+        if c.evidence is None:
+            continue
+        values = list(evidence.get(c.evidence) or ())
+        shown = ", ".join(values) if values else "none"
+        lines.append(f"- {c.tool} {c.arg} may be: {shown}")
+    return "\n".join(lines)
+
+
 def _redacted(entries: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     return [{**entry, "args": redact_audit_args(entry.get("args") or {})} for entry in entries]
 
@@ -299,6 +330,8 @@ class AgentRunner:
         self._executor: ToolExecutor | None = None
         self._client_factory: Callable[[], Any] | None = None
         self._model: str | Callable[[], str] | None = None
+        #: Named evidence providers (:meth:`register_evidence`).
+        self._evidence: dict[str, EvidenceProvider] = {}
 
     def now(self) -> datetime:
         """The runner's clock (injected in tests); what expiry and budgets are judged by."""
@@ -325,6 +358,56 @@ class AgentRunner:
             self._client_factory = client_factory
         if model is not None:
             self._model = model
+
+    # -- evidence ------------------------------------------------------------
+
+    def register_evidence(self, name: str, provider: EvidenceProvider) -> None:
+        """Feed every constraint declaring ``evidence=name`` from ``provider``.
+
+        Registering a name twice is refused: which records feed a constraint
+        must not depend on wiring order.
+        """
+
+        if name in self._evidence:
+            raise ValueError(f"evidence provider {name!r} is already registered")
+        self._evidence[name] = provider
+
+    def evidence_providers(self) -> frozenset[str]:
+        """The evidence names a provider is registered for."""
+
+        return frozenset(self._evidence)
+
+    async def resolve_evidence(self, spec: AgentSpec) -> dict[str, list[str]]:
+        """What each evidence provider ``spec`` names computes now, sorted.
+
+        A provider that is missing, raises or returns anything but strings
+        yields the empty list for its name — which admits nothing — and a
+        warning: failing evidence must never widen a run (ADR-0072 rule 6).
+        """
+
+        out: dict[str, list[str]] = {}
+        for name in evidence_names(spec):
+            provider = self._evidence.get(name)
+            if provider is None:
+                logger.warning("agent %s: no evidence provider %r; it admits nothing", spec.id, name)
+                out[name] = []
+                continue
+            try:
+                raw = await provider()
+                if isinstance(raw, (str, bytes, Mapping)):
+                    # One id, or a mapping, is not a collection of ids.
+                    raise TypeError(f"evidence must be a collection of ids, not {type(raw).__name__}")
+                values = sorted({v for v in raw if isinstance(v, str) and v})
+            except Exception:  # noqa: BLE001 - evidence that fails admits nothing
+                logger.warning(
+                    "agent %s: evidence provider %r failed; it admits nothing",
+                    spec.id,
+                    name,
+                    exc_info=True,
+                )
+                values = []
+            out[name] = values
+        return out
 
     @property
     def triage(self) -> TriageService | None:
@@ -725,6 +808,7 @@ class AgentRunner:
         counted: bool,
         params: Mapping[str, Any] | None = None,
         run_hash: str | None = None,
+        evidence: Mapping[str, Sequence[str]] | None = None,
     ) -> tuple[AgentRun, bool]:
         """Open the run row; ``(row, False)`` when a cap refused it (row ``skipped``).
 
@@ -744,6 +828,7 @@ class AgentRunner:
                 ticket_id=ticket_id,
                 params=params,
                 effective_hash=run_hash,
+                evidence=evidence,
             )
             if reason is None:
                 if counted:
@@ -894,7 +979,11 @@ class AgentRunner:
         The run's parameters are read once at start, resolved into the spec its
         gate enforces (:func:`~kenny_server.agents.spec.resolve`), and stored on
         the run row with the effective hash they make; a parameter edit during
-        the run does not reach its constraints, it ends its ``act``.
+        the run does not reach its constraints, it ends its ``act``. Its
+        evidence-fed constraints are resolved once too, after the mode is read,
+        through the registered providers (:meth:`resolve_evidence`), stored on
+        the run row and told to the model in the brief; nothing the run sees
+        later moves them.
 
         Returns the finished run row — ``completed``, ``failed`` or a cap's
         ``skipped`` — or ``None`` when the run was never started because the
@@ -936,6 +1025,8 @@ class AgentRunner:
         mode = await self._mode_for(spec)
         if mode == "off":
             return None
+        # Evidence after the mode, so an agent that is off computes nothing.
+        evidence = await self.resolve_evidence(spec) if evidence_names(spec) else None
         run, admitted = await self._admit(
             spec,
             mode,
@@ -945,6 +1036,7 @@ class AgentRunner:
             counted=True,
             params=params,
             run_hash=run_hash,
+            evidence=evidence,
         )
         if not admitted:
             return run
@@ -983,9 +1075,14 @@ class AgentRunner:
                 assert self._client_factory is not None  # checked above
                 client = self._client_factory()
             session = AgentSession(
-                id=run.id, spec=resolve(spec, params), mode=mode, agent_id=host_id
+                id=run.id,
+                spec=with_evidence(resolve(spec, params), evidence or {}),
+                mode=mode,
+                agent_id=host_id,
             )
             session.usage = meter
+            if evidence is not None:
+                brief = f"{brief}\n\n{_evidence_brief(spec, evidence)}"
             session.messages.append({"role": "user", "content": brief})
             policy = AgentPolicy(
                 session,

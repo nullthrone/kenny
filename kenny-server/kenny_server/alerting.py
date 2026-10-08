@@ -982,6 +982,15 @@ class AlertEngine:
                     priority=note.priority,
                     sections=note.sections,
                 )
+                # Where a rule is actually applied, so where its use is
+                # recorded (rule_hits): the evidence of whether it still does
+                # anything. Its own swallow: a failed record never costs the ticket.
+                record = getattr(self._ticket_rules, "record_matches", None)
+                if decision.matched and record is not None:
+                    try:
+                        await record(decision.matched, now)
+                    except Exception:  # noqa: BLE001 - hit tracking stays best-effort
+                        logger.warning("recording ticket rule matches failed", exc_info=True)
                 if decision.open:
                     ticket_id = await self._open_ticket(note)
                     # The alert row is already written; this hangs it on the

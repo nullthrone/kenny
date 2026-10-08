@@ -17,7 +17,7 @@ import uuid
 import weakref
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any, AsyncIterator, Callable
+from typing import Any, AsyncIterator, Callable, Mapping
 
 import aiosqlite
 
@@ -1288,7 +1288,7 @@ class EventStore:
     async def insert_audit(
         self,
         *,
-        agent_id: str,
+        agent_id: str | None,
         tool: str,
         ok: bool,
         error: str | None = None,
@@ -2010,6 +2010,47 @@ CREATE INDEX IF NOT EXISTS idx_reliability_suppressions_created
     ON reliability_suppressions (created_at);
 """
 
+#: Hit tracking on an operator rule table (suppressions, auto-ticket rules):
+#: when the server last applied the rule, and how often. Added to tables that
+#: predate them by :func:`_add_hit_columns`. ``last_matched_at`` is UTC
+#: ISO-8601 text with microseconds, so it compares correctly as text.
+_HIT_COLUMNS: dict[str, str] = {
+    "last_matched_at": "TEXT",
+    "match_count": "INTEGER NOT NULL DEFAULT 0",
+}
+
+
+async def _add_hit_columns(db: aiosqlite.Connection, table: str) -> None:
+    """Add the :data:`_HIT_COLUMNS` ``table`` lacks; idempotent."""
+
+    async with db.execute(f"PRAGMA table_info({table})") as cur:
+        present = {row["name"] for row in await cur.fetchall()}
+    for column, ddl in _HIT_COLUMNS.items():
+        if column not in present:
+            await db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+
+
+async def _record_hits(
+    db: aiosqlite.Connection, table: str, hits: Mapping[str, tuple[str, int]]
+) -> None:
+    """Fold ``hits`` (rule id -> (matched at, times)) into ``table``'s hit columns.
+
+    ``last_matched_at`` only moves forward; a rule removed meanwhile is skipped.
+    """
+
+    if not hits:
+        return
+    async with write_lock():
+        for rule_id, (at, times) in sorted(hits.items()):
+            await db.execute(
+                f"UPDATE {table} SET "
+                "last_matched_at = CASE WHEN last_matched_at IS NULL OR last_matched_at < ? "
+                "THEN ? ELSE last_matched_at END, "
+                "match_count = match_count + ? WHERE id = ?",
+                (at, at, int(times), rule_id),
+            )
+        await db.commit()
+
 
 class ReliabilitySuppressionStore:
     """Async SQLite-backed store for operator-declared reliability alarm
@@ -2040,6 +2081,7 @@ class ReliabilitySuppressionStore:
         self._db = await aiosqlite.connect(self.db_path)
         await _configure_connection(self._db)
         await self._db.executescript(_RELIABILITY_SUPPRESSION_SCHEMA)
+        await _add_hit_columns(self._db, "reliability_suppressions")
         await self._db.commit()
 
     async def close(self) -> None:
@@ -2057,7 +2099,8 @@ class ReliabilitySuppressionStore:
         """Return all suppression rules, oldest-first."""
 
         async with self._conn.execute(
-            "SELECT id, agent_id, source, event_id, note, created_at, created_by "
+            "SELECT id, agent_id, source, event_id, note, created_at, created_by, "
+            "last_matched_at, match_count "
             "FROM reliability_suppressions ORDER BY created_at, id"
         ) as cur:
             rows = await cur.fetchall()
@@ -2070,9 +2113,16 @@ class ReliabilitySuppressionStore:
                 "note": r["note"],
                 "created_at": r["created_at"],
                 "created_by": r["created_by"],
+                "last_matched_at": r["last_matched_at"],
+                "match_count": int(r["match_count"] or 0),
             }
             for r in rows
         ]
+
+    async def record_matches(self, hits: Mapping[str, tuple[str, int]]) -> None:
+        """Persist rule applications: rule id -> (latest match time, how many)."""
+
+        await _record_hits(self._conn, "reliability_suppressions", hits)
 
     async def add(
         self,
@@ -2286,6 +2336,7 @@ class TicketRuleStore:
         self._db = await aiosqlite.connect(self.db_path)
         await _configure_connection(self._db)
         await self._db.executescript(_TICKET_RULE_SCHEMA)
+        await _add_hit_columns(self._db, "ticket_rules")
         await self._db.commit()
 
     async def close(self) -> None:
@@ -2304,7 +2355,8 @@ class TicketRuleStore:
 
         async with self._conn.execute(
             "SELECT id, agent_id, event_type, section, decision, note, "
-            "created_at, created_by FROM ticket_rules ORDER BY created_at, id"
+            "created_at, created_by, last_matched_at, match_count "
+            "FROM ticket_rules ORDER BY created_at, id"
         ) as cur:
             rows = await cur.fetchall()
         return [
@@ -2317,9 +2369,16 @@ class TicketRuleStore:
                 "note": r["note"],
                 "created_at": r["created_at"],
                 "created_by": r["created_by"],
+                "last_matched_at": r["last_matched_at"],
+                "match_count": int(r["match_count"] or 0),
             }
             for r in rows
         ]
+
+    async def record_matches(self, hits: Mapping[str, tuple[str, int]]) -> None:
+        """Persist rule applications: rule id -> (latest match time, how many)."""
+
+        await _record_hits(self._conn, "ticket_rules", hits)
 
     async def add(
         self,

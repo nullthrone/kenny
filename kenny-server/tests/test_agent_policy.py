@@ -159,9 +159,9 @@ def test_schemas_are_exactly_the_spec_with_the_last_one_cached() -> None:
 def test_a_spec_tool_the_loop_cannot_dispatch_has_no_schema() -> None:
     # Classified (so the spec loads) but MCP-only: the loop would forward it to
     # the host as if it were a capability.
-    assert "reliability_suppression_list" in TOOL_CLASSES
-    assert "reliability_suppression_list" not in set(SERVER_TOOLS) | set(CAPABILITY_TOOLS)
-    policy = AgentPolicy(_session(tools=frozenset({"winget_list", "reliability_suppression_list"}),
+    assert "webfilter_get" in TOOL_CLASSES
+    assert "webfilter_get" not in set(SERVER_TOOLS) | set(CAPABILITY_TOOLS)
+    policy = AgentPolicy(_session(tools=frozenset({"winget_list", "webfilter_get"}),
                                   constraints=()))
     assert {s["name"] for s in policy.tool_schemas()} == {"winget_list"}
 
@@ -213,10 +213,10 @@ async def test_forbidden_wins_even_without_a_host() -> None:
 
 
 async def test_a_spec_tool_the_loop_cannot_dispatch_is_forbidden() -> None:
-    session = _session(tools=frozenset({"winget_list", "reliability_suppression_list"}),
+    session = _session(tools=frozenset({"winget_list", "webfilter_get"}),
                        constraints=())
     policy = AgentPolicy(session)
-    decision = await _gate(policy, session, "reliability_suppression_list", {})
+    decision = await _gate(policy, session, "webfilter_get", {})
     assert isinstance(decision, Deny) and decision.code == "forbidden"
 
 

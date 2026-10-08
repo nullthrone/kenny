@@ -727,8 +727,9 @@ off is `shadow`, on is `act`.
   for one agent (`limit` defaults to 50, at most 500).
 - `GET /api/specialized-agents/runs/{run_id}` *(operator+)* — one run: what started it, the host or
   ticket it was bound to, its mode and status (`running`, `completed`, `failed`,
-  `skipped`), its verdict, the changes it made and proposed (arguments redacted), and its
-  token usage.
+  `skipped`), its verdict, the changes it made and proposed (arguments redacted), the
+  parameters and server-computed `evidence` its constraints were frozen to, and its token
+  usage.
 - `PUT /api/specialized-agents/{agent_id}/mode` with `{"mode": "off" | "shadow" | "act",
   "effective_hash"}` *(superuser, signed in at the dashboard)* — moving an agent to `act`
   is a superuser's decision, so every mode write is. `act` must carry the agent's
@@ -776,6 +777,18 @@ authorized. An attempt is spent before the call runs, a failed call still counts
 run's actions and the audit entry name the authorization; without one the change is kept
 as a recommendation. A change of the effective hash voids the agent's authorizations for
 good, so neither a parameter edit nor a code rollback revives them.
+
+The **rule-hygiene agent** (`config_hygiene`, in `shadow` until a superuser chooses `act`)
+runs on the server, not on a host, about once a month: in the first occurrence of its
+`window` at least 28 days after the last one it ran in. It removes reliability
+suppressions and auto-ticket rules that nothing has matched for 90 days — a rule's creation
+counts as a match. Which rules those are is the server's evidence, never the model's: each
+rule records when the server last applied it, the ids of the unused ones are computed when
+the run starts and frozen on the run (`evidence`), and a removal naming any other id is
+refused at the gate. A rule that matches again during the run is refused at removal too.
+Removing a rule is a `normal_change`, so in `act` it needs a standing authorization with
+scope `"server"`; without one, and in `shadow`, the run's recommendations list what it
+would remove.
 
 Each server start marks a run the previous process left open as `failed`, deletes finished
 runs older than 90 days, and voids every authorization bound to what an agent no longer is.

@@ -14,6 +14,12 @@ trigger ``schedule:<end of the occurrence>``, so the answer survives a restart
 without a table of its own. A run that failed also counts as having run — a
 broken agent retries at the next occurrence, not every pass.
 
+An agent that takes no ``hosts`` parameter touches no host: it runs once per
+occurrence with no host at all, and none of the host preconditions below
+apply. A trigger's ``min_interval_days`` skips every occurrence that ends
+closer than that to the last occurrence the agent ran in (read off the same
+triggers), which is how a weekly window carries a monthly agent.
+
 **The window bounds the work, not only the start.** Before each host the
 occurrence is computed again; once it is no longer the one the pass started
 in, the pass stops. A run already started is handed the end of its occurrence
@@ -54,7 +60,7 @@ import inspect
 import logging
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from ..tools import CAPABILITY_TOOLS, supports_tool
@@ -132,7 +138,8 @@ class Outcome:
     """What one pass did for one host of one agent."""
 
     agent_id: str
-    host_id: str
+    #: ``None`` for a run of an agent that touches no host.
+    host_id: str | None
     #: ``ran`` | ``skipped`` | ``halted`` | ``tripped``
     kind: str
     detail: str = ""
@@ -366,10 +373,14 @@ class AgentScheduler:
         if end is None:
             return []
         trigger = _trigger(end)
-        hosts = _hosts(params)
+        # An agent without a ``hosts`` parameter touches no host: it runs once
+        # per occurrence, on none (``None`` stands for "the server" below).
+        hosts: list[str | None] = [None] if _server_only(spec) else list(_hosts(params))
         if not hosts:
             return []
         history = await self.runner.store.list_runs(agent_id=spec.id, limit=_HISTORY)
+        if _too_soon(spec, history, end):
+            return []
         mine = [r for r in history if r.trigger == trigger]
         if any(stops_canary(r) for r in mine):
             return [Outcome(spec.id, "", "halted", "an earlier run of this window stopped the canary")]
@@ -414,10 +425,15 @@ class AgentScheduler:
     # -- preconditions ---------------------------------------------------------
 
     async def _unready(
-        self, spec: AgentSpec, host: str, params: Mapping[str, Any]
+        self, spec: AgentSpec, host: str | None, params: Mapping[str, Any]
     ) -> str | None:
-        """Why ``host`` must not be run on now, or ``None``."""
+        """Why ``host`` must not be run on now, or ``None``.
 
+        A server-only run (``host`` ``None``) has no machine to be ready.
+        """
+
+        if host is None:
+            return None
         agent = self.executor.registry.get(host)
         if agent is None or not agent.online:
             return "the machine is offline"
@@ -463,7 +479,7 @@ class AgentScheduler:
     async def _run(
         self,
         spec: AgentSpec,
-        host: str,
+        host: str | None,
         trigger: str,
         params: Mapping[str, Any],
         end: datetime,
@@ -533,13 +549,59 @@ def _trigger(end: datetime) -> str:
     return f"{SCHEDULE_TRIGGER_PREFIX}{end.astimezone(timezone.utc).isoformat()}"
 
 
-def _brief(spec: AgentSpec, host: str, params: Mapping[str, Any]) -> str:
+def _server_only(spec: AgentSpec) -> bool:
+    """Whether ``spec`` touches no host: it takes no ``hosts`` parameter.
+
+    ``catalog.check_dispatchable`` refuses such a scheduled spec that names a
+    capability, so there is nothing it could run on a host.
+    """
+
+    return "hosts" not in spec.params
+
+
+def _occurrence_end(trigger: str) -> datetime | None:
+    """The end of the occurrence a scheduled run's ``trigger`` names, or ``None``."""
+
+    if not trigger.startswith(SCHEDULE_TRIGGER_PREFIX):
+        return None
+    try:
+        end = datetime.fromisoformat(trigger[len(SCHEDULE_TRIGGER_PREFIX):])
+    except ValueError:
+        return None
+    return end if end.tzinfo is not None else end.replace(tzinfo=timezone.utc)
+
+
+def _too_soon(spec: AgentSpec, history: list[AgentRun], end: datetime) -> bool:
+    """Whether the occurrence ending at ``end`` is closer than the spec's interval to the last.
+
+    Measured between occurrence ends, read off the triggers of the agent's runs
+    that ran (a ``skipped`` run did not), so a weekly window with a 28-day
+    interval runs in exactly every fourth occurrence, and the answer survives a
+    restart. An occurrence is never too soon after itself: its own hosts finish.
+    """
+
+    days = spec.trigger.min_interval_days
+    if days is None:
+        return False
+    for run in history:
+        if run.status not in _DONE_STATUSES:
+            continue
+        last = _occurrence_end(run.trigger)
+        if last is not None and last != end and end - last < timedelta(days=days):
+            return True
+    return False
+
+
+def _brief(spec: AgentSpec, host: str | None, params: Mapping[str, Any]) -> str:
     """The one message that starts a scheduled run.
 
     Facts the run needs to be efficient, not limits: the gate enforces those.
     """
 
-    lines = [f"Scheduled {spec.title.lower()} run on the machine \"{host}\"."]
+    if host is None:
+        lines = [f"Scheduled {spec.title.lower()} run on the server; no machine is involved."]
+    else:
+        lines = [f"Scheduled {spec.title.lower()} run on the machine \"{host}\"."]
     if "packages" in spec.params:
         packages = _packages(params)
         if packages:

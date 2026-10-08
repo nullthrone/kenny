@@ -21,6 +21,7 @@ it never imports ``chat.py``, so the dependency runs one way: ``chat`` -> ``tool
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import uuid
@@ -120,12 +121,27 @@ LOOP_EVENT_TYPES: frozenset[str] = frozenset(
     }
 )
 
+#: Operator-rule tools a specialized agent run may dispatch in the loop (the
+#: config-hygiene agent, ``agents/hygiene.py``). On MCP they are ordinary
+#: tools (``tools.py``); in the loop their handlers are registered on the
+#: agents' executor alone, so they are surface-only: the copilot's full
+#: catalog never shows them, and ``ticket_assistant.EXCLUDED_TOOLS`` keeps
+#: every ticket session from being offered them.
+AGENT_ONLY_TOOLS: frozenset[str] = frozenset(
+    {
+        "reliability_suppression_list",
+        "reliability_suppression_remove",
+        "ticket_rule_list",
+        "ticket_rule_remove",
+    }
+)
+
 #: Server tools no surface gets unless it names them. ``build_tool_schemas``
 #: emits the whole catalog when a caller passes no allowlist (the dashboard
 #: copilot does exactly that, ``chat.py``), so a tool that belongs to one
 #: surface alone has to be withheld from that default rather than added to it.
-SURFACE_ONLY_TOOLS: frozenset[str] = frozenset(
-    {TRIAGE_VERDICT_TOOL, TICKET_SUMMARY_TOOL, AGENT_VERDICT_TOOL}
+SURFACE_ONLY_TOOLS: frozenset[str] = (
+    frozenset({TRIAGE_VERDICT_TOOL, TICKET_SUMMARY_TOOL, AGENT_VERDICT_TOOL}) | AGENT_ONLY_TOOLS
 )
 
 #: Server tools :class:`ToolExecutor` dispatches itself. Guards
@@ -341,6 +357,45 @@ SERVER_TOOLS: dict[str, dict[str, Any]] = {
         "required": [],
     },
 }
+
+# The agent-only operator-rule tools (:data:`AGENT_ONLY_TOOLS`). The rule id is
+# the tools' one argument; a host filter is left out on purpose, because an
+# agent run reads every rule or none.
+_RULE_ID_ARG: dict[str, Any] = {
+    "rule_id": {"type": "string", "description": "The rule's id, exactly as listed."}
+}
+SERVER_TOOLS.update(
+    {
+        "reliability_suppression_list": {
+            "description": (
+                "List every reliability alarm suppression rule: its id, scope, "
+                "pattern, note, when it was created, when it last matched an event "
+                "(last_matched_at, null if never) and how often (match_count)."
+            ),
+            "properties": {},
+            "required": [],
+        },
+        "reliability_suppression_remove": {
+            "description": "Remove one reliability alarm suppression rule by its id.",
+            "properties": dict(_RULE_ID_ARG),
+            "required": ["rule_id"],
+        },
+        "ticket_rule_list": {
+            "description": (
+                "List every auto-ticket rule: its id, scope, event type, section, "
+                "decision, note, when it was created, when it last decided an alert "
+                "(last_matched_at, null if never) and how often (match_count)."
+            ),
+            "properties": {},
+            "required": [],
+        },
+        "ticket_rule_remove": {
+            "description": "Remove one auto-ticket rule by its id.",
+            "properties": dict(_RULE_ID_ARG),
+            "required": ["rule_id"],
+        },
+    }
+)
 
 
 # -- gate decisions ---------------------------------------------------------
@@ -764,10 +819,21 @@ class ToolExecutor:
         self.server_tool_handlers[name] = handler
 
     async def run_server_tool(
-        self, tool: str, args: dict[str, Any], *, session: Any = None
+        self,
+        tool: str,
+        args: dict[str, Any],
+        *,
+        session: Any = None,
+        authorization_id: str | None = None,
     ) -> dict[str, Any]:
         handler = self.server_tool_handlers.get(tool)
         if handler is not None:
+            # The standing authorization that let an agent make this call
+            # (ADR-0072 rule 5) reaches a handler that declares it, so the
+            # handler's own audit row can name it; every other handler is
+            # called exactly as before.
+            if "authorization_id" in inspect.signature(handler).parameters:
+                return await handler(args, session=session, authorization_id=authorization_id)
             return await handler(args, session=session)
         if tool == "list_agents":
             return await self._list_agents(session)
@@ -1109,6 +1175,13 @@ async def _execute_one(
 
     try:
         if tool in SERVER_TOOLS:
+            if authorization_id is not None:
+                return (
+                    await executor.run_server_tool(
+                        tool, args, session=session, authorization_id=authorization_id
+                    ),
+                    False,
+                )
             return await executor.run_server_tool(tool, args, session=session), False
         target = agent_id or _resolve_chat_target(session, args)
         session_actor, run_id = _audit_identity(session)

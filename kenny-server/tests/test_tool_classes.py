@@ -79,8 +79,9 @@ SINCE_LEGACY = frozenset(
     }
 )
 
-# The MCP-only server tools registered in ``tools.py`` (neither forwarded
-# capabilities nor part of ``chat.SERVER_TOOLS``).
+# The server tools registered for MCP in ``tools.py`` (no forwarded
+# capabilities). Those in ``toolloop.AGENT_ONLY_TOOLS`` are also part of
+# ``chat.SERVER_TOOLS``, dispatched in the loop for agent runs alone.
 MCP_ONLY_SERVER_TOOLS = frozenset(
     {
         "webfilter_get",

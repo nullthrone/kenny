@@ -53,9 +53,11 @@ __all__ = [
     "ToolTimeout",
     "Trigger",
     "effective_hash",
+    "evidence_names",
     "param_kind",
     "resolve",
     "validate",
+    "with_evidence",
 ]
 
 #: What an agent may do with a change-tier call.
@@ -108,9 +110,17 @@ class Trigger:
     kind: str
     #: For ``kind="event"``: one of :data:`EVENTS`.
     event: str | None = None
+    #: For ``kind="schedule"``: the fewest days between two window occurrences
+    #: this agent runs in. ``None`` runs in every occurrence of its window; 28
+    #: with a weekly window runs every fourth week.
+    min_interval_days: int | None = None
 
-    def to_dict(self) -> dict[str, str | None]:
-        return {"kind": self.kind, "event": self.event}
+    def to_dict(self) -> dict[str, str | int | None]:
+        out: dict[str, str | int | None] = {"kind": self.kind, "event": self.event}
+        # Only when set, so every spec that names none keeps the hash it had.
+        if self.min_interval_days is not None:
+            out["min_interval_days"] = self.min_interval_days
+        return out
 
 
 @dataclass(frozen=True)
@@ -134,6 +144,14 @@ class ArgConstraint:
     #: parameter feeds; :func:`resolve` fills ``allowed`` from the parameter at
     #: run start. An empty parameter admits nothing — never "everything".
     param: str | None = None
+    #: When set, the values are neither the spec's nor a parameter's: server
+    #: code computes them at run start from the server's own records, through
+    #: the evidence provider of this name (the rules nothing has matched, say),
+    #: and the run freezes them (ADR-0072 rule 6). Evidence only ever narrows:
+    #: the model chooses among values the server computed, a provider that
+    #: fails yields the empty set, and the empty set admits nothing. Exclusive
+    #: with ``param`` and with declared ``allowed`` values.
+    evidence: str | None = None
 
     def admits(self, args: dict[str, object]) -> bool:
         value = args.get(self.arg)
@@ -145,6 +163,10 @@ class ArgConstraint:
         # the agent's parameters.
         if self.param is not None:
             return {"tool": self.tool, "arg": self.arg, "param": self.param}
+        # Likewise an evidence-fed one: its values differ from run to run by
+        # design; what a person reviewed is which records feed it.
+        if self.evidence is not None:
+            return {"tool": self.tool, "arg": self.arg, "evidence": self.evidence}
         return {"tool": self.tool, "arg": self.arg, "allowed": sorted(self.allowed)}
 
 
@@ -313,7 +335,22 @@ def validate(spec: AgentSpec) -> AgentSpec:
             raise SpecError(f"agent {spec.id}: constraint names {c.tool}, which is not in its tools")
         if TOOL_CLASSES[c.tool] == READ_ONLY:
             raise SpecError(f"agent {spec.id}: constraint on read-only {c.tool} would bound nothing")
-        if c.param is not None:
+        if c.param is not None and c.evidence is not None:
+            raise SpecError(
+                f"agent {spec.id}: constraint on {c.tool} names both a param and evidence"
+            )
+        if c.evidence is not None:
+            if not c.arg or not _PARAM_RE.match(c.evidence):
+                raise SpecError(
+                    f"agent {spec.id}: evidence constraint on {c.tool} needs an arg and "
+                    f"an evidence name matching {_PARAM_RE.pattern}"
+                )
+            # A run's resolved spec carries the frozen evidence as values and is
+            # validated again by the gate; they must be non-empty strings.
+            # Declaring values for one is refused by ``catalog.check_dispatchable``.
+            if any(not isinstance(v, str) or not v for v in c.allowed):
+                raise SpecError(f"agent {spec.id}: evidence values for {c.tool} must be non-empty")
+        elif c.param is not None:
             if c.param not in spec.params:
                 raise SpecError(
                     f"agent {spec.id}: constraint on {c.tool} names undeclared param {c.param!r}"
@@ -365,6 +402,12 @@ def validate(spec: AgentSpec) -> AgentSpec:
         raise SpecError(f"agent {spec.id}: unknown event {spec.trigger.event!r}")
     if spec.trigger.kind != "event" and spec.trigger.event is not None:
         raise SpecError(f"agent {spec.id}: only an event trigger names an event")
+    interval = spec.trigger.min_interval_days
+    if interval is not None:
+        if spec.trigger.kind != "schedule":
+            raise SpecError(f"agent {spec.id}: only a schedule trigger has a minimum interval")
+        if isinstance(interval, bool) or not isinstance(interval, int) or not 1 <= interval <= 366:
+            raise SpecError(f"agent {spec.id}: min_interval_days must be 1 to 366 whole days")
     if spec.default_mode not in MODES:
         raise SpecError(f"agent {spec.id}: unknown default mode {spec.default_mode!r}")
     if spec.default_mode == "act":
@@ -425,10 +468,39 @@ def resolve(spec: AgentSpec, params: Mapping[str, Any]) -> AgentSpec:
 
     resolved: list[ArgConstraint] = []
     for c in spec.constraints:
-        if c.param is None:
+        if c.param is None or c.evidence is not None:
             resolved.append(c)
             continue
         raw = params.get(c.param) or ()
+        values = raw if isinstance(raw, (list, tuple, set, frozenset)) else ()
+        resolved.append(
+            replace(c, allowed=frozenset(v for v in values if isinstance(v, str) and v))
+        )
+    return replace(spec, constraints=tuple(resolved))
+
+
+def evidence_names(spec: AgentSpec) -> tuple[str, ...]:
+    """The evidence providers ``spec``'s constraints are fed by, sorted, once each."""
+
+    return tuple(sorted({c.evidence for c in spec.constraints if c.evidence is not None}))
+
+
+def with_evidence(spec: AgentSpec, evidence: Mapping[str, Any]) -> AgentSpec:
+    """``spec`` with every evidence-fed constraint filled from ``evidence``.
+
+    ``evidence`` maps a provider name to the values it computed at run start
+    (ADR-0072 rule 6). A name it lacks, or a value that is not a collection of
+    strings, yields the empty set, which admits nothing; non-string and empty
+    values are dropped. Every other constraint is left as it is, and the spec
+    hash is unchanged (an evidence-fed constraint is hashed by its declaration).
+    """
+
+    resolved: list[ArgConstraint] = []
+    for c in spec.constraints:
+        if c.evidence is None:
+            resolved.append(c)
+            continue
+        raw = evidence.get(c.evidence) or ()
         values = raw if isinstance(raw, (list, tuple, set, frozenset)) else ()
         resolved.append(
             replace(c, allowed=frozenset(v for v in values if isinstance(v, str) and v))
