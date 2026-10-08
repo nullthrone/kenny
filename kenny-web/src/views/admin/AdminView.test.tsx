@@ -81,6 +81,7 @@ function mockApi(role: 'superuser' | 'operator' | 'user', over: Record<string, u
     '/api/discord/status': { configured: false },
     '/api/policy/rules': { builtin: [], operator: [] },
     '/api/policy/shell-allow': { mode: 'unrestricted', allow: [] },
+    '/api/specialized-agents': { enabled: true, agents: [] },
     ...over,
   }
   apiGetMock.mockImplementation((path: string) => {
@@ -98,6 +99,7 @@ function renderAdmin(path: string) {
         <Routes>
           <Route path="/admin" element={<AdminView />} />
           <Route path="/admin/:section" element={<AdminView />} />
+          <Route path="/admin/:section/:detail" element={<AdminView />} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
@@ -126,6 +128,17 @@ describe('AdminView — what each role can reach', () => {
     expect(screen.getByRole('link', { name: 'ALARM RULES' })).toBeInTheDocument()
     expect(screen.queryByText('Could not load the settings catalog')).not.toBeInTheDocument()
     // Never requested: it would 403, and the failure is what used to break the page.
+    expect(apiGetMock).not.toHaveBeenCalledWith('/api/settings')
+  })
+
+  it('gives an operator the agents view, which reads /api/specialized-agents and not the catalog', async () => {
+    mockApi('operator')
+
+    renderAdmin('/admin/agents')
+
+    expect(await screen.findByRole('link', { name: 'SPECIALIZED AGENTS' })).toBeInTheDocument()
+    expect(await screen.findByText('No agents')).toBeInTheDocument()
+    expect(apiGetMock).toHaveBeenCalledWith('/api/specialized-agents')
     expect(apiGetMock).not.toHaveBeenCalledWith('/api/settings')
   })
 
@@ -158,6 +171,9 @@ describe('AdminView — what each role can reach', () => {
     expect(screen.getByRole('link', { name: 'ALARM RULES' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'BACKUP' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'USERS' })).toBeInTheDocument()
+    // Right after the AI group, which holds the global switch for every agent.
+    const labels = screen.getAllByRole('link').map((a) => a.textContent)
+    expect(labels.indexOf('SPECIALIZED AGENTS')).toBe(labels.indexOf('AI') + 1)
     // Nothing in Admin is read-only: the environment is not a section.
     expect(screen.queryByRole('link', { name: 'ENVIRONMENT' })).not.toBeInTheDocument()
   })
@@ -237,6 +253,47 @@ describe('AdminView — every settings group reaches the screen', () => {
 
     expect(await screen.findByText(`row of ${slug}`)).toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: 'EDIT' }).length).toBeGreaterThan(0)
+  })
+})
+
+describe('AdminView — the agents deep link', () => {
+  it('opens one agent at #/admin/agents/{id}', async () => {
+    mockApi('operator', {
+      '/api/specialized-agents': {
+        enabled: true,
+        agents: [
+          {
+            id: 'patch',
+            title: 'Package updates',
+            description: 'Updates packages.',
+            trigger: { kind: 'schedule', event: null },
+            tools: [],
+            tool_classes: {},
+            verdict_tool: null,
+            budget: { max_iterations: 3 },
+            constraints: [],
+            timeouts: [],
+            sensitive_ok: false,
+            default_mode: 'shadow',
+            version: 1,
+            spec_hash: 'a'.repeat(64),
+            mode: 'shadow',
+            params: {},
+            effective_hash: 'b'.repeat(64),
+            act_bound: false,
+            latest_run: null,
+          },
+        ],
+      },
+      '/api/specialized-agents/patch/params': { agent_id: 'patch', declared: [], params: {}, effective_hash: 'b'.repeat(64) },
+      '/api/specialized-agents/patch/authorizations': { agent_id: 'patch', effective_hash: 'b'.repeat(64), authorizations: [] },
+      '/api/specialized-agents/runs': { runs: [] },
+    })
+
+    renderAdmin('/admin/agents/patch')
+
+    expect(await screen.findByRole('heading', { name: 'Package updates' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: '← ALL AGENTS' })).toHaveAttribute('href', '/admin/agents')
   })
 })
 

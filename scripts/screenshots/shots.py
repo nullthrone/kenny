@@ -252,6 +252,28 @@ MANIFEST: list[Shot] = [
         theme="light",
         actions=[{"wait_for": ".kc-adminnav a"}, {"sleep": 700}],
     ),
+    Shot(
+        name="admin-agents",
+        hash="#/admin/agents",
+        mode="full_page",
+        theme="light",
+        note="the specialized agents: mode badge, effective hash and latest run per agent (ADR-0071).",
+        actions=[{"wait_for": "text=Package updates"}, {"sleep": SETTLE_MS}],
+    ),
+    Shot(
+        name="admin-agent-detail",
+        hash="#/admin/agents/patch",
+        mode="full_page",
+        theme="light",
+        note="one agent: its tools, the parameters editor and a run record opened from the runs list.",
+        actions=[
+            {"wait_for": "text=SAVE PARAMETERS"},
+            {"wait_for": "text=DETAILS"},
+            _click_button("DETAILS"),
+            {"wait_for": "text=FINDING"},
+            {"sleep": SETTLE_MS},
+        ],
+    ),
     # -- Profile ------------------------------------------------------------
     Shot(
         name="profile",

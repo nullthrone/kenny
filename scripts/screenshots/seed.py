@@ -116,8 +116,80 @@ async def seed_app(app: Any, base: datetime | None = None) -> SeedResult:
         await _seed_ticket_alerts(state.event_store, base)
     if getattr(state, "discord_identities", None) is not None:
         await _seed_discord_identities(state.discord_identities, base, user_ids)
+    if getattr(state, "agents", None) is not None:
+        await _seed_agents(state.agents)
 
     return SeedResult(agent_ids=[h.agent_id for h in hosts], session_id=session_id)
+
+
+async def _seed_agents(runner: Any) -> None:
+    """Give the shipped specialized agents (ADR-0071) something to show: the package
+    agent's install parameters (ADR-0072), one run it only proposed in shadow, and one
+    run that changed something, so the Agents view has a parameters editor, a runs list
+    and a run record with actions and recommendations. Written through the runner and
+    its store, so the seeded state is what a real run and a real parameter edit leave."""
+
+    await runner.set_params(
+        "patch",
+        {
+            "window": {"days": ["sat", "sun"], "start": "02:00", "end": "05:00", "tz": "Europe/Berlin"},
+            "hosts": ["living-room-pc", "study-pc"],
+            "packages": ["7zip.7zip", "Mozilla.Firefox"],
+            "require_idle": True,
+        },
+        actor="thomas",
+    )
+    spec = runner.catalog["patch"]
+    live = await runner.live_hash("patch")
+    proposed = {
+        "tool": "winget_update",
+        "args": {"id": "7zip.7zip", "timeout_s": 600},
+        "agent_id": "study-pc",
+        "tool_class": "standard_change",
+    }
+    shadow = await runner.store.start_run(
+        agent_id="patch",
+        spec_hash=spec.spec_hash,
+        trigger="schedule",
+        mode="shadow",
+        subject="study-pc",
+        host_id="study-pc",
+        effective_hash=live,
+    )
+    await runner.store.finish_run(
+        shadow.id,
+        status="completed",
+        verdict="actionable",
+        summary="7-Zip has an update pending on study-pc. In shadow I could not apply it; "
+        "it is kept as a recommendation.",
+        usage={"input_tokens": 2140, "output_tokens": 366, "cache_read_tokens": 900},
+        recommendations=[proposed],
+    )
+    acted = await runner.store.start_run(
+        agent_id="patch",
+        spec_hash=spec.spec_hash,
+        trigger="schedule",
+        mode="act",
+        subject="living-room-pc",
+        host_id="living-room-pc",
+        effective_hash=live,
+    )
+    await runner.store.finish_run(
+        acted.id,
+        status="completed",
+        verdict="acted",
+        summary="Updated Mozilla.Firefox on living-room-pc; the second winget_list shows no update pending.",
+        usage={"input_tokens": 2890, "output_tokens": 412, "cache_read_tokens": 1500},
+        actions=[
+            {
+                "tool": "winget_update",
+                "args": {"id": "Mozilla.Firefox", "timeout_s": 600},
+                "agent_id": "living-room-pc",
+                "tool_class": "standard_change",
+                "ok": True,
+            }
+        ],
+    )
 
 
 async def _seed_users(user_store: Any) -> tuple[dict[str, int], str]:
