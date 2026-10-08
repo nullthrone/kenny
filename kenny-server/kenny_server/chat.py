@@ -225,6 +225,9 @@ class FleetSession:
     _staged_results: list[dict[str, Any]] = field(default_factory=list)
     # tool_use blocks from the current assistant turn not yet executed.
     _queue: list[dict[str, Any]] = field(default_factory=list)
+    # Operator who is driving this session right now; set by the chat routes
+    # before each drive/confirm so forwarded calls are audited under their name.
+    audit_actor: str | None = None
 
     @property
     def scope(self) -> str:

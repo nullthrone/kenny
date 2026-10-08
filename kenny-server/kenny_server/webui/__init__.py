@@ -63,7 +63,7 @@ from ..webfilter import (
     requested_domains,
     validate_categories,
 )
-from .authz import guard, principal_of, visible_ids
+from .authz import guard, principal_of, strip_audit_args, strip_audit_rows, visible_ids
 
 logger = logging.getLogger("kenny.webui")
 
@@ -115,6 +115,13 @@ _RESERVED_PREFIXES = (
     "/logout",
     "/setup",
 )
+
+
+def _actor_of(request: Request) -> str | None:
+    """The username the audit trail names for an action this request takes."""
+
+    principal = principal_of(request)
+    return principal.username if principal is not None else None
 
 
 def _entry_point() -> Path | None:
@@ -191,11 +198,14 @@ def build_api_routes(
     notifier_provider: Any = None,
     presence: Any = None,
     hw_history: Any = None,
+    agents: Any = None,
 ) -> list[Route]:
     """Build the dashboard's static + JSON routes.
 
     ``client_factory`` builds the Anthropic client for read-path event
     categorization; defaults to :func:`_anthropic_client` (injected in tests).
+    ``agents`` is the :class:`~kenny_server.agents.runner.AgentRunner` behind
+    ``/api/specialized-agents*``; without one those routes answer 503.
     """
 
     _APPLIES_TO = {"powershell", "posix", "self_protection", "path"}
@@ -655,7 +665,7 @@ def build_api_routes(
         rows = await event_store.query_log(
             kind=store_kind, q=q, agent_ids=agent_ids, before=before, limit=limit
         )
-        log_rows = [_log_row(r) for r in rows]
+        log_rows = [_log_row(r) for r in strip_audit_rows(principal, rows)]
         next_cursor = (
             _encode_log_cursor(rows[-1]["at"], rows[-1]["id"]) if len(rows) == limit else None
         )
@@ -707,8 +717,11 @@ def build_api_routes(
                 # sections: a key is set and recommendations are switched on.
                 "ai_enabled": ai.current().enabled("recommend"),
                 "history": hist_points,
+                # Arguments of audited calls are shown to operator+ only.
                 "call_log": [
-                    c for c in await call_log.list() if c["agent_id"] == agent_id
+                    strip_audit_args(principal_of(request), c)
+                    for c in await call_log.list()
+                    if c["agent_id"] == agent_id
                 ],
             }
         )
@@ -862,10 +875,10 @@ def build_api_routes(
         agent_id = request.path_params["id"]
         try:
             result = await tunnel.send_request(agent_id, "telemetry_collect", {}, 60)
-            await call_log.record(agent_id, "telemetry_collect", {}, ok=True)
+            await call_log.record(agent_id, "telemetry_collect", {}, ok=True, actor=_actor_of(request))
         except (ToolError, Exception) as exc:  # noqa: BLE001 - surface to UI
             message = exc.message if isinstance(exc, ToolError) else str(exc)
-            await call_log.record(agent_id, "telemetry_collect", {}, ok=False, error=message)
+            await call_log.record(agent_id, "telemetry_collect", {}, ok=False, error=message, actor=_actor_of(request))
             return JSONResponse({"ok": False, "error": message}, status_code=502)
         # Store the freshly collected snapshot so the drill-down updates. The
         # agent round-trip above already succeeded, so a storage hiccup here
@@ -911,10 +924,10 @@ def build_api_routes(
         agent_id = request.path_params["id"]
         try:
             result = await tunnel.send_request(agent_id, "screen_capture", {}, 30)
-            await call_log.record(agent_id, "screen_capture", {}, ok=True)
+            await call_log.record(agent_id, "screen_capture", {}, ok=True, actor=_actor_of(request))
         except (ToolError, Exception) as exc:  # noqa: BLE001 - surface to UI
             message = exc.message if isinstance(exc, ToolError) else str(exc)
-            await call_log.record(agent_id, "screen_capture", {}, ok=False, error=message)
+            await call_log.record(agent_id, "screen_capture", {}, ok=False, error=message, actor=_actor_of(request))
             return JSONResponse({"ok": False, "error": message}, status_code=502)
         if isinstance(result, dict) and "image_b64" in result:
             screenshots.put(agent_id, result["image_b64"], result.get("format", "png"))
@@ -930,10 +943,10 @@ def build_api_routes(
         agent_id = request.path_params["id"]
         try:
             result = await tunnel.send_request(agent_id, "remotehelp_start", {}, 30)
-            await call_log.record(agent_id, "remotehelp_start", {}, ok=True)
+            await call_log.record(agent_id, "remotehelp_start", {}, ok=True, actor=_actor_of(request))
         except (ToolError, Exception) as exc:  # noqa: BLE001 - surface to UI
             message = exc.message if isinstance(exc, ToolError) else str(exc)
-            await call_log.record(agent_id, "remotehelp_start", {}, ok=False, error=message)
+            await call_log.record(agent_id, "remotehelp_start", {}, ok=False, error=message, actor=_actor_of(request))
             return JSONResponse({"ok": False, "error": message}, status_code=502)
         note = result.get("note") if isinstance(result, dict) else None
         return JSONResponse({"ok": True, "note": note})
@@ -1000,7 +1013,7 @@ def build_api_routes(
         )
         if principal is not None and principal.scoped:
             entries = [e for e in entries if principal.may_see(e.get("agent_id"))]
-        return JSONResponse({"entries": entries})
+        return JSONResponse({"entries": strip_audit_rows(principal, entries)})
 
     async def api_rotate_token(request: Request) -> JSONResponse:
         """Mint (or rotate) a per-agent token. Inherits /api operator auth.
@@ -1058,7 +1071,7 @@ def build_api_routes(
             presence=presence,
             hw_history=hw_history,
         )
-        await call_log.record(agent_id, "remove_host", {}, ok=True)
+        await call_log.record(agent_id, "remove_host", {}, ok=True, actor=_actor_of(request))
         return JSONResponse({"ok": True, "agent_id": agent_id, "purged": result})
 
     async def api_policy_list(_request: Request) -> JSONResponse:
@@ -1385,6 +1398,72 @@ def build_api_routes(
         await settings.reset(key)
         await _after_setting_write(key)
         return JSONResponse(settings.describe_one(key))
+
+    # -- specialized agents (ADR-0071) -------------------------------------
+    # Reading the catalog and the run history is operator+; choosing a mode is
+    # superuser-only, because moving an agent to ``act`` is a superuser's
+    # decision and every other mode write moves it towards or away from that.
+
+    _AGENTS_UNAVAILABLE = {"error": "agents not configured"}
+    _MAX_RUNS_LIMIT = 500
+
+    async def api_agents_list(_request: Request) -> JSONResponse:
+        """Every catalog agent with its mode and latest run, plus the global switch."""
+
+        if agents is None:
+            return JSONResponse(_AGENTS_UNAVAILABLE, status_code=503)
+        return JSONResponse({"enabled": agents.enabled(), "agents": await agents.overview()})
+
+    async def api_agent_runs(request: Request) -> JSONResponse:
+        """Runs newest first, optionally of one agent (``?agent_id=&limit=``)."""
+
+        if agents is None:
+            return JSONResponse(_AGENTS_UNAVAILABLE, status_code=503)
+        agent_id = request.query_params.get("agent_id") or None
+        if agent_id is not None and agent_id not in agents.catalog:
+            return JSONResponse({"error": f"unknown agent {agent_id}"}, status_code=404)
+        raw_limit = request.query_params.get("limit") or "50"
+        try:
+            limit = int(raw_limit)
+        except ValueError:
+            return JSONResponse({"error": "limit must be an integer"}, status_code=400)
+        if limit < 1:
+            return JSONResponse({"error": "limit must be at least 1"}, status_code=400)
+        runs = await agents.store.list_runs(agent_id=agent_id, limit=min(limit, _MAX_RUNS_LIMIT))
+        return JSONResponse({"runs": [run.to_public() for run in runs]})
+
+    async def api_agent_run(request: Request) -> JSONResponse:
+        """One run, with what it did and proposed."""
+
+        if agents is None:
+            return JSONResponse(_AGENTS_UNAVAILABLE, status_code=503)
+        run = await agents.store.get_run(request.path_params["run_id"])
+        if run is None:
+            return JSONResponse({"error": "run not found"}, status_code=404)
+        return JSONResponse(run.to_public())
+
+    async def api_agent_mode(request: Request) -> JSONResponse:
+        """Choose an agent's mode (``{"mode": "off"|"shadow"|"act"}``)."""
+
+        if agents is None:
+            return JSONResponse(_AGENTS_UNAVAILABLE, status_code=503)
+        agent_id = request.path_params["agent_id"]
+        if agent_id not in agents.catalog:
+            return JSONResponse({"error": f"unknown agent {agent_id}"}, status_code=404)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - malformed JSON
+            return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        mode = body.get("mode") if isinstance(body, dict) else None
+        if not isinstance(mode, str):
+            return JSONResponse({"error": "mode is required"}, status_code=400)
+        try:
+            effective = await agents.set_mode(agent_id, mode, actor=_actor_of(request) or "unknown")
+        except KeyError:
+            return JSONResponse({"error": f"unknown agent {agent_id}"}, status_code=404)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        return JSONResponse({"agent_id": agent_id, "mode": effective, "requested": mode})
 
     # -- DB backup/restore ---------------------------------------------------
     # Superuser-only (**su below): destructive (restore overwrites the live DB
@@ -1953,16 +2032,16 @@ def build_api_routes(
         call_args: dict[str, Any] = args if block_mode else {}
         try:
             result = await tunnel.send_request(agent_id, tool, call_args, 30)
-            await call_log.record(agent_id, tool, call_args, ok=True)
+            await call_log.record(agent_id, tool, call_args, ok=True, actor=_actor_of(request))
         except ToolError as exc:
-            await call_log.record(agent_id, tool, call_args, ok=False, error=exc.message)
+            await call_log.record(agent_id, tool, call_args, ok=False, error=exc.message, actor=_actor_of(request))
             # The kill switch refuses mutating tools with `disabled`; surface it
             # distinctly so the UI can show the local-override message (ADR-0024).
             if exc.code == "disabled":
                 return JSONResponse({"ok": False, "error": "disabled"}, status_code=200)
             return JSONResponse({"ok": False, "error": exc.message}, status_code=502)
         except Exception as exc:  # noqa: BLE001 - surface to the UI
-            await call_log.record(agent_id, tool, call_args, ok=False, error=str(exc))
+            await call_log.record(agent_id, tool, call_args, ok=False, error=str(exc), actor=_actor_of(request))
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=502)
         from datetime import datetime, timezone
 
@@ -2015,7 +2094,7 @@ def build_api_routes(
         agent = registry.get(agent_id)
         if agent is not None and not supports_tool(tool, agent.os):
             message = f"agent {agent_id!r} is {agent.os}; {tool} is not available there"
-            await call_log.record(agent_id, tool, args, ok=False, error=message)
+            await call_log.record(agent_id, tool, args, ok=False, error=message, actor=_actor_of(request))
             return JSONResponse(
                 {"ok": False, "error": "unsupported", "message": message}, status_code=200
             )
@@ -2023,9 +2102,9 @@ def build_api_routes(
         timeout_s = 120 if tool == "account_session_action" else 30
         try:
             result = await tunnel.send_request(agent_id, tool, args, timeout_s)
-            await call_log.record(agent_id, tool, args, ok=True)
+            await call_log.record(agent_id, tool, args, ok=True, actor=_actor_of(request))
         except ToolError as exc:
-            await call_log.record(agent_id, tool, args, ok=False, error=exc.message)
+            await call_log.record(agent_id, tool, args, ok=False, error=exc.message, actor=_actor_of(request))
             # `disabled` (the endpoint's kill switch) and `blocked` (the agent's
             # non-overridable self-protection, e.g. the last enabled admin) are
             # both expected refusals, not server faults — the UI explains them
@@ -2036,7 +2115,7 @@ def build_api_routes(
                 )
             return JSONResponse({"ok": False, "error": exc.message}, status_code=502)
         except Exception as exc:  # noqa: BLE001 - surface to the UI
-            await call_log.record(agent_id, tool, args, ok=False, error=str(exc))
+            await call_log.record(agent_id, tool, args, ok=False, error=str(exc), actor=_actor_of(request))
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=502)
         return JSONResponse({"ok": True, "result": result})
 
@@ -2124,6 +2203,10 @@ def build_api_routes(
             guard(api_suppression_remove, **op),
             methods=["DELETE"],
         ),
+        Route("/api/specialized-agents", guard(api_agents_list, **op)),
+        Route("/api/specialized-agents/runs", guard(api_agent_runs, **op)),
+        Route("/api/specialized-agents/runs/{run_id}", guard(api_agent_run, **op)),
+        Route("/api/specialized-agents/{agent_id}/mode", guard(api_agent_mode, **su), methods=["PUT"]),
         Route("/api/settings", guard(api_settings_list, **su)),
         Route("/api/settings/{key}", guard(api_settings_set, **su), methods=["PUT"]),
         Route(
@@ -2355,6 +2438,16 @@ def build_chat_routes(
     if copilot_tickets is not None:
         copilot_tickets.register_tools(executor)
 
+    def stamp_actor(session: Any, request: Request) -> None:
+        """Name the requesting operator on ``session`` before it drives a tool.
+
+        Set on every request, not once at creation: a session id is not bound
+        to a user, so the audit trail must name whoever is driving *this* turn.
+        """
+
+        principal = principal_of(request)
+        session.audit_actor = principal.username if principal is not None else None
+
     async def api_chat(request: Request) -> JSONResponse:
         try:
             body = await request.json()
@@ -2385,6 +2478,7 @@ def build_chat_routes(
         # a stale agent.
         agent_id = str(body.get("agent_id", "")).strip()
         session.agent_id = agent_id or None
+        stamp_actor(session, request)
         try:
             result = await run_turn(
                 session, message, executor=executor, client=client_factory(),
@@ -2409,6 +2503,7 @@ def build_chat_routes(
         if session.pending is None:
             return JSONResponse({"error": "no pending confirmation"}, status_code=409)
         approve = bool(body.get("approve", False))
+        stamp_actor(session, request)
         try:
             result = await confirm_pending(
                 session, approve=approve, executor=executor, client=client_factory(),
@@ -2453,6 +2548,7 @@ def build_chat_routes(
         # it back to None) so it never lags the dashboard's current selection.
         agent_id = str(body.get("agent_id", "")).strip()
         session.agent_id = agent_id or None
+        stamp_actor(session, request)
         client = client_factory()
         model = _chat_model(request)
 
@@ -2488,6 +2584,7 @@ def build_chat_routes(
         if session.pending is None:
             return JSONResponse({"error": "no pending confirmation"}, status_code=409)
         approve = bool(body.get("approve", False))
+        stamp_actor(session, request)
         client = client_factory()
         model = _chat_model(request)
 

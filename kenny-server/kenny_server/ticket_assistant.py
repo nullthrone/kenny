@@ -66,6 +66,7 @@ from .toolloop import (
     Hold,
     PendingCall,
     ToolExecutor,
+    UsageMeter,
     build_tool_schemas,
     confirmation_events,
     drive_events,
@@ -494,12 +495,23 @@ def _narrower_role(a: str | None, b: str | None) -> str:
 #: investigation nobody asked for must not look at somebody's screen, read
 #: their files, or list the sites they visited.
 #:
+#: :data:`FLEET_WIDE_TOOLS` are out because an investigation is about its
+#: ticket's one machine and reads every other one only by escaping it — the
+#: ticket surface withholds them from its scoped session anyway, and the agent
+#: gate refuses them on any run frozen to a host.
+#:
 #: :data:`~kenny_server.toolloop.TICKET_SUMMARY_TOOL` is taken out for the same
 #: reason the verdict tool is put in: an investigation says what it found *once*,
 #: in a verdict that carries its evidence and can resolve the ticket. A second,
 #: weaker way to write the same thing would be two records of one conclusion.
+#:
+#: Only names the loop can route are kept, so this set is also the honest
+#: declaration of the ``triage`` specialized agent, whose catalog refuses a tool
+#: the loop cannot route. (The session's allowlist was already intersected with
+#: the routable tools in :func:`allowed_tools_for`; this changes no call.)
 TRIAGE_TOOLS: frozenset[str] = (
-    READ_ONLY_TOOLS - SENSITIVE_TOOLS - {TICKET_SUMMARY_TOOL}
+    (READ_ONLY_TOOLS - SENSITIVE_TOOLS - FLEET_WIDE_TOOLS - {TICKET_SUMMARY_TOOL})
+    & (frozenset(SERVER_TOOLS) | frozenset(CAPABILITY_TOOLS))
 ) | {TRIAGE_VERDICT_TOOL}
 
 
@@ -616,6 +628,12 @@ class TicketSession:
     # the session, while the ticket record and trail it is built from need an
     # await. Never carries ``cache_control`` — see ``system_blocks``.
     briefing: str = ""
+    # Audit identity of this session's forwarded calls (see
+    # ``toolloop._audit_identity``): who made them, and in which autonomous run.
+    audit_actor: str | None = None
+    agent_run_id: str | None = None
+    # Opt-in token accounting: ``drive_events`` adds each model call's usage here.
+    usage: UsageMeter | None = None
 
     def record_retarget(self, tool: str, claimed: str) -> None:
         self._retargets.append((tool, claimed))

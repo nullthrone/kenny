@@ -353,7 +353,26 @@ takes an `event_type` of `health`, `offline`, `disk_forecast`, `hardware_forecas
 
 Every forwarded capability call is appended to the **tool-call audit log**, annotated
 read-only vs state-changing (plus, additively, its tier), with its agent, timestamp, and
-ok/error outcome. Read it in the dashboard's **[Log](dashboard.md#log)** page, filtered to
+ok/error outcome. Each entry also names **who made the call** — the operator driving Ask
+kenny or the dashboard, the MCP client's account, `agent:<id>` for a
+[specialized agent](adr/0071-specialized-agents-purpose-bound-unattended-sessions.md)
+(with its run id), or `system:webfilter-schedule` for a scheduled filter push — and the
+call's **arguments, redacted**:
+
+- a key naming a secret — password, passwd, secret, token, API key, credential, or the
+  whole words pass, pwd, pin, passphrase, cookie, session, authorization, private key —
+  is stored as `[redacted]`;
+- a free-text body — the value of `script`, `command`, `content`, `body` or `code` — is
+  never stored. The entry keeps `{"redacted": "body", "sha256": <hex of the UTF-8 text>,
+  "length": <characters>}` instead, so an investigator can match a known script against
+  the log without the log holding it;
+- a list keeps its first 50 items followed by a `… (N more)` marker, and every other
+  string is clipped to 500 characters.
+
+The arguments are shown **only to operators and above**. A `user`-role account that may
+see a host reads that host's audit entries — tool, actor, run id, outcome — without
+them, in the Log page, the host page and the events API alike.
+Entries written before this existed carry no actor and no arguments. Read it in the dashboard's **[Log](dashboard.md#log)** page, filtered to
 the TOOLS chip. See [`dashboard.md`](dashboard.md).
 
 ![The Log page, filtered to tool calls, each tagged read-only or state-changing.](assets/screenshots/log.png)

@@ -9,12 +9,14 @@ hierarchy (``superuser > operator > user``) and per-user host scope:
 * :func:`require_user` / :func:`require_host` raise :class:`Forbidden` (a typed
   401/403) inside handlers that need finer control.
 * :func:`visible_ids` filters a fleet list down to what a ``user`` may see.
+* :func:`may_see_audit_args` / :func:`strip_audit_args` keep the arguments of audited
+  tool calls from principals below ``operator``.
 """
 
 from __future__ import annotations
 
 from functools import wraps
-from typing import Callable, Iterable
+from typing import Any, Callable, Iterable
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -66,6 +68,49 @@ def visible_ids(principal: Principal, ids: Iterable[str]) -> list[str]:
     if not principal.scoped:
         return list(ids)
     return [i for i in ids if i in principal.hosts]
+
+
+def may_see_audit_args(principal: Principal | None) -> bool:
+    """Whether ``principal`` may read the arguments recorded on audit entries.
+
+    Only ``operator`` and above: the audit trail is readable by a ``user`` for the
+    hosts in their scope, but what an operator ran there is not. A missing
+    principal sees nothing.
+    """
+
+    return principal is not None and principal.at_least("operator")
+
+
+def strip_audit_args(principal: Principal | None, entry: dict[str, Any]) -> dict[str, Any]:
+    """``entry`` without its ``args`` unless ``principal`` may read them.
+
+    Works on both audit shapes: a ``CallLog.list`` entry (``args`` at the top) and an
+    ``EventStore`` row (``args`` inside ``fields``). The actor and run id stay. The
+    input is not mutated.
+    """
+
+    if may_see_audit_args(principal):
+        return entry
+    out = dict(entry)
+    out.pop("args", None)
+    fields = out.get("fields")
+    if isinstance(fields, dict):
+        out["fields"] = {k: v for k, v in fields.items() if k != "args"}
+    return out
+
+
+def strip_audit_rows(
+    principal: Principal | None, rows: Iterable[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """``EventStore`` rows with ``args`` removed from the ``audit`` ones.
+
+    Other kinds (log, alert) pass through untouched: their ``fields`` are not audit
+    arguments.
+    """
+
+    return [
+        strip_audit_args(principal, r) if r.get("kind") == "audit" else r for r in rows
+    ]
 
 
 def guard(

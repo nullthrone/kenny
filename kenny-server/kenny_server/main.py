@@ -68,6 +68,8 @@ from .store import (
     UpdateStore,
     WebFilterStore,
 )
+from .agents.runner import AgentRunner
+from .agents.store import AgentStore
 from .ticket_alerts import TicketAlertReader
 from .ticket_assistant import TicketAssistant
 from .ticket_rules import TicketRuleList
@@ -134,6 +136,11 @@ def _env_float(key: str, default: float) -> float:
         return default
 
 
+#: The audit actor for a push the web-filter schedule makes on its own (ADR-0055):
+#: nobody is driving it, and the trail must say so rather than name nobody.
+SCHEDULE_ACTOR = "system:webfilter-schedule"
+
+
 async def webfilter_schedule_pass(
     webfilter: WebFilterService, tunnel: AgentTunnel, call_log: CallLog
 ) -> dict[str, int]:
@@ -162,11 +169,13 @@ async def webfilter_schedule_pass(
         args = item["args"]
         try:
             result = await tunnel.send_request(agent_id, "webfilter_apply", args, 30)
-            await call_log.record(agent_id, "webfilter_apply", args, ok=True)
+            await call_log.record(
+                agent_id, "webfilter_apply", args, ok=True, actor=SCHEDULE_ACTOR
+            )
         except Exception as exc:  # noqa: BLE001 - one host must not end the pass
             counts["failed"] += 1
             await call_log.record(
-                agent_id, "webfilter_apply", args, ok=False, error=str(exc)
+                agent_id, "webfilter_apply", args, ok=False, error=str(exc), actor=SCHEDULE_ACTOR
             )
             log.info("scheduled webfilter push for %s failed: %s", agent_id, exc)
             continue
@@ -276,9 +285,17 @@ def _set_int(obj: Any, attr: str, value: Any) -> None:
 
 
 def _bind_triage(
-    settings: Settings, ai_access: AiAccess, tickets: TicketService, triage: TriageService
+    settings: Settings,
+    ai_access: AiAccess,
+    tickets: TicketService,
+    triage: TriageService,
+    runner: AgentRunner,
 ) -> None:
     """Keep triage wired to new tickets exactly while it is enabled.
+
+    A new ticket reaches the agent runner, which starts the ``triage`` agent
+    under the global agent bounds and records the run (ADR-0071); the runner
+    drives ``triage``.
 
     Wired only when a key or a gateway is actually configured. A constructed
     Anthropic client is not the same question: it builds happily without a key
@@ -288,7 +305,7 @@ def _bind_triage(
     """
 
     def apply(_value: Any = None) -> None:
-        tickets.set_triage(triage.run if ai_access.enabled("triage") else None)
+        tickets.set_triage(runner.on_ticket_created if ai_access.enabled("triage") else None)
 
     def set_resolve(value: Any) -> None:
         triage.resolve_enabled = bool(value)
@@ -736,6 +753,13 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         logging.getLogger("kenny.tickets").info(
             "the ticket assistant is disabled: no usable Anthropic client (%s)", exc
         )
+    # Specialized agents (ADR-0071): their modes and run history, and the
+    # runner every run starts through. Built on every server; the ``triage``
+    # agent is attached below once there is an assistant for it to run on.
+    agent_store = AgentStore(db_path)
+    agent_runner = AgentRunner(
+        store=agent_store, settings=settings, ai_access=ai_access, event_store=event_store
+    )
     ticket_assistant: TicketAssistant | None = None
     triage: TriageService | None = None
     if ticket_client is not None:
@@ -774,7 +798,8 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
             resolve_enabled=bool(settings.get("KENNY_TRIAGE_RESOLVE")),
         )
         triage.register(ticket_executor)
-        _bind_triage(settings, ai_access, ticket_service, triage)
+        agent_runner.triage = triage
+        _bind_triage(settings, ai_access, ticket_service, triage, agent_runner)
 
     # Discord bot surface (optional). The service is constructed only when a bot
     # token exists — an env-only secret, so its presence is already known here —
@@ -884,6 +909,9 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         await update_store.connect()
         await ticket_store.connect()
         await discord_identities.connect()
+        await agent_store.connect()
+        # Nothing runs yet, so a run still open belongs to a dead process.
+        await agent_runner.startup()
         # Telemetry retention (ADR-0051) is re-read here, after the overrides
         # loaded (settings bound through ``_bind_live_settings`` were re-applied
         # by ``settings.load()`` itself), before the
@@ -1122,6 +1150,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
             await update_store.close()
             await ticket_store.close()
             await discord_identities.close()
+            await agent_store.close()
             await settings_store.close()
 
     api_routes = build_api_routes(
@@ -1153,6 +1182,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         tickets=ticket_service,
         ticket_store=ticket_store,
         notifier_provider=notifier_provider,
+        agents=agent_runner,
     )
     user_routes = build_user_routes(
         user_store=user_store, registry=registry, store=store, oauth_store=oauth_store
@@ -1294,6 +1324,8 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
     app.state.discord_service = discord_service
     app.state.ticket_assistant = ticket_assistant
     app.state.triage = triage
+    app.state.agents = agent_runner
+    app.state.agent_store = agent_store
     # Replaced by the lifespan with the tasks it actually started (if any).
     app.state.ticket_task = None
     app.state.discord_task = None

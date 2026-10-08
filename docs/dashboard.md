@@ -701,9 +701,42 @@ the models, and the assistant's limits
 - **Triage steps per ticket** — how many model round-trips one investigation may take.
 - **Assistant turns per ticket** — the cap on the turns the ticket assistant takes on one
   ticket, on the dashboard and in Discord alike, before it is handed to an operator.
+- **Specialized agents** (on by default) — the global switch for every agent kenny runs on
+  its own, triage included; off, none starts.
+- **Agent runs at once** (default 2) and **Agent tokens per day** (default 0, no cap) —
+  the global bounds every agent run is checked against before the model is called. A run
+  either one refuses is recorded as *skipped*, with the reason.
 
 See [Tickets → kenny looks first](itsm.md#kenny-looks-first-before-you-are-asked-to) for
 triage.
+
+#### Specialized agents
+
+An agent is a purpose-bound session kenny starts on its own — triage is the first — with
+its own prompt, trigger, closed tool set and budget
+([ADR-0071](adr/0071-specialized-agents-purpose-bound-unattended-sessions.md)). Each has a
+**mode**: `off`, `shadow` (the whole run happens; a change is refused and kept as a
+recommendation) or `act`. Triage's mode is its two settings above: *Investigate new
+tickets automatically* off (or AI unavailable) is `off`, *Let triage resolve a ticket*
+off is `shadow`, on is `act`.
+
+- `GET /api/specialized-agents` *(operator+)* — the global switch (`enabled`) and every agent in the
+  catalog: its declaration (tools and their tiers, argument constraints, budget,
+  `spec_hash`), its current `mode`, and its latest run.
+- `GET /api/specialized-agents/runs?agent_id=&limit=` *(operator+)* — runs newest first, optionally
+  for one agent (`limit` defaults to 50, at most 500).
+- `GET /api/specialized-agents/runs/{run_id}` *(operator+)* — one run: what started it, the host or
+  ticket it was bound to, its mode and status (`running`, `completed`, `failed`,
+  `skipped`), its verdict, the changes it made and proposed (arguments redacted), and its
+  token usage.
+- `PUT /api/specialized-agents/{agent_id}/mode` with `{"mode": "off" | "shadow" | "act"}`
+  *(superuser only)* — moving an agent to `act` is a superuser's decision, so every mode
+  write is. For triage it writes the two settings above, exactly as this page does. The
+  answer carries the mode now in force, which for triage stays `off` while no API key or
+  gateway is configured. Each change is written to the event log with who made it.
+
+Each server start marks a run the previous process left open as `failed` and deletes
+finished runs older than 90 days.
 
 ### Tickets
 

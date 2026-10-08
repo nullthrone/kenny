@@ -615,6 +615,82 @@ def test_triage_can_be_switched_off_while_a_key_is_configured(tmp_path, monkeypa
         assert app.state.tickets._triage is None
 
 
+def _create_ticket_and_drain(app: Any, c: TestClient) -> Any:
+    """Create an alert ticket on the app's own loop and wait for its triage task."""
+
+    async def go() -> Any:
+        ticket = await app.state.tickets.create(
+            title="pc1 health: crit", origin="alert", agent_id="pc1", summary="disk: crit"
+        )
+        await asyncio.gather(*list(app.state.tickets._triage_tasks))
+        return ticket
+
+    return c.portal.call(go)
+
+
+def _fake_investigation(app: Any) -> list[dict[str, Any]]:
+    """Replace only the model-driven investigation; everything around it is real."""
+
+    calls: list[dict[str, Any]] = []
+
+    async def investigate(ticket: Any, **kw: Any) -> str:
+        calls.append({"ticket_id": ticket.id, **kw})
+        return "phantom"
+
+    app.state.triage.investigate = investigate
+    return calls
+
+
+def test_a_created_ticket_reaches_the_agent_runner_when_triage_is_enabled(
+    tmp_path, monkeypatch
+) -> None:
+    """Joined: TicketService -> the bound hook -> AgentRunner -> TriageService."""
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-not-a-real-key")
+    monkeypatch.delenv("KENNY_TRIAGE_ENABLED", raising=False)
+    monkeypatch.delenv("KENNY_TRIAGE_RESOLVE", raising=False)
+    app = build_app(db_path=str(tmp_path / "runner.sqlite"), client_factory=_FakeAnthropic)
+    assert app.state.agents.triage is app.state.triage
+    with TestClient(app) as c:
+        assert app.state.tickets._triage == app.state.agents.on_ticket_created
+        calls = _fake_investigation(app)
+        ticket = _create_ticket_and_drain(app, c)
+
+        runs = c.portal.call(lambda: app.state.agent_store.list_runs(limit=10))
+        assert [(r.agent_id, r.ticket_id, r.status, r.verdict, r.mode) for r in runs] == [
+            ("triage", ticket.id, "completed", "phantom", "shadow")
+        ]
+        assert [(k["ticket_id"], k["run_id"], k["resolve"]) for k in calls] == [
+            (ticket.id, runs[0].id, False)
+        ]
+
+
+def test_a_created_ticket_starts_no_run_when_triage_is_disabled(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-not-a-real-key")
+    monkeypatch.setenv("KENNY_TRIAGE_ENABLED", "0")
+    app = build_app(db_path=str(tmp_path / "norunner.sqlite"), client_factory=_FakeAnthropic)
+    with TestClient(app) as c:
+        calls = _fake_investigation(app)
+        _create_ticket_and_drain(app, c)
+        assert calls == []
+        assert c.portal.call(lambda: app.state.agent_store.list_runs(limit=10)) == []
+
+
+def test_boot_fails_agent_runs_a_dead_process_left_open(tmp_path) -> None:
+    db = str(tmp_path / "interrupted.sqlite")
+    app = build_app(db_path=db, client_factory=_FakeAnthropic)
+    with TestClient(app) as c:
+        run = c.portal.call(
+            lambda: app.state.agent_store.start_run(
+                agent_id="triage", spec_hash="h", trigger="t", mode="shadow"
+            )
+        )
+    app = build_app(db_path=db, client_factory=_FakeAnthropic)
+    with TestClient(app) as c:
+        after = c.portal.call(app.state.agent_store.get_run, run.id)
+        assert after is not None and after.status == "failed"
+
+
 # -- the persisted event classification rides the store seam (ADR-0058) -----
 
 

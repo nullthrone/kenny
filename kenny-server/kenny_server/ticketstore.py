@@ -299,6 +299,12 @@ TRIAGE_ACTOR = "triage"
 #: ticket reaches ``cancelled``.
 ABANDONED_BY = "inactivity"
 
+#: The ``origin`` of a ticket opened by a specialized agent's own effect. No
+#: code path opens one yet; the agent runner already refuses to start an agent
+#: for such a ticket, so an agent's effect never starts another agent
+#: (ADR-0071 rule 6).
+AGENT_ORIGIN = "agent"
+
 
 @dataclass(slots=True)
 class TicketEvent:

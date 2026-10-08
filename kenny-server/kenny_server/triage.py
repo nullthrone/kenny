@@ -47,17 +47,31 @@ already-tested undo.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from .ticket_assistant import TicketAssistant
 from .ticketstore import TRIAGE_ACTOR, Ticket, TicketStore
 from .tickets import TicketService
 from .tool_classes import READ_ONLY
-from .toolloop import TRIAGE_CLOSING_VERDICTS, TRIAGE_VERDICT_TOOL, TRIAGE_VERDICTS, ToolExecutor
+from .toolloop import (
+    TRIAGE_CLOSING_VERDICTS,
+    TRIAGE_VERDICT_TOOL,
+    TRIAGE_VERDICTS,
+    ToolExecutor,
+    UsageMeter,
+)
 
 logger = logging.getLogger("kenny.triage")
 
-__all__ = ["TriageService", "may_resolve"]
+__all__ = ["AUDIT_ACTOR", "TriageFailed", "TriageService", "may_resolve"]
+
+#: Who the forwarded-call audit names for every host call an investigation
+#: makes: the service identity of the ``triage`` specialized agent (ADR-0071
+#: rule 5), not the ticket trail's :data:`~kenny_server.ticketstore.TRIAGE_ACTOR`.
+#: ``tests/test_agent_runner.py`` joins it to the catalog entry's id.
+AUDIT_ACTOR = "agent:triage"
 
 #: Model round-trips one investigation may take. Enough for "read the report,
 #: check the thing it names, check one more thing when the first is
@@ -69,6 +83,25 @@ DEFAULT_MAX_ITERATIONS = 8
 #: Ceiling on the free-text fields a verdict carries into the trail. The model
 #: is asked for one or two sentences; this is the guard against it not being.
 _MAX_TEXT = 2000
+
+
+class TriageFailed(RuntimeError):
+    """The investigation's turn failed; the ticket itself is untouched."""
+
+
+@dataclass
+class _RunContext:
+    """What one in-flight investigation was started with, and what it concluded.
+
+    Keyed by ticket id: the verdict tool's handler is shared by every session on
+    the executor and receives only the session, whose id is the ticket's.
+    """
+
+    #: The resolve decision the run started with; ``None`` defers to the
+    #: service's live ``resolve_enabled`` alone.
+    resolve: bool | None = None
+    #: The last well-formed verdict this run recorded.
+    verdict: str | None = None
 
 
 def _clip(value: Any, limit: int = _MAX_TEXT) -> str:
@@ -139,6 +172,39 @@ class TriageService:
         #: changes nothing about how a verdict is reached — only whether
         #: :func:`may_resolve`'s answer is carried out or merely recorded.
         self.resolve_enabled = resolve_enabled
+        #: A live "may triage still act?" predicate, asked at the verdict. Set by
+        #: ``agents.runner.AgentRunner`` (the global agent switch on and triage's
+        #: mode ``act``), so switching agents off or demoting triage reaches a run
+        #: already in flight. ``None`` asks nothing; a predicate that raises or
+        #: answers anything but ``True`` means "do not resolve".
+        self.still_acting: Callable[[], bool] | None = None
+        self._runs: dict[str, _RunContext] = {}
+
+    def _resolves(self, ticket_id: str) -> bool:
+        """Whether a may-resolve verdict on ``ticket_id`` is carried out now.
+
+        A run started with a resolve decision resolves only if that decision,
+        the live switch and the live :attr:`still_acting` predicate all say so:
+        switching resolve off, triage off or every agent off mid-run takes
+        effect at the verdict, switching any of them on mid-run does not (the
+        same rule the agent gate applies to a run's mode, ADR-0071).
+        """
+
+        ctx = self._runs.get(ticket_id)
+        if ctx is None or ctx.resolve is None:
+            decided = self.resolve_enabled
+        else:
+            decided = ctx.resolve and self.resolve_enabled
+        return decided and self._still_acting_now(ticket_id)
+
+    def _still_acting_now(self, ticket_id: str) -> bool:
+        if self.still_acting is None:
+            return True
+        try:
+            return self.still_acting() is True
+        except Exception:  # noqa: BLE001 - a predicate that fails has not confirmed act
+            logger.exception("triage on ticket %s: still_acting failed; not resolving", ticket_id)
+            return False
 
     def register(self, executor: ToolExecutor) -> None:
         """Route the verdict tool to this service."""
@@ -192,6 +258,9 @@ class TriageService:
             fields["not_resolved_because"] = why_not
         if suggestion is not None:
             fields["suppression_suggestion"] = suggestion
+        ctx = self._runs.get(ticket.id)
+        if ctx is not None:
+            ctx.verdict = verdict
         await self.tickets.append_event(
             ticket.id,
             kind="note",
@@ -200,7 +269,7 @@ class TriageService:
             fields=fields,
         )
 
-        if allowed and self.resolve_enabled:
+        if allowed and self._resolves(ticket.id):
             await self.tickets.transition(
                 ticket.id,
                 "resolved",
@@ -224,26 +293,59 @@ class TriageService:
 
     # -- the investigation --------------------------------------------------
 
-    async def run(self, ticket: Ticket) -> None:
-        """Investigate ``ticket``, best-effort.
+    async def run(
+        self,
+        ticket: Ticket,
+        *,
+        run_id: str | None = None,
+        usage: UsageMeter | None = None,
+        resolve: bool | None = None,
+    ) -> str | None:
+        """Investigate ``ticket``, best-effort; return the verdict it reached.
 
         Never raises. Triage is an enhancement to a ticket that already exists
         and is already the operator's to see; a failure here must cost the
         analysis and nothing else — the same bargain ADR-0027 strikes for alert
         delivery, and for the same reason: the thing that must not be lost has
         already happened by the time this runs.
+
+        ``None`` means no verdict: a ticket with no machine, a run that spent
+        its budget, or one that failed. The keyword arguments are
+        :meth:`investigate`'s.
         """
 
         try:
-            await self._run(ticket)
+            return await self.investigate(ticket, run_id=run_id, usage=usage, resolve=resolve)
         except Exception:  # noqa: BLE001 - a failed investigation must not cost the ticket
             logger.exception("triage failed for ticket %s", ticket.id)
+            return None
 
-    async def _run(self, ticket: Ticket) -> None:
+    async def investigate(
+        self,
+        ticket: Ticket,
+        *,
+        run_id: str | None = None,
+        usage: UsageMeter | None = None,
+        resolve: bool | None = None,
+    ) -> str | None:
+        """Run one investigation and return its verdict, or raise if it failed.
+
+        For a caller that records the run (``agents.runner.AgentRunner``):
+        ``run_id`` names the ``agent_runs`` row every forwarded call is audited
+        under, ``usage`` collects the turn's token counts, and ``resolve`` is
+        the resolve decision the run started with (see :meth:`_resolves`).
+        Raises :class:`TriageFailed` when the turn failed — the assistant
+        records that on the trail and reports it as an event rather than
+        raising, so this is the one place it becomes the caller's to see.
+        """
+
         session = await self.assistant.triage_session_for(ticket)
         if session is None:
             logger.debug("ticket %s has no target machine; nothing to triage", ticket.id)
-            return
+            return None
+        session.audit_actor = AUDIT_ACTOR
+        session.agent_run_id = run_id
+        session.usage = usage
         self.assistant.append_user_message(session, _brief(ticket))
         await self.tickets.append_event(
             ticket.id,
@@ -251,17 +353,28 @@ class TriageService:
             actor=TRIAGE_ACTOR,
             summary="looking into this before anyone is asked to",
         )
-        # ``count_turn=False``: the turn cap exists to bound what an assistant
-        # does on a person's behalf, and this is not that. Triage is bounded by
-        # its own ``max_iterations`` instead, so somebody who picks the ticket up
-        # afterwards finds the human budget untouched.
-        async for _ in self.assistant.run_turn(
-            session,
-            ticket,
-            count_turn=False,
-            max_iterations=self.max_iterations,
-        ):
-            pass
+        ctx = _RunContext(resolve=resolve)
+        self._runs[ticket.id] = ctx
+        failed = False
+        try:
+            # ``count_turn=False``: the turn cap exists to bound what an
+            # assistant does on a person's behalf, and this is not that. Triage
+            # is bounded by its own ``max_iterations`` instead, so somebody who
+            # picks the ticket up afterwards finds the human budget untouched.
+            async for event in self.assistant.run_turn(
+                session,
+                ticket,
+                count_turn=False,
+                max_iterations=self.max_iterations,
+            ):
+                if event.get("type") == "error":
+                    failed = True
+        finally:
+            if self._runs.get(ticket.id) is ctx:
+                del self._runs[ticket.id]
+        if failed:
+            raise TriageFailed(f"the triage turn on ticket {ticket.id} failed")
+        return ctx.verdict
 
 
 def _suppression_suggestion(raw: Any) -> dict[str, Any] | None:
