@@ -44,32 +44,39 @@ one fails closed. The binding rules:
 
 1. **Every tool is classified** in `TOOL_CLASSES`; an unknown name refuses the spec.
    Nothing is derived from a profile. Sensitive tools are opt-in (`sensitive_ok`).
-2. **Every change-tier tool carries argument constraints, enforced in code on every
-   call.** Exact, enumerated values; an omitted or empty argument never matches (an absent
-   selector usually means "everything" — `winget_update` without `id` upgrades every
-   package). A limit stated only in the prompt is a limit the model enforces, which
-   ADR-0056 rules out. The verdict tool is exempt: its own handler decides its effect.
+2. **Every argument of every change-tier call is bound, in code, on every call.** A
+   constraint lists the exact values an argument may take; an omitted or empty argument
+   never matches (an absent selector usually means "everything" — `winget_update` without
+   `id` upgrades every package), and an argument no constraint names is refused, so
+   binding `version` cannot leave `url` free. A limit stated only in the prompt is a limit
+   the model enforces, which ADR-0056 rules out. Only a fixed set of server-side verdict
+   tools is exempt, because their own handler decides their effect.
 3. **`spec_hash` fingerprints what the agent does** (prompt, trigger, tools, constraints,
    budget, version). Anything granted to an agent binds to it, so editing a spec is never
    a silent widening of something a person agreed to.
 4. **One run, one host.** A run is frozen to one host (or none, for a server-only agent);
-   a call naming another host — an `agent_id` override or a host `id` — is refused, not
-   retargeted: nobody is present to read a retarget record.
+   a call naming another host — an `agent_id` override, a host `id`, a fleet-wide read —
+   is refused, not retargeted: nobody is present to read a retarget record.
 5. **The principal is never an operator.** A run acts as `agent:<id>`, host-scoped like
    triage's, so no exemption written for a person present applies to it.
-6. **An agent's effect never starts another agent**, and a global cap bounds concurrent
+6. **An agent's effect never starts another agent**, and global caps bound concurrent
    runs and daily tokens, checked before the model is called. Otherwise a change that
-   breaks a service raises an alert, opens a ticket and starts the next run.
+   breaks a service raises an alert, opens a ticket and starts the next run. Triage is
+   exempt from the concurrency cap — it was never bounded by one, and an alert storm must
+   not leave tickets uninvestigated — but not from the token cap.
+7. **Withdrawing permission reaches a run in flight.** A change runs only if the agent was
+   in `act` when the run started *and* still is, with the global switch on, at the moment
+   of the call; promoting an agent mid-run changes nothing.
 
 Each agent has a **mode**: `off`, `shadow` (the whole run happens; a change is refused at
-the gate and kept as a recommendation) or `act`. A new agent starts in `shadow`; moving one
-to `act` is a superuser's decision. Every run leaves an `agent_runs` record — mode,
+the gate and kept as a recommendation) or `act`. A new agent starts in `shadow` — no spec
+may default to `act` — and moving one to `act` is a superuser's decision. Every run leaves an `agent_runs` record — mode,
 verdict, the changes it made and proposed, token usage — and a global switch stops every
 agent at once.
 
 The generic gate (`agents.policy.AgentPolicy`) answers in one fixed order: not in the spec
-→ deny; another host → deny; read-only → allow; constraint not met → deny; change in
-`shadow` → deny and recommend; `standard_change` in `act` → allow; `normal_change` in `act`
+→ deny; another host → deny; read-only → allow; constraint not met → deny; verdict tool →
+allow; change in `shadow` (or no longer `act`) → deny and recommend; `standard_change` in `act` → allow; `normal_change` in `act`
 → allow only when an authorizer says yes, else deny and recommend. **It never holds**: no
 one is present to answer, and a held call parks a run forever (ADR-0056).
 
@@ -78,8 +85,9 @@ its prompt and `may_resolve`; its `KENNY_TRIAGE_*` settings remain the source of
 (`ENABLED` off → `off`; `RESOLVE` off → `shadow`; on → `act`).
 
 The forwarded-call audit names who acted — the agent actor, the operator driving the
-copilot, the MCP principal — with the run id and redacted arguments: "kenny did it" is
-not an answer once kenny acts on its own.
+copilot, the MCP principal — with the run id and the call's arguments, redacted: secrets
+removed, script and file bodies kept only as a hash and a length, and arguments shown to
+operators only. "kenny did it" is not an answer once kenny acts on its own.
 
 ### Consequences
 
