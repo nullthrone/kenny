@@ -353,7 +353,13 @@ takes an `event_type` of `health`, `offline`, `disk_forecast`, `hardware_forecas
 
 Every forwarded capability call is appended to the **tool-call audit log**, annotated
 read-only vs state-changing (plus, additively, its tier), with its agent, timestamp, and
-ok/error outcome. Read it in the dashboard's **[Log](dashboard.md#log)** page, filtered to
+ok/error outcome. Each entry also names **who made the call** — the operator driving Ask
+kenny or the dashboard, the MCP client's account, `agent:<id>` for a
+[specialized agent](adr/0071-specialized-agents-purpose-bound-unattended-sessions.md)
+(with its run id), or `system:webfilter-schedule` for a scheduled filter push — and the
+call's **arguments, redacted**: any key naming a password, secret, token, API key or
+credential is stored as `[redacted]`, and every string is clipped to 500 characters.
+Entries written before this existed carry no actor and no arguments. Read it in the dashboard's **[Log](dashboard.md#log)** page, filtered to
 the TOOLS chip. See [`dashboard.md`](dashboard.md).
 
 ![The Log page, filtered to tool calls, each tagged read-only or state-changing.](assets/screenshots/log.png)

@@ -134,6 +134,11 @@ def _env_float(key: str, default: float) -> float:
         return default
 
 
+#: The audit actor for a push the web-filter schedule makes on its own (ADR-0055):
+#: nobody is driving it, and the trail must say so rather than name nobody.
+SCHEDULE_ACTOR = "system:webfilter-schedule"
+
+
 async def webfilter_schedule_pass(
     webfilter: WebFilterService, tunnel: AgentTunnel, call_log: CallLog
 ) -> dict[str, int]:
@@ -162,11 +167,13 @@ async def webfilter_schedule_pass(
         args = item["args"]
         try:
             result = await tunnel.send_request(agent_id, "webfilter_apply", args, 30)
-            await call_log.record(agent_id, "webfilter_apply", args, ok=True)
+            await call_log.record(
+                agent_id, "webfilter_apply", args, ok=True, actor=SCHEDULE_ACTOR
+            )
         except Exception as exc:  # noqa: BLE001 - one host must not end the pass
             counts["failed"] += 1
             await call_log.record(
-                agent_id, "webfilter_apply", args, ok=False, error=str(exc)
+                agent_id, "webfilter_apply", args, ok=False, error=str(exc), actor=SCHEDULE_ACTOR
             )
             log.info("scheduled webfilter push for %s failed: %s", agent_id, exc)
             continue

@@ -117,6 +117,13 @@ _RESERVED_PREFIXES = (
 )
 
 
+def _actor_of(request: Request) -> str | None:
+    """The username the audit trail names for an action this request takes."""
+
+    principal = principal_of(request)
+    return principal.username if principal is not None else None
+
+
 def _entry_point() -> Path | None:
     """The dashboard HTML file to serve, or ``None`` if neither exists."""
 
@@ -862,10 +869,10 @@ def build_api_routes(
         agent_id = request.path_params["id"]
         try:
             result = await tunnel.send_request(agent_id, "telemetry_collect", {}, 60)
-            await call_log.record(agent_id, "telemetry_collect", {}, ok=True)
+            await call_log.record(agent_id, "telemetry_collect", {}, ok=True, actor=_actor_of(request))
         except (ToolError, Exception) as exc:  # noqa: BLE001 - surface to UI
             message = exc.message if isinstance(exc, ToolError) else str(exc)
-            await call_log.record(agent_id, "telemetry_collect", {}, ok=False, error=message)
+            await call_log.record(agent_id, "telemetry_collect", {}, ok=False, error=message, actor=_actor_of(request))
             return JSONResponse({"ok": False, "error": message}, status_code=502)
         # Store the freshly collected snapshot so the drill-down updates. The
         # agent round-trip above already succeeded, so a storage hiccup here
@@ -911,10 +918,10 @@ def build_api_routes(
         agent_id = request.path_params["id"]
         try:
             result = await tunnel.send_request(agent_id, "screen_capture", {}, 30)
-            await call_log.record(agent_id, "screen_capture", {}, ok=True)
+            await call_log.record(agent_id, "screen_capture", {}, ok=True, actor=_actor_of(request))
         except (ToolError, Exception) as exc:  # noqa: BLE001 - surface to UI
             message = exc.message if isinstance(exc, ToolError) else str(exc)
-            await call_log.record(agent_id, "screen_capture", {}, ok=False, error=message)
+            await call_log.record(agent_id, "screen_capture", {}, ok=False, error=message, actor=_actor_of(request))
             return JSONResponse({"ok": False, "error": message}, status_code=502)
         if isinstance(result, dict) and "image_b64" in result:
             screenshots.put(agent_id, result["image_b64"], result.get("format", "png"))
@@ -930,10 +937,10 @@ def build_api_routes(
         agent_id = request.path_params["id"]
         try:
             result = await tunnel.send_request(agent_id, "remotehelp_start", {}, 30)
-            await call_log.record(agent_id, "remotehelp_start", {}, ok=True)
+            await call_log.record(agent_id, "remotehelp_start", {}, ok=True, actor=_actor_of(request))
         except (ToolError, Exception) as exc:  # noqa: BLE001 - surface to UI
             message = exc.message if isinstance(exc, ToolError) else str(exc)
-            await call_log.record(agent_id, "remotehelp_start", {}, ok=False, error=message)
+            await call_log.record(agent_id, "remotehelp_start", {}, ok=False, error=message, actor=_actor_of(request))
             return JSONResponse({"ok": False, "error": message}, status_code=502)
         note = result.get("note") if isinstance(result, dict) else None
         return JSONResponse({"ok": True, "note": note})
@@ -1058,7 +1065,7 @@ def build_api_routes(
             presence=presence,
             hw_history=hw_history,
         )
-        await call_log.record(agent_id, "remove_host", {}, ok=True)
+        await call_log.record(agent_id, "remove_host", {}, ok=True, actor=_actor_of(request))
         return JSONResponse({"ok": True, "agent_id": agent_id, "purged": result})
 
     async def api_policy_list(_request: Request) -> JSONResponse:
@@ -1953,16 +1960,16 @@ def build_api_routes(
         call_args: dict[str, Any] = args if block_mode else {}
         try:
             result = await tunnel.send_request(agent_id, tool, call_args, 30)
-            await call_log.record(agent_id, tool, call_args, ok=True)
+            await call_log.record(agent_id, tool, call_args, ok=True, actor=_actor_of(request))
         except ToolError as exc:
-            await call_log.record(agent_id, tool, call_args, ok=False, error=exc.message)
+            await call_log.record(agent_id, tool, call_args, ok=False, error=exc.message, actor=_actor_of(request))
             # The kill switch refuses mutating tools with `disabled`; surface it
             # distinctly so the UI can show the local-override message (ADR-0024).
             if exc.code == "disabled":
                 return JSONResponse({"ok": False, "error": "disabled"}, status_code=200)
             return JSONResponse({"ok": False, "error": exc.message}, status_code=502)
         except Exception as exc:  # noqa: BLE001 - surface to the UI
-            await call_log.record(agent_id, tool, call_args, ok=False, error=str(exc))
+            await call_log.record(agent_id, tool, call_args, ok=False, error=str(exc), actor=_actor_of(request))
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=502)
         from datetime import datetime, timezone
 
@@ -2015,7 +2022,7 @@ def build_api_routes(
         agent = registry.get(agent_id)
         if agent is not None and not supports_tool(tool, agent.os):
             message = f"agent {agent_id!r} is {agent.os}; {tool} is not available there"
-            await call_log.record(agent_id, tool, args, ok=False, error=message)
+            await call_log.record(agent_id, tool, args, ok=False, error=message, actor=_actor_of(request))
             return JSONResponse(
                 {"ok": False, "error": "unsupported", "message": message}, status_code=200
             )
@@ -2023,9 +2030,9 @@ def build_api_routes(
         timeout_s = 120 if tool == "account_session_action" else 30
         try:
             result = await tunnel.send_request(agent_id, tool, args, timeout_s)
-            await call_log.record(agent_id, tool, args, ok=True)
+            await call_log.record(agent_id, tool, args, ok=True, actor=_actor_of(request))
         except ToolError as exc:
-            await call_log.record(agent_id, tool, args, ok=False, error=exc.message)
+            await call_log.record(agent_id, tool, args, ok=False, error=exc.message, actor=_actor_of(request))
             # `disabled` (the endpoint's kill switch) and `blocked` (the agent's
             # non-overridable self-protection, e.g. the last enabled admin) are
             # both expected refusals, not server faults — the UI explains them
@@ -2036,7 +2043,7 @@ def build_api_routes(
                 )
             return JSONResponse({"ok": False, "error": exc.message}, status_code=502)
         except Exception as exc:  # noqa: BLE001 - surface to the UI
-            await call_log.record(agent_id, tool, args, ok=False, error=str(exc))
+            await call_log.record(agent_id, tool, args, ok=False, error=str(exc), actor=_actor_of(request))
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=502)
         return JSONResponse({"ok": True, "result": result})
 
