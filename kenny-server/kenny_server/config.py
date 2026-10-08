@@ -325,6 +325,22 @@ _SPECS: list[SettingSpec] = [
           help="How many model round-trips one investigation may take. Spending "
                "them all produces no verdict: the ticket stays open with what "
                "was found so far."),
+    # Specialized agents (ADR-0071): read by agents.runner.AgentRunner before
+    # every run, before any model call.
+    _spec("KENNY_AGENTS_ENABLED", "AI", "bool", "1",
+          "Specialized agents", lifecycle="live",
+          help="Global switch for the agents kenny runs on its own, triage "
+               "included. Off means no agent starts, whatever its own mode says; "
+               "each agent keeps its mode for when this is on again."),
+    _spec("KENNY_AGENTS_MAX_CONCURRENT", "AI", "int", "2",
+          "Agent runs at once", lifecycle="live", min=1,
+          help="How many agent runs may be in flight together. A run that would "
+               "exceed it is not started and is recorded as skipped."),
+    _spec("KENNY_AGENTS_DAILY_TOKENS", "AI", "int", "0",
+          "Agent tokens per day", lifecycle="live", min=0,
+          help="Input plus output tokens all agent runs together may spend in "
+               "any 24 hours. Once reached, a run is not started and is recorded "
+               "as skipped. 0 means no cap."),
     _spec("KENNY_DISCORD_MAX_TURNS_PER_TICKET", "AI", "int", "40",
           "Assistant turns per ticket", lifecycle="live", min=1,
           help="Hard cap on the turns the ticket assistant takes on one ticket, "

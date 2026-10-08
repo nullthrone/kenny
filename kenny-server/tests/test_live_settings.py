@@ -112,6 +112,10 @@ READ_PER_USE = {
     "ANTHROPIC_BASE_URL",
     "ANTHROPIC_CUSTOM_HEADERS",
     "KENNY_FAST_MODEL",
+    # Read by ``agents.runner.AgentRunner`` before every run.
+    "KENNY_AGENTS_ENABLED",
+    "KENNY_AGENTS_MAX_CONCURRENT",
+    "KENNY_AGENTS_DAILY_TOKENS",
 }
 
 

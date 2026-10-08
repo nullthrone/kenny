@@ -198,11 +198,14 @@ def build_api_routes(
     notifier_provider: Any = None,
     presence: Any = None,
     hw_history: Any = None,
+    agents: Any = None,
 ) -> list[Route]:
     """Build the dashboard's static + JSON routes.
 
     ``client_factory`` builds the Anthropic client for read-path event
     categorization; defaults to :func:`_anthropic_client` (injected in tests).
+    ``agents`` is the :class:`~kenny_server.agents.runner.AgentRunner` behind
+    ``/api/agents*``; without one those routes answer 503.
     """
 
     _APPLIES_TO = {"powershell", "posix", "self_protection", "path"}
@@ -1393,6 +1396,72 @@ def build_api_routes(
         await _after_setting_write(key)
         return JSONResponse(settings.describe_one(key))
 
+    # -- specialized agents (ADR-0071) -------------------------------------
+    # Reading the catalog and the run history is operator+; choosing a mode is
+    # superuser-only, because moving an agent to ``act`` is a superuser's
+    # decision and every other mode write moves it towards or away from that.
+
+    _AGENTS_UNAVAILABLE = {"error": "agents not configured"}
+    _MAX_RUNS_LIMIT = 500
+
+    async def api_agents_list(_request: Request) -> JSONResponse:
+        """Every catalog agent with its mode and latest run, plus the global switch."""
+
+        if agents is None:
+            return JSONResponse(_AGENTS_UNAVAILABLE, status_code=503)
+        return JSONResponse({"enabled": agents.enabled(), "agents": await agents.overview()})
+
+    async def api_agent_runs(request: Request) -> JSONResponse:
+        """Runs newest first, optionally of one agent (``?agent_id=&limit=``)."""
+
+        if agents is None:
+            return JSONResponse(_AGENTS_UNAVAILABLE, status_code=503)
+        agent_id = request.query_params.get("agent_id") or None
+        if agent_id is not None and agent_id not in agents.catalog:
+            return JSONResponse({"error": f"unknown agent {agent_id}"}, status_code=404)
+        raw_limit = request.query_params.get("limit") or "50"
+        try:
+            limit = int(raw_limit)
+        except ValueError:
+            return JSONResponse({"error": "limit must be an integer"}, status_code=400)
+        if limit < 1:
+            return JSONResponse({"error": "limit must be at least 1"}, status_code=400)
+        runs = await agents.store.list_runs(agent_id=agent_id, limit=min(limit, _MAX_RUNS_LIMIT))
+        return JSONResponse({"runs": [run.to_public() for run in runs]})
+
+    async def api_agent_run(request: Request) -> JSONResponse:
+        """One run, with what it did and proposed."""
+
+        if agents is None:
+            return JSONResponse(_AGENTS_UNAVAILABLE, status_code=503)
+        run = await agents.store.get_run(request.path_params["run_id"])
+        if run is None:
+            return JSONResponse({"error": "run not found"}, status_code=404)
+        return JSONResponse(run.to_public())
+
+    async def api_agent_mode(request: Request) -> JSONResponse:
+        """Choose an agent's mode (``{"mode": "off"|"shadow"|"act"}``)."""
+
+        if agents is None:
+            return JSONResponse(_AGENTS_UNAVAILABLE, status_code=503)
+        agent_id = request.path_params["agent_id"]
+        if agent_id not in agents.catalog:
+            return JSONResponse({"error": f"unknown agent {agent_id}"}, status_code=404)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - malformed JSON
+            return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        mode = body.get("mode") if isinstance(body, dict) else None
+        if not isinstance(mode, str):
+            return JSONResponse({"error": "mode is required"}, status_code=400)
+        try:
+            effective = await agents.set_mode(agent_id, mode, actor=_actor_of(request) or "unknown")
+        except KeyError:
+            return JSONResponse({"error": f"unknown agent {agent_id}"}, status_code=404)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        return JSONResponse({"agent_id": agent_id, "mode": effective, "requested": mode})
+
     # -- DB backup/restore ---------------------------------------------------
     # Superuser-only (**su below): destructive (restore overwrites the live DB
     # and restarts the process) and secret-bearing (remote target credentials).
@@ -2131,6 +2200,10 @@ def build_api_routes(
             guard(api_suppression_remove, **op),
             methods=["DELETE"],
         ),
+        Route("/api/agents", guard(api_agents_list, **op)),
+        Route("/api/agents/runs", guard(api_agent_runs, **op)),
+        Route("/api/agents/runs/{run_id}", guard(api_agent_run, **op)),
+        Route("/api/agents/{agent_id}/mode", guard(api_agent_mode, **su), methods=["PUT"]),
         Route("/api/settings", guard(api_settings_list, **su)),
         Route("/api/settings/{key}", guard(api_settings_set, **su), methods=["PUT"]),
         Route(
