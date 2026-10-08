@@ -122,6 +122,9 @@ A host can carry a **schedule**: one or more recurring per-host windows (e.g. "2
 Monday through Friday, add `social` and `gaming`"). A window names its weekdays, a
 `HH:MM`–`HH:MM` start/end range, one or more extra categories, and an IANA timezone
 (defaulting to the server's own `TZ`, else UTC).
+The weekdays, range and timezone are read by the same parser as a
+[specialized agent's](dashboard.md#specialized-agents) maintenance window, so both accept
+exactly the same values.
 
 A schedule can only make the filter **stricter for its duration**. A window **adds**
 categories on top of whatever the host's own toggles already have; it never removes one,
