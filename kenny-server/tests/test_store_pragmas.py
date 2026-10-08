@@ -24,6 +24,7 @@ import pkgutil
 import pytest
 
 import kenny_server
+from kenny_server.agents.store import AgentStore
 from kenny_server.discord_identity import DiscordIdentityStore
 from kenny_server.keystore import KeyStore
 from kenny_server.oauthstore import OAuthStore
@@ -72,6 +73,7 @@ ALL_STORES: list[tuple[type, dict]] = [
     (OAuthStore, {}),
     (TicketStore, {}),
     (DiscordIdentityStore, {}),
+    (AgentStore, {}),
 ]
 
 
