@@ -343,14 +343,17 @@ class AgentStore:
         return [AgentRun._from_row(row) for row in rows]
 
     async def tokens_since(self, since_iso: str, *, agent_id: str | None = None) -> int:
-        """Input + output tokens of runs started at or after ``since_iso``.
+        """Every token of runs started at or after ``since_iso``.
 
-        Cache tokens are not counted: they are a discount on input already
-        counted, not a second spend.
+        Input + output + cache creation + cache read: the API's
+        ``input_tokens`` excludes the cached part of the prompt, so leaving the
+        cache counters out would undercount what a run read by most of its
+        prompt.
         """
 
         sql = (
-            "SELECT COALESCE(SUM(input_tokens + output_tokens), 0) AS total "
+            "SELECT COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens "
+            "+ cache_read_tokens), 0) AS total "
             "FROM agent_runs WHERE started_at >= ?"
         )
         params: list[Any] = [_normalize_iso(since_iso)]

@@ -16,14 +16,22 @@ from kenny_server import ticket_assistant, toolloop
 from kenny_server.agents import catalog
 from kenny_server.agents.catalog import CATALOG, build, get
 from kenny_server.agents.catalog.triage import TRIAGE
-from kenny_server.agents.spec import AgentSpec, Budget, SpecError, Trigger, validate
+from kenny_server.agents.spec import (
+    AgentSpec,
+    ArgConstraint,
+    Budget,
+    SpecError,
+    Trigger,
+    validate,
+)
 from kenny_server.registry import AgentRegistry
 from kenny_server.store import EventStore, TelemetryStore
 from kenny_server.ticket_assistant import TicketAssistant, TicketPolicy
 from kenny_server.ticketstore import TicketStore
 from kenny_server.tickets import TicketService
+from kenny_server.tool_classes import READ_ONLY, classify
 from kenny_server.toolloop import ToolExecutor
-from kenny_server.tools import CallLog, ScreenshotStore
+from kenny_server.tools import CAPABILITY_TOOLS, CallLog, ScreenshotStore
 from kenny_server.triage import DEFAULT_MAX_ITERATIONS
 from kenny_server.tunnel import AgentTunnel
 from kenny_server.userstore import UserStore
@@ -226,3 +234,68 @@ def test_ticket_tools_are_refused_off_a_ticket_surface() -> None:
     )
     with pytest.raises(SpecError, match="need a ticket's surface"):
         build((spec,))
+
+
+def _changer(tool: str, *constraints: ArgConstraint) -> AgentSpec:
+    return AgentSpec(
+        id="changer",
+        title="t",
+        description="d",
+        prompt="p",
+        trigger=Trigger(kind="on_demand"),
+        tools=frozenset({tool}),
+        constraints=constraints,
+        sensitive_ok=True,
+    )
+
+
+def test_a_change_tool_with_an_unbound_required_argument_is_refused() -> None:
+    # Only ``version`` bound: the gate would refuse every call that carries the
+    # ``url``/``sha256`` the tool requires, so the spec names a tool it can
+    # never call within its own bounds.
+    spec = _changer("agent_update", ArgConstraint("agent_update", "version", frozenset({"1.2.3"})))
+    validate(spec)
+    with pytest.raises(SpecError, match="agent_update's required argument.*sha256, url"):
+        catalog.check_dispatchable(spec)
+
+
+def test_a_change_tool_with_every_required_argument_bound_is_dispatchable() -> None:
+    spec = _changer(
+        "agent_update",
+        *(
+            ArgConstraint("agent_update", arg, frozenset({"x"}))
+            for arg in ("version", "url", "sha256")
+        ),
+    )
+    assert catalog.check_dispatchable(validate(spec)) is spec
+    # An optional argument (``winget_update``'s ``id?``) need not be bound for
+    # the spec to load; binding it is what makes a call admissible at all.
+    optional = _changer("winget_update", ArgConstraint("winget_update", "id", frozenset({"x"})))
+    assert catalog.check_dispatchable(validate(optional)) is optional
+
+
+def test_every_change_capability_is_checked_against_its_declared_arguments() -> None:
+    """Sweep: a change-tier capability is dispatchable exactly when its required args are bound."""
+
+    for tool, raw in CAPABILITY_TOOLS.items():
+        if classify(tool) == READ_ONLY:
+            continue
+        required = [k for k in raw if not k.endswith("?")]
+        optional = [k[:-1] for k in raw if k.endswith("?")]
+        every = tuple(ArgConstraint(tool, k, frozenset({"x"})) for k in required + optional)
+        if not every:
+            continue  # nothing to bind; validate() refuses it unconstrained anyway
+        catalog.check_dispatchable(validate(_changer(tool, *every)))
+        if required:
+            # Drop the first required argument's constraint (``every`` lists
+            # required ones first); check_dispatchable alone, since validate()
+            # would refuse a now-unconstrained tool for its own reason.
+            with pytest.raises(SpecError, match=f"required argument.*{required[0]}"):
+                catalog.check_dispatchable(_changer(tool, *every[1:]))
+
+
+def test_the_triage_tools_read_no_other_host() -> None:
+    # The ticket surface strips these for a scoped session anyway; declaring
+    # them would put fleet-wide reads in the triage spec that it never gets.
+    assert not (ticket_assistant.TRIAGE_TOOLS & ticket_assistant.FLEET_WIDE_TOOLS)
+    assert not (CATALOG["triage"].tools & ticket_assistant.FLEET_WIDE_TOOLS)

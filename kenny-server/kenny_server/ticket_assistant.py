@@ -495,6 +495,11 @@ def _narrower_role(a: str | None, b: str | None) -> str:
 #: investigation nobody asked for must not look at somebody's screen, read
 #: their files, or list the sites they visited.
 #:
+#: :data:`FLEET_WIDE_TOOLS` are out because an investigation is about its
+#: ticket's one machine and reads every other one only by escaping it — the
+#: ticket surface withholds them from its scoped session anyway, and the agent
+#: gate refuses them on any run frozen to a host.
+#:
 #: :data:`~kenny_server.toolloop.TICKET_SUMMARY_TOOL` is taken out for the same
 #: reason the verdict tool is put in: an investigation says what it found *once*,
 #: in a verdict that carries its evidence and can resolve the ticket. A second,
@@ -504,7 +509,7 @@ def _narrower_role(a: str | None, b: str | None) -> str:
 #: alone (``ticket_rule_list``, say) has no schema here, and a call to it made
 #: up by the model would otherwise be forwarded to the host as a capability.
 TRIAGE_TOOLS: frozenset[str] = (
-    (READ_ONLY_TOOLS - SENSITIVE_TOOLS - {TICKET_SUMMARY_TOOL})
+    (READ_ONLY_TOOLS - SENSITIVE_TOOLS - FLEET_WIDE_TOOLS - {TICKET_SUMMARY_TOOL})
     & (frozenset(SERVER_TOOLS) | frozenset(CAPABILITY_TOOLS))
 ) | {TRIAGE_VERDICT_TOOL}
 

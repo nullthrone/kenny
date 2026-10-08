@@ -11,10 +11,15 @@ than in the agent so no agent can forget one:
    tokens over the last 24 hours (``KENNY_AGENTS_DAILY_TOKENS``), checked
    before the model is called. A run a cap refuses *is* recorded, as
    ``skipped`` with the reason, because "kenny would have looked but was over
-   budget" is something a person needs to be able to see.
+   budget" is something a person needs to be able to see. The concurrency cap
+   bounds :meth:`AgentRunner.run_generic` runs only, counted in memory from
+   admission to the run's ``finally`` so a run that fails, is cancelled or
+   cannot close its row never keeps its slot. Triage is exempt from it: every
+   new ticket is investigated, however many arrive together; the token cap
+   applies to it like to every run.
 4. **The run row** (``agent_runs``): opened ``running`` before the first model
-   call, closed with how it ended, its verdict, what it did and proposed, and
-   what it cost.
+   call, closed in a ``finally`` (retried once) with how it ended, its verdict,
+   what it did and proposed, and what it cost.
 
 Two ways in. :meth:`AgentRunner.on_ticket_created` starts the ``triage`` agent,
 which keeps running on its ticket's own surface (``triage.TriageService``);
@@ -27,6 +32,12 @@ switch it (``KENNY_TRIAGE_ENABLED`` and the AI availability behind it -> ``off``
 source of truth and nothing to migrate; :meth:`AgentRunner.set_mode` writes those
 settings for it. Every other agent's mode is its ``agent_settings`` row, or the
 spec's default while nobody has chosen one.
+
+A run's mode is read when it starts and again before every change it makes:
+the runner hands each run a live predicate (the global switch on and the
+agent's mode ``act``) — the gate's ``still_acting`` for a generic run,
+``TriageService.still_acting`` for triage's verdict — so demoting an agent or
+switching every agent off reaches a run already in flight.
 """
 
 from __future__ import annotations
@@ -82,6 +93,9 @@ RUN_RETENTION_DAYS = 90
 
 #: Ceiling on the free text a run row carries (summary, error).
 _MAX_TEXT = 2000
+
+#: What a run that left without finishing (cancelled, interrupted) is closed with.
+_INTERRUPTED = "the run was interrupted before it finished"
 
 
 def _clip(value: Any, limit: int = _MAX_TEXT) -> str | None:
@@ -153,6 +167,7 @@ class AgentRunner:
         self.store = store
         self.settings = settings
         self.ai_access = ai_access
+        self._triage: TriageService | None = None
         self.triage = triage
         self.catalog = catalog
         #: Where a mode change is recorded with who made it.
@@ -161,6 +176,27 @@ class AgentRunner:
         # Held across "count what is running" and "open the row", so two runs
         # starting together cannot both see room under the concurrency cap.
         self._admission = asyncio.Lock()
+        #: Generic runs admitted and not yet past their ``finally``. In memory,
+        #: not ``agent_runs``: a row a failed close left ``running`` must not
+        #: hold a slot until the next restart.
+        self._in_flight = 0
+
+    @property
+    def triage(self) -> TriageService | None:
+        """The service the ``triage`` agent runs through, wired to this runner's mode."""
+
+        return self._triage
+
+    @triage.setter
+    def triage(self, service: TriageService | None) -> None:
+        self._triage = service
+        if service is not None:
+            service.still_acting = self._triage_still_acting
+
+    def _triage_still_acting(self) -> bool:
+        """Whether a triage verdict may still resolve: switch on, triage in ``act``."""
+
+        return self.enabled() and self._triage_mode() == "act"
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -215,7 +251,8 @@ class AgentRunner:
         :meth:`~kenny_server.config.Settings.set` the dashboard's settings page
         uses, so their apply-hooks rebind it at once; ``KENNY_TRIAGE_RESOLVE``
         is written before ``KENNY_TRIAGE_ENABLED`` so a ticket created between
-        the two writes never runs in the mode being left. The mode in force can
+        the two writes never runs in the mode being left, and ``off`` writes
+        ``KENNY_TRIAGE_RESOLVE`` off as well. The mode in force can
         differ from ``mode``: triage chosen ``shadow`` stays ``off`` while no AI
         key or gateway is configured.
 
@@ -227,8 +264,9 @@ class AgentRunner:
         if mode not in MODES:
             raise ValueError(f"unknown agent mode {mode!r}; expected one of {', '.join(MODES)}")
         if spec.id == TRIAGE_AGENT_ID:
-            if mode != "off":
-                await self.settings.set(_TRIAGE_RESOLVE, "1" if mode == "act" else "0")
+            # Off clears resolve too, so a run already in flight cannot resolve
+            # at its verdict, and turning triage back on starts it in shadow.
+            await self.settings.set(_TRIAGE_RESOLVE, "1" if mode == "act" else "0")
             await self.settings.set(_TRIAGE_ENABLED, "0" if mode == "off" else "1")
         else:
             await self.store.set_mode(spec.id, mode, actor=actor)
@@ -277,13 +315,17 @@ class AgentRunner:
 
     # -- admission -----------------------------------------------------------
 
-    async def _cap_reason(self) -> str | None:
-        """Why a run may not start now under the global caps, or ``None``."""
+    async def _cap_reason(self, *, counted: bool) -> str | None:
+        """Why a run may not start now under the global caps, or ``None``.
 
-        limit = max(1, int(self.settings.get(MAX_CONCURRENT_SETTING)))
-        running = await self.store.count_running()
-        if running >= limit:
-            return f"{running} agent run(s) already in flight; the limit is {limit}"
+        ``counted`` runs are bounded by the concurrency cap; every run by the
+        token cap.
+        """
+
+        if counted:
+            limit = max(1, int(self.settings.get(MAX_CONCURRENT_SETTING)))
+            if self._in_flight >= limit:
+                return f"{self._in_flight} agent run(s) already in flight; the limit is {limit}"
         cap = int(self.settings.get(DAILY_TOKENS_SETTING))
         if cap > 0:
             since = self._now() - timedelta(hours=24)
@@ -301,11 +343,16 @@ class AgentRunner:
         subject: str | None,
         host_id: str | None,
         ticket_id: str | None = None,
+        counted: bool,
     ) -> tuple[AgentRun, bool]:
-        """Open the run row; ``(row, False)`` when a cap refused it (row ``skipped``)."""
+        """Open the run row; ``(row, False)`` when a cap refused it (row ``skipped``).
+
+        An admitted ``counted`` run holds a concurrency slot; the caller must
+        :meth:`_release` it in a ``finally``.
+        """
 
         async with self._admission:
-            reason = await self._cap_reason()
+            reason = await self._cap_reason(counted=counted)
             run = await self.store.start_run(
                 agent_id=spec.id,
                 spec_hash=spec.spec_hash,
@@ -316,9 +363,34 @@ class AgentRunner:
                 ticket_id=ticket_id,
             )
             if reason is None:
+                if counted:
+                    self._in_flight += 1
                 return run, True
             logger.info("agent %s run not started: %s", spec.id, reason)
             return await self.store.finish_run(run.id, status="skipped", error=reason), False
+
+    def _release(self) -> None:
+        """Give back the concurrency slot an admitted ``counted`` run held."""
+
+        self._in_flight = max(0, self._in_flight - 1)
+
+    async def _close(self, run_id: str, **outcome: Any) -> AgentRun | None:
+        """Close the run row; one retry, then log and give up (``None``).
+
+        Whatever happens here the run's slot is already free: the slot is held
+        in memory, and a row left ``running`` is accounted for at the next
+        :meth:`startup`.
+        """
+
+        for attempt in (1, 2):
+            try:
+                return await self.store.finish_run(run_id, **outcome)
+            except Exception:  # noqa: BLE001 - the run is over either way
+                if attempt == 2:
+                    logger.exception("agent run %s could not be closed; left running", run_id)
+                else:
+                    logger.warning("agent run %s failed to close; retrying", run_id, exc_info=True)
+        return None
 
     # -- triage: a new ticket ------------------------------------------------
 
@@ -356,21 +428,24 @@ class AgentRunner:
             subject=f"ticket:{ticket.id}",
             host_id=ticket.agent_id,
             ticket_id=ticket.id,
+            counted=False,
         )
         if not admitted:
             return
         meter = UsageMeter()
-        status, error, verdict = "completed", None, None
+        status, error, verdict = "failed", _INTERRUPTED, None
         try:
             verdict = await self.triage.investigate(
                 ticket, run_id=run.id, usage=meter, resolve=mode == "act"
             )
+            status, error = "completed", None
         except Exception as exc:  # noqa: BLE001 - recorded on the run, never raised
             logger.exception("triage run %s on ticket %s failed", run.id, ticket.id)
             status, error = "failed", _clip(exc) or type(exc).__name__
-        await self.store.finish_run(
-            run.id, status=status, verdict=verdict, usage=meter.to_dict(), error=error
-        )
+        finally:
+            await self._close(
+                run.id, status=status, verdict=verdict, usage=meter.to_dict(), error=error
+            )
 
     # -- any other agent -----------------------------------------------------
 
@@ -390,20 +465,25 @@ class AgentRunner:
 
         Returns the finished run row — ``completed``, ``failed`` or a cap's
         ``skipped`` — or ``None`` when the run was never started because the
-        global switch, the AI master switch or the agent's mode is off. Never
-        raises for a failure inside the run; it is recorded as ``failed``.
+        global switch, the AI master switch or the agent's mode is off, or when
+        its row could not be closed (logged). Never raises for a failure inside
+        the run; it is recorded as ``failed``.
 
         Raises :class:`ValueError` (or :class:`~kenny_server.agents.spec.SpecError`)
         for a spec that must not run here: an invalid one, one that runs on a
-        ticket's surface (that is :meth:`on_ticket_created`'s), or one whose id
-        is in the catalog with a different ``spec_hash``.
+        ticket's surface (that is :meth:`on_ticket_created`'s), one whose id is
+        not in the catalog, or one that differs from its catalog entry's
+        ``spec_hash``. Only a catalog spec runs: its mode is a superuser's
+        choice, and a spec from anywhere else has no such choice behind it.
         """
 
         check_dispatchable(validate(spec))
         if spec.trigger.kind == "event" and spec.trigger.event == "ticket_created":
             raise ValueError(f"agent {spec.id} runs on a ticket's own surface, not run_generic")
         known = self.catalog.get(spec.id)
-        if known is not None and known.spec_hash != spec.spec_hash:
+        if known is None:
+            raise ValueError(f"agent {spec.id} is not in the catalog")
+        if known.spec_hash != spec.spec_hash:
             raise ValueError(f"agent {spec.id}: spec differs from the catalog entry")
         if not self.enabled() or not self._ai_ready():
             return None
@@ -416,17 +496,25 @@ class AgentRunner:
             trigger=trigger,
             subject=f"host:{host_id}" if host_id else None,
             host_id=host_id,
+            counted=True,
         )
         if not admitted:
             return run
 
-        session = AgentSession(id=run.id, spec=spec, mode=mode, agent_id=host_id)
-        session.usage = UsageMeter()
-        session.messages.append({"role": "user", "content": brief})
-        status, error, summary, verdict = "completed", None, None, None
+        meter = UsageMeter()
+        session: AgentSession | None = None
+        status, error, summary, verdict = "failed", _INTERRUPTED, None, None
         change_results: list[dict[str, Any]] = []
+        finished: AgentRun | None = None
+
+        async def still_acting() -> bool:
+            return self.enabled() and await self._mode_for(spec) == "act"
+
         try:
-            policy = AgentPolicy(session, authorizer=authorizer)
+            session = AgentSession(id=run.id, spec=spec, mode=mode, agent_id=host_id)
+            session.usage = meter
+            session.messages.append({"role": "user", "content": brief})
+            policy = AgentPolicy(session, authorizer=authorizer, still_acting=still_acting)
             async for event in drive_events(
                 session,
                 executor,
@@ -446,19 +534,25 @@ class AgentRunner:
                         change_results.append(event)
                 elif kind == "done":
                     summary = _clip(event.get("assistant_text"))
+            status, error = "completed", None
         except Exception as exc:  # noqa: BLE001 - recorded on the run, never raised
             logger.exception("agent %s run %s failed", spec.id, run.id)
             status, error = "failed", _clip(exc) or type(exc).__name__
-        return await self.store.finish_run(
-            run.id,
-            status=status,
-            verdict=verdict,
-            summary=summary,
-            usage=session.usage.to_dict(),
-            error=error,
-            actions=_redacted(_with_outcomes(session.actions, change_results)),
-            recommendations=_redacted(session.recommendations),
-        )
+        finally:
+            self._release()
+            actions = session.actions if session is not None else []
+            recommendations = session.recommendations if session is not None else []
+            finished = await self._close(
+                run.id,
+                status=status,
+                verdict=verdict,
+                summary=summary,
+                usage=meter.to_dict(),
+                error=error,
+                actions=_redacted(_with_outcomes(actions, change_results)),
+                recommendations=_redacted(recommendations),
+            )
+        return finished
 
     def _ai_ready(self) -> bool:
         if self.ai_access is None:

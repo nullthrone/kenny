@@ -335,7 +335,9 @@ _SPECS: list[SettingSpec] = [
     _spec("KENNY_AGENTS_MAX_CONCURRENT", "AI", "int", "2",
           "Agent runs at once", lifecycle="live", min=1,
           help="How many agent runs may be in flight together. A run that would "
-               "exceed it is not started and is recorded as skipped."),
+               "exceed it is not started and is recorded as skipped. Ticket "
+               "triage is exempt: every new ticket is investigated, however "
+               "many arrive at once; the daily token cap still applies to it."),
     _spec("KENNY_AGENTS_DAILY_TOKENS", "AI", "int", "0",
           "Agent tokens per day", lifecycle="live", min=0,
           help="Input plus output tokens all agent runs together may spend in "

@@ -20,6 +20,8 @@ must agree:
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 from types import MappingProxyType, SimpleNamespace
 from typing import Any
@@ -128,6 +130,9 @@ class World:
     def __init__(self, db_path: str) -> None:
         self.db_path = db_path
         self.sent: list[dict[str, Any]] = []
+        #: Awaited with ``(tool, args)`` on every wire send, before it is
+        #: recorded: how a test acts *mid-run*, between two of the model's calls.
+        self.on_send: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None
 
     async def setup(self, env: dict[str, str] | None = None) -> None:
         self.settings_store = SettingsStore(self.db_path)
@@ -152,6 +157,8 @@ class World:
         self.tunnel = AgentTunnel(self.registry, self.telemetry, self.event_store)
 
         async def send_request(agent_id: str, tool: str, args: dict[str, Any], timeout_s: float):
+            if self.on_send is not None:
+                await self.on_send(tool, args)
             self.sent.append({"agent_id": agent_id, "tool": tool, "args": dict(args)})
             return {"ok": True, "tool": tool, "services": [], "packages": [], "log": "done"}
 
@@ -470,21 +477,60 @@ async def test_triage_off_starts_nothing(tmp_path) -> None:
         await w.close()
 
 
-async def test_the_concurrency_cap_records_a_skipped_run_and_calls_no_model(tmp_path) -> None:
+async def test_triage_is_not_bounded_by_the_concurrency_cap(tmp_path) -> None:
+    """An alert storm's third ticket is triaged like its first.
+
+    The cap is 1 and three investigations are made to overlap (each waits in
+    its first host call until all three are there); every one must run.
+    """
+
     w = await _world_with(tmp_path, {MAX_CONCURRENT_SETTING: "1"})
     try:
-        runner = w.runner(_verdict(), _text("done"))
-        busy = await w.agent_store.start_run(
-            agent_id="other", spec_hash="h", trigger="on_demand", mode="shadow"
+        runner = w.runner(
+            *(_tool("t1", "diag_services", {}) for _ in range(3)),
+            *(_text("done") for _ in range(3)),
         )
-        ticket = await w.alert_ticket()
-        await runner.on_ticket_created(ticket)
+        arrived: list[str] = []
+        together = asyncio.Event()
 
-        assert w.client.messages.calls == []
-        skipped = [r for r in await _runs(w) if r.id != busy.id]
-        assert [(r.status, r.ticket_id) for r in skipped] == [("skipped", ticket.id)]
-        assert "limit is 1" in (skipped[0].error or "")
-        assert (await w.agent_store.get_run(busy.id)).status == "running"  # type: ignore[union-attr]
+        async def on_send(tool: str, args: dict[str, Any]) -> None:
+            arrived.append(tool)
+            if len(arrived) == 3:
+                together.set()
+            try:
+                await asyncio.wait_for(together.wait(), timeout=2)
+            except TimeoutError:
+                pass
+
+        w.on_send = on_send
+        tickets = [await w.alert_ticket() for _ in range(3)]
+        await asyncio.gather(*(runner.on_ticket_created(t) for t in tickets))
+
+        assert together.is_set(), "the three runs never overlapped"
+        runs = await _runs(w)
+        assert sorted(r.ticket_id for r in runs) == sorted(t.id for t in tickets)
+        assert {r.status for r in runs} == {"completed"}
+    finally:
+        await w.close()
+
+
+async def test_triage_holds_no_generic_slot(tmp_path) -> None:
+    # Triage runs are not counted, so a running one leaves the cap to generic runs.
+    spec = _patcher()
+    w = await _world_with(tmp_path, {MAX_CONCURRENT_SETTING: "1"})
+    try:
+        runner = w.runner(_tool("t1", "diag_services", {}), _text("done"), catalog=_catalog(spec))
+        inner: list[Any] = []
+
+        async def on_send(tool: str, args: dict[str, Any]) -> None:
+            if tool == "diag_services":
+                w.on_send = None
+                inner.append(await _generic(w, runner, spec, ("winget_list", {})))
+
+        w.on_send = on_send
+        await runner.on_ticket_created(await w.alert_ticket())
+        [(run, _client)] = inner
+        assert run is not None and run.status == "completed"
     finally:
         await w.close()
 
@@ -505,6 +551,26 @@ async def test_the_daily_token_cap_records_a_skipped_run_and_calls_no_model(tmp_
         latest = (await _runs(w))[0]
         assert latest.status == "skipped"
         assert "cap is 100" in (latest.error or "")
+    finally:
+        await w.close()
+
+
+async def test_the_daily_token_cap_counts_cached_tokens(tmp_path) -> None:
+    w = await _world_with(tmp_path, {DAILY_TOKENS_SETTING: "100"})
+    try:
+        runner = w.runner(_verdict(), _text("done"))
+        spent = await w.agent_store.start_run(
+            agent_id="triage", spec_hash="h", trigger="on_demand", mode="shadow"
+        )
+        await w.agent_store.finish_run(
+            spent.id,
+            status="completed",
+            usage={"input_tokens": 3, "output_tokens": 2, "cache_read_tokens": 500},
+        )
+        await runner.on_ticket_created(await w.alert_ticket())
+
+        assert w.client.messages.calls == []
+        assert (await _runs(w))[0].status == "skipped"
     finally:
         await w.close()
 
@@ -635,19 +701,226 @@ async def test_run_generic_off_or_globally_off_starts_nothing(tmp_path) -> None:
         await w.close()
 
 
-async def test_run_generic_respects_the_caps(tmp_path) -> None:
+async def test_run_generic_respects_the_concurrency_cap(tmp_path) -> None:
     spec = _patcher()
     w = await _world_with(tmp_path, {MAX_CONCURRENT_SETTING: "1"})
     try:
         runner = w.runner(catalog=_catalog(spec))
-        await w.agent_store.start_run(
-            agent_id="triage", spec_hash="h", trigger="t", mode="shadow"
-        )
-        run, client = await _generic(w, runner, spec, ("winget_list", {}))
+        inner: list[Any] = []
+
+        async def on_send(tool: str, args: dict[str, Any]) -> None:
+            # The first run is in flight, inside its first host call.
+            w.on_send = None
+            inner.append(await _generic(w, runner, spec, ("winget_list", {})))
+
+        w.on_send = on_send
+        outer, _ = await _generic(w, runner, spec, ("winget_list", {}))
+        [(run, client)] = inner
         assert run is not None and run.status == "skipped"
-        assert client.messages.calls == [] and w.sent == []
+        assert "limit is 1" in (run.error or "")
+        assert client.messages.calls == []
+        assert outer is not None and outer.status == "completed"
+        assert len(w.sent) == 1
     finally:
         await w.close()
+
+
+async def test_a_stale_running_row_holds_no_slot(tmp_path) -> None:
+    # The cap counts runs in flight in this process, not rows: a row a failed
+    # close left ``running`` would otherwise hold its slot until a restart.
+    spec = _patcher()
+    w = await _world_with(tmp_path, {MAX_CONCURRENT_SETTING: "1"})
+    try:
+        runner = w.runner(catalog=_catalog(spec))
+        await w.agent_store.start_run(agent_id="patcher", spec_hash="h", trigger="t", mode="shadow")
+        run, _ = await _generic(w, runner, spec, ("winget_list", {}))
+        assert run is not None and run.status == "completed"
+    finally:
+        await w.close()
+
+
+async def test_a_run_whose_close_fails_once_is_closed_and_frees_its_slot(tmp_path) -> None:
+    spec = _patcher()
+    w = await _world_with(tmp_path, {MAX_CONCURRENT_SETTING: "1"})
+    try:
+        runner = w.runner(catalog=_catalog(spec))
+        real_finish = w.agent_store.finish_run
+        failures = {"left": 1}
+
+        async def flaky_finish(run_id: str, **kwargs: Any) -> Any:
+            if failures["left"]:
+                failures["left"] -= 1
+                raise RuntimeError("database is locked")
+            return await real_finish(run_id, **kwargs)
+
+        w.agent_store.finish_run = flaky_finish  # type: ignore[method-assign]
+        run, _ = await _generic(w, runner, spec, ("winget_list", {}))
+        assert run is not None and run.status == "completed"  # the retry closed it
+
+        again, _ = await _generic(w, runner, spec, ("winget_list", {}))
+        assert again is not None and again.status == "completed"
+    finally:
+        await w.close()
+
+
+async def test_a_run_whose_close_keeps_failing_still_frees_its_slot(tmp_path) -> None:
+    spec = _patcher()
+    w = await _world_with(tmp_path, {MAX_CONCURRENT_SETTING: "1"})
+    try:
+        runner = w.runner(catalog=_catalog(spec))
+        real_finish = w.agent_store.finish_run
+
+        async def broken_finish(run_id: str, **kwargs: Any) -> Any:
+            raise RuntimeError("disk full")
+
+        w.agent_store.finish_run = broken_finish  # type: ignore[method-assign]
+        run, _ = await _generic(w, runner, spec, ("winget_list", {}))
+        assert run is None  # logged, not raised
+
+        w.agent_store.finish_run = real_finish  # type: ignore[method-assign]
+        again, _ = await _generic(w, runner, spec, ("winget_list", {}))
+        assert again is not None and again.status == "completed"
+    finally:
+        await w.close()
+
+
+async def test_a_cancelled_run_is_closed_and_frees_its_slot(tmp_path) -> None:
+    spec = _patcher()
+    w = await _world_with(tmp_path, {MAX_CONCURRENT_SETTING: "1"})
+    try:
+        runner = w.runner(catalog=_catalog(spec))
+        entered = asyncio.Event()
+
+        async def hang(tool: str, args: dict[str, Any]) -> None:
+            entered.set()
+            await asyncio.Event().wait()  # never set: only cancellation ends it
+
+        w.on_send = hang
+        task = asyncio.create_task(_generic(w, runner, spec, ("winget_list", {})))
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        [cancelled] = await _runs(w)
+        assert cancelled.status == "failed" and cancelled.error
+        w.on_send = None
+        again, _ = await _generic(w, runner, spec, ("winget_list", {}))
+        assert again is not None and again.status == "completed"
+    finally:
+        await w.close()
+
+
+async def test_a_cancelled_triage_run_is_closed(world: World) -> None:
+    runner = world.runner(_tool("t1", "diag_services", {}), _text("done"))
+    entered = asyncio.Event()
+
+    async def hang(tool: str, args: dict[str, Any]) -> None:
+        entered.set()
+        await asyncio.Event().wait()
+
+    world.on_send = hang
+    task = asyncio.create_task(runner.on_ticket_created(await world.alert_ticket()))
+    await asyncio.wait_for(entered.wait(), timeout=2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    [run] = await _runs(world)
+    assert run.status == "failed" and run.error
+
+
+# -- a run already in flight sees a demotion -----------------------------------
+
+
+async def test_demoting_an_agent_reaches_its_run_in_flight(world: World) -> None:
+    spec = _patcher()
+    runner = world.runner(catalog=_catalog(spec))
+    await runner.set_mode("patcher", "act", actor="admin")
+
+    async def demote(tool: str, args: dict[str, Any]) -> None:
+        if tool == "winget_list":
+            await runner.set_mode("patcher", "shadow", actor="admin")
+
+    world.on_send = demote
+    run, _ = await _generic(
+        world, runner, spec, ("winget_list", {}), ("winget_update", {"id": FIREFOX})
+    )
+    assert run is not None and run.mode == "act"  # the mode it started in
+    assert [s["tool"] for s in world.sent] == ["winget_list"]
+    assert run.actions == []
+    assert run.recommendations == [
+        {"tool": "winget_update", "args": {"id": FIREFOX}, "agent_id": HOST,
+         "tool_class": STANDARD_CHANGE}
+    ]
+
+
+async def test_the_global_switch_reaches_a_run_in_flight(world: World) -> None:
+    spec = _patcher()
+    runner = world.runner(catalog=_catalog(spec))
+    await runner.set_mode("patcher", "act", actor="admin")
+
+    async def switch_off(tool: str, args: dict[str, Any]) -> None:
+        if tool == "winget_list":
+            await world.settings.set(ENABLED_SETTING, "0")
+
+    world.on_send = switch_off
+    run, _ = await _generic(
+        world, runner, spec, ("winget_list", {}), ("winget_update", {"id": FIREFOX})
+    )
+    assert run is not None
+    assert [s["tool"] for s in world.sent] == ["winget_list"]
+    assert run.actions == []
+    assert [r["tool"] for r in run.recommendations] == ["winget_update"]
+
+
+async def test_setting_triage_off_reaches_its_verdict_in_flight(tmp_path) -> None:
+    w = await _world_with(tmp_path, {"KENNY_TRIAGE_RESOLVE": "1"})
+    try:
+        runner = w.runner(_tool("t1", "diag_services", {}), _verdict(), _text("done"))
+
+        async def switch_off(tool: str, args: dict[str, Any]) -> None:
+            await runner.set_mode("triage", "off", actor="admin")
+
+        w.on_send = switch_off
+        ticket = await w.alert_ticket()
+        await runner.on_ticket_created(ticket)
+
+        [run] = await _runs(w)
+        assert (run.mode, run.verdict) == ("act", "phantom")
+        after = await w.ticket_store.get(ticket.id)
+        assert after is not None and after.state != "resolved"
+        # Off clears resolve too, so turning triage on again starts in shadow.
+        assert w.settings.get("KENNY_TRIAGE_RESOLVE") is False
+    finally:
+        await w.close()
+
+
+async def test_the_global_switch_reaches_a_triage_verdict_in_flight(tmp_path) -> None:
+    w = await _world_with(tmp_path, {"KENNY_TRIAGE_RESOLVE": "1"})
+    try:
+        runner = w.runner(_tool("t1", "diag_services", {}), _verdict(), _text("done"))
+
+        async def switch_off(tool: str, args: dict[str, Any]) -> None:
+            await w.settings.set(ENABLED_SETTING, "0")
+
+        w.on_send = switch_off
+        ticket = await w.alert_ticket()
+        await runner.on_ticket_created(ticket)
+
+        after = await w.ticket_store.get(ticket.id)
+        assert after is not None and after.state != "resolved"
+    finally:
+        await w.close()
+
+
+def test_the_runner_wires_triage_to_its_live_mode(world: World) -> None:
+    # main.py assigns ``runner.triage`` after construction; both ways wire it.
+    runner = world.runner()
+    assert world.triage.still_acting is not None
+    other = TriageService(tickets=world.tickets, assistant=world.triage.assistant)
+    runner.triage = other
+    assert other.still_acting is not None
+    assert other.still_acting() is False  # shadow by default
 
 
 async def test_run_generic_records_a_failure(world: World) -> None:
@@ -681,6 +954,25 @@ async def test_run_generic_refuses_a_spec_it_must_not_run(world: World) -> None:
     with pytest.raises(ValueError):  # triage runs on its ticket, not here
         await runner.run_generic(CATALOG["triage"], **kwargs)
     assert await _runs(world) == []
+
+
+async def test_run_generic_refuses_a_spec_that_is_not_in_the_catalog(world: World) -> None:
+    # Its mode would be its own default and its stored row — neither a choice
+    # anybody made about a spec the catalog never shipped.
+    runner = world.runner()  # the shipped catalog: no patcher
+    await world.agent_store.set_mode("patcher", "act", actor="admin")
+    client = FakeAnthropic([_text("done")])
+    with pytest.raises(ValueError, match="not in the catalog"):
+        await runner.run_generic(
+            _patcher(),
+            host_id=HOST,
+            trigger="on_demand",
+            brief="go",
+            client=client,
+            model="m",
+            executor=world.executor,
+        )
+    assert await _runs(world) == [] and client.messages.calls == []
 
 
 async def test_overview_lists_every_catalog_agent_with_mode_and_latest_run(world: World) -> None:

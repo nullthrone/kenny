@@ -333,21 +333,28 @@ async def test_list_runs_orders_same_instant_runs_by_insertion(store: AgentStore
 # -- tokens_since --------------------------------------------------------------
 
 
-async def test_tokens_since_sums_input_and_output_inside_the_window(store: AgentStore) -> None:
+async def test_tokens_since_sums_every_token_inside_the_window(store: AgentStore) -> None:
+    # The API's input_tokens excludes the cached prompt: a run that read most
+    # of its prompt from cache would otherwise barely count against the cap.
     now = datetime.now(timezone.utc)
     old = await start(store)
     recent = await start(store)
     other = await start(store, agent_id="other")
-    usage = {"input_tokens": 10, "output_tokens": 5, "cache_read_tokens": 1000}
+    usage = {
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "cache_read_tokens": 1000,
+        "cache_creation_tokens": 200,
+    }
     for run in (old, recent, other):
         await store.finish_run(run.id, status="completed", usage=usage)
     await backdate(store, old.id, now - timedelta(days=2))
 
     since = (now - timedelta(days=1)).isoformat()
-    assert await store.tokens_since(since) == 30  # recent + other; cache not counted
-    assert await store.tokens_since(since, agent_id="triage") == 15
-    assert await store.tokens_since(since, agent_id="other") == 15
-    assert await store.tokens_since((now - timedelta(days=3)).isoformat()) == 45
+    assert await store.tokens_since(since) == 2 * 1215  # recent + other
+    assert await store.tokens_since(since, agent_id="triage") == 1215
+    assert await store.tokens_since(since, agent_id="other") == 1215
+    assert await store.tokens_since((now - timedelta(days=3)).isoformat()) == 3 * 1215
     assert await store.tokens_since((now + timedelta(days=1)).isoformat()) == 0
 
 

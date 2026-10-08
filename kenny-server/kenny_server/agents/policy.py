@@ -16,7 +16,10 @@ and the one host the run was frozen to.
    is read from its arguments. A spec name the loop cannot dispatch (an
    MCP-only server tool) is refused here too — ``toolloop._execute_one`` would
    otherwise forward any name outside ``SERVER_TOOLS`` to the host as a
-   capability request.
+   capability request. So is a spec's verdict tool that is not one of
+   :data:`~kenny_server.agents.spec.VERDICT_TOOLS`: the verdict exemption
+   (step 5) is for a tool whose own handler decides its effect, never for one
+   whose arguments do.
 2. *Another host -> ``out_of_scope``.* Before the tier, because a read is not
    harmless just because it is read-only: reading a host the run is not about
    is the escape. Every host a call names counts — the routing target, an
@@ -24,6 +27,9 @@ and the one host the run was frozen to.
    refused, never quietly retargeted: a retarget record is only a control if
    somebody reads it, and nobody is here. A host-naming server tool may not run
    without a frozen host at all; its argument would be whatever the model wrote.
+   A fleet-wide read (``list_agents``, ``fleet_overview``) names no host because
+   it reads every one, so a run frozen to a host is refused it; a host-less,
+   server-only run may use it when its spec names it.
    Passing this step normalises the arguments (``agent_id`` popped as routing
    metadata, a host argument pinned to the frozen host), so every later step
    judges exactly what will be forwarded.
@@ -33,7 +39,10 @@ and the one host the run was frozen to.
 4. *Constraint not met -> ``constraint``.* Every change-tier call, in either
    mode, must satisfy every :class:`~kenny_server.agents.spec.ArgConstraint`
    naming its tool, and may carry no argument its catalog entry does not
-   declare. Before the mode branch on purpose: a call outside the constraints
+   declare and no argument a constraint does not bind — binding one argument
+   leaves no other free. The one exception is ``timeout_s``, which must be an
+   integer from 1 to :data:`MAX_TIMEOUT_S` (or the tool's own forwarding floor,
+   if higher). Before the mode branch on purpose: a call outside the constraints
    is not something this agent may do at all, so it is not a recommendation
    either — recording it as one would put an unreviewable change in front of a
    person dressed as the agent's considered proposal. A change-tier tool with
@@ -55,9 +64,14 @@ and the one host the run was frozen to.
 none to answer it (ADR-0056); :meth:`AgentPolicy.on_hold` raises so that a hold
 introduced by mistake fails the run loudly instead of parking it.
 
-The mode is fixed when the policy is built and re-read on every change: a
-change runs only if the run is ``act`` both at start and now, so demoting an
-agent mid-run takes effect at its next call and promoting one does not.
+A change runs only if the run was ``act`` when the policy was built, its
+``session.mode`` still is, *and* ``still_acting()`` — a live predicate the
+runner supplies (the global switch on and the agent's mode ``act``) — says so
+at the call. Demoting an agent or switching every agent off mid-run therefore
+takes effect at its next change, which is refused and recorded as a
+recommendation exactly as in ``shadow``; promoting one mid-run does not. A
+predicate that raises is "not acting". Without a predicate (tests only) the
+run's own ``session.mode`` is the sole live input.
 """
 
 from __future__ import annotations
@@ -67,13 +81,21 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..ticket_assistant import FLEET_WIDE_TOOLS
 from ..tool_classes import NORMAL_CHANGE, READ_ONLY, STANDARD_CHANGE, classify
 from ..toolloop import SERVER_TOOLS, Allow, Deny, PendingCall, build_tool_schemas
-from ..tools import CAPABILITY_TOOLS
+from ..tools import CAPABILITY_TOOLS, forward_timeout_s
 from ..tunnel import ToolError
-from .spec import AgentSpec, validate
+from .spec import VERDICT_TOOLS, AgentSpec, validate
 
-__all__ = ["HOST_ARG", "AgentPolicy", "AgentSession", "Authorizer"]
+__all__ = [
+    "HOST_ARG",
+    "MAX_TIMEOUT_S",
+    "AgentPolicy",
+    "AgentSession",
+    "Authorizer",
+    "StillActing",
+]
 
 logger = logging.getLogger("kenny.agents.policy")
 
@@ -94,15 +116,32 @@ HOST_ARG: dict[str, str] = {
     "ticket_find": "agent_id",
 }
 
+#: The longest per-call ``timeout_s`` a change-tier call of an agent run may ask
+#: for, in seconds, unless the tool's own forwarding floor
+#: (:func:`~kenny_server.tools.forward_timeout_s`) is higher. ``timeout_s`` is
+#: the one argument no constraint binds; this bound keeps it from parking a run
+#: on one call indefinitely.
+MAX_TIMEOUT_S = 600
+
 #: Asked whether a ``normal_change`` may run in ``act``:
 #: ``authorizer(session, tool, args, agent_id) -> bool``. Only ``True`` allows.
 Authorizer = Callable[["AgentSession", str, dict[str, Any], str | None], Awaitable[bool]]
+
+#: Asked before every change whether the run may still act: ``still_acting() ->
+#: bool``. Only ``True`` keeps it acting; ``False`` or an exception does not.
+StillActing = Callable[[], Awaitable[bool]]
 
 
 def _dispatchable(tool: str) -> bool:
     """Whether the loop routes ``tool`` to what it names, not to a guess."""
 
     return tool in SERVER_TOOLS or tool in CAPABILITY_TOOLS
+
+
+def _timeout_ceiling(tool: str) -> float:
+    """The largest ``timeout_s`` an agent's change-tier call of ``tool`` may carry."""
+
+    return max(float(MAX_TIMEOUT_S), forward_timeout_s(tool, {"timeout_s": 0}))
 
 
 def _declared_args(tool: str) -> frozenset[str]:
@@ -161,7 +200,12 @@ class AgentPolicy:
     another session is refused, since it would gate that session by this spec.
     """
 
-    def __init__(self, session: AgentSession, authorizer: Authorizer | None = None) -> None:
+    def __init__(
+        self,
+        session: AgentSession,
+        authorizer: Authorizer | None = None,
+        still_acting: StillActing | None = None,
+    ) -> None:
         validate(session.spec)
         if session.mode not in _RUN_MODES:
             raise ValueError(f"an agent run is shadow or act, not {session.mode!r}")
@@ -170,6 +214,7 @@ class AgentPolicy:
         self._mode = session.mode
         self._host = session.agent_id
         self._authorizer = authorizer
+        self._still_acting = still_acting
         schemas = build_tool_schemas(allowed=frozenset(self._spec.tools), unattended=True)
         if schemas:
             schemas[-1] = {**schemas[-1], "cache_control": {"type": "ephemeral"}}
@@ -263,6 +308,8 @@ class AgentPolicy:
             return f"this run is fixed to {frozen or 'no machine'}"
         if host_arg is not None and not frozen:
             return f"{tool} names a machine, and this run has none"
+        if tool in FLEET_WIDE_TOOLS and frozen:
+            return f"{tool} reads every machine, and this run is fixed to {frozen}"
         # Every argument that names a host: the routing override on any tool,
         # and the tool's own host argument. Absent or blank names nothing; a
         # non-string is not a host name and is refused rather than coerced.
@@ -281,12 +328,27 @@ class AgentPolicy:
     def _constraint_violation(self, tool: str, args: dict[str, Any]) -> str | None:
         constraints = self._spec.constraints_for(tool)
         if not constraints:
-            if tool == self._spec.verdict_tool:
+            if tool == self._spec.verdict_tool and tool in VERDICT_TOOLS:
                 return None
             return f"{tool} carries no argument constraint in this agent's spec"
         undeclared = sorted(set(args) - _declared_args(tool))
         if undeclared:
             return f"{tool}: argument(s) {', '.join(undeclared)} are not part of the tool"
+        bound = {c.arg for c in constraints}
+        unbound = sorted(k for k in args if k != "timeout_s" and k not in bound)
+        if unbound:
+            return (
+                f"{tool}: argument(s) {', '.join(unbound)} are not bound by this "
+                "agent's constraints, so it may not set them"
+            )
+        if "timeout_s" in args:
+            value = args["timeout_s"]
+            ceiling = _timeout_ceiling(tool)
+            if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= ceiling:
+                return (
+                    f"{tool}: timeout_s={value!r} is not a whole number of seconds "
+                    f"from 1 to {ceiling:g}"
+                )
         for c in constraints:
             if not c.admits(args):
                 return (
@@ -316,6 +378,19 @@ class AgentPolicy:
             logger.exception("agent run %s: authorizer failed for %s; refusing", session.id, tool)
             return False
 
+    async def _acting(self, session: AgentSession) -> bool:
+        """Whether a change may run now: ``act`` at start, now, and still live."""
+
+        if self._mode != "act" or session.mode != "act":
+            return False
+        if self._still_acting is None:
+            return True
+        try:
+            return (await self._still_acting()) is True
+        except Exception:  # noqa: BLE001 - a predicate that fails has not confirmed act
+            logger.exception("agent run %s: still_acting failed; treating as shadow", session.id)
+            return False
+
     async def gate(
         self, session: AgentSession, tool: str, args: dict[str, Any], agent_id: str | None
     ) -> Allow | Deny:
@@ -324,6 +399,8 @@ class AgentPolicy:
         self._own(session)
         if tool not in self._spec.tools or not _dispatchable(tool):
             return Deny("forbidden", f"{tool} is not available to this agent")
+        if tool == self._spec.verdict_tool and tool not in VERDICT_TOOLS:
+            return Deny("forbidden", f"{tool} is not a verdict tool, and this agent may not use it")
 
         reason = self._scope_violation(tool, args, agent_id)
         if reason is not None:
@@ -337,14 +414,13 @@ class AgentPolicy:
         if reason is not None:
             return Deny("constraint", reason)
 
-        if tool == self._spec.verdict_tool:
+        if tool == self._spec.verdict_tool and tool in VERDICT_TOOLS:
             # How a run reports what it found, in either mode. Its effect is its
             # handler's to decide, and that handler must honour ``session.mode``
             # itself — refusing it in shadow would make a shadow run unreadable.
             return Allow()
 
-        acting = self._mode == "act" and session.mode == "act"
-        if not acting:
+        if not await self._acting(session):
             self._record(session.recommendations, tool, args, agent_id, tier)
             return Deny(
                 "shadow",

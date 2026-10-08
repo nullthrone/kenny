@@ -47,6 +47,7 @@ already-tested undo.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -171,21 +172,39 @@ class TriageService:
         #: changes nothing about how a verdict is reached — only whether
         #: :func:`may_resolve`'s answer is carried out or merely recorded.
         self.resolve_enabled = resolve_enabled
+        #: A live "may triage still act?" predicate, asked at the verdict. Set by
+        #: ``agents.runner.AgentRunner`` (the global agent switch on and triage's
+        #: mode ``act``), so switching agents off or demoting triage reaches a run
+        #: already in flight. ``None`` asks nothing; a predicate that raises or
+        #: answers anything but ``True`` means "do not resolve".
+        self.still_acting: Callable[[], bool] | None = None
         self._runs: dict[str, _RunContext] = {}
 
     def _resolves(self, ticket_id: str) -> bool:
         """Whether a may-resolve verdict on ``ticket_id`` is carried out now.
 
-        A run started with a resolve decision resolves only if that decision and
-        the live switch both say so: switching resolve off mid-run takes effect
-        at the verdict, switching it on mid-run does not (the same rule the
-        agent gate applies to a run's mode, ADR-0071).
+        A run started with a resolve decision resolves only if that decision,
+        the live switch and the live :attr:`still_acting` predicate all say so:
+        switching resolve off, triage off or every agent off mid-run takes
+        effect at the verdict, switching any of them on mid-run does not (the
+        same rule the agent gate applies to a run's mode, ADR-0071).
         """
 
         ctx = self._runs.get(ticket_id)
         if ctx is None or ctx.resolve is None:
-            return self.resolve_enabled
-        return ctx.resolve and self.resolve_enabled
+            decided = self.resolve_enabled
+        else:
+            decided = ctx.resolve and self.resolve_enabled
+        return decided and self._still_acting_now(ticket_id)
+
+    def _still_acting_now(self, ticket_id: str) -> bool:
+        if self.still_acting is None:
+            return True
+        try:
+            return self.still_acting() is True
+        except Exception:  # noqa: BLE001 - a predicate that fails has not confirmed act
+            logger.exception("triage on ticket %s: still_acting failed; not resolving", ticket_id)
+            return False
 
     def register(self, executor: ToolExecutor) -> None:
         """Route the verdict tool to this service."""
