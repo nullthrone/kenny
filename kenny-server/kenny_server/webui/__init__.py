@@ -119,6 +119,11 @@ _RESERVED_PREFIXES = (
 )
 
 
+#: Settings whose truthy value lets an agent act on its own: triage resolving
+#: tickets (its ``act``), and the global switch every agent's runs need.
+_AUTONOMY_SETTINGS: frozenset[str] = frozenset({"KENNY_TRIAGE_RESOLVE", "KENNY_AGENTS_ENABLED"})
+
+
 def _person_at_a_browser(request: Request) -> bool:
     """Whether this request comes from a signed-in account's browser session.
 
@@ -1383,6 +1388,21 @@ def build_api_routes(
             # web filter was never configured (ADR-0069).
             await tunnel.broadcast_policy()
 
+    def _would_widen_autonomy(key: str, raw: str) -> bool:
+        """Whether writing ``raw`` to ``key`` turns unattended action *on* (ADR-0072).
+
+        Switching an agent's autonomy on is consent, so it takes a person at a
+        browser exactly like promoting an agent to ``act``; switching it off is
+        never a widening and stays open to any superuser credential.
+        """
+
+        if key not in _AUTONOMY_SETTINGS:
+            return False
+        try:
+            return bool(CATALOG[key].parse(raw))
+        except Exception:  # noqa: BLE001 - an unparsable value is refused later anyway
+            return False
+
     async def api_settings_set(request: Request) -> JSONResponse:
         """Set one override. 400 unknown/invalid, 403 env-only, else apply."""
 
@@ -1405,6 +1425,8 @@ def build_api_routes(
         if "value" not in body:
             return JSONResponse({"error": "value is required"}, status_code=400)
         raw = "" if body["value"] is None else str(body["value"])
+        if _would_widen_autonomy(key, raw) and not _person_at_a_browser(request):
+            return JSONResponse(_NOT_A_PERSON, status_code=403)
         try:
             await settings.set(key, raw)
         except SettingNotWritable as exc:
@@ -1427,6 +1449,11 @@ def build_api_routes(
             return JSONResponse(
                 {"error": f"{key} is managed via the environment"}, status_code=403
             )
+        if key in _AUTONOMY_SETTINGS and not _person_at_a_browser(request):
+            # Resetting falls back to the environment or the default — "on" for
+            # the global agent switch — so it may widen autonomy: the same
+            # consent as setting it, whatever the value it lands on.
+            return JSONResponse(_NOT_A_PERSON, status_code=403)
         await settings.reset(key)
         await _after_setting_write(key)
         return JSONResponse(settings.describe_one(key))

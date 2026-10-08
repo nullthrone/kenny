@@ -1,6 +1,6 @@
 # 0072. Standing authorizations: autonomy is consent given ahead, never a tier
 
-- Status: proposed
+- Status: accepted
 - Boundary moved: **the authorization model** — consent can now attach to a *predicate over
   future calls a model chooses*. Until now it named one action (the confirm-gate,
   ADR-0009), one pinned artifact (an update campaign, ADR-0040) or a deterministic rule the
@@ -44,7 +44,9 @@ binding rules:
 2. **Only a person grants, and only for what they saw.** Granting, revoking, editing an
    agent's parameters and promoting it to `act` need a superuser signed in to the
    dashboard — not a token, which is what a model holds — and name the effective hash the
-   person was shown; a different live hash refuses the request. Every grant expires (at
+   person was shown; a different live hash refuses the request. Switching unattended
+   action on through a setting — triage resolving tickets, the global agent switch — is
+   the same consent and takes the same person; switching it off takes any superuser. Every grant expires (at
    most 180 days). Operators may read authorizations; users may not. None is ever shown to
    a model: the refusal message is the boundary (ADR-0023).
 3. **It narrows, never widens.** It is consulted at gate step 8 only, after the spec's
@@ -65,7 +67,10 @@ binding rules:
    the agent's parameters. Parameters are what an install must set without a code change
    (a package allowlist, a maintenance window); only a superuser edits them. Any change
    of the effective hash drops the agent to `shadow` — for a run in flight too — and voids
-   its authorizations for good: rolling the code back does not revive them.
+   its authorizations for good: rolling the code back does not revive them. A
+   constraint's values may also be computed at run start by server code from the
+   server's own records — the rules nothing has matched, say — and frozen on the run;
+   such evidence only ever narrows what the parameters and the spec allow.
 
 ### Consequences
 
