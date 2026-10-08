@@ -69,6 +69,7 @@ from .store import (
     WebFilterStore,
 )
 from .agents.authorizations import AuthorizationStore
+from .agents.hygiene import register as register_rule_hygiene
 from .agents.runner import AgentRunner
 from .agents.scheduler import INTERVAL_SETTING as AGENT_SCHEDULE_SETTING
 from .agents.scheduler import AgentScheduler
@@ -783,6 +784,15 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         settings=settings,
     )
     register_agent_verdict(agent_executor, tickets=ticket_service)
+    # The config-hygiene agent: its evidence (the rules nothing has matched) on
+    # the runner, its four rule tools on this executor alone.
+    register_rule_hygiene(
+        agent_runner,
+        agent_executor,
+        suppression=suppression,
+        ticket_rules=ticket_rules,
+        call_log=call_log,
+    )
     agent_runner.configure(
         executor=agent_executor,
         client_factory=client_factory,
@@ -1190,6 +1200,8 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
             await policy_store.close()
             await shell_allow_store.close()
             await webfilter_store.close()
+            # Matches recorded since the last write (rule_hits), before the store goes.
+            await suppression.flush()
             await suppression_store.close()
             await classification_store.close()
             await ticket_rule_store.close()

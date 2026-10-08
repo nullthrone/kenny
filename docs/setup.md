@@ -190,7 +190,7 @@ connected, install the optional dependency first: `pip install -e ".[discord]"`.
 | `KENNY_AGENTS_ENABLED` | `1` | Global switch for the [specialized agents](dashboard.md#specialized-agents) kenny runs on its own, triage included. Off means no agent starts, whatever its own mode says. Switching it on (or resetting it) takes a superuser signed in to the dashboard, not an API token; switching it off takes any superuser. |
 | `KENNY_AGENTS_MAX_CONCURRENT` | `2` | How many agent runs may be in flight at once (minimum 1). A run over the limit is not started and is recorded as `skipped`. Triage is exempt: every new ticket is still investigated. |
 | `KENNY_AGENTS_DAILY_TOKENS` | `0` | Tokens (input, output and cached prompt tokens alike) all agent runs together may spend in any 24 hours; `0` means no cap. Once reached, a run is not started and is recorded as `skipped`. |
-| `KENNY_AGENTS_SCHEDULE_INTERVAL_SECS` | `300` | How often kenny checks whether a scheduled agent (package updates, posture review) is due (minimum 60). The agent's own maintenance window decides whether it runs; this is only how finely kenny looks. |
+| `KENNY_AGENTS_SCHEDULE_INTERVAL_SECS` | `300` | How often kenny checks whether a scheduled agent (package updates, posture review, rule hygiene) is due (minimum 60). The agent's own maintenance window decides whether it runs; this is only how finely kenny looks. |
 
 Every key in this table except the bot token and the two `KENNY_TICKET_SWEEP_*` keys
 (environment-only) is also editable in the dashboard's [Admin](dashboard.md#admin) page:

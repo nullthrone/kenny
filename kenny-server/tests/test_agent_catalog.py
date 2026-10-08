@@ -15,6 +15,7 @@ import pytest
 from kenny_server import ticket_assistant, toolloop
 from kenny_server.agents import catalog
 from kenny_server.agents.catalog import CATALOG, build, get
+from kenny_server.agents.catalog.hygiene import CONFIG_HYGIENE
 from kenny_server.agents.catalog.patch import PATCH
 from kenny_server.agents.catalog.posture import POSTURE
 from kenny_server.agents.catalog.triage import TRIAGE
@@ -88,7 +89,7 @@ def test_build_validates_every_spec_not_just_the_first() -> None:
 def test_import_is_where_the_catalog_is_validated() -> None:
     # CATALOG is built by ``build`` at import, so a bad spec in the module's
     # tuple would stop the server booting. Pin that it goes through build().
-    assert catalog.CATALOG == build((TRIAGE, PATCH, POSTURE))
+    assert catalog.CATALOG == build((TRIAGE, PATCH, POSTURE, CONFIG_HYGIENE))
 
 
 def test_triage_declares_the_documented_shape() -> None:
@@ -216,7 +217,7 @@ def test_a_spec_naming_an_mcp_only_tool_is_refused() -> None:
         description="d",
         prompt="p",
         trigger=Trigger(kind="on_demand"),
-        tools=frozenset({"reliability_suppression_list"}),
+        tools=frozenset({"webfilter_get"}),
     )
     with pytest.raises(SpecError, match="cannot run in the tool loop"):
         build((spec,))
