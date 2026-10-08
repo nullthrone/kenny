@@ -74,11 +74,11 @@ from typing import TYPE_CHECKING, Any
 from ..ticketstore import AGENT_ORIGIN, Ticket
 from ..tool_classes import READ_ONLY, classify
 from ..toolloop import ToolExecutor, UsageMeter, drive_events
-from ..tools import redact_audit_args
+from ..tools import CAPABILITY_TOOLS, redact_audit_args
 from ..webfilter import DAY_KEYS, format_hhmm, parse_recurrence
 from .authorizations import Authorization, AuthorizationStore
 from .catalog import CATALOG, check_dispatchable
-from .policy import AgentPolicy, AgentSession, Authorizer
+from .policy import HOST_ARG, AgentPolicy, AgentSession, Authorizer, host_bound
 from .spec import MODES, AgentSpec, effective_hash, param_kind, resolve, validate
 from .store import INTERRUPTED_ERROR, AgentRun, AgentStore
 
@@ -738,6 +738,16 @@ class AgentRunner:
                     "params": await self.get_params(spec.id),
                     "effective_hash": live,
                     "act_bound": bound,
+                    # Where each tool acts: on the run's machine, or on the
+                    # server itself. A grant's scope follows it (ADR-0072: a
+                    # host list for one, the ``server`` sentinel for the other).
+                    "host_bound": host_bound(spec),
+                    "tool_targets": {
+                        tool: "host"
+                        if tool in CAPABILITY_TOOLS or tool in HOST_ARG
+                        else "server"
+                        for tool in sorted(spec.tools)
+                    },
                     "latest_run": latest[0].to_public() if latest else None,
                 }
             )
