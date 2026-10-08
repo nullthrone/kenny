@@ -35,13 +35,14 @@ import json
 import re
 from dataclasses import dataclass, field
 
-from ..tool_classes import SENSITIVE_TOOLS, TOOL_CLASSES
+from ..tool_classes import READ_ONLY, SENSITIVE_TOOLS, TOOL_CLASSES
 
 __all__ = [
     "EVENTS",
     "MODES",
     "TRIGGER_KINDS",
     "AgentSpec",
+    "ArgConstraint",
     "Budget",
     "SpecError",
     "Trigger",
@@ -82,6 +83,30 @@ class Trigger:
 
 
 @dataclass(frozen=True)
+class ArgConstraint:
+    """One argument of one change-tier tool may only take these exact values.
+
+    Enforced in code by the gate on every call, in every mode — never stated in
+    the prompt and left to the model. Matching is exact string equality over an
+    enumerated set (no patterns: ADR-0064's lesson that a pattern is a policy
+    nobody can read). **An omitted or empty argument never satisfies a
+    constraint**: for most tools an absent selector means "everything"
+    (``winget_update`` without ``id`` upgrades every package).
+    """
+
+    tool: str
+    arg: str
+    allowed: frozenset[str]
+
+    def admits(self, args: dict[str, object]) -> bool:
+        value = args.get(self.arg)
+        return isinstance(value, str) and value != "" and value in self.allowed
+
+    def to_dict(self) -> dict[str, object]:
+        return {"tool": self.tool, "arg": self.arg, "allowed": sorted(self.allowed)}
+
+
+@dataclass(frozen=True)
 class Budget:
     """What bounds one run, independent of what the model decides to do."""
 
@@ -106,6 +131,10 @@ class AgentSpec:
     #: The tool a run ends by calling; its result is the run's verdict.
     verdict_tool: str | None = None
     budget: Budget = field(default_factory=Budget)
+    #: Argument constraints on change-tier tools; every one naming a tool must
+    #: hold for a call to that tool to run. A change-tier tool other than the
+    #: verdict tool must carry at least one (see :func:`validate`).
+    constraints: tuple[ArgConstraint, ...] = ()
     #: Must be true for a spec that names any sensitive tool.
     sensitive_ok: bool = False
     #: The mode a fresh install starts in. ``shadow`` unless there is a reason.
@@ -132,12 +161,22 @@ class AgentSpec:
                 "tools": sorted(self.tools),
                 "verdict_tool": self.verdict_tool,
                 "budget": self.budget.to_dict(),
+                "constraints": self._sorted_constraints(),
                 "sensitive_ok": self.sensitive_ok,
             },
             sort_keys=True,
             separators=(",", ":"),
         )
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    def _sorted_constraints(self) -> list[dict[str, object]]:
+        return sorted(
+            (c.to_dict() for c in self.constraints),
+            key=lambda d: (str(d["tool"]), str(d["arg"])),
+        )
+
+    def constraints_for(self, tool: str) -> tuple[ArgConstraint, ...]:
+        return tuple(c for c in self.constraints if c.tool == tool)
 
     def to_public(self) -> dict[str, object]:
         """The catalog entry as the dashboard and the API show it."""
@@ -151,6 +190,7 @@ class AgentSpec:
             "tool_classes": {t: TOOL_CLASSES[t] for t in sorted(self.tools)},
             "verdict_tool": self.verdict_tool,
             "budget": self.budget.to_dict(),
+            "constraints": self._sorted_constraints(),
             "sensitive_ok": self.sensitive_ok,
             "default_mode": self.default_mode,
             "version": self.version,
@@ -178,6 +218,29 @@ def validate(spec: AgentSpec) -> AgentSpec:
         )
     if spec.verdict_tool is not None and spec.verdict_tool not in spec.tools:
         raise SpecError(f"agent {spec.id}: verdict tool {spec.verdict_tool} is not in its tools")
+    seen: set[tuple[str, str]] = set()
+    for c in spec.constraints:
+        if c.tool not in spec.tools:
+            raise SpecError(f"agent {spec.id}: constraint names {c.tool}, which is not in its tools")
+        if TOOL_CLASSES[c.tool] == READ_ONLY:
+            raise SpecError(f"agent {spec.id}: constraint on read-only {c.tool} would bound nothing")
+        if not c.arg or not c.allowed or any(not v for v in c.allowed):
+            raise SpecError(f"agent {spec.id}: constraint on {c.tool} needs an arg and non-empty values")
+        if (c.tool, c.arg) in seen:
+            raise SpecError(f"agent {spec.id}: two constraints on {c.tool}.{c.arg}")
+        seen.add((c.tool, c.arg))
+    # A change the agent may make with any arguments at all is the tier acting
+    # as the permission, which ADR-0045 forbids. The verdict tool is exempt: its
+    # effect is decided server-side by its own handler, not by its arguments.
+    unbounded = sorted(
+        t
+        for t in spec.tools
+        if TOOL_CLASSES[t] != READ_ONLY and t != spec.verdict_tool and not spec.constraints_for(t)
+    )
+    if unbounded:
+        raise SpecError(
+            f"agent {spec.id}: change-tier tool(s) {', '.join(unbounded)} carry no argument constraint"
+        )
     if spec.trigger.kind not in TRIGGER_KINDS:
         raise SpecError(f"agent {spec.id}: unknown trigger kind {spec.trigger.kind!r}")
     if spec.trigger.kind == "event" and spec.trigger.event not in EVENTS:
