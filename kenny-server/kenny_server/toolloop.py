@@ -13,8 +13,10 @@ own terms while the loop's event shapes, ordering and truncation stay identical.
 
 The loop is deliberately duck-typed over its session object. It touches only
 ``.id``, ``.messages``, ``.agent_id``, ``.pending``, ``._queue`` and
-``._staged_results`` — no base class, no ``isinstance`` checks — and it never
-imports ``chat.py``, so the dependency runs one way: ``chat`` -> ``toolloop``.
+``._staged_results`` — no base class, no ``isinstance`` checks (a session may
+also opt in to token accounting with a ``.usage`` :class:`UsageMeter`, and name
+the author of its forwarded calls with ``.audit_actor``/``.agent_run_id``) — and
+it never imports ``chat.py``, so the dependency runs one way: ``chat`` -> ``toolloop``.
 """
 
 from __future__ import annotations
@@ -607,6 +609,48 @@ def _fold_staged_results(session: Any) -> None:
     session._staged_results = []
 
 
+# -- token accounting -------------------------------------------------------
+
+
+@dataclass
+class UsageMeter:
+    """Running token totals for one session, summed over its model calls.
+
+    A session opts in by carrying a ``usage`` attribute holding one of these;
+    :func:`drive_events` then adds each model call's usage to it. Sessions
+    without one are untouched, and a response with no ``usage`` (a fake client,
+    an older SDK) counts as zero.
+    """
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
+
+    def add(self, usage: Any) -> None:
+        """Add an Anthropic ``usage`` object (``None`` and missing fields count 0)."""
+
+        if usage is None:
+            return
+        self.input_tokens += _count(usage, "input_tokens")
+        self.output_tokens += _count(usage, "output_tokens")
+        self.cache_read_tokens += _count(usage, "cache_read_input_tokens")
+        self.cache_creation_tokens += _count(usage, "cache_creation_input_tokens")
+
+    def to_dict(self) -> dict[str, int]:
+        return {
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "cache_read_tokens": self.cache_read_tokens,
+            "cache_creation_tokens": self.cache_creation_tokens,
+        }
+
+
+def _count(usage: Any, name: str) -> int:
+    value = getattr(usage, name, None)
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
 # -- execution --------------------------------------------------------------
 
 
@@ -691,7 +735,13 @@ class ToolExecutor:
         raise ToolError("unknown_tool", f"unknown server tool {tool!r}")
 
     async def run_capability(
-        self, tool: str, args: dict[str, Any], *, agent_id: str
+        self,
+        tool: str,
+        args: dict[str, Any],
+        *,
+        agent_id: str,
+        actor: str | None = None,
+        run_id: str | None = None,
     ) -> dict[str, Any]:
         """Forward a capability tool to ``agent_id`` (read-only or confirmed).
 
@@ -700,6 +750,9 @@ class ToolExecutor:
         the process-global registry slot, which is shared by every concurrent
         chat session and would let one session's selection bleed into another's
         forwarded call (ADR-0038).
+
+        ``actor`` and ``run_id`` say who made the call and in which autonomous
+        run; they go to the audit trail unchanged.
         """
 
         if not agent_id:
@@ -714,16 +767,22 @@ class ToolExecutor:
             timeout_s = forward_timeout_s(tool, args)
         except (TypeError, ValueError):
             message = f"timeout_s must be a number, got {args.get('timeout_s')!r}"
-            await self.call_log.record(agent_id, tool, args, ok=False, error=message)
+            await self.call_log.record(
+                agent_id, tool, args, ok=False, error=message, actor=actor, run_id=run_id
+            )
             raise ToolError("bad_args", message)
         try:
             result = await self.tunnel.send_request(agent_id, tool, args, timeout_s)
-            await self.call_log.record(agent_id, tool, args, ok=True)
+            await self.call_log.record(
+                agent_id, tool, args, ok=True, actor=actor, run_id=run_id
+            )
             if tool == "screen_capture" and isinstance(result, dict) and "image_b64" in result:
                 self.screenshots.put(agent_id, result["image_b64"], result.get("format", "png"))
             return result
         except ToolError as exc:
-            await self.call_log.record(agent_id, tool, args, ok=False, error=exc.message)
+            await self.call_log.record(
+                agent_id, tool, args, ok=False, error=exc.message, actor=actor, run_id=run_id
+            )
             raise
 
     # -- server-only tool implementations ---------------------------------
@@ -848,6 +907,23 @@ def _tier_auto_runs(tool: str) -> bool:
     return classify(tool) == READ_ONLY
 
 
+def _audit_identity(session: Any) -> tuple[str | None, str | None]:
+    """``(actor, run_id)`` the audit trail records for a call made in ``session``.
+
+    The actor is the session's ``audit_actor`` when non-empty, else its
+    principal's username, else ``None``; the run id is ``agent_run_id``.
+    """
+
+    actor = getattr(session, "audit_actor", None)
+    if not (isinstance(actor, str) and actor):
+        actor = getattr(getattr(session, "principal", None), "username", None)
+    run_id = getattr(session, "agent_run_id", None)
+    return (
+        actor if isinstance(actor, str) and actor else None,
+        run_id if isinstance(run_id, str) and run_id else None,
+    )
+
+
 async def _execute_one(
     executor: ToolExecutor,
     tool: str,
@@ -869,7 +945,13 @@ async def _execute_one(
         if tool in SERVER_TOOLS:
             return await executor.run_server_tool(tool, args, session=session), False
         target = agent_id or _resolve_chat_target(session, args)
-        return await executor.run_capability(tool, args, agent_id=target), False
+        actor, run_id = _audit_identity(session)
+        return (
+            await executor.run_capability(
+                tool, args, agent_id=target, actor=actor, run_id=run_id
+            ),
+            False,
+        )
     except ToolError as exc:
         return {"error": {"code": exc.code, "message": exc.message}}, True
 
@@ -1264,6 +1346,9 @@ async def drive_events(
         ):
             if event["type"] == "final":
                 response = event["message"]
+                meter = getattr(session, "usage", None)
+                if isinstance(meter, UsageMeter):
+                    meter.add(getattr(response, "usage", None))
             else:
                 yield event
         content = _assistant_content(response)

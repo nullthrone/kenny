@@ -28,6 +28,7 @@ impossible: a call either names its host or fails closed.
 from __future__ import annotations
 
 import logging
+import re
 from collections import deque
 from datetime import datetime, timezone
 from typing import Any
@@ -191,6 +192,37 @@ CAPABILITY_TOOLS: dict[str, list[str]] = {
 }
 
 
+_SECRET_KEY_RE = re.compile(
+    r"password|passwd|secret|token|api_?key|credential", re.IGNORECASE
+)
+_AUDIT_STR_MAX = 500
+
+
+def redact_audit_args(value: Any) -> Any:
+    """Return a copy of tool-call ``value`` that is safe to persist in the audit trail.
+
+    Any dict key matching (case-insensitive) password|passwd|secret|token|api_key|
+    apikey|credential has its value replaced by ``"[redacted]"``, recursively
+    through nested dicts and lists (``account_create`` carries a ``password``, see
+    docs/protocol.md). Every remaining string is clipped to 500 characters so a
+    large payload (script body, file content) cannot bloat the events table. The
+    input is never mutated.
+    """
+
+    if isinstance(value, dict):
+        return {
+            k: "[redacted]"
+            if isinstance(k, str) and _SECRET_KEY_RE.search(k)
+            else redact_audit_args(v)
+            for k, v in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [redact_audit_args(v) for v in value]
+    if isinstance(value, str) and len(value) > _AUDIT_STR_MAX:
+        return value[:_AUDIT_STR_MAX]
+    return value
+
+
 class CallLog:
     """Persistent log of forwarded tool calls (for the dashboard).
 
@@ -211,7 +243,17 @@ class CallLog:
         *,
         ok: bool,
         error: str | None = None,
+        actor: str | None = None,
+        run_id: str | None = None,
     ) -> None:
+        """Record one forwarded call.
+
+        ``actor`` names who made it (operator username, or an agent identity) and
+        ``run_id`` the autonomous run it belongs to; both, plus the redacted
+        ``args``, are persisted in the event's ``fields`` JSON.
+        """
+
+        safe_args = redact_audit_args(args)
         if self.event_store is not None:
             # Audit logging is a side effect of the call, not the call itself: a
             # transient write failure here (e.g. sqlite "database is locked" under
@@ -219,7 +261,11 @@ class CallLog:
             # succeeded against the agent. Log and swallow instead of propagating.
             try:
                 await self.event_store.insert_audit(
-                    agent_id=agent_id, tool=tool, ok=ok, error=error
+                    agent_id=agent_id,
+                    tool=tool,
+                    ok=ok,
+                    error=error,
+                    fields={"actor": actor, "run_id": run_id, "args": safe_args},
                 )
             except Exception:
                 logger.warning(
@@ -234,9 +280,11 @@ class CallLog:
                 "at": datetime.now(timezone.utc).isoformat(),
                 "agent_id": agent_id,
                 "tool": tool,
-                "args": args,
+                "args": safe_args,
                 "ok": ok,
                 "error": error,
+                "actor": actor,
+                "run_id": run_id,
             }
         )
 
@@ -250,6 +298,10 @@ class CallLog:
                     "tool": r["tool"],
                     "ok": r["ok"],
                     "error": r["error"],
+                    # Rows written before the audit identity existed have no fields.
+                    "actor": (r.get("fields") or {}).get("actor"),
+                    "run_id": (r.get("fields") or {}).get("run_id"),
+                    "args": (r.get("fields") or {}).get("args"),
                 }
                 for r in rows
             ]
@@ -510,6 +562,7 @@ def register_tools(
             agent_id = _resolve_target(principal, args)
             if min_role is not None:
                 _require_role(principal, min_role)
+            actor = principal.username if principal is not None else None
 
             # OS-scoped shell tools (powershell_exec/shell_exec): refuse the wrong
             # one for this agent's OS before ever forwarding, with a message naming
@@ -527,7 +580,7 @@ def register_tools(
                     if mirror is not None:
                         message += f", use {mirror} instead"
                     forward_logger.info("refused %s -> %s: %s", tool_name, agent_id, message)
-                    await call_log.record(agent_id, tool_name, args, ok=False, error=message)
+                    await call_log.record(agent_id, tool_name, args, ok=False, error=message, actor=actor)
                     raise ToolError("unsupported", message)
 
             # timeout_s is unvalidated client input (like every other key in
@@ -540,17 +593,17 @@ def register_tools(
             except (TypeError, ValueError):
                 message = f"timeout_s must be a number, got {args.get('timeout_s')!r}"
                 forward_logger.info("refused %s -> %s: %s", tool_name, agent_id, message)
-                await call_log.record(agent_id, tool_name, args, ok=False, error=message)
+                await call_log.record(agent_id, tool_name, args, ok=False, error=message, actor=actor)
                 raise ToolError("bad_args", message)
 
             forward_logger.info("forward %s -> %s", tool_name, agent_id)
             try:
                 result = await tunnel.send_request(agent_id, tool_name, args, timeout_s)
-                await call_log.record(agent_id, tool_name, args, ok=True)
+                await call_log.record(agent_id, tool_name, args, ok=True, actor=actor)
                 return result
             except ToolError as exc:
                 forward_logger.warning("forward %s -> %s failed: %s", tool_name, agent_id, exc.message)
-                await call_log.record(agent_id, tool_name, args, ok=False, error=exc.message)
+                await call_log.record(agent_id, tool_name, args, ok=False, error=exc.message, actor=actor)
                 raise
 
         return forward
@@ -976,14 +1029,17 @@ def register_tools(
             # Refuse here rather than hand the agent a list it rejects with
             # `bad_args` anyway — the operator gets a count and a way out.
             raise ToolError("bad_args", str(exc)) from exc
+        actor = principal.username if principal is not None else None
         protect = config["enforcement"] == "protect"
         tool = "webfilter_apply" if protect else "webfilter_clear"
         call_args = args if protect else {}
         try:
             result = await tunnel.send_request(id, tool, call_args, 30)
-            await call_log.record(id, tool, call_args, ok=True)
+            await call_log.record(id, tool, call_args, ok=True, actor=actor)
         except ToolError as exc:
-            await call_log.record(id, tool, call_args, ok=False, error=exc.message)
+            await call_log.record(
+                id, tool, call_args, ok=False, error=exc.message, actor=actor
+            )
             raise
         applied_at = str(result.get("applied_at") or datetime.now(timezone.utc).isoformat())
         await webfilter.set_applied_state(

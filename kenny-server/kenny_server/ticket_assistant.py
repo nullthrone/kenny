@@ -66,6 +66,7 @@ from .toolloop import (
     Hold,
     PendingCall,
     ToolExecutor,
+    UsageMeter,
     build_tool_schemas,
     confirmation_events,
     drive_events,
@@ -616,6 +617,12 @@ class TicketSession:
     # the session, while the ticket record and trail it is built from need an
     # await. Never carries ``cache_control`` — see ``system_blocks``.
     briefing: str = ""
+    # Audit identity of this session's forwarded calls (see
+    # ``toolloop._audit_identity``): who made them, and in which autonomous run.
+    audit_actor: str | None = None
+    agent_run_id: str | None = None
+    # Opt-in token accounting: ``drive_events`` adds each model call's usage here.
+    usage: UsageMeter | None = None
 
     def record_retarget(self, tool: str, claimed: str) -> None:
         self._retargets.append((tool, claimed))
