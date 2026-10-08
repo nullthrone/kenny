@@ -1293,15 +1293,27 @@ class EventStore:
         ok: bool,
         error: str | None = None,
         at: str | None = None,
+        fields: dict[str, Any] | None = None,
     ) -> None:
-        """Store a forwarded tool-call audit event (kind='audit', source='server')."""
+        """Store a forwarded tool-call audit event (kind='audit', source='server').
+
+        ``fields`` (actor, run_id, redacted args) is stored as JSON in the
+        ``fields`` column; callers pass it already redacted.
+        """
 
         at = at or datetime.now(timezone.utc).isoformat()
         async with write_lock():
             await self._conn.execute(
-                "INSERT INTO events (at, agent_id, source, kind, tool, ok, error) "
-                "VALUES (?, ?, 'server', 'audit', ?, ?, ?)",
-                (at, agent_id, tool, 1 if ok else 0, error),
+                "INSERT INTO events (at, agent_id, source, kind, tool, ok, error, fields) "
+                "VALUES (?, ?, 'server', 'audit', ?, ?, ?, ?)",
+                (
+                    at,
+                    agent_id,
+                    tool,
+                    1 if ok else 0,
+                    error,
+                    json.dumps(fields) if fields is not None else None,
+                ),
             )
             await self._conn.commit()
 

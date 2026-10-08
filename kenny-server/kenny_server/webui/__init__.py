@@ -2355,6 +2355,16 @@ def build_chat_routes(
     if copilot_tickets is not None:
         copilot_tickets.register_tools(executor)
 
+    def stamp_actor(session: Any, request: Request) -> None:
+        """Name the requesting operator on ``session`` before it drives a tool.
+
+        Set on every request, not once at creation: a session id is not bound
+        to a user, so the audit trail must name whoever is driving *this* turn.
+        """
+
+        principal = principal_of(request)
+        session.audit_actor = principal.username if principal is not None else None
+
     async def api_chat(request: Request) -> JSONResponse:
         try:
             body = await request.json()
@@ -2385,6 +2395,7 @@ def build_chat_routes(
         # a stale agent.
         agent_id = str(body.get("agent_id", "")).strip()
         session.agent_id = agent_id or None
+        stamp_actor(session, request)
         try:
             result = await run_turn(
                 session, message, executor=executor, client=client_factory(),
@@ -2409,6 +2420,7 @@ def build_chat_routes(
         if session.pending is None:
             return JSONResponse({"error": "no pending confirmation"}, status_code=409)
         approve = bool(body.get("approve", False))
+        stamp_actor(session, request)
         try:
             result = await confirm_pending(
                 session, approve=approve, executor=executor, client=client_factory(),
@@ -2453,6 +2465,7 @@ def build_chat_routes(
         # it back to None) so it never lags the dashboard's current selection.
         agent_id = str(body.get("agent_id", "")).strip()
         session.agent_id = agent_id or None
+        stamp_actor(session, request)
         client = client_factory()
         model = _chat_model(request)
 
@@ -2488,6 +2501,7 @@ def build_chat_routes(
         if session.pending is None:
             return JSONResponse({"error": "no pending confirmation"}, status_code=409)
         approve = bool(body.get("approve", False))
+        stamp_actor(session, request)
         client = client_factory()
         model = _chat_model(request)
 
