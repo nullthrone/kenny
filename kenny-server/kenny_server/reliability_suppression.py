@@ -191,7 +191,9 @@ class SuppressionList:
                     return rule
         return None
 
-    def mark(self, agent_id: str, snapshot: dict[str, Any] | None) -> None:
+    def mark(
+        self, agent_id: str, snapshot: dict[str, Any] | None, received_at: str | None = None
+    ) -> None:
         """Stamp ``suppressed``/``suppressed_by`` onto each reliability event
         group in ``snapshot``, in place. A no-op with no rules loaded or no
         reliability events. ``category``/``severity``/``suspected_cause`` (the
@@ -200,9 +202,10 @@ class SuppressionList:
         from the classifier's own ``benign`` verdict.
 
         Every rule that matches records the match (``last_matched_at``, at the
-        event group's own ``last_seen``; ``match_count``): this is where the
-        server applies a suppression, so it is the evidence of whether one still
-        does anything (``rule_hits``).
+        event group's own ``last_seen`` bounded by ``received_at``, the
+        server's record of when the snapshot arrived; ``match_count``): this is
+        where the server applies a suppression, so it is the evidence of whether
+        one still does anything (``rule_hits.observed_at``).
         """
 
         if not isinstance(snapshot, dict):
@@ -232,7 +235,7 @@ class SuppressionList:
             }
             if now is None:
                 now = self._clock()
-            self._hits.add(rule, observed_at(e.get("last_seen"), now))
+            self._hits.add(rule, observed_at(e.get("last_seen"), now, received_at))
         if now is not None:
             self._flush_soon()
 

@@ -495,6 +495,39 @@ class AgentStore:
             rows = await cur.fetchall()
         return [AgentRun._from_row(row) for row in rows]
 
+    async def scheduled_runs(self, agent_id: str, *, prefix: str) -> list[AgentRun]:
+        """Every run of ``agent_id`` whose ``trigger`` starts with ``prefix``, newest first.
+
+        The scheduler's whole history (``scheduler.SCHEDULE_TRIGGER_PREFIX``),
+        selected in SQL, so no number of runs of another kind -- previews a
+        person can start at will -- can push a scheduled run out of it. Bounded
+        by run retention, not by a count.
+        """
+
+        if not prefix or any(ch in prefix for ch in "%_\\"):
+            raise ValueError(f"not a plain trigger prefix: {prefix!r}")
+        async with self._conn.execute(
+            f"SELECT {_RUN_COLUMNS} FROM agent_runs "
+            "WHERE agent_id = ? AND trigger LIKE ? AND substr(trigger, 1, ?) = ? "
+            "ORDER BY started_at DESC, rowid DESC",
+            (agent_id, f"{prefix}%", len(prefix), prefix),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [AgentRun._from_row(row) for row in rows]
+
+    async def count_runs_since(self, agent_id: str, *, prefix: str, since_iso: str) -> int:
+        """How many runs of ``agent_id`` with a ``trigger`` starting ``prefix`` began at or after ``since_iso``."""
+
+        if not prefix or any(ch in prefix for ch in "%_\\"):
+            raise ValueError(f"not a plain trigger prefix: {prefix!r}")
+        async with self._conn.execute(
+            "SELECT COUNT(*) FROM agent_runs WHERE agent_id = ? AND trigger LIKE ? "
+            "AND substr(trigger, 1, ?) = ? AND started_at >= ?",
+            (agent_id, f"{prefix}%", len(prefix), prefix, _normalize_iso(since_iso)),
+        ) as cur:
+            row = await cur.fetchone()
+        return int(row[0]) if row else 0
+
     async def runs_on_host_since(self, host_id: str, since_iso: str) -> list[AgentRun]:
         """Every run of any agent on ``host_id`` started at or after ``since_iso``, newest first."""
 

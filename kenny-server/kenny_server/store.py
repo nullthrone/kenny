@@ -193,6 +193,11 @@ CREATE INDEX IF NOT EXISTS idx_snapshots_agent_time
 """
 
 
+#: A read-path annotator: ``(agent_id, snapshot, received_at)``, mutating
+#: ``snapshot`` in place (:attr:`TelemetryStore.annotators`).
+Annotator = Callable[[str, dict[str, Any], str | None], None]
+
+
 class TelemetryStore:
     """Async SQLite-backed store for telemetry snapshots."""
 
@@ -215,10 +220,14 @@ class TelemetryStore:
         # than one annotation rides this seam (suppression, then the persisted
         # LLM classification), so the hook is a list; ``annotate`` remains as a
         # single-callable view of it for callers that only ever set one.
-        self.annotators: list[Callable[[str, dict[str, Any]], None]] = []
+        # Each is called ``fn(agent_id, snapshot, received_at)``: the third
+        # argument is the server's own record of when the snapshot arrived
+        # (``None`` where a read path does not have it), the one time on it a
+        # host cannot write.
+        self.annotators: list[Annotator] = []
 
     @property
-    def annotate(self) -> Callable[[str, dict[str, Any]], None] | None:
+    def annotate(self) -> Annotator | None:
         """The composed read-path annotator, or ``None`` when none is set."""
 
         if not self.annotators:
@@ -226,12 +235,14 @@ class TelemetryStore:
         return self._apply_annotators
 
     @annotate.setter
-    def annotate(self, fn: Callable[[str, dict[str, Any]], None] | None) -> None:
+    def annotate(self, fn: Annotator | None) -> None:
         self.annotators = [fn] if fn is not None else []
 
-    def _apply_annotators(self, agent_id: str, snapshot: dict[str, Any]) -> None:
+    def _apply_annotators(
+        self, agent_id: str, snapshot: dict[str, Any], received_at: str | None = None
+    ) -> None:
         for fn in self.annotators:
-            fn(agent_id, snapshot)
+            fn(agent_id, snapshot, received_at)
 
     async def connect(self) -> None:
         if self._db is not None:
@@ -305,7 +316,7 @@ class TelemetryStore:
         """
 
         async with self._conn.execute(
-            "SELECT collected_at, snapshot, MAX(collected_at) AS _m FROM snapshots "
+            "SELECT collected_at, received_at, snapshot, MAX(collected_at) AS _m FROM snapshots "
             "WHERE agent_id = ? AND collected_at >= ? "
             "GROUP BY substr(collected_at, 1, 10) ORDER BY collected_at ASC LIMIT ?",
             (agent_id, since, limit),
@@ -315,7 +326,7 @@ class TelemetryStore:
         for r in rows:
             snapshot = json.loads(r["snapshot"])
             if self.annotate is not None:
-                self.annotate(agent_id, snapshot)
+                self.annotate(agent_id, snapshot, r["received_at"])
             out.append({"collected_at": r["collected_at"], "snapshot": snapshot})
         return out
 
@@ -495,7 +506,7 @@ class TelemetryStore:
     def _row_to_record(self, row: aiosqlite.Row) -> dict[str, Any]:
         snapshot = json.loads(row["snapshot"])
         if self.annotate is not None:
-            self.annotate(row["agent_id"], snapshot)
+            self.annotate(row["agent_id"], snapshot, row["received_at"])
         return {
             "agent_id": row["agent_id"],
             "collected_at": row["collected_at"],
@@ -2019,15 +2030,43 @@ _HIT_COLUMNS: dict[str, str] = {
     "match_count": "INTEGER NOT NULL DEFAULT 0",
 }
 
+#: When hit tracking started on each rule table, one row per table. A missing
+#: match means nothing before that instant, so every rule read carries it as
+#: ``tracking_since`` and ``rule_hits.last_activity`` counts it as activity.
+_RULE_HIT_TRACKING_SCHEMA = """
+CREATE TABLE IF NOT EXISTS rule_hit_tracking (
+    table_name TEXT PRIMARY KEY,
+    since      TEXT NOT NULL
+);
+"""
+
 
 async def _add_hit_columns(db: aiosqlite.Connection, table: str) -> None:
-    """Add the :data:`_HIT_COLUMNS` ``table`` lacks; idempotent."""
+    """Add the :data:`_HIT_COLUMNS` ``table`` lacks and note when tracking began; idempotent.
+
+    The first call for ``table`` records the instant its matches start being
+    kept: for a table that predates hit tracking, the upgrade that adds the
+    columns; for a new table, its creation (the columns are added right after
+    it). A database whose columns exist but whose instant does not gets it
+    now, the later and therefore safe answer. It never moves once recorded.
+    """
 
     async with db.execute(f"PRAGMA table_info({table})") as cur:
         present = {row["name"] for row in await cur.fetchall()}
     for column, ddl in _HIT_COLUMNS.items():
         if column not in present:
             await db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+    await db.executescript(_RULE_HIT_TRACKING_SCHEMA)
+    await db.execute(
+        "INSERT OR IGNORE INTO rule_hit_tracking (table_name, since) VALUES (?, ?)",
+        (table, datetime.now(timezone.utc).isoformat(timespec="microseconds")),
+    )
+
+
+def _tracking_since(table: str) -> str:
+    """A select-list item: when hit tracking began on ``table``, as ``tracking_since``."""
+
+    return f"(SELECT since FROM rule_hit_tracking WHERE table_name = '{table}') AS tracking_since"
 
 
 async def _record_hits(
@@ -2100,7 +2139,8 @@ class ReliabilitySuppressionStore:
 
         async with self._conn.execute(
             "SELECT id, agent_id, source, event_id, note, created_at, created_by, "
-            "last_matched_at, match_count "
+            "last_matched_at, match_count, "
+            f"{_tracking_since('reliability_suppressions')} "
             "FROM reliability_suppressions ORDER BY created_at, id"
         ) as cur:
             rows = await cur.fetchall()
@@ -2115,6 +2155,7 @@ class ReliabilitySuppressionStore:
                 "created_by": r["created_by"],
                 "last_matched_at": r["last_matched_at"],
                 "match_count": int(r["match_count"] or 0),
+                "tracking_since": r["tracking_since"],
             }
             for r in rows
         ]
@@ -2355,7 +2396,8 @@ class TicketRuleStore:
 
         async with self._conn.execute(
             "SELECT id, agent_id, event_type, section, decision, note, "
-            "created_at, created_by, last_matched_at, match_count "
+            "created_at, created_by, last_matched_at, match_count, "
+            f"{_tracking_since('ticket_rules')} "
             "FROM ticket_rules ORDER BY created_at, id"
         ) as cur:
             rows = await cur.fetchall()
@@ -2371,6 +2413,7 @@ class TicketRuleStore:
                 "created_by": r["created_by"],
                 "last_matched_at": r["last_matched_at"],
                 "match_count": int(r["match_count"] or 0),
+                "tracking_since": r["tracking_since"],
             }
             for r in rows
         ]

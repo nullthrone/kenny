@@ -1111,3 +1111,81 @@ async def test_previews_neither_count_toward_nor_break_the_breaker_streak(w: Wor
     outcomes = await sched.pass_once()
     assert [o.kind for o in outcomes] == ["ran", "tripped"]
     assert await w.runner.mode_of("posture") == "shadow"
+
+
+# -- a preview flood erases nothing the scheduler reads ---------------------------
+#
+# Regression: the scheduler read the last 500 runs of every kind, so enough
+# preview rows (even cap-refused, token-free ones) pushed every scheduled run
+# out of its view. Each test floods past that old window.
+
+FLOOD = 600
+
+
+async def _flood(w: World, agent: str, host: str | None, *, status: str = "skipped") -> None:
+    for _ in range(FLOOD):
+        run = await w.agent_store.start_run(
+            agent_id=agent, spec_hash="x", trigger="preview:op", mode="shadow",
+            subject=f"host:{host}" if host else None, host_id=host,
+        )
+        await w.agent_store.finish_run(run.id, status=status, error="concurrency cap")
+
+
+async def test_a_preview_flood_does_not_restart_a_halted_canary(w: World) -> None:
+    _patch(w, WIN_A, WIN_B, require_idle=False)
+    w.runner.script[WIN_A] = {**CHANGED_ACTIONABLE, "verdict": "actionable"}
+    sched = w.scheduler()
+    await sched.pass_once()
+    assert w.hosts_run("patch") == [WIN_A]
+    w.now += timedelta(minutes=5)
+    assert [o.kind for o in await sched.pass_once()] == ["halted"]
+    await _flood(w, "patch", WIN_A)
+    w.now += timedelta(minutes=5)
+    w.runner.script.clear()
+    assert [o.kind for o in await sched.pass_once()] == ["halted"]
+    assert w.hosts_run("patch") == [WIN_A]
+
+
+async def test_a_preview_flood_does_not_run_a_host_twice_in_one_occurrence(w: World) -> None:
+    _posture(w, WIN_A, WIN_B)
+    sched = w.scheduler()
+    assert [o.kind for o in await sched.pass_once()] == ["ran", "ran"]
+    await _flood(w, "posture", WIN_A, status="completed")
+    w.now += timedelta(minutes=5)
+    assert await sched.pass_once() == []
+    assert w.hosts_run("posture") == [WIN_A, WIN_B]
+
+
+async def test_a_preview_flood_does_not_reset_the_breaker(w: World) -> None:
+    _posture(w, WIN_A)
+    await w.runner.set_mode(
+        "posture", "act", actor="admin", effective_hash=await w.runner.live_hash("posture")
+    )
+    w.runner.script[WIN_A] = FAILED
+    sched = w.scheduler()
+    await _nights(w, sched, 2)
+    await _flood(w, "posture", WIN_A, status="completed")
+    outcomes = await sched.pass_once()
+    assert [o.kind for o in outcomes] == ["ran", "tripped"]
+    assert await w.runner.mode_of("posture") == "shadow"
+
+
+async def test_a_preview_flood_does_not_defeat_the_interval(w: World) -> None:
+    w.configure("config_hygiene", window=NIGHT)
+    sched = w.scheduler()
+    assert [o.kind for o in await sched.pass_once()] == ["ran"]
+    await _flood(w, "config_hygiene", None, status="completed")
+    w.now += timedelta(days=1)  # the next night, well inside 28 days
+    assert await sched.pass_once() == []
+    assert w.hosts_run("config_hygiene") == [None]
+
+
+async def test_the_scheduler_reads_scheduled_runs_only(w: World) -> None:
+    # Joined: what the store selects is exactly what the scheduler wrote.
+    _posture(w, WIN_A)
+    await w.scheduler().pass_once()
+    await _flood(w, "posture", WIN_A)
+    scheduled = await w.agent_store.scheduled_runs("posture", prefix=SCHEDULE_TRIGGER_PREFIX)
+    assert [r.trigger for r in scheduled] == [w.runner.calls[0].trigger]
+    with pytest.raises(ValueError):
+        await w.agent_store.scheduled_runs("posture", prefix="schedule%")

@@ -12,7 +12,10 @@ nothing starts. Inside it, each host in the agent's ``hosts`` parameter runs
 "all". "Already ran" is read off ``agent_runs``: a run is recorded with the
 trigger ``schedule:<end of the occurrence>``, so the answer survives a restart
 without a table of its own. A run that failed also counts as having run — a
-broken agent retries at the next occurrence, not every pass.
+broken agent retries at the next occurrence, not every pass. Everything the
+scheduler reads back — this, the canary stop, the breaker's streak and the
+interval — comes from the agent's scheduled runs alone, selected by trigger in
+the store, so no number of preview runs can hide one.
 
 An agent that takes no ``hosts`` parameter touches no host: it runs once per
 occurrence with no host at all, and none of the host preconditions below
@@ -65,7 +68,7 @@ from typing import Any
 
 from ..tools import CAPABILITY_TOOLS, supports_tool
 from ..webfilter import CATEGORY_KEYS, make_window, schedule_state
-from .runner import PREVIEW_TRIGGER_PREFIX, AgentRunner
+from .runner import AgentRunner
 from .spec import AgentSpec, resolve
 from .store import INTERRUPTED_ERROR, AgentRun
 
@@ -117,10 +120,6 @@ _CONFIRMING_VERDICTS: frozenset[str] = frozenset({"acted"})
 
 #: Run statuses that mean "this host has had its run for this occurrence".
 _DONE_STATUSES: frozenset[str] = frozenset({"running", "completed", "failed"})
-
-#: How many recent runs of one agent a pass reads back. Enough for every host of
-#: a household fleet over a window plus the breaker's streak.
-_HISTORY = 500
 
 #: The OS that can serve a tool, where :func:`kenny_server.tools.supports_tool`
 #: does not say (it lists the tools the *agent binary* refuses by name; a
@@ -378,7 +377,7 @@ class AgentScheduler:
         hosts: list[str | None] = [None] if _server_only(spec) else list(_hosts(params))
         if not hosts:
             return []
-        history = await self.runner.store.list_runs(agent_id=spec.id, limit=_HISTORY)
+        history = await self._history(spec)
         if _too_soon(spec, history, end):
             return []
         mine = [r for r in history if r.trigger == trigger]
@@ -421,6 +420,17 @@ class AgentScheduler:
             if stops_canary(run):
                 break
         return outcomes
+
+    async def _history(self, spec: AgentSpec) -> list[AgentRun]:
+        """Every scheduled run of ``spec`` on the record, newest first.
+
+        Selected by trigger in the store, never a window of the latest runs of
+        every kind: a person can start previews at will, and none of them may
+        push out the runs that say a host already ran, that the canary stopped,
+        that the breaker's streak stands, or when the agent last ran.
+        """
+
+        return await self.runner.store.scheduled_runs(spec.id, prefix=SCHEDULE_TRIGGER_PREFIX)
 
     # -- preconditions ---------------------------------------------------------
 
@@ -509,13 +519,10 @@ class AgentScheduler:
         counted, never ending a streak.
         """
 
-        history = await self.runner.store.list_runs(agent_id=spec.id, limit=_HISTORY)
         streak = 0
-        for run in history:  # newest first
-            # A preview is a person's one-off look in shadow; it neither counts
-            # toward the streak nor ends it.
-            if run.trigger.startswith(PREVIEW_TRIGGER_PREFIX):
-                continue
+        # Scheduled runs only: a preview is a person's one-off look in shadow;
+        # it neither counts toward the streak nor ends it.
+        for run in await self._history(spec):  # newest first
             if run.status in ("skipped", "running") or interrupted(run):
                 continue
             if not stops_canary(run):

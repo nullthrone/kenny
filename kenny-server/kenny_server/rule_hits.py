@@ -9,6 +9,14 @@ That record is the server's evidence of whether a rule still does anything; the
 config-hygiene agent (``agents/hygiene.py``) proposes removing only rules it
 shows unused, and never on the model's say-so.
 
+The record only covers the time it has been kept. Each rule table carries the
+instant hit tracking started on it (``tracking_since``: when the hit columns
+were added to a table that predates them, or the table's creation), and that
+instant counts as activity like a rule's creation does: a rule is unused only
+once nothing has matched it for the whole window *and* tracking was on for all
+of it. Without that bound every rule older than the window would look unused
+on the first run after the upgrade that added tracking.
+
 :class:`PendingHits` is the in-memory half: the rule mirrors are matched
 synchronously (``SuppressionList.mark`` runs inside every telemetry read), so a
 hit updates the mirror's rule dict at once and is queued for the store, which
@@ -26,6 +34,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 __all__ = [
+    "RELIABILITY_WINDOW_DAYS",
     "PendingHits",
     "iso",
     "last_activity",
@@ -58,38 +67,67 @@ def parse_instant(value: Any) -> datetime | None:
     return moment.astimezone(timezone.utc)
 
 
-def observed_at(value: Any, now: datetime) -> str:
-    """When a matched event happened: its own timestamp, never later than ``now``.
+#: The rolling window the agent's ``reliability`` section reports events over
+#: (``window_days`` in ``docs/protocol.md``): an event group in a snapshot
+#: happened at most this long before the server received the snapshot.
+RELIABILITY_WINDOW_DAYS = 7
+
+
+def observed_at(value: Any, now: datetime, received: Any = None) -> str:
+    """When a matched event happened: its own timestamp, bounded by what the server saw.
 
     An event group carries ``last_seen``; using it rather than the moment of the
     read means re-reading an old snapshot (a trend chart over 30 days) cannot
-    make a rule look recently used. A missing or unreadable stamp counts as
-    ``now`` — the safe direction: a rule that may be in use is kept.
+    make a rule look recently used. A missing or unreadable stamp counts as the
+    latest moment it can be — the safe direction: a rule that may be in use is
+    kept.
+
+    ``last_seen`` is the host's word, so it is bounded by the server's own
+    record of the snapshot, ``received`` (its ``received_at``): never later
+    than that (nor than ``now``), and never earlier than
+    :data:`RELIABILITY_WINDOW_DAYS` before it, since a group the section
+    reports happened inside its window. A host therefore cannot backdate a
+    match to make a rule look unused. Without ``received`` only ``now`` bounds it.
     """
 
+    ceiling = now
+    floor: datetime | None = None
+    receipt = parse_instant(received)
+    if receipt is not None:
+        ceiling = min(now, receipt)
+        floor = receipt - timedelta(days=RELIABILITY_WINDOW_DAYS)
     seen = parse_instant(value)
-    if seen is None or seen > now:
-        return iso(now)
+    if seen is None or seen > ceiling:
+        return iso(ceiling)
+    if floor is not None and seen < floor:
+        return iso(floor)
     return iso(seen)
 
 
 def last_activity(rule: Mapping[str, Any]) -> datetime | None:
-    """The later of a rule's creation and its last match; ``None`` if it cannot be dated.
+    """The latest of a rule's creation, its last match and the start of hit tracking.
 
     Creation counts as a match: a rule nobody has had a chance to see apply is
-    not unused. A rule without a readable ``created_at`` cannot be dated, and is
-    never unused.
+    not unused. So does ``tracking_since``, the moment its table started
+    recording matches: before it, the absence of a match is no evidence of
+    anything. A rule without a readable ``created_at`` or ``tracking_since``
+    cannot be dated, and is never unused.
     """
 
     created = parse_instant(rule.get("created_at"))
-    if created is None:
+    tracking = parse_instant(rule.get("tracking_since"))
+    if created is None or tracking is None:
         return None
     matched = parse_instant(rule.get("last_matched_at"))
-    return max(created, matched) if matched is not None else created
+    return max(m for m in (created, tracking, matched) if m is not None)
 
 
 def unused(rule: Mapping[str, Any], now: datetime, days: int) -> bool:
-    """Whether nothing has matched ``rule``, and it was not created, in the last ``days``."""
+    """Whether nothing has matched ``rule`` in the last ``days``, all of them tracked.
+
+    Also false while ``rule`` is younger than ``days``, or hit tracking on its
+    table is (:func:`last_activity`).
+    """
 
     active = last_activity(rule)
     return active is not None and active <= now - timedelta(days=days)

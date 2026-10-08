@@ -54,7 +54,7 @@ from ..tools import CallLog, ScreenshotStore, build_health, health_for, supports
 from ..tunnel import AgentTunnel, ToolError
 from ..agents.authorizations import BUDGET_WINDOW, AuthorizationError
 from ..agents.policy import run_target_problem
-from ..agents.runner import HashMismatch, PreviewRefused, surface_refusal
+from ..agents.runner import HashMismatch, PreviewRefused
 from ..webfilter import (
     BYPASS_REQUEST_CATEGORY,
     ListTooLargeError,
@@ -1512,8 +1512,14 @@ def build_api_routes(
         Operator+ with any credential, not only a browser session: a preview
         changes nothing on any host -- the run is forced to ``shadow`` however
         the agent is set, a change is only recorded as a recommendation and a
-        verdict opens no ticket. It is refused for triage and for an agent that
-        is ``off``. Answers 202 with the run's id as soon as the run is
+        verdict opens no ticket. What refuses it is
+        :meth:`~kenny_server.agents.runner.AgentRunner.preview_refusal`, the
+        list the copilot checks too: 400 for triage and an agent that is
+        ``off``, 409 for a state that may pass (the global switch, AI, a
+        preview of it on this host still running, its daily preview limit);
+        then 400 for a bad target, and 409 when a global cap refuses it at
+        admission. A refused preview leaves no run behind, so it carries no
+        ``run_id``. Answers 202 with the run's id as soon as the run is
         admitted; the model is never waited for (the run takes minutes). Watch
         it at ``GET /api/specialized-agents/runs/{run_id}``.
         """
@@ -1537,12 +1543,10 @@ def build_api_routes(
         if raw_host is not None and not isinstance(raw_host, str):
             return JSONResponse({"error": "host_id must be a string"}, status_code=400)
         host_id = (raw_host or "").strip() or None
-        refused = surface_refusal(spec)
+        refused = await agents.preview_refusal(spec, host_id)
         if refused is not None:
-            return JSONResponse({"error": refused}, status_code=400)
-        if await agents.mode_of(spec.id) == "off":
             return JSONResponse(
-                {"error": f"{spec.id} is off; a preview does not override that"}, status_code=400
+                {"error": str(refused)}, status_code=409 if refused.conflict else 400
             )
         known = {a.agent_id for a in registry.list()} | set(await store.known_agents())
         problem = run_target_problem(spec, host_id, known)
@@ -1563,8 +1567,6 @@ def build_api_routes(
                 {"error": "the agent could not start (agents or AI are switched off)"},
                 status_code=409,
             )
-        if run.status == "skipped":
-            return JSONResponse({"error": run.error, "run_id": run.id}, status_code=409)
         return JSONResponse(
             {
                 "run_id": run.id,

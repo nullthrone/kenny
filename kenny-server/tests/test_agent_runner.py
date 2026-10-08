@@ -35,8 +35,10 @@ from kenny_server.agents.runner import (
     DAILY_TOKENS_SETTING,
     ENABLED_SETTING,
     MAX_CONCURRENT_SETTING,
+    PREVIEWS_PER_DAY_SETTING,
     TICKET_CREATED_TRIGGER,
     AgentRunner,
+    PreviewRefused,
     _redacted,
     caused_by_agent,
 )
@@ -1139,3 +1141,106 @@ async def test_a_preview_needs_its_trigger_and_cannot_be_triage(world: World) ->
     with pytest.raises(ValueError):
         await runner.run_generic(CATALOG["triage"], trigger="preview:op", **kwargs)
     assert await _runs(world) == []
+
+
+# -- start_preview: what bounds a person's previews ------------------------------
+
+
+def _preview_runner(w: World, spec: AgentSpec, *scripted: _Response) -> AgentRunner:
+    runner = w.runner(*scripted, catalog=_catalog(spec))
+    runner.configure(executor=w.executor, client_factory=lambda: w.client, model="test-model")
+    return runner
+
+
+async def test_a_cap_refused_preview_leaves_no_run_row(tmp_path) -> None:
+    spec = _patcher()
+    w = await _world_with(tmp_path, {DAILY_TOKENS_SETTING: "100"})
+    try:
+        runner = _preview_runner(w, spec, _text("done"))
+        spent = await w.agent_store.start_run(
+            agent_id="triage", spec_hash="h", trigger="on_demand", mode="shadow"
+        )
+        await w.agent_store.finish_run(
+            spent.id, status="completed", usage={"input_tokens": 90, "output_tokens": 10}
+        )
+        with pytest.raises(PreviewRefused) as refused:
+            await runner.start_preview(spec, host_id=HOST, requested_by="op")
+        assert refused.value.conflict and refused.value.code == "over_cap"
+        assert "cap is 100" in str(refused.value)
+        await runner.wait_previews()
+        assert [r.id for r in await _runs(w)] == [spent.id]  # no skipped row
+        assert w.client.messages.calls == []
+    finally:
+        await w.close()
+
+
+async def test_one_preview_of_an_agent_runs_per_host_at_a_time(world: World) -> None:
+    spec = _patcher()
+    runner = _preview_runner(
+        world, spec, _tool("t1", "winget_list", {}), _text("done"), _text("done again")
+    )
+    release = asyncio.Event()
+
+    async def hold(tool: str, args: dict[str, Any]) -> None:
+        await release.wait()
+
+    world.on_send = hold
+    first = await runner.start_preview(spec, host_id=HOST, requested_by="op")
+    assert first is not None and first.status == "running"
+    assert (await runner.preview_refusal(spec, HOST)).code == "preview_running"  # type: ignore[union-attr]
+    with pytest.raises(PreviewRefused) as refused:
+        await runner.start_preview(spec, host_id=HOST, requested_by="someone-else")
+    assert refused.value.conflict and refused.value.code == "preview_running"
+    # Another host is another target.
+    assert await runner.preview_refusal(spec, "other-pc") is None
+
+    release.set()
+    await runner.wait_previews()
+    assert (await world.agent_store.get_run(first.id)).status == "completed"  # type: ignore[union-attr]
+    # Once it ended, the next one may start.
+    second = await runner.start_preview(spec, host_id=HOST, requested_by="op")
+    await runner.wait_previews()
+    assert second is not None
+    assert [r.status for r in await _runs(world)] == ["completed", "completed"]
+
+
+async def test_the_daily_preview_limit_is_per_agent_over_24_hours(tmp_path) -> None:
+    spec = _patcher()
+    other = _patcher(id="other")
+    w = await _world_with(tmp_path, {PREVIEWS_PER_DAY_SETTING: "2"})
+    try:
+        runner = w.runner(*(_text("done") for _ in range(4)), catalog=_catalog(spec, other))
+        runner.configure(executor=w.executor, client_factory=lambda: w.client, model="m")
+        for _ in range(2):
+            assert await runner.start_preview(spec, host_id=HOST, requested_by="op") is not None
+            await runner.wait_previews()
+        with pytest.raises(PreviewRefused) as refused:
+            await runner.start_preview(spec, host_id=HOST, requested_by="op")
+        assert refused.value.conflict and refused.value.code == "preview_limit"
+        assert len(await _runs(w)) == 2  # the refusal left no row
+        # Another agent has a limit of its own.
+        assert await runner.start_preview(other, host_id=HOST, requested_by="op") is not None
+        await runner.wait_previews()
+        # A preview more than 24 hours old no longer counts.
+        day_ago = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
+        await w.agent_store._conn.execute(
+            "UPDATE agent_runs SET started_at = ? WHERE agent_id = 'patcher'", (day_ago,)
+        )
+        await w.agent_store._conn.commit()
+        assert await runner.preview_refusal(spec, HOST) is None
+    finally:
+        await w.close()
+
+
+async def test_a_preview_is_refused_without_ai(tmp_path) -> None:
+    spec = _patcher()
+    w = await _world_with(tmp_path, {"KENNY_AI_ENABLED": "0"})
+    try:
+        runner = _preview_runner(w, spec)
+        refused = await runner.preview_refusal(spec, HOST)
+        assert refused is not None and refused.conflict and refused.code == "ai_unavailable"
+        with pytest.raises(PreviewRefused):
+            await runner.start_preview(spec, host_id=HOST, requested_by="op")
+        assert await _runs(w) == []
+    finally:
+        await w.close()

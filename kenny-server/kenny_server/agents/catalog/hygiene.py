@@ -4,7 +4,9 @@ Server-only (it touches no host) and monthly: a ``schedule`` trigger whose
 occurrences are at least 28 days apart, inside the maintenance window an admin
 sets. The rules it may remove are not its to pick: each remove tool's
 ``rule_id`` is bound to evidence the server computes at run start from its own
-record of when each rule last matched (``agents/hygiene.py``). Removing a rule
+record of when each rule last matched, admitting only rules whose removal can
+make kenny louder, never quieter (``agents/hygiene.py`` states the rule; this
+prompt does not, so no wording of it can widen it). Removing a rule
 is a ``normal_change``, so in ``act`` it runs only under a standing
 authorization scoped to ``server`` (ADR-0072); otherwise it is a recommendation.
 """

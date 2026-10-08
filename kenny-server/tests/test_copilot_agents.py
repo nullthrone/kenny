@@ -584,3 +584,75 @@ def test_a_preview_answers_409_when_agents_are_switched_off(tmp_path) -> None:
             "/api/specialized-agents/posture/runs", json={"host_id": HOST}, headers=_h(pats["op"])
         )
         assert r.status_code == 409
+
+
+def test_a_cap_refused_preview_answers_409_and_leaves_no_run(tmp_path) -> None:
+    app, pats = _app(tmp_path)
+    with TestClient(app) as c:
+        _know_host(c, app)
+        store = app.state.agent_store
+
+        async def spend() -> None:
+            await app.state.settings.set("KENNY_AGENTS_DAILY_TOKENS", "100")
+            run = await store.start_run(
+                agent_id="triage", spec_hash="h", trigger="on_demand", mode="shadow"
+            )
+            await store.finish_run(run.id, status="completed", usage={"input_tokens": 100})
+
+        c.portal.call(spend)
+        r = c.post(
+            "/api/specialized-agents/posture/runs", json={"host_id": HOST}, headers=_h(pats["op"])
+        )
+        assert r.status_code == 409, r.text
+        assert "run_id" not in r.json() and "cap is 100" in r.json()["error"]
+        _wait(c, app)
+        runs = c.portal.call(lambda: store.list_runs(agent_id="posture"))
+        assert runs == []
+
+
+def _route_and_proposal(c: TestClient, app: Any, pats: dict[str, str]) -> tuple[int, str]:
+    """What the preview route answers, and the code the copilot's proposal raises."""
+
+    copilot = CopilotAgents(runner=app.state.agents, registry=app.state.registry,
+                            store=app.state.store)
+    try:
+        c.portal.call(
+            copilot.run_propose, {"agent_id": "posture", "host_id": HOST, "reason": "r"}
+        )
+        code = "proposed"
+    except ToolError as exc:
+        code = exc.code
+    r = c.post(
+        "/api/specialized-agents/posture/runs", json={"host_id": HOST}, headers=_h(pats["op"])
+    )
+    return r.status_code, code
+
+
+@pytest.mark.parametrize(
+    ("setting", "value", "code"),
+    [
+        ("KENNY_AGENTS_ENABLED", "0", "agents_off"),
+        ("KENNY_AI_ENABLED", "0", "ai_unavailable"),
+    ],
+)
+def test_the_copilot_offers_no_card_the_route_would_refuse(tmp_path, setting, value, code) -> None:
+    app, pats = _app(tmp_path)
+    with TestClient(app) as c:
+        _know_host(c, app)
+        c.portal.call(lambda: app.state.settings.set(setting, value))
+        assert _route_and_proposal(c, app, pats) == (409, code)
+        assert c.portal.call(lambda: app.state.agent_store.list_runs()) == []
+
+
+def test_the_daily_preview_limit_refuses_the_route_and_the_proposal_alike(tmp_path) -> None:
+    app, pats = _app(tmp_path, *(_done() for _ in range(2)))
+    with TestClient(app) as c:
+        _know_host(c, app)
+        c.portal.call(lambda: app.state.settings.set("KENNY_AGENTS_PREVIEWS_PER_DAY", "2"))
+        for _ in range(2):
+            status, code = _route_and_proposal(c, app, pats)
+            assert (status, code) == (202, "proposed")
+            _wait(c, app)
+        assert _route_and_proposal(c, app, pats) == (409, "preview_limit")
+        runs = c.portal.call(lambda: app.state.agent_store.list_runs(agent_id="posture"))
+        assert len(runs) == 2

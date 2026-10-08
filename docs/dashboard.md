@@ -747,11 +747,16 @@ off is `shadow`, on is `act`.
   signed-in superuser. The run's `trigger` is `preview:<username>`. A host-bound agent
   needs a `host_id` the server knows; an agent that works on no machine takes none. It is
   refused with `400` for triage, for an agent whose mode is `off` (a preview is no way
-  round that switch), and for a bad target; `409` when the global switch is off or a cap
-  refused the run. It answers `202` with `run_id` as soon as the run is admitted and
-  carries on in the background; watch it at `GET /api/specialized-agents/runs/{run_id}`.
-  Previews count toward the concurrency and token caps like any run, and are ignored by
-  the circuit breaker.
+  round that switch), and for a bad target; `409` when the global switch or AI is off,
+  when a preview of the same agent on the same host is still running (one at a time), when
+  the agent has had `KENNY_AGENTS_PREVIEWS_PER_DAY` previews in the last 24 hours, or when
+  a cap refused the run. A refused preview leaves no run behind, so a refusal carries no
+  `run_id`. It answers `202` with `run_id` as soon as the run is admitted and carries on in
+  the background; watch it at `GET /api/specialized-agents/runs/{run_id}`. Previews count
+  toward the concurrency and token caps like any run. Nothing a scheduled agent reads back
+  — which hosts already ran, a stopped canary, the circuit breaker's streak, the agent's
+  interval — counts a preview, however many there are. Ask kenny offers a preview only
+  when this route would accept it, apart from the caps.
 - `PUT /api/specialized-agents/{agent_id}/mode` with `{"mode": "off" | "shadow" | "act",
   "effective_hash"}` *(superuser, signed in at the dashboard)* — moving an agent to `act`
   is a superuser's decision, so every mode write is. `act` must carry the agent's
@@ -803,14 +808,38 @@ good, so neither a parameter edit nor a code rollback revives them.
 The **rule-hygiene agent** (`config_hygiene`, in `shadow` until a superuser chooses `act`)
 runs on the server, not on a host, about once a month: in the first occurrence of its
 `window` at least 28 days after the last one it ran in. It removes reliability
-suppressions and auto-ticket rules that nothing has matched for 90 days — a rule's creation
-counts as a match. Which rules those are is the server's evidence, never the model's: each
-rule records when the server last applied it, the ids of the unused ones are computed when
-the run starts and frozen on the run (`evidence`), and a removal naming any other id is
-refused at the gate. A rule that matches again during the run is refused at removal too.
-Removing a rule is a `normal_change`, so in `act` it needs a standing authorization with
-scope `"server"`; without one, and in `shadow`, the run's recommendations list what it
-would remove.
+suppressions and auto-ticket rules that nothing has matched for 90 days, and only those
+whose removal can make kenny louder, never quieter. Which rules those are is the server's
+evidence, never the model's: each rule records when the server last applied it, the ids
+of the removable ones are computed when the run starts and frozen on the run (`evidence`),
+and a removal naming any other id is refused at the gate.
+
+- **Unused** means nothing matched the rule for 90 days, it was created more than 90 days
+  ago, and the server has been recording matches on its table for all of those 90 days.
+  Recording on each table starts the first time the server runs with this agent, so on
+  an install that predates it no rule is removable for its first 90 days. A
+  suppression's match is dated by when the event last happened, bounded by when the
+  server received the snapshot (no later, and no earlier than the reliability section's
+  7-day window before it), so a host cannot make a match look older than it is.
+- **Louder on removal.** A suppression always qualifies: removing one only lets an event
+  count toward health again. An auto-ticket rule qualifies only when, for every alert it
+  decides, whatever decides in its place — the next most specific rule, else the coded
+  default — opens a ticket for every severity it does: a `never` rule always qualifies,
+  an `open_crit` rule only where its replacement is `open_all`, an `open_all` rule never.
+  An `open_all` rule for `change` on one PC, say, may be a tripwire for a rare event, and
+  "unused for 90 days" cannot tell it from a dead rule.
+- **Known limits of hit tracking**, and the reason only "louder on removal" rules are
+  ever proposed: a chronic alert that stays raised is dispatched once, so its auto-ticket
+  rule is stamped only when the alert starts; and with the alert loop off and nobody
+  reading a host's telemetry, a suppression records no matches at all. Either can make a
+  rule that still does something look unused, and removing such a rule can only make
+  kenny louder.
+
+Both conditions are checked again at removal, against the rules as they are then: a rule
+that matched during the run, or whose removal stopped being louder because another rule
+changed, is refused. Removing a rule is a `normal_change`, so in `act` it needs a
+standing authorization with scope `"server"`; without one, and in `shadow`, the run's
+recommendations list what it would remove.
 
 Each server start marks a run the previous process left open as `failed`, deletes finished
 runs older than 90 days, and voids every authorization bound to what an agent no longer is.

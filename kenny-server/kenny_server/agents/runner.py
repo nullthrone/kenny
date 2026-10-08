@@ -99,6 +99,7 @@ __all__ = [
     "DAILY_TOKENS_SETTING",
     "ENABLED_SETTING",
     "MAX_CONCURRENT_SETTING",
+    "PREVIEWS_PER_DAY_SETTING",
     "RUN_RETENTION_DAYS",
     "TICKET_CREATED_TRIGGER",
     "TRIAGE_AGENT_ID",
@@ -132,6 +133,9 @@ ENABLED_SETTING = "KENNY_AGENTS_ENABLED"
 MAX_CONCURRENT_SETTING = "KENNY_AGENTS_MAX_CONCURRENT"
 DAILY_TOKENS_SETTING = "KENNY_AGENTS_DAILY_TOKENS"
 
+#: How many previews of one agent may start in any 24 hours.
+PREVIEWS_PER_DAY_SETTING = "KENNY_AGENTS_PREVIEWS_PER_DAY"
+
 #: The settings triage's mode is derived from and written to.
 _TRIAGE_ENABLED = "KENNY_TRIAGE_ENABLED"
 _TRIAGE_RESOLVE = "KENNY_TRIAGE_RESOLVE"
@@ -159,11 +163,16 @@ _MAX_PARAM_VALUE_LEN = 200
 
 
 class PreviewRefused(ValueError):
-    """A preview request that must not run; ``conflict`` marks a state, not a bad request."""
+    """A preview request that must not run.
 
-    def __init__(self, message: str, *, conflict: bool = False) -> None:
+    ``conflict`` marks a state that may pass (a switch, a cap, a preview already
+    running), not a bad request; ``code`` names the reason for a tool result.
+    """
+
+    def __init__(self, message: str, *, conflict: bool = False, code: str = "refused") -> None:
         super().__init__(message)
         self.conflict = conflict
+        self.code = code
 
 
 class HashMismatch(ValueError):
@@ -373,6 +382,12 @@ class AgentRunner:
         #: Preview runs still going. The event loop keeps only a weak reference
         #: to a task, so a fire-and-forget one can be collected mid-run.
         self._previews: set[asyncio.Task[None]] = set()
+        #: ``(agent id, host id)`` of every preview from its admission check to
+        #: its end: at most one runs per agent and host.
+        self._preview_targets: set[tuple[str, str | None]] = set()
+        #: Held from a preview's checks until its row exists, so two requests
+        #: cannot both pass the daily limit or the one-at-a-time rule.
+        self._preview_admission = asyncio.Lock()
         #: The standing authorizations (ADR-0072) a run's ``normal_change`` is
         #: matched against. Without a store no ``normal_change`` ever runs.
         self.authorizations = authorizations
@@ -870,15 +885,22 @@ class AgentRunner:
         params: Mapping[str, Any] | None = None,
         run_hash: str | None = None,
         evidence: Mapping[str, Sequence[str]] | None = None,
+        record_refusal: bool = True,
     ) -> tuple[AgentRun, bool]:
         """Open the run row; ``(row, False)`` when a cap refused it (row ``skipped``).
 
         An admitted ``counted`` run holds a concurrency slot; the caller must
-        :meth:`_release` it in a ``finally``.
+        :meth:`_release` it in a ``finally``. Without ``record_refusal`` (a
+        preview: the person who asked is told at once) a cap's refusal writes
+        no row and raises :class:`PreviewRefused` instead; otherwise every
+        refused request would be a free row on the record.
         """
 
         async with self._admission:
             reason = await self._cap_reason(counted=counted)
+            if reason is not None and not record_refusal:
+                logger.info("agent %s preview not started: %s", spec.id, reason)
+                raise PreviewRefused(reason, conflict=True, code="over_cap")
             run = await self.store.start_run(
                 agent_id=spec.id,
                 spec_hash=spec.spec_hash,
@@ -1038,6 +1060,7 @@ class AgentRunner:
         mode is ``off`` starts nothing -- a preview is no way round a
         superuser's switch. ``on_admitted`` is called with the run row as soon
         as it is opened (also when a cap skipped it), before the model is called.
+        A preview a cap refuses leaves no row: it raises :class:`PreviewRefused`.
 
         ``act_until`` is the moment from which no change of this run may start
         (the end of the maintenance window a scheduled run belongs to): from
@@ -1117,6 +1140,7 @@ class AgentRunner:
             params=params,
             run_hash=run_hash,
             evidence=evidence,
+            record_refusal=not preview,
         )
         if on_admitted is not None:
             on_admitted(run)
@@ -1215,71 +1239,129 @@ class AgentRunner:
 
     # -- an on-demand preview ------------------------------------------------
 
+    async def preview_refusal(self, spec: AgentSpec, host_id: str | None) -> PreviewRefused | None:
+        """Why a preview of ``spec`` on ``host_id`` must not start now, or ``None``.
+
+        The one list of a preview's refusals, asked by the preview route, by the
+        copilot before it offers a preview card, and again by
+        :meth:`start_preview` itself, so the copilot never offers a run the
+        route would refuse. In order: an agent that runs on a ticket's own
+        surface (triage), one not in the catalog, one whose mode is ``off``,
+        the global switch off, no AI to run it, a preview of this agent on this
+        host already running, and :data:`PREVIEWS_PER_DAY_SETTING` previews of
+        this agent started in the last 24 hours. Whether ``host_id`` is a valid
+        target is the caller's (:func:`~kenny_server.agents.policy.run_target_problem`);
+        the global caps are checked at admission.
+        """
+
+        why = surface_refusal(spec)
+        if why is not None:
+            return PreviewRefused(why, code="not_previewable")
+        if spec.id not in self.catalog:
+            return PreviewRefused(f"unknown agent {spec.id}", code="unknown_agent")
+        if await self._mode_for(spec) == "off":
+            return PreviewRefused(
+                f"{spec.id} is off; a preview does not override that", code="agent_off"
+            )
+        if not self.enabled():
+            return PreviewRefused("agents are switched off", conflict=True, code="agents_off")
+        if not self._ai_ready():
+            return PreviewRefused(
+                "AI is switched off or not configured", conflict=True, code="ai_unavailable"
+            )
+        if (spec.id, host_id) in self._preview_targets:
+            where = f" on {host_id}" if host_id else ""
+            return PreviewRefused(
+                f"a preview of {spec.id}{where} is already running; wait for it to finish",
+                conflict=True,
+                code="preview_running",
+            )
+        limit = max(1, int(self.settings.get(PREVIEWS_PER_DAY_SETTING)))
+        since = (self._now() - timedelta(hours=24)).isoformat()
+        started = await self.store.count_runs_since(
+            spec.id, prefix=PREVIEW_TRIGGER_PREFIX, since_iso=since
+        )
+        if started >= limit:
+            return PreviewRefused(
+                f"{spec.id} was previewed {started} times in the last 24 hours; the limit is {limit}",
+                conflict=True,
+                code="preview_limit",
+            )
+        return None
+
     async def start_preview(
         self, spec: AgentSpec, *, host_id: str | None, requested_by: str
     ) -> AgentRun | None:
         """Start one preview run of ``spec`` in the background; return its row.
 
         Returns as soon as the run is *admitted* -- the row exists and is
-        ``running`` (or ``skipped`` by a cap) -- and never waits for the model.
-        The run itself continues in a task this runner holds until it ends; it
-        records its own outcome (``failed`` included) and nothing observes it
-        but the run row. ``None`` when nothing could start (the global switch
-        or the AI master switch went off, or the mode turned ``off``, between
-        the caller's checks and here).
+        ``running`` -- and never waits for the model. The run itself continues
+        in a task this runner holds until it ends; it records its own outcome
+        (``failed`` included) and nothing observes it but the run row. ``None``
+        when nothing could start (the global switch or the AI master switch
+        went off, or the mode turned ``off``, after the checks here).
 
-        Raises :class:`PreviewRefused` for a request that must not run at all:
-        triage and any agent that runs on a ticket's own surface, an agent whose
-        mode is ``off``, and the global switch off. ``host_id`` is the caller's
-        to validate (:func:`~kenny_server.agents.policy.run_target_problem`).
+        Raises :class:`PreviewRefused` for a request that must not run now:
+        anything :meth:`preview_refusal` names, or a global cap at admission --
+        a refused preview leaves no run row. ``host_id`` is the caller's to
+        validate (:func:`~kenny_server.agents.policy.run_target_problem`).
         """
 
-        why = surface_refusal(spec)
-        if why is not None:
-            raise PreviewRefused(why)
-        if spec.id not in self.catalog:
-            raise PreviewRefused(f"unknown agent {spec.id}")
-        if await self._mode_for(spec) == "off":
-            raise PreviewRefused(f"{spec.id} is off; a preview does not override that")
-        if not self.enabled():
-            raise PreviewRefused("agents are switched off", conflict=True)
+        key = (spec.id, host_id)
+        async with self._preview_admission:
+            refused = await self.preview_refusal(spec, host_id)
+            if refused is not None:
+                raise refused
+            trigger = f"{PREVIEW_TRIGGER_PREFIX}{requested_by.strip()[:_MAX_PREVIEWER] or 'unknown'}"
+            loop = asyncio.get_running_loop()
+            admitted: asyncio.Future[AgentRun | None] = loop.create_future()
 
-        trigger = f"{PREVIEW_TRIGGER_PREFIX}{requested_by.strip()[:_MAX_PREVIEWER] or 'unknown'}"
-        loop = asyncio.get_running_loop()
-        admitted: asyncio.Future[AgentRun | None] = loop.create_future()
-
-        def on_admitted(run: AgentRun) -> None:
-            if not admitted.done():
-                admitted.set_result(run)
-
-        async def go() -> None:
-            try:
-                await self.run_generic(
-                    spec,
-                    host_id=host_id,
-                    trigger=trigger,
-                    brief=_preview_brief(spec, host_id, await self.get_params(spec.id)),
-                    preview=True,
-                    on_admitted=on_admitted,
-                )
-            except Exception as exc:  # noqa: BLE001 - reported to the caller if still waiting
-                logger.exception("agent %s preview failed to start", spec.id)
+            def on_admitted(run: AgentRun) -> None:
                 if not admitted.done():
-                    admitted.set_exception(exc)
-            finally:
-                if not admitted.done():
-                    admitted.set_result(None)
+                    admitted.set_result(run)
 
-        task = asyncio.create_task(go(), name=f"agent-preview-{spec.id}")
-        self._previews.add(task)
-        task.add_done_callback(self._previews.discard)
-        return await admitted
+            async def go() -> None:
+                try:
+                    await self.run_generic(
+                        spec,
+                        host_id=host_id,
+                        trigger=trigger,
+                        brief=_preview_brief(spec, host_id, await self.get_params(spec.id)),
+                        preview=True,
+                        on_admitted=on_admitted,
+                    )
+                except PreviewRefused as exc:
+                    if not admitted.done():
+                        admitted.set_exception(exc)
+                except Exception as exc:  # noqa: BLE001 - reported to the caller if still waiting
+                    logger.exception("agent %s preview failed to start", spec.id)
+                    if not admitted.done():
+                        admitted.set_exception(exc)
+                finally:
+                    self._preview_targets.discard(key)
+                    if not admitted.done():
+                        admitted.set_result(None)
+
+            # Held from here to the run's end, so a second request for the same
+            # target is refused however soon it comes.
+            self._preview_targets.add(key)
+            task = asyncio.create_task(go(), name=f"agent-preview-{spec.id}")
+            self._previews.add(task)
+            task.add_done_callback(self._previews.discard)
+            # The lock is held until the row exists: the next request's daily
+            # count sees it.
+            return await admitted
 
     async def wait_previews(self) -> None:
-        """Wait for every preview run still going (shutdown and tests)."""
+        """Wait for every preview run still going (shutdown and tests).
 
-        while self._previews:
-            await asyncio.gather(*list(self._previews), return_exceptions=True)
+        Waits on the tasks not yet done: a finished task stays in the set until
+        its done-callback runs, and gathering only finished tasks need not yield
+        to the loop that would run it.
+        """
+
+        while pending := [task for task in self._previews if not task.done()]:
+            await asyncio.gather(*pending, return_exceptions=True)
 
     async def cancel_previews(self) -> None:
         """Stop every preview run still going (server shutdown).

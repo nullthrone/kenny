@@ -32,7 +32,7 @@ import logging
 from typing import Any
 
 from .agents.policy import run_target_problem
-from .agents.runner import AgentRunner, surface_refusal
+from .agents.runner import AgentRunner
 from .agents.store import AgentRun
 from .registry import AgentRegistry
 from .store import TelemetryStore
@@ -174,10 +174,14 @@ class CopilotAgents:
     async def run_propose(self, args: dict[str, Any], *, session: Any = None) -> dict[str, Any]:
         """Handle ``agent_run_propose``: validate a request and hand it back.
 
-        Starts nothing. Refuses what the preview route would refuse -- an unknown
-        agent, triage, an agent that is off, a machine the server does not know,
-        a machine given to an agent that takes none -- so the operator is never
-        offered a card whose button is bound to fail.
+        Starts nothing. Refuses what the preview route would refuse, through
+        the same :meth:`~kenny_server.agents.runner.AgentRunner.preview_refusal`
+        -- an unknown agent, triage, an agent that is off, agents or AI
+        switched off, a preview of it on that machine still running, its daily
+        preview limit reached -- and the same target check (a machine the
+        server does not know, a machine given to an agent that takes none), so
+        the operator is never offered a card whose button is bound to fail.
+        Only a global cap, checked when a run is admitted, can still refuse it.
         """
 
         agent_id = _clean(args, "agent_id")
@@ -190,11 +194,9 @@ class CopilotAgents:
         if len(reason) > MAX_REASON_CHARS:
             raise ToolError("bad_args", f"reason is longer than {MAX_REASON_CHARS} characters")
         spec = self._agent(agent_id)
-        why = surface_refusal(spec)
-        if why is not None:
-            raise ToolError("not_previewable", why)
-        if await self._runner.mode_of(spec.id) == "off":
-            raise ToolError("agent_off", f"{spec.id} is switched off")
+        refused = await self._runner.preview_refusal(spec, host_id or None)
+        if refused is not None:
+            raise ToolError(refused.code, str(refused))
         problem = run_target_problem(spec, host_id or None, await self._known_hosts())
         if problem is not None:
             raise ToolError("bad_args", problem)
