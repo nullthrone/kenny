@@ -566,6 +566,54 @@ describe('AgentsSection — standing authorizations', () => {
     expect(apiPostMock.mock.calls[0][1]).toMatchObject({ scope: 'server' })
   })
 
+  describe('where a tool runs (tool_targets)', () => {
+    const TWO_TOOLS = agent({
+      tools: ['winget_install', 'maintenance_run'],
+      tool_classes: { winget_install: 'normal_change', maintenance_run: 'normal_change' },
+      tool_targets: { winget_install: 'host', maintenance_run: 'server' },
+      constraints: [],
+      timeouts: [],
+    })
+
+    it('offers only PCs for a host tool and only the server for a server tool', async () => {
+      mockApi({ agents: [TWO_TOOLS] })
+      renderSection('/admin/agents/patch', true)
+
+      const form = await screen.findByRole('form', { name: 'Grant a standing authorization' })
+      // winget_install runs on a PC: the PC picker, no server scope.
+      expect(await within(form).findByRole('checkbox', { name: 'study-pc' })).toBeInTheDocument()
+      expect(within(form).getByRole('radio', { name: /These PCs/ })).toBeInTheDocument()
+      expect(within(form).queryByRole('radio', { name: /The server/ })).not.toBeInTheDocument()
+
+      fireEvent.change(within(form).getByLabelText('TOOL'), { target: { value: 'maintenance_run' } })
+      expect(within(form).getByRole('radio', { name: /The server/ })).toBeChecked()
+      expect(within(form).queryByRole('radio', { name: /These PCs/ })).not.toBeInTheDocument()
+      expect(within(form).queryByRole('checkbox', { name: 'study-pc' })).not.toBeInTheDocument()
+    })
+
+    it('grants a server tool on the server without any PC picked', async () => {
+      mockApi({ agents: [TWO_TOOLS] })
+      apiPostMock.mockResolvedValue(auth({ id: 'new', scope: 'server' }))
+      renderSection('/admin/agents/patch', true)
+
+      const form = await screen.findByRole('form', { name: 'Grant a standing authorization' })
+      fireEvent.change(within(form).getByLabelText('TOOL'), { target: { value: 'maintenance_run' } })
+      fireEvent.click(within(form).getByRole('button', { name: 'GRANT AUTHORIZATION' }))
+
+      await waitFor(() => expect(apiPostMock).toHaveBeenCalledTimes(1))
+      expect(apiPostMock.mock.calls[0][1]).toMatchObject({ tool: 'maintenance_run', scope: 'server' })
+    })
+
+    it('offers both scopes when the server does not say where a tool runs', async () => {
+      mockApi()
+      renderSection('/admin/agents/patch', true)
+
+      const form = await screen.findByRole('form', { name: 'Grant a standing authorization' })
+      expect(within(form).getByRole('radio', { name: /These PCs/ })).toBeInTheDocument()
+      expect(within(form).getByRole('radio', { name: /The server/ })).toBeInTheDocument()
+    })
+  })
+
   it('shows a 409 on grant as a changed agent', async () => {
     mockApi()
     apiPostMock.mockRejectedValue(new ApiError('changed', 409))

@@ -1117,8 +1117,11 @@ not navigate away from wherever you were.
   proposals) and can propose a preview run of one. A proposal starts nothing: the chat
   stream carries an `agent_run_proposal` event (`{agent_id, host_id, reason}`), and a run
   exists only when a person starts it through `POST /api/specialized-agents/{agent_id}/runs`.
-  A preview is always shadow, so it changes nothing on any machine. These tools are not
-  offered on a ticket's own chat.
+  A preview is always shadow, so it changes nothing on any machine. The proposal shows as
+  a card naming the agent, the PC and why; nothing starts until you press **START
+  PREVIEW**, and the card then links the new run to the agent's page under
+  [Specialized agents](#specialized-agents-view). These tools are not offered on a
+  ticket's own chat.
 - **Composer** — type and **send**; while a turn streams the button becomes **stop**.
   Suggestion chips ("Why is this PC flagged?", "Free up disk space", "Update all
   packages") pre-fill the box. A section modal's **Fix via Ask kenny** button opens the

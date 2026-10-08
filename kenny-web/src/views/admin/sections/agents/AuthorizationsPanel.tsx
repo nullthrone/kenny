@@ -47,7 +47,7 @@ function GrantForm({ agent, tools }: { agent: SpecializedAgent; tools: string[] 
   const queryClient = useQueryClient()
   const fleet = useFleetHosts()
   const [tool, setTool] = useState(tools[0] ?? '')
-  const [kind, setKind] = useState<'hosts' | 'server'>('hosts')
+  const [pickedKind, setKind] = useState<'hosts' | 'server'>('hosts')
   const [hosts, setHosts] = useState<string[]>([])
   const [attempts, setAttempts] = useState(String(DEFAULT_ATTEMPTS))
   const [days, setDays] = useState(String(DEFAULT_EXPIRY_DAYS))
@@ -58,6 +58,10 @@ function GrantForm({ agent, tools }: { agent: SpecializedAgent; tools: string[] 
   const daysValid = Number.isInteger(daysNumber) && daysNumber >= 1 && daysNumber <= MAX_EXPIRY_DAYS
   const attemptsNumber = Number(attempts)
   const attemptsValid = Number.isInteger(attemptsNumber) && attemptsNumber >= 1
+  // Where the chosen tool runs decides which scope can mean anything: a PC tool is granted
+  // on PCs, a server tool on the server. Without the map (an older server) both are offered.
+  const target = agent.tool_targets?.[tool]
+  const kind: 'hosts' | 'server' = target === 'server' ? 'server' : target === 'host' ? 'hosts' : pickedKind
   const scopeValid = kind === 'server' || hosts.length > 0
   const hash = agent.effective_hash
 
@@ -136,14 +140,18 @@ function GrantForm({ agent, tools }: { agent: SpecializedAgent; tools: string[] 
       <fieldset className={styles.fieldset}>
         <legend className={styles.legend}>SCOPE</legend>
         <div className={styles.checkGrid} role="radiogroup" aria-label="Scope kind">
-          <label className={styles.check}>
-            <input type="radio" name={`scope-${agent.id}`} checked={kind === 'hosts'} onChange={() => setKind('hosts')} />
-            These PCs
-          </label>
-          <label className={styles.check}>
-            <input type="radio" name={`scope-${agent.id}`} checked={kind === 'server'} onChange={() => setKind('server')} />
-            The server (a change that touches no PC)
-          </label>
+          {target !== 'server' && (
+            <label className={styles.check}>
+              <input type="radio" name={`scope-${agent.id}`} checked={kind === 'hosts'} onChange={() => setKind('hosts')} />
+              These PCs
+            </label>
+          )}
+          {target !== 'host' && (
+            <label className={styles.check}>
+              <input type="radio" name={`scope-${agent.id}`} checked={kind === 'server'} onChange={() => setKind('server')} />
+              The server (a change that touches no PC)
+            </label>
+          )}
         </div>
         {kind === 'hosts' && (
           <div className={styles.checkGrid} style={{ marginTop: 10 }} role="group" aria-label="PCs">
@@ -163,9 +171,11 @@ function GrantForm({ agent, tools }: { agent: SpecializedAgent; tools: string[] 
             )}
           </div>
         )}
-        <p className={shared.help} style={{ marginTop: 8 }}>
-          An empty selection is never &quot;all PCs&quot;: pick at least one.
-        </p>
+        {kind === 'hosts' && (
+          <p className={shared.help} style={{ marginTop: 8 }}>
+            An empty selection is never &quot;all PCs&quot;: pick at least one.
+          </p>
+        )}
       </fieldset>
 
       <label className={shared.field}>

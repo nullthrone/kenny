@@ -144,6 +144,22 @@ export type TranscriptItem =
       ticketId?: string
       ticketNumber?: number
     }
+  /**
+   * A specialized-agent preview run kenny proposed. Shaped after `draft`: a card
+   * that carries a decision and stays in the transcript once it is made.
+   * `resolution` is the operator's — nothing runs until they press Start preview.
+   */
+  | {
+      kind: 'agent_proposal'
+      id: string
+      agentId: string
+      /** '' for an agent that is not bound to a PC. */
+      hostId: string
+      reason: string
+      resolution: 'pending' | 'started' | 'dismissed'
+      /** Set once `resolution` is 'started': the run the server created. */
+      runId?: string
+    }
   | { kind: 'error'; id: string; error: string }
 
 export interface PendingGate {

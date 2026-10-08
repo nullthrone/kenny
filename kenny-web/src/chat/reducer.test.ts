@@ -237,3 +237,36 @@ describe('applyChatEvent — ticket_draft', () => {
     expect(s.streaming).toBe(makeInitialState('pc-kid').streaming)
   })
 })
+
+describe('applyChatEvent — agent_run_proposal', () => {
+  it('pushes an undecided proposal card and nothing else — a proposal starts no run', () => {
+    const s = applyChatEvent(makeInitialState('pc-kid'), {
+      type: 'agent_run_proposal',
+      agent_id: 'patch',
+      host_id: 'study-pc',
+      reason: 'Three packages are behind on study-pc.',
+    })
+    expect(s.items).toEqual([
+      {
+        kind: 'agent_proposal',
+        id: 'item-0',
+        agentId: 'patch',
+        hostId: 'study-pc',
+        reason: 'Three packages are behind on study-pc.',
+        resolution: 'pending',
+      },
+    ])
+    expect(s.pendingGate).toBeNull()
+    expect(s.streaming).toBe(makeInitialState('pc-kid').streaming)
+  })
+
+  it('keeps an empty host for an agent that is not bound to a PC', () => {
+    const s = applyChatEvent(makeInitialState(''), {
+      type: 'agent_run_proposal',
+      agent_id: 'digest',
+      host_id: '',
+      reason: 'The weekly digest is due.',
+    })
+    expect(s.items[0]).toMatchObject({ kind: 'agent_proposal', hostId: '' })
+  })
+})
