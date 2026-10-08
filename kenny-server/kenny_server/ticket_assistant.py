@@ -505,9 +505,10 @@ def _narrower_role(a: str | None, b: str | None) -> str:
 #: in a verdict that carries its evidence and can resolve the ticket. A second,
 #: weaker way to write the same thing would be two records of one conclusion.
 #:
-#: Only names the loop can route are kept. A read-only tool that exists on MCP
-#: alone (``ticket_rule_list``, say) has no schema here, and a call to it made
-#: up by the model would otherwise be forwarded to the host as a capability.
+#: Only names the loop can route are kept, so this set is also the honest
+#: declaration of the ``triage`` specialized agent, whose catalog refuses a tool
+#: the loop cannot route. (The session's allowlist was already intersected with
+#: the routable tools in :func:`allowed_tools_for`; this changes no call.)
 TRIAGE_TOOLS: frozenset[str] = (
     (READ_ONLY_TOOLS - SENSITIVE_TOOLS - FLEET_WIDE_TOOLS - {TICKET_SUMMARY_TOOL})
     & (frozenset(SERVER_TOOLS) | frozenset(CAPABILITY_TOOLS))
