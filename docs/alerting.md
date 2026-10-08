@@ -284,9 +284,16 @@ default 08:00):
 
 A short weekly overview is scheduled inside the same loop and sent on the same channels
 at low priority. It is a summary to click through, not a report: the detail behind every
-line is on the dashboard. Rendered entirely from data already in the stores, it holds:
+line is on the dashboard. Rendered from data already in the stores, it holds:
 
 - the fleet health mix and how many hosts are online;
+- **In short:** one or two sentences in which the fast model reads the same facts and
+  names the host or item that most deserves attention this week, joining what the lines
+  below list separately (a host that is filling up, wearing out and failing updates is
+  one finding). It is an annotation, never the record: the lines below are computed and
+  unchanged. It is left out when the **Weekly digest summary** feature
+  (`KENNY_AI_DIGEST_ENABLED`, Admin → AI) is off, no API key or gateway is set, or the
+  model answers late (30 s) or unusably;
 - one line per host that needs attention, with the names of its sections at that
   severity (crit hosts first, at most 8 lines, the rest as `+N more hosts`). Rule
   reasons such as KB numbers or percentages are left to the host page;

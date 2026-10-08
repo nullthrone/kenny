@@ -6,7 +6,7 @@ import { api } from './client'
  * `GET /api/ai/status` uses. `aiFeatures.json` holds the same list; the server's
  * `kenny_server.ai.FEATURES` and this constant are both tested against it.
  */
-export const AI_FEATURES = ['ask', 'recommend', 'forecast', 'classify', 'ticket_assistant', 'triage'] as const
+export const AI_FEATURES = ['ask', 'recommend', 'forecast', 'classify', 'ticket_assistant', 'triage', 'digest'] as const
 
 export type AiFeature = (typeof AI_FEATURES)[number]
 

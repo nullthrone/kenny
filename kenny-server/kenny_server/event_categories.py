@@ -430,28 +430,21 @@ def _user_message(groups: list[dict[str, Any]]) -> dict[str, Any]:
 async def _classify(client: Any, groups: list[dict[str, Any]]) -> list[Classification] | None:
     """One batched fast-model call classifying ``groups``; None on any failure."""
 
-    access = ai.current()
-    request = access.fast_request(_max_tokens(len(groups)))
-    while True:
-        try:
-            resp = await asyncio.to_thread(
-                client.messages.create,
-                **request,
-                system=_cached_system(),
-                messages=[_user_message(groups)],
-            )
-        except Exception as exc:  # noqa: BLE001 - best-effort; caller falls back to defaults
-            if access.drop_effort(request, exc):
-                request = access.fast_request(_max_tokens(len(groups)))
-                continue
-            return None
-        break
     try:
-        ai.check_usable(resp)
+        resp = await asyncio.to_thread(
+            ai.create_fast,
+            ai.current(),
+            client,
+            _max_tokens(len(groups)),
+            system=_cached_system(),
+            messages=[_user_message(groups)],
+        )
     except ai.UnusableResponse as exc:
         # A cut-off list could still parse as a prefix of the batch; a refusal
         # carries no verdicts at all. Either way the defaults stand.
         logger.warning("classifying %d event group(s) failed: %s", len(groups), exc)
+        return None
+    except Exception:  # noqa: BLE001 - best-effort; caller falls back to defaults
         return None
     return _parse_classifications(_extract_text(resp), len(groups))
 
