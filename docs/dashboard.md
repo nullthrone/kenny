@@ -729,25 +729,37 @@ off is `shadow`, on is `act`.
   ticket it was bound to, its mode and status (`running`, `completed`, `failed`,
   `skipped`), its verdict, the changes it made and proposed (arguments redacted), and its
   token usage.
-- `PUT /api/specialized-agents/{agent_id}/mode` with `{"mode": "off" | "shadow" | "act"}`
-  *(superuser only)* — moving an agent to `act` is a superuser's decision, so every mode
-  write is. For triage it writes the two settings above, exactly as this page does. The
-  answer carries the mode now in force, which for triage stays `off` while no API key or
-  gateway is configured. Each change is written to the event log with who made it.
+- `PUT /api/specialized-agents/{agent_id}/mode` with `{"mode": "off" | "shadow" | "act",
+  "effective_hash"}` *(superuser, signed in at the dashboard)* — moving an agent to `act`
+  is a superuser's decision, so every mode write is. `act` must carry the agent's
+  `effective_hash` exactly as `GET /api/specialized-agents` showed it: `act` binds to that
+  hash, the answer is `400` without one and `409` when the agent has changed since (a
+  parameter edit in between), so reload and review it again. `off` and `shadow` need no
+  hash. For triage it writes the two settings above, exactly as this page does. The answer
+  carries the mode now in force, which for triage stays `off` while no API key or gateway
+  is configured. Each change is written to the event log with who made it.
 - `GET /api/specialized-agents/{agent_id}/params` *(operator+)* — the parameters the agent's
   spec declares, their values on this install, and the agent's `effective_hash`.
-- `PUT /api/specialized-agents/{agent_id}/params` with `{"params": {...}}` *(superuser only)*
-  — replaces them. A list parameter (a package allowlist) is a list of non-empty strings;
-  `window` is `{"days", "start", "end", "tz"}`, read like a web-filter schedule window.
+- `PUT /api/specialized-agents/{agent_id}/params` with `{"params": {...}}` *(superuser,
+  signed in at the dashboard)* — replaces them. A list parameter (`hosts`, the `packages`
+  allowlist) is a list of non-empty strings; `require_idle` is `true` or `false` (absent
+  means `true`: a host with somebody signed in is skipped); `window` is `{"days",
+  "start", "end", "tz"}`, read like a web-filter schedule window.
 - `GET /api/specialized-agents/{agent_id}/authorizations` *(operator+)* — the agent's
   standing authorizations, revoked, voided and expired ones included, each with its status
   and the attempts spent per host in the last 24 hours.
 - `POST /api/specialized-agents/{agent_id}/authorizations` with `{"tool", "scope",
-  "max_attempts_per_day", "expires_at", "note"}` *(superuser only)* — grants one, bound to
-  the agent's effective hash at that moment. `scope` is a list of host ids, or `"server"`
-  for a change that touches no host.
-- `DELETE /api/specialized-agents/{agent_id}/authorizations/{auth_id}` *(superuser only)* —
-  revokes one; the next call it would have covered is refused.
+  "max_attempts_per_day", "expires_at", "note", "effective_hash"}` *(superuser, signed in
+  at the dashboard)* — grants one, bound to `effective_hash`, the agent's hash as `GET
+  /api/specialized-agents` showed it: `400` without one, `409` when the agent has changed
+  since. `scope` is a list of host ids, or `"server"` for a change that touches no host.
+- `DELETE /api/specialized-agents/{agent_id}/authorizations/{auth_id}` *(superuser, signed
+  in at the dashboard)* — revokes one; the next call it would have covered is refused.
+
+Choosing a mode, granting, revoking and editing parameters are a person's consent, so they
+need a superuser signed in to their own account in a browser. The same calls made with a
+personal access token, an OAuth token (what Claude uses for `/mcp`) or the shared operator
+token are refused with `403`; reading stays open to them.
 
 `act` is bound to the agent's **effective hash**: its spec (including the tier of every
 tool it names) together with its parameters. A parameter edit that changes the hash, or a
@@ -767,6 +779,8 @@ good, so neither a parameter edit nor a code rollback revives them.
 
 Each server start marks a run the previous process left open as `failed`, deletes finished
 runs older than 90 days, and voids every authorization bound to what an agent no longer is.
+For an agent no longer in the catalog it voids every authorization and drops a stored `act`
+to `shadow`, so an agent removed and shipped again later starts over in `shadow`.
 
 ### Tickets
 

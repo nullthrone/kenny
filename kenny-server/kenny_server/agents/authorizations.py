@@ -26,6 +26,8 @@ What it enforces, and where:
   every authorization bound to a hash other than the agent's current one.
   Nothing clears it, so rolling the code or the parameters back does not
   revive a grant made against what the agent used to be.
+  :meth:`void_absent_agents` does the same for every agent no longer in the
+  catalog, so removing an agent and shipping it again revives nothing either.
 
 Storage follows :mod:`kenny_server.agents.store`: its own connection on the
 shared DB file, ``CREATE TABLE IF NOT EXISTS`` only, UTC ISO-8601 text stamps
@@ -370,6 +372,44 @@ class AuthorizationStore:
             changed = cur.rowcount or 0
             await self._conn.commit()
         return changed
+
+    async def void_absent_agents(
+        self,
+        agent_ids: Sequence[str],
+        actor: str = "system",
+        *,
+        now: datetime | None = None,
+    ) -> dict[str, int]:
+        """Void, for good, every live authorization of an agent not in ``agent_ids``.
+
+        Returns how many were voided per agent id. Called at startup with the
+        catalog's ids: an agent a release removed must not find its grants
+        waiting when an identical spec comes back (ADR-0072 rule 6).
+        """
+
+        keep = sorted(set(agent_ids))
+        absent = f"AND agent_id NOT IN ({', '.join('?' for _ in keep)})" if keep else ""
+        async with write_lock():
+            await _begin_immediate(self._conn)
+            try:
+                async with self._conn.execute(
+                    "SELECT agent_id, COUNT(*) AS n FROM agent_authorizations "
+                    f"WHERE voided_at IS NULL AND revoked_at IS NULL {absent} "
+                    "GROUP BY agent_id",
+                    keep,
+                ) as cur:
+                    counts = {str(row["agent_id"]): int(row["n"]) for row in await cur.fetchall()}
+                if counts:
+                    await self._conn.execute(
+                        "UPDATE agent_authorizations SET voided_at = ?, voided_by = ? "
+                        f"WHERE voided_at IS NULL AND revoked_at IS NULL {absent}",
+                        (_iso(now or datetime.now(timezone.utc)), actor, *keep),
+                    )
+                await self._conn.commit()
+            except BaseException:
+                await self._conn.rollback()
+                raise
+        return counts
 
     # -- the gate's question -----------------------------------------------
 

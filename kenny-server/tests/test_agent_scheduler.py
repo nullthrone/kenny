@@ -30,13 +30,14 @@ import pytest
 
 from kenny_server.agents import scheduler as scheduler_module
 from kenny_server.agents.catalog import CATALOG
-from kenny_server.agents.runner import ENABLED_SETTING, AgentRunner
+from kenny_server.agents.runner import ENABLED_SETTING, AgentRunner, validate_params
 from kenny_server.agents.scheduler import (
     BENIGN_REFUSALS,
     BREAKER_ACTOR,
     MIN_INTERVAL_S,
     SCHEDULE_TRIGGER_PREFIX,
     AgentScheduler,
+    halts,
     host_supports,
     made_change,
     run_failed,
@@ -466,7 +467,9 @@ async def _nights(w: World, sched: AgentScheduler, count: int) -> None:
 
 async def test_three_failed_runs_in_a_row_move_an_agent_in_act_back_to_shadow(w: World) -> None:
     _posture(w, WIN_A)
-    await w.runner.set_mode("posture", "act", actor="admin")
+    await w.runner.set_mode(
+        "posture", "act", actor="admin", effective_hash=await w.runner.live_hash("posture")
+    )
     w.runner.script[WIN_A] = FAILED
     sched = w.scheduler()
     await _nights(w, sched, 2)
@@ -484,7 +487,9 @@ async def test_three_failed_runs_in_a_row_move_an_agent_in_act_back_to_shadow(w:
 
 async def test_a_success_in_between_resets_the_count(w: World) -> None:
     _posture(w, WIN_A)
-    await w.runner.set_mode("posture", "act", actor="admin")
+    await w.runner.set_mode(
+        "posture", "act", actor="admin", effective_hash=await w.runner.live_hash("posture")
+    )
     sched = w.scheduler()
     for outcome in (FAILED, FAILED, {}, FAILED, FAILED):
         w.runner.script[WIN_A] = outcome
@@ -494,7 +499,9 @@ async def test_a_success_in_between_resets_the_count(w: World) -> None:
 
 async def test_a_refused_change_never_trips_the_breaker(w: World) -> None:
     _patch(w, WIN_A, require_idle=False)
-    await w.runner.set_mode("patch", "act", actor="admin")
+    await w.runner.set_mode(
+        "patch", "act", actor="admin", effective_hash=await w.runner.live_hash("patch")
+    )
     for code in ("disabled", "blocked", "paused", "disabled", "blocked"):
         w.runner.script[WIN_A] = {
             "verdict": "actionable",
@@ -507,7 +514,9 @@ async def test_a_refused_change_never_trips_the_breaker(w: World) -> None:
 
 async def test_errored_changes_do_trip_the_breaker(w: World) -> None:
     _patch(w, WIN_A, require_idle=False)
-    await w.runner.set_mode("patch", "act", actor="admin")
+    await w.runner.set_mode(
+        "patch", "act", actor="admin", effective_hash=await w.runner.live_hash("patch")
+    )
     w.runner.script[WIN_A] = {
         "verdict": "inconclusive",
         "actions": [{"tool": "winget_update", "args": {"id": FIREFOX}, "ok": False, "code": "exec_failed"}],
@@ -518,7 +527,9 @@ async def test_errored_changes_do_trip_the_breaker(w: World) -> None:
 
 async def test_interrupted_and_skipped_runs_do_not_count_toward_the_breaker(w: World) -> None:
     _posture(w, WIN_A)
-    await w.runner.set_mode("posture", "act", actor="admin")
+    await w.runner.set_mode(
+        "posture", "act", actor="admin", effective_hash=await w.runner.live_hash("posture")
+    )
     sched = w.scheduler()
     w.runner.script[WIN_A] = FAILED
     await _nights(w, sched, 1)
@@ -539,10 +550,185 @@ async def test_failures_in_shadow_leave_the_mode_alone(w: World) -> None:
 
 async def test_the_threshold_is_configurable(w: World) -> None:
     _posture(w, WIN_A)
-    await w.runner.set_mode("posture", "act", actor="admin")
+    await w.runner.set_mode(
+        "posture", "act", actor="admin", effective_hash=await w.runner.live_hash("posture")
+    )
     w.runner.script[WIN_A] = FAILED
     await _nights(w, w.scheduler(breaker_threshold=1), 1)
     assert await w.runner.mode_of("posture") == "shadow"
+
+
+async def test_an_interruption_neither_counts_nor_breaks_a_streak(w: World) -> None:
+    _posture(w, WIN_A)
+    await w.runner.set_mode(
+        "posture", "act", actor="admin", effective_hash=await w.runner.live_hash("posture")
+    )
+    sched = w.scheduler()
+    for outcome in (FAILED, FAILED, {"status": "failed", "verdict": None, "error": INTERRUPTED_ERROR}):
+        w.runner.script[WIN_A] = outcome
+        await _nights(w, sched, 1)
+    assert await w.runner.mode_of("posture") == "act"
+    w.runner.script[WIN_A] = FAILED
+    await _nights(w, sched, 1)
+    assert await w.runner.mode_of("posture") == "shadow"  # three real failures, one pause
+
+
+# -- a change nobody confirmed -----------------------------------------------------
+
+CHANGED_NO_VERDICT = {
+    "verdict": None,
+    "actions": [{"tool": "winget_update", "args": {"id": FIREFOX}, "ok": True}],
+}
+
+
+async def test_a_change_with_no_verdict_stops_the_canary(w: World) -> None:
+    _patch(w, WIN_A, WIN_B, require_idle=False)
+    w.runner.script[WIN_A] = CHANGED_NO_VERDICT
+    await w.scheduler().pass_once()
+    assert w.hosts_run("patch") == [WIN_A]
+
+
+@pytest.mark.parametrize("verdict", [None, "actionable", "inconclusive", "clean"])
+def test_only_acted_confirms_a_change(verdict: str | None) -> None:
+    changed = [{"tool": "winget_update", "args": {"id": FIREFOX}, "ok": True}]
+    assert halts(_row(verdict=verdict, actions=changed))
+    assert stops_canary(_row(verdict=verdict, actions=changed))
+    assert not halts(_row(verdict="acted", actions=changed))
+    assert not halts(_row(verdict=verdict))  # nothing changed, nothing to confirm
+
+
+@pytest.mark.parametrize("outcome", [CHANGED_NO_VERDICT, CHANGED_ACTIONABLE])
+async def test_halts_count_toward_the_circuit_breaker(w: World, outcome: dict[str, Any]) -> None:
+    """A halt that never trips anything lasts only until the next window."""
+
+    _patch(w, WIN_A, require_idle=False)
+    await w.runner.set_mode(
+        "patch", "act", actor="admin", effective_hash=await w.runner.live_hash("patch")
+    )
+    w.runner.script[WIN_A] = outcome
+    sched = w.scheduler()
+    await _nights(w, sched, 2)
+    assert await w.runner.mode_of("patch") == "act"
+    outcomes = await sched.pass_once()
+    assert [o.kind for o in outcomes] == ["ran", "tripped"]
+    assert await w.runner.mode_of("patch") == "shadow"
+
+
+async def test_an_acted_night_resets_the_halt_streak(w: World) -> None:
+    _patch(w, WIN_A, require_idle=False)
+    await w.runner.set_mode(
+        "patch", "act", actor="admin", effective_hash=await w.runner.live_hash("patch")
+    )
+    sched = w.scheduler()
+    acted = {**CHANGED_ACTIONABLE, "verdict": "acted"}
+    for outcome in (CHANGED_NO_VERDICT, CHANGED_NO_VERDICT, acted, CHANGED_NO_VERDICT):
+        w.runner.script[WIN_A] = outcome
+        await _nights(w, sched, 1)
+    assert await w.runner.mode_of("patch") == "act"
+
+
+# -- the window bounds the work, not only the start --------------------------------
+
+
+async def test_a_pass_stops_when_the_window_closes_between_hosts(w: World) -> None:
+    """Window 02:00-05:00, pass at 03:00, each run takes 90 minutes.
+
+    A runs 03:00-04:30, B 04:30-06:00; C would start at 06:00, outside the
+    window, so it is not started — it waits for the next occurrence.
+    """
+
+    _posture(w, WIN_A, WIN_B, WIN_C)
+
+    def ninety_minutes(_call: Any) -> dict[str, Any]:
+        w.now = w.now + timedelta(minutes=90)
+        return {"verdict": "clean"}
+
+    w.runner.script["*"] = ninety_minutes
+    outcomes = await w.scheduler().pass_once()
+    assert w.hosts_run("posture") == [WIN_A, WIN_B]
+    assert (outcomes[-1].kind, outcomes[-1].host_id) == ("halted", WIN_C)
+    assert "window" in outcomes[-1].detail
+    # The next occurrence starts with the first host again, as always.
+    w.runner.script.clear()
+    w.now = IN_WINDOW + timedelta(days=1)
+    await w.scheduler().pass_once()
+    assert w.hosts_run("posture") == [WIN_A, WIN_B, WIN_A, WIN_B, WIN_C]
+
+
+async def test_a_window_edited_shut_mid_pass_stops_it(w: World) -> None:
+    _posture(w, WIN_A, WIN_B)
+
+    def close_the_window(_call: Any) -> dict[str, Any]:
+        w.configure("posture", window={**NIGHT, "start": "04:00", "end": "05:00"})
+        return {"verdict": "clean"}
+
+    w.runner.script[WIN_A] = close_the_window
+    await w.scheduler().pass_once()
+    assert w.hosts_run("posture") == [WIN_A]
+
+
+async def test_a_scheduled_run_is_handed_the_end_of_its_occurrence(w: World) -> None:
+    _posture(w, WIN_A)
+    await w.scheduler().pass_once()
+    [call] = w.runner.calls
+    assert call.kw["act_until"] == datetime(2026, 10, 8, 5, 0, tzinfo=timezone.utc)
+
+
+async def test_a_window_whose_end_cannot_be_told_never_runs(
+    w: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _posture(w, WIN_A)
+    real = scheduler_module.schedule_state
+
+    def no_end(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        return {**real(*args, **kwargs), "next_change_at": None}
+
+    monkeypatch.setattr(scheduler_module, "schedule_state", no_end)
+    assert await w.scheduler().pass_once() == []
+    assert w.runner.calls == []
+
+
+async def test_joined_a_change_after_the_window_closed_is_refused(w: World) -> None:
+    """Through the real runner and gate: the run outlasts its window, its change does not run."""
+
+    real = AgentRunner(
+        store=w.agent_store,
+        settings=w.settings,
+        catalog=CATALOG,
+        event_store=w.event_store,
+        now=lambda: w.now,
+    )
+    await real.set_params(
+        "patch",
+        {"window": NIGHT, "hosts": [WIN_A], "packages": [FIREFOX], "require_idle": False},
+        actor="admin",
+    )
+    await real.set_mode("patch", "act", actor="admin", effective_hash=await real.live_hash("patch"))
+
+    tunnel = w.executor.tunnel
+    send = tunnel.send_request
+
+    async def slow_list(agent_id: str, tool: str, args: dict[str, Any], timeout_s: float) -> Any:
+        if tool == "winget_list":
+            w.now = datetime(2026, 10, 8, 5, 1, tzinfo=timezone.utc)  # the window has closed
+        return await send(agent_id, tool, args, timeout_s)
+
+    tunnel.send_request = slow_list  # type: ignore[method-assign]
+    client = FakeAnthropic(
+        [
+            _Response([tool_use_block("t1", "winget_list", {})], "tool_use"),
+            _Response([tool_use_block("t2", "winget_update", {"id": FIREFOX})], "tool_use"),
+            _Response([text_block("done")], "end_turn"),
+        ]
+    )
+    [outcome] = await AgentScheduler(
+        real, CATALOG, real.get_params, w.executor, now=lambda: w.now, client=client, model="m"
+    ).pass_once()
+    assert outcome.kind == "ran" and outcome.run is not None
+    assert outcome.run.mode == "act"
+    assert outcome.run.actions == []
+    assert [r["tool"] for r in outcome.run.recommendations] == ["winget_update"]
+    assert [c["tool"] for c in w.capability_calls] == ["winget_list"]
 
 
 # -- host_idle -------------------------------------------------------------------
@@ -634,6 +820,43 @@ async def test_require_idle_missing_is_on(w: World) -> None:
     w.idle[WIN_A] = {"interactive_session": True}
     await w.scheduler().pass_once()
     assert w.runner.calls == []
+
+
+@pytest.mark.parametrize("value", ["false", "no", 0, 1, None, [], ["false"], {"x": 1}])
+def test_require_idle_is_a_json_boolean_and_nothing_else(value: Any) -> None:
+    with pytest.raises(ValueError, match="true or false"):
+        validate_params(CATALOG["patch"], {"require_idle": value})
+
+
+@pytest.mark.parametrize("value", [True, False])
+def test_require_idle_is_stored_as_the_boolean_given(value: bool) -> None:
+    assert validate_params(CATALOG["patch"], {"require_idle": value}) == {"require_idle": value}
+
+
+@pytest.mark.parametrize("stored", [["false"], [], "false", 0, None])
+async def test_only_a_stored_false_switches_the_idle_check_off(w: World, stored: Any) -> None:
+    # Values a parameter written before require_idle was a boolean may carry:
+    # every one of them means "check", the safe direction.
+    _patch(w, WIN_A, require_idle=stored)
+    w.idle[WIN_A] = {"interactive_session": True}
+    await w.scheduler().pass_once()
+    assert w.runner.calls == []
+    assert [c["tool"] for c in w.capability_calls] == ["remotehelp_status"]
+
+
+async def test_joined_require_idle_false_through_the_runners_stored_parameters(w: World) -> None:
+    await w.runner.set_params(
+        "patch",
+        {"window": NIGHT, "hosts": [WIN_A], "packages": [FIREFOX], "require_idle": False},
+        actor="admin",
+    )
+    assert (await w.runner.get_params("patch"))["require_idle"] is False
+    w.idle[WIN_A] = {"interactive_session": True}
+    await AgentScheduler(
+        w.runner, CATALOG, w.runner.get_params, w.executor, now=lambda: w.now
+    ).pass_once()
+    assert w.capability_calls == []
+    assert w.hosts_run("patch") == [WIN_A]
 
 
 async def test_an_agent_without_the_parameter_never_asks(w: World) -> None:

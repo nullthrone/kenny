@@ -73,8 +73,9 @@ introduced by mistake fails the run loudly instead of parking it.
 
 A change runs only if the run was ``act`` when the policy was built, its
 ``session.mode`` still is, *and* ``still_acting()`` — a live predicate the
-runner supplies (the global switch on and the agent's mode ``act``) — says so
-at the call. Demoting an agent or switching every agent off mid-run therefore
+runner supplies (the global switch on, the agent's mode ``act`` bound to the
+run's effective hash, and for a scheduled run its maintenance window still
+open) — says so at the call. Demoting an agent or switching every agent off mid-run therefore
 takes effect at its next change, which is refused and recorded as a
 recommendation exactly as in ``shadow``; promoting one mid-run does not. A
 predicate that raises is "not acting". Without a predicate (tests only) the

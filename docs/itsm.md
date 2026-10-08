@@ -287,8 +287,12 @@ each investigation is one run, bound by the global agent switch and caps in **Ad
 and recorded with its verdict and token usage in the agent run history
 (`GET /api/specialized-agents/runs?agent_id=triage`). Its host calls are audited as `agent:triage`
 under that run's id; on the ticket's own timeline it still appears as triage. A ticket an
-agent's own action opened is never investigated, so one agent's effect cannot start
-another.
+agent's own action opened is never investigated, and neither is any new ticket on a machine
+an agent changed in the last 6 hours — an alert the change raised opens such a ticket — so
+one agent's effect cannot start another. That skip is recorded in the run history as a
+*skipped* triage run naming the agent and the run that made the change. An investigation
+does not read the machine's browsing history: a snapshot handed to it leaves the
+`web_activity` section out.
 
 See [ADR-0056](adr/0056-unprompted-ticket-triage.md) for the reasoning and the three
 controls that bound it, and

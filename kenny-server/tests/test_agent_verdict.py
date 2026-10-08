@@ -170,6 +170,16 @@ async def test_an_actionable_verdict_opens_an_agent_ticket_in_either_mode(
     assert session.verdict["ticket_id"] == ticket.id
 
 
+async def test_the_ticket_is_opened_by_the_agent_in_its_run_not_by_system(rig: Rig) -> None:
+    session = rig.session()
+    await rig.service.record_verdict(_args("actionable"), session=session)
+    [ticket] = await rig.agent_tickets()
+    [genesis] = [e for e in await rig.tickets.events(ticket.id) if e.kind == "state"]
+    assert genesis.actor == "agent:posture"
+    assert genesis.fields["run"] == session.id
+    assert (genesis.fields["origin"], genesis.fields["agent_id"]) == (AGENT_ORIGIN, HOST)
+
+
 async def test_the_ticket_title_is_one_bounded_line(rig: Rig) -> None:
     session = rig.session()
     await rig.service.record_verdict(

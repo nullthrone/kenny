@@ -4,7 +4,11 @@ Every run passes the same doors in the same order, and each door is here rather
 than in the agent so no agent can forget one:
 
 1. **An agent's effect never starts another agent** (rule 6). A ticket whose
-   origin is :data:`~kenny_server.ticketstore.AGENT_ORIGIN` starts nothing.
+   origin is :data:`~kenny_server.ticketstore.AGENT_ORIGIN` starts nothing,
+   and neither does any ticket on a host an agent changed within
+   :data:`AGENT_CHANGE_QUIET_PERIOD` — an alert the change raised opens a
+   ticket of another origin — which is recorded as a ``skipped`` run naming
+   the agent and the run.
 2. **The global switch** (``KENNY_AGENTS_ENABLED``) and **the agent's mode**.
    ``off`` either way means the run never existed: nothing is recorded.
 3. **The global caps**, concurrent runs (``KENNY_AGENTS_MAX_CONCURRENT``) and
@@ -41,15 +45,19 @@ switching every agent off reaches a run already in flight.
 
 **``act`` binds to the effective hash** (ADR-0072 rule 6): the spec hash
 combined with the agent's parameters
-(:func:`~kenny_server.agents.spec.effective_hash`). Choosing ``act`` stores the
-hash it was chosen at; an agent is in ``act`` only while that stored hash
+(:func:`~kenny_server.agents.spec.effective_hash`). Choosing ``act`` names the
+hash the person choosing it was shown, and is refused unless that is still the
+live hash; the stored binding is that reviewed hash, never one read at the
+moment of the write. An agent is in ``act`` only while that stored hash
 equals the live one, computed from the catalog entry and the stored parameters
 on every read. The first read that finds them apart drops the agent to
 ``shadow`` for good (a code rollback does not promote it again), records who
 and why on the event log, and voids every authorization bound to another hash.
 A parameter edit (:meth:`AgentRunner.set_params`) does the same at once. A
 generic run freezes its parameters and effective hash at start, and its
-``still_acting`` also turns false once the live hash moves away from the run's.
+``still_acting`` also turns false once the live hash moves away from the run's,
+and, for a scheduled run, once its maintenance window has closed
+(``act_until``).
 
 Triage is outside that binding: its mode is its settings, and it takes no
 parameters.
@@ -71,13 +79,14 @@ from ..webfilter import DAY_KEYS, format_hhmm, parse_recurrence
 from .authorizations import Authorization, AuthorizationStore
 from .catalog import CATALOG, check_dispatchable
 from .policy import AgentPolicy, AgentSession, Authorizer
-from .spec import MODES, AgentSpec, effective_hash, resolve, validate
-from .store import AgentRun, AgentStore
+from .spec import MODES, AgentSpec, effective_hash, param_kind, resolve, validate
+from .store import INTERRUPTED_ERROR, AgentRun, AgentStore
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from ..triage import TriageService
 
 __all__ = [
+    "AGENT_CHANGE_QUIET_PERIOD",
     "DAILY_TOKENS_SETTING",
     "ENABLED_SETTING",
     "MAX_CONCURRENT_SETTING",
@@ -85,6 +94,7 @@ __all__ = [
     "TICKET_CREATED_TRIGGER",
     "TRIAGE_AGENT_ID",
     "AgentRunner",
+    "HashMismatch",
     "caused_by_agent",
 ]
 
@@ -111,8 +121,10 @@ RUN_RETENTION_DAYS = 90
 #: Ceiling on the free text a run row carries (summary, error).
 _MAX_TEXT = 2000
 
-#: What a run that left without finishing (cancelled, interrupted) is closed with.
-_INTERRUPTED = "the run was interrupted before it finished"
+#: How long after an agent changed a host a new ticket on that host starts no
+#: triage (ADR-0071 rule 6): the ticket may be the change's own effect, raised
+#: as an alert rather than opened by the agent.
+AGENT_CHANGE_QUIET_PERIOD = timedelta(hours=6)
 
 #: The actor recorded when the server, not a person, drops an agent to shadow.
 _SYSTEM_ACTOR = "system"
@@ -125,16 +137,26 @@ _MAX_PARAM_VALUES = 200
 _MAX_PARAM_VALUE_LEN = 200
 
 
+class HashMismatch(ValueError):
+    """The effective hash a person reviewed is not the agent's live one.
+
+    Consent binds to what the person saw; if the agent changed in between
+    (a concurrent parameter edit), there is nothing to bind it to.
+    """
+
+
 def validate_params(spec: AgentSpec, params: Any) -> dict[str, Any]:
     """``params`` checked against what ``spec`` declares, normalised; else :class:`ValueError`.
 
-    Keys must be among ``spec.params``. ``window`` is a mapping
+    Keys must be among ``spec.params``; each is read by its kind
+    (:func:`~kenny_server.agents.spec.param_kind`). ``window`` is a mapping
     ``{days, start, end[, tz]}`` validated by the web filter's own parser
     (:func:`~kenny_server.webfilter.parse_recurrence`) and stored normalised
-    (``days`` as weekday keys, times as ``HH:MM``, the zone filled in). Every
-    other parameter is a list of non-empty strings, deduplicated and sorted, so
-    the same set always yields the same effective hash. An empty list is kept:
-    it admits nothing.
+    (``days`` as weekday keys, times as ``HH:MM``, the zone filled in). A
+    ``bool`` parameter is a JSON ``true`` or ``false`` and nothing else — not
+    ``"false"``, not ``0``, not a list. Every other parameter is a list of
+    non-empty strings, deduplicated and sorted, so the same set always yields
+    the same effective hash. An empty list is kept: it admits nothing.
     """
 
     if not isinstance(params, Mapping):
@@ -162,6 +184,11 @@ def validate_params(spec: AgentSpec, params: Any) -> dict[str, Any]:
                 "end": format_hhmm(end_min),
                 "tz": zone,
             }
+            continue
+        if param_kind(name) == "bool":
+            if not isinstance(value, bool):
+                raise ValueError(f"{name} must be true or false")
+            out[name] = value
             continue
         if not isinstance(value, (list, tuple)):
             raise ValueError(f"{name} must be a list of values")
@@ -319,7 +346,15 @@ class AgentRunner:
     # -- lifecycle -----------------------------------------------------------
 
     async def startup(self) -> None:
-        """Account for runs a dead process left open; drop runs past retention."""
+        """Account for runs a dead process left open; drop runs past retention.
+
+        Also unbinds, before anything runs, what was granted to an agent that is
+        no longer what it was: an authorization bound to another hash is voided
+        and a stale ``act`` dropped; for an agent no longer in the catalog at
+        all, every live authorization is voided and a stored ``act`` dropped,
+        so removing an agent and shipping an identical spec later revives
+        neither (ADR-0072 rule 6).
+        """
 
         interrupted = await self.store.fail_interrupted()
         if interrupted:
@@ -334,6 +369,30 @@ class AgentRunner:
             if live is not None:
                 await self._void_others(spec.id, live, _SYSTEM_ACTOR)
             await self._mode_for(spec)
+        await self._unbind_removed()
+
+    async def _unbind_removed(self) -> None:
+        """Void the grants of, and drop ``act`` for, every agent the catalog lacks."""
+
+        present = sorted(self.catalog)
+        if self.authorizations is not None:
+            voided = await self.authorizations.void_absent_agents(present, _SYSTEM_ACTOR)
+            for agent_id, count in sorted(voided.items()):
+                await self._record_event(
+                    agent_id,
+                    f"agent {agent_id}: {count} authorization(s) voided by {_SYSTEM_ACTOR}: "
+                    "the agent is no longer in the catalog",
+                    {"voided": count, "actor": _SYSTEM_ACTOR},
+                    level="warning",
+                )
+        for agent_id in await self.store.demote_absent(present, actor=_SYSTEM_ACTOR):
+            await self._record_event(
+                agent_id,
+                f"agent {agent_id}: mode set to shadow by {_SYSTEM_ACTOR}: "
+                "the agent is no longer in the catalog",
+                {"mode": "shadow", "actor": _SYSTEM_ACTOR},
+                level="warning",
+            )
 
     # -- modes ---------------------------------------------------------------
 
@@ -420,8 +479,37 @@ class AgentRunner:
 
         return await self._mode_for(self.spec(agent_id))
 
-    async def set_mode(self, agent_id: str, mode: str, *, actor: str) -> str:
+    async def _reviewed(self, spec: AgentSpec, reviewed_hash: str | None) -> str:
+        """``reviewed_hash`` if it is ``spec``'s live hash; else :class:`ValueError`.
+
+        :class:`HashMismatch` when the person reviewed something the agent no
+        longer is; a plain :class:`ValueError` when they named nothing.
+        """
+
+        if not isinstance(reviewed_hash, str) or not reviewed_hash:
+            raise ValueError(
+                "effective_hash is required: the hash of the agent as it was shown "
+                "to the person consenting"
+            )
+        live = await self.live_hash(spec.id)
+        if reviewed_hash != live:
+            raise HashMismatch(
+                f"agent {spec.id} changed since it was shown (effective hash "
+                f"{reviewed_hash[:12]} is now {str(live)[:12]}); review it again"
+            )
+        return reviewed_hash
+
+    async def set_mode(
+        self, agent_id: str, mode: str, *, actor: str, effective_hash: str | None = None
+    ) -> str:
         """Choose ``agent_id``'s mode; returns the mode now in force.
+
+        Choosing ``act`` needs ``effective_hash``: the hash of the agent as the
+        person choosing it was shown it (ADR-0072 rule 6). ``act`` binds to that
+        hash, never to whatever the agent is at the moment of the write, so a
+        concurrent parameter edit cannot widen what they agreed to;
+        :class:`HashMismatch` when it is no longer the live hash. ``off`` and
+        ``shadow`` take none: the circuit breaker demotes without one.
 
         For ``triage`` this writes its settings through the same
         :meth:`~kenny_server.config.Settings.set` the dashboard's settings page
@@ -433,20 +521,20 @@ class AgentRunner:
         key or gateway is configured.
 
         Raises :class:`KeyError` for an unknown agent, :class:`ValueError` for
-        an unknown mode.
+        an unknown mode or an ``act`` without a hash.
         """
 
         spec = self.spec(agent_id)
         if mode not in MODES:
             raise ValueError(f"unknown agent mode {mode!r}; expected one of {', '.join(MODES)}")
+        bound = await self._reviewed(spec, effective_hash) if mode == "act" else None
         if spec.id == TRIAGE_AGENT_ID:
             # Off clears resolve too, so a run already in flight cannot resolve
             # at its verdict, and turning triage back on starts it in shadow.
             await self.settings.set(_TRIAGE_RESOLVE, "1" if mode == "act" else "0")
             await self.settings.set(_TRIAGE_ENABLED, "0" if mode == "off" else "1")
         else:
-            # ``act`` is chosen for what the agent is now; it binds to that.
-            bound = await self.live_hash(spec.id) if mode == "act" else None
+            # ``act`` is chosen for what the person was shown; it binds to that.
             await self.store.set_mode(spec.id, mode, actor=actor, act_hash=bound)
         await self._record_mode_change(spec.id, mode, actor)
         return await self._mode_for(spec)
@@ -549,21 +637,25 @@ class AgentRunner:
         max_attempts_per_day: Any,
         expires_at: Any,
         actor: str,
+        effective_hash: str | None,
         note: str = "",
     ) -> Authorization:
-        """Grant ``agent_id`` a standing authorization bound to its *current* effective hash.
+        """Grant ``agent_id`` a standing authorization bound to the hash a person reviewed.
 
-        Raises :class:`KeyError` for an unknown agent and
+        ``effective_hash`` is the agent's hash as the person granting was shown
+        it; the grant binds to it, never to the hash at the moment of the
+        write. Raises :class:`KeyError` for an unknown agent,
+        :class:`HashMismatch` when it is no longer the live hash, a
+        :class:`ValueError` when it is missing, and
         :class:`~kenny_server.agents.authorizations.AuthorizationError` for a
         grant the store refuses. Who may call this is the API's to enforce.
         """
 
         spec = self.spec(agent_id)
-        live = await self.live_hash(spec.id)
-        assert live is not None  # self.spec() found it in the catalog
+        reviewed = await self._reviewed(spec, effective_hash)
         return await self._authorizations().grant(
             spec=spec,
-            effective_hash=live,
+            effective_hash=reviewed,
             tool=tool,
             scope=scope,
             max_attempts_per_day=max_attempts_per_day,
@@ -712,6 +804,25 @@ class AgentRunner:
         if ticket.agent_id is None:
             # Nowhere to look, so no investigation and no run to record.
             return
+        changed_by = await self._recent_agent_change(ticket.agent_id)
+        if changed_by is not None:
+            hours = int(AGENT_CHANGE_QUIET_PERIOD.total_seconds() // 3600)
+            reason = (
+                f"agent {changed_by.agent_id} (run {changed_by.id}) changed this machine "
+                f"within the last {hours} hours; an agent's effect never starts another agent"
+            )
+            logger.info("ticket %s: no triage: %s", ticket.id, reason)
+            skipped = await self.store.start_run(
+                agent_id=spec.id,
+                spec_hash=spec.spec_hash,
+                trigger=TICKET_CREATED_TRIGGER,
+                mode=mode,
+                subject=f"ticket:{ticket.id}",
+                host_id=ticket.agent_id,
+                ticket_id=ticket.id,
+            )
+            await self.store.finish_run(skipped.id, status="skipped", error=reason)
+            return
         run, admitted = await self._admit(
             spec,
             mode,
@@ -724,7 +835,7 @@ class AgentRunner:
         if not admitted:
             return
         meter = UsageMeter()
-        status, error, verdict = "failed", _INTERRUPTED, None
+        status, error, verdict = "failed", INTERRUPTED_ERROR, None
         try:
             verdict = await self.triage.investigate(
                 ticket, run_id=run.id, usage=meter, resolve=mode == "act"
@@ -737,6 +848,20 @@ class AgentRunner:
             await self._close(
                 run.id, status=status, verdict=verdict, usage=meter.to_dict(), error=error
             )
+
+    async def _recent_agent_change(self, host_id: str) -> AgentRun | None:
+        """The newest run that changed ``host_id`` within the quiet period, or ``None``.
+
+        A change is an action the gate allowed that did not fail (``ok`` not
+        ``False``): one whose outcome was never paired, because the run was
+        interrupted, may have run, so it counts.
+        """
+
+        since = self._now() - AGENT_CHANGE_QUIET_PERIOD
+        for run in await self.store.runs_on_host_since(host_id, since.isoformat()):
+            if any(a.get("ok") is not False for a in run.actions):
+                return run
+        return None
 
     # -- any other agent -----------------------------------------------------
 
@@ -751,8 +876,14 @@ class AgentRunner:
         model: str | None = None,
         executor: ToolExecutor | None = None,
         authorizer: Authorizer | None = None,
+        act_until: datetime | None = None,
     ) -> AgentRun | None:
         """Run ``spec`` once on ``host_id`` through the agent gate.
+
+        ``act_until`` is the moment from which no change of this run may start
+        (the end of the maintenance window a scheduled run belongs to): from
+        then on the gate refuses every change and records it as a
+        recommendation, as it does once the agent leaves ``act``.
 
         ``client``, ``model`` and ``executor`` default to what :meth:`configure`
         set; :class:`RuntimeError` if neither supplies one. ``authorizer``
@@ -820,11 +951,13 @@ class AgentRunner:
 
         meter = UsageMeter()
         session: AgentSession | None = None
-        status, error, summary, verdict = "failed", _INTERRUPTED, None, None
+        status, error, summary, verdict = "failed", INTERRUPTED_ERROR, None, None
         change_results: list[dict[str, Any]] = []
         finished: AgentRun | None = None
 
         async def still_acting() -> bool:
+            if act_until is not None and self._now() >= act_until:
+                return False
             if not self.enabled() or await self._mode_for(spec) != "act":
                 return False
             # Bound to what the agent was when this run started.
