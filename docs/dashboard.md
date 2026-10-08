@@ -607,6 +607,13 @@ the dashboard — see [Environment variables](setup.md#environment-variables). B
 settings, a section shows the state they act on: the Discord connection, the backup list,
 the update rollout.
 
+Two settings let kenny act on its own — **Let triage resolve a ticket**
+(`KENNY_TRIAGE_RESOLVE`) and the global switch for the
+[specialized agents](#specialized-agents) (`KENNY_AGENTS_ENABLED`). Switching either on,
+or resetting it, needs a superuser signed in here, not an API token
+([ADR-0072](adr/0072-standing-authorizations-consent-given-ahead.md)); switching either
+off works with any superuser credential.
+
 Every setting row shows its **label**, its **current value**, and a **source badge** —
 `DEFAULT`, `ENV`, or `CUSTOM` — telling you where that value came from. A value saved here
 is `CUSTOM` and wins over the environment; **reset to default** drops it, so the setting
