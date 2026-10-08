@@ -43,6 +43,7 @@ __all__ = [
     "EVENTS",
     "MAX_TIMEOUT_S",
     "MODES",
+    "PARAM_KINDS",
     "TRIGGER_KINDS",
     "VERDICT_TOOLS",
     "AgentSpec",
@@ -52,6 +53,7 @@ __all__ = [
     "ToolTimeout",
     "Trigger",
     "effective_hash",
+    "param_kind",
     "resolve",
     "validate",
 ]
@@ -83,6 +85,12 @@ EVENTS: tuple[str, ...] = ("ticket_created",)
 #: module stays stdlib-only; ``tests/test_agent_spec.py`` joins it to
 #: ``toolloop.TRIAGE_VERDICT_TOOL`` and ``toolloop.AGENT_VERDICT_TOOL``.
 VERDICT_TOOLS: frozenset[str] = frozenset({"ticket_triage_verdict", "agent_verdict"})
+
+#: The kind of value a parameter takes, by name. ``window`` is a maintenance
+#: window (``{days, start, end[, tz]}``) and ``bool`` a JSON ``true``/``false``;
+#: every parameter not named here is a list of strings (an allowlist, a host
+#: list). Keyed by name so the same name means the same thing in every agent.
+PARAM_KINDS: Mapping[str, str] = {"window": "window", "require_idle": "bool"}
 
 _PARAM_RE = re.compile(r"^[a-z][a-z0-9_]{0,40}$")
 
@@ -368,6 +376,12 @@ def validate(spec: AgentSpec) -> AgentSpec:
     if spec.version < 1:
         raise SpecError(f"agent {spec.id}: version must be at least 1")
     return spec
+
+
+def param_kind(name: str) -> str:
+    """``window``, ``bool`` or ``list``: what parameter ``name`` holds (:data:`PARAM_KINDS`)."""
+
+    return PARAM_KINDS.get(name, "list")
 
 
 def _canonical_params(spec: AgentSpec, params: Mapping[str, Any]) -> dict[str, Any]:

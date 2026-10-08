@@ -23,7 +23,7 @@ import pytest
 from kenny_server import toolloop
 from kenny_server.agents.authorizations import AuthorizationStore
 from kenny_server.agents.catalog import CATALOG
-from kenny_server.agents.runner import AgentRunner, validate_params
+from kenny_server.agents.runner import AgentRunner, HashMismatch, validate_params
 from kenny_server.agents.spec import AgentSpec, ArgConstraint, Trigger, effective_hash
 from kenny_server.tool_classes import NORMAL_CHANGE
 
@@ -98,6 +98,7 @@ async def _grant(runner: AgentRunner, **overrides: Any):
         "max_attempts_per_day": 1,
         "expires_at": NOW + timedelta(days=7),
         "actor": "admin",
+        "effective_hash": await runner.live_hash("installer"),
     }
     kwargs.update(overrides)
     return await runner.grant("installer", **kwargs)
@@ -114,7 +115,9 @@ async def test_an_authorized_normal_change_runs_and_names_its_authorization(worl
     spec = _installer()
     runner = _runner(world, spec)
     await runner.set_params("installer", {"packages": [SEVENZIP]}, actor="admin")
-    assert await runner.set_mode("installer", "act", actor="admin") == "act"
+    assert await runner.set_mode(
+        "installer", "act", actor="admin", effective_hash=await runner.live_hash("installer")
+    ) == "act"
     grant = await _grant(runner)
 
     run = await _run(world, runner, spec, ("winget_install", {"id": SEVENZIP}))
@@ -149,7 +152,9 @@ async def test_without_a_matching_authorization_it_is_a_recommendation(world) ->
     spec = _installer()
     runner = _runner(world, spec)
     await runner.set_params("installer", {"packages": [SEVENZIP]}, actor="admin")
-    await runner.set_mode("installer", "act", actor="admin")
+    await runner.set_mode(
+        "installer", "act", actor="admin", effective_hash=await runner.live_hash("installer")
+    )
     await _grant(runner, scope=["another-pc"])
 
     run = await _run(world, runner, spec, ("winget_install", {"id": SEVENZIP}))
@@ -167,7 +172,9 @@ async def test_a_spent_budget_turns_the_next_run_into_a_recommendation(world) ->
     spec = _installer()
     runner = _runner(world, spec)
     await runner.set_params("installer", {"packages": [SEVENZIP]}, actor="admin")
-    await runner.set_mode("installer", "act", actor="admin")
+    await runner.set_mode(
+        "installer", "act", actor="admin", effective_hash=await runner.live_hash("installer")
+    )
     await _grant(runner, max_attempts_per_day=1)
 
     first = await _run(world, runner, spec, ("winget_install", {"id": SEVENZIP}))
@@ -185,7 +192,9 @@ async def test_a_failed_call_still_spends_its_attempt(world) -> None:
     spec = _installer()
     runner = _runner(world, spec)
     await runner.set_params("installer", {"packages": [SEVENZIP]}, actor="admin")
-    await runner.set_mode("installer", "act", actor="admin")
+    await runner.set_mode(
+        "installer", "act", actor="admin", effective_hash=await runner.live_hash("installer")
+    )
     grant = await _grant(runner, max_attempts_per_day=1)
 
     async def fail(tool: str, args: dict[str, Any]) -> None:
@@ -204,7 +213,9 @@ async def test_a_parameter_feeds_the_constraint_the_gate_enforces(world) -> None
     spec = _installer()
     runner = _runner(world, spec)
     await runner.set_params("installer", {"packages": [SEVENZIP]}, actor="admin")
-    await runner.set_mode("installer", "act", actor="admin")
+    await runner.set_mode(
+        "installer", "act", actor="admin", effective_hash=await runner.live_hash("installer")
+    )
     await _grant(runner, max_attempts_per_day=5)
 
     run = await _run(world, runner, spec, ("winget_install", {"id": FIREFOX}))
@@ -252,7 +263,9 @@ async def test_a_server_side_normal_change_names_its_authorization(world, monkey
     )
     runner = _runner(world, spec)
     await runner.set_params("pruner", {"rules": ["r1"]}, actor="admin")
-    await runner.set_mode("pruner", "act", actor="admin")
+    await runner.set_mode(
+        "pruner", "act", actor="admin", effective_hash=await runner.live_hash("pruner")
+    )
     grant = await runner.grant(
         "pruner",
         tool="ticket_rule_remove",
@@ -260,6 +273,7 @@ async def test_a_server_side_normal_change_names_its_authorization(world, monkey
         max_attempts_per_day=1,
         expires_at=NOW + timedelta(days=1),
         actor="admin",
+        effective_hash=await runner.live_hash("pruner"),
     )
     run = await runner.run_generic(
         spec,
@@ -302,7 +316,9 @@ async def test_a_parameter_edit_drops_act_to_shadow_and_voids_for_good(world) ->
     spec = _installer()
     runner = _runner(world, spec)
     await runner.set_params("installer", {"packages": [SEVENZIP]}, actor="admin")
-    await runner.set_mode("installer", "act", actor="admin")
+    await runner.set_mode(
+        "installer", "act", actor="admin", effective_hash=await runner.live_hash("installer")
+    )
     grant = await _grant(runner)
 
     result = await runner.set_params(
@@ -329,7 +345,9 @@ async def test_writing_the_same_parameters_changes_nothing(world) -> None:
     spec = _installer()
     runner = _runner(world, spec)
     await runner.set_params("installer", {"packages": [SEVENZIP]}, actor="admin")
-    await runner.set_mode("installer", "act", actor="admin")
+    await runner.set_mode(
+        "installer", "act", actor="admin", effective_hash=await runner.live_hash("installer")
+    )
     grant = await _grant(runner)
     result = await runner.set_params("installer", {"packages": [SEVENZIP, SEVENZIP]}, actor="x")
     assert (result["mode"], result["voided"]) == ("act", 0)
@@ -346,13 +364,17 @@ async def test_a_parameter_edit_mid_run_ends_its_act_even_if_act_is_chosen_again
     spec = _installer()
     runner = _runner(world, spec)
     await runner.set_params("installer", {"packages": [SEVENZIP]}, actor="admin")
-    await runner.set_mode("installer", "act", actor="admin")
+    await runner.set_mode(
+        "installer", "act", actor="admin", effective_hash=await runner.live_hash("installer")
+    )
     await _grant(runner, max_attempts_per_day=5)
 
     async def edit_then_promote(tool: str, args: dict[str, Any]) -> None:
         if tool == "winget_list":
             await runner.set_params("installer", {"packages": [SEVENZIP, FIREFOX]}, actor="root")
-            await runner.set_mode("installer", "act", actor="root")
+            await runner.set_mode(
+        "installer", "act", actor="root", effective_hash=await runner.live_hash("installer")
+    )
             await _grant(runner, max_attempts_per_day=5)
 
     world.on_send = edit_then_promote
@@ -414,7 +436,9 @@ async def test_a_catalog_change_drops_act_to_shadow_live_and_voids(world) -> Non
     spec = _installer()
     runner = _runner(world, spec)
     await runner.set_params("installer", {"packages": [SEVENZIP]}, actor="admin")
-    await runner.set_mode("installer", "act", actor="admin")
+    await runner.set_mode(
+        "installer", "act", actor="admin", effective_hash=await runner.live_hash("installer")
+    )
     grant = await _grant(runner)
 
     # A new release edits the spec (here: its prompt). Nothing else is touched.
@@ -435,7 +459,9 @@ async def test_a_catalog_change_drops_act_to_shadow_live_and_voids(world) -> Non
 async def test_a_retier_unbinds_act(world, monkeypatch) -> None:
     spec = _installer()
     runner = _runner(world, spec)
-    await runner.set_mode("installer", "act", actor="admin")
+    await runner.set_mode(
+        "installer", "act", actor="admin", effective_hash=await runner.live_hash("installer")
+    )
     from kenny_server import tool_classes
 
     monkeypatch.setitem(tool_classes.TOOL_CLASSES, "winget_install", "standard_change")
@@ -446,7 +472,9 @@ async def test_a_catalog_change_mid_run_ends_its_act(world) -> None:
     spec = _installer()
     runner = _runner(world, spec)
     await runner.set_params("installer", {"packages": [SEVENZIP]}, actor="admin")
-    await runner.set_mode("installer", "act", actor="admin")
+    await runner.set_mode(
+        "installer", "act", actor="admin", effective_hash=await runner.live_hash("installer")
+    )
     await _grant(runner, max_attempts_per_day=5)
 
     async def release(tool: str, args: dict[str, Any]) -> None:
@@ -484,7 +512,9 @@ async def test_overview_says_what_act_is_bound_to(world) -> None:
     spec = _installer()
     runner = _runner(world, spec)
     await runner.set_params("installer", {"packages": [SEVENZIP]}, actor="admin")
-    await runner.set_mode("installer", "act", actor="admin")
+    await runner.set_mode(
+        "installer", "act", actor="admin", effective_hash=await runner.live_hash("installer")
+    )
     overview = {a["id"]: a for a in await runner.overview()}
     installer = overview["installer"]
     assert installer["params"] == {"packages": [SEVENZIP]}
@@ -492,3 +522,133 @@ async def test_overview_says_what_act_is_bound_to(world) -> None:
     assert (installer["mode"], installer["act_bound"]) == ("act", True)
     assert overview["triage"]["act_bound"] is None
     assert overview["triage"]["params"] == {}
+
+
+# -- consent binds to what the person was shown ----------------------------------
+
+
+async def test_act_and_a_grant_bind_to_the_hash_reviewed_not_the_live_one(world) -> None:
+    """A parameter edit between "shown" and "consented" must not widen the consent."""
+
+    spec = _installer()
+    runner = _runner(world, spec)
+    await runner.set_params("installer", {"packages": [SEVENZIP]}, actor="admin")
+    reviewed = await runner.live_hash("installer")
+    # Someone widens the allowlist while the superuser is reading the page.
+    await runner.set_params("installer", {"packages": [SEVENZIP, FIREFOX]}, actor="root")
+
+    with pytest.raises(HashMismatch):
+        await runner.set_mode("installer", "act", actor="admin", effective_hash=reviewed)
+    with pytest.raises(HashMismatch):
+        await _grant(runner, effective_hash=reviewed)
+    assert await runner.mode_of("installer") == "shadow"
+    assert await world.authorizations.list("installer") == []
+
+    # Naming no hash is refused too; only leaving act needs none.
+    with pytest.raises(ValueError, match="effective_hash"):
+        await runner.set_mode("installer", "act", actor="admin")
+    with pytest.raises(ValueError, match="effective_hash"):
+        await _grant(runner, effective_hash=None)
+    assert await runner.set_mode("installer", "off", actor="admin") == "off"
+    assert await runner.set_mode("installer", "shadow", actor="admin") == "shadow"
+
+    current = await runner.live_hash("installer")
+    assert await runner.set_mode("installer", "act", actor="admin", effective_hash=current) == "act"
+    assert (await _grant(runner, effective_hash=current)).effective_hash == current
+
+
+async def test_triage_act_needs_the_reviewed_hash_too(world) -> None:
+    runner = _runner(world)
+    with pytest.raises(ValueError, match="effective_hash"):
+        await runner.set_mode("triage", "act", actor="admin")
+    with pytest.raises(HashMismatch):
+        await runner.set_mode("triage", "act", actor="admin", effective_hash="0" * 64)
+    assert world.settings.get("KENNY_TRIAGE_RESOLVE") is False
+    shown = await runner.live_hash("triage")
+    assert await runner.set_mode("triage", "act", actor="admin", effective_hash=shown) == "act"
+
+
+# -- an agent removed and shipped again revives nothing ----------------------------
+
+
+async def test_an_agent_removed_and_readded_gets_neither_act_nor_grants_back(world) -> None:
+    spec = _installer()
+    first = _runner(world, spec)
+    await first.set_params("installer", {"packages": [SEVENZIP]}, actor="admin")
+    await first.set_mode(
+        "installer", "act", actor="admin", effective_hash=await first.live_hash("installer")
+    )
+    grant = await _grant(first)
+
+    # A release drops the agent from the catalog ...
+    without = _runner(world)
+    await without.startup()
+    voided = await world.authorizations.get(grant.id)
+    assert voided is not None and voided.status(NOW) == "voided"
+    assert voided.voided_by == "system"
+    assert await world.agent_store.get_mode("installer") == "shadow"
+    logs = [e for e in await _logs(world) if (e.get("fields") or {}).get("agent") == "installer"]
+    assert any("no longer in the catalog" in e["message"] for e in logs)
+
+    # ... and the next ships the identical spec again.
+    again = _runner(world, spec)
+    await again.startup()
+    assert await again.mode_of("installer") == "shadow"
+    run = await _run(world, again, spec, ("winget_install", {"id": SEVENZIP}))
+    assert run is not None and run.actions == []
+    assert all(s["tool"] != "winget_install" for s in world.sent)
+
+
+async def test_startup_leaves_the_agents_still_in_the_catalog_alone(world) -> None:
+    spec = _installer()
+    runner = _runner(world, spec)
+    await runner.set_params("installer", {"packages": [SEVENZIP]}, actor="admin")
+    await runner.set_mode(
+        "installer", "act", actor="admin", effective_hash=await runner.live_hash("installer")
+    )
+    grant = await _grant(runner)
+    await _runner(world, spec).startup()
+    assert await runner.mode_of("installer") == "act"
+    assert (await world.authorizations.get(grant.id)).status(NOW) == "live"  # type: ignore[union-attr]
+
+
+# -- a run that outlasts its window can report but not act -------------------------
+
+
+async def test_no_change_starts_after_act_until(world) -> None:
+    spec = _installer()
+    runner = _runner(world, spec)
+    await runner.set_params("installer", {"packages": [SEVENZIP]}, actor="admin")
+    await runner.set_mode(
+        "installer", "act", actor="admin", effective_hash=await runner.live_hash("installer")
+    )
+    run = await runner.run_generic(
+        spec,
+        host_id=HOST,
+        trigger="schedule:test",
+        brief="Update what is allowed.",
+        client=FakeAnthropic(
+            [_tool("t1", "winget_update", {"id": SEVENZIP}), _text("done")]
+        ),
+        model="test-model",
+        executor=world.executor,
+        act_until=NOW,  # the runner's clock is NOW: the window has just closed
+    )
+    assert run is not None and run.actions == []
+    assert [r["tool"] for r in run.recommendations] == ["winget_update"]
+    assert world.sent == []
+
+    # Before the bound, the same call runs.
+    run = await runner.run_generic(
+        spec,
+        host_id=HOST,
+        trigger="schedule:test",
+        brief="Update what is allowed.",
+        client=FakeAnthropic(
+            [_tool("t1", "winget_update", {"id": SEVENZIP}), _text("done")]
+        ),
+        model="test-model",
+        executor=world.executor,
+        act_until=NOW + timedelta(seconds=1),
+    )
+    assert run is not None and [a["tool"] for a in run.actions] == ["winget_update"]

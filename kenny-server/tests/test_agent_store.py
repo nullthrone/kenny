@@ -408,7 +408,7 @@ async def test_fail_interrupted_fails_only_running_runs(store: AgentStore) -> No
         got = await store.get_run(run.id)
         assert got is not None
         assert got.status == "failed"
-        assert got.error == INTERRUPTED_ERROR == "interrupted by a server restart"
+        assert got.error == INTERRUPTED_ERROR
         assert got.finished_at is not None
     untouched = await store.get_run(completed.id)
     assert untouched is not None

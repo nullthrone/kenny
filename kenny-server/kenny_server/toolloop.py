@@ -784,7 +784,9 @@ class ToolExecutor:
         if tool == "agent_health":
             return await self._agent_health(str(args["id"]))
         if tool == "agent_snapshot":
-            return await self._agent_snapshot(str(args["id"]), args.get("section"))
+            return await self._agent_snapshot(
+                str(args["id"]), args.get("section"), withhold=withheld_sections(session)
+            )
         if tool == "agent_availability":
             return await availability_summary(
                 str(args["id"]),
@@ -937,23 +939,95 @@ class ToolExecutor:
             **health,
         }
 
-    async def _agent_snapshot(self, agent_id: str, section: str | None) -> dict[str, Any]:
+    async def _agent_snapshot(
+        self,
+        agent_id: str,
+        section: str | None,
+        *,
+        withhold: frozenset[str] = frozenset(),
+    ) -> dict[str, Any]:
+        """The latest snapshot of ``agent_id``, or one section of it.
+
+        Sections in ``withhold`` (:func:`withheld_sections`) are left out of a
+        whole snapshot and answered with no payload when asked for by name, and
+        the result says which were withheld.
+        """
+
         latest = await self.store.latest(agent_id)
         if latest is None:
             return {"agent_id": agent_id, "snapshot": None}
         snapshot = latest["snapshot"]
         if section is not None:
+            if section in withhold:
+                return {
+                    "agent_id": agent_id,
+                    "collected_at": latest["collected_at"],
+                    "section": section,
+                    "payload": None,
+                    "withheld": _WITHHELD_NOTE,
+                }
             return {
                 "agent_id": agent_id,
                 "collected_at": latest["collected_at"],
                 "section": section,
                 "payload": snapshot.get(section),
             }
-        return {
+        out: dict[str, Any] = {
             "agent_id": agent_id,
             "collected_at": latest["collected_at"],
             "snapshot": snapshot,
         }
+        hidden = sorted(withhold & set(snapshot or {}))
+        if hidden:
+            out["snapshot"] = {k: v for k, v in snapshot.items() if k not in withhold}
+            out["withheld_sections"] = hidden
+        return out
+
+
+#: Snapshot sections that carry what a sensitive tool exists to guard, keyed by
+#: section and naming that tool: ``agent_snapshot`` must not be a way round it.
+#: Every tool named here is in :data:`~kenny_server.tool_classes.SENSITIVE_TOOLS`
+#: (``tests/test_snapshot_sensitive_sections.py`` fails otherwise). ``fs_read``
+#: and ``screen_capture`` have no snapshot section.
+SENSITIVE_SECTIONS: dict[str, str] = {"web_activity": "web_activity_query"}
+
+_WITHHELD_NOTE = (
+    "withheld: this session may not read this section's data (it is guarded by a "
+    "sensitive tool this session was not given)"
+)
+
+
+def withheld_sections(session: Any) -> frozenset[str]:
+    """The :data:`SENSITIVE_SECTIONS` ``agent_snapshot`` must not return to ``session``.
+
+    Nobody is present in an unattended session to consent to a privacy-touching
+    read, so the section of a sensitive tool goes only where that tool would:
+
+    * an agent run (a session carrying its ``spec``) — only when the spec opted
+      into sensitive tools (``sensitive_ok``) *and* names the tool;
+    * a ticket session (one carrying ``allowed_tools``) — only when the tool is
+      among them, which an unprompted triage session's never is;
+    * any other session (the operator's copilot) and none at all — unchanged:
+      a person is driving it and sees through the same rights everywhere.
+    """
+
+    if session is None:
+        return frozenset()
+    spec = getattr(session, "spec", None)
+    if spec is not None:
+        tools = getattr(spec, "tools", frozenset())
+        sensitive_ok = getattr(spec, "sensitive_ok", False) is True
+        return frozenset(
+            section
+            for section, tool in SENSITIVE_SECTIONS.items()
+            if not (sensitive_ok and tool in tools)
+        )
+    allowed = getattr(session, "allowed_tools", None)
+    if allowed is not None:
+        return frozenset(
+            section for section, tool in SENSITIVE_SECTIONS.items() if tool not in allowed
+        )
+    return frozenset()
 
 
 def _resolve_chat_target(session: Any, args: dict[str, Any]) -> str:

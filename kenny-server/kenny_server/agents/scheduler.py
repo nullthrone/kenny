@@ -14,25 +14,34 @@ trigger ``schedule:<end of the occurrence>``, so the answer survives a restart
 without a table of its own. A run that failed also counts as having run — a
 broken agent retries at the next occurrence, not every pass.
 
-**Canary order.** Hosts run one after another in sorted order. The pass for an
-agent stops at the first run that failed, or that ended ``actionable`` or
-``inconclusive`` *after a change* (an action the gate allowed that did not fail).
-The stop outlasts the pass: while any run of this occurrence stopped the
-canary, the agent starts nothing else until the next occurrence, so the next
-pass cannot walk past a host that went wrong.
+**The window bounds the work, not only the start.** Before each host the
+occurrence is computed again; once it is no longer the one the pass started
+in, the pass stops. A run already started is handed the end of its occurrence
+(``act_until``), and its gate refuses every change requested after it, so a
+run that outlasts its window can report but not act.
 
-**Circuit breaker.** After :data:`BREAKER_THRESHOLD` consecutive failed runs of
-one agent that is in ``act``, it is moved to ``shadow`` as
-``system:circuit-breaker`` and a warning goes on the event log. A run counts as
-failed when it ended ``failed`` or a change it made errored. Refusals that are
-an outcome rather than a fault — the agent's ``disabled`` kill switch, its
-``blocked`` guard, a ``paused`` game session — never count, and neither does a
-run a restart interrupted.
+**Canary order.** Hosts run one after another in sorted order. The pass for an
+agent stops at the first run that failed, or that *changed something* (an
+action the gate allowed that did not fail) and did not end ``acted`` — an
+``actionable``, ``inconclusive`` or missing verdict leaves the change
+unconfirmed. The stop outlasts the pass: while any run of this occurrence
+stopped the canary, the agent starts nothing else until the next occurrence,
+so the next pass cannot walk past a host that went wrong.
+
+**Circuit breaker.** After :data:`BREAKER_THRESHOLD` consecutive runs of one
+agent in ``act`` that stopped the canary, it is moved to ``shadow`` as
+``system:circuit-breaker`` and a warning goes on the event log. A run stops the
+canary when it ended ``failed``, a change it made errored, or it changed
+something it did not confirm. Refusals that are an outcome rather than a fault
+— the agent's ``disabled`` kill switch, its ``blocked`` guard, a ``paused``
+game session — never count, and a run that was interrupted (a graceful
+shutdown or a restart, :data:`~kenny_server.agents.store.INTERRUPTED_ERROR`)
+is neutral: it neither counts nor breaks a streak.
 
 **Preconditions, before any run.** A host that is offline, or whose OS cannot
 serve a tool the agent names, is skipped. An agent whose ``require_idle``
-parameter is not off asks the host itself — ``remotehelp_status``, called here
-as ``agent:<id>``, not by the model — whether somebody is signed in, and
+parameter is not ``false`` asks the host itself — ``remotehelp_status``, called
+here as ``agent:<id>``, not by the model — whether somebody is signed in, and
 skips the host unless the answer is a clear *no*: a failed check is "do not
 disturb". A skip is recorded once per occurrence as a ``skipped`` run with the
 reason and is retried at the next pass; it is not a failure.
@@ -65,7 +74,9 @@ __all__ = [
     "SCHEDULE_TRIGGER_PREFIX",
     "AgentScheduler",
     "Outcome",
+    "halts",
     "host_supports",
+    "interrupted",
     "made_change",
     "run_failed",
     "stops_canary",
@@ -93,8 +104,10 @@ BREAKER_ACTOR = "system:circuit-breaker"
 #: a failure to count.
 BENIGN_REFUSALS: frozenset[str] = frozenset({"disabled", "blocked", "paused"})
 
-#: Verdicts after which a run that changed something stops the canary.
-_STOPPING_VERDICTS: frozenset[str] = frozenset({"actionable", "inconclusive"})
+#: The verdicts after which a run that changed something lets the next host go
+#: ahead: the run says it acted and checked. Any other verdict, or none, leaves
+#: the change unconfirmed.
+_CONFIRMING_VERDICTS: frozenset[str] = frozenset({"acted"})
 
 #: Run statuses that mean "this host has had its run for this occurrence".
 _DONE_STATUSES: frozenset[str] = frozenset({"running", "completed", "failed"})
@@ -113,9 +126,6 @@ _TOOL_OS: dict[str, frozenset[str]] = {
     "winget_update": frozenset({"windows"}),
 }
 
-#: Spellings of "off" a ``require_idle`` parameter may carry.
-_FALSE_WORDS = frozenset({"false", "0", "no", "off", ""})
-
 
 @dataclass(frozen=True)
 class Outcome:
@@ -132,16 +142,22 @@ class Outcome:
 # -- reading a finished run ----------------------------------------------------
 
 
+def interrupted(run: AgentRun) -> bool:
+    """Whether ``run`` was cut short by a shutdown or a restart, not by its own fault."""
+
+    return run.status == "failed" and run.error == INTERRUPTED_ERROR
+
+
 def run_failed(run: AgentRun) -> bool:
-    """Whether ``run`` counts as a failure (and toward the circuit breaker).
+    """Whether ``run`` counts as a failure.
 
     ``failed`` outright, or a change it made that errored for any reason other
-    than a refusal that is an outcome (:data:`BENIGN_REFUSALS`). A run the
-    server's restart interrupted is not the agent's fault and is not one.
+    than a refusal that is an outcome (:data:`BENIGN_REFUSALS`). A run a
+    shutdown or restart interrupted is not the agent's fault and is not one.
     """
 
     if run.status == "failed":
-        return run.error != INTERRUPTED_ERROR
+        return not interrupted(run)
     if run.status != "completed":
         return False
     return any(
@@ -155,12 +171,20 @@ def made_change(run: AgentRun) -> bool:
     return any(a.get("ok") is not False for a in run.actions)
 
 
-def stops_canary(run: AgentRun) -> bool:
-    """Whether the hosts after ``run`` must wait for a person."""
+def halts(run: AgentRun) -> bool:
+    """Whether ``run`` changed something and did not confirm it (any verdict but ``acted``)."""
 
-    if run_failed(run):
-        return True
-    return run.verdict in _STOPPING_VERDICTS and made_change(run)
+    return made_change(run) and run.verdict not in _CONFIRMING_VERDICTS
+
+
+def stops_canary(run: AgentRun) -> bool:
+    """Whether the hosts after ``run`` must wait for a person.
+
+    Also what the circuit breaker counts, unless the run was
+    :func:`interrupted`.
+    """
+
+    return run_failed(run) or halts(run)
 
 
 # -- the host ------------------------------------------------------------------
@@ -193,14 +217,14 @@ def _hosts(params: Mapping[str, Any]) -> list[str]:
 
 
 def _idle_required(params: Mapping[str, Any]) -> bool:
-    """Whether to check the host is unattended: yes, unless the parameter says no."""
+    """Whether to check the host is unattended: yes, unless the parameter is ``false``.
 
-    value = params.get("require_idle")
-    if value is None:
-        return True
-    if isinstance(value, str):
-        return value.strip().lower() not in _FALSE_WORDS
-    return bool(value)
+    The parameter is a JSON boolean (``runner.validate_params``); anything else
+    — absent, a list, a string a parameter written before that rule left
+    behind — means check, the safe direction.
+    """
+
+    return params.get("require_idle") is not False
 
 
 def _packages(params: Mapping[str, Any]) -> list[str]:
@@ -290,11 +314,12 @@ class AgentScheduler:
                     logger.exception("schedule pass for agent %s failed", spec.id)
             return outcomes
 
-    def _occurrence(self, spec: AgentSpec, raw: Any, at: datetime) -> str | None:
-        """The trigger for the window occurrence open at ``at``, or ``None``.
+    def _occurrence(self, spec: AgentSpec, raw: Any, at: datetime) -> datetime | None:
+        """The end of the window occurrence open at ``at``, or ``None``.
 
-        ``None`` for no window, an unreadable one, or one that is closed:
-        a window nobody can interpret never means "always".
+        The end identifies the occurrence for as long as it is open. ``None``
+        for no window, an unreadable one, one that is closed, or one whose end
+        cannot be told: a window nobody can interpret never means "always".
         """
 
         if not isinstance(raw, Mapping):
@@ -314,19 +339,33 @@ class AgentScheduler:
             logger.warning("agent %s: its maintenance window is unreadable (%s)", spec.id, exc)
             return None
         state = schedule_state({}, [window], at=at)
-        if not state["active_windows"]:
+        if not state["active_windows"] or not state["next_change_at"]:
             return None
-        # The window's end identifies the occurrence for as long as it is open.
-        return f"{SCHEDULE_TRIGGER_PREFIX}{state['next_change_at'] or window.id}"
+        try:
+            end = datetime.fromisoformat(str(state["next_change_at"]))
+        except ValueError:
+            return None
+        return end if end.tzinfo is not None else end.replace(tzinfo=timezone.utc)
+
+    async def _still_open(self, spec: AgentSpec, end: datetime) -> bool:
+        """Whether the occurrence ending at ``end`` is still the one open now.
+
+        Read from the stored window again, so a window edited during the pass
+        counts as well as the clock.
+        """
+
+        params = await self.params_of(spec.id)
+        return self._occurrence(spec, params.get("window"), self._now()) == end
 
     async def _pass_agent(self, spec: AgentSpec) -> list[Outcome]:
         mode = await self.runner.mode_of(spec.id)
         if mode == "off":
             return []
         params = await self.params_of(spec.id)
-        trigger = self._occurrence(spec, params.get("window"), self._now())
-        if trigger is None:
+        end = self._occurrence(spec, params.get("window"), self._now())
+        if end is None:
             return []
+        trigger = _trigger(end)
         hosts = _hosts(params)
         if not hosts:
             return []
@@ -341,6 +380,11 @@ class AgentScheduler:
         for host in hosts:
             if host in ran:
                 continue
+            if not await self._still_open(spec, end):
+                # Hosts run one after another; the ones left wait for the next
+                # occurrence rather than start outside this one.
+                outcomes.append(Outcome(spec.id, host, "halted", "the maintenance window closed"))
+                break
             reason = await self._unready(spec, host, params)
             if reason is not None:
                 if (host, reason) not in skipped:
@@ -348,7 +392,7 @@ class AgentScheduler:
                     skipped.add((host, reason))
                 outcomes.append(Outcome(spec.id, host, "skipped", reason))
                 continue
-            run = await self._run(spec, host, trigger, params)
+            run = await self._run(spec, host, trigger, params, end)
             if run is None:
                 # The global switch, the AI switch or the mode went off meanwhile.
                 break
@@ -358,7 +402,9 @@ class AgentScheduler:
                 outcomes.append(Outcome(spec.id, host, "skipped", run.error or "", run))
                 break
             outcomes.append(Outcome(spec.id, host, "ran", run.status, run))
-            tripped = run_failed(run) and await self._maybe_trip(spec)
+            tripped = (
+                stops_canary(run) and not interrupted(run) and await self._maybe_trip(spec)
+            )
             if tripped:
                 outcomes.append(Outcome(spec.id, host, "tripped", "back to shadow", run))
             if stops_canary(run):
@@ -415,7 +461,12 @@ class AgentScheduler:
     # -- a run -----------------------------------------------------------------
 
     async def _run(
-        self, spec: AgentSpec, host: str, trigger: str, params: Mapping[str, Any]
+        self,
+        spec: AgentSpec,
+        host: str,
+        trigger: str,
+        params: Mapping[str, Any],
+        end: datetime,
     ) -> AgentRun | None:
         kwargs: dict[str, Any] = {
             "host_id": host,
@@ -426,6 +477,8 @@ class AgentScheduler:
             ("client", self._client),
             ("model", self._model),
             ("executor", self.executor),
+            # No change of this run may start after its window has closed.
+            ("act_until", end),
         ):
             if value is not None and (self._takes_any or name in self._accepted):
                 kwargs[name] = value
@@ -434,16 +487,18 @@ class AgentScheduler:
         return await self.runner.run_generic(resolve(spec, params), **kwargs)
 
     async def _maybe_trip(self, spec: AgentSpec) -> bool:
-        """Move ``spec`` to ``shadow`` after N consecutive failed runs while in ``act``."""
+        """Move ``spec`` to ``shadow`` after N consecutive canary stops while in ``act``.
+
+        Skipped, running and interrupted runs are neutral: passed over, never
+        counted, never ending a streak.
+        """
 
         history = await self.runner.store.list_runs(agent_id=spec.id, limit=_HISTORY)
         streak = 0
         for run in history:  # newest first
-            if run.status in ("skipped", "running") or (
-                run.status == "failed" and run.error == INTERRUPTED_ERROR
-            ):
+            if run.status in ("skipped", "running") or interrupted(run):
                 continue
-            if not run_failed(run):
+            if not stops_canary(run):
                 break
             streak += 1
         if streak < self._breaker_threshold:
@@ -452,8 +507,8 @@ class AgentScheduler:
             return False
         await self.runner.set_mode(spec.id, "shadow", actor=BREAKER_ACTOR)
         message = (
-            f"agent {spec.id}: {streak} runs in a row failed; moved back to shadow "
-            f"by the circuit breaker"
+            f"agent {spec.id}: {streak} runs in a row failed or left a change unconfirmed; "
+            "moved back to shadow by the circuit breaker"
         )
         logger.warning(message)
         event_store = getattr(self.runner, "event_store", None)
@@ -470,6 +525,12 @@ class AgentScheduler:
             except Exception:  # noqa: BLE001 - the demotion stands; losing its record must not undo it
                 logger.warning("failed to record the circuit breaker for %s", spec.id, exc_info=True)
         return True
+
+
+def _trigger(end: datetime) -> str:
+    """The ``trigger`` of every scheduled run of the occurrence ending at ``end``."""
+
+    return f"{SCHEDULE_TRIGGER_PREFIX}{end.astimezone(timezone.utc).isoformat()}"
 
 
 def _brief(spec: AgentSpec, host: str, params: Mapping[str, Any]) -> str:

@@ -56,8 +56,11 @@ USAGE_KEYS: tuple[str, ...] = (
     "cache_creation_tokens",
 )
 
-#: What a run that was in flight when the server stopped is marked with.
-INTERRUPTED_ERROR = "interrupted by a server restart"
+#: What a run that did not finish is closed with: cancelled by a graceful
+#: shutdown, or still ``running`` when a dead process was accounted for at the
+#: next start. One constant for both, so whoever reads a run (the scheduler's
+#: circuit breaker) can tell an interruption from a fault.
+INTERRUPTED_ERROR = "the run was interrupted before it finished (cancelled or a server restart)"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS agent_settings (
@@ -477,6 +480,48 @@ class AgentStore:
         async with self._conn.execute(sql, params) as cur:
             rows = await cur.fetchall()
         return [AgentRun._from_row(row) for row in rows]
+
+    async def runs_on_host_since(self, host_id: str, since_iso: str) -> list[AgentRun]:
+        """Every run of any agent on ``host_id`` started at or after ``since_iso``, newest first."""
+
+        async with self._conn.execute(
+            f"SELECT {_RUN_COLUMNS} FROM agent_runs WHERE host_id = ? AND started_at >= ? "
+            "ORDER BY started_at DESC, rowid DESC",
+            (host_id, _normalize_iso(since_iso)),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [AgentRun._from_row(row) for row in rows]
+
+    async def demote_absent(self, agent_ids: Sequence[str], *, actor: str) -> list[str]:
+        """Drop every stored ``act`` whose agent is not in ``agent_ids`` to ``shadow``.
+
+        Returns the ids demoted. Called at startup with the catalog's ids, so an
+        agent a release removed keeps no ``act`` for an identical spec to come
+        back to (ADR-0072 rule 6).
+        """
+
+        keep = sorted(set(agent_ids))
+        absent = f"AND agent_id NOT IN ({', '.join('?' for _ in keep)})" if keep else ""
+        async with write_lock():
+            await _begin_immediate(self._conn)
+            try:
+                async with self._conn.execute(
+                    f"SELECT agent_id FROM agent_settings WHERE mode = 'act' {absent}",
+                    keep,
+                ) as cur:
+                    demoted = sorted(str(row["agent_id"]) for row in await cur.fetchall())
+                if demoted:
+                    await self._conn.execute(
+                        "UPDATE agent_settings SET mode = 'shadow', act_hash = NULL, "
+                        "updated_at = ?, updated_by = ? "
+                        f"WHERE agent_id IN ({', '.join('?' for _ in demoted)})",
+                        (_now_iso(), actor, *demoted),
+                    )
+                await self._conn.commit()
+            except BaseException:
+                await self._conn.rollback()
+                raise
+        return demoted
 
     async def tokens_since(self, since_iso: str, *, agent_id: str | None = None) -> int:
         """Every token of runs started at or after ``since_iso``.

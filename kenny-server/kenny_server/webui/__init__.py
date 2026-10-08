@@ -53,6 +53,7 @@ from ..tokenstore import AgentTokenStore
 from ..tools import CallLog, ScreenshotStore, build_health, health_for, supports_tool
 from ..tunnel import AgentTunnel, ToolError
 from ..agents.authorizations import BUDGET_WINDOW, AuthorizationError
+from ..agents.runner import HashMismatch
 from ..webfilter import (
     BYPASS_REQUEST_CATEGORY,
     ListTooLargeError,
@@ -116,6 +117,36 @@ _RESERVED_PREFIXES = (
     "/logout",
     "/setup",
 )
+
+
+def _person_at_a_browser(request: Request) -> bool:
+    """Whether this request comes from a signed-in account's browser session.
+
+    A real account (``user_id``) on a dashboard session cookie (``session_id``),
+    and none of the bearer credentials: not a personal access token, not an
+    OAuth token, not the legacy shared token. Those are what Claude and scripts
+    hold for ``/mcp`` and the API, so a write that is a person's consent must
+    not be reachable with them.
+    """
+
+    principal = principal_of(request)
+    return (
+        principal is not None
+        and principal.user_id is not None
+        and bool(principal.session_id)
+        and not principal.pat_id
+        and not principal.oauth_token_id
+        and not principal.is_env_token
+    )
+
+
+#: The refusal of a consent write made with anything but a browser session.
+_NOT_A_PERSON = {
+    "error": (
+        "a person must do this from the dashboard, signed in to their own account; "
+        "API tokens, OAuth tokens and the shared operator token cannot"
+    )
+}
 
 
 def _actor_of(request: Request) -> str | None:
@@ -1404,6 +1435,10 @@ def build_api_routes(
     # Reading the catalog and the run history is operator+; choosing a mode is
     # superuser-only, because moving an agent to ``act`` is a superuser's
     # decision and every other mode write moves it towards or away from that.
+    # Every write here (mode, grant, revoke, parameters) is consent, so it also
+    # needs a person at a browser (``_person_at_a_browser``), and ``act`` and a
+    # grant name the ``effective_hash`` that person was shown: a 409 when the
+    # agent has changed since, never a binding to whatever it is now.
 
     _AGENTS_UNAVAILABLE = {"error": "agents not configured"}
     _MAX_RUNS_LIMIT = 500
@@ -1443,11 +1478,33 @@ def build_api_routes(
             return JSONResponse({"error": "run not found"}, status_code=404)
         return JSONResponse(run.to_public())
 
+    def _reviewed_hash(body: Any) -> tuple[str | None, JSONResponse | None]:
+        """The ``effective_hash`` a consent write names, or its 400."""
+
+        value = body.get("effective_hash") if isinstance(body, dict) else None
+        if not isinstance(value, str) or not value:
+            return None, JSONResponse(
+                {
+                    "error": "effective_hash is required: the agent's effective_hash "
+                    "as GET /api/specialized-agents showed it"
+                },
+                status_code=400,
+            )
+        return value, None
+
+    def _changed(exc: HashMismatch) -> JSONResponse:
+        return JSONResponse({"error": str(exc)}, status_code=409)
+
     async def api_agent_mode(request: Request) -> JSONResponse:
-        """Choose an agent's mode (``{"mode": "off"|"shadow"|"act"}``)."""
+        """Choose an agent's mode (``{"mode": "off"|"shadow"|"act", "effective_hash"}``).
+
+        ``effective_hash`` is required for ``act`` only.
+        """
 
         if agents is None:
             return JSONResponse(_AGENTS_UNAVAILABLE, status_code=503)
+        if not _person_at_a_browser(request):
+            return JSONResponse(_NOT_A_PERSON, status_code=403)
         agent_id = request.path_params["agent_id"]
         if agent_id not in agents.catalog:
             return JSONResponse({"error": f"unknown agent {agent_id}"}, status_code=404)
@@ -1458,10 +1515,19 @@ def build_api_routes(
         mode = body.get("mode") if isinstance(body, dict) else None
         if not isinstance(mode, str):
             return JSONResponse({"error": "mode is required"}, status_code=400)
+        reviewed: str | None = None
+        if mode == "act":
+            reviewed, refused = _reviewed_hash(body)
+            if refused is not None:
+                return refused
         try:
-            effective = await agents.set_mode(agent_id, mode, actor=_actor_of(request) or "unknown")
+            effective = await agents.set_mode(
+                agent_id, mode, actor=_actor_of(request) or "unknown", effective_hash=reviewed
+            )
         except KeyError:
             return JSONResponse({"error": f"unknown agent {agent_id}"}, status_code=404)
+        except HashMismatch as exc:
+            return _changed(exc)
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
         return JSONResponse({"agent_id": agent_id, "mode": effective, "requested": mode})
@@ -1506,12 +1572,14 @@ def build_api_routes(
         )
 
     async def api_agent_authorization_grant(request: Request) -> JSONResponse:
-        """Grant one (``{tool, scope, max_attempts_per_day, expires_at, note}``).
+        """Grant one (``{tool, scope, max_attempts_per_day, expires_at, note, effective_hash}``).
 
-        Bound to the agent's effective hash at this moment: the parameters and
-        spec a superuser is looking at when they grant.
+        Bound to ``effective_hash``, the agent as the superuser granting was
+        shown it; a 409 when the agent has changed since.
         """
 
+        if agents is not None and not _person_at_a_browser(request):
+            return JSONResponse(_NOT_A_PERSON, status_code=403)
         agent_id, refused = _agent_or_404(request)
         if refused is not None:
             return refused
@@ -1529,6 +1597,9 @@ def build_api_routes(
         note = body.get("note") or ""
         if not isinstance(note, str):
             return JSONResponse({"error": "note must be text"}, status_code=400)
+        reviewed, refused = _reviewed_hash(body)
+        if refused is not None:
+            return refused
         try:
             granted = await agents.grant(
                 agent_id,
@@ -1537,15 +1608,20 @@ def build_api_routes(
                 max_attempts_per_day=body.get("max_attempts_per_day"),
                 expires_at=body.get("expires_at"),
                 actor=_actor_of(request) or "unknown",
+                effective_hash=reviewed,
                 note=note,
             )
-        except AuthorizationError as exc:
+        except HashMismatch as exc:
+            return _changed(exc)
+        except (AuthorizationError, ValueError) as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
         return JSONResponse(await _authorization_public(granted), status_code=201)
 
     async def api_agent_authorization_revoke(request: Request) -> JSONResponse:
         """Revoke one; the next call it would have covered is refused."""
 
+        if agents is not None and not _person_at_a_browser(request):
+            return JSONResponse(_NOT_A_PERSON, status_code=403)
         agent_id, refused = _agent_or_404(request)
         if refused is not None:
             return refused
@@ -1582,6 +1658,8 @@ def build_api_routes(
         its authorizations (ADR-0072 rule 6).
         """
 
+        if agents is not None and not _person_at_a_browser(request):
+            return JSONResponse(_NOT_A_PERSON, status_code=403)
         agent_id, refused = _agent_or_404(request)
         if refused is not None:
             return refused

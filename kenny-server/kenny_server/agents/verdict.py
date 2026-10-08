@@ -176,9 +176,12 @@ class AgentVerdictService:
                 priority="normal",
                 category="agent",
                 summary=summary,
-                actor="system",
+                # The agent opened it, in this run: "kenny did it" is not an
+                # answer once kenny acts on its own (ADR-0071).
+                actor=f"agent:{spec.id}",
                 reason=f"opened by the {spec.title} agent",
                 dedup_key=key,
+                fields={"run": session.id},
             )
         return ticket, False
 
