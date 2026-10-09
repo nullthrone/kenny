@@ -278,7 +278,9 @@ def test_parse_days_accepts(raw, expected) -> None:
     assert parse_days(raw, 7) == expected
 
 
-@pytest.mark.parametrize("raw", [0, 31, "-1", "abc", "2.5", True, 2.5])
+@pytest.mark.parametrize(
+    "raw", [0, 31, "-1", "abc", "2.5", True, 2.5, float("inf"), float("-inf"), float("nan")]
+)
 def test_parse_days_rejects(raw) -> None:
     with pytest.raises(ValueError):
         parse_days(raw, 7)
