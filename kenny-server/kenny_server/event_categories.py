@@ -251,7 +251,7 @@ _failed_until: dict[tuple[str, int], float] = {}
 def _key(source: Any, event_id: Any) -> tuple[str, int]:
     try:
         eid = int(event_id)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         eid = -1
     return (str(source or "").strip(), eid)
 

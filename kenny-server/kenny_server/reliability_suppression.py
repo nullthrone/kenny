@@ -99,7 +99,7 @@ class SuppressionList:
 
         try:
             eid = int(event_id)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return None
         src = str(source or "").strip()
         for aid in (agent_id, ""):
@@ -161,7 +161,7 @@ class SuppressionList:
         source = validate_source_or_agent(source, "source")
         try:
             eid = int(event_id)
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError, OverflowError) as exc:
             raise ValueError("event_id must be an integer") from exc
         if not (0 <= eid < 2**31):
             raise ValueError("event_id out of range")
