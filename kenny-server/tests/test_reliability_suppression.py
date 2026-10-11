@@ -30,6 +30,11 @@ def _bearer(app):
 # -- SuppressionList: pure matcher, no store -------------------------------
 
 
+def test_match_ignores_a_non_finite_event_id() -> None:
+    sup = SuppressionList(None)
+    assert sup.match("PC-A", "Microsoft-Windows-CAPI2", float("inf")) is None
+
+
 def test_match_exact_fleet_rule() -> None:
     sup = SuppressionList(None)
     sup.set_rules(

@@ -291,10 +291,14 @@ def _fan_samples(fan: dict[str, Any]) -> list[float]:
 
 
 def _population_cv(running: list[float]) -> float | None:
-    mean = math.fsum(running) / len(running)
-    if mean <= 0:
+    try:
+        mean = math.fsum(running) / len(running)
+        if mean <= 0:
+            return None
+        return math.sqrt(math.fsum((v - mean) ** 2 for v in running) / len(running)) / mean
+    except OverflowError:
+        # Finite samples near the float limit overflow the sum; the spread is unusable.
         return None
-    return math.sqrt(math.fsum((v - mean) ** 2 for v in running) / len(running)) / mean
 
 
 def _extract_fans(snapshots: Iterable[Any]) -> list[Row]:
