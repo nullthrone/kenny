@@ -876,6 +876,8 @@ def make_window(
     end_min = parse_hhmm(end)
     if start_min == end_min:
         raise ValueError("a window's start and end must differ")
+    if tz is not None and not isinstance(tz, str):
+        raise ValueError(f"timezone must be a string, got {type(tz).__name__}")
     zone = (tz or default_timezone()).strip()
     resolve_timezone(zone)
     return ScheduleWindow(
