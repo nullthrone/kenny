@@ -740,6 +740,13 @@ def test_make_window_rejects_unknown_timezone() -> None:
                     categories=["social"], tz="Mars/Olympus")
 
 
+@pytest.mark.parametrize("tz", [5, True, ["UTC"], {"a": 1}])
+def test_make_window_rejects_non_string_timezone(tz) -> None:
+    with pytest.raises(ValueError, match="timezone must be a string"):
+        make_window("pc1", days="mon", start="09:00", end="10:00",
+                    categories=["social"], tz=tz)
+
+
 def test_default_timezone_falls_back_to_utc(monkeypatch) -> None:
     monkeypatch.delenv("TZ", raising=False)
     assert webfilter.default_timezone() == "UTC"
