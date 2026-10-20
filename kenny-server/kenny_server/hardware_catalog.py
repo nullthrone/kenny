@@ -116,6 +116,8 @@ def queried_events() -> frozenset[tuple[str, int]]:
     )
 
 
+# POSSIBLY DEAD: no production caller — only tests/test_hardware_catalog.py uses
+# this, as the seam check between the agent query and ATTRIBUTED_LINUX_KEYS.
 def queried_linux_keys() -> frozenset[str]:
     """The matcher keys the agent reports for the Linux kernel journal."""
 
