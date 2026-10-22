@@ -11,9 +11,10 @@ A discriminated union on ``type`` covers all seven frame kinds. Use
 
 from __future__ import annotations
 
+import math
 from typing import Annotated, Any, Literal, Union
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
 # ---------------------------------------------------------------------------
 # Shared / leaf types
@@ -36,6 +37,26 @@ ErrorCode = Literal[
 ]
 
 
+def _reject_non_finite(value: Any) -> None:
+    """Raise ``ValueError`` if a JSON-decoded value holds a NaN or infinity.
+
+    Python's JSON parser, and pydantic's, accept ``NaN``/``Infinity`` and overflowing
+    literals such as ``1e999``, but they are not JSON: a stored snapshot carrying one
+    cannot be serialized back to the dashboard.
+    """
+
+    stack = [value]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, float):
+            if not math.isfinite(item):
+                raise ValueError("non-finite number in payload")
+        elif isinstance(item, dict):
+            stack.extend(item.values())
+        elif isinstance(item, list):
+            stack.extend(item)
+
+
 class Section(BaseModel):
     """Base for every telemetry section payload.
 
@@ -48,6 +69,11 @@ class Section(BaseModel):
 
     status: Status
     summary: str
+
+    @model_validator(mode="after")
+    def _finite_extras(self) -> "Section":
+        _reject_non_finite(self.model_extra)
+        return self
 
 
 class ResponseError(BaseModel):
@@ -161,6 +187,12 @@ class Log(BaseModel):
     target: str
     message: str
     fields: dict[str, Any] | None = None
+
+    @field_validator("fields")
+    @classmethod
+    def _finite_fields(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        _reject_non_finite(value)
+        return value
 
 
 class PolicyRule(BaseModel):
