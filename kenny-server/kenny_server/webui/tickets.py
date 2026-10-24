@@ -143,6 +143,21 @@ def _assistant_on(assistant: Any) -> bool:
 
     return assistant is not None and ai.current().enabled("ticket_assistant")
 
+def _as_user_id(raw: Any) -> int | None:
+    """Coerce a JSON ``user_id`` to an int SQLite can bind, or ``None``.
+
+    The JSON parser accepts ``Infinity`` and arbitrarily large integers; ``int()``
+    raises ``OverflowError`` on the former and a 64-bit bind overflows on the
+    latter, either of which would otherwise surface as a 500.
+    """
+
+    try:
+        value = int(raw)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return value if -(2**63) <= value < 2**63 else None
+
+
 def _err(detail: str, status: int = 400) -> JSONResponse:
     """One error shape for the whole module: ``{"error": ..., "detail": ...}``.
 
@@ -1148,9 +1163,8 @@ def build_ticket_routes(
         raw_user_id = body.get("user_id")
         if raw_user_id is None:
             return _err("user_id is required")
-        try:
-            user_id = int(raw_user_id)
-        except (TypeError, ValueError):
+        user_id = _as_user_id(raw_user_id)
+        if user_id is None:
             return _err("user_id must be an integer")
         if user_store is not None and await user_store.get_user(user_id) is None:
             return _err("user not found", 404)
@@ -1226,9 +1240,8 @@ def build_ticket_routes(
         raw_user_id = body.get("user_id")
         if raw_user_id is None:
             return _err("user_id is required")
-        try:
-            user_id = int(raw_user_id)
-        except (TypeError, ValueError):
+        user_id = _as_user_id(raw_user_id)
+        if user_id is None:
             return _err("user_id must be an integer")
         if user_store is not None and await user_store.get_user(user_id) is None:
             return _err("user not found", 404)
