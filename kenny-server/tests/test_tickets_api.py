@@ -2336,3 +2336,22 @@ def test_a_ticket_with_no_conversation_gets_no_evidence_row(tmp_path) -> None:
             assert r.status_code == 201
             events = c.get(f"/api/tickets/{r.json()['id']}/events", headers=h).json()["events"]
             assert [e for e in events if e["kind"] == "note"] == []
+
+
+@pytest.mark.parametrize("user_id", ["Infinity", "1e999", "99999999999999999999"])
+def test_discord_link_with_unbindable_user_id_is_400_not_500(tmp_path, user_id: str) -> None:
+    async def seed(users: UserStore, _store: TicketStore, _svc: TicketService) -> dict:
+        su = await users.create_user("su", "pw-123456", "superuser")
+        return {"su_pat": await users.create_pat(su["id"], "t")}
+
+    app = _build_app(tmp_path, seed, with_discord=True)
+    with TestClient(app, raise_server_exceptions=False) as c:
+        h = {**_hdr(app.state.seed["su_pat"]), "content-type": "application/json"}
+        link = c.post(
+            "/api/discord/identities",
+            headers=h,
+            content='{"discord_user_id": "1", "user_id": %s}' % user_id,
+        )
+        claim = c.post("/api/discord/claims/abc", headers=h, content='{"user_id": %s}' % user_id)
+        assert link.status_code == 400
+        assert claim.status_code == 400
