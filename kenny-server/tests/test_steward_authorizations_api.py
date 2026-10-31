@@ -1,12 +1,12 @@
-"""``/api/specialized-agents/{id}/authorizations`` and ``/params``: who may do what (ADR-0072).
+"""``/api/stewards/{id}/authorizations`` and ``/params``: who may do what (ADR-0072).
 
 Through the real composition root and the real guard. A superuser grants,
 revokes and edits parameters — signed in at a browser, never with a token —
 and a grant or ``act`` names the effective hash that superuser was shown; an
 operator reads; a ``user`` reaches none of it. The authorization store is
-attached to the app's own runner, as ``main.py`` wires it, and a test agent
+attached to the app's own runner, as ``main.py`` wires it, and a test steward
 with a ``normal_change`` is added to that runner's catalog, because the
-shipped catalog has no such agent yet.
+shipped catalog has no such steward yet.
 """
 
 from __future__ import annotations
@@ -18,11 +18,11 @@ from typing import Any
 import pytest
 from starlette.testclient import TestClient
 
-from kenny_server.agents.authorizations import AuthorizationStore
-from kenny_server.agents.catalog import CATALOG
-from kenny_server.agents.spec import AgentSpec, ArgConstraint, Trigger, effective_hash
+from kenny_server.stewards.authorizations import AuthorizationStore
+from kenny_server.stewards.catalog import CATALOG
+from kenny_server.stewards.spec import StewardSpec, ArgConstraint, Trigger, effective_hash
 
-from test_specialized_agents_api import (
+from test_stewards_api import (
     BROWSER,
     NOT_A_BROWSER,
     _app_with_operator,
@@ -34,7 +34,7 @@ from test_specialized_agents_api import (
 
 SEVENZIP = "7zip.7zip"
 
-INSTALLER = AgentSpec(
+INSTALLER = StewardSpec(
     id="installer",
     title="Installer",
     description="Installs what the household allowed.",
@@ -45,14 +45,14 @@ INSTALLER = AgentSpec(
     params=("packages",),
 )
 
-BASE = "/api/specialized-agents/installer"
+BASE = "/api/stewards/installer"
 
 
 @pytest.fixture(autouse=True)
 def _env(monkeypatch: pytest.MonkeyPatch) -> None:
-    from test_specialized_agents_api import LEGACY_TOKEN
+    from test_stewards_api import LEGACY_TOKEN
 
-    for key in ("KENNY_TRIAGE_ENABLED", "KENNY_TRIAGE_RESOLVE", "KENNY_AGENTS_ENABLED"):
+    for key in ("KENNY_TRIAGE_ENABLED", "KENNY_TRIAGE_RESOLVE", "KENNY_STEWARDS_ENABLED"):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-not-a-real-key")
     monkeypatch.setenv("KENNY_OPERATOR_TOKEN", LEGACY_TOKEN)
@@ -61,8 +61,8 @@ def _env(monkeypatch: pytest.MonkeyPatch) -> None:
 def _wire(c: TestClient, app: Any, db_path: str) -> AuthorizationStore:
     store = AuthorizationStore(db_path)
     c.portal.call(store.connect)
-    app.state.agents.authorizations = store
-    app.state.agents.catalog = MappingProxyType({**CATALOG, INSTALLER.id: INSTALLER})
+    app.state.stewards.authorizations = store
+    app.state.stewards.catalog = MappingProxyType({**CATALOG, INSTALLER.id: INSTALLER})
     return store
 
 
@@ -99,7 +99,7 @@ def _promote(c: TestClient) -> Any:
 def test_a_user_reaches_none_of_it(tmp_path) -> None:
     app, pats = _app_with_operator(tmp_path)
     with TestClient(app) as c:
-        store = _wire(c, app, str(tmp_path / "agents-api.sqlite"))
+        store = _wire(c, app, str(tmp_path / "stewards-api.sqlite"))
         try:
             h = _h(pats["kid"])
             assert c.get(f"{BASE}/authorizations", headers=h).status_code == 403
@@ -114,7 +114,7 @@ def test_a_user_reaches_none_of_it(tmp_path) -> None:
 def test_an_operator_reads_but_never_grants_revokes_or_edits(tmp_path) -> None:
     app, pats = _app_with_operator(tmp_path)
     with TestClient(app) as c:
-        store = _wire(c, app, str(tmp_path / "agents-api.sqlite"))
+        store = _wire(c, app, str(tmp_path / "stewards-api.sqlite"))
         try:
             _login(c)
             granted = c.post(f"{BASE}/authorizations", json=_shown_body(c), headers=BROWSER)
@@ -131,7 +131,7 @@ def test_an_operator_reads_but_never_grants_revokes_or_edits(tmp_path) -> None:
             assert c.delete(f"{BASE}/authorizations/{auth_id}", headers=op).status_code == 403
             r = c.put(f"{BASE}/params", json={"params": {"packages": ["x"]}}, headers=op)
             assert r.status_code == 403
-            assert c.portal.call(app.state.agents.get_params, "installer") == {}
+            assert c.portal.call(app.state.stewards.get_params, "installer") == {}
             assert c.portal.call(store.list, "installer")[0].revoked_at is None
         finally:
             c.portal.call(store.close)
@@ -140,7 +140,7 @@ def test_an_operator_reads_but_never_grants_revokes_or_edits(tmp_path) -> None:
 def test_an_operator_at_a_browser_still_cannot_grant(tmp_path) -> None:
     app, _pats = _app_with_operator(tmp_path)
     with TestClient(app) as c:
-        store = _wire(c, app, str(tmp_path / "agents-api.sqlite"))
+        store = _wire(c, app, str(tmp_path / "stewards-api.sqlite"))
         try:
             _login(c, "op")
             r = c.post(f"{BASE}/authorizations", json=_shown_body(c), headers=BROWSER)
@@ -154,7 +154,7 @@ def test_an_operator_at_a_browser_still_cannot_grant(tmp_path) -> None:
 def test_a_superuser_grants_against_the_hash_shown_and_revokes(tmp_path) -> None:
     app, _pats = _app_with_operator(tmp_path)
     with TestClient(app) as c:
-        store = _wire(c, app, str(tmp_path / "agents-api.sqlite"))
+        store = _wire(c, app, str(tmp_path / "stewards-api.sqlite"))
         try:
             _login(c)
             r = c.put(f"{BASE}/params", json={"params": {"packages": [SEVENZIP]}}, headers=BROWSER)
@@ -176,7 +176,7 @@ def test_a_superuser_grants_against_the_hash_shown_and_revokes(tmp_path) -> None
             assert revoked.status_code == 200
             assert (revoked.json()["status"], revoked.json()["revoked_by"]) == ("revoked", "admin")
             assert c.delete(f"{BASE}/authorizations/nope", headers=BROWSER).status_code == 404
-            other = "/api/specialized-agents/triage"
+            other = "/api/stewards/triage"
             assert c.delete(f"{other}/authorizations/{body['id']}", headers=BROWSER).status_code == 404
         finally:
             c.portal.call(store.close)
@@ -185,14 +185,14 @@ def test_a_superuser_grants_against_the_hash_shown_and_revokes(tmp_path) -> None
 def test_a_grant_against_a_hash_nobody_was_shown_is_refused(tmp_path) -> None:
     """A concurrent parameter edit must not widen what a superuser approved.
 
-    The superuser reviewed the agent with one package; before the grant
+    The superuser reviewed the steward with one package; before the grant
     arrives someone widens the allowlist. The grant names the reviewed hash,
-    so it is a 409, not a grant bound to the wider agent.
+    so it is a 409, not a grant bound to the wider steward.
     """
 
     app, _pats = _app_with_operator(tmp_path)
     with TestClient(app) as c:
-        store = _wire(c, app, str(tmp_path / "agents-api.sqlite"))
+        store = _wire(c, app, str(tmp_path / "stewards-api.sqlite"))
         try:
             _login(c)
             c.put(f"{BASE}/params", json={"params": {"packages": [SEVENZIP]}}, headers=BROWSER)
@@ -209,7 +209,7 @@ def test_a_grant_against_a_hash_nobody_was_shown_is_refused(tmp_path) -> None:
             )
             assert r.status_code == 409, r.text
             assert c.portal.call(store.list, "installer") == []
-            assert c.portal.call(app.state.agents.mode_of, "installer") == "shadow"
+            assert c.portal.call(app.state.stewards.mode_of, "installer") == "shadow"
 
             missing = c.post(f"{BASE}/authorizations", json=_grant_body(), headers=BROWSER)
             assert missing.status_code == 400 and "effective_hash" in missing.json()["error"]
@@ -237,7 +237,7 @@ def test_a_grant_against_a_hash_nobody_was_shown_is_refused(tmp_path) -> None:
 def test_a_refused_grant_is_a_400_and_writes_nothing(tmp_path, overrides) -> None:
     app, _pats = _app_with_operator(tmp_path)
     with TestClient(app) as c:
-        store = _wire(c, app, str(tmp_path / "agents-api.sqlite"))
+        store = _wire(c, app, str(tmp_path / "stewards-api.sqlite"))
         try:
             _login(c)
             r = c.post(f"{BASE}/authorizations", json=_shown_body(c, **overrides), headers=BROWSER)
@@ -250,7 +250,7 @@ def test_a_refused_grant_is_a_400_and_writes_nothing(tmp_path, overrides) -> Non
 def test_a_parameter_edit_drops_act_and_voids_through_the_api(tmp_path) -> None:
     app, _pats = _app_with_operator(tmp_path)
     with TestClient(app) as c:
-        store = _wire(c, app, str(tmp_path / "agents-api.sqlite"))
+        store = _wire(c, app, str(tmp_path / "stewards-api.sqlite"))
         try:
             _login(c)
             c.put(f"{BASE}/params", json={"params": {"packages": [SEVENZIP]}}, headers=BROWSER)
@@ -258,7 +258,7 @@ def test_a_parameter_edit_drops_act_and_voids_through_the_api(tmp_path) -> None:
             granted = c.post(f"{BASE}/authorizations", json=_shown_body(c), headers=BROWSER).json()
 
             listing = {
-                a["id"]: a for a in c.get("/api/specialized-agents", headers=BROWSER).json()["agents"]
+                a["id"]: a for a in c.get("/api/stewards", headers=BROWSER).json()["stewards"]
             }
             assert listing["installer"]["act_bound"] is True
             assert listing["installer"]["params"] == {"packages": [SEVENZIP]}
@@ -273,7 +273,7 @@ def test_a_parameter_edit_drops_act_and_voids_through_the_api(tmp_path) -> None:
             [after] = c.get(f"{BASE}/authorizations", headers=BROWSER).json()["authorizations"]
             assert (after["id"], after["status"]) == (granted["id"], "voided")
             listing = {
-                a["id"]: a for a in c.get("/api/specialized-agents", headers=BROWSER).json()["agents"]
+                a["id"]: a for a in c.get("/api/stewards", headers=BROWSER).json()["stewards"]
             }
             assert (listing["installer"]["mode"], listing["installer"]["act_bound"]) == (
                 "shadow",
@@ -289,7 +289,7 @@ def test_grants_revocations_and_parameter_edits_need_a_person_at_a_browser(
 ) -> None:
     app, pats = _app_with_operator(tmp_path)
     with TestClient(app) as c:
-        store = _wire(c, app, str(tmp_path / "agents-api.sqlite"))
+        store = _wire(c, app, str(tmp_path / "stewards-api.sqlite"))
         try:
             _login(c)
             body = _shown_body(c)
@@ -314,29 +314,29 @@ def test_grants_revocations_and_parameter_edits_need_a_person_at_a_browser(
                 assert "dashboard" in r.json()["error"]
             [only] = c.portal.call(store.list, "installer")
             assert (only.id, only.revoked_at) == (existing, None)
-            assert c.portal.call(app.state.agents.get_params, "installer") == {}
-            assert c.portal.call(app.state.agents.mode_of, "installer") == "shadow"
+            assert c.portal.call(app.state.stewards.get_params, "installer") == {}
+            assert c.portal.call(app.state.stewards.mode_of, "installer") == "shadow"
         finally:
             c.portal.call(store.close)
 
 
-def test_bad_parameters_and_unknown_agents(tmp_path) -> None:
+def test_bad_parameters_and_unknown_stewards(tmp_path) -> None:
     app, _pats = _app_with_operator(tmp_path)
     with TestClient(app) as c:
-        store = _wire(c, app, str(tmp_path / "agents-api.sqlite"))
+        store = _wire(c, app, str(tmp_path / "stewards-api.sqlite"))
         try:
             _login(c)
             su = BROWSER
             assert c.put(f"{BASE}/params", json={"params": {"nope": ["x"]}}, headers=su).status_code == 400
             assert c.put(f"{BASE}/params", json={"params": ["x"]}, headers=su).status_code == 400
             assert c.put(f"{BASE}/params", content=b"{", headers=su).status_code == 400
-            nope = "/api/specialized-agents/nope"
+            nope = "/api/stewards/nope"
             assert c.get(f"{nope}/params", headers=su).status_code == 404
             assert c.get(f"{nope}/authorizations", headers=su).status_code == 404
             assert c.post(f"{nope}/authorizations", json=_grant_body(), headers=su).status_code == 404
             got = c.get(f"{BASE}/params", headers=su).json()
             assert got == {
-                "agent_id": "installer",
+                "steward_id": "installer",
                 "declared": ["packages"],
                 "params": {},
                 "effective_hash": effective_hash(INSTALLER, {}),
@@ -348,10 +348,10 @@ def test_bad_parameters_and_unknown_agents(tmp_path) -> None:
 def test_without_an_authorization_store_the_routes_say_so(tmp_path) -> None:
     app, _pats = _app_with_operator(tmp_path)
     with TestClient(app) as c:
-        app.state.agents.authorizations = None
+        app.state.stewards.authorizations = None
         _login(c)
-        assert c.get("/api/specialized-agents/triage/authorizations", headers=BROWSER).status_code == 503
+        assert c.get("/api/stewards/triage/authorizations", headers=BROWSER).status_code == 503
         r = c.post(
-            "/api/specialized-agents/triage/authorizations", json=_grant_body(), headers=BROWSER
+            "/api/stewards/triage/authorizations", json=_grant_body(), headers=BROWSER
         )
         assert r.status_code == 503

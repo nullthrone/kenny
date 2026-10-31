@@ -1,10 +1,10 @@
 """Standing authorizations: consent a superuser gives ahead (ADR-0072).
 
-An authorization says that one agent, bound to what that agent *is* on this
-install (its effective hash, :func:`~kenny_server.agents.spec.effective_hash`),
+An authorization says that one steward, bound to what that steward *is* on this
+install (its effective hash, :func:`~kenny_server.stewards.spec.effective_hash`),
 may make one kind of ``normal_change`` on named hosts, a bounded number of
 times per host per rolling 24 hours, until it expires. This module stores them
-and answers the one question the agent gate asks at step 8: *is there one that
+and answers the one question the steward gate asks at step 8: *is there one that
 covers this call, and if so, spend an attempt on it.*
 
 What it enforces, and where:
@@ -13,7 +13,7 @@ What it enforces, and where:
   :meth:`AuthorizationStore.grant` *and* at :meth:`AuthorizationStore.consume`,
   so a row written past :meth:`grant` (a restored backup, a hand edit) still
   matches nothing.
-* **Grant refusals**: a tool outside the agent's spec, a tool that is not
+* **Grant refusals**: a tool outside the steward's spec, a tool that is not
   ``normal_change``, an empty scope (an empty list is never "all"), the server
   sentinel for a tool that always runs on a host, an attempt budget below one,
   an expiry in the past or more than :data:`MAX_EXPIRY_DAYS` out. Who may grant (a
@@ -23,13 +23,13 @@ What it enforces, and where:
   two runs reaching for the last attempt cannot both get it. The caller
   executes only after it returns; a call that then fails still counted.
 * **Voiding is permanent**: :meth:`void_other_hashes` stamps ``voided_at`` on
-  every authorization bound to a hash other than the agent's current one.
+  every authorization bound to a hash other than the steward's current one.
   Nothing clears it, so rolling the code or the parameters back does not
-  revive a grant made against what the agent used to be.
-  :meth:`void_absent_agents` does the same for every agent no longer in the
-  catalog, so removing an agent and shipping it again revives nothing either.
+  revive a grant made against what the steward used to be.
+  :meth:`void_absent_stewards` does the same for every steward no longer in the
+  catalog, so removing a steward and shipping it again revives nothing either.
 
-Storage follows :mod:`kenny_server.agents.store`: its own connection on the
+Storage follows :mod:`kenny_server.stewards.store`: its own connection on the
 shared DB file, ``CREATE TABLE IF NOT EXISTS`` only, UTC ISO-8601 text stamps
 (always with microseconds, so they compare correctly as text).
 """
@@ -48,7 +48,7 @@ import aiosqlite
 from ..store import DEFAULT_DB_PATH, _begin_immediate, _configure_connection, write_lock
 from ..tool_classes import NORMAL_CHANGE, TOOL_CLASSES
 from ..tools import CAPABILITY_TOOLS
-from .spec import AgentSpec
+from .spec import StewardSpec
 
 __all__ = [
     "BUDGET_WINDOW",
@@ -76,9 +76,9 @@ SERVER_SCOPE = "server"
 BUDGET_WINDOW = timedelta(hours=24)
 
 _SCHEMA = """
-CREATE TABLE IF NOT EXISTS agent_authorizations (
+CREATE TABLE IF NOT EXISTS steward_authorizations (
     id                   TEXT PRIMARY KEY,
-    agent_id             TEXT NOT NULL,
+    steward_id           TEXT NOT NULL,
     effective_hash       TEXT NOT NULL,
     tool                 TEXT NOT NULL,
     scope                TEXT NOT NULL,
@@ -92,21 +92,21 @@ CREATE TABLE IF NOT EXISTS agent_authorizations (
     voided_by            TEXT,
     note                 TEXT NOT NULL DEFAULT ''
 );
-CREATE INDEX IF NOT EXISTS idx_agent_authorizations_agent
-    ON agent_authorizations (agent_id, tool);
+CREATE INDEX IF NOT EXISTS idx_steward_authorizations_steward
+    ON steward_authorizations (steward_id, tool);
 
-CREATE TABLE IF NOT EXISTS agent_authorization_uses (
+CREATE TABLE IF NOT EXISTS steward_authorization_uses (
     authorization_id TEXT NOT NULL,
     host_id          TEXT,
     at               TEXT NOT NULL,
     run_id           TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_agent_authorization_uses
-    ON agent_authorization_uses (authorization_id, at);
+CREATE INDEX IF NOT EXISTS idx_steward_authorization_uses
+    ON steward_authorization_uses (authorization_id, at);
 """
 
 _COLUMNS = (
-    "id, agent_id, effective_hash, tool, scope, max_attempts_per_day, expires_at, "
+    "id, steward_id, effective_hash, tool, scope, max_attempts_per_day, expires_at, "
     "granted_by, granted_at, revoked_at, revoked_by, voided_at, voided_by, note"
 )
 
@@ -161,10 +161,10 @@ def _normalize_scope(scope: Any) -> list[str] | str:
 
 @dataclass(frozen=True)
 class Authorization:
-    """One row of ``agent_authorizations``."""
+    """One row of ``steward_authorizations``."""
 
     id: str
-    agent_id: str
+    steward_id: str
     effective_hash: str
     tool: str
     #: Host ids, or :data:`SERVER_SCOPE` for a change that names no host.
@@ -210,7 +210,7 @@ class Authorization:
     def to_public(self, now: datetime | None = None) -> dict[str, Any]:
         out: dict[str, Any] = {
             "id": self.id,
-            "agent_id": self.agent_id,
+            "steward_id": self.steward_id,
             "effective_hash": self.effective_hash,
             "tool": self.tool,
             "scope": self.scope,
@@ -259,7 +259,7 @@ class AuthorizationStore:
     async def grant(
         self,
         *,
-        spec: AgentSpec,
+        spec: StewardSpec,
         effective_hash: str,
         tool: str,
         scope: Sequence[str] | str,
@@ -269,7 +269,7 @@ class AuthorizationStore:
         note: str = "",
         now: datetime | None = None,
     ) -> Authorization:
-        """Record a grant for ``spec``'s agent at ``effective_hash``; refuse a bad one.
+        """Record a grant for ``spec``'s steward at ``effective_hash``; refuse a bad one.
 
         Raises :class:`AuthorizationError` naming the first rule the grant
         breaks. Only a superuser may call this; the API enforces that.
@@ -279,7 +279,7 @@ class AuthorizationStore:
         if tool in NEVER_AUTHORIZED:
             raise AuthorizationError(f"{tool} can never be authorized ahead")
         if tool not in spec.tools:
-            raise AuthorizationError(f"{tool} is not one of agent {spec.id}'s tools")
+            raise AuthorizationError(f"{tool} is not one of steward {spec.id}'s tools")
         if TOOL_CLASSES.get(tool) != NORMAL_CHANGE:
             raise AuthorizationError(
                 f"{tool} is not a normal_change; only a normal_change is authorized ahead"
@@ -306,7 +306,7 @@ class AuthorizationStore:
         auth_id = uuid.uuid4().hex
         async with write_lock():
             await self._conn.execute(
-                f"INSERT INTO agent_authorizations ({_COLUMNS}) "
+                f"INSERT INTO steward_authorizations ({_COLUMNS}) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?)",
                 (
                     auth_id,
@@ -338,7 +338,7 @@ class AuthorizationStore:
 
         async with write_lock():
             await self._conn.execute(
-                "UPDATE agent_authorizations SET revoked_at = ?, revoked_by = ? "
+                "UPDATE steward_authorizations SET revoked_at = ?, revoked_by = ? "
                 "WHERE id = ? AND revoked_at IS NULL",
                 (_iso(now or datetime.now(timezone.utc)), actor, authorization_id),
             )
@@ -350,13 +350,13 @@ class AuthorizationStore:
 
     async def void_other_hashes(
         self,
-        agent_id: str,
+        steward_id: str,
         effective_hash: str,
         actor: str = "system",
         *,
         now: datetime | None = None,
     ) -> int:
-        """Void, for good, every live authorization of ``agent_id`` not bound to ``effective_hash``.
+        """Void, for good, every live authorization of ``steward_id`` not bound to ``effective_hash``.
 
         Returns how many were voided. Revoked and already-voided rows are left
         as they are. Nothing un-voids a row (ADR-0072 rule 6).
@@ -364,44 +364,44 @@ class AuthorizationStore:
 
         async with write_lock():
             cur = await self._conn.execute(
-                "UPDATE agent_authorizations SET voided_at = ?, voided_by = ? "
-                "WHERE agent_id = ? AND effective_hash != ? "
+                "UPDATE steward_authorizations SET voided_at = ?, voided_by = ? "
+                "WHERE steward_id = ? AND effective_hash != ? "
                 "AND voided_at IS NULL AND revoked_at IS NULL",
-                (_iso(now or datetime.now(timezone.utc)), actor, agent_id, effective_hash),
+                (_iso(now or datetime.now(timezone.utc)), actor, steward_id, effective_hash),
             )
             changed = cur.rowcount or 0
             await self._conn.commit()
         return changed
 
-    async def void_absent_agents(
+    async def void_absent_stewards(
         self,
-        agent_ids: Sequence[str],
+        steward_ids: Sequence[str],
         actor: str = "system",
         *,
         now: datetime | None = None,
     ) -> dict[str, int]:
-        """Void, for good, every live authorization of an agent not in ``agent_ids``.
+        """Void, for good, every live authorization of a steward not in ``steward_ids``.
 
-        Returns how many were voided per agent id. Called at startup with the
-        catalog's ids: an agent a release removed must not find its grants
+        Returns how many were voided per steward id. Called at startup with the
+        catalog's ids: a steward a release removed must not find its grants
         waiting when an identical spec comes back (ADR-0072 rule 6).
         """
 
-        keep = sorted(set(agent_ids))
-        absent = f"AND agent_id NOT IN ({', '.join('?' for _ in keep)})" if keep else ""
+        keep = sorted(set(steward_ids))
+        absent = f"AND steward_id NOT IN ({', '.join('?' for _ in keep)})" if keep else ""
         async with write_lock():
             await _begin_immediate(self._conn)
             try:
                 async with self._conn.execute(
-                    "SELECT agent_id, COUNT(*) AS n FROM agent_authorizations "
+                    "SELECT steward_id, COUNT(*) AS n FROM steward_authorizations "
                     f"WHERE voided_at IS NULL AND revoked_at IS NULL {absent} "
-                    "GROUP BY agent_id",
+                    "GROUP BY steward_id",
                     keep,
                 ) as cur:
-                    counts = {str(row["agent_id"]): int(row["n"]) for row in await cur.fetchall()}
+                    counts = {str(row["steward_id"]): int(row["n"]) for row in await cur.fetchall()}
                 if counts:
                     await self._conn.execute(
-                        "UPDATE agent_authorizations SET voided_at = ?, voided_by = ? "
+                        "UPDATE steward_authorizations SET voided_at = ?, voided_by = ? "
                         f"WHERE voided_at IS NULL AND revoked_at IS NULL {absent}",
                         (_iso(now or datetime.now(timezone.utc)), actor, *keep),
                     )
@@ -416,7 +416,7 @@ class AuthorizationStore:
     async def consume(
         self,
         *,
-        agent_id: str,
+        steward_id: str,
         effective_hash: str,
         tool: str,
         host_id: str | None,
@@ -425,7 +425,7 @@ class AuthorizationStore:
     ) -> Authorization | None:
         """Spend one attempt of a live authorization covering this call, or ``None``.
 
-        A match is: same agent, same effective hash, same tool, not revoked,
+        A match is: same steward, same effective hash, same tool, not revoked,
         voided or expired, its scope naming ``host_id`` (or the server sentinel
         for ``host_id=None``), and fewer than ``max_attempts_per_day`` attempts
         on that host in the last 24 hours. The attempt is recorded before this
@@ -442,11 +442,11 @@ class AuthorizationStore:
             await _begin_immediate(self._conn)
             try:
                 async with self._conn.execute(
-                    f"SELECT {_COLUMNS} FROM agent_authorizations "
-                    "WHERE agent_id = ? AND effective_hash = ? AND tool = ? "
+                    f"SELECT {_COLUMNS} FROM steward_authorizations "
+                    "WHERE steward_id = ? AND effective_hash = ? AND tool = ? "
                     "AND revoked_at IS NULL AND voided_at IS NULL AND expires_at > ? "
                     "ORDER BY granted_at, id",
-                    (agent_id, effective_hash, tool, stamp),
+                    (steward_id, effective_hash, tool, stamp),
                 ) as cur:
                     rows = await cur.fetchall()
                 chosen: Authorization | None = None
@@ -455,7 +455,7 @@ class AuthorizationStore:
                     if not candidate.covers(host_id):
                         continue
                     async with self._conn.execute(
-                        "SELECT COUNT(*) AS n FROM agent_authorization_uses "
+                        "SELECT COUNT(*) AS n FROM steward_authorization_uses "
                         "WHERE authorization_id = ? AND host_id IS ? AND at > ?",
                         (candidate.id, host_id, since),
                     ) as cur:
@@ -467,7 +467,7 @@ class AuthorizationStore:
                     await self._conn.rollback()
                     return None
                 await self._conn.execute(
-                    "INSERT INTO agent_authorization_uses (authorization_id, host_id, at, run_id) "
+                    "INSERT INTO steward_authorization_uses (authorization_id, host_id, at, run_id) "
                     "VALUES (?, ?, ?, ?)",
                     (chosen.id, host_id, stamp, run_id),
                 )
@@ -481,18 +481,18 @@ class AuthorizationStore:
 
     async def get(self, authorization_id: str) -> Authorization | None:
         async with self._conn.execute(
-            f"SELECT {_COLUMNS} FROM agent_authorizations WHERE id = ?", (authorization_id,)
+            f"SELECT {_COLUMNS} FROM steward_authorizations WHERE id = ?", (authorization_id,)
         ) as cur:
             row = await cur.fetchone()
         return None if row is None else Authorization._from_row(row)
 
-    async def list(self, agent_id: str) -> list[Authorization]:
-        """Every authorization of ``agent_id``, newest grant first, dead ones included."""
+    async def list(self, steward_id: str) -> list[Authorization]:
+        """Every authorization of ``steward_id``, newest grant first, dead ones included."""
 
         async with self._conn.execute(
-            f"SELECT {_COLUMNS} FROM agent_authorizations WHERE agent_id = ? "
+            f"SELECT {_COLUMNS} FROM steward_authorizations WHERE steward_id = ? "
             "ORDER BY granted_at DESC, id",
-            (agent_id,),
+            (steward_id,),
         ) as cur:
             rows = await cur.fetchall()
         return [Authorization._from_row(row) for row in rows]
@@ -501,7 +501,7 @@ class AuthorizationStore:
         """Attempts spent on ``authorization_id`` since ``since``, per host (``server`` for none)."""
 
         async with self._conn.execute(
-            "SELECT host_id, COUNT(*) AS n FROM agent_authorization_uses "
+            "SELECT host_id, COUNT(*) AS n FROM steward_authorization_uses "
             "WHERE authorization_id = ? AND at > ? GROUP BY host_id",
             (authorization_id, _iso(since)),
         ) as cur:

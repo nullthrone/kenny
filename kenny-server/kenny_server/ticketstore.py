@@ -299,11 +299,11 @@ TRIAGE_ACTOR = "triage"
 #: ticket reaches ``cancelled``.
 ABANDONED_BY = "inactivity"
 
-#: The ``origin`` of a ticket opened by a specialized agent's own effect
-#: (``agents.verdict`` opens one for an ``actionable`` verdict). The agent
-#: runner refuses to start an agent for such a ticket, so an agent's effect
-#: never starts another agent (ADR-0071 rule 6).
-AGENT_ORIGIN = "agent"
+#: The ``origin`` of a ticket opened by a steward's own effect
+#: (``stewards.verdict`` opens one for an ``actionable`` verdict). The steward
+#: runner refuses to start a steward for such a ticket, so a steward's effect
+#: never starts another steward (ADR-0071 rule 6).
+STEWARD_ORIGIN = "steward"
 
 
 @dataclass(slots=True)

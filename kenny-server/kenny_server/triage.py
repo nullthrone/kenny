@@ -68,10 +68,10 @@ logger = logging.getLogger("kenny.triage")
 __all__ = ["AUDIT_ACTOR", "TriageFailed", "TriageService", "may_resolve"]
 
 #: Who the forwarded-call audit names for every host call an investigation
-#: makes: the service identity of the ``triage`` specialized agent (ADR-0071
+#: makes: the service identity of the ``triage`` steward (ADR-0071
 #: rule 5), not the ticket trail's :data:`~kenny_server.ticketstore.TRIAGE_ACTOR`.
-#: ``tests/test_agent_runner.py`` joins it to the catalog entry's id.
-AUDIT_ACTOR = "agent:triage"
+#: ``tests/test_steward_runner.py`` joins it to the catalog entry's id.
+AUDIT_ACTOR = "steward:triage"
 
 #: Model round-trips one investigation may take. Enough for "read the report,
 #: check the thing it names, check one more thing when the first is
@@ -173,8 +173,8 @@ class TriageService:
         #: :func:`may_resolve`'s answer is carried out or merely recorded.
         self.resolve_enabled = resolve_enabled
         #: A live "may triage still act?" predicate, asked at the verdict. Set by
-        #: ``agents.runner.AgentRunner`` (the global agent switch on and triage's
-        #: mode ``act``), so switching agents off or demoting triage reaches a run
+        #: ``stewards.runner.StewardRunner`` (the global steward switch on and triage's
+        #: mode ``act``), so switching stewards off or demoting triage reaches a run
         #: already in flight. ``None`` asks nothing; a predicate that raises or
         #: answers anything but ``True`` means "do not resolve".
         self.still_acting: Callable[[], bool] | None = None
@@ -185,9 +185,9 @@ class TriageService:
 
         A run started with a resolve decision resolves only if that decision,
         the live switch and the live :attr:`still_acting` predicate all say so:
-        switching resolve off, triage off or every agent off mid-run takes
+        switching resolve off, triage off or every steward off mid-run takes
         effect at the verdict, switching any of them on mid-run does not (the
-        same rule the agent gate applies to a run's mode, ADR-0071).
+        same rule the steward gate applies to a run's mode, ADR-0071).
         """
 
         ctx = self._runs.get(ticket_id)
@@ -330,8 +330,8 @@ class TriageService:
     ) -> str | None:
         """Run one investigation and return its verdict, or raise if it failed.
 
-        For a caller that records the run (``agents.runner.AgentRunner``):
-        ``run_id`` names the ``agent_runs`` row every forwarded call is audited
+        For a caller that records the run (``stewards.runner.StewardRunner``):
+        ``run_id`` names the ``steward_runs`` row every forwarded call is audited
         under, ``usage`` collects the turn's token counts, and ``resolve`` is
         the resolve decision the run started with (see :meth:`_resolves`).
         Raises :class:`TriageFailed` when the turn failed — the assistant
@@ -344,7 +344,7 @@ class TriageService:
             logger.debug("ticket %s has no target machine; nothing to triage", ticket.id)
             return None
         session.audit_actor = AUDIT_ACTOR
-        session.agent_run_id = run_id
+        session.steward_run_id = run_id
         session.usage = usage
         self.assistant.append_user_message(session, _brief(ticket))
         await self.tickets.append_event(

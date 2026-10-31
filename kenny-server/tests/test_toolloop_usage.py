@@ -126,4 +126,4 @@ def test_ticket_session_new_fields_default_to_none() -> None:
         agent_id=None,
         allowed_tools=frozenset(),
     )
-    assert s.usage is None and s.audit_actor is None and s.agent_run_id is None
+    assert s.usage is None and s.audit_actor is None and s.steward_run_id is None

@@ -15,7 +15,7 @@ The loop is deliberately duck-typed over its session object. It touches only
 ``.id``, ``.messages``, ``.agent_id``, ``.pending``, ``._queue`` and
 ``._staged_results`` — no base class, no ``isinstance`` checks (a session may
 also opt in to token accounting with a ``.usage`` :class:`UsageMeter`, and name
-the author of its forwarded calls with ``.audit_actor``/``.agent_run_id``) — and
+the author of its forwarded calls with ``.audit_actor``/``.steward_run_id``) — and
 it never imports ``chat.py``, so the dependency runs one way: ``chat`` -> ``toolloop``.
 """
 
@@ -59,13 +59,13 @@ _MAX_TOOL_RESULT_CHARS = 100_000
 #: The tool an unprompted triage turn ends with (see ``kenny_server/triage.py``).
 TRIAGE_VERDICT_TOOL = "ticket_triage_verdict"
 
-#: How a specialized agent's run ends (ADR-0071, ADR-0072). Not a ticket tool:
-#: an agent run has no ticket, and its handler (registered by the agent runner)
+#: How a steward's run ends (ADR-0071, ADR-0072). Not a ticket tool:
+#: a steward run has no ticket, and its handler (registered by the steward runner)
 #: decides — honouring the run's mode — whether a finding becomes one.
-AGENT_VERDICT_TOOL = "agent_verdict"
+STEWARD_VERDICT_TOOL = "steward_verdict"
 
-#: The fixed outcomes an agent run may report.
-AGENT_VERDICTS: tuple[str, ...] = ("clean", "acted", "actionable", "inconclusive")
+#: The fixed outcomes a steward run may report.
+STEWARD_VERDICTS: tuple[str, ...] = ("clean", "acted", "actionable", "inconclusive")
 
 #: The two tools the dashboard copilot uses to get a ticket out of a
 #: conversation. Both are READ_ONLY and neither writes a ticket: ``ticket_draft``
@@ -125,7 +125,7 @@ LOOP_EVENT_TYPES: frozenset[str] = frozenset(
 #: copilot does exactly that, ``chat.py``), so a tool that belongs to one
 #: surface alone has to be withheld from that default rather than added to it.
 SURFACE_ONLY_TOOLS: frozenset[str] = frozenset(
-    {TRIAGE_VERDICT_TOOL, TICKET_SUMMARY_TOOL, AGENT_VERDICT_TOOL}
+    {TRIAGE_VERDICT_TOOL, TICKET_SUMMARY_TOOL, STEWARD_VERDICT_TOOL}
 )
 
 #: Server tools :class:`ToolExecutor` dispatches itself. Guards
@@ -190,7 +190,7 @@ SERVER_TOOLS: dict[str, dict[str, Any]] = {
         },
         "required": ["id"],
     },
-    AGENT_VERDICT_TOOL: {
+    STEWARD_VERDICT_TOOL: {
         "description": (
             "Record what this run found and did, and finish. Call this exactly once, "
             "as the last thing you do. The server decides what follows from it."
@@ -198,7 +198,7 @@ SERVER_TOOLS: dict[str, dict[str, Any]] = {
         "properties": {
             "verdict": {
                 "type": "string",
-                "enum": list(AGENT_VERDICTS),
+                "enum": list(STEWARD_VERDICTS),
                 "description": (
                     "clean: nothing needed doing. acted: you made changes and their "
                     "tool results say they succeeded. actionable: something needs a "
@@ -354,7 +354,7 @@ SERVER_TOOLS: dict[str, dict[str, Any]] = {
 class Allow:
     """Execute the call now.
 
-    ``authorization_id`` names the standing authorization that let an agent
+    ``authorization_id`` names the standing authorization that let a steward
     run a ``normal_change`` (ADR-0072); the loop carries it to the audit row.
     ``None`` for every other allow.
     """
@@ -469,14 +469,14 @@ def build_tool_schemas(
     that exposes only part of the catalog). ``None`` — the default — emits the
     full catalog exactly as before.
 
-    ``unattended`` describes the tools as an agent run sees them (ADR-0071):
+    ``unattended`` describes the tools as a steward run sees them (ADR-0071):
     nobody confirms anything there, and a run is fixed to one host, so the
     confirmation note and the per-call ``agent_id`` override would both tell
     the model something false.
     """
 
     note = (
-        " (state-changing — runs only within this agent's limits)"
+        " (state-changing — runs only within this steward's limits)"
         if unattended
         else " (state-changing — requires operator confirmation)"
     )
@@ -817,7 +817,7 @@ class ToolExecutor:
         forwarded call (ADR-0038).
 
         ``actor`` and ``run_id`` say who made the call and in which autonomous
-        run, and ``authorization_id`` which standing authorization let an agent
+        run, and ``authorization_id`` which standing authorization let a steward
         make it (ADR-0072); all three go to the audit trail unchanged.
         """
 
@@ -1003,7 +1003,7 @@ def withheld_sections(session: Any) -> frozenset[str]:
     Nobody is present in an unattended session to consent to a privacy-touching
     read, so the section of a sensitive tool goes only where that tool would:
 
-    * an agent run (a session carrying its ``spec``) — only when the spec opted
+    * a steward run (a session carrying its ``spec``) — only when the spec opted
       into sensitive tools (``sensitive_ok``) *and* names the tool;
     * a ticket session (one carrying ``allowed_tools``) — only when the tool is
       among them, which an unprompted triage session's never is;
@@ -1069,13 +1069,13 @@ def _audit_identity(session: Any) -> tuple[str | None, str | None]:
     """``(actor, run_id)`` the audit trail records for a call made in ``session``.
 
     The actor is the session's ``audit_actor`` when non-empty, else its
-    principal's username, else ``None``; the run id is ``agent_run_id``.
+    principal's username, else ``None``; the run id is ``steward_run_id``.
     """
 
     actor = getattr(session, "audit_actor", None)
     if not (isinstance(actor, str) and actor):
         actor = getattr(getattr(session, "principal", None), "username", None)
-    run_id = getattr(session, "agent_run_id", None)
+    run_id = getattr(session, "steward_run_id", None)
     return (
         actor if isinstance(actor, str) and actor else None,
         run_id if isinstance(run_id, str) and run_id else None,
@@ -1422,7 +1422,7 @@ async def drive_events(
     """Run the tool-use loop, yielding structured events as they happen.
 
     ``actor`` names who drives this turn on the audit trail of every call it
-    forwards; ``None`` falls back to the session's own identity (an agent run's
+    forwards; ``None`` falls back to the session's own identity (a steward run's
     ``audit_actor``, a ticket session's principal).
 
     This is the single source of truth for the loop. It yields, in order:

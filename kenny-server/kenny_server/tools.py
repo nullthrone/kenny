@@ -310,9 +310,9 @@ class CallLog:
     ) -> None:
         """Record one forwarded call.
 
-        ``actor`` names who made it (operator username, or an agent identity),
+        ``actor`` names who made it (operator username, or a steward identity),
         ``run_id`` the autonomous run it belongs to, and ``authorization_id``
-        the standing authorization that let an agent make it (ADR-0072); all
+        the standing authorization that let a steward make it (ADR-0072); all
         three, plus the redacted ``args``, are persisted in the event's
         ``fields`` JSON. The authorization id sits beside ``args``, not in it:
         it is the server's record of why the call ran, not something the

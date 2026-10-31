@@ -1,4 +1,4 @@
-"""``AgentSpec`` validation and the hash that binds grants to behaviour (ADR-0071)."""
+"""``StewardSpec`` validation and the hash that binds grants to behaviour (ADR-0071)."""
 
 from __future__ import annotations
 
@@ -6,13 +6,13 @@ from dataclasses import replace
 
 import pytest
 
-from kenny_server.agents.spec import (
+from kenny_server.stewards.spec import (
     EVENTS,
     MAX_TIMEOUT_S,
     MODES,
     TRIGGER_KINDS,
     VERDICT_TOOLS,
-    AgentSpec,
+    StewardSpec,
     ArgConstraint,
     Budget,
     SpecError,
@@ -23,11 +23,11 @@ from kenny_server.agents.spec import (
     validate,
 )
 from kenny_server.tool_classes import READ_ONLY, SENSITIVE_TOOLS, TOOL_CLASSES
-from kenny_server.toolloop import AGENT_VERDICT_TOOL, TRIAGE_VERDICT_TOOL
+from kenny_server.toolloop import STEWARD_VERDICT_TOOL, TRIAGE_VERDICT_TOOL
 
 
-def make_spec(**overrides: object) -> AgentSpec:
-    base = AgentSpec(
+def make_spec(**overrides: object) -> StewardSpec:
+    base = StewardSpec(
         id="disk_watch",
         title="Disk watch",
         description="Looks at disks.",
@@ -55,7 +55,7 @@ def test_the_fixture_tools_are_classified() -> None:
 
 @pytest.mark.parametrize("bad_id", ["", "A", "a", "Triage", "1triage", "has-dash", "x" * 42, "sp ace"])
 def test_a_malformed_id_is_refused(bad_id: str) -> None:
-    with pytest.raises(SpecError, match="agent id"):
+    with pytest.raises(SpecError, match="steward id"):
         validate(make_spec(id=bad_id))
 
 
@@ -105,7 +105,7 @@ def test_no_verdict_tool_is_allowed() -> None:
 def test_the_verdict_tools_are_the_loops_verdict_tool() -> None:
     # spec.py stays stdlib-only, so it names the verdict tool as a literal;
     # joined here to the name the loop and triage actually route.
-    assert VERDICT_TOOLS == frozenset({TRIAGE_VERDICT_TOOL, AGENT_VERDICT_TOOL})
+    assert VERDICT_TOOLS == frozenset({TRIAGE_VERDICT_TOOL, STEWARD_VERDICT_TOOL})
 
 
 @pytest.mark.parametrize("tool", ["powershell_exec", "winget_update", "diag_services"])
@@ -157,7 +157,7 @@ def test_off_and_shadow_are_valid_defaults(mode: str) -> None:
 
 
 def test_act_is_never_a_default_mode() -> None:
-    # Moving an agent to act is a superuser's decision; a spec that shipped in
+    # Moving a steward to act is a superuser's decision; a spec that shipped in
     # act would make it for every fresh install.
     assert "act" in MODES
     with pytest.raises(SpecError, match="default mode act"):
@@ -206,11 +206,11 @@ def test_the_hash_ignores_tool_ordering() -> None:
         {"version": 2},
         {"sensitive_ok": True},
         {"verdict_tool": None},
-        {"id": "other_agent"},
+        {"id": "other_steward"},
     ],
     ids=lambda c: next(iter(c)),
 )
-def test_the_hash_changes_with_what_the_agent_does(change: dict[str, object]) -> None:
+def test_the_hash_changes_with_what_the_steward_does(change: dict[str, object]) -> None:
     assert make_spec(**change).spec_hash != make_spec().spec_hash
 
 
@@ -246,7 +246,7 @@ def test_to_public_carries_the_hash_and_tool_classes() -> None:
 CHANGE_TOOL = "winget_update"
 
 
-def constrained(**overrides: object) -> AgentSpec:
+def constrained(**overrides: object) -> StewardSpec:
     base = make_spec(
         tools=frozenset({"diag_services", CHANGE_TOOL, "ticket_triage_verdict"}),
         constraints=(ArgConstraint(CHANGE_TOOL, "id", frozenset({"Git.Git"})),),
@@ -413,7 +413,7 @@ def test_timeouts_change_the_hash_and_their_order_does_not() -> None:
 # -- parameters (ADR-0072) -------------------------------------------------------
 
 
-def _param_spec(**overrides: object) -> AgentSpec:
+def _param_spec(**overrides: object) -> StewardSpec:
     fields: dict[str, object] = {
         "params": ("packages",),
         "constraints": (ArgConstraint(CHANGE_TOOL, "id", param="packages"),),
@@ -457,7 +457,7 @@ def test_a_schedule_trigger_needs_a_window_param() -> None:
 
 
 def test_the_tier_of_a_named_tool_is_part_of_the_spec_hash(monkeypatch) -> None:
-    import kenny_server.agents.spec as spec_module
+    import kenny_server.stewards.spec as spec_module
 
     spec = constrained()
     before = spec.spec_hash

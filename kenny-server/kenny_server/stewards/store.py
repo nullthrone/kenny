@@ -1,4 +1,4 @@
-"""SQLite storage for specialized agents (ADR-0071): per-agent mode and run history.
+"""SQLite storage for stewards (ADR-0071): per-steward mode and run history.
 
 Two tables on the shared DB file, one connection of its own, same shape as the
 stores in :mod:`kenny_server.store` (own
@@ -6,12 +6,12 @@ stores in :mod:`kenny_server.store` (own
 ``CREATE TABLE IF NOT EXISTS`` only, ISO-8601 UTC text timestamps, every write
 under :func:`~kenny_server.store.write_lock`).
 
-* ``agent_settings`` — per agent id: the operator's chosen mode, the effective
-  hash ``act`` was chosen at (``act_hash``, ADR-0072), and the agent's
+* ``steward_settings`` — per steward id: the operator's chosen mode, the effective
+  hash ``act`` was chosen at (``act_hash``, ADR-0072), and the steward's
   parameters. A missing row, or an empty ``mode`` (a row that exists only for
   its parameters), means "mode never chosen"; the caller falls back to the
   spec's default mode.
-* ``agent_runs`` — one row per started run: what it was bound to (the spec
+* ``steward_runs`` — one row per started run: what it was bound to (the spec
   hash, and the effective hash and frozen parameters it ran with), what started
   it, the mode it ran in, how it ended and what it cost.
 
@@ -38,8 +38,8 @@ __all__ = [
     "INTERRUPTED_ERROR",
     "RUN_STATUSES",
     "USAGE_KEYS",
-    "AgentRun",
-    "AgentStore",
+    "StewardRun",
+    "StewardStore",
 ]
 
 #: ``running`` while a run is in flight; the rest are the ways it can end.
@@ -63,8 +63,8 @@ USAGE_KEYS: tuple[str, ...] = (
 INTERRUPTED_ERROR = "the run was interrupted before it finished (cancelled or a server restart)"
 
 _SCHEMA = """
-CREATE TABLE IF NOT EXISTS agent_settings (
-    agent_id   TEXT PRIMARY KEY,
+CREATE TABLE IF NOT EXISTS steward_settings (
+    steward_id TEXT PRIMARY KEY,
     mode       TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     updated_by TEXT NOT NULL,
@@ -72,9 +72,9 @@ CREATE TABLE IF NOT EXISTS agent_settings (
     act_hash   TEXT
 );
 
-CREATE TABLE IF NOT EXISTS agent_runs (
+CREATE TABLE IF NOT EXISTS steward_runs (
     id                    TEXT PRIMARY KEY,
-    agent_id              TEXT NOT NULL,
+    steward_id            TEXT NOT NULL,
     spec_hash             TEXT NOT NULL,
     trigger               TEXT NOT NULL,
     subject               TEXT,
@@ -96,22 +96,22 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     params                TEXT,
     effective_hash        TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_agent_runs_agent ON agent_runs (agent_id, started_at DESC);
-CREATE INDEX IF NOT EXISTS idx_agent_runs_started ON agent_runs (started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_steward_runs_steward ON steward_runs (steward_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_steward_runs_started ON steward_runs (started_at DESC);
 """
 
 _RUN_COLUMNS = (
-    "id, agent_id, spec_hash, trigger, subject, host_id, mode, status, verdict, summary, "
+    "id, steward_id, spec_hash, trigger, subject, host_id, mode, status, verdict, summary, "
     "input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, "
     "ticket_id, error, actions, recommendations, started_at, finished_at, "
     "params, effective_hash"
 )
 
 #: Columns added after a table was first shipped, with their DDL; added by
-#: :meth:`AgentStore._migrate` to a database that predates them.
+#: :meth:`StewardStore._migrate` to a database that predates them.
 _MIGRATED_COLUMNS: dict[str, dict[str, str]] = {
-    "agent_settings": {"params": "TEXT NOT NULL DEFAULT '{}'", "act_hash": "TEXT"},
-    "agent_runs": {"params": "TEXT", "effective_hash": "TEXT"},
+    "steward_settings": {"params": "TEXT NOT NULL DEFAULT '{}'", "act_hash": "TEXT"},
+    "steward_runs": {"params": "TEXT", "effective_hash": "TEXT"},
 }
 
 
@@ -134,15 +134,15 @@ def _normalize_iso(value: str) -> str:
 
 def _check_mode(mode: str) -> None:
     if mode not in MODES:
-        raise ValueError(f"unknown agent mode {mode!r}; expected one of {', '.join(MODES)}")
+        raise ValueError(f"unknown steward mode {mode!r}; expected one of {', '.join(MODES)}")
 
 
 @dataclass(frozen=True)
-class AgentRun:
-    """One row of ``agent_runs``."""
+class StewardRun:
+    """One row of ``steward_runs``."""
 
     id: str
-    agent_id: str
+    steward_id: str
     spec_hash: str
     trigger: str
     subject: str | None
@@ -172,7 +172,7 @@ class AgentRun:
     effective_hash: str | None = None
 
     @classmethod
-    def _from_row(cls, row: aiosqlite.Row) -> AgentRun:
+    def _from_row(cls, row: aiosqlite.Row) -> StewardRun:
         values = {key: row[key] for key in row.keys()}
         values["actions"] = json.loads(values["actions"])
         values["recommendations"] = json.loads(values["recommendations"])
@@ -186,8 +186,8 @@ class AgentRun:
         return asdict(self)
 
 
-class AgentStore:
-    """Async SQLite-backed store for agent modes and run history.
+class StewardStore:
+    """Async SQLite-backed store for steward modes and run history.
 
     Shares the DB file with the stores in :mod:`kenny_server.store` but owns its
     own connection. The schema is ``CREATE ... IF NOT EXISTS`` only, so
@@ -226,33 +226,33 @@ class AgentStore:
     @property
     def _conn(self) -> aiosqlite.Connection:
         if self._db is None:
-            raise RuntimeError("AgentStore is not connected; call connect() first")
+            raise RuntimeError("StewardStore is not connected; call connect() first")
         return self._db
 
     # -- mode ----------------------------------------------------------------
 
-    async def get_mode(self, agent_id: str) -> str | None:
-        """The mode an operator chose for ``agent_id``, or ``None`` if never chosen."""
+    async def get_mode(self, steward_id: str) -> str | None:
+        """The mode an operator chose for ``steward_id``, or ``None`` if never chosen."""
 
         async with self._conn.execute(
-            "SELECT mode FROM agent_settings WHERE agent_id = ?", (agent_id,)
+            "SELECT mode FROM steward_settings WHERE steward_id = ?", (steward_id,)
         ) as cur:
             row = await cur.fetchone()
         return None if row is None or not row["mode"] else str(row["mode"])
 
-    async def get_act_hash(self, agent_id: str) -> str | None:
+    async def get_act_hash(self, steward_id: str) -> str | None:
         """The effective hash ``act`` was chosen at, or ``None``."""
 
         async with self._conn.execute(
-            "SELECT act_hash FROM agent_settings WHERE agent_id = ?", (agent_id,)
+            "SELECT act_hash FROM steward_settings WHERE steward_id = ?", (steward_id,)
         ) as cur:
             row = await cur.fetchone()
         return None if row is None or not row["act_hash"] else str(row["act_hash"])
 
     async def set_mode(
-        self, agent_id: str, mode: str, *, actor: str, act_hash: str | None = None
+        self, steward_id: str, mode: str, *, actor: str, act_hash: str | None = None
     ) -> None:
-        """Record ``mode`` as the operator's choice for ``agent_id``.
+        """Record ``mode`` as the operator's choice for ``steward_id``.
 
         ``act_hash`` is the effective hash ``act`` binds to (ADR-0072 rule 6);
         it is stored for ``act`` only and cleared for every other mode. An
@@ -264,17 +264,17 @@ class AgentStore:
         bound = act_hash if mode == "act" else None
         async with write_lock():
             await self._conn.execute(
-                "INSERT INTO agent_settings (agent_id, mode, updated_at, updated_by, act_hash) "
+                "INSERT INTO steward_settings (steward_id, mode, updated_at, updated_by, act_hash) "
                 "VALUES (?, ?, ?, ?, ?) "
-                "ON CONFLICT(agent_id) DO UPDATE SET "
+                "ON CONFLICT(steward_id) DO UPDATE SET "
                 "mode=excluded.mode, updated_at=excluded.updated_at, "
                 "updated_by=excluded.updated_by, act_hash=excluded.act_hash",
-                (agent_id, mode, _now_iso(), actor, bound),
+                (steward_id, mode, _now_iso(), actor, bound),
             )
             await self._conn.commit()
 
-    async def demote_unbound(self, agent_id: str, effective_hash: str, *, actor: str) -> bool:
-        """Drop ``agent_id`` from ``act`` to ``shadow`` unless ``act`` is bound to ``effective_hash``.
+    async def demote_unbound(self, steward_id: str, effective_hash: str, *, actor: str) -> bool:
+        """Drop ``steward_id`` from ``act`` to ``shadow`` unless ``act`` is bound to ``effective_hash``.
 
         Returns whether this call demoted it, so exactly one caller records the
         drop when several notice it at once.
@@ -282,11 +282,11 @@ class AgentStore:
 
         async with write_lock():
             cur = await self._conn.execute(
-                "UPDATE agent_settings SET mode = 'shadow', act_hash = NULL, "
+                "UPDATE steward_settings SET mode = 'shadow', act_hash = NULL, "
                 "updated_at = ?, updated_by = ? "
-                "WHERE agent_id = ? AND mode = 'act' "
+                "WHERE steward_id = ? AND mode = 'act' "
                 "AND (act_hash IS NULL OR act_hash != ?)",
-                (_now_iso(), actor, agent_id, effective_hash),
+                (_now_iso(), actor, steward_id, effective_hash),
             )
             changed = cur.rowcount or 0
             await self._conn.commit()
@@ -294,11 +294,11 @@ class AgentStore:
 
     # -- params --------------------------------------------------------------
 
-    async def get_params(self, agent_id: str) -> dict[str, Any]:
-        """``agent_id``'s parameters; ``{}`` while none were ever set."""
+    async def get_params(self, steward_id: str) -> dict[str, Any]:
+        """``steward_id``'s parameters; ``{}`` while none were ever set."""
 
         async with self._conn.execute(
-            "SELECT params FROM agent_settings WHERE agent_id = ?", (agent_id,)
+            "SELECT params FROM steward_settings WHERE steward_id = ?", (steward_id,)
         ) as cur:
             row = await cur.fetchone()
         if row is None or not row["params"]:
@@ -307,11 +307,11 @@ class AgentStore:
         return value if isinstance(value, dict) else {}
 
     async def set_params(
-        self, agent_id: str, params: Mapping[str, Any], *, actor: str, demote: bool = False
+        self, steward_id: str, params: Mapping[str, Any], *, actor: str, demote: bool = False
     ) -> str | None:
-        """Store ``params`` for ``agent_id``; returns the mode stored before.
+        """Store ``params`` for ``steward_id``; returns the mode stored before.
 
-        With ``demote``, an agent in ``act`` is dropped to ``shadow`` (and its
+        With ``demote``, a steward in ``act`` is dropped to ``shadow`` (and its
         ``act`` binding cleared) in the same transaction as the write, so no
         call can see the new parameters while still in ``act``. Validating the
         values is the caller's job. A row created here carries an empty mode
@@ -323,22 +323,22 @@ class AgentStore:
             await _begin_immediate(self._conn)
             try:
                 async with self._conn.execute(
-                    "SELECT mode FROM agent_settings WHERE agent_id = ?", (agent_id,)
+                    "SELECT mode FROM steward_settings WHERE steward_id = ?", (steward_id,)
                 ) as cur:
                     row = await cur.fetchone()
                 before = None if row is None or not row["mode"] else str(row["mode"])
                 await self._conn.execute(
-                    "INSERT INTO agent_settings (agent_id, mode, updated_at, updated_by, params) "
+                    "INSERT INTO steward_settings (steward_id, mode, updated_at, updated_by, params) "
                     "VALUES (?, '', ?, ?, ?) "
-                    "ON CONFLICT(agent_id) DO UPDATE SET params=excluded.params, "
+                    "ON CONFLICT(steward_id) DO UPDATE SET params=excluded.params, "
                     "updated_at=excluded.updated_at, updated_by=excluded.updated_by",
-                    (agent_id, _now_iso(), actor, payload),
+                    (steward_id, _now_iso(), actor, payload),
                 )
                 if demote and before == "act":
                     await self._conn.execute(
-                        "UPDATE agent_settings SET mode = 'shadow', act_hash = NULL "
-                        "WHERE agent_id = ?",
-                        (agent_id,),
+                        "UPDATE steward_settings SET mode = 'shadow', act_hash = NULL "
+                        "WHERE steward_id = ?",
+                        (steward_id,),
                     )
                 await self._conn.commit()
             except BaseException:
@@ -351,7 +351,7 @@ class AgentStore:
     async def start_run(
         self,
         *,
-        agent_id: str,
+        steward_id: str,
         spec_hash: str,
         trigger: str,
         mode: str,
@@ -360,7 +360,7 @@ class AgentStore:
         ticket_id: str | None = None,
         params: Mapping[str, Any] | None = None,
         effective_hash: str | None = None,
-    ) -> AgentRun:
+    ) -> StewardRun:
         """Open a run in the ``running`` state and return it.
 
         ``params`` and ``effective_hash`` are what the run is bound to for its
@@ -374,13 +374,13 @@ class AgentStore:
         )
         async with write_lock():
             await self._conn.execute(
-                "INSERT INTO agent_runs "
-                "(id, agent_id, spec_hash, trigger, subject, host_id, mode, status, "
+                "INSERT INTO steward_runs "
+                "(id, steward_id, spec_hash, trigger, subject, host_id, mode, status, "
                 "ticket_id, started_at, params, effective_hash) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?)",
                 (
                     run_id,
-                    agent_id,
+                    steward_id,
                     spec_hash,
                     trigger,
                     subject,
@@ -395,7 +395,7 @@ class AgentStore:
             await self._conn.commit()
         run = await self.get_run(run_id)
         if run is None:  # pragma: no cover - insert just succeeded
-            raise RuntimeError(f"agent run {run_id} vanished after insert")
+            raise RuntimeError(f"steward run {run_id} vanished after insert")
         return run
 
     async def finish_run(
@@ -410,7 +410,7 @@ class AgentStore:
         ticket_id: str | None = None,
         actions: Sequence[Mapping[str, Any]] | None = None,
         recommendations: Sequence[Mapping[str, Any]] | None = None,
-    ) -> AgentRun:
+    ) -> StewardRun:
         """Close a ``running`` run with its outcome, token usage and what it did.
 
         Raises :class:`ValueError` for an unknown or non-final ``status``, for an
@@ -430,7 +430,7 @@ class AgentStore:
         recommendations_json = json.dumps([dict(r) for r in recommendations or ()], default=str)
         async with write_lock():
             cur = await self._conn.execute(
-                "UPDATE agent_runs SET status = ?, verdict = ?, summary = ?, "
+                "UPDATE steward_runs SET status = ?, verdict = ?, summary = ?, "
                 "input_tokens = ?, output_tokens = ?, cache_read_tokens = ?, "
                 "cache_creation_tokens = ?, error = ?, actions = ?, recommendations = ?, "
                 "ticket_id = COALESCE(?, ticket_id), finished_at = ? "
@@ -455,66 +455,66 @@ class AgentStore:
             await self._conn.commit()
         run = await self.get_run(run_id)
         if run is None:
-            raise ValueError(f"no agent run {run_id}")
+            raise ValueError(f"no steward run {run_id}")
         if not changed:
-            raise ValueError(f"agent run {run_id} is already {run.status}, not running")
+            raise ValueError(f"steward run {run_id} is already {run.status}, not running")
         return run
 
-    async def get_run(self, run_id: str) -> AgentRun | None:
+    async def get_run(self, run_id: str) -> StewardRun | None:
         async with self._conn.execute(
-            f"SELECT {_RUN_COLUMNS} FROM agent_runs WHERE id = ?", (run_id,)
+            f"SELECT {_RUN_COLUMNS} FROM steward_runs WHERE id = ?", (run_id,)
         ) as cur:
             row = await cur.fetchone()
-        return None if row is None else AgentRun._from_row(row)
+        return None if row is None else StewardRun._from_row(row)
 
-    async def list_runs(self, *, agent_id: str | None = None, limit: int = 50) -> list[AgentRun]:
-        """Runs newest first, optionally for one agent."""
+    async def list_runs(self, *, steward_id: str | None = None, limit: int = 50) -> list[StewardRun]:
+        """Runs newest first, optionally for one steward."""
 
-        sql = f"SELECT {_RUN_COLUMNS} FROM agent_runs"
+        sql = f"SELECT {_RUN_COLUMNS} FROM steward_runs"
         params: list[Any] = []
-        if agent_id is not None:
-            sql += " WHERE agent_id = ?"
-            params.append(agent_id)
+        if steward_id is not None:
+            sql += " WHERE steward_id = ?"
+            params.append(steward_id)
         sql += " ORDER BY started_at DESC, rowid DESC LIMIT ?"
         params.append(max(0, int(limit)))
         async with self._conn.execute(sql, params) as cur:
             rows = await cur.fetchall()
-        return [AgentRun._from_row(row) for row in rows]
+        return [StewardRun._from_row(row) for row in rows]
 
-    async def runs_on_host_since(self, host_id: str, since_iso: str) -> list[AgentRun]:
-        """Every run of any agent on ``host_id`` started at or after ``since_iso``, newest first."""
+    async def runs_on_host_since(self, host_id: str, since_iso: str) -> list[StewardRun]:
+        """Every run of any steward on ``host_id`` started at or after ``since_iso``, newest first."""
 
         async with self._conn.execute(
-            f"SELECT {_RUN_COLUMNS} FROM agent_runs WHERE host_id = ? AND started_at >= ? "
+            f"SELECT {_RUN_COLUMNS} FROM steward_runs WHERE host_id = ? AND started_at >= ? "
             "ORDER BY started_at DESC, rowid DESC",
             (host_id, _normalize_iso(since_iso)),
         ) as cur:
             rows = await cur.fetchall()
-        return [AgentRun._from_row(row) for row in rows]
+        return [StewardRun._from_row(row) for row in rows]
 
-    async def demote_absent(self, agent_ids: Sequence[str], *, actor: str) -> list[str]:
-        """Drop every stored ``act`` whose agent is not in ``agent_ids`` to ``shadow``.
+    async def demote_absent(self, steward_ids: Sequence[str], *, actor: str) -> list[str]:
+        """Drop every stored ``act`` whose steward is not in ``steward_ids`` to ``shadow``.
 
         Returns the ids demoted. Called at startup with the catalog's ids, so an
-        agent a release removed keeps no ``act`` for an identical spec to come
+        steward a release removed keeps no ``act`` for an identical spec to come
         back to (ADR-0072 rule 6).
         """
 
-        keep = sorted(set(agent_ids))
-        absent = f"AND agent_id NOT IN ({', '.join('?' for _ in keep)})" if keep else ""
+        keep = sorted(set(steward_ids))
+        absent = f"AND steward_id NOT IN ({', '.join('?' for _ in keep)})" if keep else ""
         async with write_lock():
             await _begin_immediate(self._conn)
             try:
                 async with self._conn.execute(
-                    f"SELECT agent_id FROM agent_settings WHERE mode = 'act' {absent}",
+                    f"SELECT steward_id FROM steward_settings WHERE mode = 'act' {absent}",
                     keep,
                 ) as cur:
-                    demoted = sorted(str(row["agent_id"]) for row in await cur.fetchall())
+                    demoted = sorted(str(row["steward_id"]) for row in await cur.fetchall())
                 if demoted:
                     await self._conn.execute(
-                        "UPDATE agent_settings SET mode = 'shadow', act_hash = NULL, "
+                        "UPDATE steward_settings SET mode = 'shadow', act_hash = NULL, "
                         "updated_at = ?, updated_by = ? "
-                        f"WHERE agent_id IN ({', '.join('?' for _ in demoted)})",
+                        f"WHERE steward_id IN ({', '.join('?' for _ in demoted)})",
                         (_now_iso(), actor, *demoted),
                     )
                 await self._conn.commit()
@@ -523,7 +523,7 @@ class AgentStore:
                 raise
         return demoted
 
-    async def tokens_since(self, since_iso: str, *, agent_id: str | None = None) -> int:
+    async def tokens_since(self, since_iso: str, *, steward_id: str | None = None) -> int:
         """Every token of runs started at or after ``since_iso``.
 
         Input + output + cache creation + cache read: the API's
@@ -535,24 +535,24 @@ class AgentStore:
         sql = (
             "SELECT COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens "
             "+ cache_read_tokens), 0) AS total "
-            "FROM agent_runs WHERE started_at >= ?"
+            "FROM steward_runs WHERE started_at >= ?"
         )
         params: list[Any] = [_normalize_iso(since_iso)]
-        if agent_id is not None:
-            sql += " AND agent_id = ?"
-            params.append(agent_id)
+        if steward_id is not None:
+            sql += " AND steward_id = ?"
+            params.append(steward_id)
         async with self._conn.execute(sql, params) as cur:
             row = await cur.fetchone()
         return int(row["total"]) if row is not None else 0
 
-    async def count_running(self, *, agent_id: str | None = None) -> int:
-        """How many runs are in flight, optionally for one agent."""
+    async def count_running(self, *, steward_id: str | None = None) -> int:
+        """How many runs are in flight, optionally for one steward."""
 
-        sql = "SELECT COUNT(*) AS n FROM agent_runs WHERE status = 'running'"
+        sql = "SELECT COUNT(*) AS n FROM steward_runs WHERE status = 'running'"
         params: list[Any] = []
-        if agent_id is not None:
-            sql += " AND agent_id = ?"
-            params.append(agent_id)
+        if steward_id is not None:
+            sql += " AND steward_id = ?"
+            params.append(steward_id)
         async with self._conn.execute(sql, params) as cur:
             row = await cur.fetchone()
         return int(row["n"]) if row is not None else 0
@@ -566,7 +566,7 @@ class AgentStore:
 
         async with write_lock():
             cur = await self._conn.execute(
-                "UPDATE agent_runs SET status = 'failed', error = ?, finished_at = ? "
+                "UPDATE steward_runs SET status = 'failed', error = ?, finished_at = ? "
                 "WHERE status = 'running'",
                 (INTERRUPTED_ERROR, _now_iso()),
             )
@@ -585,7 +585,7 @@ class AgentStore:
         async with write_lock():
             await _begin_immediate(self._conn)
             cur = await self._conn.execute(
-                "DELETE FROM agent_runs WHERE status != 'running' AND started_at < ?",
+                "DELETE FROM steward_runs WHERE status != 'running' AND started_at < ?",
                 (cutoff,),
             )
             deleted = cur.rowcount or 0

@@ -1,4 +1,4 @@
-"""The shipped agent catalog, and the seam between it and the code it describes.
+"""The shipped steward catalog, and the seam between it and the code it describes.
 
 ``CATALOG["triage"]`` *declares* the unprompted triage that ``triage.py`` and
 ``ticket_assistant.py`` *run*. Two places that must agree, so the last tests
@@ -13,13 +13,13 @@ from dataclasses import replace
 import pytest
 
 from kenny_server import ticket_assistant, toolloop
-from kenny_server.agents import catalog
-from kenny_server.agents.catalog import CATALOG, build, get
-from kenny_server.agents.catalog.patch import PATCH
-from kenny_server.agents.catalog.posture import POSTURE
-from kenny_server.agents.catalog.triage import TRIAGE
-from kenny_server.agents.spec import (
-    AgentSpec,
+from kenny_server.stewards import catalog
+from kenny_server.stewards.catalog import CATALOG, build, get
+from kenny_server.stewards.catalog.patch import PATCH
+from kenny_server.stewards.catalog.posture import POSTURE
+from kenny_server.stewards.catalog.triage import TRIAGE
+from kenny_server.stewards.spec import (
+    StewardSpec,
     ArgConstraint,
     Budget,
     SpecError,
@@ -56,8 +56,8 @@ def test_get_unknown_is_none() -> None:
 
 def test_every_catalog_spec_is_valid_and_keyed_by_its_id() -> None:
     assert CATALOG
-    for agent_id, spec in CATALOG.items():
-        assert spec.id == agent_id
+    for steward_id, spec in CATALOG.items():
+        assert spec.id == steward_id
         assert validate(spec) is spec
 
 
@@ -101,8 +101,8 @@ def test_triage_declares_the_documented_shape() -> None:
     assert TRIAGE.title and TRIAGE.description
 
 
-def test_the_catalog_is_a_stable_set_of_agent_specs() -> None:
-    assert all(isinstance(s, AgentSpec) for s in CATALOG.values())
+def test_the_catalog_is_a_stable_set_of_steward_specs() -> None:
+    assert all(isinstance(s, StewardSpec) for s in CATALOG.values())
     assert CATALOG["triage"].spec_hash == CATALOG["triage"].spec_hash
 
 
@@ -207,10 +207,10 @@ async def test_the_verdict_tool_is_offered_to_the_real_session(world: _World) ->
 
 
 def test_a_spec_naming_an_mcp_only_tool_is_refused() -> None:
-    from kenny_server.agents.catalog import build
-    from kenny_server.agents.spec import AgentSpec, SpecError, Trigger
+    from kenny_server.stewards.catalog import build
+    from kenny_server.stewards.spec import StewardSpec, SpecError, Trigger
 
-    spec = AgentSpec(
+    spec = StewardSpec(
         id="mcp_only",
         title="t",
         description="d",
@@ -223,10 +223,10 @@ def test_a_spec_naming_an_mcp_only_tool_is_refused() -> None:
 
 
 def test_ticket_tools_are_refused_off_a_ticket_surface() -> None:
-    from kenny_server.agents.catalog import build
-    from kenny_server.agents.spec import AgentSpec, SpecError, Trigger
+    from kenny_server.stewards.catalog import build
+    from kenny_server.stewards.spec import StewardSpec, SpecError, Trigger
 
-    spec = AgentSpec(
+    spec = StewardSpec(
         id="no_ticket",
         title="t",
         description="d",
@@ -238,8 +238,8 @@ def test_ticket_tools_are_refused_off_a_ticket_surface() -> None:
         build((spec,))
 
 
-def _changer(tool: str, *constraints: ArgConstraint) -> AgentSpec:
-    return AgentSpec(
+def _changer(tool: str, *constraints: ArgConstraint) -> StewardSpec:
+    return StewardSpec(
         id="changer",
         title="t",
         description="d",
@@ -303,7 +303,7 @@ def test_the_triage_tools_read_no_other_host() -> None:
     assert not (CATALOG["triage"].tools & ticket_assistant.FLEET_WIDE_TOOLS)
 
 
-# -- the scheduled agents ------------------------------------------------------
+# -- the scheduled stewards ------------------------------------------------------
 
 PATCH_HOST = "thomas-pc"
 FIREFOX = "Mozilla.Firefox"
@@ -311,26 +311,26 @@ SEVENZIP = "7zip.7zip"
 
 
 @pytest.mark.parametrize("spec", [PATCH, POSTURE], ids=lambda s: s.id)
-def test_a_scheduled_agent_is_valid_dispatchable_and_ships_in_shadow(spec: AgentSpec) -> None:
+def test_a_scheduled_steward_is_valid_dispatchable_and_ships_in_shadow(spec: StewardSpec) -> None:
     assert CATALOG[spec.id] is spec
     assert validate(spec) is spec
     assert catalog.check_dispatchable(spec) is spec
     assert spec.trigger == Trigger(kind="schedule")
     assert spec.default_mode == "shadow"
-    assert spec.verdict_tool == toolloop.AGENT_VERDICT_TOOL
-    assert toolloop.AGENT_VERDICT_TOOL in spec.tools
+    assert spec.verdict_tool == toolloop.STEWARD_VERDICT_TOOL
+    assert toolloop.STEWARD_VERDICT_TOOL in spec.tools
     assert spec.sensitive_ok is False
     assert spec.title and spec.description
 
 
 @pytest.mark.parametrize("spec", [PATCH, POSTURE], ids=lambda s: s.id)
-def test_the_scheduler_can_read_what_a_scheduled_agent_declares(spec: AgentSpec) -> None:
-    # The scheduler reads exactly these two parameters of every schedule agent.
+def test_the_scheduler_can_read_what_a_scheduled_steward_declares(spec: StewardSpec) -> None:
+    # The scheduler reads exactly these two parameters of every schedule steward.
     assert {"window", "hosts"} <= set(spec.params)
 
 
 @pytest.mark.parametrize("spec", [PATCH, POSTURE], ids=lambda s: s.id)
-def test_a_prompt_names_only_tools_the_agent_has(spec: AgentSpec) -> None:
+def test_a_prompt_names_only_tools_the_steward_has(spec: StewardSpec) -> None:
     from kenny_server.tool_classes import TOOL_CLASSES
 
     named = {t for t in TOOL_CLASSES if t in spec.prompt}
@@ -339,25 +339,25 @@ def test_a_prompt_names_only_tools_the_agent_has(spec: AgentSpec) -> None:
     assert "untrusted" in spec.prompt
 
 
-def test_the_patch_agent_declares_the_documented_shape() -> None:
+def test_the_patch_steward_declares_the_documented_shape() -> None:
     assert PATCH.id == "patch"
     assert PATCH.params == ("window", "hosts", "packages", "require_idle")
-    assert PATCH.tools == {"winget_list", "winget_update", "agent_verdict"}
+    assert PATCH.tools == {"winget_list", "winget_update", "steward_verdict"}
     assert PATCH.constraints == (ArgConstraint("winget_update", "id", param="packages"),)
     assert [(t.tool, t.max_s) for t in PATCH.timeouts] == [("winget_update", 600)]
-    assert {t for t in PATCH.tools if classify(t) != READ_ONLY} == {"winget_update", "agent_verdict"}
+    assert {t for t in PATCH.tools if classify(t) != READ_ONLY} == {"winget_update", "steward_verdict"}
 
 
 def test_every_argument_of_winget_update_is_bound_or_the_one_free_one() -> None:
     # The gate refuses any argument no constraint binds except timeout_s. If the
-    # agent's protocol grows another argument for winget_update, this fails.
+    # steward's protocol grows another argument for winget_update, this fails.
     declared = {a.rstrip("?") for a in CAPABILITY_TOOLS["winget_update"]}
     bound = {c.arg for c in PATCH.constraints_for("winget_update")}
     assert declared - bound <= {"timeout_s"}
 
 
-def test_the_patch_allowlist_is_a_parameter_so_widening_it_unbinds_the_agent() -> None:
-    from kenny_server.agents.spec import effective_hash
+def test_the_patch_allowlist_is_a_parameter_so_widening_it_unbinds_the_steward() -> None:
+    from kenny_server.stewards.spec import effective_hash
 
     narrow = effective_hash(PATCH, {"packages": [FIREFOX]})
     wide = effective_hash(PATCH, {"packages": [FIREFOX, SEVENZIP]})
@@ -365,33 +365,33 @@ def test_the_patch_allowlist_is_a_parameter_so_widening_it_unbinds_the_agent() -
     assert effective_hash(PATCH, {"packages": [SEVENZIP, FIREFOX]}) == wide  # order is not content
 
 
-def test_the_posture_agent_has_no_change_tool_but_its_verdict() -> None:
-    assert POSTURE.tools == {"diag_autostart", "diag_services", "agent_snapshot", "agent_verdict"}
+def test_the_posture_steward_has_no_change_tool_but_its_verdict() -> None:
+    assert POSTURE.tools == {"diag_autostart", "diag_services", "agent_snapshot", "steward_verdict"}
     assert POSTURE.constraints == () and POSTURE.timeouts == ()
-    assert {t for t in POSTURE.tools if classify(t) != READ_ONLY} == {"agent_verdict"}
+    assert {t for t in POSTURE.tools if classify(t) != READ_ONLY} == {"steward_verdict"}
     assert POSTURE.params == ("window", "hosts")
 
 
-def test_the_scheduled_agents_read_no_other_host() -> None:
+def test_the_scheduled_stewards_read_no_other_host() -> None:
     assert not (POSTURE.tools & ticket_assistant.FLEET_WIDE_TOOLS)
     assert not (PATCH.tools & ticket_assistant.FLEET_WIDE_TOOLS)
 
 
-# The patch spec's gate behaviour, through the real AgentPolicy.
+# The patch spec's gate behaviour, through the real StewardPolicy.
 
 
 def _patch_session(packages, mode: str = "act"):
-    from kenny_server.agents.policy import AgentSession
-    from kenny_server.agents.spec import resolve
+    from kenny_server.stewards.policy import StewardSession
+    from kenny_server.stewards.spec import resolve
 
     params = {} if packages is None else {"packages": packages}
-    return AgentSession(id="run-1", spec=resolve(PATCH, params), mode=mode, agent_id=PATCH_HOST)
+    return StewardSession(id="run-1", spec=resolve(PATCH, params), mode=mode, agent_id=PATCH_HOST)
 
 
 async def _gate(session, tool: str, args: dict):
-    from kenny_server.agents.policy import AgentPolicy
+    from kenny_server.stewards.policy import StewardPolicy
 
-    return await AgentPolicy(session).gate(session, tool, dict(args), PATCH_HOST)
+    return await StewardPolicy(session).gate(session, tool, dict(args), PATCH_HOST)
 
 
 async def test_an_allowlisted_package_updates_in_act() -> None:
@@ -460,7 +460,7 @@ async def test_in_shadow_the_allowed_update_is_only_a_recommendation() -> None:
     assert [r["args"]["id"] for r in session.recommendations] == [FIREFOX]
 
 
-async def test_install_and_uninstall_are_not_available_to_the_patch_agent() -> None:
+async def test_install_and_uninstall_are_not_available_to_the_patch_steward() -> None:
     from kenny_server.toolloop import Deny
 
     session = _patch_session([FIREFOX])
@@ -476,15 +476,15 @@ async def test_the_verdict_and_the_read_are_allowed_in_both_modes() -> None:
         session = _patch_session([], mode=mode)
         assert isinstance(await _gate(session, "winget_list", {}), Allow)
         verdict = {"verdict": "clean", "finding": "-", "evidence": "-"}
-        assert isinstance(await _gate(session, "agent_verdict", verdict), Allow)
+        assert isinstance(await _gate(session, "steward_verdict", verdict), Allow)
 
 
-async def test_the_posture_agent_cannot_change_anything() -> None:
-    from kenny_server.agents.policy import AgentPolicy, AgentSession
+async def test_the_posture_steward_cannot_change_anything() -> None:
+    from kenny_server.stewards.policy import StewardPolicy, StewardSession
     from kenny_server.toolloop import Allow, Deny
 
-    session = AgentSession(id="run-2", spec=POSTURE, mode="act", agent_id=PATCH_HOST)
-    policy = AgentPolicy(session)
+    session = StewardSession(id="run-2", spec=POSTURE, mode="act", agent_id=PATCH_HOST)
+    policy = StewardPolicy(session)
     for tool in ("diag_autostart", "diag_services"):
         assert isinstance(await policy.gate(session, tool, {}, PATCH_HOST), Allow)
     snapshot = await policy.gate(
@@ -506,7 +506,7 @@ async def test_the_posture_agent_cannot_change_anything() -> None:
 async def test_joined_the_real_loop_sends_only_the_allowlisted_update(tmp_path) -> None:
     """Two update requests through ``drive_events``: one reaches the wire, one does not."""
 
-    from kenny_server.agents.policy import AgentPolicy
+    from kenny_server.stewards.policy import StewardPolicy
     from test_chat import FakeAnthropic, _Response, text_block, tool_use_block
 
     telemetry = TelemetryStore(db_path=str(tmp_path / "patch.sqlite"))
@@ -549,7 +549,7 @@ async def test_joined_the_real_loop_sends_only_the_allowlisted_update(tmp_path) 
                 executor,
                 client=client,
                 model="m",
-                policy=AgentPolicy(session),
+                policy=StewardPolicy(session),
                 max_iterations=PATCH.budget.max_iterations,
             )
         ]

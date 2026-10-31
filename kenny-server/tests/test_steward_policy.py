@@ -1,6 +1,6 @@
-"""The agent gate: what an unattended run may do, and in which order it is asked.
+"""The steward gate: what an unattended run may do, and in which order it is asked.
 
-Two halves. The unit tests call :class:`AgentPolicy` directly, one gate step at
+Two halves. The unit tests call :class:`StewardPolicy` directly, one gate step at
 a time, including the steps that only matter in combination (a forbidden call
 that also names another host must be ``forbidden``, not ``out_of_scope``). The
 joined tests drive the real :func:`toolloop.drive_events` with the real
@@ -18,11 +18,11 @@ from typing import Any
 
 import pytest
 
-from kenny_server.agents import policy as policy_module
-from kenny_server.agents.authorizations import NEVER_AUTHORIZED, Authorization
-from kenny_server.agents.policy import HOST_ARG, MAX_TIMEOUT_S, AgentPolicy, AgentSession
-from kenny_server.agents.spec import ToolTimeout
-from kenny_server.agents.spec import VERDICT_TOOLS, AgentSpec, ArgConstraint, SpecError, Trigger
+from kenny_server.stewards import policy as policy_module
+from kenny_server.stewards.authorizations import NEVER_AUTHORIZED, Authorization
+from kenny_server.stewards.policy import HOST_ARG, MAX_TIMEOUT_S, StewardPolicy, StewardSession
+from kenny_server.stewards.spec import ToolTimeout
+from kenny_server.stewards.spec import VERDICT_TOOLS, StewardSpec, ArgConstraint, SpecError, Trigger
 from kenny_server.ticket_assistant import FLEET_WIDE_TOOLS
 from kenny_server.registry import AgentRegistry
 from kenny_server.store import EventStore, TelemetryStore
@@ -47,7 +47,7 @@ FIREFOX = "Mozilla.Firefox"
 SEVENZIP = "7zip.7zip"
 
 
-def _spec(**overrides: Any) -> AgentSpec:
+def _spec(**overrides: Any) -> StewardSpec:
     fields: dict[str, Any] = {
         "id": "patcher",
         "title": "Patcher",
@@ -61,22 +61,22 @@ def _spec(**overrides: Any) -> AgentSpec:
         ),
     }
     fields.update(overrides)
-    return AgentSpec(**fields)
+    return StewardSpec(**fields)
 
 
-def _session(mode: str = "shadow", agent_id: str | None = HOST, **spec: Any) -> AgentSession:
-    return AgentSession(id="run-1", spec=_spec(**spec), mode=mode, agent_id=agent_id)
+def _session(mode: str = "shadow", agent_id: str | None = HOST, **spec: Any) -> StewardSession:
+    return StewardSession(id="run-1", spec=_spec(**spec), mode=mode, agent_id=agent_id)
 
 
 AUTH_ID = "auth-1"
 
 
-def _grant(agent: str, tool: str, auth_id: str = AUTH_ID) -> Authorization:
+def _grant(steward: str, tool: str, auth_id: str = AUTH_ID) -> Authorization:
     """A live authorization as the store would return it."""
 
     return Authorization(
         id=auth_id,
-        agent_id=agent,
+        steward_id=steward,
         effective_hash="h",
         tool=tool,
         scope=[HOST],
@@ -104,7 +104,7 @@ def _yes(calls: list[tuple[Any, ...]] | None = None) -> Any:
 
 
 async def _gate(
-    policy: AgentPolicy, session: AgentSession, tool: str, args: dict[str, Any]
+    policy: StewardPolicy, session: StewardSession, tool: str, args: dict[str, Any]
 ) -> Any:
     """resolve_target then gate, the way the loop asks them."""
 
@@ -117,8 +117,8 @@ async def _gate(
 
 def test_session_derives_its_actor_and_run_id() -> None:
     session = _session()
-    assert session.audit_actor == "agent:patcher"
-    assert session.agent_run_id == "run-1"
+    assert session.audit_actor == "steward:patcher"
+    assert session.steward_run_id == "run-1"
     assert session.pending is None and session.usage is None
     assert session.recommendations == [] and session.actions == []
 
@@ -126,18 +126,18 @@ def test_session_derives_its_actor_and_run_id() -> None:
 def test_policy_refuses_a_mode_that_is_not_a_run() -> None:
     for mode in ("off", "ACT", "", "unknown"):
         with pytest.raises(ValueError):
-            AgentPolicy(_session(mode=mode))
+            StewardPolicy(_session(mode=mode))
 
 
 def test_policy_revalidates_the_spec_rather_than_trusting_the_loader() -> None:
     # A change-tier tool with no constraint: refused at construction, not at
     # the first call that happens to use it.
     with pytest.raises(SpecError):
-        AgentPolicy(_session(constraints=()))
+        StewardPolicy(_session(constraints=()))
 
 
 def test_policy_gates_only_its_own_session() -> None:
-    policy = AgentPolicy(_session())
+    policy = StewardPolicy(_session())
     with pytest.raises(RuntimeError):
         policy.resolve_target(_session(), "winget_list", {})
 
@@ -146,7 +146,7 @@ def test_policy_gates_only_its_own_session() -> None:
 
 
 def test_schemas_are_exactly_the_spec_with_the_last_one_cached() -> None:
-    policy = AgentPolicy(_session())
+    policy = StewardPolicy(_session())
     schemas = policy.tool_schemas()
     assert {s["name"] for s in schemas} == set(_spec().tools)
     assert [s.get("cache_control") for s in schemas[:-1]] == [None] * (len(schemas) - 1)
@@ -161,14 +161,14 @@ def test_a_spec_tool_the_loop_cannot_dispatch_has_no_schema() -> None:
     # the host as if it were a capability.
     assert "reliability_suppression_list" in TOOL_CLASSES
     assert "reliability_suppression_list" not in set(SERVER_TOOLS) | set(CAPABILITY_TOOLS)
-    policy = AgentPolicy(_session(tools=frozenset({"winget_list", "reliability_suppression_list"}),
+    policy = StewardPolicy(_session(tools=frozenset({"winget_list", "reliability_suppression_list"}),
                                   constraints=()))
     assert {s["name"] for s in policy.tool_schemas()} == {"winget_list"}
 
 
 def test_system_blocks_cache_the_prompt_and_state_host_and_mode() -> None:
     session = _session()
-    blocks = AgentPolicy(session).system_blocks(session)
+    blocks = StewardPolicy(session).system_blocks(session)
     assert blocks[0] == {
         "type": "text",
         "text": _spec().prompt,
@@ -180,7 +180,7 @@ def test_system_blocks_cache_the_prompt_and_state_host_and_mode() -> None:
     assert "recommendations for a person" in blocks[1]["text"]
 
     act = _session(mode="act", agent_id=None)
-    text = AgentPolicy(act).system_blocks(act)[1]["text"]
+    text = StewardPolicy(act).system_blocks(act)[1]["text"]
     assert "touches no machine" in text and "shadow" not in text
 
 
@@ -189,16 +189,16 @@ def test_system_blocks_cache_the_prompt_and_state_host_and_mode() -> None:
 
 async def test_a_tool_outside_the_spec_is_forbidden() -> None:
     session = _session(mode="act")
-    policy = AgentPolicy(session, authorizer=_yes())
+    policy = StewardPolicy(session, authorizer=_yes())
     for tool in ("powershell_exec", "list_agents", "fleet_overview", "made_up_tool"):
         decision = await _gate(policy, session, tool, {})
-        assert decision == Deny("forbidden", f"{tool} is not available to this agent")
+        assert decision == Deny("forbidden", f"{tool} is not available to this steward")
     assert session.recommendations == [] and session.actions == []
 
 
 async def test_forbidden_wins_over_out_of_scope() -> None:
     session = _session(mode="act")
-    policy = AgentPolicy(session)
+    policy = StewardPolicy(session)
     decision = await _gate(policy, session, "powershell_exec", {"agent_id": OTHER})
     assert isinstance(decision, Deny) and decision.code == "forbidden"
 
@@ -206,7 +206,7 @@ async def test_forbidden_wins_over_out_of_scope() -> None:
 async def test_forbidden_wins_even_without_a_host() -> None:
     # resolve_target must not raise ``no_agent`` for a tool the spec lacks.
     session = _session(agent_id=None)
-    policy = AgentPolicy(session)
+    policy = StewardPolicy(session)
     assert policy.resolve_target(session, "powershell_exec", {}) is None
     decision = await policy.gate(session, "powershell_exec", {}, None)
     assert isinstance(decision, Deny) and decision.code == "forbidden"
@@ -215,7 +215,7 @@ async def test_forbidden_wins_even_without_a_host() -> None:
 async def test_a_spec_tool_the_loop_cannot_dispatch_is_forbidden() -> None:
     session = _session(tools=frozenset({"winget_list", "reliability_suppression_list"}),
                        constraints=())
-    policy = AgentPolicy(session)
+    policy = StewardPolicy(session)
     decision = await _gate(policy, session, "reliability_suppression_list", {})
     assert isinstance(decision, Deny) and decision.code == "forbidden"
 
@@ -223,7 +223,7 @@ async def test_a_spec_tool_the_loop_cannot_dispatch_is_forbidden() -> None:
 async def test_fleet_wide_tools_are_reachable_only_when_named() -> None:
     session = _session(agent_id=None, tools=frozenset({"winget_list", "list_agents"}),
                        constraints=())
-    policy = AgentPolicy(session)
+    policy = StewardPolicy(session)
     assert await _gate(policy, session, "list_agents", {}) == Allow()
     decision = await _gate(policy, session, "fleet_overview", {})
     assert isinstance(decision, Deny) and decision.code == "forbidden"
@@ -239,12 +239,12 @@ async def test_a_fleet_wide_read_is_out_of_scope_on_a_run_frozen_to_a_host(tool:
 
     tools = frozenset({"winget_list", "list_agents", "fleet_overview"})
     frozen = _session(mode="act", tools=tools, constraints=())
-    policy = AgentPolicy(frozen)
+    policy = StewardPolicy(frozen)
     decision = await _gate(policy, frozen, tool, {})
     assert isinstance(decision, Deny) and decision.code == "out_of_scope"
     # A host-less, server-only run that names it may still use it.
     hostless = _session(mode="act", agent_id=None, tools=tools, constraints=())
-    assert await _gate(AgentPolicy(hostless), hostless, tool, {}) == Allow()
+    assert await _gate(StewardPolicy(hostless), hostless, tool, {}) == Allow()
 
 
 # -- step 2: another host ------------------------------------------------------
@@ -253,7 +253,7 @@ async def test_a_fleet_wide_read_is_out_of_scope_on_a_run_frozen_to_a_host(tool:
 @pytest.mark.parametrize("mode", ["shadow", "act"])
 async def test_a_foreign_agent_id_is_refused_even_for_a_read(mode: str) -> None:
     session = _session(mode=mode)
-    policy = AgentPolicy(session, authorizer=_yes())
+    policy = StewardPolicy(session, authorizer=_yes())
     for tool, args in (
         ("winget_list", {"agent_id": OTHER}),
         ("winget_update", {"id": FIREFOX, "agent_id": OTHER}),
@@ -266,7 +266,7 @@ async def test_a_foreign_agent_id_is_refused_even_for_a_read(mode: str) -> None:
 
 async def test_the_frozen_host_as_agent_id_is_accepted_and_never_forwarded() -> None:
     session = _session()
-    policy = AgentPolicy(session)
+    policy = StewardPolicy(session)
     for claimed in (HOST, f"  {HOST} ", "", "   "):
         args: dict[str, Any] = {"agent_id": claimed}
         assert await _gate(policy, session, "winget_list", args) == Allow()
@@ -275,7 +275,7 @@ async def test_the_frozen_host_as_agent_id_is_accepted_and_never_forwarded() -> 
 
 async def test_a_non_string_agent_id_is_refused_not_coerced() -> None:
     session = _session()
-    policy = AgentPolicy(session)
+    policy = StewardPolicy(session)
     for claimed in (0, False, [HOST], {"id": HOST}):
         decision = await _gate(policy, session, "winget_list", {"agent_id": claimed})
         assert isinstance(decision, Deny) and decision.code == "out_of_scope", claimed
@@ -283,7 +283,7 @@ async def test_a_non_string_agent_id_is_refused_not_coerced() -> None:
 
 async def test_a_host_id_naming_another_host_is_refused() -> None:
     session = _session()
-    policy = AgentPolicy(session)
+    policy = StewardPolicy(session)
     decision = await _gate(policy, session, "agent_health", {"id": OTHER})
     assert isinstance(decision, Deny) and decision.code == "out_of_scope"
     decision = await _gate(policy, session, "agent_health", {"id": HOST, "agent_id": OTHER})
@@ -292,7 +292,7 @@ async def test_a_host_id_naming_another_host_is_refused() -> None:
 
 async def test_a_missing_host_id_is_pinned_to_the_frozen_host() -> None:
     session = _session()
-    policy = AgentPolicy(session)
+    policy = StewardPolicy(session)
     for args in ({}, {"id": ""}, {"id": f" {HOST} "}, {"id": HOST, "agent_id": HOST}):
         assert await _gate(policy, session, "agent_health", args) == Allow()
         assert args == {"id": HOST}
@@ -300,7 +300,7 @@ async def test_a_missing_host_id_is_pinned_to_the_frozen_host() -> None:
 
 async def test_without_a_host_a_capability_fails_to_route() -> None:
     session = _session(agent_id=None)
-    policy = AgentPolicy(session)
+    policy = StewardPolicy(session)
     with pytest.raises(ToolError) as exc:
         policy.resolve_target(session, "winget_list", {})
     assert exc.value.code == "no_agent"
@@ -311,7 +311,7 @@ async def test_without_a_host_a_capability_fails_to_route() -> None:
 
 async def test_without_a_host_a_host_naming_tool_never_runs() -> None:
     session = _session(agent_id=None)
-    policy = AgentPolicy(session)
+    policy = StewardPolicy(session)
     for args in ({}, {"id": OTHER}, {"id": HOST}):
         decision = await _gate(policy, session, "agent_health", args)
         assert isinstance(decision, Deny) and decision.code == "out_of_scope", args
@@ -320,7 +320,7 @@ async def test_without_a_host_a_host_naming_tool_never_runs() -> None:
 async def test_without_a_host_any_agent_id_is_refused() -> None:
     session = _session(agent_id=None, tools=frozenset({"winget_list", "list_agents"}),
                        constraints=())
-    policy = AgentPolicy(session)
+    policy = StewardPolicy(session)
     assert await _gate(policy, session, "list_agents", {}) == Allow()
     decision = await _gate(policy, session, "list_agents", {"agent_id": OTHER})
     assert isinstance(decision, Deny) and decision.code == "out_of_scope"
@@ -330,7 +330,7 @@ async def test_a_session_whose_host_drifted_is_refused() -> None:
     # Something (``select_agent``'s executor path writes ``session.agent_id``)
     # moved the session off the host the policy was built for.
     session = _session()
-    policy = AgentPolicy(session)
+    policy = StewardPolicy(session)
     session.agent_id = OTHER
     decision = await _gate(policy, session, "winget_list", {})
     assert isinstance(decision, Deny) and decision.code == "out_of_scope"
@@ -341,7 +341,7 @@ async def test_a_session_whose_host_drifted_is_refused() -> None:
 
 async def test_a_read_runs_in_shadow_and_is_not_recorded() -> None:
     session = _session()
-    policy = AgentPolicy(session)
+    policy = StewardPolicy(session)
     assert await _gate(policy, session, "winget_list", {}) == Allow()
     assert session.recommendations == [] and session.actions == []
 
@@ -365,7 +365,7 @@ async def test_a_change_outside_its_constraints_is_refused_and_not_recommended(
     mode: str, args: dict[str, Any]
 ) -> None:
     session = _session(mode=mode)
-    policy = AgentPolicy(session, authorizer=_yes())
+    policy = StewardPolicy(session, authorizer=_yes())
     decision = await _gate(policy, session, "winget_update", dict(args))
     assert isinstance(decision, Deny) and decision.code == "constraint"
     decision = await _gate(policy, session, "winget_install", {**args, "id": args.get("id")})
@@ -375,7 +375,7 @@ async def test_a_change_outside_its_constraints_is_refused_and_not_recommended(
 
 async def test_the_constraint_sees_the_args_without_the_routing_override() -> None:
     session = _session(mode="act")
-    policy = AgentPolicy(session)
+    policy = StewardPolicy(session)
     args = {"id": FIREFOX, "agent_id": HOST, "timeout_s": 600}
     assert await _gate(policy, session, "winget_update", args) == Allow()
     assert args == {"id": FIREFOX, "timeout_s": 600}
@@ -397,7 +397,7 @@ async def test_a_constraint_on_one_argument_leaves_no_other_free(mode: str) -> N
         tools=frozenset({"agent_update"}),
         constraints=(ArgConstraint("agent_update", "version", frozenset({"1.2.3"})),),
     )
-    policy = AgentPolicy(session, authorizer=_yes())
+    policy = StewardPolicy(session, authorizer=_yes())
     evil = {**_AGENT_UPDATE, "url": "https://evil.example/x.exe"}
     decision = await _gate(policy, session, "agent_update", evil)
     assert isinstance(decision, Deny) and decision.code == "constraint"
@@ -413,7 +413,7 @@ async def test_every_argument_bound_passes_the_constraints() -> None:
             ArgConstraint("agent_update", k, frozenset({v})) for k, v in _AGENT_UPDATE.items()
         ),
     )
-    policy = AgentPolicy(session, authorizer=_yes())
+    policy = StewardPolicy(session, authorizer=_yes())
     # Past the constraints, and still never run: agent_update is never authorized
     # ahead, whatever the authorizer answers (ADR-0072 rule 1).
     decision = await _gate(policy, session, "agent_update", dict(_AGENT_UPDATE))
@@ -433,7 +433,7 @@ async def test_an_unbound_or_boolean_argument_is_refused(enabled: Any) -> None:
         tools=frozenset({"account_set_enabled"}),
         constraints=(ArgConstraint("account_set_enabled", "principal", frozenset({"kid"})),),
     )
-    policy = AgentPolicy(session, authorizer=_yes())
+    policy = StewardPolicy(session, authorizer=_yes())
     decision = await _gate(
         policy, session, "account_set_enabled", {"principal": "kid", "enabled": enabled}
     )
@@ -448,7 +448,7 @@ async def test_an_unbound_or_boolean_argument_is_refused(enabled: Any) -> None:
         ),
     )
     decision = await _gate(
-        AgentPolicy(bound, authorizer=_yes()),
+        StewardPolicy(bound, authorizer=_yes()),
         bound,
         "account_set_enabled",
         {"principal": "kid", "enabled": False},
@@ -461,7 +461,7 @@ async def test_an_unbound_or_boolean_argument_is_refused(enabled: Any) -> None:
 )
 async def test_timeout_s_must_be_a_bounded_whole_number(timeout_s: Any) -> None:
     session = _session(mode="act")
-    policy = AgentPolicy(session)
+    policy = StewardPolicy(session)
     decision = await _gate(
         policy, session, "winget_update", {"id": FIREFOX, "timeout_s": timeout_s}
     )
@@ -472,14 +472,14 @@ async def test_timeout_s_must_be_a_bounded_whole_number(timeout_s: Any) -> None:
 @pytest.mark.parametrize("timeout_s", [1, 30, MAX_TIMEOUT_S])
 async def test_timeout_s_within_bounds_needs_no_constraint(timeout_s: int) -> None:
     session = _session(mode="act")
-    policy = AgentPolicy(session)
+    policy = StewardPolicy(session)
     args = {"id": FIREFOX, "timeout_s": timeout_s}
     assert await _gate(policy, session, "winget_update", args) == Allow()
 
 
 async def test_a_spec_timeout_narrows_the_ceiling_for_its_tool_only() -> None:
     session = _session(mode="act", timeouts=(ToolTimeout("winget_update", 120),))
-    policy = AgentPolicy(session)
+    policy = StewardPolicy(session)
     over = await _gate(policy, session, "winget_update", {"id": FIREFOX, "timeout_s": 121})
     assert isinstance(over, Deny) and over.code == "constraint"
     assert await _gate(
@@ -488,7 +488,7 @@ async def test_a_spec_timeout_narrows_the_ceiling_for_its_tool_only() -> None:
     # Another tool of the same spec keeps the global ceiling.
     other = _session(mode="act", timeouts=(ToolTimeout("winget_update", 120),))
     assert await _gate(
-        AgentPolicy(other, authorizer=_yes()),
+        StewardPolicy(other, authorizer=_yes()),
         other,
         "winget_install",
         {"id": SEVENZIP, "timeout_s": MAX_TIMEOUT_S},
@@ -507,7 +507,7 @@ async def test_a_verdict_exemption_for_a_non_verdict_tool_is_forbidden(monkeypat
             constraints=(),
             verdict_tool="powershell_exec",
         )
-        policy = AgentPolicy(session, authorizer=_yes())
+        policy = StewardPolicy(session, authorizer=_yes())
         decision = await _gate(
             policy, session, "powershell_exec", {"script": "Remove-Item C:\\ -Recurse"}
         )
@@ -527,13 +527,13 @@ async def test_the_verdict_tool_runs_in_both_modes_and_is_not_an_action() -> Non
     args = {"verdict": "phantom", "finding": "f", "evidence": "e"}
     for mode in ("act", "shadow"):
         session = _session(mode=mode, tools=tools, constraints=(), verdict_tool=TRIAGE_VERDICT_TOOL)
-        assert await _gate(AgentPolicy(session), session, TRIAGE_VERDICT_TOOL, dict(args)) == Allow()
+        assert await _gate(StewardPolicy(session), session, TRIAGE_VERDICT_TOOL, dict(args)) == Allow()
         assert session.actions == [] and session.recommendations == []
 
 
 async def test_unattended_schemas_offer_no_host_override_and_promise_no_confirmation() -> None:
     session = _session(mode="act")
-    for schema in AgentPolicy(session).tool_schemas():
+    for schema in StewardPolicy(session).tool_schemas():
         assert "agent_id" not in schema["input_schema"]["properties"], schema["name"]
         assert "operator confirmation" not in schema["description"], schema["name"]
 
@@ -543,7 +543,7 @@ async def test_unattended_schemas_offer_no_host_override_and_promise_no_confirma
 
 async def test_shadow_refuses_every_change_and_records_it() -> None:
     session = _session()
-    policy = AgentPolicy(session, authorizer=_yes())
+    policy = StewardPolicy(session, authorizer=_yes())
     for tool, tier, pkg in (
         ("winget_update", STANDARD_CHANGE, FIREFOX),
         ("winget_install", NORMAL_CHANGE, SEVENZIP),
@@ -562,13 +562,13 @@ async def test_shadow_refuses_every_change_and_records_it() -> None:
 
 async def test_demoting_a_run_mid_way_takes_effect_and_promoting_does_not() -> None:
     act = _session(mode="act")
-    policy = AgentPolicy(act)
+    policy = StewardPolicy(act)
     act.mode = "shadow"
     decision = await _gate(policy, act, "winget_update", {"id": FIREFOX})
     assert isinstance(decision, Deny) and decision.code == "shadow"
 
     shadow = _session()
-    policy = AgentPolicy(shadow)
+    policy = StewardPolicy(shadow)
     shadow.mode = "act"
     decision = await _gate(policy, shadow, "winget_update", {"id": FIREFOX})
     assert isinstance(decision, Deny) and decision.code == "shadow"
@@ -585,7 +585,7 @@ async def test_still_acting_is_asked_before_every_change() -> None:
         return live["acting"]
 
     session = _session(mode="act")
-    policy = AgentPolicy(session, still_acting=still_acting)
+    policy = StewardPolicy(session, still_acting=still_acting)
     assert await _gate(policy, session, "winget_update", {"id": FIREFOX}) == Allow()
     live["acting"] = False
     decision = await _gate(policy, session, "winget_update", {"id": FIREFOX})
@@ -605,7 +605,7 @@ async def test_a_still_acting_that_fails_or_hedges_is_not_acting(answer: Any) ->
         return answer
 
     session = _session(mode="act")
-    policy = AgentPolicy(session, authorizer=_yes(), still_acting=still_acting)
+    policy = StewardPolicy(session, authorizer=_yes(), still_acting=still_acting)
     decision = await _gate(policy, session, "winget_install", {"id": SEVENZIP})
     assert isinstance(decision, Deny) and decision.code == "shadow"
     assert len(session.recommendations) == 1 and session.actions == []
@@ -616,7 +616,7 @@ async def test_still_acting_cannot_promote_a_shadow_run() -> None:
         return True
 
     session = _session()
-    policy = AgentPolicy(session, still_acting=still_acting)
+    policy = StewardPolicy(session, still_acting=still_acting)
     decision = await _gate(policy, session, "winget_update", {"id": FIREFOX})
     assert isinstance(decision, Deny) and decision.code == "shadow"
 
@@ -626,7 +626,7 @@ async def test_still_acting_cannot_promote_a_shadow_run() -> None:
 
 async def test_act_runs_a_constrained_standard_change_and_records_it() -> None:
     session = _session(mode="act")
-    policy = AgentPolicy(session)
+    policy = StewardPolicy(session)
     assert await _gate(policy, session, "winget_update", {"id": FIREFOX}) == Allow()
     assert session.actions == [
         {"tool": "winget_update", "args": {"id": FIREFOX}, "agent_id": HOST,
@@ -637,7 +637,7 @@ async def test_act_runs_a_constrained_standard_change_and_records_it() -> None:
 
 async def test_act_refuses_a_normal_change_without_an_authorizer() -> None:
     session = _session(mode="act")
-    decision = await _gate(AgentPolicy(session), session, "winget_install", {"id": SEVENZIP})
+    decision = await _gate(StewardPolicy(session), session, "winget_install", {"id": SEVENZIP})
     assert isinstance(decision, Deny) and decision.code == "not_authorized"
     assert session.recommendations[0]["tool"] == "winget_install"
     assert session.actions == []
@@ -646,7 +646,7 @@ async def test_act_refuses_a_normal_change_without_an_authorizer() -> None:
 async def test_act_runs_a_normal_change_the_authorizer_allows() -> None:
     calls: list[tuple[Any, ...]] = []
     session = _session(mode="act")
-    policy = AgentPolicy(session, authorizer=_yes(calls))
+    policy = StewardPolicy(session, authorizer=_yes(calls))
     args = {"id": SEVENZIP}
     assert await _gate(policy, session, "winget_install", args) == Allow(authorization_id=AUTH_ID)
     # The action names the authorization that let it run (ADR-0072 rule 5).
@@ -669,18 +669,18 @@ async def test_act_runs_a_normal_change_the_authorizer_allows() -> None:
         True,
         AUTH_ID,
         _grant("patcher", "winget_install", auth_id=""),
-        _grant("another_agent", "winget_install"),
+        _grant("another_steward", "winget_install"),
         _grant("patcher", "winget_update"),
     ],
-    ids=["false", "none", "str", "one", "true", "bare-id", "empty-id", "other-agent", "other-tool"],
+    ids=["false", "none", "str", "one", "true", "bare-id", "empty-id", "other-steward", "other-tool"],
 )
-async def test_only_an_authorization_for_this_agent_and_tool_authorizes(answer: Any) -> None:
+async def test_only_an_authorization_for_this_steward_and_tool_authorizes(answer: Any) -> None:
     async def authorizer(*_a: Any) -> Any:
         return answer
 
     session = _session(mode="act")
     decision = await _gate(
-        AgentPolicy(session, authorizer=authorizer), session, "winget_install", {"id": SEVENZIP}
+        StewardPolicy(session, authorizer=authorizer), session, "winget_install", {"id": SEVENZIP}
     )
     assert isinstance(decision, Deny) and decision.code == "not_authorized"
     assert len(session.recommendations) == 1 and session.actions == []
@@ -692,7 +692,7 @@ async def test_an_authorizer_that_fails_has_not_authorized() -> None:
 
     session = _session(mode="act")
     decision = await _gate(
-        AgentPolicy(session, authorizer=authorizer), session, "winget_install", {"id": SEVENZIP}
+        StewardPolicy(session, authorizer=authorizer), session, "winget_install", {"id": SEVENZIP}
     )
     assert isinstance(decision, Deny) and decision.code == "not_authorized"
 
@@ -709,7 +709,7 @@ async def test_a_never_authorized_tool_is_refused_without_asking(tool: str) -> N
         tools=frozenset({tool}),
         constraints=tuple(ArgConstraint(tool, a, frozenset({"v"})) for a in arg_names),
     )
-    policy = AgentPolicy(session, authorizer=_yes(calls))
+    policy = StewardPolicy(session, authorizer=_yes(calls))
     decision = await _gate(policy, session, tool, {a: "v" for a in arg_names})
     assert isinstance(decision, Deny) and decision.code == "not_authorized"
     assert calls == []
@@ -720,7 +720,7 @@ async def test_a_never_authorized_tool_is_refused_without_asking(tool: str) -> N
 async def test_the_authorizer_is_not_asked_about_a_standard_change() -> None:
     calls: list[tuple[Any, ...]] = []
     session = _session(mode="act")
-    policy = AgentPolicy(session, authorizer=_yes(calls))
+    policy = StewardPolicy(session, authorizer=_yes(calls))
     assert await _gate(policy, session, "winget_update", {"id": FIREFOX}) == Allow()
     assert calls == []
 
@@ -732,7 +732,7 @@ async def test_on_hold_raises() -> None:
     session = _session()
     pending = PendingCall(id="p", tool_use_id="t", tool="winget_install", args={}, agent_id=HOST)
     with pytest.raises(RuntimeError):
-        await AgentPolicy(session).on_hold(session, pending)
+        await StewardPolicy(session).on_hold(session, pending)
 
 
 @pytest.mark.parametrize("mode", ["shadow", "act"])
@@ -751,7 +751,7 @@ async def test_no_tool_in_the_catalog_is_ever_held(mode: str, agent_id: str | No
             ArgConstraint(t, "x", frozenset({"v"})) for t in changes if t != TRIAGE_VERDICT_TOOL
         ),
     )
-    policy = AgentPolicy(session, authorizer=_yes())
+    policy = StewardPolicy(session, authorizer=_yes())
     for tool in sorted(TOOL_CLASSES):
         for args in ({}, {"x": "v"}, {"agent_id": OTHER}, {"id": OTHER}):
             try:
@@ -784,7 +784,7 @@ def test_every_host_naming_server_tool_is_pinned() -> None:
 
 @pytest.fixture
 async def store(tmp_path) -> TelemetryStore:
-    s = TelemetryStore(db_path=str(tmp_path / "agents.sqlite"))
+    s = TelemetryStore(db_path=str(tmp_path / "stewards.sqlite"))
     await s.connect()
     yield s
     await s.close()
@@ -812,7 +812,7 @@ class Rig:
         )
 
     async def run(
-        self, session: AgentSession, calls: list[tuple[str, dict[str, Any]]], authorizer: Any = None
+        self, session: StewardSession, calls: list[tuple[str, dict[str, Any]]], authorizer: Any = None
     ) -> tuple[list[dict[str, Any]], FakeAnthropic]:
         """One model turn per call, then an ending turn."""
 
@@ -823,7 +823,7 @@ class Rig:
         scripted.append(_Response([text_block("done")], "end_turn"))
         client = FakeAnthropic(scripted)
         session.messages.append({"role": "user", "content": "start"})
-        policy = AgentPolicy(session, authorizer=authorizer)
+        policy = StewardPolicy(session, authorizer=authorizer)
         events = [
             ev
             async for ev in drive_events(
@@ -856,7 +856,7 @@ def _error_code(block: dict[str, Any]) -> str | None:
     return json.loads(block["content"])["error"]["code"]
 
 
-def _assert_never_held(events: list[dict[str, Any]], session: AgentSession) -> None:
+def _assert_never_held(events: list[dict[str, Any]], session: StewardSession) -> None:
     assert not [e for e in events if e["type"] == "pending"]
     assert session.pending is None
     assert events[-1]["type"] == "done" and events[-1]["done"] is True

@@ -1,18 +1,18 @@
-"""Starts the specialized agents whose trigger is a schedule (ADR-0071, ADR-0072).
+"""Starts the stewards whose trigger is a schedule (ADR-0071, ADR-0072).
 
-One pass looks at every catalog agent with a ``schedule`` trigger and, for each
+One pass looks at every catalog steward with a ``schedule`` trigger and, for each
 host the install named, decides whether a run is due *now*. Everything here is
 deterministic server code; the model is only ever started, never asked.
 
-**When a run is due.** The agent's ``window`` parameter is a recurring
+**When a run is due.** The steward's ``window`` parameter is a recurring
 maintenance window (weekday/time/zone, parsed by :mod:`kenny_server.webfilter`'s
 own ``make_window`` and ``schedule_state``, not a second parser). Outside it
-nothing starts. Inside it, each host in the agent's ``hosts`` parameter runs
+nothing starts. Inside it, each host in the steward's ``hosts`` parameter runs
 **once per window occurrence**; an empty or missing ``hosts`` is no host, never
-"all". "Already ran" is read off ``agent_runs``: a run is recorded with the
+"all". "Already ran" is read off ``steward_runs``: a run is recorded with the
 trigger ``schedule:<end of the occurrence>``, so the answer survives a restart
 without a table of its own. A run that failed also counts as having run — a
-broken agent retries at the next occurrence, not every pass.
+broken steward retries at the next occurrence, not every pass.
 
 **The window bounds the work, not only the start.** Before each host the
 occurrence is computed again; once it is no longer the one the pass started
@@ -21,27 +21,27 @@ in, the pass stops. A run already started is handed the end of its occurrence
 run that outlasts its window can report but not act.
 
 **Canary order.** Hosts run one after another in sorted order. The pass for an
-agent stops at the first run that failed, or that *changed something* (an
+steward stops at the first run that failed, or that *changed something* (an
 action the gate allowed that did not fail) and did not end ``acted`` — an
 ``actionable``, ``inconclusive`` or missing verdict leaves the change
 unconfirmed. The stop outlasts the pass: while any run of this occurrence
-stopped the canary, the agent starts nothing else until the next occurrence,
+stopped the canary, the steward starts nothing else until the next occurrence,
 so the next pass cannot walk past a host that went wrong.
 
 **Circuit breaker.** After :data:`BREAKER_THRESHOLD` consecutive runs of one
-agent in ``act`` that stopped the canary, it is moved to ``shadow`` as
+steward in ``act`` that stopped the canary, it is moved to ``shadow`` as
 ``system:circuit-breaker`` and a warning goes on the event log. A run stops the
 canary when it ended ``failed``, a change it made errored, or it changed
 something it did not confirm. Refusals that are an outcome rather than a fault
-— the agent's ``disabled`` kill switch, its ``blocked`` guard, a ``paused``
+— the steward's ``disabled`` kill switch, its ``blocked`` guard, a ``paused``
 game session — never count, and a run that was interrupted (a graceful
-shutdown or a restart, :data:`~kenny_server.agents.store.INTERRUPTED_ERROR`)
+shutdown or a restart, :data:`~kenny_server.stewards.store.INTERRUPTED_ERROR`)
 is neutral: it neither counts nor breaks a streak.
 
 **Preconditions, before any run.** A host that is offline, or whose OS cannot
-serve a tool the agent names, is skipped. An agent whose ``require_idle``
+serve a tool the steward names, is skipped. A steward whose ``require_idle``
 parameter is not ``false`` asks the host itself — ``remotehelp_status``, called
-here as ``agent:<id>``, not by the model — whether somebody is signed in, and
+here as ``steward:<id>``, not by the model — whether somebody is signed in, and
 skips the host unless the answer is a clear *no*: a failed check is "do not
 disturb". A skip is recorded once per occurrence as a ``skipped`` run with the
 reason and is retried at the next pass; it is not a failure.
@@ -59,11 +59,11 @@ from typing import Any
 
 from ..tools import CAPABILITY_TOOLS, supports_tool
 from ..webfilter import CATEGORY_KEYS, make_window, schedule_state
-from .runner import AgentRunner
-from .spec import AgentSpec, resolve
-from .store import INTERRUPTED_ERROR, AgentRun
+from .runner import StewardRunner
+from .spec import StewardSpec, resolve
+from .store import INTERRUPTED_ERROR, StewardRun
 
-logger = logging.getLogger("kenny.agents.scheduler")
+logger = logging.getLogger("kenny.stewards.scheduler")
 
 __all__ = [
     "BENIGN_REFUSALS",
@@ -72,7 +72,7 @@ __all__ = [
     "INTERVAL_SETTING",
     "MIN_INTERVAL_S",
     "SCHEDULE_TRIGGER_PREFIX",
-    "AgentScheduler",
+    "StewardScheduler",
     "Outcome",
     "halts",
     "host_supports",
@@ -83,7 +83,7 @@ __all__ = [
 ]
 
 #: The live setting a pass's cadence is read from (``config.py``).
-INTERVAL_SETTING = "KENNY_AGENTS_SCHEDULE_INTERVAL_SECS"
+INTERVAL_SETTING = "KENNY_STEWARDS_SCHEDULE_INTERVAL_SECS"
 
 #: The shortest cadence a loop honours, whatever the setting says.
 MIN_INTERVAL_S = 60
@@ -92,13 +92,13 @@ MIN_INTERVAL_S = 60
 #: occurrence it belongs to (UTC, ISO-8601): one occurrence, one trigger.
 SCHEDULE_TRIGGER_PREFIX = "schedule:"
 
-#: Consecutive failed runs of one agent that move it back to ``shadow``.
+#: Consecutive failed runs of one steward that move it back to ``shadow``.
 BREAKER_THRESHOLD = 3
 
-#: Who the circuit breaker acts as when it demotes an agent.
+#: Who the circuit breaker acts as when it demotes a steward.
 BREAKER_ACTOR = "system:circuit-breaker"
 
-#: Error codes of a change that was *refused*, not one that broke: the agent's
+#: Error codes of a change that was *refused*, not one that broke: the steward's
 #: remote-control kill switch (``disabled``), its deterministic safety guard
 #: (``blocked``) and a game-scoped pause (``paused``). An outcome to read, not
 #: a failure to count.
@@ -112,13 +112,13 @@ _CONFIRMING_VERDICTS: frozenset[str] = frozenset({"acted"})
 #: Run statuses that mean "this host has had its run for this occurrence".
 _DONE_STATUSES: frozenset[str] = frozenset({"running", "completed", "failed"})
 
-#: How many recent runs of one agent a pass reads back. Enough for every host of
+#: How many recent runs of one steward a pass reads back. Enough for every host of
 #: a household fleet over a window plus the breaker's streak.
 _HISTORY = 500
 
 #: The OS that can serve a tool, where :func:`kenny_server.tools.supports_tool`
 #: does not say (it lists the tools the *agent binary* refuses by name; a
-#: ``winget_*`` call on Linux is refused by the agent at run time, which is too
+#: ``winget_*`` call on Linux is refused by the steward at run time, which is too
 #: late for a scheduled run). Entries here are redundant once ``tools`` scopes
 #: the tool itself.
 _TOOL_OS: dict[str, frozenset[str]] = {
@@ -129,31 +129,31 @@ _TOOL_OS: dict[str, frozenset[str]] = {
 
 @dataclass(frozen=True)
 class Outcome:
-    """What one pass did for one host of one agent."""
+    """What one pass did for one host of one steward."""
 
-    agent_id: str
+    steward_id: str
     host_id: str
     #: ``ran`` | ``skipped`` | ``halted`` | ``tripped``
     kind: str
     detail: str = ""
-    run: AgentRun | None = None
+    run: StewardRun | None = None
 
 
 # -- reading a finished run ----------------------------------------------------
 
 
-def interrupted(run: AgentRun) -> bool:
+def interrupted(run: StewardRun) -> bool:
     """Whether ``run`` was cut short by a shutdown or a restart, not by its own fault."""
 
     return run.status == "failed" and run.error == INTERRUPTED_ERROR
 
 
-def run_failed(run: AgentRun) -> bool:
+def run_failed(run: StewardRun) -> bool:
     """Whether ``run`` counts as a failure.
 
     ``failed`` outright, or a change it made that errored for any reason other
     than a refusal that is an outcome (:data:`BENIGN_REFUSALS`). A run a
-    shutdown or restart interrupted is not the agent's fault and is not one.
+    shutdown or restart interrupted is not the steward's fault and is not one.
     """
 
     if run.status == "failed":
@@ -165,19 +165,19 @@ def run_failed(run: AgentRun) -> bool:
     )
 
 
-def made_change(run: AgentRun) -> bool:
+def made_change(run: StewardRun) -> bool:
     """Whether ``run`` changed something: an action the gate allowed that did not fail."""
 
     return any(a.get("ok") is not False for a in run.actions)
 
 
-def halts(run: AgentRun) -> bool:
+def halts(run: StewardRun) -> bool:
     """Whether ``run`` changed something and did not confirm it (any verdict but ``acted``)."""
 
     return made_change(run) and run.verdict not in _CONFIRMING_VERDICTS
 
 
-def stops_canary(run: AgentRun) -> bool:
+def stops_canary(run: StewardRun) -> bool:
     """Whether the hosts after ``run`` must wait for a person.
 
     Also what the circuit breaker counts, unless the run was
@@ -190,7 +190,7 @@ def stops_canary(run: AgentRun) -> bool:
 # -- the host ------------------------------------------------------------------
 
 
-def host_supports(spec: AgentSpec, os_name: str | None) -> bool:
+def host_supports(spec: StewardSpec, os_name: str | None) -> bool:
     """Whether a host running ``os_name`` can serve every capability ``spec`` names."""
 
     name = (os_name or "").lower()
@@ -206,7 +206,7 @@ def host_supports(spec: AgentSpec, os_name: str | None) -> bool:
 
 
 def _hosts(params: Mapping[str, Any]) -> list[str]:
-    """The hosts an agent may run on: sorted, unique, and empty unless named."""
+    """The hosts a steward may run on: sorted, unique, and empty unless named."""
 
     raw = params.get("hosts")
     if isinstance(raw, str):
@@ -234,10 +234,10 @@ def _packages(params: Mapping[str, Any]) -> list[str]:
     return sorted({p for p in raw if isinstance(p, str) and p})
 
 
-class AgentScheduler:
-    """Starts the scheduled agents; one :meth:`pass_once` per cadence tick.
+class StewardScheduler:
+    """Starts the scheduled stewards; one :meth:`pass_once` per cadence tick.
 
-    ``params_of(agent_id)`` is the agent's stored parameters (superuser-edited,
+    ``params_of(steward_id)`` is the steward's stored parameters (superuser-edited,
     ADR-0072). ``executor`` is used to ask a host whether it is idle and for the
     registry that says whether it is online and which OS it runs. ``client`` and
     ``model`` are handed to the runner only if given, and only if its
@@ -246,8 +246,8 @@ class AgentScheduler:
 
     def __init__(
         self,
-        runner: AgentRunner,
-        catalog: Mapping[str, AgentSpec],
+        runner: StewardRunner,
+        catalog: Mapping[str, StewardSpec],
         params_of: Callable[[str], Awaitable[Mapping[str, Any]]],
         executor: Any,
         *,
@@ -289,7 +289,7 @@ class AgentScheduler:
             try:
                 await self.pass_once()
             except Exception:  # noqa: BLE001 - never let the loop die
-                logger.exception("agent schedule pass failed")
+                logger.exception("steward schedule pass failed")
             try:
                 interval = float(interval_s())
             except Exception:  # noqa: BLE001 - a bad setting must not stop the loop
@@ -309,12 +309,12 @@ class AgentScheduler:
                 if spec.trigger.kind != "schedule":
                     continue
                 try:
-                    outcomes += await self._pass_agent(spec)
-                except Exception:  # noqa: BLE001 - one agent's fault must not skip the others
-                    logger.exception("schedule pass for agent %s failed", spec.id)
+                    outcomes += await self._pass_steward(spec)
+                except Exception:  # noqa: BLE001 - one steward's fault must not skip the others
+                    logger.exception("schedule pass for steward %s failed", spec.id)
             return outcomes
 
-    def _occurrence(self, spec: AgentSpec, raw: Any, at: datetime) -> datetime | None:
+    def _occurrence(self, spec: StewardSpec, raw: Any, at: datetime) -> datetime | None:
         """The end of the window occurrence open at ``at``, or ``None``.
 
         The end identifies the occurrence for as long as it is open. ``None``
@@ -336,7 +336,7 @@ class AgentScheduler:
                 tz=raw.get("tz") or raw.get("timezone"),
             )
         except (ValueError, TypeError) as exc:
-            logger.warning("agent %s: its maintenance window is unreadable (%s)", spec.id, exc)
+            logger.warning("steward %s: its maintenance window is unreadable (%s)", spec.id, exc)
             return None
         state = schedule_state({}, [window], at=at)
         if not state["active_windows"] or not state["next_change_at"]:
@@ -347,7 +347,7 @@ class AgentScheduler:
             return None
         return end if end.tzinfo is not None else end.replace(tzinfo=timezone.utc)
 
-    async def _still_open(self, spec: AgentSpec, end: datetime) -> bool:
+    async def _still_open(self, spec: StewardSpec, end: datetime) -> bool:
         """Whether the occurrence ending at ``end`` is still the one open now.
 
         Read from the stored window again, so a window edited during the pass
@@ -357,7 +357,7 @@ class AgentScheduler:
         params = await self.params_of(spec.id)
         return self._occurrence(spec, params.get("window"), self._now()) == end
 
-    async def _pass_agent(self, spec: AgentSpec) -> list[Outcome]:
+    async def _pass_steward(self, spec: StewardSpec) -> list[Outcome]:
         mode = await self.runner.mode_of(spec.id)
         if mode == "off":
             return []
@@ -369,7 +369,7 @@ class AgentScheduler:
         hosts = _hosts(params)
         if not hosts:
             return []
-        history = await self.runner.store.list_runs(agent_id=spec.id, limit=_HISTORY)
+        history = await self.runner.store.list_runs(steward_id=spec.id, limit=_HISTORY)
         mine = [r for r in history if r.trigger == trigger]
         if any(stops_canary(r) for r in mine):
             return [Outcome(spec.id, "", "halted", "an earlier run of this window stopped the canary")]
@@ -414,7 +414,7 @@ class AgentScheduler:
     # -- preconditions ---------------------------------------------------------
 
     async def _unready(
-        self, spec: AgentSpec, host: str, params: Mapping[str, Any]
+        self, spec: StewardSpec, host: str, params: Mapping[str, Any]
     ) -> str | None:
         """Why ``host`` must not be run on now, or ``None``."""
 
@@ -422,17 +422,17 @@ class AgentScheduler:
         if agent is None or not agent.online:
             return "the machine is offline"
         if not host_supports(spec, getattr(agent, "os", None)):
-            return f"this agent does not run on {getattr(agent, 'os', 'this')} machines"
+            return f"this steward does not run on {getattr(agent, 'os', 'this')} machines"
         if "require_idle" in spec.params and _idle_required(params):
             return await self._not_idle(spec, host)
         return None
 
-    async def _not_idle(self, spec: AgentSpec, host: str) -> str | None:
+    async def _not_idle(self, spec: StewardSpec, host: str) -> str | None:
         """``None`` only when the host itself says nobody is signed in."""
 
         try:
             status = await self.executor.run_capability(
-                "remotehelp_status", {}, agent_id=host, actor=f"agent:{spec.id}"
+                "remotehelp_status", {}, agent_id=host, actor=f"steward:{spec.id}"
             )
         except Exception as exc:  # noqa: BLE001 - a check that fails is "do not disturb"
             return f"could not tell whether anyone is using the machine ({type(exc).__name__})"
@@ -443,13 +443,13 @@ class AgentScheduler:
         return "could not tell whether anyone is using the machine"
 
     async def _record_skip(
-        self, spec: AgentSpec, mode: str, trigger: str, host: str, reason: str
+        self, spec: StewardSpec, mode: str, trigger: str, host: str, reason: str
     ) -> None:
         """Leave a ``skipped`` run so a person can see the host was passed over, and why."""
 
         store = self.runner.store
         run = await store.start_run(
-            agent_id=spec.id,
+            steward_id=spec.id,
             spec_hash=spec.spec_hash,
             trigger=trigger,
             mode=mode,
@@ -462,12 +462,12 @@ class AgentScheduler:
 
     async def _run(
         self,
-        spec: AgentSpec,
+        spec: StewardSpec,
         host: str,
         trigger: str,
         params: Mapping[str, Any],
         end: datetime,
-    ) -> AgentRun | None:
+    ) -> StewardRun | None:
         kwargs: dict[str, Any] = {
             "host_id": host,
             "trigger": trigger,
@@ -486,14 +486,14 @@ class AgentScheduler:
         # is this spec with the allowlist filled in from the stored parameters.
         return await self.runner.run_generic(resolve(spec, params), **kwargs)
 
-    async def _maybe_trip(self, spec: AgentSpec) -> bool:
+    async def _maybe_trip(self, spec: StewardSpec) -> bool:
         """Move ``spec`` to ``shadow`` after N consecutive canary stops while in ``act``.
 
         Skipped, running and interrupted runs are neutral: passed over, never
         counted, never ending a streak.
         """
 
-        history = await self.runner.store.list_runs(agent_id=spec.id, limit=_HISTORY)
+        history = await self.runner.store.list_runs(steward_id=spec.id, limit=_HISTORY)
         streak = 0
         for run in history:  # newest first
             if run.status in ("skipped", "running") or interrupted(run):
@@ -507,7 +507,7 @@ class AgentScheduler:
             return False
         await self.runner.set_mode(spec.id, "shadow", actor=BREAKER_ACTOR)
         message = (
-            f"agent {spec.id}: {streak} runs in a row failed or left a change unconfirmed; "
+            f"steward {spec.id}: {streak} runs in a row failed or left a change unconfirmed; "
             "moved back to shadow by the circuit breaker"
         )
         logger.warning(message)
@@ -520,7 +520,7 @@ class AgentScheduler:
                     level="warning",
                     target=logger.name,
                     message=message,
-                    fields={"agent": spec.id, "failed_in_a_row": streak, "actor": BREAKER_ACTOR},
+                    fields={"steward": spec.id, "failed_in_a_row": streak, "actor": BREAKER_ACTOR},
                 )
             except Exception:  # noqa: BLE001 - the demotion stands; losing its record must not undo it
                 logger.warning("failed to record the circuit breaker for %s", spec.id, exc_info=True)
@@ -533,7 +533,7 @@ def _trigger(end: datetime) -> str:
     return f"{SCHEDULE_TRIGGER_PREFIX}{end.astimezone(timezone.utc).isoformat()}"
 
 
-def _brief(spec: AgentSpec, host: str, params: Mapping[str, Any]) -> str:
+def _brief(spec: StewardSpec, host: str, params: Mapping[str, Any]) -> str:
     """The one message that starts a scheduled run.
 
     Facts the run needs to be efficient, not limits: the gate enforces those.

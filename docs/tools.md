@@ -354,8 +354,8 @@ takes an `event_type` of `health`, `offline`, `disk_forecast`, `hardware_forecas
 Every forwarded capability call is appended to the **tool-call audit log**, annotated
 read-only vs state-changing (plus, additively, its tier), with its agent, timestamp, and
 ok/error outcome. Each entry also names **who made the call** — the operator driving Ask
-kenny or the dashboard, the MCP client's account, `agent:<id>` for a
-[specialized agent](adr/0071-specialized-agents-purpose-bound-unattended-sessions.md)
+kenny or the dashboard, the MCP client's account, `steward:<id>` for a
+[steward](adr/0071-stewards-purpose-bound-unattended-sessions.md)
 (with its run id), or `system:webfilter-schedule` for a scheduled filter push — and the
 call's **arguments, redacted**:
 
@@ -372,7 +372,7 @@ call's **arguments, redacted**:
 The arguments are shown **only to operators and above**. A `user`-role account that may
 see a host reads that host's audit entries — tool, actor, run id, outcome — without
 them, in the Log page, the host page and the events API alike.
-A change a specialized agent made on its own also names the
+A change a steward made on its own also names the
 [standing authorization](adr/0072-standing-authorizations-consent-given-ahead.md) that
 permitted it. Entries written before this existed carry no actor and no arguments. Read it in the dashboard's **[Log](dashboard.md#log)** page, filtered to
 the TOOLS chip. See [`dashboard.md`](dashboard.md).

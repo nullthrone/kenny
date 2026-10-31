@@ -16,14 +16,14 @@ from typing import Any
 
 import pytest
 
-from kenny_server.agents.authorizations import (
+from kenny_server.stewards.authorizations import (
     MAX_EXPIRY_DAYS,
     NEVER_AUTHORIZED,
     SERVER_SCOPE,
     AuthorizationError,
     AuthorizationStore,
 )
-from kenny_server.agents.spec import AgentSpec, ArgConstraint, Trigger
+from kenny_server.stewards.spec import StewardSpec, ArgConstraint, Trigger
 from kenny_server.tool_classes import NORMAL_CHANGE, TOOL_CLASSES
 
 NOW = datetime(2026, 10, 8, 12, 0, tzinfo=timezone.utc)
@@ -34,7 +34,7 @@ HASH = "a" * 64
 OLD_HASH = "b" * 64
 
 
-def _spec(**overrides: Any) -> AgentSpec:
+def _spec(**overrides: Any) -> StewardSpec:
     fields: dict[str, Any] = {
         "id": "patcher",
         "title": "Patcher",
@@ -48,7 +48,7 @@ def _spec(**overrides: Any) -> AgentSpec:
         ),
     }
     fields.update(overrides)
-    return AgentSpec(**fields)
+    return StewardSpec(**fields)
 
 
 @pytest.fixture
@@ -76,7 +76,7 @@ async def _grant(store: AuthorizationStore, **overrides: Any):
 
 async def _consume(store: AuthorizationStore, **overrides: Any):
     kwargs: dict[str, Any] = {
-        "agent_id": "patcher",
+        "steward_id": "patcher",
         "effective_hash": HASH,
         "tool": "winget_install",
         "host_id": HOST,
@@ -92,7 +92,7 @@ async def _insert_raw(store: AuthorizationStore, **row: Any) -> None:
 
     values: dict[str, Any] = {
         "id": "raw",
-        "agent_id": "patcher",
+        "steward_id": "patcher",
         "effective_hash": HASH,
         "tool": "winget_install",
         "scope": json.dumps([HOST]),
@@ -106,7 +106,7 @@ async def _insert_raw(store: AuthorizationStore, **row: Any) -> None:
     cols = ", ".join(values)
     marks = ", ".join("?" for _ in values)
     await store._conn.execute(
-        f"INSERT INTO agent_authorizations ({cols}) VALUES ({marks})", tuple(values.values())
+        f"INSERT INTO steward_authorizations ({cols}) VALUES ({marks})", tuple(values.values())
     )
     await store._conn.commit()
 
@@ -196,7 +196,7 @@ async def test_grant_refuses_a_missing_grantor_or_hash(store) -> None:
 async def test_a_grant_records_what_it_says(store) -> None:
     granted = await _grant(store, scope=[OTHER, HOST, HOST], max_attempts_per_day=3, note=" why ")
     assert granted.scope == [OTHER, HOST]
-    assert (granted.agent_id, granted.effective_hash, granted.tool) == (
+    assert (granted.steward_id, granted.effective_hash, granted.tool) == (
         "patcher",
         HASH,
         "winget_install",
@@ -215,7 +215,7 @@ async def test_consume_spends_a_matching_authorization_and_records_the_use(store
     used = await _consume(store)
     assert used is not None and used.id == granted.id
     assert await store.uses_since(granted.id, NOW - timedelta(hours=1)) == {HOST: 1}
-    async with store._conn.execute("SELECT * FROM agent_authorization_uses") as cur:
+    async with store._conn.execute("SELECT * FROM steward_authorization_uses") as cur:
         rows = [dict(r) for r in await cur.fetchall()]
     assert [(r["authorization_id"], r["host_id"], r["run_id"]) for r in rows] == [
         (granted.id, HOST, "run-1")
@@ -226,17 +226,17 @@ async def test_consume_spends_a_matching_authorization_and_records_the_use(store
     "mismatch",
     [
         {"effective_hash": OLD_HASH},
-        {"agent_id": "another_agent"},
+        {"steward_id": "another_steward"},
         {"tool": "winget_update"},
         {"host_id": OTHER},
         {"host_id": None},
     ],
-    ids=["hash", "agent", "tool", "host", "no-host"],
+    ids=["hash", "steward", "tool", "host", "no-host"],
 )
 async def test_consume_matches_nothing_else(store, mismatch: dict[str, Any]) -> None:
     await _grant(store)
     assert await _consume(store, **mismatch) is None
-    async with store._conn.execute("SELECT COUNT(*) AS n FROM agent_authorization_uses") as cur:
+    async with store._conn.execute("SELECT COUNT(*) AS n FROM steward_authorization_uses") as cur:
         assert (await cur.fetchone())["n"] == 0
 
 
@@ -335,7 +335,7 @@ async def test_two_runs_racing_for_the_last_attempt_get_it_once(tmp_path) -> Non
         await _grant(a, max_attempts_per_day=1)
         results = await asyncio.gather(_consume(a, run_id="run-a"), _consume(b, run_id="run-b"))
         assert sum(r is not None for r in results) == 1
-        async with a._conn.execute("SELECT COUNT(*) AS n FROM agent_authorization_uses") as cur:
+        async with a._conn.execute("SELECT COUNT(*) AS n FROM steward_authorization_uses") as cur:
             assert (await cur.fetchone())["n"] == 1
     finally:
         await a.close()

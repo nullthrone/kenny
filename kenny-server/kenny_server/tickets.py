@@ -211,7 +211,7 @@ GateResumer = Callable[[TicketApproval], Awaitable[None]]
 
 #: Called with a ticket this module just created, to investigate it before a
 #: person is asked to. Registered by whoever can actually drive an assistant
-#: turn (``main.py`` wires ``agents.runner.AgentRunner.on_ticket_created``); this module only knows
+#: turn (``main.py`` wires ``stewards.runner.StewardRunner.on_ticket_created``); this module only knows
 #: that a new ticket is worth looking into, never how looking is done.
 TriageRunner = Callable[["Ticket"], Awaitable[None]]
 
@@ -494,7 +494,7 @@ class TicketService:
         The task reference is held (``_triage_tasks``) because a bare
         ``create_task`` may be garbage-collected mid-flight, and discarded on
         completion so the set cannot grow without bound. Exceptions are the
-        runner's own to handle — ``AgentRunner.on_ticket_created`` never raises — and the
+        runner's own to handle — ``StewardRunner.on_ticket_created`` never raises — and the
         done-callback re-reads the result only to keep the loop from logging an
         unretrieved exception if some other runner ever does.
         """
@@ -585,7 +585,7 @@ class TicketService:
 
         ``fields`` are added to the genesis event's own (``origin`` and
         ``agent_id``, which they never override): what the record needs beside
-        the actor's name, such as the run an agent opened the ticket from.
+        the actor's name, such as the run a steward opened the ticket from.
 
         ``agent_id`` is frozen here: it is the routing target every later tool
         call is checked against, and only :meth:`reassign` may change it.

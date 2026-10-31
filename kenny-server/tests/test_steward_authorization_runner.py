@@ -1,7 +1,7 @@
 """Standing authorizations and parameters, joined through the runner (ADR-0072).
 
-Every test here runs the real path: ``AgentRunner.run_generic`` -> the real
-``AgentPolicy`` -> ``toolloop.drive_events`` -> the real ``ToolExecutor`` ->
+Every test here runs the real path: ``StewardRunner.run_generic`` -> the real
+``StewardPolicy`` -> ``toolloop.drive_events`` -> the real ``ToolExecutor`` ->
 ``CallLog`` on a real ``EventStore``, with the runner's own default authorizer
 consuming from a real ``AuthorizationStore``. Only the tunnel's wire send is
 fake. So "the audit row names the authorization" means the id travelled from
@@ -9,7 +9,7 @@ the store, through the gate's ``Allow``, through the loop, to the row.
 
 The binding rules are tested where they bite: a parameter edit and a catalog
 change each drop ``act`` to ``shadow`` *live* and void what was granted, and a
-run in flight stops acting the moment the agent stops being what it started as.
+run in flight stops acting the moment the steward stops being what it started as.
 """
 
 from __future__ import annotations
@@ -21,13 +21,13 @@ from typing import Any
 import pytest
 
 from kenny_server import toolloop
-from kenny_server.agents.authorizations import AuthorizationStore
-from kenny_server.agents.catalog import CATALOG
-from kenny_server.agents.runner import AgentRunner, HashMismatch, validate_params
-from kenny_server.agents.spec import AgentSpec, ArgConstraint, Trigger, effective_hash
+from kenny_server.stewards.authorizations import AuthorizationStore
+from kenny_server.stewards.catalog import CATALOG
+from kenny_server.stewards.runner import StewardRunner, HashMismatch, validate_params
+from kenny_server.stewards.spec import StewardSpec, ArgConstraint, Trigger, effective_hash
 from kenny_server.tool_classes import NORMAL_CHANGE
 
-from test_agent_runner import HOST, World, _text, _tool
+from test_steward_runner import HOST, World, _text, _tool
 from test_chat import FakeAnthropic
 
 SEVENZIP = "7zip.7zip"
@@ -35,8 +35,8 @@ FIREFOX = "Mozilla.Firefox"
 NOW = datetime(2026, 10, 8, 12, 0, tzinfo=timezone.utc)
 
 
-def _installer(**overrides: Any) -> AgentSpec:
-    """An agent with one parameter-fed ``normal_change``: install from an allowlist."""
+def _installer(**overrides: Any) -> StewardSpec:
+    """A steward with one parameter-fed ``normal_change``: install from an allowlist."""
 
     fields: dict[str, Any] = {
         "id": "installer",
@@ -52,10 +52,10 @@ def _installer(**overrides: Any) -> AgentSpec:
         "params": ("packages",),
     }
     fields.update(overrides)
-    return AgentSpec(**fields)
+    return StewardSpec(**fields)
 
 
-def _catalog(*specs: AgentSpec) -> Any:
+def _catalog(*specs: StewardSpec) -> Any:
     return MappingProxyType({"triage": CATALOG["triage"], **{s.id: s for s in specs}})
 
 
@@ -70,14 +70,14 @@ async def world(tmp_path):
     await w.close()
 
 
-def _runner(world: World, *specs: AgentSpec) -> AgentRunner:
+def _runner(world: World, *specs: StewardSpec) -> StewardRunner:
     runner = world.runner(catalog=_catalog(*specs))
     runner.authorizations = world.authorizations  # type: ignore[attr-defined]
     runner._now = lambda: NOW  # type: ignore[method-assign]
     return runner
 
 
-async def _run(world: World, runner: AgentRunner, spec: AgentSpec, *calls: tuple[str, dict]):
+async def _run(world: World, runner: StewardRunner, spec: StewardSpec, *calls: tuple[str, dict]):
     scripted = [_tool(f"tu{i}", name, args) for i, (name, args) in enumerate(calls)]
     scripted.append(_text("done"))
     return await runner.run_generic(
@@ -91,7 +91,7 @@ async def _run(world: World, runner: AgentRunner, spec: AgentSpec, *calls: tuple
     )
 
 
-async def _grant(runner: AgentRunner, **overrides: Any):
+async def _grant(runner: StewardRunner, **overrides: Any):
     kwargs: dict[str, Any] = {
         "tool": "winget_install",
         "scope": [HOST],
@@ -129,15 +129,15 @@ async def test_an_authorized_normal_change_runs_and_names_its_authorization(worl
          "tool_class": NORMAL_CHANGE, "authorization_id": grant.id, "ok": True}
     ]
     assert run.recommendations == []
-    # The run is bound to what the agent was when it started.
+    # The run is bound to what the steward was when it started.
     assert run.params == {"packages": [SEVENZIP]}
     assert run.effective_hash == effective_hash(spec, {"packages": [SEVENZIP]})
     assert run.effective_hash == grant.effective_hash
-    # The audit row names the agent, the run and the authorization.
+    # The audit row names the steward, the run and the authorization.
     [entry] = await world.call_log.list()
     assert (entry["tool"], entry["actor"], entry["run_id"], entry["authorization_id"]) == (
         "winget_install",
-        "agent:installer",
+        "steward:installer",
         run.id,
         grant.id,
     )
@@ -219,7 +219,7 @@ async def test_a_parameter_feeds_the_constraint_the_gate_enforces(world) -> None
     await _grant(runner, max_attempts_per_day=5)
 
     run = await _run(world, runner, spec, ("winget_install", {"id": FIREFOX}))
-    # Outside the parameter is outside the agent: neither an action nor a recommendation.
+    # Outside the parameter is outside the steward: neither an action nor a recommendation.
     assert run is not None and run.actions == [] and run.recommendations == []
     assert world.sent == []
 
@@ -251,7 +251,7 @@ async def test_a_server_side_normal_change_names_its_authorization(world, monkey
         return {"removed": args["rule_id"]}
 
     world.executor.register_server_tool("ticket_rule_remove", remove)
-    spec = AgentSpec(
+    spec = StewardSpec(
         id="pruner",
         title="Pruner",
         description="Drops rules nothing matches.",
@@ -331,8 +331,8 @@ async def test_a_parameter_edit_drops_act_to_shadow_and_voids_for_good(world) ->
     voided = await world.authorizations.get(grant.id)
     assert voided is not None and voided.status(NOW) == "voided" and voided.voided_by == "root"
     messages = [row["message"] for row in await _logs(world)]
-    assert "agent installer: mode set to shadow by root: its parameters changed" in messages
-    assert "agent installer: parameters changed by root" in messages
+    assert "steward installer: mode set to shadow by root: its parameters changed" in messages
+    assert "steward installer: parameters changed by root" in messages
 
     # Putting the old parameters back revives neither act nor the grant.
     await runner.set_params("installer", {"packages": [SEVENZIP]}, actor="root")
@@ -503,9 +503,9 @@ async def test_act_stored_without_a_hash_is_not_act(world) -> None:
 
     spec = _installer()
     runner = _runner(world, spec)
-    await world.agent_store.set_mode("installer", "act", actor="admin")
+    await world.steward_store.set_mode("installer", "act", actor="admin")
     assert await runner.mode_of("installer") == "shadow"
-    assert await world.agent_store.get_mode("installer") == "shadow"
+    assert await world.steward_store.get_mode("installer") == "shadow"
 
 
 async def test_overview_says_what_act_is_bound_to(world) -> None:
@@ -568,10 +568,10 @@ async def test_triage_act_needs_the_reviewed_hash_too(world) -> None:
     assert await runner.set_mode("triage", "act", actor="admin", effective_hash=shown) == "act"
 
 
-# -- an agent removed and shipped again revives nothing ----------------------------
+# -- a steward removed and shipped again revives nothing ----------------------------
 
 
-async def test_an_agent_removed_and_readded_gets_neither_act_nor_grants_back(world) -> None:
+async def test_an_steward_removed_and_readded_gets_neither_act_nor_grants_back(world) -> None:
     spec = _installer()
     first = _runner(world, spec)
     await first.set_params("installer", {"packages": [SEVENZIP]}, actor="admin")
@@ -580,14 +580,14 @@ async def test_an_agent_removed_and_readded_gets_neither_act_nor_grants_back(wor
     )
     grant = await _grant(first)
 
-    # A release drops the agent from the catalog ...
+    # A release drops the steward from the catalog ...
     without = _runner(world)
     await without.startup()
     voided = await world.authorizations.get(grant.id)
     assert voided is not None and voided.status(NOW) == "voided"
     assert voided.voided_by == "system"
-    assert await world.agent_store.get_mode("installer") == "shadow"
-    logs = [e for e in await _logs(world) if (e.get("fields") or {}).get("agent") == "installer"]
+    assert await world.steward_store.get_mode("installer") == "shadow"
+    logs = [e for e in await _logs(world) if (e.get("fields") or {}).get("steward") == "installer"]
     assert any("no longer in the catalog" in e["message"] for e in logs)
 
     # ... and the next ships the identical spec again.
@@ -599,7 +599,7 @@ async def test_an_agent_removed_and_readded_gets_neither_act_nor_grants_back(wor
     assert all(s["tool"] != "winget_install" for s in world.sent)
 
 
-async def test_startup_leaves_the_agents_still_in_the_catalog_alone(world) -> None:
+async def test_startup_leaves_the_stewards_still_in_the_catalog_alone(world) -> None:
     spec = _installer()
     runner = _runner(world, spec)
     await runner.set_params("installer", {"packages": [SEVENZIP]}, actor="admin")

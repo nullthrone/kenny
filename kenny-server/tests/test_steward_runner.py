@@ -1,4 +1,4 @@
-"""The agent runner: the one place a specialized agent's run starts (ADR-0071).
+"""The steward runner: the one place a steward's run starts (ADR-0071).
 
 What these tests pin down, each of which is a seam between two halves that
 must agree:
@@ -6,15 +6,15 @@ must agree:
 * **Triage's mode is its settings.** ``mode_of("triage")`` is derived from
   ``KENNY_TRIAGE_ENABLED``/``KENNY_TRIAGE_RESOLVE`` and the AI availability
   behind them, and ``set_mode("triage", …)`` writes those settings — so the
-  dashboard's settings page and the agents API can never disagree.
-* **The bounds come before the model.** The global switch, an agent-caused
+  dashboard's settings page and the stewards API can never disagree.
+* **The bounds come before the model.** The global switch, a steward-caused
   ticket and both global caps are checked before any model call; the
   assertions are on the fake client's call list, not on what the runner says.
 * **A run is recorded joined.** The triage run goes through the real
   ``TriageService`` -> ``TicketAssistant`` -> ``drive_events`` -> real
   ``ToolExecutor`` -> ``CallLog`` on a real ``EventStore``, so "the audit row
   carries the run id" means the id travelled the whole way. ``run_generic`` goes
-  through the real ``AgentPolicy`` and ``drive_events`` with only the tunnel's
+  through the real ``StewardPolicy`` and ``drive_events`` with only the tunnel's
   wire send replaced.
 """
 
@@ -28,27 +28,27 @@ from typing import Any
 
 import pytest
 
-from kenny_server.agents.catalog import CATALOG
-from kenny_server.agents.policy import AgentSession
-from kenny_server.agents.runner import (
-    AGENT_CHANGE_QUIET_PERIOD,
+from kenny_server.stewards.catalog import CATALOG
+from kenny_server.stewards.policy import StewardSession
+from kenny_server.stewards.runner import (
+    STEWARD_CHANGE_QUIET_PERIOD,
     DAILY_TOKENS_SETTING,
     ENABLED_SETTING,
     MAX_CONCURRENT_SETTING,
     TICKET_CREATED_TRIGGER,
-    AgentRunner,
+    StewardRunner,
     _redacted,
-    caused_by_agent,
+    caused_by_steward,
 )
-from kenny_server.agents.scheduler import interrupted, run_failed
-from kenny_server.agents.spec import AgentSpec, ArgConstraint, Trigger
-from kenny_server.agents.store import INTERRUPTED_ERROR, AgentStore
+from kenny_server.stewards.scheduler import interrupted, run_failed
+from kenny_server.stewards.spec import StewardSpec, ArgConstraint, Trigger
+from kenny_server.stewards.store import INTERRUPTED_ERROR, StewardStore
 from kenny_server.ai import AiAccess
 from kenny_server.config import Settings
 from kenny_server.registry import AgentRegistry
 from kenny_server.store import EventStore, SettingsStore, TelemetryStore
 from kenny_server.ticket_assistant import TicketAssistant
-from kenny_server.ticketstore import AGENT_ORIGIN, TRIAGE_ACTOR, TicketStore
+from kenny_server.ticketstore import STEWARD_ORIGIN, TRIAGE_ACTOR, TicketStore
 from kenny_server.tickets import TicketService
 from kenny_server.tool_classes import STANDARD_CHANGE
 from kenny_server.tools import CallLog, ScreenshotStore
@@ -103,8 +103,8 @@ def _settings(env: dict[str, str] | None = None, store: Any = None) -> Settings:
     return Settings(store, env={**KEY_ENV, **(env or {})})
 
 
-def _patcher(**overrides: Any) -> AgentSpec:
-    """A test-only agent of the kind Phase 2 adds: one constrained change."""
+def _patcher(**overrides: Any) -> StewardSpec:
+    """A test-only steward of the kind Phase 2 adds: one constrained change."""
 
     fields: dict[str, Any] = {
         "id": "patcher",
@@ -116,10 +116,10 @@ def _patcher(**overrides: Any) -> AgentSpec:
         "constraints": (ArgConstraint("winget_update", "id", frozenset({FIREFOX})),),
     }
     fields.update(overrides)
-    return AgentSpec(**fields)
+    return StewardSpec(**fields)
 
 
-def _catalog(*specs: AgentSpec) -> Any:
+def _catalog(*specs: StewardSpec) -> Any:
     return MappingProxyType({"triage": CATALOG["triage"], **{s.id: s for s in specs}})
 
 
@@ -152,8 +152,8 @@ class World:
 
         self.users = UserStore(self.db_path)
         await self.users.connect()
-        self.agent_store = AgentStore(self.db_path)
-        await self.agent_store.connect()
+        self.steward_store = StewardStore(self.db_path)
+        await self.steward_store.connect()
         self.tickets = TicketService(self.ticket_store)
         self.registry = AgentRegistry(tokens={HOST: "t"})
         self.tunnel = AgentTunnel(self.registry, self.telemetry, self.event_store)
@@ -176,7 +176,7 @@ class World:
 
     async def close(self) -> None:
         for store in (
-            self.agent_store,
+            self.steward_store,
             self.users,
             self.ticket_store,
             self.event_store,
@@ -187,7 +187,7 @@ class World:
 
     def runner(
         self, *scripted: _Response, catalog: Any = CATALOG, resolve_enabled: bool | None = None
-    ) -> AgentRunner:
+    ) -> StewardRunner:
         self.client = FakeAnthropic(list(scripted))
         assistant = TicketAssistant(
             tickets=self.tickets,
@@ -202,8 +202,8 @@ class World:
             tickets=self.tickets, assistant=assistant, resolve_enabled=resolve_enabled
         )
         self.triage.register(self.executor)
-        return AgentRunner(
-            store=self.agent_store,
+        return StewardRunner(
+            store=self.steward_store,
             settings=self.settings,
             ai_access=self.ai,
             triage=self.triage,
@@ -239,20 +239,20 @@ async def _world_with(tmp_path, env: dict[str, str]) -> World:
 # -- identity ------------------------------------------------------------------
 
 
-def test_triage_audit_actor_is_the_catalog_agent_identity() -> None:
+def test_triage_audit_actor_is_the_catalog_steward_identity() -> None:
     # The triage session sets its audit actor itself (no import of the catalog
     # from triage.py, which the catalog imports); joined here.
     spec = CATALOG["triage"]
-    assert AUDIT_ACTOR == f"agent:{spec.id}"
-    assert AgentSession(id="r", spec=spec, mode="shadow").audit_actor == AUDIT_ACTOR
+    assert AUDIT_ACTOR == f"steward:{spec.id}"
+    assert StewardSession(id="r", spec=spec, mode="shadow").audit_actor == AUDIT_ACTOR
     assert AUDIT_ACTOR != TRIAGE_ACTOR  # the ticket trail keeps its own actor
 
 
-def test_an_agent_origin_ticket_is_caused_by_an_agent() -> None:
-    assert AGENT_ORIGIN == "agent"
-    assert caused_by_agent(SimpleNamespace(origin=AGENT_ORIGIN))  # type: ignore[arg-type]
+def test_an_steward_origin_ticket_is_caused_by_an_steward() -> None:
+    assert STEWARD_ORIGIN == "steward"
+    assert caused_by_steward(SimpleNamespace(origin=STEWARD_ORIGIN))  # type: ignore[arg-type]
     for origin in ("alert", "discord", "dashboard"):
-        assert not caused_by_agent(SimpleNamespace(origin=origin))  # type: ignore[arg-type]
+        assert not caused_by_steward(SimpleNamespace(origin=origin))  # type: ignore[arg-type]
 
 
 def test_run_entries_are_redacted() -> None:
@@ -286,7 +286,7 @@ async def test_triage_mode_is_derived_from_its_settings(
     env: dict[str, str], expected: str
 ) -> None:
     settings = _settings(env)
-    runner = AgentRunner(store=AgentStore(":memory:"), settings=settings, ai_access=AiAccess(settings))
+    runner = StewardRunner(store=StewardStore(":memory:"), settings=settings, ai_access=AiAccess(settings))
     # Derived only: the store is never read for triage (it is not even connected).
     assert await runner.mode_of("triage") == expected
 
@@ -314,12 +314,12 @@ async def test_set_mode_for_triage_writes_its_settings(world: World) -> None:
     assert world.settings.get("KENNY_TRIAGE_ENABLED") is False
     assert await runner.mode_of("triage") == "off"
     assert await runner.set_mode("triage", "shadow", actor="admin") == "shadow"
-    # No agent_settings row: the settings are triage's only source of truth.
-    assert await world.agent_store.get_mode("triage") is None
+    # No steward_settings row: the settings are triage's only source of truth.
+    assert await world.steward_store.get_mode("triage") is None
 
     # Every change is on the event log with who made it.
     logs = [
-        e for e in await world.event_store.query(kind="log") if e.get("target") == "kenny.agents"
+        e for e in await world.event_store.query(kind="log") if e.get("target") == "kenny.stewards"
     ]
     assert [(e["fields"]["mode"], e["fields"]["actor"]) for e in reversed(logs)] == [
         ("act", "admin"),
@@ -329,23 +329,23 @@ async def test_set_mode_for_triage_writes_its_settings(world: World) -> None:
     ]
 
 
-async def test_set_mode_for_a_store_backed_agent(world: World) -> None:
+async def test_set_mode_for_a_store_backed_steward(world: World) -> None:
     runner = world.runner(catalog=_catalog(_patcher()))
     assert await runner.mode_of("patcher") == "shadow"  # the spec's default
     assert await runner.set_mode(
         "patcher", "act", actor="admin", effective_hash=await runner.live_hash("patcher")
     ) == "act"
-    assert await world.agent_store.get_mode("patcher") == "act"
+    assert await world.steward_store.get_mode("patcher") == "act"
     assert await runner.mode_of("patcher") == "act"
-    async with world.agent_store._conn.execute(
-        "SELECT updated_by FROM agent_settings WHERE agent_id = 'patcher'"
+    async with world.steward_store._conn.execute(
+        "SELECT updated_by FROM steward_settings WHERE steward_id = 'patcher'"
     ) as cur:
         assert (await cur.fetchone())["updated_by"] == "admin"
-    # Writing a store-backed agent touches no triage setting.
+    # Writing a store-backed steward touches no triage setting.
     assert world.settings.get("KENNY_TRIAGE_RESOLVE") is False
 
 
-async def test_set_mode_refuses_an_unknown_agent_or_mode(world: World) -> None:
+async def test_set_mode_refuses_an_unknown_steward_or_mode(world: World) -> None:
     runner = world.runner()
     with pytest.raises(KeyError):
         await runner.mode_of("nope")
@@ -362,7 +362,7 @@ async def test_set_mode_refuses_an_unknown_agent_or_mode(world: World) -> None:
 
 
 async def _runs(world: World) -> list[Any]:
-    return await world.agent_store.list_runs(limit=50)
+    return await world.steward_store.list_runs(limit=50)
 
 
 async def test_a_new_ticket_records_a_completed_triage_run(world: World) -> None:
@@ -376,7 +376,7 @@ async def test_a_new_ticket_records_a_completed_triage_run(world: World) -> None
 
     [run] = await _runs(world)
     assert run.status == "completed" and run.error is None
-    assert run.agent_id == "triage"
+    assert run.steward_id == "triage"
     assert run.spec_hash == CATALOG["triage"].spec_hash
     assert run.trigger == TICKET_CREATED_TRIGGER
     assert run.subject == f"ticket:{ticket.id}"
@@ -421,7 +421,7 @@ async def test_a_run_started_in_shadow_does_not_resolve_when_promoted_mid_run(
     assert after is not None and after.state != "resolved"
 
 
-async def test_triage_calls_are_audited_as_the_agent_with_the_run_id(world: World) -> None:
+async def test_triage_calls_are_audited_as_the_steward_with_the_run_id(world: World) -> None:
     runner = world.runner(_tool("t1", "diag_services", {}), _verdict(), _text("done"))
     ticket = await world.alert_ticket()
     await runner.on_ticket_created(ticket)
@@ -448,9 +448,9 @@ async def test_a_failed_triage_run_is_recorded_as_failed(world: World) -> None:
     assert after is not None
 
 
-async def test_an_agent_origin_ticket_starts_nothing(world: World) -> None:
+async def test_an_steward_origin_ticket_starts_nothing(world: World) -> None:
     runner = world.runner(_verdict(), _text("done"))
-    ticket = await world.alert_ticket(origin=AGENT_ORIGIN)
+    ticket = await world.alert_ticket(origin=STEWARD_ORIGIN)
     await runner.on_ticket_created(ticket)
     assert await _runs(world) == []
     assert world.client.messages.calls == []
@@ -466,8 +466,8 @@ async def test_a_ticket_without_a_machine_starts_nothing(world: World) -> None:
 # -- rule 6: a change's own alert does not start triage ---------------------------
 
 
-async def _patched(world: World, *, act: bool = True) -> tuple[AgentRunner, Any]:
-    """A runner whose ``patcher`` agent has just changed ``HOST`` (or, in shadow, proposed to)."""
+async def _patched(world: World, *, act: bool = True) -> tuple[StewardRunner, Any]:
+    """A runner whose ``patcher`` steward has just changed ``HOST`` (or, in shadow, proposed to)."""
 
     spec = _patcher()
     runner = world.runner(_tool("t1", "diag_services", {}), _verdict(), _text("done"),
@@ -481,10 +481,10 @@ async def _patched(world: World, *, act: bool = True) -> tuple[AgentRunner, Any]
     return runner, run
 
 
-async def test_a_ticket_on_a_host_an_agent_just_changed_starts_no_triage(world: World) -> None:
+async def test_a_ticket_on_a_host_an_steward_just_changed_starts_no_triage(world: World) -> None:
     """A patch breaks a service -> an alert -> an alert-origin ticket: no triage.
 
-    The ticket is not agent-origin, so only the agent's own record of the
+    The ticket is not steward-origin, so only the steward's own record of the
     change can tell that this is the change's effect (ADR-0071 rule 6).
     """
 
@@ -493,7 +493,7 @@ async def test_a_ticket_on_a_host_an_agent_just_changed_starts_no_triage(world: 
     ticket = await world.alert_ticket()
     await runner.on_ticket_created(ticket)
 
-    [skipped] = [r for r in await _runs(world) if r.agent_id == "triage"]
+    [skipped] = [r for r in await _runs(world) if r.steward_id == "triage"]
     assert skipped.status == "skipped"
     assert (skipped.ticket_id, skipped.host_id, skipped.trigger) == (
         ticket.id,
@@ -506,10 +506,10 @@ async def test_a_ticket_on_a_host_an_agent_just_changed_starts_no_triage(world: 
 
 async def test_triage_runs_again_once_the_quiet_period_is_over(world: World) -> None:
     runner, _change = await _patched(world)
-    later = datetime.now(timezone.utc) + AGENT_CHANGE_QUIET_PERIOD + timedelta(minutes=1)
+    later = datetime.now(timezone.utc) + STEWARD_CHANGE_QUIET_PERIOD + timedelta(minutes=1)
     runner._now = lambda: later  # type: ignore[method-assign]
     await runner.on_ticket_created(await world.alert_ticket())
-    [run] = [r for r in await _runs(world) if r.agent_id == "triage"]
+    [run] = [r for r in await _runs(world) if r.steward_id == "triage"]
     assert run.status == "completed"
 
 
@@ -519,7 +519,7 @@ async def test_a_change_only_proposed_or_one_that_failed_does_not_stop_triage(
     runner, proposed = await _patched(world, act=False)
     assert proposed.actions == [] and proposed.recommendations
     await runner.on_ticket_created(await world.alert_ticket())
-    [run] = [r for r in await _runs(world) if r.agent_id == "triage"]
+    [run] = [r for r in await _runs(world) if r.steward_id == "triage"]
     assert run.status == "completed"
 
 
@@ -527,7 +527,7 @@ async def test_a_change_on_another_host_does_not_stop_triage(world: World) -> No
     runner, _change = await _patched(world)
     other = await world.alert_ticket(agent_id="other-pc")
     await runner.on_ticket_created(other)
-    [run] = [r for r in await _runs(world) if r.agent_id == "triage"]
+    [run] = [r for r in await _runs(world) if r.steward_id == "triage"]
     assert run.status == "completed" and run.host_id == "other-pc"
 
 
@@ -615,10 +615,10 @@ async def test_the_daily_token_cap_records_a_skipped_run_and_calls_no_model(tmp_
     w = await _world_with(tmp_path, {DAILY_TOKENS_SETTING: "100"})
     try:
         runner = w.runner(_verdict(), _text("done"))
-        spent = await w.agent_store.start_run(
-            agent_id="triage", spec_hash="h", trigger="on_demand", mode="shadow"
+        spent = await w.steward_store.start_run(
+            steward_id="triage", spec_hash="h", trigger="on_demand", mode="shadow"
         )
-        await w.agent_store.finish_run(
+        await w.steward_store.finish_run(
             spent.id, status="completed", usage={"input_tokens": 90, "output_tokens": 10}
         )
         await runner.on_ticket_created(await w.alert_ticket())
@@ -635,10 +635,10 @@ async def test_the_daily_token_cap_counts_cached_tokens(tmp_path) -> None:
     w = await _world_with(tmp_path, {DAILY_TOKENS_SETTING: "100"})
     try:
         runner = w.runner(_verdict(), _text("done"))
-        spent = await w.agent_store.start_run(
-            agent_id="triage", spec_hash="h", trigger="on_demand", mode="shadow"
+        spent = await w.steward_store.start_run(
+            steward_id="triage", spec_hash="h", trigger="on_demand", mode="shadow"
         )
-        await w.agent_store.finish_run(
+        await w.steward_store.finish_run(
             spent.id,
             status="completed",
             usage={"input_tokens": 3, "output_tokens": 2, "cache_read_tokens": 500},
@@ -654,10 +654,10 @@ async def test_the_daily_token_cap_counts_cached_tokens(tmp_path) -> None:
 async def test_a_token_cap_of_zero_is_no_cap(tmp_path) -> None:
     w = await _world_with(tmp_path, {DAILY_TOKENS_SETTING: "0"})
     try:
-        spent = await w.agent_store.start_run(
-            agent_id="triage", spec_hash="h", trigger="on_demand", mode="shadow"
+        spent = await w.steward_store.start_run(
+            steward_id="triage", spec_hash="h", trigger="on_demand", mode="shadow"
         )
-        await w.agent_store.finish_run(
+        await w.steward_store.finish_run(
             spent.id, status="completed", usage={"input_tokens": 10**9}
         )
         runner = w.runner(_tool("t1", "diag_services", {}), _verdict(), _text("done"))
@@ -672,30 +672,30 @@ async def test_a_token_cap_of_zero_is_no_cap(tmp_path) -> None:
 
 async def test_startup_fails_interrupted_runs_and_prunes_old_ones(world: World) -> None:
     runner = world.runner()
-    stale = await world.agent_store.start_run(
-        agent_id="triage", spec_hash="h", trigger="t", mode="shadow"
+    stale = await world.steward_store.start_run(
+        steward_id="triage", spec_hash="h", trigger="t", mode="shadow"
     )
-    old = await world.agent_store.start_run(
-        agent_id="triage", spec_hash="h", trigger="t", mode="shadow"
+    old = await world.steward_store.start_run(
+        steward_id="triage", spec_hash="h", trigger="t", mode="shadow"
     )
-    await world.agent_store.finish_run(old.id, status="completed")
+    await world.steward_store.finish_run(old.id, status="completed")
     long_ago = (datetime.now(timezone.utc) - timedelta(days=91)).isoformat()
-    await world.agent_store._conn.execute(
-        "UPDATE agent_runs SET started_at = ? WHERE id = ?", (long_ago, old.id)
+    await world.steward_store._conn.execute(
+        "UPDATE steward_runs SET started_at = ? WHERE id = ?", (long_ago, old.id)
     )
-    await world.agent_store._conn.commit()
+    await world.steward_store._conn.commit()
 
     await runner.startup()
 
-    assert await world.agent_store.get_run(old.id) is None
-    after = await world.agent_store.get_run(stale.id)
+    assert await world.steward_store.get_run(old.id) is None
+    after = await world.steward_store.get_run(stale.id)
     assert after is not None and (after.status, after.error) == ("failed", INTERRUPTED_ERROR)
 
 
 # -- run_generic: the real gate and the real loop ------------------------------
 
 
-async def _generic(world: World, runner: AgentRunner, spec: AgentSpec, *calls: tuple[str, dict]):
+async def _generic(world: World, runner: StewardRunner, spec: StewardSpec, *calls: tuple[str, dict]):
     scripted = [_tool(f"tu{i}", name, args) for i, (name, args) in enumerate(calls)]
     scripted.append(_text("done"))
     client = FakeAnthropic(scripted)
@@ -720,7 +720,7 @@ async def test_run_generic_in_shadow_recommends_and_never_reaches_the_host(world
 
     assert run is not None
     assert world.sent == [{"agent_id": HOST, "tool": "winget_list", "args": {}}]
-    assert (run.status, run.mode, run.agent_id) == ("completed", "shadow", "patcher")
+    assert (run.status, run.mode, run.steward_id) == ("completed", "shadow", "patcher")
     assert (run.trigger, run.subject, run.host_id) == ("on_demand", f"host:{HOST}", HOST)
     assert run.spec_hash == spec.spec_hash
     assert run.actions == []
@@ -731,9 +731,9 @@ async def test_run_generic_in_shadow_recommends_and_never_reaches_the_host(world
     assert (run.input_tokens, run.output_tokens) == (300, 30)
     assert run.summary == "done"
     assert client.messages.calls[0]["system"][0]["text"] == spec.prompt
-    # The read it did make is audited as the agent, under this run.
+    # The read it did make is audited as the steward, under this run.
     assert [(a["tool"], a["actor"], a["run_id"]) for a in await world.call_log.list()] == [
-        ("winget_list", "agent:patcher", run.id)
+        ("winget_list", "steward:patcher", run.id)
     ]
 
 
@@ -810,7 +810,7 @@ async def test_a_stale_running_row_holds_no_slot(tmp_path) -> None:
     w = await _world_with(tmp_path, {MAX_CONCURRENT_SETTING: "1"})
     try:
         runner = w.runner(catalog=_catalog(spec))
-        await w.agent_store.start_run(agent_id="patcher", spec_hash="h", trigger="t", mode="shadow")
+        await w.steward_store.start_run(steward_id="patcher", spec_hash="h", trigger="t", mode="shadow")
         run, _ = await _generic(w, runner, spec, ("winget_list", {}))
         assert run is not None and run.status == "completed"
     finally:
@@ -822,7 +822,7 @@ async def test_a_run_whose_close_fails_once_is_closed_and_frees_its_slot(tmp_pat
     w = await _world_with(tmp_path, {MAX_CONCURRENT_SETTING: "1"})
     try:
         runner = w.runner(catalog=_catalog(spec))
-        real_finish = w.agent_store.finish_run
+        real_finish = w.steward_store.finish_run
         failures = {"left": 1}
 
         async def flaky_finish(run_id: str, **kwargs: Any) -> Any:
@@ -831,7 +831,7 @@ async def test_a_run_whose_close_fails_once_is_closed_and_frees_its_slot(tmp_pat
                 raise RuntimeError("database is locked")
             return await real_finish(run_id, **kwargs)
 
-        w.agent_store.finish_run = flaky_finish  # type: ignore[method-assign]
+        w.steward_store.finish_run = flaky_finish  # type: ignore[method-assign]
         run, _ = await _generic(w, runner, spec, ("winget_list", {}))
         assert run is not None and run.status == "completed"  # the retry closed it
 
@@ -846,16 +846,16 @@ async def test_a_run_whose_close_keeps_failing_still_frees_its_slot(tmp_path) ->
     w = await _world_with(tmp_path, {MAX_CONCURRENT_SETTING: "1"})
     try:
         runner = w.runner(catalog=_catalog(spec))
-        real_finish = w.agent_store.finish_run
+        real_finish = w.steward_store.finish_run
 
         async def broken_finish(run_id: str, **kwargs: Any) -> Any:
             raise RuntimeError("disk full")
 
-        w.agent_store.finish_run = broken_finish  # type: ignore[method-assign]
+        w.steward_store.finish_run = broken_finish  # type: ignore[method-assign]
         run, _ = await _generic(w, runner, spec, ("winget_list", {}))
         assert run is None  # logged, not raised
 
-        w.agent_store.finish_run = real_finish  # type: ignore[method-assign]
+        w.steward_store.finish_run = real_finish  # type: ignore[method-assign]
         again, _ = await _generic(w, runner, spec, ("winget_list", {}))
         assert again is not None and again.status == "completed"
     finally:
@@ -882,7 +882,7 @@ async def test_a_cancelled_run_is_closed_and_frees_its_slot(tmp_path) -> None:
 
         [cancelled] = await _runs(w)
         assert cancelled.status == "failed" and cancelled.error
-        # A graceful shutdown is an interruption, not the agent's failure: the
+        # A graceful shutdown is an interruption, not the steward's failure: the
         # scheduler's circuit breaker must read it as neutral.
         assert cancelled.error == INTERRUPTED_ERROR
         assert interrupted(cancelled) and not run_failed(cancelled)
@@ -914,7 +914,7 @@ async def test_a_cancelled_triage_run_is_closed(world: World) -> None:
 # -- a run already in flight sees a demotion -----------------------------------
 
 
-async def test_demoting_an_agent_reaches_its_run_in_flight(world: World) -> None:
+async def test_demoting_an_steward_reaches_its_run_in_flight(world: World) -> None:
     spec = _patcher()
     runner = world.runner(catalog=_catalog(spec))
     await runner.set_mode(
@@ -1046,7 +1046,7 @@ async def test_run_generic_refuses_a_spec_that_is_not_in_the_catalog(world: Worl
     # Its mode would be its own default and its stored row — neither a choice
     # anybody made about a spec the catalog never shipped.
     runner = world.runner()  # the shipped catalog: no patcher
-    await world.agent_store.set_mode("patcher", "act", actor="admin")
+    await world.steward_store.set_mode("patcher", "act", actor="admin")
     client = FakeAnthropic([_text("done")])
     with pytest.raises(ValueError, match="not in the catalog"):
         await runner.run_generic(
@@ -1061,7 +1061,7 @@ async def test_run_generic_refuses_a_spec_that_is_not_in_the_catalog(world: Worl
     assert await _runs(world) == [] and client.messages.calls == []
 
 
-async def test_overview_lists_every_catalog_agent_with_mode_and_latest_run(world: World) -> None:
+async def test_overview_lists_every_catalog_steward_with_mode_and_latest_run(world: World) -> None:
     spec = _patcher()
     runner = world.runner(
         _tool("t1", "diag_services", {}), _verdict(), _text("done"), catalog=_catalog(spec)

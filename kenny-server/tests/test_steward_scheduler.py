@@ -1,4 +1,4 @@
-"""The agent scheduler: when a scheduled agent is due, on which host, and when to stop.
+"""The steward scheduler: when a scheduled steward is due, on which host, and when to stop.
 
 The scheduler is real, and so are the stores, the runner's mode handling and the
 tool executor (its registry decides online/OS, its ``run_capability`` makes the
@@ -28,31 +28,31 @@ from typing import Any
 
 import pytest
 
-from kenny_server.agents import scheduler as scheduler_module
-from kenny_server.agents.catalog import CATALOG
-from kenny_server.agents.runner import ENABLED_SETTING, AgentRunner, validate_params
-from kenny_server.agents.scheduler import (
+from kenny_server.stewards import scheduler as scheduler_module
+from kenny_server.stewards.catalog import CATALOG
+from kenny_server.stewards.runner import ENABLED_SETTING, StewardRunner, validate_params
+from kenny_server.stewards.scheduler import (
     BENIGN_REFUSALS,
     BREAKER_ACTOR,
     MIN_INTERVAL_S,
     SCHEDULE_TRIGGER_PREFIX,
-    AgentScheduler,
+    StewardScheduler,
     halts,
     host_supports,
     made_change,
     run_failed,
     stops_canary,
 )
-from kenny_server.agents.store import INTERRUPTED_ERROR, AgentRun, AgentStore
+from kenny_server.stewards.store import INTERRUPTED_ERROR, StewardRun, StewardStore
 from kenny_server.config import CATALOG as SETTINGS_CATALOG
 from kenny_server.config import Settings
 from kenny_server.registry import AgentRegistry
 from kenny_server.store import EventStore, TelemetryStore
-from kenny_server.ticketstore import AGENT_ORIGIN, TicketStore
+from kenny_server.ticketstore import STEWARD_ORIGIN, TicketStore
 from kenny_server.tickets import TicketService
-from kenny_server.toolloop import AGENT_VERDICT_TOOL, ToolExecutor
+from kenny_server.toolloop import STEWARD_VERDICT_TOOL, ToolExecutor
 from kenny_server.tools import CAPABILITY_TOOLS, CallLog, ScreenshotStore
-from kenny_server.agents.verdict import register as register_verdict
+from kenny_server.stewards.verdict import register as register_verdict
 from kenny_server.tunnel import AgentTunnel, ToolError
 
 from test_chat import FakeAnthropic, _Response, text_block, tool_use_block
@@ -68,18 +68,18 @@ IN_WINDOW = datetime(2026, 10, 8, 3, 0, tzinfo=timezone.utc)
 # -- the world -----------------------------------------------------------------
 
 
-class ScriptedRunner(AgentRunner):
+class ScriptedRunner(StewardRunner):
     """The real runner (modes, store, event log) with ``run_generic`` replaced by a script."""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.calls: list[SimpleNamespace] = []
-        #: ``(agent, host)`` or ``host`` or ``"*"`` -> outcome dict or ``callable(call) -> dict``.
+        #: ``(steward, host)`` or ``host`` or ``"*"`` -> outcome dict or ``callable(call) -> dict``.
         self.script: dict[Any, Any] = {}
 
     async def run_generic(  # type: ignore[override]
         self, spec: Any, *, host_id: str | None, trigger: str, brief: str, **kw: Any
-    ) -> AgentRun | None:
+    ) -> StewardRun | None:
         if not self.enabled():
             return None
         mode = await self._mode_for(spec)
@@ -93,7 +93,7 @@ class ScriptedRunner(AgentRunner):
         if callable(outcome):
             outcome = outcome(call)
         run = await self.store.start_run(
-            agent_id=spec.id,
+            steward_id=spec.id,
             spec_hash=spec.spec_hash,
             trigger=trigger,
             mode=mode,
@@ -120,8 +120,8 @@ class World:
         self.capability_calls: list[dict[str, Any]] = []
 
     async def setup(self) -> None:
-        self.agent_store = AgentStore(self.db_path)
-        await self.agent_store.connect()
+        self.steward_store = StewardStore(self.db_path)
+        await self.steward_store.connect()
         self.telemetry = TelemetryStore(db_path=self.db_path)
         await self.telemetry.connect()
         self.event_store = EventStore(db_path=self.db_path)
@@ -152,7 +152,7 @@ class World:
         )
         self.settings = Settings(None, env={"ANTHROPIC_API_KEY": "sk-test"})
         self.runner = ScriptedRunner(
-            store=self.agent_store,
+            store=self.steward_store,
             settings=self.settings,
             catalog=CATALOG,
             event_store=self.event_store,
@@ -160,25 +160,25 @@ class World:
         )
 
     async def close(self) -> None:
-        for store in (self.agent_store, self.event_store, self.telemetry):
+        for store in (self.steward_store, self.event_store, self.telemetry):
             await store.close()
 
-    async def params_of(self, agent_id: str) -> dict[str, Any]:
-        return self.params.get(agent_id, {})
+    async def params_of(self, steward_id: str) -> dict[str, Any]:
+        return self.params.get(steward_id, {})
 
-    def scheduler(self, runner: AgentRunner | None = None, **kw: Any) -> AgentScheduler:
-        return AgentScheduler(
+    def scheduler(self, runner: StewardRunner | None = None, **kw: Any) -> StewardScheduler:
+        return StewardScheduler(
             runner or self.runner, CATALOG, self.params_of, self.executor, now=lambda: self.now, **kw
         )
 
-    def configure(self, agent: str, **params: Any) -> None:
-        self.params.setdefault(agent, {}).update(params)
+    def configure(self, steward: str, **params: Any) -> None:
+        self.params.setdefault(steward, {}).update(params)
 
-    async def runs(self, agent: str) -> list[AgentRun]:
-        return list(reversed(await self.agent_store.list_runs(agent_id=agent, limit=500)))
+    async def runs(self, steward: str) -> list[StewardRun]:
+        return list(reversed(await self.steward_store.list_runs(steward_id=steward, limit=500)))
 
-    def hosts_run(self, agent: str) -> list[str]:
-        return [c.host for c in self.runner.calls if c.spec.id == agent]
+    def hosts_run(self, steward: str) -> list[str]:
+        return [c.host for c in self.runner.calls if c.spec.id == steward]
 
 
 @pytest.fixture
@@ -284,7 +284,7 @@ async def test_a_host_the_registry_has_never_heard_of_is_skipped_not_run(w: Worl
     assert w.runner.calls == []
 
 
-async def test_an_agent_in_off_mode_starts_nothing_and_asks_no_host(w: World) -> None:
+async def test_an_steward_in_off_mode_starts_nothing_and_asks_no_host(w: World) -> None:
     _patch(w, WIN_A)
     await w.runner.set_mode("patch", "off", actor="admin")
     assert await w.scheduler().pass_once() == []
@@ -298,8 +298,8 @@ async def test_the_global_switch_stops_the_pass(w: World) -> None:
     assert await w.scheduler().pass_once() == []
 
 
-async def test_only_schedule_agents_are_considered(w: World) -> None:
-    # triage is an event agent; give it a window and hosts anyway.
+async def test_only_schedule_stewards_are_considered(w: World) -> None:
+    # triage is an event steward; give it a window and hosts anyway.
     w.configure("triage", window=NIGHT, hosts=[WIN_A])
     assert await w.scheduler().pass_once() == []
 
@@ -346,14 +346,14 @@ async def test_a_failed_run_is_not_retried_within_the_occurrence(w: World) -> No
     assert w.hosts_run("posture") == [WIN_A]
 
 
-async def test_the_runs_of_two_agents_do_not_hide_each_other(w: World) -> None:
+async def test_the_runs_of_two_stewards_do_not_hide_each_other(w: World) -> None:
     _posture(w, WIN_A)
     w.configure("patch", window=NIGHT, hosts=[WIN_A], packages=[FIREFOX], require_idle=False)
     await w.scheduler().pass_once()
     assert w.hosts_run("posture") == [WIN_A] and w.hosts_run("patch") == [WIN_A]
 
 
-async def test_a_run_a_cap_refused_is_tried_again_and_stops_the_agent(w: World) -> None:
+async def test_a_run_a_cap_refused_is_tried_again_and_stops_the_steward(w: World) -> None:
     _posture(w, WIN_A, WIN_B)
     w.runner.script[WIN_A] = {"status": "skipped", "verdict": None, "error": "token cap reached"}
     sched = w.scheduler()
@@ -418,15 +418,15 @@ async def test_a_good_verdict_after_a_change_carries_on(w: World) -> None:
 # -- reading a run ---------------------------------------------------------------
 
 
-def _row(**kw: Any) -> AgentRun:
+def _row(**kw: Any) -> StewardRun:
     fields: dict[str, Any] = dict(
-        id="r", agent_id="patch", spec_hash="h", trigger="schedule:x", subject=None, host_id=WIN_A,
+        id="r", steward_id="patch", spec_hash="h", trigger="schedule:x", subject=None, host_id=WIN_A,
         mode="act", status="completed", verdict="clean", summary=None, input_tokens=0,
         output_tokens=0, cache_read_tokens=0, cache_creation_tokens=0, ticket_id=None,
         error=None, actions=[], recommendations=[], started_at="t", finished_at="t",
     )
     fields.update(kw)
-    return AgentRun(**fields)
+    return StewardRun(**fields)
 
 
 def test_a_change_that_errored_is_a_failed_run() -> None:
@@ -459,13 +459,13 @@ def test_a_skipped_or_clean_run_is_not_a_failure() -> None:
 # -- the circuit breaker ---------------------------------------------------------
 
 
-async def _nights(w: World, sched: AgentScheduler, count: int) -> None:
+async def _nights(w: World, sched: StewardScheduler, count: int) -> None:
     for _ in range(count):
         await sched.pass_once()
         w.now += timedelta(days=1)
 
 
-async def test_three_failed_runs_in_a_row_move_an_agent_in_act_back_to_shadow(w: World) -> None:
+async def test_three_failed_runs_in_a_row_move_an_steward_in_act_back_to_shadow(w: World) -> None:
     _posture(w, WIN_A)
     await w.runner.set_mode(
         "posture", "act", actor="admin", effective_hash=await w.runner.live_hash("posture")
@@ -477,10 +477,10 @@ async def test_three_failed_runs_in_a_row_move_an_agent_in_act_back_to_shadow(w:
     outcomes = await sched.pass_once()
     assert [o.kind for o in outcomes] == ["ran", "tripped"]
     assert await w.runner.mode_of("posture") == "shadow"
-    assert await w.agent_store.get_mode("posture") == "shadow"
+    assert await w.steward_store.get_mode("posture") == "shadow"
     # Who did it is on the event log, once for the mode change and once for the reason.
-    logs = [e for e in await w.event_store.query(kind="log") if e.get("target", "").startswith("kenny.agents")]
-    actors = {e["fields"].get("actor") for e in logs if e["fields"].get("agent") == "posture"}
+    logs = [e for e in await w.event_store.query(kind="log") if e.get("target", "").startswith("kenny.stewards")]
+    actors = {e["fields"].get("actor") for e in logs if e["fields"].get("steward") == "posture"}
     assert BREAKER_ACTOR in actors
     assert any(e["level"] == "warning" and "circuit breaker" in e["message"] for e in logs)
 
@@ -545,7 +545,7 @@ async def test_failures_in_shadow_leave_the_mode_alone(w: World) -> None:
     w.runner.script[WIN_A] = FAILED
     await _nights(w, w.scheduler(), 4)
     assert await w.runner.mode_of("posture") == "shadow"
-    assert await w.agent_store.get_mode("posture") is None  # nothing written
+    assert await w.steward_store.get_mode("posture") is None  # nothing written
 
 
 async def test_the_threshold_is_configurable(w: World) -> None:
@@ -691,8 +691,8 @@ async def test_a_window_whose_end_cannot_be_told_never_runs(
 async def test_joined_a_change_after_the_window_closed_is_refused(w: World) -> None:
     """Through the real runner and gate: the run outlasts its window, its change does not run."""
 
-    real = AgentRunner(
-        store=w.agent_store,
+    real = StewardRunner(
+        store=w.steward_store,
         settings=w.settings,
         catalog=CATALOG,
         event_store=w.event_store,
@@ -721,7 +721,7 @@ async def test_joined_a_change_after_the_window_closed_is_refused(w: World) -> N
             _Response([text_block("done")], "end_turn"),
         ]
     )
-    [outcome] = await AgentScheduler(
+    [outcome] = await StewardScheduler(
         real, CATALOG, real.get_params, w.executor, now=lambda: w.now, client=client, model="m"
     ).pass_once()
     assert outcome.kind == "ran" and outcome.run is not None
@@ -746,7 +746,7 @@ async def test_a_signed_in_user_means_the_host_is_skipped_without_a_run(w: World
     assert not run_failed(row)
 
 
-async def test_the_idle_check_is_the_servers_own_call_as_the_agent(w: World) -> None:
+async def test_the_idle_check_is_the_servers_own_call_as_the_steward(w: World) -> None:
     _patch(w, WIN_A)
     spy: list[dict[str, Any]] = []
     real = w.executor.run_capability
@@ -758,7 +758,7 @@ async def test_the_idle_check_is_the_servers_own_call_as_the_agent(w: World) -> 
     w.executor.run_capability = run_capability  # type: ignore[method-assign]
     await w.scheduler().pass_once()
     assert spy == [
-        {"tool": "remotehelp_status", "args": {}, "agent_id": WIN_A, "actor": "agent:patch"}
+        {"tool": "remotehelp_status", "args": {}, "agent_id": WIN_A, "actor": "steward:patch"}
     ]
     assert w.hosts_run("patch") == [WIN_A]
 
@@ -852,14 +852,14 @@ async def test_joined_require_idle_false_through_the_runners_stored_parameters(w
     )
     assert (await w.runner.get_params("patch"))["require_idle"] is False
     w.idle[WIN_A] = {"interactive_session": True}
-    await AgentScheduler(
+    await StewardScheduler(
         w.runner, CATALOG, w.runner.get_params, w.executor, now=lambda: w.now
     ).pass_once()
     assert w.capability_calls == []
     assert w.hosts_run("patch") == [WIN_A]
 
 
-async def test_an_agent_without_the_parameter_never_asks(w: World) -> None:
+async def test_an_steward_without_the_parameter_never_asks(w: World) -> None:
     _posture(w, WIN_A)
     w.idle[WIN_A] = {"interactive_session": True}
     await w.scheduler().pass_once()
@@ -896,8 +896,8 @@ def test_host_supports_follows_the_tools_the_spec_names() -> None:
     assert host_supports(shell, "windows") and not host_supports(shell, "linux")  # type: ignore[arg-type]
 
 
-def test_every_capability_a_scheduled_agent_names_is_known_to_the_scheduler() -> None:
-    # If a scheduled agent grows a tool only one OS serves, tools._OS_SCOPED_TOOLS
+def test_every_capability_a_scheduled_steward_names_is_known_to_the_scheduler() -> None:
+    # If a scheduled steward grows a tool only one OS serves, tools._OS_SCOPED_TOOLS
     # or the scheduler's own table must say so; this fails the day it is neither.
     for spec in CATALOG.values():
         if spec.trigger.kind != "schedule":
@@ -941,7 +941,7 @@ async def test_client_and_model_are_passed_when_given_and_the_runner_takes_them(
             seen.update(client=client, model=model, executor=executor)
             return await super().run_generic(spec, host_id=host_id, trigger=trigger, brief=brief)
 
-    runner = Runner(store=w.agent_store, settings=w.settings, catalog=CATALOG, event_store=w.event_store)
+    runner = Runner(store=w.steward_store, settings=w.settings, catalog=CATALOG, event_store=w.event_store)
     _posture(w, WIN_A)
     sentinel = object()
     await w.scheduler(runner, client=sentinel, model="m").pass_once()
@@ -956,7 +956,7 @@ async def test_a_runner_that_takes_no_client_is_not_given_one(w: World) -> None:
             seen["called"] = True
             return await super().run_generic(spec, host_id=host_id, trigger=trigger, brief=brief)
 
-    runner = Runner(store=w.agent_store, settings=w.settings, catalog=CATALOG, event_store=w.event_store)
+    runner = Runner(store=w.steward_store, settings=w.settings, catalog=CATALOG, event_store=w.event_store)
     _posture(w, WIN_A)
     await w.scheduler(runner, client=object(), model="m").pass_once()
     assert seen == {"called": True}
@@ -1016,26 +1016,26 @@ async def test_a_bad_cadence_setting_does_not_stop_the_loop(
     assert sleeps == [0, float(MIN_INTERVAL_S)]
 
 
-async def test_one_agent_failing_does_not_skip_the_others(
+async def test_one_steward_failing_does_not_skip_the_others(
     w: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _patch(w, WIN_A, require_idle=False)
     _posture(w, WIN_A)
     sched = w.scheduler()
-    real = sched._pass_agent
+    real = sched._pass_steward
 
-    async def pass_agent(spec: Any) -> Any:
+    async def pass_steward(spec: Any) -> Any:
         if spec.id == "patch":
             raise RuntimeError("bad params")
         return await real(spec)
 
-    monkeypatch.setattr(sched, "_pass_agent", pass_agent)
+    monkeypatch.setattr(sched, "_pass_steward", pass_steward)
     await sched.pass_once()
     assert w.hosts_run("posture") == [WIN_A]
 
 
 def test_the_interval_setting_is_a_live_setting_with_the_loops_floor() -> None:
-    spec = SETTINGS_CATALOG["KENNY_AGENTS_SCHEDULE_INTERVAL_SECS"]
+    spec = SETTINGS_CATALOG["KENNY_STEWARDS_SCHEDULE_INTERVAL_SECS"]
     assert spec.lifecycle == "live"
     assert spec.default_raw == "300"
     assert spec.min == MIN_INTERVAL_S == 60
@@ -1060,7 +1060,7 @@ async def test_joined_a_scheduled_posture_run_reports_through_the_real_runner(
                     [
                         tool_use_block(
                             "t2",
-                            AGENT_VERDICT_TOOL,
+                            STEWARD_VERDICT_TOOL,
                             {
                                 "verdict": "actionable",
                                 "finding": "An unknown updater starts at logon.",
@@ -1073,8 +1073,8 @@ async def test_joined_a_scheduled_posture_run_reports_through_the_real_runner(
                 _Response([text_block("done")], "end_turn"),
             ]
         )
-        real = AgentRunner(
-            store=w.agent_store, settings=w.settings, catalog=CATALOG, event_store=w.event_store
+        real = StewardRunner(
+            store=w.steward_store, settings=w.settings, catalog=CATALOG, event_store=w.event_store
         )
         _posture(w, WIN_A)
         sched = w.scheduler(real, client=client, model="fake-model")
@@ -1086,7 +1086,7 @@ async def test_joined_a_scheduled_posture_run_reports_through_the_real_runner(
         )
         assert outcome.run.mode == "shadow"  # the catalog default; the report still happens
         assert outcome.run.trigger.startswith(SCHEDULE_TRIGGER_PREFIX)
-        [ticket] = [t for t in await ticket_store.list(limit=50) if t.origin == AGENT_ORIGIN]
+        [ticket] = [t for t in await ticket_store.list(limit=50) if t.origin == STEWARD_ORIGIN]
         assert ticket.agent_id == WIN_A
         # Once per occurrence, through the real run record.
         w.now += timedelta(minutes=30)

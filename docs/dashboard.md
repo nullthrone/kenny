@@ -609,7 +609,7 @@ the update rollout.
 
 Two settings let kenny act on its own — **Let triage resolve a ticket**
 (`KENNY_TRIAGE_RESOLVE`) and the global switch for the
-[specialized agents](#specialized-agents) (`KENNY_AGENTS_ENABLED`). Switching either on,
+[stewards](#stewards) (`KENNY_STEWARDS_ENABLED`). Switching either on,
 or resetting it, needs a superuser signed in here, not an API token
 ([ADR-0072](adr/0072-standing-authorizations-consent-given-ahead.md)); switching either
 off works with any superuser credential.
@@ -708,59 +708,59 @@ the models, and the assistant's limits
 - **Triage steps per ticket** — how many model round-trips one investigation may take.
 - **Assistant turns per ticket** — the cap on the turns the ticket assistant takes on one
   ticket, on the dashboard and in Discord alike, before it is handed to an operator.
-- **Specialized agents** (on by default) — the global switch for every agent kenny runs on
+- **Stewards** (on by default) — the global switch for every steward kenny runs on
   its own, triage included; off, none starts.
-- **Agent runs at once** (default 2) and **Agent tokens per day** (default 0, no cap) —
-  the global bounds every agent run is checked against before the model is called. A run
+- **Steward runs at once** (default 2) and **Steward tokens per day** (default 0, no cap) —
+  the global bounds every steward run is checked against before the model is called. A run
   either one refuses is recorded as *skipped*, with the reason.
 
 See [Tickets → kenny looks first](itsm.md#kenny-looks-first-before-you-are-asked-to) for
 triage.
 
-#### Specialized agents
+#### Stewards
 
-An agent is a purpose-bound session kenny starts on its own — triage is the first — with
+A steward is a purpose-bound session kenny starts on its own — triage is the first — with
 its own prompt, trigger, closed tool set and budget
-([ADR-0071](adr/0071-specialized-agents-purpose-bound-unattended-sessions.md)). Each has a
+([ADR-0071](adr/0071-stewards-purpose-bound-unattended-sessions.md)). Each has a
 **mode**: `off`, `shadow` (the whole run happens; a change is refused and kept as a
 recommendation) or `act`. Triage's mode is its two settings above: *Investigate new
 tickets automatically* off (or AI unavailable) is `off`, *Let triage resolve a ticket*
 off is `shadow`, on is `act`.
 
-- `GET /api/specialized-agents` *(operator+)* — the global switch (`enabled`) and every agent in the
+- `GET /api/stewards` *(operator+)* — the global switch (`enabled`) and every steward in the
   catalog: its declaration (tools and their tiers, argument constraints, budget,
   `spec_hash`), its current `mode`, and its latest run.
-- `GET /api/specialized-agents/runs?agent_id=&limit=` *(operator+)* — runs newest first, optionally
-  for one agent (`limit` defaults to 50, at most 500).
-- `GET /api/specialized-agents/runs/{run_id}` *(operator+)* — one run: what started it, the host or
+- `GET /api/stewards/runs?steward_id=&limit=` *(operator+)* — runs newest first, optionally
+  for one steward (`limit` defaults to 50, at most 500).
+- `GET /api/stewards/runs/{run_id}` *(operator+)* — one run: what started it, the host or
   ticket it was bound to, its mode and status (`running`, `completed`, `failed`,
   `skipped`), its verdict, the changes it made and proposed (arguments redacted), and its
   token usage.
-- `PUT /api/specialized-agents/{agent_id}/mode` with `{"mode": "off" | "shadow" | "act",
-  "effective_hash"}` *(superuser, signed in at the dashboard)* — moving an agent to `act`
-  is a superuser's decision, so every mode write is. `act` must carry the agent's
-  `effective_hash` exactly as `GET /api/specialized-agents` showed it: `act` binds to that
-  hash, the answer is `400` without one and `409` when the agent has changed since (a
+- `PUT /api/stewards/{steward_id}/mode` with `{"mode": "off" | "shadow" | "act",
+  "effective_hash"}` *(superuser, signed in at the dashboard)* — moving a steward to `act`
+  is a superuser's decision, so every mode write is. `act` must carry the steward's
+  `effective_hash` exactly as `GET /api/stewards` showed it: `act` binds to that
+  hash, the answer is `400` without one and `409` when the steward has changed since (a
   parameter edit in between), so reload and review it again. `off` and `shadow` need no
   hash. For triage it writes the two settings above, exactly as this page does. The answer
   carries the mode now in force, which for triage stays `off` while no API key or gateway
   is configured. Each change is written to the event log with who made it.
-- `GET /api/specialized-agents/{agent_id}/params` *(operator+)* — the parameters the agent's
-  spec declares, their values on this install, and the agent's `effective_hash`.
-- `PUT /api/specialized-agents/{agent_id}/params` with `{"params": {...}}` *(superuser,
+- `GET /api/stewards/{steward_id}/params` *(operator+)* — the parameters the steward's
+  spec declares, their values on this install, and the steward's `effective_hash`.
+- `PUT /api/stewards/{steward_id}/params` with `{"params": {...}}` *(superuser,
   signed in at the dashboard)* — replaces them. A list parameter (`hosts`, the `packages`
   allowlist) is a list of non-empty strings; `require_idle` is `true` or `false` (absent
   means `true`: a host with somebody signed in is skipped); `window` is `{"days",
   "start", "end", "tz"}`, read like a web-filter schedule window.
-- `GET /api/specialized-agents/{agent_id}/authorizations` *(operator+)* — the agent's
+- `GET /api/stewards/{steward_id}/authorizations` *(operator+)* — the steward's
   standing authorizations, revoked, voided and expired ones included, each with its status
   and the attempts spent per host in the last 24 hours.
-- `POST /api/specialized-agents/{agent_id}/authorizations` with `{"tool", "scope",
+- `POST /api/stewards/{steward_id}/authorizations` with `{"tool", "scope",
   "max_attempts_per_day", "expires_at", "note", "effective_hash"}` *(superuser, signed in
-  at the dashboard)* — grants one, bound to `effective_hash`, the agent's hash as `GET
-  /api/specialized-agents` showed it: `400` without one, `409` when the agent has changed
+  at the dashboard)* — grants one, bound to `effective_hash`, the steward's hash as `GET
+  /api/stewards` showed it: `400` without one, `409` when the steward has changed
   since. `scope` is a list of host ids, or `"server"` for a change that touches no host.
-- `DELETE /api/specialized-agents/{agent_id}/authorizations/{auth_id}` *(superuser, signed
+- `DELETE /api/stewards/{steward_id}/authorizations/{auth_id}` *(superuser, signed
   in at the dashboard)* — revokes one; the next call it would have covered is refused.
 
 Choosing a mode, granting, revoking and editing parameters are a person's consent, so they
@@ -768,26 +768,26 @@ need a superuser signed in to their own account in a browser. The same calls mad
 personal access token, an OAuth token (what Claude uses for `/mcp`) or the shared operator
 token are refused with `403`; reading stays open to them.
 
-`act` is bound to the agent's **effective hash**: its spec (including the tier of every
+`act` is bound to the steward's **effective hash**: its spec (including the tier of every
 tool it names) together with its parameters. A parameter edit that changes the hash, or a
-release that changes the spec, drops the agent to `shadow` at once, a run in flight
+release that changes the spec, drops the steward to `shadow` at once, a run in flight
 included, and it stays there until a superuser chooses `act` again; `GET
-/api/specialized-agents` shows each agent's `params`, `effective_hash` and whether `act` is
+/api/stewards` shows each steward's `params`, `effective_hash` and whether `act` is
 bound (`act_bound`).
 
-A `normal_change` an agent in `act` makes runs only under a standing authorization
+A `normal_change` a steward in `act` makes runs only under a standing authorization
 ([ADR-0072](adr/0072-standing-authorizations-consent-given-ahead.md)): one tool, named hosts
 (an empty list is never "all"), an attempt budget per host per rolling 24 hours, an expiry
 at most 180 days out. `shell_exec`, `powershell_exec` and `agent_update` can never be
 authorized. An attempt is spent before the call runs, a failed call still counts, and the
 run's actions and the audit entry name the authorization; without one the change is kept
-as a recommendation. A change of the effective hash voids the agent's authorizations for
+as a recommendation. A change of the effective hash voids the steward's authorizations for
 good, so neither a parameter edit nor a code rollback revives them.
 
 Each server start marks a run the previous process left open as `failed`, deletes finished
-runs older than 90 days, and voids every authorization bound to what an agent no longer is.
-For an agent no longer in the catalog it voids every authorization and drops a stored `act`
-to `shadow`, so an agent removed and shipped again later starts over in `shadow`.
+runs older than 90 days, and voids every authorization bound to what a steward no longer is.
+For a steward no longer in the catalog it voids every authorization and drops a stored `act`
+to `shadow`, so a steward removed and shipped again later starts over in `shadow`.
 
 ### Tickets
 
