@@ -1,0 +1,14 @@
+{
+  "type": "response",
+  "id": "a3c71e5b-0d42-4f68-9b1a-7c2e8d4f6a10",
+  "ok": true,
+  "result": {
+    "target": "temp_system",
+    "files": 1284,
+    "bytes": 912340992,
+    "min_age_days": 7,
+    "complete": true,
+    "skipped": { "in_use": 12, "denied": 3, "reparse": 0, "other": 0 },
+    "errors": []
+  }
+}

@@ -55,6 +55,12 @@ Adding/altering a fixture is a contract change — see `docs/protocol.md` § Ver
 | `response_account_session_action.json` | successful `response` frame (`account_session_action`) |
 | `request_password_policy_set.json`  | `request` frame (`password_policy_set`)      |
 | `response_password_policy_set.json` | successful `response` frame (`password_policy_set`) |
+| `request_fs_cleanup_scan.json`   | `request` frame (`fs_cleanup_scan`)             |
+| `response_fs_cleanup_scan.json`  | successful `response` frame (`fs_cleanup_scan`) |
+| `request_fs_cleanup.json`        | `request` frame (`fs_cleanup`)                  |
+| `response_fs_cleanup.json`       | successful `response` frame (`fs_cleanup`)      |
+| `request_service_restart.json`   | `request` frame (`service_restart`)             |
+| `response_service_restart.json`  | successful `response` frame (`service_restart`) |
 
 ## `vectors/`
 
@@ -66,6 +72,7 @@ execute and must agree on.
 | `vectors/mutual_auth.json`     | the byte-exact `register`/`challenge`/`auth` transcript and its Ed25519 signatures |
 | `vectors/policy_decisions.json`| the guard's verdict (`allow` / `blocked`) for a tool call under a given deny + shell policy |
 | `vectors/hardware_event_query.json` | the closed set of Windows event providers/ids/levels and Linux kernel-message matchers the agent queries for `hardware_errors`; the agent's constant and the server's attribution tables must both equal it |
+| `vectors/fs_cleanup_targets.json` | the agent's fixed `fs_cleanup`/`fs_cleanup_scan` target catalog per OS, in catalog order, with each target's `min_age_days`; the agent's constant and the server's target validation must both equal it |
 
 `policy_decisions.json` is the joined test for `kenny-agent/src/policy.rs` and
 `kenny-server/kenny_server/policy.py`, which mirror each other by hand. Adding a case is

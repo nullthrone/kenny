@@ -1,0 +1,15 @@
+{
+  "windows": [
+    {"target": "temp_system", "min_age_days": 7},
+    {"target": "temp_users", "min_age_days": 7},
+    {"target": "windows_update_cache", "min_age_days": 1},
+    {"target": "recycle_bin", "min_age_days": 30},
+    {"target": "logs_old", "min_age_days": 30}
+  ],
+  "linux": [
+    {"target": "tmp", "min_age_days": 10},
+    {"target": "package_cache", "min_age_days": 0},
+    {"target": "journal", "min_age_days": 14},
+    {"target": "logs_old", "min_age_days": 30}
+  ]
+}
