@@ -189,6 +189,22 @@ def test_self_service_password_and_pats(tmp_path) -> None:
         assert c.delete(f"/api/me/pats/{pid}").json()["ok"] is True
 
 
+def _as_other_device(c, sid: str):
+    """GET /api/fleet presenting only ``sid``, as a device holding that session.
+
+    The cookie goes in an explicit ``Cookie`` header: the client's jar already
+    holds this device's fresh session under the same name, and a cookie merged
+    in next to it would put two ``kenny_op`` values on the request, leaving
+    which one the server reads to the client library's ordering.
+    """
+
+    from kenny_server.auth import COOKIE_NAME
+
+    return c.get(
+        "/api/fleet", headers={"Cookie": f"{COOKIE_NAME}={sid}"}, follow_redirects=False
+    )
+
+
 def test_password_change_revokes_other_sessions(tmp_path) -> None:
     """A password change invalidates sibling sessions and keeps this one (#125)."""
 
@@ -207,8 +223,7 @@ def test_password_change_revokes_other_sessions(tmp_path) -> None:
         assert new_sid and new_sid != old_sid
         assert c.get("/api/fleet").status_code == 200
         # The pre-change session (as held by any other device) is now rejected.
-        c.cookies.set(COOKIE_NAME, old_sid)
-        assert c.get("/api/fleet", follow_redirects=False).status_code == 401
+        assert _as_other_device(c, old_sid).status_code == 401
 
 
 def test_self_service_totp_enable_disable(tmp_path) -> None:
@@ -254,13 +269,8 @@ def test_every_credential_change_rotates_sessions(tmp_path) -> None:
             assert new_sid and new_sid != old_sid
             assert c.get("/api/fleet").status_code == 200
             # The pre-change session (as held by any other device) is now
-            # rejected. Passed as a one-off request cookie rather than
-            # written into ``c``'s jar, so it can't collide with the fresh
-            # one already stored there.
-            r = c.get(
-                "/api/fleet", cookies={COOKIE_NAME: old_sid}, follow_redirects=False
-            )
-            assert r.status_code == 401
+            # rejected.
+            assert _as_other_device(c, old_sid).status_code == 401
 
         # 1. Password change.
         _assert_rotates_and_keeps_this_device(lambda: c.post(
