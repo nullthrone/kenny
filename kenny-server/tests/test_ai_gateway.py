@@ -226,7 +226,7 @@ def test_every_fast_model_call_reaches_the_gateway_as_configured(tmp_path, gatew
         assert req["body"]["model"] == "gateway-fast"
         assert req["headers"]["x-gateway-key"] == "gw-secret"
         assert req["headers"]["x-gateway-route"] == "fleet"
-        assert req["headers"]["x-api-key"] == ai.GATEWAY_PLACEHOLDER_KEY
+        assert _key_sent(req["headers"]) == ai.GATEWAY_PLACEHOLDER_KEY
     assert [bool(r["body"].get("stream")) for r in gateway.requests] == [False, False, True, True]
     # One request shape for every fast route, valid for current models: an
     # effort setting, room for reasoning, no sampling parameters (a 400 on
@@ -280,6 +280,18 @@ def test_an_unusable_answer_is_reported_and_never_cached(tmp_path, gateway, stop
     assert probe["ok"] is (stop_reason == "max_tokens")
 
 
+def _key_sent(headers: dict[str, str]) -> str | None:
+    """The API key a request carries, however the SDK in use transmits it.
+
+    anthropic 1.x sends it as ``X-Api-Key``; 2.x as ``Authorization: Bearer``.
+    """
+
+    if "x-api-key" in headers:
+        return headers["x-api-key"]
+    scheme, _, token = headers.get("authorization", "").partition(" ")
+    return token if scheme.lower() == "bearer" else None
+
+
 async def _collect(events: Any) -> list[dict[str, Any]]:
     return [ev async for ev in events]
 
@@ -296,7 +308,7 @@ def test_a_key_is_sent_to_the_gateway_when_one_is_set(tmp_path, gateway) -> None
         _configure(c, app, gateway)
         _put(c, app, "ANTHROPIC_API_KEY", "sk-provider")
         assert c.post("/api/ai/test", headers=_bearer(app)).json()["ok"] is True
-    assert gateway.requests[-1]["headers"]["x-api-key"] == "sk-provider"
+    assert _key_sent(gateway.requests[-1]["headers"]) == "sk-provider"
 
 
 def test_the_verdict_tag_follows_the_fast_model(tmp_path, gateway) -> None:
