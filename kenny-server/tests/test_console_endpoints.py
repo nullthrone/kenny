@@ -123,7 +123,7 @@ async def test_auto_run_separates_an_unattended_call_from_an_approved_one(
         async def run_server_tool(self, tool: str, args: dict, *, session: Any) -> dict:
             return {"ok": True}
 
-        async def run_capability(self, tool: str, args: dict, *, agent_id: str) -> dict:
+        async def run_capability(self, tool: str, args: dict, *, agent_id: str, **_audit: Any) -> dict:
             return {"ok": True}
 
     session = FleetSession(id="s1", agent_id="linus-pc")

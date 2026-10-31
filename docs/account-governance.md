@@ -122,7 +122,10 @@ the assistant asks for one anyway. Deciding who may sign in to a PC is not somet
 support conversation can reach.
 
 **Every call is written to the audit log** — visible in the dashboard's
-[Log](dashboard.md#log) page, filtered to the TOOLS chip.
+[Log](dashboard.md#log) page, filtered to the TOOLS chip — naming who made it and with its
+arguments, which only operators and above can read; the `password` of `account_create` is
+stored as `[redacted]`, never in clear. Script and command bodies are kept as a SHA-256
+and a length, not as text, and a list of arguments is cut at 50 items.
 
 !!! note "Monitoring is the guarantee, enforcement is best-effort"
     All of these actions are refused while the person at the machine has **remote control

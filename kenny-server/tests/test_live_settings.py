@@ -112,6 +112,10 @@ READ_PER_USE = {
     "ANTHROPIC_BASE_URL",
     "ANTHROPIC_CUSTOM_HEADERS",
     "KENNY_FAST_MODEL",
+    # Read by ``stewards.runner.StewardRunner`` before every run.
+    "KENNY_STEWARDS_ENABLED",
+    "KENNY_STEWARDS_MAX_CONCURRENT",
+    "KENNY_STEWARDS_DAILY_TOKENS",
 }
 
 

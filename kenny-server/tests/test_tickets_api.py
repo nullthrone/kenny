@@ -135,7 +135,7 @@ class _FakeExecutor:
         self.server_tool_handlers: dict[str, Any] = {}
 
     async def run_capability(
-        self, tool: str, args: dict[str, Any], *, agent_id: str | None = None
+        self, tool: str, args: dict[str, Any], *, agent_id: str | None = None, **_audit: Any
     ) -> dict[str, Any]:
         self.ran.append((tool, dict(args), agent_id))
         return {"ok": True, "stdout": "hi"}
