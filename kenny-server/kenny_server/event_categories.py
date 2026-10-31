@@ -619,10 +619,13 @@ def _reliability_events(snapshot: dict[str, Any] | None) -> list[dict[str, Any]]
     return [e for e in events if isinstance(e, dict)] if isinstance(events, list) else []
 
 
-def mark(agent_id: str, snapshot: dict[str, Any] | None) -> None:
+def mark(
+    agent_id: str, snapshot: dict[str, Any] | None, received_at: str | None = None
+) -> None:
     """Stamp the verdict fields onto each reliability event group in
     ``snapshot`` from the cache alone -- synchronous, no LLM, no API key --
-    for the ``TelemetryStore.annotate`` seam (ADR-0058).
+    for the ``TelemetryStore.annotate`` seam (ADR-0058). ``received_at`` is
+    part of that seam's signature; a verdict does not depend on it.
 
     A group whose pattern is not cached yet keeps its verdict fields
     **unstamped** — the fallback would be indistinguishable from a real

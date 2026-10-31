@@ -299,6 +299,23 @@ export function applyChatEvent(state: ChatSessionState, event: ChatEvent): ChatS
       })
     }
 
+    /**
+     * An offer, not a run. The card it pushes is the only thing that can start
+     * one, through `POST /api/stewards/{id}/runs` — this reducer only
+     * carries the three strings it was handed.
+     */
+    case 'steward_run_proposal': {
+      const [id, s1] = nextId(state)
+      return pushItem(s1, {
+        kind: 'steward_proposal',
+        id,
+        stewardId: event.steward_id,
+        hostId: event.host_id,
+        reason: event.reason,
+        resolution: 'pending',
+      })
+    }
+
     default: {
       const _exhaustive: never = event
       return _exhaustive

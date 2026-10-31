@@ -252,6 +252,28 @@ MANIFEST: list[Shot] = [
         theme="light",
         actions=[{"wait_for": ".kc-adminnav a"}, {"sleep": 700}],
     ),
+    Shot(
+        name="admin-stewards",
+        hash="#/admin/stewards",
+        mode="full_page",
+        theme="light",
+        note="the stewards: mode badge, effective hash and latest run per steward (ADR-0071).",
+        actions=[{"wait_for": "text=Package updates"}, {"sleep": SETTLE_MS}],
+    ),
+    Shot(
+        name="admin-steward-detail",
+        hash="#/admin/stewards/patch",
+        mode="full_page",
+        theme="light",
+        note="one steward: its tools, the parameters editor and a run record opened from the runs list.",
+        actions=[
+            {"wait_for": "text=SAVE PARAMETERS"},
+            {"wait_for": "text=DETAILS"},
+            _click_button("DETAILS"),
+            {"wait_for": "text=FINDING"},
+            {"sleep": SETTLE_MS},
+        ],
+    ),
     # -- Profile ------------------------------------------------------------
     Shot(
         name="profile",

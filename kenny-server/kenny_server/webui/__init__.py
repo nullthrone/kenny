@@ -53,7 +53,8 @@ from ..tokenstore import AgentTokenStore
 from ..tools import CallLog, ScreenshotStore, build_health, health_for, supports_tool
 from ..tunnel import AgentTunnel, ToolError
 from ..stewards.authorizations import BUDGET_WINDOW, AuthorizationError
-from ..stewards.runner import HashMismatch
+from ..stewards.policy import run_target_problem
+from ..stewards.runner import HashMismatch, PreviewRefused
 from ..webfilter import (
     BYPASS_REQUEST_CATEGORY,
     ListTooLargeError,
@@ -1505,6 +1506,79 @@ def build_api_routes(
             return JSONResponse({"error": "run not found"}, status_code=404)
         return JSONResponse(run.to_public())
 
+    async def api_steward_preview(request: Request) -> JSONResponse:
+        """Preview a steward once (``{"host_id"?}``): always a shadow run, in the background.
+
+        Operator+ with any credential, not only a browser session: a preview
+        changes nothing on any host -- the run is forced to ``shadow`` however
+        the steward is set, a change is only recorded as a recommendation and a
+        verdict opens no ticket. What refuses it is
+        :meth:`~kenny_server.stewards.runner.StewardRunner.preview_refusal`, the
+        list the copilot checks too: 400 for triage and a steward that is
+        ``off``, 409 for a state that may pass (the global switch, AI, a
+        preview of it on this host still running, its daily preview limit);
+        then 400 for a bad target, and 409 when a global cap refuses it at
+        admission. A refused preview leaves no run behind, so it carries no
+        ``run_id``. Answers 202 with the run's id as soon as the run is
+        admitted; the model is never waited for (the run takes minutes). Watch
+        it at ``GET /api/stewards/runs/{run_id}``.
+        """
+
+        if stewards is None:
+            return JSONResponse(_STEWARDS_UNAVAILABLE, status_code=503)
+        steward_id = request.path_params["steward_id"]
+        spec = stewards.catalog.get(steward_id)
+        if spec is None:
+            return JSONResponse({"error": f"unknown steward {steward_id}"}, status_code=404)
+        raw = await request.body()
+        body: Any = {}
+        if raw.strip():
+            try:
+                body = json.loads(raw)
+            except ValueError:
+                return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
+        raw_host = body.get("host_id")
+        if raw_host is not None and not isinstance(raw_host, str):
+            return JSONResponse({"error": "host_id must be a string"}, status_code=400)
+        host_id = (raw_host or "").strip() or None
+        refused = await stewards.preview_refusal(spec, host_id)
+        if refused is not None:
+            return JSONResponse(
+                {"error": str(refused)}, status_code=409 if refused.conflict else 400
+            )
+        known = {a.agent_id for a in registry.list()} | set(await store.known_agents())
+        problem = run_target_problem(spec, host_id, known)
+        if problem is not None:
+            return JSONResponse({"error": problem}, status_code=400)
+        try:
+            run = await stewards.start_preview(
+                spec, host_id=host_id, requested_by=_actor_of(request) or "unknown"
+            )
+        except PreviewRefused as exc:
+            return JSONResponse(
+                {"error": str(exc)}, status_code=409 if exc.conflict else 400
+            )
+        except RuntimeError as exc:  # no executor / model / client configured
+            return JSONResponse({"error": str(exc)}, status_code=503)
+        if run is None:
+            return JSONResponse(
+                {"error": "the steward could not start (stewards or AI are switched off)"},
+                status_code=409,
+            )
+        return JSONResponse(
+            {
+                "run_id": run.id,
+                "steward_id": run.steward_id,
+                "host_id": run.host_id,
+                "mode": run.mode,
+                "trigger": run.trigger,
+                "status": run.status,
+            },
+            status_code=202,
+        )
+
     def _reviewed_hash(body: Any) -> tuple[str | None, JSONResponse | None]:
         """The ``effective_hash`` a consent write names, or its 400."""
 
@@ -2446,6 +2520,11 @@ def build_api_routes(
         Route("/api/stewards", guard(api_stewards_list, **op)),
         Route("/api/stewards/runs", guard(api_steward_runs, **op)),
         Route("/api/stewards/runs/{run_id}", guard(api_steward_run, **op)),
+        Route(
+            "/api/stewards/{steward_id}/runs",
+            guard(api_steward_preview, **op),
+            methods=["POST"],
+        ),
         Route("/api/stewards/{steward_id}/mode", guard(api_steward_mode, **su), methods=["PUT"]),
         Route(
             "/api/stewards/{steward_id}/authorizations",
@@ -2665,6 +2744,7 @@ def build_chat_routes(
     presence: Any = None,
     settings: Settings | None = None,
     hw_history: Any = None,
+    copilot_stewards: Any = None,
 ) -> list[Route]:
     """Build the server-hosted Claude chat routes.
 
@@ -2683,7 +2763,8 @@ def build_chat_routes(
     ``copilot_tickets`` registers ``ticket_draft``/``ticket_find`` on the
     executor. Optional the way ``tools.py`` treats an unconfigured service: a
     server without it simply never offers those two names, and nothing else
-    about the copilot changes.
+    about the copilot changes. ``copilot_stewards`` does the same for
+    ``steward_run_list``/``steward_run_get``/``steward_run_propose``.
     """
 
     executor = ChatExecutor(
@@ -2697,6 +2778,8 @@ def build_chat_routes(
     )
     if copilot_tickets is not None:
         copilot_tickets.register_tools(executor)
+    if copilot_stewards is not None:
+        copilot_stewards.register_tools(executor)
 
     def driver_of(request: Request) -> str | None:
         """The operator driving *this* request's turn, for its audit rows.

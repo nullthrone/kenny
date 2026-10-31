@@ -298,7 +298,7 @@ class CallLog:
 
     async def record(
         self,
-        agent_id: str,
+        agent_id: str | None,
         tool: str,
         args: dict[str, Any],
         *,
@@ -310,9 +310,11 @@ class CallLog:
     ) -> None:
         """Record one forwarded call.
 
-        ``actor`` names who made it (operator username, or a steward identity),
-        ``run_id`` the autonomous run it belongs to, and ``authorization_id``
-        the standing authorization that let a steward make it (ADR-0072); all
+        ``agent_id`` is the host the call ran on, ``None`` for a server-side
+        change a steward run made (a rule it removed). ``actor`` names who made
+        it (operator username, or a steward identity), ``run_id`` the autonomous
+        run it belongs to, and ``authorization_id`` the standing
+        authorization that let a steward make it (ADR-0072); all
         three, plus the redacted ``args``, are persisted in the event's
         ``fields`` JSON. The authorization id sits beside ``args``, not in it:
         it is the server's record of why the call ran, not something the

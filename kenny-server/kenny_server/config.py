@@ -343,6 +343,11 @@ _SPECS: list[SettingSpec] = [
           help="Tokens (input, output and cached prompt tokens alike) all steward "
                "runs together may spend in any 24 hours. Once reached, a run is not started and is recorded "
                "as skipped. 0 means no cap."),
+    _spec("KENNY_STEWARDS_PREVIEWS_PER_DAY", "AI", "int", "20",
+          "Previews per steward per day", lifecycle="live", min=1,
+          help="How many preview runs of one steward may start in any 24 hours, "
+               "whoever asks. A request over it is refused and leaves no run "
+               "behind. One preview of a steward on a machine runs at a time."),
     _spec("KENNY_STEWARDS_SCHEDULE_INTERVAL_SECS", "AI", "int", "300",
           "Scheduled stewards check (s)", lifecycle="live", min=60,
           help="How often kenny checks whether a scheduled steward is due. The "

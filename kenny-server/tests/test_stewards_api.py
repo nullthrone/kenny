@@ -96,6 +96,11 @@ def test_an_operator_reads_the_stewards_and_their_runs(tmp_path) -> None:
         assert triage["mode"] == "shadow"  # enabled, resolve off by default
         assert triage["spec_hash"] == CATALOG["triage"].spec_hash
         assert triage["latest_run"] is None
+        # Where each tool acts, so a grant's scope can follow it (ADR-0072).
+        patch = stewards["patch"]
+        assert patch["host_bound"] is True
+        assert patch["tool_targets"]["winget_update"] == "host"
+        assert patch["tool_targets"]["steward_verdict"] == "server"
         assert c.get("/api/stewards/runs", headers=h).json() == {"runs": []}
 
         run = c.portal.call(
