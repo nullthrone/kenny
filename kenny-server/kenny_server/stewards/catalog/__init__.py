@@ -13,6 +13,8 @@ from ...tool_classes import READ_ONLY, classify
 from ...toolloop import SERVER_TOOLS
 from ...tools import CAPABILITY_TOOLS
 from ..spec import StewardSpec, SpecError, validate
+from .patch import PATCH
+from .posture import POSTURE
 from .triage import TRIAGE
 
 __all__ = ["CATALOG", "TICKET_SURFACE_TOOLS", "build", "check_dispatchable", "get"]
@@ -80,7 +82,7 @@ def build(specs: Sequence[StewardSpec]) -> Mapping[str, StewardSpec]:
     return MappingProxyType(built)
 
 
-CATALOG: Mapping[str, StewardSpec] = build((TRIAGE,))
+CATALOG: Mapping[str, StewardSpec] = build((TRIAGE, PATCH, POSTURE))
 
 
 def get(steward_id: str) -> StewardSpec | None:

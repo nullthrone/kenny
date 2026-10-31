@@ -225,9 +225,9 @@ class FleetSession:
     _staged_results: list[dict[str, Any]] = field(default_factory=list)
     # tool_use blocks from the current assistant turn not yet executed.
     _queue: list[dict[str, Any]] = field(default_factory=list)
-    # Operator who is driving this session right now; set by the chat routes
-    # before each drive/confirm so forwarded calls are audited under their name.
-    audit_actor: str | None = None
+    # Deliberately no ``audit_actor``: a session id is not bound to one person,
+    # so who drives a turn is passed per call (``actor=``), never stored here
+    # where a second operator's request would overwrite the first's.
 
     @property
     def scope(self) -> str:
@@ -458,13 +458,14 @@ async def _drive(
     *,
     client: Any,
     model: str,
+    actor: str | None = None,
 ) -> TurnResult:
     """Drain :func:`~kenny_server.toolloop.drive_events` into a :class:`TurnResult`."""
 
     tool_events: list[dict[str, Any]] = []
     final: dict[str, Any] | None = None
     async for ev in drive_events(
-        session, executor, client=client, model=model, policy=_FLEET_POLICY
+        session, executor, client=client, model=model, policy=_FLEET_POLICY, actor=actor
     ):
         if ev["type"] in ("tool_result", "pending", "denied"):
             tool_events.append(ev)
@@ -579,12 +580,15 @@ async def run_turn(
     executor: ChatExecutor,
     client: Any,
     model: str | None = None,
+    actor: str | None = None,
 ) -> TurnResult:
     """Send a user message and drive the tool-use loop to completion or a gate.
 
     ``client`` is injected (real ``anthropic.Anthropic`` in production, a fake in
     tests). Returns a :class:`TurnResult`; if ``pending`` is set the loop paused
     on a state-changing tool and is resumed via :func:`confirm_pending`.
+    ``actor`` is the operator driving this turn, named on the audit row of
+    every call it forwards.
     """
 
     if session.pending is not None:
@@ -593,7 +597,7 @@ async def run_turn(
     model = model or os.environ.get("KENNY_CHAT_MODEL", DEFAULT_MODEL)
     heal_session(session)
     session.messages.append({"role": "user", "content": user_text})
-    return await _drive(session, executor, client=client, model=model)
+    return await _drive(session, executor, client=client, model=model, actor=actor)
 
 
 
@@ -646,6 +650,7 @@ async def run_turn_events(
     executor: ChatExecutor,
     client: Any,
     model: str | None = None,
+    actor: str | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Streaming variant of :func:`run_turn`: yield loop events as they happen.
 
@@ -662,7 +667,9 @@ async def run_turn_events(
     heal_session(session)
     session.messages.append({"role": "user", "content": user_text})
     async for ev in _surface_events(
-        drive_events(session, executor, client=client, model=model, policy=_FLEET_POLICY)
+        drive_events(
+            session, executor, client=client, model=model, policy=_FLEET_POLICY, actor=actor
+        )
     ):
         yield ev
 
@@ -674,6 +681,7 @@ async def confirm_pending(
     executor: ChatExecutor,
     client: Any,
     model: str | None = None,
+    actor: str | None = None,
 ) -> TurnResult:
     """Resolve a pending state-changing call, then resume the tool-use loop.
 
@@ -686,9 +694,11 @@ async def confirm_pending(
         raise RuntimeError("no pending confirmation for this session")
 
     model = model or os.environ.get("KENNY_CHAT_MODEL", DEFAULT_MODEL)
-    resume_event = await apply_confirmation(session, approve=approve, executor=executor)
+    resume_event = await apply_confirmation(
+        session, approve=approve, executor=executor, actor=actor
+    )
 
-    result = await _drive(session, executor, client=client, model=model)
+    result = await _drive(session, executor, client=client, model=model, actor=actor)
     result.tool_events.insert(0, resume_event)
     return result
 
@@ -700,6 +710,7 @@ async def confirm_pending_events(
     executor: ChatExecutor,
     client: Any,
     model: str | None = None,
+    actor: str | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Streaming variant of :func:`confirm_pending`.
 
@@ -719,9 +730,13 @@ async def confirm_pending_events(
         raise RuntimeError("no pending confirmation for this session")
 
     model = model or os.environ.get("KENNY_CHAT_MODEL", DEFAULT_MODEL)
-    async for event in confirmation_events(session, approve=approve, executor=executor):
+    async for event in confirmation_events(
+        session, approve=approve, executor=executor, actor=actor
+    ):
         yield event
     async for ev in _surface_events(
-        drive_events(session, executor, client=client, model=model, policy=_FLEET_POLICY)
+        drive_events(
+            session, executor, client=client, model=model, policy=_FLEET_POLICY, actor=actor
+        )
     ):
         yield ev

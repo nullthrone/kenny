@@ -68,8 +68,12 @@ from .store import (
     UpdateStore,
     WebFilterStore,
 )
+from .stewards.authorizations import AuthorizationStore
 from .stewards.runner import StewardRunner
+from .stewards.scheduler import INTERVAL_SETTING as STEWARD_SCHEDULE_SETTING
+from .stewards.scheduler import StewardScheduler
 from .stewards.store import StewardStore
+from .stewards.verdict import register as register_steward_verdict
 from .ticket_alerts import TicketAlertReader
 from .ticket_assistant import TicketAssistant
 from .ticket_rules import TicketRuleList
@@ -757,8 +761,38 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
     # runner every run starts through. Built on every server; the ``triage``
     # steward is attached below once there is an assistant for it to run on.
     steward_store = StewardStore(db_path)
+    steward_authorizations = AuthorizationStore(db_path)
     steward_runner = StewardRunner(
-        store=steward_store, settings=settings, ai_access=ai_access, event_store=event_store
+        store=steward_store,
+        settings=settings,
+        ai_access=ai_access,
+        event_store=event_store,
+        authorizations=steward_authorizations,
+    )
+    # The executor stewards run forward through: its own instance, so the one
+    # tool only steward runs end with is registered nowhere a person's session
+    # reaches. The model is read at each run start, like the chat's.
+    steward_executor = ToolExecutor(
+        registry=registry,
+        store=store,
+        tunnel=tunnel,
+        call_log=call_log,
+        screenshots=screenshots,
+        presence=presence,
+        settings=settings,
+    )
+    register_steward_verdict(steward_executor, tickets=ticket_service)
+    steward_runner.configure(
+        executor=steward_executor,
+        client_factory=client_factory,
+        model=lambda: str(settings.get("KENNY_CHAT_MODEL")),
+    )
+
+    async def _steward_params(steward_id: str) -> dict[str, Any]:
+        return dict(await steward_runner.get_params(steward_id))
+
+    steward_scheduler = StewardScheduler(
+        steward_runner, steward_runner.catalog, _steward_params, steward_executor
     )
     ticket_assistant: TicketAssistant | None = None
     triage: TriageService | None = None
@@ -910,6 +944,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         await ticket_store.connect()
         await discord_identities.connect()
         await steward_store.connect()
+        await steward_authorizations.connect()
         # Nothing runs yet, so a run still open belongs to a dead process.
         await steward_runner.startup()
         # Telemetry retention (ADR-0051) is re-read here, after the overrides
@@ -993,6 +1028,14 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         if alert_secs > 0:
             alert_delay = float(settings.get("KENNY_ALERT_INITIAL_DELAY"))
             alert_task = asyncio.create_task(alert_engine.run(alert_secs, alert_delay))
+        # Scheduled stewards (ADR-0071). Nothing runs unless a steward
+        # has a window, hosts and a mode other than off; the cadence is live.
+        steward_schedule_task: asyncio.Task | None = asyncio.create_task(
+            steward_scheduler.run(
+                lambda: int(settings.get(STEWARD_SCHEDULE_SETTING)),
+                initial_delay_s=float(settings.get("KENNY_ALERT_INITIAL_DELAY")),
+            )
+        )
         # Periodic DB backup loop (see backup.py). Always started: the cadence,
         # including 0 = paused, is re-read inside the loop.
         backup_delay = float(settings.get("KENNY_BACKUP_INITIAL_DELAY"))
@@ -1108,6 +1151,10 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
                 alert_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await alert_task
+            if steward_schedule_task is not None:
+                steward_schedule_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await steward_schedule_task
             startup_maintenance_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await startup_maintenance_task
@@ -1150,6 +1197,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
             await update_store.close()
             await ticket_store.close()
             await discord_identities.close()
+            await steward_authorizations.close()
             await steward_store.close()
             await settings_store.close()
 
@@ -1326,6 +1374,8 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
     app.state.triage = triage
     app.state.stewards = steward_runner
     app.state.steward_store = steward_store
+    app.state.steward_authorizations = steward_authorizations
+    app.state.steward_scheduler = steward_scheduler
     # Replaced by the lifespan with the tasks it actually started (if any).
     app.state.ticket_task = None
     app.state.discord_task = None

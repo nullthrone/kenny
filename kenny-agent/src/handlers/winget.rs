@@ -37,15 +37,7 @@ pub async fn install(_args: Value) -> Result<Value, (ErrorCode, String)> {
     {
         let a: IdArg =
             serde_json::from_value(_args).map_err(|e| (ErrorCode::BadArgs, e.to_string()))?;
-        windows_impl::run_change(&[
-            "install",
-            "--id",
-            &a.id,
-            "--silent",
-            "--accept-package-agreements",
-            "--accept-source-agreements",
-        ])
-        .await
+        windows_impl::run_change(&install_args(&a.id)).await
     }
     #[cfg(not(windows))]
     {
@@ -61,7 +53,7 @@ pub async fn uninstall(_args: Value) -> Result<Value, (ErrorCode, String)> {
     {
         let a: IdArg =
             serde_json::from_value(_args).map_err(|e| (ErrorCode::BadArgs, e.to_string()))?;
-        windows_impl::run_change(&["uninstall", "--id", &a.id, "--silent"]).await
+        windows_impl::run_change(&uninstall_args(&a.id)).await
     }
     #[cfg(not(windows))]
     {
@@ -76,25 +68,58 @@ pub async fn update(_args: Value) -> Result<Value, (ErrorCode, String)> {
     {
         let a: OptIdArg =
             serde_json::from_value(_args).map_err(|e| (ErrorCode::BadArgs, e.to_string()))?;
-        let mut args = vec![
-            "upgrade",
-            "--silent",
-            "--accept-package-agreements",
-            "--accept-source-agreements",
-        ];
-        if let Some(id) = a.id.as_deref() {
-            args.push("--id");
-            args.push(id);
-        } else {
-            args.push("--all");
-        }
-        windows_impl::run_change(&args).await
+        windows_impl::run_change(&upgrade_args(a.id.as_deref())).await
     }
     #[cfg(not(windows))]
     {
         let _ = OptIdArg { id: None };
         Err(unsupported("winget_update"))
     }
+}
+
+/// Argument vector for `winget install --id <id>`.
+///
+/// `--exact` is mandatory with `--id`: without it winget matches the id as a
+/// case-insensitive substring, so `Mozilla.Firefox` would also select
+/// `Mozilla.Firefox.ESR` and a caller-supplied id could act on a package other than
+/// the one named (bypassing any exact-id allowlist enforced upstream).
+///
+/// Platform-neutral so it can be unit-tested on non-Windows CI; off Windows it is
+/// only reached from tests.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn install_args(id: &str) -> Vec<&str> {
+    vec![
+        "install",
+        "--id",
+        id,
+        "--exact",
+        "--silent",
+        "--accept-package-agreements",
+        "--accept-source-agreements",
+    ]
+}
+
+/// Argument vector for `winget uninstall --id <id>`; `--exact` as for [`install_args`].
+#[cfg_attr(not(windows), allow(dead_code))]
+fn uninstall_args(id: &str) -> Vec<&str> {
+    vec!["uninstall", "--id", id, "--exact", "--silent"]
+}
+
+/// Argument vector for `winget upgrade`: one package (`--id <id> --exact`, as for
+/// [`install_args`]) or every package (`--all`) when no id is given.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn upgrade_args(id: Option<&str>) -> Vec<&str> {
+    let mut args = vec![
+        "upgrade",
+        "--silent",
+        "--accept-package-agreements",
+        "--accept-source-agreements",
+    ];
+    match id {
+        Some(id) => args.extend(["--id", id, "--exact"]),
+        None => args.push("--all"),
+    }
+    args
 }
 
 #[cfg(not(windows))]
@@ -263,6 +288,36 @@ Name                 Id                     Version      Source
 Mozilla Firefox      Mozilla.Firefox        119.0        winget
 7-Zip                7zip.7zip              22.01         winget
 ";
+
+    #[test]
+    fn install_with_id_is_exact() {
+        let args = install_args("Mozilla.Firefox");
+        assert!(args.contains(&"--exact"));
+        let i = args.iter().position(|a| *a == "--id").unwrap();
+        assert_eq!(args[i + 1], "Mozilla.Firefox");
+    }
+
+    #[test]
+    fn uninstall_with_id_is_exact() {
+        let args = uninstall_args("Mozilla.Firefox");
+        assert!(args.contains(&"--exact"));
+        let i = args.iter().position(|a| *a == "--id").unwrap();
+        assert_eq!(args[i + 1], "Mozilla.Firefox");
+    }
+
+    #[test]
+    fn upgrade_with_id_is_exact_and_without_id_is_all() {
+        let args = upgrade_args(Some("Mozilla.Firefox"));
+        assert!(args.contains(&"--exact"));
+        assert!(!args.contains(&"--all"));
+        let i = args.iter().position(|a| *a == "--id").unwrap();
+        assert_eq!(args[i + 1], "Mozilla.Firefox");
+
+        let all = upgrade_args(None);
+        assert!(!all.contains(&"--exact"));
+        assert!(!all.contains(&"--id"));
+        assert!(all.contains(&"--all"));
+    }
 
     #[test]
     fn parses_available_column_when_present() {

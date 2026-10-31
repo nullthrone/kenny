@@ -299,10 +299,10 @@ TRIAGE_ACTOR = "triage"
 #: ticket reaches ``cancelled``.
 ABANDONED_BY = "inactivity"
 
-#: The ``origin`` of a ticket opened by a steward's own effect. No
-#: code path opens one yet; the steward runner already refuses to start a steward
-#: for such a ticket, so a steward's effect never starts another steward
-#: (ADR-0071 rule 6).
+#: The ``origin`` of a ticket opened by a steward's own effect
+#: (``stewards.verdict`` opens one for an ``actionable`` verdict). The steward
+#: runner refuses to start a steward for such a ticket, so a steward's effect
+#: never starts another steward (ADR-0071 rule 6).
 STEWARD_ORIGIN = "steward"
 
 
