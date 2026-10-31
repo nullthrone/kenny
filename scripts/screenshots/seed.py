@@ -116,16 +116,16 @@ async def seed_app(app: Any, base: datetime | None = None) -> SeedResult:
         await _seed_ticket_alerts(state.event_store, base)
     if getattr(state, "discord_identities", None) is not None:
         await _seed_discord_identities(state.discord_identities, base, user_ids)
-    if getattr(state, "agents", None) is not None:
-        await _seed_agents(state.agents)
+    if getattr(state, "stewards", None) is not None:
+        await _seed_stewards(state.stewards)
 
     return SeedResult(agent_ids=[h.agent_id for h in hosts], session_id=session_id)
 
 
-async def _seed_agents(runner: Any) -> None:
-    """Give the shipped specialized agents (ADR-0071) something to show: the package
-    agent's install parameters (ADR-0072), one run it only proposed in shadow, and one
-    run that changed something, so the Agents view has a parameters editor, a runs list
+async def _seed_stewards(runner: Any) -> None:
+    """Give the shipped stewards (ADR-0071) something to show: the package
+    steward's install parameters (ADR-0072), one run it only proposed in shadow, and one
+    run that changed something, so the Stewards view has a parameters editor, a runs list
     and a run record with actions and recommendations. Written through the runner and
     its store, so the seeded state is what a real run and a real parameter edit leave."""
 
@@ -148,7 +148,7 @@ async def _seed_agents(runner: Any) -> None:
         "tool_class": "standard_change",
     }
     shadow = await runner.store.start_run(
-        agent_id="patch",
+        steward_id="patch",
         spec_hash=spec.spec_hash,
         trigger="schedule",
         mode="shadow",
@@ -166,7 +166,7 @@ async def _seed_agents(runner: Any) -> None:
         recommendations=[proposed],
     )
     acted = await runner.store.start_run(
-        agent_id="patch",
+        steward_id="patch",
         spec_hash=spec.spec_hash,
         trigger="schedule",
         mode="act",

@@ -123,7 +123,7 @@ Monday through Friday, add `social` and `gaming`"). A window names its weekdays,
 `HH:MM`–`HH:MM` start/end range, one or more extra categories, and an IANA timezone
 (defaulting to the server's own `TZ`, else UTC).
 The weekdays, range and timezone are read by the same parser as a
-[specialized agent's](dashboard.md#specialized-agents) maintenance window, so both accept
+[steward's](dashboard.md#stewards) maintenance window, so both accept
 exactly the same values.
 
 A schedule can only make the filter **stricter for its duration**. A window **adds**

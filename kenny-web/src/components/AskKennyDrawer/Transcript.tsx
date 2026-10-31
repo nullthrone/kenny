@@ -4,7 +4,7 @@ import type { TicketDraftCardProps } from './TicketDraftCard'
 import { Check, X, ICON_STROKE_WIDTH } from '../icons'
 import Markdown from '../Markdown/Markdown'
 import TicketDraftCard from './TicketDraftCard'
-import AgentRunProposalCard, { type AgentRunProposalCardProps } from './AgentRunProposalCard'
+import StewardRunProposalCard, { type StewardRunProposalCardProps } from './StewardRunProposalCard'
 import styles from './Transcript.module.css'
 
 /**
@@ -58,9 +58,9 @@ export interface TranscriptProps {
   /** Puts a draft away unfiled. */
   onDismissDraft?: TicketDraftCardProps['onDismiss']
   /** Starts the preview run a proposal card offers. */
-  onStartAgentRun?: AgentRunProposalCardProps['onStart']
+  onStartStewardRun?: StewardRunProposalCardProps['onStart']
   /** Puts a proposal away unstarted. */
-  onDismissAgentRun?: AgentRunProposalCardProps['onDismiss']
+  onDismissStewardRun?: StewardRunProposalCardProps['onDismiss']
 }
 
 /**
@@ -81,8 +81,8 @@ export default function Transcript({
   openToolItemId = null,
   onCreateDraft,
   onDismissDraft,
-  onStartAgentRun,
-  onDismissAgentRun,
+  onStartStewardRun,
+  onDismissStewardRun,
 }: TranscriptProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -216,18 +216,18 @@ export default function Transcript({
               />
             )
 
-          case 'agent_proposal':
+          case 'steward_proposal':
             return (
-              <AgentRunProposalCard
+              <StewardRunProposalCard
                 key={item.id}
                 itemId={item.id}
-                agentId={item.agentId}
+                stewardId={item.stewardId}
                 hostId={item.hostId}
                 reason={item.reason}
                 resolution={item.resolution}
                 runId={item.runId}
-                onStart={onStartAgentRun ?? (async () => undefined)}
-                onDismiss={onDismissAgentRun ?? (() => undefined)}
+                onStart={onStartStewardRun ?? (async () => undefined)}
+                onDismiss={onDismissStewardRun ?? (() => undefined)}
               />
             )
 

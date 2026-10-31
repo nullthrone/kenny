@@ -4,7 +4,7 @@ A read-only call passes every gate unasked, and ``agent_snapshot`` is read-only.
 Without a filter, a whole snapshot — or ``section="web_activity"`` — hands an
 unattended run the browsing history that ``web_activity_query`` exists to guard
 (``tool_classes.SENSITIVE_TOOLS``). These tests join the real sessions to the
-real executor: the posture agent through ``run_generic`` and its gate, triage
+real executor: the posture steward through ``run_generic`` and its gate, triage
 through the session ``TicketAssistant`` builds for it, and the operator's
 copilot, which must keep seeing everything.
 """
@@ -19,13 +19,13 @@ from typing import Any
 import pytest
 
 from kenny_server import toolloop
-from kenny_server.agents.catalog import CATALOG
-from kenny_server.agents.policy import AgentSession
+from kenny_server.stewards.catalog import CATALOG
+from kenny_server.stewards.policy import StewardSession
 from kenny_server.chat import FleetSession
 from kenny_server.tool_classes import SENSITIVE_TOOLS, TOOL_CLASSES
 from kenny_server.toolloop import SENSITIVE_SECTIONS, withheld_sections
 
-from test_agent_runner import HOST, World, _text, _tool
+from test_steward_runner import HOST, World, _text, _tool
 from test_chat import FakeAnthropic
 
 FIXTURE = Path(__file__).resolve().parents[2] / "docs" / "fixtures" / "telemetry_snapshot.json"
@@ -68,7 +68,7 @@ def _tool_results(client: FakeAnthropic) -> str:
     return json.dumps(shown)
 
 
-# -- an unattended agent run --------------------------------------------------------
+# -- an unattended steward run --------------------------------------------------------
 
 
 async def test_joined_a_posture_run_never_sees_browsing_history(world: World) -> None:
@@ -98,13 +98,13 @@ async def test_joined_a_posture_run_never_sees_browsing_history(world: World) ->
     assert SNAPSHOT["local_accounts"]["summary"] in shown
 
 
-async def test_an_agent_that_opted_into_the_tool_reads_the_section(world: World) -> None:
+async def test_a_steward_that_opted_into_the_tool_reads_the_section(world: World) -> None:
     spec = replace(
         CATALOG["posture"],
         tools=CATALOG["posture"].tools | {"web_activity_query"},
         sensitive_ok=True,
     )
-    session = AgentSession(id="r", spec=spec, mode="shadow", agent_id=HOST)
+    session = StewardSession(id="r", spec=spec, mode="shadow", agent_id=HOST)
     assert withheld_sections(session) == frozenset()
     got = await world.executor.run_server_tool(
         "agent_snapshot", {"id": HOST, "section": "web_activity"}, session=session
@@ -114,11 +114,11 @@ async def test_an_agent_that_opted_into_the_tool_reads_the_section(world: World)
 
 def test_sensitive_ok_alone_or_the_tool_alone_is_not_enough() -> None:
     posture = CATALOG["posture"]
-    ok_only = AgentSession(id="r", spec=replace(posture, sensitive_ok=True), mode="shadow")
+    ok_only = StewardSession(id="r", spec=replace(posture, sensitive_ok=True), mode="shadow")
     assert "web_activity" in withheld_sections(ok_only)
     # A spec naming the tool without sensitive_ok never validates; the session
     # rule does not rely on that.
-    tool_only = AgentSession.__new__(AgentSession)
+    tool_only = StewardSession.__new__(StewardSession)
     tool_only.spec = replace(posture, tools=posture.tools | {"web_activity_query"})
     assert "web_activity" in withheld_sections(tool_only)
 

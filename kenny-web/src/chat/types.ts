@@ -145,15 +145,15 @@ export type TranscriptItem =
       ticketNumber?: number
     }
   /**
-   * A specialized-agent preview run kenny proposed. Shaped after `draft`: a card
+   * A steward preview run kenny proposed. Shaped after `draft`: a card
    * that carries a decision and stays in the transcript once it is made.
    * `resolution` is the operator's — nothing runs until they press Start preview.
    */
   | {
-      kind: 'agent_proposal'
+      kind: 'steward_proposal'
       id: string
-      agentId: string
-      /** '' for an agent that is not bound to a PC. */
+      stewardId: string
+      /** '' for a steward that is not bound to a PC. */
       hostId: string
       reason: string
       resolution: 'pending' | 'started' | 'dismissed'

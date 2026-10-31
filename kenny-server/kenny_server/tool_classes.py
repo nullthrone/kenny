@@ -128,9 +128,9 @@ TOOL_CLASSES: dict[str, str] = {
     # window (``tickets.auto_close_resolved``) plus a ``resolved -> in_progress``
     # transition any requester or operator may make.
     "ticket_triage_verdict": STANDARD_CHANGE,
-    # How a specialized agent run ends; its handler may open a ticket for a
+    # How a steward run ends; its handler may open a ticket for a
     # finding (ADR-0071). Reversible server state, like the triage verdict.
-    "agent_verdict": STANDARD_CHANGE,
+    "steward_verdict": STANDARD_CHANGE,
     # -- what a ticket-bound turn leaves on the ticket ----------------------
     # Records, in kenny's own sentence, what the turn found or changed. READ_ONLY
     # and it has to be: it touches no machine and moves no ticket, it only writes
@@ -146,14 +146,14 @@ TOOL_CLASSES: dict[str, str] = {
     # ticket -- and would hold a call that changes nothing if they said no.
     "ticket_draft": READ_ONLY,
     "ticket_find": READ_ONLY,
-    # -- the copilot's window onto specialized agents (ADR-0071) -------------
+    # -- the copilot's window onto stewards (ADR-0071) -------------
     # Two reads of the run history, and a proposal. READ_ONLY all three, and the
     # proposal has to be: it starts no run -- its whole output is a card the
     # operator presses, so the consent is given there, once. (A preview is a
     # shadow run in any case: it changes nothing on any host.)
-    "agent_run_list": READ_ONLY,
-    "agent_run_get": READ_ONLY,
-    "agent_run_propose": READ_ONLY,
+    "steward_run_list": READ_ONLY,
+    "steward_run_get": READ_ONLY,
+    "steward_run_propose": READ_ONLY,
 }
 
 #: Every tool that only observes. Derived, never hand-listed, so a tool added to

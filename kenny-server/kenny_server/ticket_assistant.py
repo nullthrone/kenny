@@ -55,9 +55,9 @@ from .tool_classes import (
     profile_allows,
 )
 from .toolloop import (
-    AGENT_ONLY_TOOLS,
-    AGENT_VERDICT_TOOL,
-    COPILOT_AGENT_TOOLS,
+    STEWARD_ONLY_TOOLS,
+    STEWARD_VERDICT_TOOL,
+    COPILOT_STEWARD_TOOLS,
     SERVER_TOOLS,
     TICKET_DRAFT_TOOL,
     TICKET_FIND_TOOL,
@@ -108,19 +108,19 @@ logger = logging.getLogger("kenny.tickets.assistant")
 #: across requesters, and this surface is reachable by a host-scoped household
 #: member: leaving it open would be the one place they could read what everyone
 #: else has open, the same objection :data:`FLEET_WIDE_TOOLS` already carries.
-#: ``agent_verdict`` ends a specialized agent's run, which has no ticket, and
-#: the operator-rule tools (``toolloop.AGENT_ONLY_TOOLS``) are dispatched for
-#: agent runs alone: a ticket is about one machine, and those rules are fleet
+#: ``steward_verdict`` ends a steward's run, which has no ticket, and
+#: the operator-rule tools (``toolloop.STEWARD_ONLY_TOOLS``) are dispatched for
+#: steward runs alone: a ticket is about one machine, and those rules are fleet
 #: policy.
 #: Subtracted before the triage intersection in :func:`allowed_tools_for`, so
 #: this one line covers an unprompted investigation too.
-#: The copilot's three agent-run tools read every agent's runs across hosts, with
+#: The copilot's three steward-run tools read every steward's runs across hosts, with
 #: the changes each made or proposed: fleet-wide, so withheld for the reason
 #: ``ticket_find`` is.
 EXCLUDED_TOOLS: frozenset[str] = (
-    frozenset({"select_agent", TICKET_DRAFT_TOOL, TICKET_FIND_TOOL, AGENT_VERDICT_TOOL})
-    | COPILOT_AGENT_TOOLS
-    | AGENT_ONLY_TOOLS
+    frozenset({"select_agent", TICKET_DRAFT_TOOL, TICKET_FIND_TOOL, STEWARD_VERDICT_TOOL})
+    | COPILOT_STEWARD_TOOLS
+    | STEWARD_ONLY_TOOLS
 )
 
 #: Tools that report on the whole fleet rather than one host. Withheld from a
@@ -509,7 +509,7 @@ def _narrower_role(a: str | None, b: str | None) -> str:
 #:
 #: :data:`FLEET_WIDE_TOOLS` are out because an investigation is about its
 #: ticket's one machine and reads every other one only by escaping it — the
-#: ticket surface withholds them from its scoped session anyway, and the agent
+#: ticket surface withholds them from its scoped session anyway, and the steward
 #: gate refuses them on any run frozen to a host.
 #:
 #: :data:`~kenny_server.toolloop.TICKET_SUMMARY_TOOL` is taken out for the same
@@ -518,11 +518,11 @@ def _narrower_role(a: str | None, b: str | None) -> str:
 #: weaker way to write the same thing would be two records of one conclusion.
 #:
 #: Only names the loop can route are kept, so this set is also the honest
-#: declaration of the ``triage`` specialized agent, whose catalog refuses a tool
+#: declaration of the ``triage`` steward, whose catalog refuses a tool
 #: the loop cannot route. (The session's allowlist was already intersected with
 #: the routable tools in :func:`allowed_tools_for`; this changes no call.)
 TRIAGE_TOOLS: frozenset[str] = (
-    (READ_ONLY_TOOLS - SENSITIVE_TOOLS - FLEET_WIDE_TOOLS - {TICKET_SUMMARY_TOOL} - COPILOT_AGENT_TOOLS)
+    (READ_ONLY_TOOLS - SENSITIVE_TOOLS - FLEET_WIDE_TOOLS - {TICKET_SUMMARY_TOOL} - COPILOT_STEWARD_TOOLS)
     & (frozenset(SERVER_TOOLS) | frozenset(CAPABILITY_TOOLS))
 ) | {TRIAGE_VERDICT_TOOL}
 
@@ -643,7 +643,7 @@ class TicketSession:
     # Audit identity of this session's forwarded calls (see
     # ``toolloop._audit_identity``): who made them, and in which autonomous run.
     audit_actor: str | None = None
-    agent_run_id: str | None = None
+    steward_run_id: str | None = None
     # Opt-in token accounting: ``drive_events`` adds each model call's usage here.
     usage: UsageMeter | None = None
 

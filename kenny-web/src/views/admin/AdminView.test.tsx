@@ -81,7 +81,7 @@ function mockApi(role: 'superuser' | 'operator' | 'user', over: Record<string, u
     '/api/discord/status': { configured: false },
     '/api/policy/rules': { builtin: [], operator: [] },
     '/api/policy/shell-allow': { mode: 'unrestricted', allow: [] },
-    '/api/specialized-agents': { enabled: true, agents: [] },
+    '/api/stewards': { enabled: true, stewards: [] },
     ...over,
   }
   apiGetMock.mockImplementation((path: string) => {
@@ -131,14 +131,14 @@ describe('AdminView — what each role can reach', () => {
     expect(apiGetMock).not.toHaveBeenCalledWith('/api/settings')
   })
 
-  it('gives an operator the agents view, which reads /api/specialized-agents and not the catalog', async () => {
+  it('gives an operator the stewards view, which reads /api/stewards and not the catalog', async () => {
     mockApi('operator')
 
-    renderAdmin('/admin/agents')
+    renderAdmin('/admin/stewards')
 
-    expect(await screen.findByRole('link', { name: 'SPECIALIZED AGENTS' })).toBeInTheDocument()
-    expect(await screen.findByText('No agents')).toBeInTheDocument()
-    expect(apiGetMock).toHaveBeenCalledWith('/api/specialized-agents')
+    expect(await screen.findByRole('link', { name: 'STEWARDS' })).toBeInTheDocument()
+    expect(await screen.findByText('No stewards')).toBeInTheDocument()
+    expect(apiGetMock).toHaveBeenCalledWith('/api/stewards')
     expect(apiGetMock).not.toHaveBeenCalledWith('/api/settings')
   })
 
@@ -171,9 +171,9 @@ describe('AdminView — what each role can reach', () => {
     expect(screen.getByRole('link', { name: 'ALARM RULES' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'BACKUP' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'USERS' })).toBeInTheDocument()
-    // Right after the AI group, which holds the global switch for every agent.
+    // Right after the AI group, which holds the global switch for every steward.
     const labels = screen.getAllByRole('link').map((a) => a.textContent)
-    expect(labels.indexOf('SPECIALIZED AGENTS')).toBe(labels.indexOf('AI') + 1)
+    expect(labels.indexOf('STEWARDS')).toBe(labels.indexOf('AI') + 1)
     // Nothing in Admin is read-only: the environment is not a section.
     expect(screen.queryByRole('link', { name: 'ENVIRONMENT' })).not.toBeInTheDocument()
   })
@@ -256,12 +256,12 @@ describe('AdminView — every settings group reaches the screen', () => {
   })
 })
 
-describe('AdminView — the agents deep link', () => {
-  it('opens one agent at #/admin/agents/{id}', async () => {
+describe('AdminView — the stewards deep link', () => {
+  it('opens one steward at #/admin/stewards/{id}', async () => {
     mockApi('operator', {
-      '/api/specialized-agents': {
+      '/api/stewards': {
         enabled: true,
-        agents: [
+        stewards: [
           {
             id: 'patch',
             title: 'Package updates',
@@ -285,15 +285,15 @@ describe('AdminView — the agents deep link', () => {
           },
         ],
       },
-      '/api/specialized-agents/patch/params': { agent_id: 'patch', declared: [], params: {}, effective_hash: 'b'.repeat(64) },
-      '/api/specialized-agents/patch/authorizations': { agent_id: 'patch', effective_hash: 'b'.repeat(64), authorizations: [] },
-      '/api/specialized-agents/runs': { runs: [] },
+      '/api/stewards/patch/params': { steward_id: 'patch', declared: [], params: {}, effective_hash: 'b'.repeat(64) },
+      '/api/stewards/patch/authorizations': { steward_id: 'patch', effective_hash: 'b'.repeat(64), authorizations: [] },
+      '/api/stewards/runs': { runs: [] },
     })
 
-    renderAdmin('/admin/agents/patch')
+    renderAdmin('/admin/stewards/patch')
 
     expect(await screen.findByRole('heading', { name: 'Package updates' })).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: '← ALL AGENTS' })).toHaveAttribute('href', '/admin/agents')
+    expect(screen.getByRole('link', { name: '← ALL STEWARDS' })).toHaveAttribute('href', '/admin/stewards')
   })
 })
 

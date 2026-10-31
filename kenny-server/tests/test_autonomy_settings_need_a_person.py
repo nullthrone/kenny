@@ -1,9 +1,9 @@
 """Switching unattended action on through a setting is consent, too (ADR-0072).
 
-Triage's ``act`` is its ``KENNY_TRIAGE_RESOLVE`` setting, and every agent run
-needs ``KENNY_AGENTS_ENABLED``. Turning either on — or resetting it, which may
+Triage's ``act`` is its ``KENNY_TRIAGE_RESOLVE`` setting, and every steward run
+needs ``KENNY_STEWARDS_ENABLED``. Turning either on — or resetting it, which may
 land on an "on" default or environment value — takes a superuser at a browser,
-exactly like promoting an agent to ``act``. Turning either off is never a
+exactly like promoting a steward to ``act``. Turning either off is never a
 widening and stays open to any superuser credential.
 """
 
@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 from starlette.testclient import TestClient
 
-from test_specialized_agents_api import (
+from test_stewards_api import (
     BROWSER,
     NOT_A_BROWSER,
     _app_with_operator,
@@ -20,12 +20,12 @@ from test_specialized_agents_api import (
     use_credential,
 )
 
-AUTONOMY_KEYS = ["KENNY_TRIAGE_RESOLVE", "KENNY_AGENTS_ENABLED"]
+AUTONOMY_KEYS = ["KENNY_TRIAGE_RESOLVE", "KENNY_STEWARDS_ENABLED"]
 
 
 @pytest.fixture(autouse=True)
 def _env(monkeypatch: pytest.MonkeyPatch) -> None:
-    from test_specialized_agents_api import LEGACY_TOKEN
+    from test_stewards_api import LEGACY_TOKEN
 
     for key in AUTONOMY_KEYS:
         monkeypatch.delenv(key, raising=False)

@@ -293,27 +293,27 @@ export interface ShellAllowResponse {
   defaults: PolicyRule[]
 }
 
-/* ── Specialized agents (ADR-0071, ADR-0072) ─────────────────────────────── */
+/* ── Stewards (ADR-0071, ADR-0072) ─────────────────────────────── */
 
-export type AgentMode = 'off' | 'shadow' | 'act'
+export type StewardMode = 'off' | 'shadow' | 'act'
 export type ToolTier = 'read_only' | 'standard_change' | 'normal_change'
-export type AgentRunStatus = 'running' | 'completed' | 'failed' | 'skipped'
+export type StewardRunStatus = 'running' | 'completed' | 'failed' | 'skipped'
 export type AuthorizationStatus = 'live' | 'revoked' | 'voided' | 'expired'
 
-export interface AgentTrigger {
+export interface StewardTrigger {
   kind: 'event' | 'schedule' | 'on_demand'
   event: string | null
 }
 
 /**
- * One argument of one change-tier tool (`agents/spec.py::ArgConstraint.to_dict`).
- * `allowed` is a literal set the spec fixes; `param` names the agent parameter that
+ * One argument of one change-tier tool (`stewards/spec.py::ArgConstraint.to_dict`).
+ * `allowed` is a literal set the spec fixes; `param` names the steward parameter that
  * feeds the values at run start. `evidence` is the third kind (ADR-0072 rule 6:
  * values computed at run start from the server's own records); the server does not
  * send it yet, so the view renders it when present and treats a constraint with
  * neither `allowed` nor `param` nor `evidence` as an empty literal set.
  */
-export interface AgentConstraint {
+export interface StewardConstraint {
   tool: string
   arg: string
   allowed?: string[]
@@ -321,30 +321,30 @@ export interface AgentConstraint {
   evidence?: string
 }
 
-export interface AgentTimeout {
+export interface StewardTimeout {
   tool: string
   max_s: number
 }
 
 /** `window` as `validate_params` stores it: weekday keys (`mon`..`sun`), `HH:MM`, an IANA zone. */
-export interface AgentWindow {
+export interface StewardWindow {
   days: string[]
   start: string
   end: string
   tz: string
 }
 
-/** The parameters an agent takes, by name. A name the spec does not declare never appears. */
-export interface AgentParamValues {
-  window?: AgentWindow
+/** The parameters a steward takes, by name. A name the spec does not declare never appears. */
+export interface StewardParamValues {
+  window?: StewardWindow
   hosts?: string[]
   packages?: string[]
   require_idle?: boolean
   [name: string]: unknown
 }
 
-/** An entry of a run's `actions` or `recommendations` — one tool call (`agents/policy.py::_record`). */
-export interface AgentCall {
+/** An entry of a run's `actions` or `recommendations` — one tool call (`stewards/policy.py::_record`). */
+export interface StewardCall {
   tool: string
   args: Record<string, unknown>
   agent_id: string | null
@@ -354,16 +354,16 @@ export interface AgentCall {
   code?: string | null
 }
 
-/** `agents/store.py::AgentRun.to_public`. */
-export interface AgentRun {
+/** `stewards/store.py::StewardRun.to_public`. */
+export interface StewardRun {
   id: string
-  agent_id: string
+  steward_id: string
   spec_hash: string
   trigger: string
   subject: string | null
   host_id: string | null
-  mode: AgentMode
-  status: AgentRunStatus
+  mode: StewardMode
+  status: StewardRunStatus
   verdict: string | null
   summary: string | null
   input_tokens: number
@@ -372,20 +372,20 @@ export interface AgentRun {
   cache_creation_tokens: number
   ticket_id: string | null
   error: string | null
-  actions: AgentCall[]
-  recommendations: AgentCall[]
+  actions: StewardCall[]
+  recommendations: StewardCall[]
   started_at: string
   finished_at: string | null
-  params: AgentParamValues | null
+  params: StewardParamValues | null
   effective_hash: string | null
 }
 
-/** One entry of `GET /api/specialized-agents` (`agents/runner.py::overview`). */
-export interface SpecializedAgent {
+/** One entry of `GET /api/stewards` (`stewards/runner.py::overview`). */
+export interface Steward {
   id: string
   title: string
   description: string
-  trigger: AgentTrigger
+  trigger: StewardTrigger
   tools: string[]
   tool_classes: Record<string, ToolTier>
   /**
@@ -395,46 +395,46 @@ export interface SpecializedAgent {
   tool_targets?: Record<string, 'host' | 'server'>
   verdict_tool: string | null
   budget: { max_iterations: number }
-  constraints: AgentConstraint[]
-  timeouts: AgentTimeout[]
+  constraints: StewardConstraint[]
+  timeouts: StewardTimeout[]
   sensitive_ok: boolean
-  default_mode: AgentMode
+  default_mode: StewardMode
   version: number
   spec_hash: string
-  mode: AgentMode
+  mode: StewardMode
   /** The values on this install (the overview replaces the spec's list of names with them). */
-  params: AgentParamValues
+  params: StewardParamValues
   effective_hash: string | null
   /** `null` for triage, whose `act` is its settings rather than a binding to a hash. */
   act_bound: boolean | null
-  latest_run: AgentRun | null
+  latest_run: StewardRun | null
 }
 
-export interface SpecializedAgentsResponse {
+export interface StewardsResponse {
   enabled: boolean
-  agents: SpecializedAgent[]
+  stewards: Steward[]
 }
 
-/** `GET /api/specialized-agents/{id}/params` — `declared` is what the spec takes. */
-export interface AgentParamsResponse {
-  agent_id: string
+/** `GET /api/stewards/{id}/params` — `declared` is what the spec takes. */
+export interface StewardParamsResponse {
+  steward_id: string
   declared: string[]
-  params: AgentParamValues
+  params: StewardParamValues
   effective_hash: string | null
 }
 
-/** `PUT /api/specialized-agents/{id}/params`. */
-export interface AgentParamsSaved {
-  agent_id: string
-  params: AgentParamValues
+/** `PUT /api/stewards/{id}/params`. */
+export interface StewardParamsSaved {
+  steward_id: string
+  params: StewardParamValues
   effective_hash: string
-  mode: AgentMode
+  mode: StewardMode
   voided: number
 }
 
-export interface AgentAuthorization {
+export interface StewardAuthorization {
   id: string
-  agent_id: string
+  steward_id: string
   effective_hash: string
   tool: string
   /** Host ids, or the sentinel `"server"`. */
@@ -453,20 +453,20 @@ export interface AgentAuthorization {
   attempts_last_24h: Record<string, number>
 }
 
-export interface AgentAuthorizationsResponse {
-  agent_id: string
+export interface StewardAuthorizationsResponse {
+  steward_id: string
   effective_hash: string | null
-  authorizations: AgentAuthorization[]
+  authorizations: StewardAuthorization[]
 }
 
-/** `PUT /api/specialized-agents/{id}/mode` — `mode` is the one now in force, which for triage can differ from `requested`. */
-export interface AgentModeSet {
-  agent_id: string
-  mode: AgentMode
-  requested: AgentMode
+/** `PUT /api/stewards/{id}/mode` — `mode` is the one now in force, which for triage can differ from `requested`. */
+export interface StewardModeSet {
+  steward_id: string
+  mode: StewardMode
+  requested: StewardMode
 }
 
-/** `POST /api/specialized-agents/{id}/runs` (preview, always shadow) answers 202. */
-export interface AgentPreviewStarted {
+/** `POST /api/stewards/{id}/runs` (preview, always shadow) answers 202. */
+export interface StewardPreviewStarted {
   run_id: string
 }

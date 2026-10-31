@@ -1,4 +1,4 @@
-"""The config-hygiene agent, joined end to end (ADR-0071, ADR-0072).
+"""The config-hygiene steward, joined end to end (ADR-0071, ADR-0072).
 
 What is guaranteed here, each where it can break:
 
@@ -11,8 +11,8 @@ What is guaranteed here, each where it can break:
 * **The gate admits only computed ids**, and no free argument beside them.
 * **The removal re-checks at execution**: a rule that matched after the run's
   evidence was computed is refused, not removed.
-* **The tools exist only on the agent executor**: absent from the copilot's
-  schemas and every ticket session, registered on ``main.py``'s agent executor.
+* **The tools exist only on the steward executor**: absent from the copilot's
+  schemas and every ticket session, registered on ``main.py``'s steward executor.
 * **Joined runs**: shadow (recommendations), act with a ``server`` grant (the
   removal happens and the audit row names the authorization), act without one
   (recommendation only).
@@ -27,21 +27,21 @@ from typing import Any
 import pytest
 
 from kenny_server import chat, toolloop
-from kenny_server.agents import catalog
-from kenny_server.agents.authorizations import AuthorizationStore
-from kenny_server.agents.catalog import CATALOG
-from kenny_server.agents.catalog.hygiene import CONFIG_HYGIENE
-from kenny_server.agents.hygiene import (
+from kenny_server.stewards import catalog
+from kenny_server.stewards.authorizations import AuthorizationStore
+from kenny_server.stewards.catalog import CATALOG
+from kenny_server.stewards.catalog.hygiene import CONFIG_HYGIENE
+from kenny_server.stewards.hygiene import (
     EVIDENCE_NAMES,
     UNUSED_AFTER_DAYS,
     UNUSED_SUPPRESSIONS,
     UNUSED_TICKET_RULES,
     RuleHygiene,
 )
-from kenny_server.agents.hygiene import register as register_hygiene
-from kenny_server.agents.policy import AgentPolicy, AgentSession
-from kenny_server.agents.spec import (
-    AgentSpec,
+from kenny_server.stewards.hygiene import register as register_hygiene
+from kenny_server.stewards.policy import StewardPolicy, StewardSession
+from kenny_server.stewards.spec import (
+    StewardSpec,
     ArgConstraint,
     SpecError,
     Trigger,
@@ -49,7 +49,7 @@ from kenny_server.agents.spec import (
     validate,
     with_evidence,
 )
-from kenny_server.agents.verdict import register as register_verdict
+from kenny_server.stewards.verdict import register as register_verdict
 from kenny_server.alerting import AlertEngine
 from kenny_server.reliability_suppression import SuppressionList
 from kenny_server.rule_hits import RELIABILITY_WINDOW_DAYS, iso, unused, unused_ids
@@ -67,10 +67,10 @@ from kenny_server.ticket_rules import (
 )
 from kenny_server.ticket_rules import rule_id as ticket_rule_id
 from kenny_server.tool_classes import NORMAL_CHANGE, READ_ONLY, classify
-from kenny_server.toolloop import AGENT_ONLY_TOOLS, Allow, Deny, ToolExecutor
+from kenny_server.toolloop import STEWARD_ONLY_TOOLS, Allow, Deny, ToolExecutor
 from kenny_server.tunnel import ToolError
 
-from test_agent_runner import World, _text, _tool
+from test_steward_runner import World, _text, _tool
 
 NOW = datetime(2026, 10, 8, 12, 0, tzinfo=timezone.utc)
 OLD = NOW - timedelta(days=UNUSED_AFTER_DAYS + 10)
@@ -638,7 +638,7 @@ async def test_the_evidence_holds_back_a_tripwire_and_the_removal_rechecks(
     # Between the evidence and the call, an admin says "nothing on kid-pc's
     # health tickets": removing the memory rule would now silence its crits.
     await hw.ticket_rules.add(event_type="health", decision="never", agent_id=KID)
-    session = AgentSession(id="run1", spec=CONFIG_HYGIENE, mode="act")
+    session = StewardSession(id="run1", spec=CONFIG_HYGIENE, mode="act")
     with pytest.raises(ToolError) as refused:
         await hygiene.remove_ticket_rule({"rule_id": memory}, session=session,
                                           authorization_id="auth1")
@@ -702,14 +702,14 @@ def test_every_evidence_the_catalog_names_has_a_provider_in_the_wiring() -> None
 # -- the spec ------------------------------------------------------------------------
 
 
-def test_the_agent_declares_the_documented_shape() -> None:
+def test_the_steward_declares_the_documented_shape() -> None:
     spec = CATALOG["config_hygiene"]
     assert spec is CONFIG_HYGIENE
     assert catalog.check_dispatchable(validate(spec)) is spec
     assert spec.default_mode == "shadow"
     assert spec.trigger == Trigger(kind="schedule", min_interval_days=28)
     assert spec.params == ("window",)
-    assert spec.verdict_tool == toolloop.AGENT_VERDICT_TOOL
+    assert spec.verdict_tool == toolloop.STEWARD_VERDICT_TOOL
     assert {t for t in spec.tools if classify(t) == READ_ONLY} == {
         "reliability_suppression_list", "ticket_rule_list"}
     assert {t for t in spec.tools if classify(t) == NORMAL_CHANGE} == {
@@ -749,7 +749,7 @@ def test_evidence_is_hashed_by_declaration_and_never_declared_with_values() -> N
         validate(both)
 
 
-def test_a_server_only_schedule_agent_may_not_name_a_host_tool() -> None:
+def test_a_server_only_schedule_steward_may_not_name_a_host_tool() -> None:
     spec = replace(CONFIG_HYGIENE, tools=CONFIG_HYGIENE.tools | {"diag_services"})
     with pytest.raises(SpecError, match="runs on no host"):
         catalog.check_dispatchable(spec)
@@ -760,7 +760,7 @@ def test_min_interval_is_whole_days_on_a_schedule(bad: Any) -> None:
     with pytest.raises(SpecError):
         validate(replace(CONFIG_HYGIENE, trigger=Trigger(kind="schedule", min_interval_days=bad)))
     with pytest.raises(SpecError):
-        validate(AgentSpec(id="od", title="t", description="d", prompt="p",
+        validate(StewardSpec(id="od", title="t", description="d", prompt="p",
                            trigger=Trigger(kind="on_demand", min_interval_days=28),
                            tools=frozenset({"ticket_rule_list"})))
 
@@ -768,18 +768,18 @@ def test_min_interval_is_whole_days_on_a_schedule(bad: Any) -> None:
 # -- the gate ------------------------------------------------------------------------
 
 
-def _session(mode: str, **evidence: list[str]) -> AgentSession:
-    return AgentSession(id="run1", spec=with_evidence(CONFIG_HYGIENE, evidence), mode=mode)
+def _session(mode: str, **evidence: list[str]) -> StewardSession:
+    return StewardSession(id="run1", spec=with_evidence(CONFIG_HYGIENE, evidence), mode=mode)
 
 
-async def _gate(policy: AgentPolicy, session: AgentSession, tool: str, args: dict[str, Any]):
+async def _gate(policy: StewardPolicy, session: StewardSession, tool: str, args: dict[str, Any]):
     target = policy.resolve_target(session, tool, args)
     return await policy.gate(session, tool, args, target)
 
 
 async def test_the_gate_admits_only_an_id_the_server_computed() -> None:
     session = _session("shadow", unused_suppressions=[S_OLD])
-    policy = AgentPolicy(session)
+    policy = StewardPolicy(session)
     tool = "reliability_suppression_remove"
     for args in ({"rule_id": S_USED}, {"rule_id": ""}, {}, {"rule_id": [S_OLD]}):
         decision = await _gate(policy, session, tool, dict(args))
@@ -813,7 +813,7 @@ async def test_a_rule_that_matched_since_the_evidence_is_refused(hw: HygieneWorl
     assert await hygiene.unused_suppressions() == [S_OLD]
     # Between the evidence and the call, the server applies the rule again.
     hw.suppression.mark("pc1", _snapshot(_event("Microsoft-Windows-CAPI2", 4176, iso(NOW))))
-    session = AgentSession(id="run1", spec=CONFIG_HYGIENE, mode="act")
+    session = StewardSession(id="run1", spec=CONFIG_HYGIENE, mode="act")
 
     with pytest.raises(ToolError) as refused:
         await hygiene.remove_suppression({"rule_id": S_OLD}, session=session,
@@ -823,10 +823,10 @@ async def test_a_rule_that_matched_since_the_evidence_is_refused(hw: HygieneWorl
     [entry] = await hw.base.call_log.list()
     assert (entry["tool"], entry["ok"], entry["actor"], entry["run_id"],
             entry["authorization_id"], entry["agent_id"]) == (
-        "reliability_suppression_remove", False, "agent:config_hygiene", "run1", "auth1", None)
+        "reliability_suppression_remove", False, "steward:config_hygiene", "run1", "auth1", None)
 
 
-async def test_the_handlers_refuse_outside_an_agent_run(hw: HygieneWorld) -> None:
+async def test_the_handlers_refuse_outside_a_steward_run(hw: HygieneWorld) -> None:
     await hw.rules()
     hygiene = RuleHygiene(suppression=hw.suppression, ticket_rules=hw.ticket_rules,
                           call_log=hw.base.call_log, now=lambda: NOW)
@@ -836,43 +836,43 @@ async def test_the_handlers_refuse_outside_an_agent_run(hw: HygieneWorld) -> Non
     assert hw.ticket_rules.get(T_OLD) is not None
 
 
-# -- only on the agent executor ----------------------------------------------------------
+# -- only on the steward executor ----------------------------------------------------------
 
 
 def test_the_rule_tools_are_withheld_from_the_copilot_and_every_ticket_session() -> None:
-    assert AGENT_ONLY_TOOLS <= set(toolloop.SERVER_TOOLS)
-    assert AGENT_ONLY_TOOLS <= toolloop.SURFACE_ONLY_TOOLS
+    assert STEWARD_ONLY_TOOLS <= set(toolloop.SERVER_TOOLS)
+    assert STEWARD_ONLY_TOOLS <= toolloop.SURFACE_ONLY_TOOLS
     copilot = {s["name"] for s in toolloop.build_tool_schemas()}
-    assert not (copilot & AGENT_ONLY_TOOLS)
-    assert not ({s["name"] for s in chat._TOOL_SCHEMAS} & AGENT_ONLY_TOOLS)
-    assert AGENT_ONLY_TOOLS <= EXCLUDED_TOOLS
+    assert not (copilot & STEWARD_ONLY_TOOLS)
+    assert not ({s["name"] for s in chat._TOOL_SCHEMAS} & STEWARD_ONLY_TOOLS)
+    assert STEWARD_ONLY_TOOLS <= EXCLUDED_TOOLS
     for profile in ("operator", "power-user", "self-service-basic", None):
         for scoped in (False, True):
             for triage in (False, True):
                 offered = allowed_tools_for(profile=profile, scoped=scoped, triage=triage)
-                assert not (offered & AGENT_ONLY_TOOLS), (profile, scoped, triage)
+                assert not (offered & STEWARD_ONLY_TOOLS), (profile, scoped, triage)
 
 
 async def test_an_executor_without_the_handlers_cannot_run_them(hw: HygieneWorld) -> None:
     plain = ToolExecutor(registry=hw.base.registry, store=hw.base.telemetry,
                          tunnel=hw.base.tunnel, call_log=hw.base.call_log,
                          screenshots=hw.base.executor.screenshots)
-    for tool in sorted(AGENT_ONLY_TOOLS):
+    for tool in sorted(STEWARD_ONLY_TOOLS):
         with pytest.raises(ToolError) as refused:
             await plain.run_server_tool(tool, {"rule_id": S_OLD})
         assert refused.value.code == "unknown_tool"
 
 
-def test_main_registers_the_tools_on_the_agent_executor_alone(tmp_path) -> None:
+def test_main_registers_the_tools_on_the_steward_executor_alone(tmp_path) -> None:
     from kenny_server.main import build_app
 
     app = build_app(db_path=str(tmp_path / "app.sqlite"))
-    agent_executor = app.state.agents._executor
-    assert AGENT_ONLY_TOOLS <= set(agent_executor.server_tool_handlers)
-    assert app.state.agents.evidence_providers() >= EVIDENCE_NAMES
+    steward_executor = app.state.stewards._executor
+    assert STEWARD_ONLY_TOOLS <= set(steward_executor.server_tool_handlers)
+    assert app.state.stewards.evidence_providers() >= EVIDENCE_NAMES
     assistant = app.state.ticket_assistant
     if assistant is not None:
-        assert not (set(assistant.executor.server_tool_handlers) & AGENT_ONLY_TOOLS)
+        assert not (set(assistant.executor.server_tool_handlers) & STEWARD_ONLY_TOOLS)
 
 
 # -- joined runs -----------------------------------------------------------------------
@@ -884,7 +884,7 @@ def _script() -> list[Any]:
         _tool("t2", "ticket_rule_list", {}),
         _tool("t3", "reliability_suppression_remove", {"rule_id": S_OLD}),
         _tool("t4", "ticket_rule_remove", {"rule_id": T_OLD}),
-        _tool("t5", toolloop.AGENT_VERDICT_TOOL, {
+        _tool("t5", toolloop.STEWARD_VERDICT_TOOL, {
             "verdict": "actionable",
             "finding": "Two rules have done nothing for months.",
             "evidence": "reliability_suppression_list, ticket_rule_list",
@@ -932,7 +932,7 @@ async def test_a_shadow_run_recommends_what_it_would_remove(hw: HygieneWorld) ->
     brief = client.messages.calls[0]["messages"][0]["content"]
     assert S_OLD in brief and T_OLD in brief and S_USED not in brief
     # The shadow finding reaches a person, with what the run proposed.
-    ticket = await hw.base.ticket_store.find_open_by_dedup_key("agent|config_hygiene|")
+    ticket = await hw.base.ticket_store.find_open_by_dedup_key("steward|config_hygiene|")
     assert ticket is not None and S_OLD in ticket.summary
 
 
@@ -974,7 +974,7 @@ async def test_an_authorized_act_run_removes_and_names_the_authorization(hw: Hyg
     assert len(audit) == 1
     assert (audit[0]["ok"], audit[0]["actor"], audit[0]["run_id"], audit[0]["authorization_id"],
             audit[0]["agent_id"], audit[0]["args"]) == (
-        True, "agent:config_hygiene", run.id, grant.id, None, {"rule_id": S_OLD})
+        True, "steward:config_hygiene", run.id, grant.id, None, {"rule_id": S_OLD})
 
 
 async def test_act_without_an_authorization_only_recommends(hw: HygieneWorld) -> None:
@@ -1031,7 +1031,7 @@ async def test_a_match_after_run_start_is_refused_in_a_joined_act_run(hw: Hygien
 
 @pytest.fixture
 async def sw(tmp_path):
-    from test_agent_scheduler import World as SchedulerWorld
+    from test_steward_scheduler import World as SchedulerWorld
 
     world = SchedulerWorld(str(tmp_path / "hygiene-sched.sqlite"))
     await world.setup()
@@ -1040,11 +1040,11 @@ async def sw(tmp_path):
 
 
 async def test_the_scheduler_runs_it_once_per_occurrence_on_no_host(sw: Any) -> None:
-    from test_agent_scheduler import IN_WINDOW, NIGHT
+    from test_steward_scheduler import IN_WINDOW, NIGHT
 
     sw.configure("config_hygiene", window=NIGHT)
     [outcome] = await sw.scheduler().pass_once()
-    assert (outcome.agent_id, outcome.kind, outcome.host_id) == ("config_hygiene", "ran", None)
+    assert (outcome.steward_id, outcome.kind, outcome.host_id) == ("config_hygiene", "ran", None)
     [call] = sw.runner.calls
     assert call.host is None and "on the server" in call.brief
     # The same occurrence never runs it twice.
@@ -1061,7 +1061,7 @@ async def test_the_scheduler_runs_it_once_per_occurrence_on_no_host(sw: Any) -> 
 
 
 async def test_a_skipped_occurrence_does_not_start_the_interval(sw: Any) -> None:
-    from test_agent_scheduler import IN_WINDOW, NIGHT
+    from test_steward_scheduler import IN_WINDOW, NIGHT
 
     sw.configure("config_hygiene", window=NIGHT)
     sw.runner.script["*"] = {"status": "skipped", "error": "over the token cap"}

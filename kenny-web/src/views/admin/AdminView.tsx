@@ -10,7 +10,7 @@ import AdminNav, { type AdminNavItem } from './AdminNav'
 import GenericSettingsSection from './sections/GenericSettingsSection'
 import AlertsSection from './sections/AlertsSection'
 import AiSection from './sections/AiSection'
-import AgentsSection from './sections/AgentsSection'
+import StewardsSection from './sections/StewardsSection'
 import AlarmRulesSection from './sections/AlarmRulesSection'
 import BackupSection from './sections/BackupSection'
 import UpdatesSection from './sections/UpdatesSection'
@@ -23,7 +23,7 @@ import styles from './AdminView.module.css'
 const SYNTHETIC_LABELS: Record<string, string> = {
   updates: 'Updates',
   'alarm-rules': 'Alarm rules',
-  agents: 'Specialized agents',
+  stewards: 'Stewards',
   users: 'Users',
 }
 
@@ -59,11 +59,11 @@ const SLUG_ALIASES: Record<string, string> = {
  * (`groups[].slug`, in the server's order) plus **Alarm rules** (right after the
  * alerts it governs) and **Users**.
  *
- * An operator gets **Updates**, **Alarm rules** and **Specialized agents** — the
+ * An operator gets **Updates**, **Alarm rules** and **Stewards** — the
  * sections whose own routes floor at `operator` (`/api/updates`,
- * `/api/ticket-rules`, `/api/reliability/suppressions`, `/api/specialized-agents`).
+ * `/api/ticket-rules`, `/api/reliability/suppressions`, `/api/stewards`).
  * They render without `/api/settings` ever being requested: asking for it would
- * 403 and take the whole page down with it. **Specialized agents** is the one
+ * 403 and take the whole page down with it. **Stewards** is the one
  * section a superuser and an operator see differently: the write controls (mode,
  * parameters, authorizations) are drawn only for a superuser.
  */
@@ -86,19 +86,19 @@ export default function AdminView() {
   const navItems: AdminNavItem[] = useMemo(() => {
     if (!isOperator) return []
     const alarmRules = { key: 'alarm-rules', label: SYNTHETIC_LABELS['alarm-rules'] }
-    const agents = { key: 'agents', label: SYNTHETIC_LABELS.agents }
+    const stewards = { key: 'stewards', label: SYNTHETIC_LABELS.stewards }
     if (!isSuperuser) {
-      return [{ key: 'updates', label: SYNTHETIC_LABELS.updates }, alarmRules, agents]
+      return [{ key: 'updates', label: SYNTHETIC_LABELS.updates }, alarmRules, stewards]
     }
     const items: AdminNavItem[] = []
     for (const g of groups) {
       items.push({ key: g.key, label: g.label })
       if (g.key === 'alerts-notifications') items.push(alarmRules)
-      // Right after the AI group, which holds the global switch for every agent.
-      if (g.key === 'ai') items.push(agents)
+      // Right after the AI group, which holds the global switch for every steward.
+      if (g.key === 'ai') items.push(stewards)
     }
     if (!items.includes(alarmRules)) items.push(alarmRules)
-    if (!items.includes(agents)) items.push(agents)
+    if (!items.includes(stewards)) items.push(stewards)
     items.push({ key: 'users', label: SYNTHETIC_LABELS.users })
     return items
   }, [groups, isOperator, isSuperuser])
@@ -194,8 +194,8 @@ export default function AdminView() {
             <AiSection rows={rows} />
           ) : section === 'alarm-rules' ? (
             <AlarmRulesSection />
-          ) : section === 'agents' ? (
-            <AgentsSection canManage={isSuperuser} />
+          ) : section === 'stewards' ? (
+            <StewardsSection canManage={isSuperuser} />
           ) : section === 'backup' ? (
             <BackupSection rows={rows} />
           ) : section === 'updates' ? (

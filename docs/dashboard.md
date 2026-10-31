@@ -588,19 +588,19 @@ where [alerts](alerting.md) land as an audit trail, and where the
 
 <figure markdown>
   ![The Admin page](assets/screenshots/admin.png)
-  <figcaption>Admin with Alerts & notifications open; the section nav lists Alerts & notifications, Alarm rules, AI, Specialized agents, Tickets, Discord, Backup, Updates, Web filter, Shell policy, System, and Users.</figcaption>
+  <figcaption>Admin with Alerts & notifications open; the section nav lists Alerts & notifications, Alarm rules, AI, Stewards, Tickets, Discord, Backup, Updates, Web filter, Shell policy, System, and Users.</figcaption>
 </figure>
 
 *(`#/admin/{section}` — a superuser sees every section; an operator sees only
 [Updates](#updates), [Alarm rules](#alarm-rules) and
-[Specialized agents](#specialized-agents-view))*
+[Stewards](#stewards-view))*
 
 A left section nav picks one section at a time: **Alerts & notifications**, **Alarm
-rules**, **AI**, **Specialized agents**, **Tickets**, **Discord**, **Backup**,
+rules**, **AI**, **Stewards**, **Tickets**, **Discord**, **Backup**,
 **Updates**, **Web filter**, **Shell policy**, **System**, and **Users**. Every section
-except Alarm rules, Specialized agents and Users is a group of `config.py`'s settings
+except Alarm rules, Stewards and Users is a group of `config.py`'s settings
 catalog, in the catalog's order; Alarm rules sits right after the alerts it governs and
-Specialized agents right after AI, whose settings hold the global switch for every agent.
+Stewards right after AI, whose settings hold the global switch for every steward.
 
 **Everything Admin shows can be changed there.** `GET /api/settings` lists only the
 settings the dashboard can write. Bootstrap, network, auth and secret settings, and the
@@ -611,7 +611,7 @@ the update rollout.
 
 Two settings let kenny act on its own — **Let triage resolve a ticket**
 (`KENNY_TRIAGE_RESOLVE`) and the global switch for the
-[specialized agents](#specialized-agents) (`KENNY_AGENTS_ENABLED`). Switching either on,
+[stewards](#stewards) (`KENNY_STEWARDS_ENABLED`). Switching either on,
 or resetting it, needs a superuser signed in here, not an API token
 ([ADR-0072](adr/0072-standing-authorizations-consent-given-ahead.md)); switching either
 off works with any superuser credential.
@@ -710,78 +710,78 @@ the models, and the assistant's limits
 - **Triage steps per ticket** — how many model round-trips one investigation may take.
 - **Assistant turns per ticket** — the cap on the turns the ticket assistant takes on one
   ticket, on the dashboard and in Discord alike, before it is handed to an operator.
-- **Specialized agents** (on by default) — the global switch for every agent kenny runs on
+- **Stewards** (on by default) — the global switch for every steward kenny runs on
   its own, triage included; off, none starts.
-- **Agent runs at once** (default 2) and **Agent tokens per day** (default 0, no cap) —
-  the global bounds every agent run is checked against before the model is called. A run
+- **Steward runs at once** (default 2) and **Steward tokens per day** (default 0, no cap) —
+  the global bounds every steward run is checked against before the model is called. A run
   either one refuses is recorded as *skipped*, with the reason.
 
 See [Tickets → kenny looks first](itsm.md#kenny-looks-first-before-you-are-asked-to) for
 triage.
 
-#### Specialized agents
+#### Stewards
 
-An agent is a purpose-bound session kenny starts on its own — triage is the first — with
+A steward is a purpose-bound session kenny starts on its own — triage is the first — with
 its own prompt, trigger, closed tool set and budget
-([ADR-0071](adr/0071-specialized-agents-purpose-bound-unattended-sessions.md)). Each has a
+([ADR-0071](adr/0071-stewards-purpose-bound-unattended-sessions.md)). Each has a
 **mode**: `off`, `shadow` (the whole run happens; a change is refused and kept as a
 recommendation) or `act`. Triage's mode is its two settings above: *Investigate new
 tickets automatically* off (or AI unavailable) is `off`, *Let triage resolve a ticket*
 off is `shadow`, on is `act`.
 
-- `GET /api/specialized-agents` *(operator+)* — the global switch (`enabled`) and every agent in the
+- `GET /api/stewards` *(operator+)* — the global switch (`enabled`) and every steward in the
   catalog: its declaration (tools and their tiers, argument constraints, budget,
   `spec_hash`), its current `mode`, and its latest run.
-- `GET /api/specialized-agents/runs?agent_id=&limit=` *(operator+)* — runs newest first, optionally
-  for one agent (`limit` defaults to 50, at most 500).
-- `GET /api/specialized-agents/runs/{run_id}` *(operator+)* — one run: what started it, the host or
+- `GET /api/stewards/runs?steward_id=&limit=` *(operator+)* — runs newest first, optionally
+  for one steward (`limit` defaults to 50, at most 500).
+- `GET /api/stewards/runs/{run_id}` *(operator+)* — one run: what started it, the host or
   ticket it was bound to, its mode and status (`running`, `completed`, `failed`,
   `skipped`), its verdict, the changes it made and proposed (arguments redacted), the
   parameters and server-computed `evidence` its constraints were frozen to, and its token
   usage.
-- `POST /api/specialized-agents/{agent_id}/runs` with `{"host_id"?}` *(operator+, any
-  credential)* — runs the agent once, now, as a **preview**. A preview is **always
-  `shadow`**, whatever mode the agent is in (an agent in `act` included): the run happens,
+- `POST /api/stewards/{steward_id}/runs` with `{"host_id"?}` *(operator+, any
+  credential)* — runs the steward once, now, as a **preview**. A preview is **always
+  `shadow`**, whatever mode the steward is in (a steward in `act` included): the run happens,
   but a change it attempts is kept as a recommendation and never made, it spends no
   authorization, and its verdict opens no ticket — so it changes nothing and needs no
-  signed-in superuser. The run's `trigger` is `preview:<username>`. A host-bound agent
-  needs a `host_id` the server knows; an agent that works on no machine takes none. It is
-  refused with `400` for triage, for an agent whose mode is `off` (a preview is no way
+  signed-in superuser. The run's `trigger` is `preview:<username>`. A host-bound steward
+  needs a `host_id` the server knows; a steward that works on no machine takes none. It is
+  refused with `400` for triage, for a steward whose mode is `off` (a preview is no way
   round that switch), and for a bad target; `409` when the global switch or AI is off,
-  when a preview of the same agent on the same host is still running (one at a time), when
-  the agent has had `KENNY_AGENTS_PREVIEWS_PER_DAY` previews in the last 24 hours, or when
+  when a preview of the same steward on the same host is still running (one at a time), when
+  the steward has had `KENNY_STEWARDS_PREVIEWS_PER_DAY` previews in the last 24 hours, or when
   a cap refused the run. A refused preview leaves no run behind, so a refusal carries no
   `run_id`. It answers `202` with `run_id` as soon as the run is admitted and carries on in
-  the background; watch it at `GET /api/specialized-agents/runs/{run_id}`. Previews count
-  toward the concurrency and token caps like any run. Nothing a scheduled agent reads back
-  — which hosts already ran, a stopped canary, the circuit breaker's streak, the agent's
+  the background; watch it at `GET /api/stewards/runs/{run_id}`. Previews count
+  toward the concurrency and token caps like any run. Nothing a scheduled steward reads back
+  — which hosts already ran, a stopped canary, the circuit breaker's streak, the steward's
   interval — counts a preview, however many there are. Ask kenny offers a preview only
   when this route would accept it, apart from the caps.
-- `PUT /api/specialized-agents/{agent_id}/mode` with `{"mode": "off" | "shadow" | "act",
-  "effective_hash"}` *(superuser, signed in at the dashboard)* — moving an agent to `act`
-  is a superuser's decision, so every mode write is. `act` must carry the agent's
-  `effective_hash` exactly as `GET /api/specialized-agents` showed it: `act` binds to that
-  hash, the answer is `400` without one and `409` when the agent has changed since (a
+- `PUT /api/stewards/{steward_id}/mode` with `{"mode": "off" | "shadow" | "act",
+  "effective_hash"}` *(superuser, signed in at the dashboard)* — moving a steward to `act`
+  is a superuser's decision, so every mode write is. `act` must carry the steward's
+  `effective_hash` exactly as `GET /api/stewards` showed it: `act` binds to that
+  hash, the answer is `400` without one and `409` when the steward has changed since (a
   parameter edit in between), so reload and review it again. `off` and `shadow` need no
   hash. For triage it writes the two settings above, exactly as this page does. The answer
   carries the mode now in force, which for triage stays `off` while no API key or gateway
   is configured. Each change is written to the event log with who made it.
-- `GET /api/specialized-agents/{agent_id}/params` *(operator+)* — the parameters the agent's
-  spec declares, their values on this install, and the agent's `effective_hash`.
-- `PUT /api/specialized-agents/{agent_id}/params` with `{"params": {...}}` *(superuser,
+- `GET /api/stewards/{steward_id}/params` *(operator+)* — the parameters the steward's
+  spec declares, their values on this install, and the steward's `effective_hash`.
+- `PUT /api/stewards/{steward_id}/params` with `{"params": {...}}` *(superuser,
   signed in at the dashboard)* — replaces them. A list parameter (`hosts`, the `packages`
   allowlist) is a list of non-empty strings; `require_idle` is `true` or `false` (absent
   means `true`: a host with somebody signed in is skipped); `window` is `{"days",
   "start", "end", "tz"}`, read like a web-filter schedule window.
-- `GET /api/specialized-agents/{agent_id}/authorizations` *(operator+)* — the agent's
+- `GET /api/stewards/{steward_id}/authorizations` *(operator+)* — the steward's
   standing authorizations, revoked, voided and expired ones included, each with its status
   and the attempts spent per host in the last 24 hours.
-- `POST /api/specialized-agents/{agent_id}/authorizations` with `{"tool", "scope",
+- `POST /api/stewards/{steward_id}/authorizations` with `{"tool", "scope",
   "max_attempts_per_day", "expires_at", "note", "effective_hash"}` *(superuser, signed in
-  at the dashboard)* — grants one, bound to `effective_hash`, the agent's hash as `GET
-  /api/specialized-agents` showed it: `400` without one, `409` when the agent has changed
+  at the dashboard)* — grants one, bound to `effective_hash`, the steward's hash as `GET
+  /api/stewards` showed it: `400` without one, `409` when the steward has changed
   since. `scope` is a list of host ids, or `"server"` for a change that touches no host.
-- `DELETE /api/specialized-agents/{agent_id}/authorizations/{auth_id}` *(superuser, signed
+- `DELETE /api/stewards/{steward_id}/authorizations/{auth_id}` *(superuser, signed
   in at the dashboard)* — revokes one; the next call it would have covered is refused.
 
 Choosing a mode, granting, revoking and editing parameters are a person's consent, so they
@@ -789,23 +789,23 @@ need a superuser signed in to their own account in a browser. The same calls mad
 personal access token, an OAuth token (what Claude uses for `/mcp`) or the shared operator
 token are refused with `403`; reading stays open to them.
 
-`act` is bound to the agent's **effective hash**: its spec (including the tier of every
+`act` is bound to the steward's **effective hash**: its spec (including the tier of every
 tool it names) together with its parameters. A parameter edit that changes the hash, or a
-release that changes the spec, drops the agent to `shadow` at once, a run in flight
+release that changes the spec, drops the steward to `shadow` at once, a run in flight
 included, and it stays there until a superuser chooses `act` again; `GET
-/api/specialized-agents` shows each agent's `params`, `effective_hash` and whether `act` is
+/api/stewards` shows each steward's `params`, `effective_hash` and whether `act` is
 bound (`act_bound`).
 
-A `normal_change` an agent in `act` makes runs only under a standing authorization
+A `normal_change` a steward in `act` makes runs only under a standing authorization
 ([ADR-0072](adr/0072-standing-authorizations-consent-given-ahead.md)): one tool, named hosts
 (an empty list is never "all"), an attempt budget per host per rolling 24 hours, an expiry
 at most 180 days out. `shell_exec`, `powershell_exec` and `agent_update` can never be
 authorized. An attempt is spent before the call runs, a failed call still counts, and the
 run's actions and the audit entry name the authorization; without one the change is kept
-as a recommendation. A change of the effective hash voids the agent's authorizations for
+as a recommendation. A change of the effective hash voids the steward's authorizations for
 good, so neither a parameter edit nor a code rollback revives them.
 
-The **rule-hygiene agent** (`config_hygiene`, in `shadow` until a superuser chooses `act`)
+The **rule-hygiene steward** (`config_hygiene`, in `shadow` until a superuser chooses `act`)
 runs on the server, not on a host, about once a month: in the first occurrence of its
 `window` at least 28 days after the last one it ran in. It removes reliability
 suppressions and auto-ticket rules that nothing has matched for 90 days, and only those
@@ -816,7 +816,7 @@ and a removal naming any other id is refused at the gate.
 
 - **Unused** means nothing matched the rule for 90 days, it was created more than 90 days
   ago, and the server has been recording matches on its table for all of those 90 days.
-  Recording on each table starts the first time the server runs with this agent, so on
+  Recording on each table starts the first time the server runs with this steward, so on
   an install that predates it no rule is removable for its first 90 days. A
   suppression's match is dated by when the event last happened, bounded by when the
   server received the snapshot (no later, and no earlier than the reliability section's
@@ -842,36 +842,36 @@ standing authorization with scope `"server"`; without one, and in `shadow`, the 
 recommendations list what it would remove.
 
 Each server start marks a run the previous process left open as `failed`, deletes finished
-runs older than 90 days, and voids every authorization bound to what an agent no longer is.
-For an agent no longer in the catalog it voids every authorization and drops a stored `act`
-to `shadow`, so an agent removed and shipped again later starts over in `shadow`.
+runs older than 90 days, and voids every authorization bound to what a steward no longer is.
+For a steward no longer in the catalog it voids every authorization and drops a stored `act`
+to `shadow`, so a steward removed and shipped again later starts over in `shadow`.
 
-### Specialized agents view
+### Stewards view
 
 <figure markdown>
-  ![The Specialized agents list](assets/screenshots/admin-agents.png)
-  <figcaption>The agent list: each agent's mode, effective hash and latest run.</figcaption>
+  ![The Stewards list](assets/screenshots/admin-stewards.png)
+  <figcaption>The steward list: each steward's mode, effective hash and latest run.</figcaption>
 </figure>
 
-*(`#/admin/agents`, one agent at `#/admin/agents/{id}` — operator+ reads and may start a
-preview; changing an agent is a superuser's, signed in at the dashboard)*
+*(`#/admin/stewards`, one steward at `#/admin/stewards/{id}` — operator+ reads and may start a
+preview; changing a steward is a superuser's, signed in at the dashboard)*
 
-The view for the agents kenny runs on its own
-([ADR-0071](adr/0071-specialized-agents-purpose-bound-unattended-sessions.md)); the API it
-reads is described under [AI → Specialized agents](#specialized-agents). A banner appears
-when the global switch (Admin → AI) is off: no agent starts, whatever its mode says.
+The view for the stewards kenny runs on its own
+([ADR-0071](adr/0071-stewards-purpose-bound-unattended-sessions.md)); the API it
+reads is described under [AI → Stewards](#stewards). A banner appears
+when the global switch (Admin → AI) is off: no steward starts, whatever its mode says.
 
-**The list** shows, per agent, its title and description, what triggers it, a **mode
+**The list** shows, per steward, its title and description, what triggers it, a **mode
 badge** (`OFF`, `SHADOW`, `ACT`, plus `ACT UNBOUND` when a stored `act` no longer matches
-the agent's effective hash), the effective hash in short form and the latest run with its
-status. A title opens the agent.
+the steward's effective hash), the effective hash in short form and the latest run with its
+status. A title opens the steward.
 
 <figure markdown>
-  ![One agent: tools, parameters, runs and a run record](assets/screenshots/admin-agent-detail.png)
-  <figcaption>One agent: what it may do, its mode, parameters, standing authorizations, preview and runs, with a run record open.</figcaption>
+  ![One steward: tools, parameters, runs and a run record](assets/screenshots/admin-steward-detail.png)
+  <figcaption>One steward: what it may do, its mode, parameters, standing authorizations, preview and runs, with a run record open.</figcaption>
 </figure>
 
-**One agent**, top to bottom:
+**One steward**, top to bottom:
 
 - **What it may do** — its tools, each with a tier badge (`READ-ONLY`, `STANDARD CHANGE`,
   `NORMAL CHANGE`); its argument constraints, each marked **literal** (values the spec
@@ -880,32 +880,32 @@ status. A title opens the agent.
   and the per-tool timeouts. An omitted or empty argument never satisfies a constraint.
 - **Mode** — `OFF`, `SHADOW`, `ACT`. Choosing `ACT` first asks for confirmation, which
   names the hash being bound, and the request carries exactly the effective hash the page
-  shows. If the agent changed since the page loaded the server answers `409` and the page
-  says *the agent changed since you loaded it — reload and review it*, with a **Reload**
+  shows. If the steward changed since the page loaded the server answers `409` and the page
+  says *the steward changed since you loaded it — reload and review it*, with a **Reload**
   button; a `403` reads *sign in to the dashboard as a superuser* (a token, an OAuth token
   or the shared operator token cannot make this choice). Operators see the mode but not
   the controls.
 - **Parameters** — what an install sets without a code change: the maintenance
   **window** (days, start, end, time zone), the **hosts** (a checkbox per enrolled PC; an
   empty selection means none, never all), the **allowed package ids** (one per line) and
-  whether to **only run when nobody is signed in**. Only the parameters an agent
-  declares appear; triage takes none. Saving a change to these values drops the agent back to
+  whether to **only run when nobody is signed in**. Only the parameters a steward
+  declares appear; triage takes none. Saving a change to these values drops the steward back to
   `shadow` and voids its standing authorizations for good — the page says so above the
   save button and reports what the server did afterwards.
 - **Standing authorizations** — a table of tool, scope (PCs or `the server`),
   attempts per PC per day (with the attempts spent in the last 24 hours), expiry, who
-  granted it and its state: `LIVE`, `REVOKED`, `VOIDED` (the agent changed) or
+  granted it and its state: `LIVE`, `REVOKED`, `VOIDED` (the steward changed) or
   `EXPIRED`. A superuser can **revoke** a live one and **grant** a new one: the tool list
-  holds only the agent's `normal_change` tools (`shell_exec`, `powershell_exec` and
+  holds only the steward's `normal_change` tools (`shell_exec`, `powershell_exec` and
   `agent_update` can never be authorized), the scope must name at least one PC or be the
   server, and it expires in 1 to 180 days. A grant is bound to the hash the page shows;
   a `409` is explained as above.
-- **Preview** — **Run preview** starts one run of the agent in `shadow`, whatever its
+- **Preview** — **Run preview** starts one run of the steward in `shadow`, whatever its
   mode. **A preview never changes anything**: every change it would make is only recorded
-  as a recommendation. It spends model tokens. An agent that works on PCs asks which PC
-  first. An agent that starts from a new ticket has no preview. On a server that does not
+  as a recommendation. It spends model tokens. A steward that works on PCs asks which PC
+  first. A steward that starts from a new ticket has no preview. On a server that does not
   offer preview runs yet the button answers with that, and nothing else changes.
-- **Runs** — the agent's recent runs, newest first. **Details** opens a run: its status
+- **Runs** — the steward's recent runs, newest first. **Details** opens a run: its status
   and mode, what started it, the PC or ticket it was bound to, the hash it ran under, its
   verdict and finding, any error, the token usage, the **actions** it took (tool,
   redacted arguments, tier, result and the id of the authorization it ran under) and the
@@ -1154,15 +1154,14 @@ not navigate away from wherever you were.
   ticket and look for one already open; it cannot move one — that happens on the
   [ticket itself](#ticket-detail). See
   [ITSM: where a ticket comes from](itsm.md#what-a-ticket-is-and-where-it-comes-from).
-- **Specialized agents** — kenny can read what the [specialized
-  agents](#specialized-agents) have done (recent runs, one run's verdict, changes and
+- **Stewards** — kenny can read what the [stewards](#stewards) have done (recent runs, one run's verdict, changes and
   proposals) and can propose a preview run of one. A proposal starts nothing: the chat
-  stream carries an `agent_run_proposal` event (`{agent_id, host_id, reason}`), and a run
-  exists only when a person starts it through `POST /api/specialized-agents/{agent_id}/runs`.
+  stream carries a `steward_run_proposal` event (`{steward_id, host_id, reason}`), and a run
+  exists only when a person starts it through `POST /api/stewards/{steward_id}/runs`.
   A preview is always shadow, so it changes nothing on any machine. The proposal shows as
-  a card naming the agent, the PC and why; nothing starts until you press **START
-  PREVIEW**, and the card then links the new run to the agent's page under
-  [Specialized agents](#specialized-agents-view). These tools are not offered on a
+  a card naming the steward, the PC and why; nothing starts until you press **START
+  PREVIEW**, and the card then links the new run to the steward's page under
+  [Stewards](#stewards-view). These tools are not offered on a
   ticket's own chat.
 - **Composer** — type and **send**; while a turn streams the button becomes **stop**.
   Suggestion chips ("Why is this PC flagged?", "Free up disk space", "Update all
@@ -1278,7 +1277,7 @@ and the "see the dashboard" links kenny has already posted into Discord all keep
   dashboard is legible without colour.
 - **Deep links** — every view is a URL hash you can bookmark or share: `#/today`,
   `#/fleet`, `#/fleet/{host}`, `#/fleet/{host}?section={name}`, `#/inbox`,
-  `#/inbox/{group}`, `#/inbox/ticket/{id}`, `#/log`, `#/admin/{section}`, `#/admin/agents/{agent}`, `#/profile`. See
+  `#/inbox/{group}`, `#/inbox/ticket/{id}`, `#/log`, `#/admin/{section}`, `#/admin/stewards/{steward}`, `#/profile`. See
   [Old bookmarks & redirects](#old-bookmarks-redirects) above for what still works from
   before.
 - **Keyboard & motion** — Escape closes modals and the Ask kenny overlay; ⌘K/Ctrl+K opens

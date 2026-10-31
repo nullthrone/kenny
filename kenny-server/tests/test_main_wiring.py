@@ -641,23 +641,23 @@ def _fake_investigation(app: Any) -> list[dict[str, Any]]:
     return calls
 
 
-def test_a_created_ticket_reaches_the_agent_runner_when_triage_is_enabled(
+def test_a_created_ticket_reaches_the_steward_runner_when_triage_is_enabled(
     tmp_path, monkeypatch
 ) -> None:
-    """Joined: TicketService -> the bound hook -> AgentRunner -> TriageService."""
+    """Joined: TicketService -> the bound hook -> StewardRunner -> TriageService."""
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-not-a-real-key")
     monkeypatch.delenv("KENNY_TRIAGE_ENABLED", raising=False)
     monkeypatch.delenv("KENNY_TRIAGE_RESOLVE", raising=False)
     app = build_app(db_path=str(tmp_path / "runner.sqlite"), client_factory=_FakeAnthropic)
-    assert app.state.agents.triage is app.state.triage
+    assert app.state.stewards.triage is app.state.triage
     with TestClient(app) as c:
-        assert app.state.tickets._triage == app.state.agents.on_ticket_created
+        assert app.state.tickets._triage == app.state.stewards.on_ticket_created
         calls = _fake_investigation(app)
         ticket = _create_ticket_and_drain(app, c)
 
-        runs = c.portal.call(lambda: app.state.agent_store.list_runs(limit=10))
-        assert [(r.agent_id, r.ticket_id, r.status, r.verdict, r.mode) for r in runs] == [
+        runs = c.portal.call(lambda: app.state.steward_store.list_runs(limit=10))
+        assert [(r.steward_id, r.ticket_id, r.status, r.verdict, r.mode) for r in runs] == [
             ("triage", ticket.id, "completed", "phantom", "shadow")
         ]
         assert [(k["ticket_id"], k["run_id"], k["resolve"]) for k in calls] == [
@@ -673,21 +673,21 @@ def test_a_created_ticket_starts_no_run_when_triage_is_disabled(tmp_path, monkey
         calls = _fake_investigation(app)
         _create_ticket_and_drain(app, c)
         assert calls == []
-        assert c.portal.call(lambda: app.state.agent_store.list_runs(limit=10)) == []
+        assert c.portal.call(lambda: app.state.steward_store.list_runs(limit=10)) == []
 
 
-def test_boot_fails_agent_runs_a_dead_process_left_open(tmp_path) -> None:
+def test_boot_fails_steward_runs_a_dead_process_left_open(tmp_path) -> None:
     db = str(tmp_path / "interrupted.sqlite")
     app = build_app(db_path=db, client_factory=_FakeAnthropic)
     with TestClient(app) as c:
         run = c.portal.call(
-            lambda: app.state.agent_store.start_run(
-                agent_id="triage", spec_hash="h", trigger="t", mode="shadow"
+            lambda: app.state.steward_store.start_run(
+                steward_id="triage", spec_hash="h", trigger="t", mode="shadow"
             )
         )
     app = build_app(db_path=db, client_factory=_FakeAnthropic)
     with TestClient(app) as c:
-        after = c.portal.call(app.state.agent_store.get_run, run.id)
+        after = c.portal.call(app.state.steward_store.get_run, run.id)
         assert after is not None and after.status == "failed"
 
 
@@ -950,7 +950,7 @@ def test_each_boot_is_a_server_run_closed_on_shutdown(tmp_path) -> None:
         assert [r["current"] for r in runs] == [False, True]
 
 
-def test_specialized_agents_are_wired_end_to_end(tmp_path) -> None:
+def test_stewards_are_wired_end_to_end(tmp_path) -> None:
     """The scheduler, the verdict tool and standing authorizations reach the app.
 
     Joined at the app: a scheduled run's verdict call must find its handler on
@@ -959,21 +959,21 @@ def test_specialized_agents_are_wired_end_to_end(tmp_path) -> None:
     unit tests and still fail in production.
     """
 
-    from kenny_server.toolloop import AGENT_VERDICT_TOOL
+    from kenny_server.toolloop import STEWARD_VERDICT_TOOL
 
-    app = build_app(db_path=str(tmp_path / "agents.sqlite"))
-    runner = app.state.agents
-    assert runner.authorizations is app.state.agent_authorizations
-    scheduler = app.state.agent_scheduler
+    app = build_app(db_path=str(tmp_path / "stewards.sqlite"))
+    runner = app.state.stewards
+    assert runner.authorizations is app.state.steward_authorizations
+    scheduler = app.state.steward_scheduler
     assert scheduler.runner is runner
-    assert AGENT_VERDICT_TOOL in scheduler.executor.server_tool_handlers
+    assert STEWARD_VERDICT_TOOL in scheduler.executor.server_tool_handlers
 
     with TestClient(app) as c:
         h = _bearer(app)
-        listing = c.get("/api/specialized-agents", headers=h)
+        listing = c.get("/api/stewards", headers=h)
         assert listing.status_code == 200
-        ids = {a["id"] for a in listing.json()["agents"]}
+        ids = {a["id"] for a in listing.json()["stewards"]}
         assert {"triage", "patch", "posture"} <= ids
         assert (
-            c.get("/api/specialized-agents/patch/authorizations", headers=h).status_code == 200
+            c.get("/api/stewards/patch/authorizations", headers=h).status_code == 200
         )

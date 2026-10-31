@@ -325,33 +325,33 @@ _SPECS: list[SettingSpec] = [
           help="How many model round-trips one investigation may take. Spending "
                "them all produces no verdict: the ticket stays open with what "
                "was found so far."),
-    # Specialized agents (ADR-0071): read by agents.runner.AgentRunner before
+    # Stewards (ADR-0071): read by stewards.runner.StewardRunner before
     # every run, before any model call.
-    _spec("KENNY_AGENTS_ENABLED", "AI", "bool", "1",
-          "Specialized agents", lifecycle="live",
-          help="Global switch for the agents kenny runs on its own, triage "
-               "included. Off means no agent starts, whatever its own mode says; "
-               "each agent keeps its mode for when this is on again."),
-    _spec("KENNY_AGENTS_MAX_CONCURRENT", "AI", "int", "2",
-          "Agent runs at once", lifecycle="live", min=1,
-          help="How many agent runs may be in flight together. A run that would "
+    _spec("KENNY_STEWARDS_ENABLED", "AI", "bool", "1",
+          "Stewards", lifecycle="live",
+          help="Global switch for the stewards kenny runs on its own, triage "
+               "included. Off means no steward starts, whatever its own mode says; "
+               "each steward keeps its mode for when this is on again."),
+    _spec("KENNY_STEWARDS_MAX_CONCURRENT", "AI", "int", "2",
+          "Steward runs at once", lifecycle="live", min=1,
+          help="How many steward runs may be in flight together. A run that would "
                "exceed it is not started and is recorded as skipped. Ticket "
                "triage is exempt: every new ticket is investigated, however "
                "many arrive at once; the daily token cap still applies to it."),
-    _spec("KENNY_AGENTS_DAILY_TOKENS", "AI", "int", "0",
-          "Agent tokens per day", lifecycle="live", min=0,
-          help="Tokens (input, output and cached prompt tokens alike) all agent "
+    _spec("KENNY_STEWARDS_DAILY_TOKENS", "AI", "int", "0",
+          "Steward tokens per day", lifecycle="live", min=0,
+          help="Tokens (input, output and cached prompt tokens alike) all steward "
                "runs together may spend in any 24 hours. Once reached, a run is not started and is recorded "
                "as skipped. 0 means no cap."),
-    _spec("KENNY_AGENTS_PREVIEWS_PER_DAY", "AI", "int", "20",
-          "Previews per agent per day", lifecycle="live", min=1,
-          help="How many preview runs of one agent may start in any 24 hours, "
+    _spec("KENNY_STEWARDS_PREVIEWS_PER_DAY", "AI", "int", "20",
+          "Previews per steward per day", lifecycle="live", min=1,
+          help="How many preview runs of one steward may start in any 24 hours, "
                "whoever asks. A request over it is refused and leaves no run "
-               "behind. One preview of an agent on a machine runs at a time."),
-    _spec("KENNY_AGENTS_SCHEDULE_INTERVAL_SECS", "AI", "int", "300",
-          "Scheduled agents check (s)", lifecycle="live", min=60,
-          help="How often kenny checks whether a scheduled agent is due. The "
-               "agent's own maintenance window decides whether it runs; this is "
+               "behind. One preview of a steward on a machine runs at a time."),
+    _spec("KENNY_STEWARDS_SCHEDULE_INTERVAL_SECS", "AI", "int", "300",
+          "Scheduled stewards check (s)", lifecycle="live", min=60,
+          help="How often kenny checks whether a scheduled steward is due. The "
+               "steward's own maintenance window decides whether it runs; this is "
                "only how finely kenny looks."),
     _spec("KENNY_DISCORD_MAX_TURNS_PER_TICKET", "AI", "int", "40",
           "Assistant turns per ticket", lifecycle="live", min=1,

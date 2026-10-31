@@ -73,14 +73,14 @@ SINCE_LEGACY = frozenset(
         # Records a triage verdict and, when the server's preconditions hold,
         # resolves the ticket (kenny_server/triage.py).
         "ticket_triage_verdict",
-        # Ends a specialized agent's run; its handler may open a ticket for a
-        # finding (kenny_server/agents, ADR-0071).
-        "agent_verdict",
+        # Ends a steward's run; its handler may open a ticket for a
+        # finding (kenny_server/stewards, ADR-0071).
+        "steward_verdict",
     }
 )
 
 # The server tools registered for MCP in ``tools.py`` (no forwarded
-# capabilities). Those in ``toolloop.AGENT_ONLY_TOOLS`` are also part of
+# capabilities). Those in ``toolloop.STEWARD_ONLY_TOOLS`` are also part of
 # ``chat.SERVER_TOOLS``, dispatched in the loop for agent runs alone.
 MCP_ONLY_SERVER_TOOLS = frozenset(
     {
@@ -154,7 +154,7 @@ def test_catalog_exhaustive() -> None:
 def test_the_copilot_agent_tools_are_in_the_catalog_and_read_only() -> None:
     """They are classified (so exhaustiveness holds) and none of them changes anything."""
 
-    for name in ("agent_run_list", "agent_run_get", "agent_run_propose"):
+    for name in ("steward_run_list", "steward_run_get", "steward_run_propose"):
         assert name in chat.SERVER_TOOLS
         assert TOOL_CLASSES[name] == READ_ONLY
 
@@ -186,8 +186,8 @@ def test_standard_change_is_the_short_deliberate_list() -> None:
         # to make one. `normal_change` would hold for an operator who is not
         # coming, parking the ticket on an open gate. See tool_classes.py.
         "ticket_triage_verdict",
-        # Ends an agent run; opening a ticket for a finding is the most it does.
-        "agent_verdict",
+        # Ends a steward run; opening a ticket for a finding is the most it does.
+        "steward_verdict",
     }
 
 

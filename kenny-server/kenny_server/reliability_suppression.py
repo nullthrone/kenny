@@ -116,7 +116,7 @@ class SuppressionList:
         """Write the matches queued since the last write to the store.
 
         A write that fails queues them again; it never raises, because a lost
-        hit costs the hygiene agent a rule it keeps, nothing more.
+        hit costs the hygiene steward a rule it keeps, nothing more.
         """
 
         if self._in_flight():

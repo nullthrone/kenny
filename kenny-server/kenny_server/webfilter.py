@@ -854,7 +854,7 @@ def parse_recurrence(
     """Validate the *when* of a recurring window: ``(days, start_min, end_min, tz)``.
 
     The part of :func:`make_window` that is not about categories, shared with
-    every other recurring window kenny reads unattended (an agent's
+    every other recurring window kenny reads unattended (a steward's
     maintenance window, ADR-0072), so there is one parser for "which days,
     from when to when, in which zone". Raises :class:`ValueError` as
     :func:`make_window` does.

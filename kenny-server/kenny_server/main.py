@@ -68,13 +68,13 @@ from .store import (
     UpdateStore,
     WebFilterStore,
 )
-from .agents.authorizations import AuthorizationStore
-from .agents.hygiene import register as register_rule_hygiene
-from .agents.runner import AgentRunner
-from .agents.scheduler import INTERVAL_SETTING as AGENT_SCHEDULE_SETTING
-from .agents.scheduler import AgentScheduler
-from .agents.store import AgentStore
-from .agents.verdict import register as register_agent_verdict
+from .stewards.authorizations import AuthorizationStore
+from .stewards.hygiene import register as register_rule_hygiene
+from .stewards.runner import StewardRunner
+from .stewards.scheduler import INTERVAL_SETTING as STEWARD_SCHEDULE_SETTING
+from .stewards.scheduler import StewardScheduler
+from .stewards.store import StewardStore
+from .stewards.verdict import register as register_steward_verdict
 from .ticket_alerts import TicketAlertReader
 from .ticket_assistant import TicketAssistant
 from .ticket_rules import TicketRuleList
@@ -88,7 +88,7 @@ from .tunnel import AgentTunnel
 from .update_manager import UpdateManager, record_agent_fetch, update_check_loop
 from .userstore import UserStore
 from .webfilter import ExternalListCache, WebFilterService
-from .copilot_agents import CopilotAgents
+from .copilot_stewards import CopilotStewards
 from .copilot_tickets import CopilotTickets, evidence_from_session
 from .webui import _anthropic_client, build_api_routes, build_chat_routes
 from .webui.authz import guard
@@ -295,12 +295,12 @@ def _bind_triage(
     ai_access: AiAccess,
     tickets: TicketService,
     triage: TriageService,
-    runner: AgentRunner,
+    runner: StewardRunner,
 ) -> None:
     """Keep triage wired to new tickets exactly while it is enabled.
 
-    A new ticket reaches the agent runner, which starts the ``triage`` agent
-    under the global agent bounds and records the run (ADR-0071); the runner
+    A new ticket reaches the steward runner, which starts the ``triage`` steward
+    under the global steward bounds and records the run (ADR-0071); the runner
     drives ``triage``.
 
     Wired only when a key or a gateway is actually configured. A constructed
@@ -759,22 +759,22 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         logging.getLogger("kenny.tickets").info(
             "the ticket assistant is disabled: no usable Anthropic client (%s)", exc
         )
-    # Specialized agents (ADR-0071): their modes and run history, and the
+    # Stewards (ADR-0071): their modes and run history, and the
     # runner every run starts through. Built on every server; the ``triage``
-    # agent is attached below once there is an assistant for it to run on.
-    agent_store = AgentStore(db_path)
-    agent_authorizations = AuthorizationStore(db_path)
-    agent_runner = AgentRunner(
-        store=agent_store,
+    # steward is attached below once there is an assistant for it to run on.
+    steward_store = StewardStore(db_path)
+    steward_authorizations = AuthorizationStore(db_path)
+    steward_runner = StewardRunner(
+        store=steward_store,
         settings=settings,
         ai_access=ai_access,
         event_store=event_store,
-        authorizations=agent_authorizations,
+        authorizations=steward_authorizations,
     )
-    # The executor agent runs forward through: its own instance, so the one
-    # tool only agent runs end with is registered nowhere a person's session
+    # The executor stewards run forward through: its own instance, so the one
+    # tool only steward runs end with is registered nowhere a person's session
     # reaches. The model is read at each run start, like the chat's.
-    agent_executor = ToolExecutor(
+    steward_executor = ToolExecutor(
         registry=registry,
         store=store,
         tunnel=tunnel,
@@ -783,27 +783,27 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         presence=presence,
         settings=settings,
     )
-    register_agent_verdict(agent_executor, tickets=ticket_service)
-    # The config-hygiene agent: its evidence (the rules nothing has matched) on
+    register_steward_verdict(steward_executor, tickets=ticket_service)
+    # The config-hygiene steward: its evidence (the rules nothing has matched) on
     # the runner, its four rule tools on this executor alone.
     register_rule_hygiene(
-        agent_runner,
-        agent_executor,
+        steward_runner,
+        steward_executor,
         suppression=suppression,
         ticket_rules=ticket_rules,
         call_log=call_log,
     )
-    agent_runner.configure(
-        executor=agent_executor,
+    steward_runner.configure(
+        executor=steward_executor,
         client_factory=client_factory,
         model=lambda: str(settings.get("KENNY_CHAT_MODEL")),
     )
 
-    async def _agent_params(agent_id: str) -> dict[str, Any]:
-        return dict(await agent_runner.get_params(agent_id))
+    async def _steward_params(steward_id: str) -> dict[str, Any]:
+        return dict(await steward_runner.get_params(steward_id))
 
-    agent_scheduler = AgentScheduler(
-        agent_runner, agent_runner.catalog, _agent_params, agent_executor
+    steward_scheduler = StewardScheduler(
+        steward_runner, steward_runner.catalog, _steward_params, steward_executor
     )
     ticket_assistant: TicketAssistant | None = None
     triage: TriageService | None = None
@@ -843,8 +843,8 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
             resolve_enabled=bool(settings.get("KENNY_TRIAGE_RESOLVE")),
         )
         triage.register(ticket_executor)
-        agent_runner.triage = triage
-        _bind_triage(settings, ai_access, ticket_service, triage, agent_runner)
+        steward_runner.triage = triage
+        _bind_triage(settings, ai_access, ticket_service, triage, steward_runner)
 
     # Discord bot surface (optional). The service is constructed only when a bot
     # token exists — an env-only secret, so its presence is already known here —
@@ -954,10 +954,10 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         await update_store.connect()
         await ticket_store.connect()
         await discord_identities.connect()
-        await agent_store.connect()
-        await agent_authorizations.connect()
+        await steward_store.connect()
+        await steward_authorizations.connect()
         # Nothing runs yet, so a run still open belongs to a dead process.
-        await agent_runner.startup()
+        await steward_runner.startup()
         # Telemetry retention (ADR-0051) is re-read here, after the overrides
         # loaded (settings bound through ``_bind_live_settings`` were re-applied
         # by ``settings.load()`` itself), before the
@@ -1039,11 +1039,11 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         if alert_secs > 0:
             alert_delay = float(settings.get("KENNY_ALERT_INITIAL_DELAY"))
             alert_task = asyncio.create_task(alert_engine.run(alert_secs, alert_delay))
-        # Scheduled specialized agents (ADR-0071). Nothing runs unless an agent
+        # Scheduled stewards (ADR-0071). Nothing runs unless a steward
         # has a window, hosts and a mode other than off; the cadence is live.
-        agent_schedule_task: asyncio.Task | None = asyncio.create_task(
-            agent_scheduler.run(
-                lambda: int(settings.get(AGENT_SCHEDULE_SETTING)),
+        steward_schedule_task: asyncio.Task | None = asyncio.create_task(
+            steward_scheduler.run(
+                lambda: int(settings.get(STEWARD_SCHEDULE_SETTING)),
                 initial_delay_s=float(settings.get("KENNY_ALERT_INITIAL_DELAY")),
             )
         )
@@ -1162,11 +1162,11 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
                 alert_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await alert_task
-            if agent_schedule_task is not None:
-                agent_schedule_task.cancel()
+            if steward_schedule_task is not None:
+                steward_schedule_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
-                    await agent_schedule_task
-            await agent_runner.cancel_previews()
+                    await steward_schedule_task
+            await steward_runner.cancel_previews()
             startup_maintenance_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await startup_maintenance_task
@@ -1211,8 +1211,8 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
             await update_store.close()
             await ticket_store.close()
             await discord_identities.close()
-            await agent_authorizations.close()
-            await agent_store.close()
+            await steward_authorizations.close()
+            await steward_store.close()
             await settings_store.close()
 
     api_routes = build_api_routes(
@@ -1244,7 +1244,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         tickets=ticket_service,
         ticket_store=ticket_store,
         notifier_provider=notifier_provider,
-        agents=agent_runner,
+        stewards=steward_runner,
     )
     user_routes = build_user_routes(
         user_store=user_store, registry=registry, store=store, oauth_store=oauth_store
@@ -1265,7 +1265,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         history_store=chat_history_store,
         client_factory=client_factory,
         copilot_tickets=copilot_tickets,
-        copilot_agents=CopilotAgents(runner=agent_runner, registry=registry, store=store),
+        copilot_stewards=CopilotStewards(runner=steward_runner, registry=registry, store=store),
         presence=presence,
         hw_history=hw_history,
         settings=settings,
@@ -1387,10 +1387,10 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
     app.state.discord_service = discord_service
     app.state.ticket_assistant = ticket_assistant
     app.state.triage = triage
-    app.state.agents = agent_runner
-    app.state.agent_store = agent_store
-    app.state.agent_authorizations = agent_authorizations
-    app.state.agent_scheduler = agent_scheduler
+    app.state.stewards = steward_runner
+    app.state.steward_store = steward_store
+    app.state.steward_authorizations = steward_authorizations
+    app.state.steward_scheduler = steward_scheduler
     # Replaced by the lifespan with the tasks it actually started (if any).
     app.state.ticket_task = None
     app.state.discord_task = None

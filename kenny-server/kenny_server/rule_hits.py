@@ -6,7 +6,7 @@ a snapshot's event group, an auto-ticket rule when ``ticket_rules.decide``
 picks it for an alert. Each records *that it was applied*: ``last_matched_at``
 (the latest moment it matched) and ``match_count`` (how often it was applied).
 That record is the server's evidence of whether a rule still does anything; the
-config-hygiene agent (``agents/hygiene.py``) proposes removing only rules it
+config-hygiene steward (``stewards/hygiene.py``) proposes removing only rules it
 shows unused, and never on the model's say-so.
 
 The record only covers the time it has been kept. Each rule table carries the

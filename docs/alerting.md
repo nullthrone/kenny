@@ -155,7 +155,7 @@ MCP tools. Each rule names an event type (`health` / `offline` / `disk_forecast`
 (only when the subject is `crit`) or `never`. Each rule records when it last decided an
 alert (`last_matched_at`) and how often (`match_count`) — a `never` rule that kept a
 ticket closed counts as much as one that opened it — which is what the
-[rule-hygiene agent](dashboard.md#specialized-agents) reads to find rules that no longer
+[rule-hygiene steward](dashboard.md#stewards) reads to find rules that no longer
 do anything.
 
 Two practical cases this solves:

@@ -52,9 +52,9 @@ from ..store import (
 from ..tokenstore import AgentTokenStore
 from ..tools import CallLog, ScreenshotStore, build_health, health_for, supports_tool
 from ..tunnel import AgentTunnel, ToolError
-from ..agents.authorizations import BUDGET_WINDOW, AuthorizationError
-from ..agents.policy import run_target_problem
-from ..agents.runner import HashMismatch, PreviewRefused
+from ..stewards.authorizations import BUDGET_WINDOW, AuthorizationError
+from ..stewards.policy import run_target_problem
+from ..stewards.runner import HashMismatch, PreviewRefused
 from ..webfilter import (
     BYPASS_REQUEST_CATEGORY,
     ListTooLargeError,
@@ -120,9 +120,9 @@ _RESERVED_PREFIXES = (
 )
 
 
-#: Settings whose truthy value lets an agent act on its own: triage resolving
-#: tickets (its ``act``), and the global switch every agent's runs need.
-_AUTONOMY_SETTINGS: frozenset[str] = frozenset({"KENNY_TRIAGE_RESOLVE", "KENNY_AGENTS_ENABLED"})
+#: Settings whose truthy value lets a steward act on its own: triage resolving
+#: tickets (its ``act``), and the global switch every steward's runs need.
+_AUTONOMY_SETTINGS: frozenset[str] = frozenset({"KENNY_TRIAGE_RESOLVE", "KENNY_STEWARDS_ENABLED"})
 
 
 def _person_at_a_browser(request: Request) -> bool:
@@ -236,14 +236,14 @@ def build_api_routes(
     notifier_provider: Any = None,
     presence: Any = None,
     hw_history: Any = None,
-    agents: Any = None,
+    stewards: Any = None,
 ) -> list[Route]:
     """Build the dashboard's static + JSON routes.
 
     ``client_factory`` builds the Anthropic client for read-path event
     categorization; defaults to :func:`_anthropic_client` (injected in tests).
-    ``agents`` is the :class:`~kenny_server.agents.runner.AgentRunner` behind
-    ``/api/specialized-agents*``; without one those routes answer 503.
+    ``stewards`` is the :class:`~kenny_server.stewards.runner.StewardRunner` behind
+    ``/api/stewards*``; without one those routes answer 503.
     """
 
     _APPLIES_TO = {"powershell", "posix", "self_protection", "path"}
@@ -1392,8 +1392,8 @@ def build_api_routes(
     def _would_widen_autonomy(key: str, raw: str) -> bool:
         """Whether writing ``raw`` to ``key`` turns unattended action *on* (ADR-0072).
 
-        Switching an agent's autonomy on is consent, so it takes a person at a
-        browser exactly like promoting an agent to ``act``; switching it off is
+        Switching a steward's autonomy on is consent, so it takes a person at a
+        browser exactly like promoting a steward to ``act``; switching it off is
         never a widening and stays open to any superuser credential.
         """
 
@@ -1452,40 +1452,40 @@ def build_api_routes(
             )
         if key in _AUTONOMY_SETTINGS and not _person_at_a_browser(request):
             # Resetting falls back to the environment or the default — "on" for
-            # the global agent switch — so it may widen autonomy: the same
+            # the global steward switch — so it may widen autonomy: the same
             # consent as setting it, whatever the value it lands on.
             return JSONResponse(_NOT_A_PERSON, status_code=403)
         await settings.reset(key)
         await _after_setting_write(key)
         return JSONResponse(settings.describe_one(key))
 
-    # -- specialized agents (ADR-0071) -------------------------------------
+    # -- stewards (ADR-0071) -----------------------------------------------
     # Reading the catalog and the run history is operator+; choosing a mode is
-    # superuser-only, because moving an agent to ``act`` is a superuser's
+    # superuser-only, because moving a steward to ``act`` is a superuser's
     # decision and every other mode write moves it towards or away from that.
     # Every write here (mode, grant, revoke, parameters) is consent, so it also
     # needs a person at a browser (``_person_at_a_browser``), and ``act`` and a
     # grant name the ``effective_hash`` that person was shown: a 409 when the
-    # agent has changed since, never a binding to whatever it is now.
+    # steward has changed since, never a binding to whatever it is now.
 
-    _AGENTS_UNAVAILABLE = {"error": "agents not configured"}
+    _STEWARDS_UNAVAILABLE = {"error": "stewards not configured"}
     _MAX_RUNS_LIMIT = 500
 
-    async def api_agents_list(_request: Request) -> JSONResponse:
-        """Every catalog agent with its mode and latest run, plus the global switch."""
+    async def api_stewards_list(_request: Request) -> JSONResponse:
+        """Every catalog steward with its mode and latest run, plus the global switch."""
 
-        if agents is None:
-            return JSONResponse(_AGENTS_UNAVAILABLE, status_code=503)
-        return JSONResponse({"enabled": agents.enabled(), "agents": await agents.overview()})
+        if stewards is None:
+            return JSONResponse(_STEWARDS_UNAVAILABLE, status_code=503)
+        return JSONResponse({"enabled": stewards.enabled(), "stewards": await stewards.overview()})
 
-    async def api_agent_runs(request: Request) -> JSONResponse:
-        """Runs newest first, optionally of one agent (``?agent_id=&limit=``)."""
+    async def api_steward_runs(request: Request) -> JSONResponse:
+        """Runs newest first, optionally of one steward (``?steward_id=&limit=``)."""
 
-        if agents is None:
-            return JSONResponse(_AGENTS_UNAVAILABLE, status_code=503)
-        agent_id = request.query_params.get("agent_id") or None
-        if agent_id is not None and agent_id not in agents.catalog:
-            return JSONResponse({"error": f"unknown agent {agent_id}"}, status_code=404)
+        if stewards is None:
+            return JSONResponse(_STEWARDS_UNAVAILABLE, status_code=503)
+        steward_id = request.query_params.get("steward_id") or None
+        if steward_id is not None and steward_id not in stewards.catalog:
+            return JSONResponse({"error": f"unknown steward {steward_id}"}, status_code=404)
         raw_limit = request.query_params.get("limit") or "50"
         try:
             limit = int(raw_limit)
@@ -1493,43 +1493,43 @@ def build_api_routes(
             return JSONResponse({"error": "limit must be an integer"}, status_code=400)
         if limit < 1:
             return JSONResponse({"error": "limit must be at least 1"}, status_code=400)
-        runs = await agents.store.list_runs(agent_id=agent_id, limit=min(limit, _MAX_RUNS_LIMIT))
+        runs = await stewards.store.list_runs(steward_id=steward_id, limit=min(limit, _MAX_RUNS_LIMIT))
         return JSONResponse({"runs": [run.to_public() for run in runs]})
 
-    async def api_agent_run(request: Request) -> JSONResponse:
+    async def api_steward_run(request: Request) -> JSONResponse:
         """One run, with what it did and proposed."""
 
-        if agents is None:
-            return JSONResponse(_AGENTS_UNAVAILABLE, status_code=503)
-        run = await agents.store.get_run(request.path_params["run_id"])
+        if stewards is None:
+            return JSONResponse(_STEWARDS_UNAVAILABLE, status_code=503)
+        run = await stewards.store.get_run(request.path_params["run_id"])
         if run is None:
             return JSONResponse({"error": "run not found"}, status_code=404)
         return JSONResponse(run.to_public())
 
-    async def api_agent_preview(request: Request) -> JSONResponse:
-        """Preview an agent once (``{"host_id"?}``): always a shadow run, in the background.
+    async def api_steward_preview(request: Request) -> JSONResponse:
+        """Preview a steward once (``{"host_id"?}``): always a shadow run, in the background.
 
         Operator+ with any credential, not only a browser session: a preview
         changes nothing on any host -- the run is forced to ``shadow`` however
-        the agent is set, a change is only recorded as a recommendation and a
+        the steward is set, a change is only recorded as a recommendation and a
         verdict opens no ticket. What refuses it is
-        :meth:`~kenny_server.agents.runner.AgentRunner.preview_refusal`, the
-        list the copilot checks too: 400 for triage and an agent that is
+        :meth:`~kenny_server.stewards.runner.StewardRunner.preview_refusal`, the
+        list the copilot checks too: 400 for triage and a steward that is
         ``off``, 409 for a state that may pass (the global switch, AI, a
         preview of it on this host still running, its daily preview limit);
         then 400 for a bad target, and 409 when a global cap refuses it at
         admission. A refused preview leaves no run behind, so it carries no
         ``run_id``. Answers 202 with the run's id as soon as the run is
         admitted; the model is never waited for (the run takes minutes). Watch
-        it at ``GET /api/specialized-agents/runs/{run_id}``.
+        it at ``GET /api/stewards/runs/{run_id}``.
         """
 
-        if agents is None:
-            return JSONResponse(_AGENTS_UNAVAILABLE, status_code=503)
-        agent_id = request.path_params["agent_id"]
-        spec = agents.catalog.get(agent_id)
+        if stewards is None:
+            return JSONResponse(_STEWARDS_UNAVAILABLE, status_code=503)
+        steward_id = request.path_params["steward_id"]
+        spec = stewards.catalog.get(steward_id)
         if spec is None:
-            return JSONResponse({"error": f"unknown agent {agent_id}"}, status_code=404)
+            return JSONResponse({"error": f"unknown steward {steward_id}"}, status_code=404)
         raw = await request.body()
         body: Any = {}
         if raw.strip():
@@ -1543,7 +1543,7 @@ def build_api_routes(
         if raw_host is not None and not isinstance(raw_host, str):
             return JSONResponse({"error": "host_id must be a string"}, status_code=400)
         host_id = (raw_host or "").strip() or None
-        refused = await agents.preview_refusal(spec, host_id)
+        refused = await stewards.preview_refusal(spec, host_id)
         if refused is not None:
             return JSONResponse(
                 {"error": str(refused)}, status_code=409 if refused.conflict else 400
@@ -1553,7 +1553,7 @@ def build_api_routes(
         if problem is not None:
             return JSONResponse({"error": problem}, status_code=400)
         try:
-            run = await agents.start_preview(
+            run = await stewards.start_preview(
                 spec, host_id=host_id, requested_by=_actor_of(request) or "unknown"
             )
         except PreviewRefused as exc:
@@ -1564,13 +1564,13 @@ def build_api_routes(
             return JSONResponse({"error": str(exc)}, status_code=503)
         if run is None:
             return JSONResponse(
-                {"error": "the agent could not start (agents or AI are switched off)"},
+                {"error": "the steward could not start (stewards or AI are switched off)"},
                 status_code=409,
             )
         return JSONResponse(
             {
                 "run_id": run.id,
-                "agent_id": run.agent_id,
+                "steward_id": run.steward_id,
                 "host_id": run.host_id,
                 "mode": run.mode,
                 "trigger": run.trigger,
@@ -1586,8 +1586,8 @@ def build_api_routes(
         if not isinstance(value, str) or not value:
             return None, JSONResponse(
                 {
-                    "error": "effective_hash is required: the agent's effective_hash "
-                    "as GET /api/specialized-agents showed it"
+                    "error": "effective_hash is required: the steward's effective_hash "
+                    "as GET /api/stewards showed it"
                 },
                 status_code=400,
             )
@@ -1596,19 +1596,19 @@ def build_api_routes(
     def _changed(exc: HashMismatch) -> JSONResponse:
         return JSONResponse({"error": str(exc)}, status_code=409)
 
-    async def api_agent_mode(request: Request) -> JSONResponse:
-        """Choose an agent's mode (``{"mode": "off"|"shadow"|"act", "effective_hash"}``).
+    async def api_steward_mode(request: Request) -> JSONResponse:
+        """Choose a steward's mode (``{"mode": "off"|"shadow"|"act", "effective_hash"}``).
 
         ``effective_hash`` is required for ``act`` only.
         """
 
-        if agents is None:
-            return JSONResponse(_AGENTS_UNAVAILABLE, status_code=503)
+        if stewards is None:
+            return JSONResponse(_STEWARDS_UNAVAILABLE, status_code=503)
         if not _person_at_a_browser(request):
             return JSONResponse(_NOT_A_PERSON, status_code=403)
-        agent_id = request.path_params["agent_id"]
-        if agent_id not in agents.catalog:
-            return JSONResponse({"error": f"unknown agent {agent_id}"}, status_code=404)
+        steward_id = request.path_params["steward_id"]
+        if steward_id not in stewards.catalog:
+            return JSONResponse({"error": f"unknown steward {steward_id}"}, status_code=404)
         try:
             body = await request.json()
         except Exception:  # noqa: BLE001 - malformed JSON
@@ -1622,16 +1622,16 @@ def build_api_routes(
             if refused is not None:
                 return refused
         try:
-            effective = await agents.set_mode(
-                agent_id, mode, actor=_actor_of(request) or "unknown", effective_hash=reviewed
+            effective = await stewards.set_mode(
+                steward_id, mode, actor=_actor_of(request) or "unknown", effective_hash=reviewed
             )
         except KeyError:
-            return JSONResponse({"error": f"unknown agent {agent_id}"}, status_code=404)
+            return JSONResponse({"error": f"unknown steward {steward_id}"}, status_code=404)
         except HashMismatch as exc:
             return _changed(exc)
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
-        return JSONResponse({"agent_id": agent_id, "mode": effective, "requested": mode})
+        return JSONResponse({"steward_id": steward_id, "mode": effective, "requested": mode})
 
     # Standing authorizations and parameters (ADR-0072). Reading them is an
     # operator's; granting, revoking and editing a superuser's. A ``user`` never
@@ -1639,52 +1639,52 @@ def build_api_routes(
 
     _AUTHORIZATIONS_UNAVAILABLE = {"error": "standing authorizations not configured"}
 
-    def _agent_or_404(request: Request) -> tuple[str, JSONResponse | None]:
-        if agents is None:
-            return "", JSONResponse(_AGENTS_UNAVAILABLE, status_code=503)
-        agent_id = request.path_params["agent_id"]
-        if agent_id not in agents.catalog:
-            return agent_id, JSONResponse({"error": f"unknown agent {agent_id}"}, status_code=404)
-        return agent_id, None
+    def _steward_or_404(request: Request) -> tuple[str, JSONResponse | None]:
+        if stewards is None:
+            return "", JSONResponse(_STEWARDS_UNAVAILABLE, status_code=503)
+        steward_id = request.path_params["steward_id"]
+        if steward_id not in stewards.catalog:
+            return steward_id, JSONResponse({"error": f"unknown steward {steward_id}"}, status_code=404)
+        return steward_id, None
 
     async def _authorization_public(authorization: Any) -> dict[str, Any]:
-        now = agents.now()
+        now = stewards.now()
         out = authorization.to_public(now)
-        out["attempts_last_24h"] = await agents.authorizations.uses_since(
+        out["attempts_last_24h"] = await stewards.authorizations.uses_since(
             authorization.id, now - BUDGET_WINDOW
         )
         return out
 
-    async def api_agent_authorizations(request: Request) -> JSONResponse:
-        """Every standing authorization of one agent, dead ones included."""
+    async def api_steward_authorizations(request: Request) -> JSONResponse:
+        """Every standing authorization of one steward, dead ones included."""
 
-        agent_id, refused = _agent_or_404(request)
+        steward_id, refused = _steward_or_404(request)
         if refused is not None:
             return refused
-        if agents.authorizations is None:
+        if stewards.authorizations is None:
             return JSONResponse(_AUTHORIZATIONS_UNAVAILABLE, status_code=503)
-        rows = await agents.authorizations.list(agent_id)
+        rows = await stewards.authorizations.list(steward_id)
         return JSONResponse(
             {
-                "agent_id": agent_id,
-                "effective_hash": await agents.live_hash(agent_id),
+                "steward_id": steward_id,
+                "effective_hash": await stewards.live_hash(steward_id),
                 "authorizations": [await _authorization_public(a) for a in rows],
             }
         )
 
-    async def api_agent_authorization_grant(request: Request) -> JSONResponse:
+    async def api_steward_authorization_grant(request: Request) -> JSONResponse:
         """Grant one (``{tool, scope, max_attempts_per_day, expires_at, note, effective_hash}``).
 
-        Bound to ``effective_hash``, the agent as the superuser granting was
-        shown it; a 409 when the agent has changed since.
+        Bound to ``effective_hash``, the steward as the superuser granting was
+        shown it; a 409 when the steward has changed since.
         """
 
-        if agents is not None and not _person_at_a_browser(request):
+        if stewards is not None and not _person_at_a_browser(request):
             return JSONResponse(_NOT_A_PERSON, status_code=403)
-        agent_id, refused = _agent_or_404(request)
+        steward_id, refused = _steward_or_404(request)
         if refused is not None:
             return refused
-        if agents.authorizations is None:
+        if stewards.authorizations is None:
             return JSONResponse(_AUTHORIZATIONS_UNAVAILABLE, status_code=503)
         try:
             body = await request.json()
@@ -1702,8 +1702,8 @@ def build_api_routes(
         if refused is not None:
             return refused
         try:
-            granted = await agents.grant(
-                agent_id,
+            granted = await stewards.grant(
+                steward_id,
                 tool=tool,
                 scope=body.get("scope"),
                 max_attempts_per_day=body.get("max_attempts_per_day"),
@@ -1718,50 +1718,50 @@ def build_api_routes(
             return JSONResponse({"error": str(exc)}, status_code=400)
         return JSONResponse(await _authorization_public(granted), status_code=201)
 
-    async def api_agent_authorization_revoke(request: Request) -> JSONResponse:
+    async def api_steward_authorization_revoke(request: Request) -> JSONResponse:
         """Revoke one; the next call it would have covered is refused."""
 
-        if agents is not None and not _person_at_a_browser(request):
+        if stewards is not None and not _person_at_a_browser(request):
             return JSONResponse(_NOT_A_PERSON, status_code=403)
-        agent_id, refused = _agent_or_404(request)
+        steward_id, refused = _steward_or_404(request)
         if refused is not None:
             return refused
-        if agents.authorizations is None:
+        if stewards.authorizations is None:
             return JSONResponse(_AUTHORIZATIONS_UNAVAILABLE, status_code=503)
         auth_id = request.path_params["auth_id"]
-        found = await agents.authorizations.get(auth_id)
-        if found is None or found.agent_id != agent_id:
+        found = await stewards.authorizations.get(auth_id)
+        if found is None or found.steward_id != steward_id:
             return JSONResponse({"error": "authorization not found"}, status_code=404)
-        revoked = await agents.authorizations.revoke(
-            auth_id, _actor_of(request) or "unknown", now=agents.now()
+        revoked = await stewards.authorizations.revoke(
+            auth_id, _actor_of(request) or "unknown", now=stewards.now()
         )
         return JSONResponse(await _authorization_public(revoked))
 
-    async def api_agent_params(request: Request) -> JSONResponse:
-        """One agent's parameters, the names its spec declares, and its effective hash."""
+    async def api_steward_params(request: Request) -> JSONResponse:
+        """One steward's parameters, the names its spec declares, and its effective hash."""
 
-        agent_id, refused = _agent_or_404(request)
+        steward_id, refused = _steward_or_404(request)
         if refused is not None:
             return refused
         return JSONResponse(
             {
-                "agent_id": agent_id,
-                "declared": sorted(agents.catalog[agent_id].params),
-                "params": await agents.get_params(agent_id),
-                "effective_hash": await agents.live_hash(agent_id),
+                "steward_id": steward_id,
+                "declared": sorted(stewards.catalog[steward_id].params),
+                "params": await stewards.get_params(steward_id),
+                "effective_hash": await stewards.live_hash(steward_id),
             }
         )
 
-    async def api_agent_params_set(request: Request) -> JSONResponse:
-        """Replace one agent's parameters (``{"params": {...}}``).
+    async def api_steward_params_set(request: Request) -> JSONResponse:
+        """Replace one steward's parameters (``{"params": {...}}``).
 
-        A change of the effective hash drops the agent to ``shadow`` and voids
+        A change of the effective hash drops the steward to ``shadow`` and voids
         its authorizations (ADR-0072 rule 6).
         """
 
-        if agents is not None and not _person_at_a_browser(request):
+        if stewards is not None and not _person_at_a_browser(request):
             return JSONResponse(_NOT_A_PERSON, status_code=403)
-        agent_id, refused = _agent_or_404(request)
+        steward_id, refused = _steward_or_404(request)
         if refused is not None:
             return refused
         try:
@@ -1772,12 +1772,12 @@ def build_api_routes(
         if not isinstance(params, dict):
             return JSONResponse({"error": "params must be an object"}, status_code=400)
         try:
-            result = await agents.set_params(
-                agent_id, params, actor=_actor_of(request) or "unknown"
+            result = await stewards.set_params(
+                steward_id, params, actor=_actor_of(request) or "unknown"
             )
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
-        return JSONResponse({"agent_id": agent_id, **result})
+        return JSONResponse({"steward_id": steward_id, **result})
 
     # -- DB backup/restore ---------------------------------------------------
     # Superuser-only (**su below): destructive (restore overwrites the live DB
@@ -2517,33 +2517,33 @@ def build_api_routes(
             guard(api_suppression_remove, **op),
             methods=["DELETE"],
         ),
-        Route("/api/specialized-agents", guard(api_agents_list, **op)),
-        Route("/api/specialized-agents/runs", guard(api_agent_runs, **op)),
-        Route("/api/specialized-agents/runs/{run_id}", guard(api_agent_run, **op)),
+        Route("/api/stewards", guard(api_stewards_list, **op)),
+        Route("/api/stewards/runs", guard(api_steward_runs, **op)),
+        Route("/api/stewards/runs/{run_id}", guard(api_steward_run, **op)),
         Route(
-            "/api/specialized-agents/{agent_id}/runs",
-            guard(api_agent_preview, **op),
+            "/api/stewards/{steward_id}/runs",
+            guard(api_steward_preview, **op),
             methods=["POST"],
         ),
-        Route("/api/specialized-agents/{agent_id}/mode", guard(api_agent_mode, **su), methods=["PUT"]),
+        Route("/api/stewards/{steward_id}/mode", guard(api_steward_mode, **su), methods=["PUT"]),
         Route(
-            "/api/specialized-agents/{agent_id}/authorizations",
-            guard(api_agent_authorizations, **op),
+            "/api/stewards/{steward_id}/authorizations",
+            guard(api_steward_authorizations, **op),
         ),
         Route(
-            "/api/specialized-agents/{agent_id}/authorizations",
-            guard(api_agent_authorization_grant, **su),
+            "/api/stewards/{steward_id}/authorizations",
+            guard(api_steward_authorization_grant, **su),
             methods=["POST"],
         ),
         Route(
-            "/api/specialized-agents/{agent_id}/authorizations/{auth_id}",
-            guard(api_agent_authorization_revoke, **su),
+            "/api/stewards/{steward_id}/authorizations/{auth_id}",
+            guard(api_steward_authorization_revoke, **su),
             methods=["DELETE"],
         ),
-        Route("/api/specialized-agents/{agent_id}/params", guard(api_agent_params, **op)),
+        Route("/api/stewards/{steward_id}/params", guard(api_steward_params, **op)),
         Route(
-            "/api/specialized-agents/{agent_id}/params",
-            guard(api_agent_params_set, **su),
+            "/api/stewards/{steward_id}/params",
+            guard(api_steward_params_set, **su),
             methods=["PUT"],
         ),
         Route("/api/settings", guard(api_settings_list, **su)),
@@ -2744,7 +2744,7 @@ def build_chat_routes(
     presence: Any = None,
     settings: Settings | None = None,
     hw_history: Any = None,
-    copilot_agents: Any = None,
+    copilot_stewards: Any = None,
 ) -> list[Route]:
     """Build the server-hosted Claude chat routes.
 
@@ -2763,8 +2763,8 @@ def build_chat_routes(
     ``copilot_tickets`` registers ``ticket_draft``/``ticket_find`` on the
     executor. Optional the way ``tools.py`` treats an unconfigured service: a
     server without it simply never offers those two names, and nothing else
-    about the copilot changes. ``copilot_agents`` does the same for
-    ``agent_run_list``/``agent_run_get``/``agent_run_propose``.
+    about the copilot changes. ``copilot_stewards`` does the same for
+    ``steward_run_list``/``steward_run_get``/``steward_run_propose``.
     """
 
     executor = ChatExecutor(
@@ -2778,8 +2778,8 @@ def build_chat_routes(
     )
     if copilot_tickets is not None:
         copilot_tickets.register_tools(executor)
-    if copilot_agents is not None:
-        copilot_agents.register_tools(executor)
+    if copilot_stewards is not None:
+        copilot_stewards.register_tools(executor)
 
     def driver_of(request: Request) -> str | None:
         """The operator driving *this* request's turn, for its audit rows.
