@@ -230,7 +230,7 @@ error status, not with `200`: kenny retries and reports on the status.
 |---|---|
 | **AI gateway URL** (`ANTHROPIC_BASE_URL`) | The gateway's base URL, without `/v1/messages`, e.g. `https://gateway.example` or `https://gateway.example/tenant/kenny`. `https` is required, except to a host on the same machine or container network (`http://localhost:8080`, `http://gateway:8080`). |
 | **AI gateway headers** (`ANTHROPIC_CUSTOM_HEADERS`) | The headers the gateway authenticates and routes by, e.g. `X-Gateway-Key: …; X-Gateway-Route: kenny`. Never shown back and never in a backup — set them again after a restore. |
-| **Anthropic API key** | Empty if the gateway holds the provider key (kenny then sends a placeholder); otherwise the key, which kenny sends to the gateway. |
+| **Anthropic API key** | Empty if the gateway holds the provider key (kenny then sends a placeholder); otherwise the key, which kenny sends to the gateway. The Anthropic SDK decides the header: `X-Api-Key` (SDK 1.x) or `Authorization: Bearer` (SDK 2.x), so a gateway that reads the key must accept both. |
 | **Chat model** / **Fast model** | The model ids the gateway expects, if it names models its own way. |
 
 Headers the HTTP client owns (`Host`, `Content-Length`, `Connection`, …), `X-Api-Key` and
