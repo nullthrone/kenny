@@ -35,8 +35,10 @@ from kenny_server.stewards.runner import (
     DAILY_TOKENS_SETTING,
     ENABLED_SETTING,
     MAX_CONCURRENT_SETTING,
+    PREVIEWS_PER_DAY_SETTING,
     TICKET_CREATED_TRIGGER,
     StewardRunner,
+    PreviewRefused,
     _redacted,
     caused_by_steward,
 )
@@ -248,7 +250,7 @@ def test_triage_audit_actor_is_the_catalog_steward_identity() -> None:
     assert AUDIT_ACTOR != TRIAGE_ACTOR  # the ticket trail keeps its own actor
 
 
-def test_an_steward_origin_ticket_is_caused_by_an_steward() -> None:
+def test_a_steward_origin_ticket_is_caused_by_a_steward() -> None:
     assert STEWARD_ORIGIN == "steward"
     assert caused_by_steward(SimpleNamespace(origin=STEWARD_ORIGIN))  # type: ignore[arg-type]
     for origin in ("alert", "discord", "dashboard"):
@@ -448,7 +450,7 @@ async def test_a_failed_triage_run_is_recorded_as_failed(world: World) -> None:
     assert after is not None
 
 
-async def test_an_steward_origin_ticket_starts_nothing(world: World) -> None:
+async def test_a_steward_origin_ticket_starts_nothing(world: World) -> None:
     runner = world.runner(_verdict(), _text("done"))
     ticket = await world.alert_ticket(origin=STEWARD_ORIGIN)
     await runner.on_ticket_created(ticket)
@@ -481,7 +483,7 @@ async def _patched(world: World, *, act: bool = True) -> tuple[StewardRunner, An
     return runner, run
 
 
-async def test_a_ticket_on_a_host_an_steward_just_changed_starts_no_triage(world: World) -> None:
+async def test_a_ticket_on_a_host_a_steward_just_changed_starts_no_triage(world: World) -> None:
     """A patch breaks a service -> an alert -> an alert-origin ticket: no triage.
 
     The ticket is not steward-origin, so only the steward's own record of the
@@ -914,7 +916,7 @@ async def test_a_cancelled_triage_run_is_closed(world: World) -> None:
 # -- a run already in flight sees a demotion -----------------------------------
 
 
-async def test_demoting_an_steward_reaches_its_run_in_flight(world: World) -> None:
+async def test_demoting_a_steward_reaches_its_run_in_flight(world: World) -> None:
     spec = _patcher()
     runner = world.runner(catalog=_catalog(spec))
     await runner.set_mode(
@@ -1073,3 +1075,172 @@ async def test_overview_lists_every_catalog_steward_with_mode_and_latest_run(wor
     assert overview["triage"]["spec_hash"] == CATALOG["triage"].spec_hash
     assert overview["triage"]["latest_run"]["verdict"] == "phantom"
     assert overview["patcher"]["latest_run"] is None
+
+
+# -- run_generic: preview ------------------------------------------------------
+
+
+async def _preview(world: World, runner: StewardRunner, spec: StewardSpec, *calls: tuple[str, dict]):
+    scripted = [_tool(f"tu{i}", name, args) for i, (name, args) in enumerate(calls)]
+    scripted.append(_text("done"))
+    admitted: list[Any] = []
+    run = await runner.run_generic(
+        spec,
+        host_id=HOST,
+        trigger="preview:op",
+        brief="Preview.",
+        client=FakeAnthropic(scripted),
+        model="test-model",
+        executor=world.executor,
+        preview=True,
+        on_admitted=admitted.append,
+    )
+    return run, admitted
+
+
+async def test_a_preview_of_a_steward_in_act_is_shadow_and_never_acts(world: World) -> None:
+    spec = _patcher()
+    runner = world.runner(catalog=_catalog(spec))
+    await runner.set_mode(
+        "patcher", "act", actor="admin", effective_hash=await runner.live_hash("patcher")
+    )
+    run, admitted = await _preview(world, runner, spec, ("winget_update", {"id": FIREFOX}))
+
+    assert run is not None and (run.status, run.mode, run.trigger) == (
+        "completed", "shadow", "preview:op"
+    )
+    assert world.sent == []  # nothing reached the host
+    assert run.actions == []
+    assert [r["tool"] for r in run.recommendations] == ["winget_update"]
+    # on_admitted saw the row while it was still running.
+    assert [(r.id, r.status) for r in admitted] == [(run.id, "running")]
+    assert await runner.mode_of("patcher") == "act"  # the preview moved nothing
+
+
+async def test_a_preview_starts_nothing_for_a_steward_that_is_off(world: World) -> None:
+    spec = _patcher()
+    runner = world.runner(catalog=_catalog(spec))
+    await runner.set_mode("patcher", "off", actor="admin")
+    run, admitted = await _preview(world, runner, spec, ("winget_list", {}))
+    assert run is None and admitted == [] and await _runs(world) == []
+
+
+async def test_a_preview_needs_its_trigger_and_cannot_be_triage(world: World) -> None:
+    spec = _patcher()
+    runner = world.runner(catalog=_catalog(spec))
+    kwargs: dict[str, Any] = {
+        "host_id": HOST,
+        "brief": "x",
+        "client": FakeAnthropic([]),
+        "model": "m",
+        "executor": world.executor,
+        "preview": True,
+    }
+    with pytest.raises(ValueError, match="preview:"):
+        await runner.run_generic(spec, trigger="on_demand", **kwargs)
+    with pytest.raises(ValueError):
+        await runner.run_generic(CATALOG["triage"], trigger="preview:op", **kwargs)
+    assert await _runs(world) == []
+
+
+# -- start_preview: what bounds a person's previews ------------------------------
+
+
+def _preview_runner(w: World, spec: StewardSpec, *scripted: _Response) -> StewardRunner:
+    runner = w.runner(*scripted, catalog=_catalog(spec))
+    runner.configure(executor=w.executor, client_factory=lambda: w.client, model="test-model")
+    return runner
+
+
+async def test_a_cap_refused_preview_leaves_no_run_row(tmp_path) -> None:
+    spec = _patcher()
+    w = await _world_with(tmp_path, {DAILY_TOKENS_SETTING: "100"})
+    try:
+        runner = _preview_runner(w, spec, _text("done"))
+        spent = await w.steward_store.start_run(
+            steward_id="triage", spec_hash="h", trigger="on_demand", mode="shadow"
+        )
+        await w.steward_store.finish_run(
+            spent.id, status="completed", usage={"input_tokens": 90, "output_tokens": 10}
+        )
+        with pytest.raises(PreviewRefused) as refused:
+            await runner.start_preview(spec, host_id=HOST, requested_by="op")
+        assert refused.value.conflict and refused.value.code == "over_cap"
+        assert "cap is 100" in str(refused.value)
+        await runner.wait_previews()
+        assert [r.id for r in await _runs(w)] == [spent.id]  # no skipped row
+        assert w.client.messages.calls == []
+    finally:
+        await w.close()
+
+
+async def test_one_preview_of_a_steward_runs_per_host_at_a_time(world: World) -> None:
+    spec = _patcher()
+    runner = _preview_runner(
+        world, spec, _tool("t1", "winget_list", {}), _text("done"), _text("done again")
+    )
+    release = asyncio.Event()
+
+    async def hold(tool: str, args: dict[str, Any]) -> None:
+        await release.wait()
+
+    world.on_send = hold
+    first = await runner.start_preview(spec, host_id=HOST, requested_by="op")
+    assert first is not None and first.status == "running"
+    assert (await runner.preview_refusal(spec, HOST)).code == "preview_running"  # type: ignore[union-attr]
+    with pytest.raises(PreviewRefused) as refused:
+        await runner.start_preview(spec, host_id=HOST, requested_by="someone-else")
+    assert refused.value.conflict and refused.value.code == "preview_running"
+    # Another host is another target.
+    assert await runner.preview_refusal(spec, "other-pc") is None
+
+    release.set()
+    await runner.wait_previews()
+    assert (await world.steward_store.get_run(first.id)).status == "completed"  # type: ignore[union-attr]
+    # Once it ended, the next one may start.
+    second = await runner.start_preview(spec, host_id=HOST, requested_by="op")
+    await runner.wait_previews()
+    assert second is not None
+    assert [r.status for r in await _runs(world)] == ["completed", "completed"]
+
+
+async def test_the_daily_preview_limit_is_per_steward_over_24_hours(tmp_path) -> None:
+    spec = _patcher()
+    other = _patcher(id="other")
+    w = await _world_with(tmp_path, {PREVIEWS_PER_DAY_SETTING: "2"})
+    try:
+        runner = w.runner(*(_text("done") for _ in range(4)), catalog=_catalog(spec, other))
+        runner.configure(executor=w.executor, client_factory=lambda: w.client, model="m")
+        for _ in range(2):
+            assert await runner.start_preview(spec, host_id=HOST, requested_by="op") is not None
+            await runner.wait_previews()
+        with pytest.raises(PreviewRefused) as refused:
+            await runner.start_preview(spec, host_id=HOST, requested_by="op")
+        assert refused.value.conflict and refused.value.code == "preview_limit"
+        assert len(await _runs(w)) == 2  # the refusal left no row
+        # Another steward has a limit of its own.
+        assert await runner.start_preview(other, host_id=HOST, requested_by="op") is not None
+        await runner.wait_previews()
+        # A preview more than 24 hours old no longer counts.
+        day_ago = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
+        await w.steward_store._conn.execute(
+            "UPDATE steward_runs SET started_at = ? WHERE steward_id = 'patcher'", (day_ago,)
+        )
+        await w.steward_store._conn.commit()
+        assert await runner.preview_refusal(spec, HOST) is None
+    finally:
+        await w.close()
+
+
+async def test_a_preview_is_refused_without_ai(tmp_path) -> None:
+    spec = _patcher()
+    w = await _world_with(tmp_path, {"KENNY_AI_ENABLED": "0"})
+    try:
+        runner = _preview_runner(w, spec)
+        refused = await runner.preview_refusal(spec, HOST)
+        assert refused is not None and refused.conflict and refused.code == "ai_unavailable"
+        with pytest.raises(PreviewRefused):
+            await runner.start_preview(spec, host_id=HOST, requested_by="op")
+        assert await _runs(w) == []
+    finally:
+        await w.close()

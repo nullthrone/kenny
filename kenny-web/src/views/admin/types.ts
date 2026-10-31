@@ -292,3 +292,181 @@ export interface ShellAllowResponse {
   allow: PolicyRule[]
   defaults: PolicyRule[]
 }
+
+/* ── Stewards (ADR-0071, ADR-0072) ─────────────────────────────── */
+
+export type StewardMode = 'off' | 'shadow' | 'act'
+export type ToolTier = 'read_only' | 'standard_change' | 'normal_change'
+export type StewardRunStatus = 'running' | 'completed' | 'failed' | 'skipped'
+export type AuthorizationStatus = 'live' | 'revoked' | 'voided' | 'expired'
+
+export interface StewardTrigger {
+  kind: 'event' | 'schedule' | 'on_demand'
+  event: string | null
+}
+
+/**
+ * One argument of one change-tier tool (`stewards/spec.py::ArgConstraint.to_dict`).
+ * `allowed` is a literal set the spec fixes; `param` names the steward parameter that
+ * feeds the values at run start. `evidence` is the third kind (ADR-0072 rule 6:
+ * values computed at run start from the server's own records); the server does not
+ * send it yet, so the view renders it when present and treats a constraint with
+ * neither `allowed` nor `param` nor `evidence` as an empty literal set.
+ */
+export interface StewardConstraint {
+  tool: string
+  arg: string
+  allowed?: string[]
+  param?: string
+  evidence?: string
+}
+
+export interface StewardTimeout {
+  tool: string
+  max_s: number
+}
+
+/** `window` as `validate_params` stores it: weekday keys (`mon`..`sun`), `HH:MM`, an IANA zone. */
+export interface StewardWindow {
+  days: string[]
+  start: string
+  end: string
+  tz: string
+}
+
+/** The parameters a steward takes, by name. A name the spec does not declare never appears. */
+export interface StewardParamValues {
+  window?: StewardWindow
+  hosts?: string[]
+  packages?: string[]
+  require_idle?: boolean
+  [name: string]: unknown
+}
+
+/** An entry of a run's `actions` or `recommendations` — one tool call (`stewards/policy.py::_record`). */
+export interface StewardCall {
+  tool: string
+  args: Record<string, unknown>
+  agent_id: string | null
+  tool_class: ToolTier
+  authorization_id?: string
+  ok?: boolean
+  code?: string | null
+}
+
+/** `stewards/store.py::StewardRun.to_public`. */
+export interface StewardRun {
+  id: string
+  steward_id: string
+  spec_hash: string
+  trigger: string
+  subject: string | null
+  host_id: string | null
+  mode: StewardMode
+  status: StewardRunStatus
+  verdict: string | null
+  summary: string | null
+  input_tokens: number
+  output_tokens: number
+  cache_read_tokens: number
+  cache_creation_tokens: number
+  ticket_id: string | null
+  error: string | null
+  actions: StewardCall[]
+  recommendations: StewardCall[]
+  started_at: string
+  finished_at: string | null
+  params: StewardParamValues | null
+  effective_hash: string | null
+}
+
+/** One entry of `GET /api/stewards` (`stewards/runner.py::overview`). */
+export interface Steward {
+  id: string
+  title: string
+  description: string
+  trigger: StewardTrigger
+  tools: string[]
+  tool_classes: Record<string, ToolTier>
+  /**
+   * Where each tool runs: on a PC (`'host'`) or on the server (`'server'`). Absent on a
+   * server that predates it; a consumer then offers both.
+   */
+  tool_targets?: Record<string, 'host' | 'server'>
+  verdict_tool: string | null
+  budget: { max_iterations: number }
+  constraints: StewardConstraint[]
+  timeouts: StewardTimeout[]
+  sensitive_ok: boolean
+  default_mode: StewardMode
+  version: number
+  spec_hash: string
+  mode: StewardMode
+  /** The values on this install (the overview replaces the spec's list of names with them). */
+  params: StewardParamValues
+  effective_hash: string | null
+  /** `null` for triage, whose `act` is its settings rather than a binding to a hash. */
+  act_bound: boolean | null
+  latest_run: StewardRun | null
+}
+
+export interface StewardsResponse {
+  enabled: boolean
+  stewards: Steward[]
+}
+
+/** `GET /api/stewards/{id}/params` — `declared` is what the spec takes. */
+export interface StewardParamsResponse {
+  steward_id: string
+  declared: string[]
+  params: StewardParamValues
+  effective_hash: string | null
+}
+
+/** `PUT /api/stewards/{id}/params`. */
+export interface StewardParamsSaved {
+  steward_id: string
+  params: StewardParamValues
+  effective_hash: string
+  mode: StewardMode
+  voided: number
+}
+
+export interface StewardAuthorization {
+  id: string
+  steward_id: string
+  effective_hash: string
+  tool: string
+  /** Host ids, or the sentinel `"server"`. */
+  scope: string[] | string
+  max_attempts_per_day: number
+  expires_at: string
+  granted_by: string
+  granted_at: string
+  revoked_at: string | null
+  revoked_by: string | null
+  voided_at: string | null
+  voided_by: string | null
+  note: string
+  status: AuthorizationStatus
+  /** Attempts spent in the last 24 hours, per host (`server` for a change that names none). */
+  attempts_last_24h: Record<string, number>
+}
+
+export interface StewardAuthorizationsResponse {
+  steward_id: string
+  effective_hash: string | null
+  authorizations: StewardAuthorization[]
+}
+
+/** `PUT /api/stewards/{id}/mode` — `mode` is the one now in force, which for triage can differ from `requested`. */
+export interface StewardModeSet {
+  steward_id: string
+  mode: StewardMode
+  requested: StewardMode
+}
+
+/** `POST /api/stewards/{id}/runs` (preview, always shadow) answers 202. */
+export interface StewardPreviewStarted {
+  run_id: string
+}

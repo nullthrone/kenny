@@ -117,7 +117,7 @@ async def test_an_unknown_verdict_is_a_malformed_answer(rig: Rig) -> None:
     assert await rig.steward_tickets() == []
 
 
-async def test_a_call_outside_an_steward_run_is_refused(rig: Rig) -> None:
+async def test_a_call_outside_a_steward_run_is_refused(rig: Rig) -> None:
     with pytest.raises(ToolError) as caught:
         await rig.service.record_verdict(_args("actionable"), session=None)
     assert caught.value.code == "no_run"
@@ -153,7 +153,7 @@ async def test_only_an_actionable_verdict_opens_a_ticket(rig: Rig, verdict: str)
 
 
 @pytest.mark.parametrize("mode", ["shadow", "act"])
-async def test_an_actionable_verdict_opens_an_steward_ticket_in_either_mode(
+async def test_an_actionable_verdict_opens_a_steward_ticket_in_either_mode(
     rig: Rig, mode: str
 ) -> None:
     session = rig.session(mode=mode)
@@ -189,7 +189,7 @@ async def test_the_ticket_title_is_one_bounded_line(rig: Rig) -> None:
     assert "\n" not in ticket.title and len(ticket.title) <= 160
 
 
-async def test_an_steward_key_is_not_an_alert_key() -> None:
+async def test_a_steward_key_is_not_an_alert_key() -> None:
     assert parse_alert_key(dedup_key("posture", HOST)) is None
 
 
@@ -314,7 +314,7 @@ class _CountingTriage:
         return "inconclusive"
 
 
-async def test_joined_the_ticket_an_steward_opens_does_not_start_triage(
+async def test_joined_the_ticket_a_steward_opens_does_not_start_triage(
     rig: Rig, tmp_path
 ) -> None:
     store = StewardStore(str(tmp_path / "stewards.sqlite"))

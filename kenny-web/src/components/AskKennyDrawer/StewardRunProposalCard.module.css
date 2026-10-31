@@ -1,0 +1,26 @@
+.facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 12px;
+  margin: 0 0 12px;
+  font-size: var(--text-sm);
+}
+
+.facts dt {
+  font-family: var(--font-display);
+  font-size: 10px;
+  letter-spacing: var(--track-caps);
+  color: var(--text-muted);
+  align-self: baseline;
+}
+
+.facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.note {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  margin: 0 0 12px;
+}

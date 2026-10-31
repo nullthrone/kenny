@@ -31,12 +31,18 @@ Vocabulary:
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from . import diffs, health_rules
 from .notify import Notification
+from .rule_hits import PendingHits, iso
 from .store import TicketRuleStore
+
+logger = logging.getLogger("kenny.ticket_rules")
 
 __all__ = [
     "EVENT_TYPES",
@@ -48,6 +54,7 @@ __all__ = [
     "KNOWN_SECTIONS",
     "TicketRuleList",
     "decide",
+    "removal_is_louder",
     "rule_id",
     "validate_field",
 ]
@@ -153,6 +160,11 @@ class Decision:
     open: bool
     rule: dict[str, Any] | None = None
     subject: tuple[str, str] | None = None  # (section, severity) that decided it
+    #: The ids of the operator rules this decision applied, in the order it
+    #: visited them: every subject's most specific rule up to the one that
+    #: decided, whatever its decision (a ``never`` rule that kept a ticket
+    #: closed did its job too). The record of a rule's use (``rule_hits``).
+    matched: tuple[str, ...] = ()
 
 
 def rule_id(agent_id: str, event_type: str, section: str) -> str:
@@ -223,26 +235,122 @@ def decide(
         sorted(sections.items()) if sections else [("", _severity_from_priority(priority))]
     )
 
+    matched: list[str] = []
     for section, severity in subjects:
-        rule = _match(rules, agent_id, event_type, section)
-        if rule is not None:
-            rule_decision = rule["decision"]
-        else:
-            # No event_type-specific default is looked up when the producer
-            # left event_type empty (back-compat notifications predating this
-            # feature) -- those fall back to the kind-based legacy rule.
-            rule_decision = (
-                DEFAULT_SECTION_DECISION.get(
-                    (event_type, section), DEFAULT_DECISION.get(event_type, "never")
-                )
-                if event_type
-                else ("open_all" if default_open else "never")
-            )
+        rule, rule_decision = _resolve(
+            rules, agent_id, event_type, section, default_open=default_open
+        )
+        if rule is not None and rule.get("id") and rule["id"] not in matched:
+            matched.append(str(rule["id"]))
         if rule_decision == "open_all":
-            return Decision(True, rule, (section, severity))
+            return Decision(True, rule, (section, severity), tuple(matched))
         if rule_decision == "open_crit" and severity == "crit":
-            return Decision(True, rule, (section, severity))
-    return Decision(False)
+            return Decision(True, rule, (section, severity), tuple(matched))
+    return Decision(False, matched=tuple(matched))
+
+
+def _resolve(
+    rules: dict[tuple[str, str, str], dict[str, Any]],
+    agent_id: str,
+    event_type: str,
+    section: str,
+    *,
+    default_open: bool,
+) -> tuple[dict[str, Any] | None, str]:
+    """One subject's ``(deciding rule or None, decision)``: step 3 of :func:`decide`."""
+
+    rule = _match(rules, agent_id, event_type, section)
+    if rule is not None:
+        return rule, rule["decision"]
+    # No event_type-specific default is looked up when the producer left
+    # event_type empty (back-compat notifications predating this feature) --
+    # those fall back to the kind-based legacy rule.
+    if not event_type:
+        return None, "open_all" if default_open else "never"
+    return None, DEFAULT_SECTION_DECISION.get(
+        (event_type, section), DEFAULT_DECISION.get(event_type, "never")
+    )
+
+
+#: Stand-ins for "a host no rule names" and "a section nothing names". Each
+#: contains ``|``, which :func:`validate_field` refuses in a rule, so no rule
+#: can ever match them by name.
+_ANY_HOST = "|any-host|"
+_ANY_SECTION = "|any-section|"
+
+
+def removal_is_louder(
+    rules: dict[tuple[str, str, str], dict[str, Any]], rule: dict[str, Any]
+) -> bool:
+    """Whether deleting ``rule`` from ``rules`` can only make kenny open more tickets.
+
+    An auto-ticket rule nothing has matched for months is either dead or a
+    tripwire for a rare event, and its hit record cannot tell which. Removing
+    a tripwire that is stricter than what decides in its place silences it, so
+    a rule may be proposed for removal only when, for **every** subject (host,
+    section) it decides, the decision that takes its place opens a ticket for
+    every severity the rule opens one for:
+
+    * ``never`` always qualifies: it opens nothing, so nothing can be lost.
+    * ``open_crit`` qualifies only where every decision taking its place is
+      ``open_all``.
+    * ``open_all`` never qualifies. Neither does an ``open_crit`` replaced by
+      another ``open_crit``: removing it changes nothing today, but an equal
+      rule may pin a host or section against a later change of the wider rule
+      or the default, and a removal is proposed only where it is louder.
+
+    "What takes its place" is :func:`decide`'s own precedence (step 3) with the
+    rule gone. For the subjects the rule decides -- those it is the most
+    specific match for -- that is the next most specific remaining rule (host
+    and section, host and any section, fleet and section, fleet and any
+    section), else the section default, else the event-type default. A rule
+    with an empty section decides every section no more specific rule names,
+    so every section its replacement could differ on is checked: each one a
+    rule or a section default names, the empty section, and one nothing
+    names. A fleet rule is checked for a host with no rule of its own; a host
+    with one is decided by that rule, not this one. Since a notification opens
+    a ticket as soon as any one of its subjects opens (step 4), a removal that
+    keeps every subject at least as loud keeps every notification so.
+
+    Pure, like :func:`decide`; ``False`` for a rule ``rules`` does not hold.
+    """
+
+    agent_id = str(rule.get("agent_id") or "")
+    event_type = str(rule.get("event_type") or "")
+    section = str(rule.get("section") or "")
+    key = (agent_id, event_type, section)
+    if not _same(rules.get(key), rule):
+        return False
+    decision = rule.get("decision")
+    if decision == "never":
+        return True
+    if decision != "open_crit" or event_type not in EVENT_TYPES:
+        return False
+    remaining = {k: r for k, r in rules.items() if k != key}
+    hosts = [agent_id] if agent_id else [_ANY_HOST]
+    sections = (
+        [section]
+        if section
+        else sorted(
+            {"", _ANY_SECTION}
+            | {s for (et, s) in DEFAULT_SECTION_DECISION if et == event_type}
+            | {k[2] for k in rules if k[1] == event_type and k[2]}
+        )
+    )
+    for host in hosts:
+        for sec in sections:
+            if not _same(_match(rules, host, event_type, sec), rule):
+                continue  # a more specific rule decides this subject
+            _, instead = _resolve(remaining, host, event_type, sec, default_open=True)
+            if instead != "open_all":
+                return False
+    return True
+
+
+def _same(held: dict[str, Any] | None, rule: dict[str, Any]) -> bool:
+    """Whether ``held`` is ``rule`` (the same rule id)."""
+
+    return held is not None and bool(rule.get("id")) and held.get("id") == rule.get("id")
 
 
 def _match(
@@ -274,18 +382,53 @@ class TicketRuleList:
         self._store = store
         # (agent_id, event_type, section) -> rule dict
         self._rules: dict[tuple[str, str, str], dict[str, Any]] = {}
+        #: Matches applied to the mirror and not yet written (``rule_hits``).
+        self._hits = PendingHits()
 
     async def load(self) -> None:
         """Load persisted rules into the in-memory mirror (call once at startup)."""
 
         if self._store is None:
             return
+        await self.flush()
         self.set_rules(await self._store.list())
 
     def set_rules(self, rules: list[dict[str, Any]]) -> None:
+        self._hits.overlay(rules)
         self._rules = {
             (r["agent_id"], r["event_type"], r["section"]): r for r in rules
         }
+
+    def get(self, rule_id_: str) -> dict[str, Any] | None:
+        """The rule with id ``rule_id_`` as the mirror holds it now, or ``None``."""
+
+        return next((r for r in self._rules.values() if r["id"] == rule_id_), None)
+
+    async def record_matches(self, rule_ids: Iterable[str], at: datetime) -> None:
+        """Record that a decision applied ``rule_ids`` at ``at`` (:attr:`Decision.matched`).
+
+        The mirror is updated at once and the store written straight after: a
+        ticket decision is rare next to a telemetry read. Never raises.
+        """
+
+        stamp = iso(at)
+        for rule_id_ in rule_ids:
+            rule = self.get(rule_id_)
+            if rule is not None:
+                self._hits.add(rule, stamp)
+        await self.flush()
+
+    async def flush(self) -> None:
+        """Write queued matches to the store; a failed write queues them again."""
+
+        if self._store is None or not self._hits:
+            return
+        hits = self._hits.take()
+        try:
+            await self._store.record_matches(hits)
+        except Exception:  # noqa: BLE001 - hit tracking must never cost an alert
+            self._hits.restore(hits)
+            logger.warning("could not record auto-ticket rule matches", exc_info=True)
 
     def mapping(self) -> dict[tuple[str, str, str], dict[str, Any]]:
         """The raw ``(agent_id, event_type, section) -> rule`` mirror, for

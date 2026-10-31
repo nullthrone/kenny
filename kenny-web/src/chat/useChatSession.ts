@@ -8,6 +8,8 @@ export interface ChatSession {
   resolveGate: typeof chatStore.resolveGate
   createFromDraft: typeof chatStore.createFromDraft
   dismissDraft: typeof chatStore.dismissDraft
+  startStewardRun: typeof chatStore.startStewardRun
+  dismissStewardRun: typeof chatStore.dismissStewardRun
   stop: typeof chatStore.stop
   startNew: () => void
   loadConversation: typeof chatStore.loadConversation
@@ -49,6 +51,8 @@ export function useChatSession(agentId: string, ticketId = ''): ChatSession {
     resolveGate: chatStore.resolveGate,
     createFromDraft: chatStore.createFromDraft,
     dismissDraft: chatStore.dismissDraft,
+    startStewardRun: chatStore.startStewardRun,
+    dismissStewardRun: chatStore.dismissStewardRun,
     stop: chatStore.stop,
     startNew: () => chatStore.reset(agentId),
     loadConversation: chatStore.loadConversation,

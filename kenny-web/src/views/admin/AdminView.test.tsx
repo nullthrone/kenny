@@ -81,6 +81,7 @@ function mockApi(role: 'superuser' | 'operator' | 'user', over: Record<string, u
     '/api/discord/status': { configured: false },
     '/api/policy/rules': { builtin: [], operator: [] },
     '/api/policy/shell-allow': { mode: 'unrestricted', allow: [] },
+    '/api/stewards': { enabled: true, stewards: [] },
     ...over,
   }
   apiGetMock.mockImplementation((path: string) => {
@@ -98,6 +99,7 @@ function renderAdmin(path: string) {
         <Routes>
           <Route path="/admin" element={<AdminView />} />
           <Route path="/admin/:section" element={<AdminView />} />
+          <Route path="/admin/:section/:detail" element={<AdminView />} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
@@ -126,6 +128,17 @@ describe('AdminView — what each role can reach', () => {
     expect(screen.getByRole('link', { name: 'ALARM RULES' })).toBeInTheDocument()
     expect(screen.queryByText('Could not load the settings catalog')).not.toBeInTheDocument()
     // Never requested: it would 403, and the failure is what used to break the page.
+    expect(apiGetMock).not.toHaveBeenCalledWith('/api/settings')
+  })
+
+  it('gives an operator the stewards view, which reads /api/stewards and not the catalog', async () => {
+    mockApi('operator')
+
+    renderAdmin('/admin/stewards')
+
+    expect(await screen.findByRole('link', { name: 'STEWARDS' })).toBeInTheDocument()
+    expect(await screen.findByText('No stewards')).toBeInTheDocument()
+    expect(apiGetMock).toHaveBeenCalledWith('/api/stewards')
     expect(apiGetMock).not.toHaveBeenCalledWith('/api/settings')
   })
 
@@ -158,6 +171,9 @@ describe('AdminView — what each role can reach', () => {
     expect(screen.getByRole('link', { name: 'ALARM RULES' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'BACKUP' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'USERS' })).toBeInTheDocument()
+    // Right after the AI group, which holds the global switch for every steward.
+    const labels = screen.getAllByRole('link').map((a) => a.textContent)
+    expect(labels.indexOf('STEWARDS')).toBe(labels.indexOf('AI') + 1)
     // Nothing in Admin is read-only: the environment is not a section.
     expect(screen.queryByRole('link', { name: 'ENVIRONMENT' })).not.toBeInTheDocument()
   })
@@ -237,6 +253,47 @@ describe('AdminView — every settings group reaches the screen', () => {
 
     expect(await screen.findByText(`row of ${slug}`)).toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: 'EDIT' }).length).toBeGreaterThan(0)
+  })
+})
+
+describe('AdminView — the stewards deep link', () => {
+  it('opens one steward at #/admin/stewards/{id}', async () => {
+    mockApi('operator', {
+      '/api/stewards': {
+        enabled: true,
+        stewards: [
+          {
+            id: 'patch',
+            title: 'Package updates',
+            description: 'Updates packages.',
+            trigger: { kind: 'schedule', event: null },
+            tools: [],
+            tool_classes: {},
+            verdict_tool: null,
+            budget: { max_iterations: 3 },
+            constraints: [],
+            timeouts: [],
+            sensitive_ok: false,
+            default_mode: 'shadow',
+            version: 1,
+            spec_hash: 'a'.repeat(64),
+            mode: 'shadow',
+            params: {},
+            effective_hash: 'b'.repeat(64),
+            act_bound: false,
+            latest_run: null,
+          },
+        ],
+      },
+      '/api/stewards/patch/params': { steward_id: 'patch', declared: [], params: {}, effective_hash: 'b'.repeat(64) },
+      '/api/stewards/patch/authorizations': { steward_id: 'patch', effective_hash: 'b'.repeat(64), authorizations: [] },
+      '/api/stewards/runs': { runs: [] },
+    })
+
+    renderAdmin('/admin/stewards/patch')
+
+    expect(await screen.findByRole('heading', { name: 'Package updates' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: '← ALL STEWARDS' })).toHaveAttribute('href', '/admin/stewards')
   })
 })
 

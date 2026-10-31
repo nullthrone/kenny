@@ -571,7 +571,7 @@ async def test_triage_act_needs_the_reviewed_hash_too(world) -> None:
 # -- a steward removed and shipped again revives nothing ----------------------------
 
 
-async def test_an_steward_removed_and_readded_gets_neither_act_nor_grants_back(world) -> None:
+async def test_a_steward_removed_and_readded_gets_neither_act_nor_grants_back(world) -> None:
     spec = _installer()
     first = _runner(world, spec)
     await first.set_params("installer", {"packages": [SEVENZIP]}, actor="admin")

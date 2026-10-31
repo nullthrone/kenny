@@ -264,6 +264,40 @@ class ChatStore {
     }))
   }
 
+  /**
+   * Start the preview run a steward-run card is offering.
+   *
+   * The POST is the stewards view's own (a preview is always shadow:
+   * it changes nothing on any PC). A refusal (400/409/503) throws with the
+   * server's text so the card can show it; the row stays pending.
+   */
+  startStewardRun = async (itemId: string, stewardId: string, hostId: string): Promise<void> => {
+    const res = await api.post<{ run_id: string }>(
+      `/api/stewards/${encodeURIComponent(stewardId)}/runs`,
+      hostId ? { host_id: hostId } : {},
+    )
+    this.update((st) => ({
+      ...st,
+      items: st.items.map((it) =>
+        it.kind === 'steward_proposal' && it.id === itemId
+          ? { ...it, resolution: 'started' as const, runId: res.run_id }
+          : it,
+      ),
+    }))
+  }
+
+  /** Put a steward-run offer away unstarted. The row stays: the offer was made and declined. */
+  dismissStewardRun = (itemId: string): void => {
+    this.update((st) => ({
+      ...st,
+      items: st.items.map((it) =>
+        it.kind === 'steward_proposal' && it.id === itemId
+          ? { ...it, resolution: 'dismissed' as const }
+          : it,
+      ),
+    }))
+  }
+
   private runStream = async (
     url: string,
     body: ChatStreamRequest | ChatConfirmRequest | TicketChatRequest | TicketDecisionRequest,
