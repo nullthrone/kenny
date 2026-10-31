@@ -122,7 +122,16 @@ _HOST_ARG_TOOLS: frozenset[str] = frozenset(
     {"agent_health", "agent_snapshot", "agent_availability"}
 )
 
-_TOOL_CATALOG: frozenset[str] = frozenset(SERVER_TOOLS) | frozenset(CAPABILITY_TOOLS)
+#: The only names the tool loop can route: the ones ``build_tool_schemas`` emits
+#: a schema for and ``ToolExecutor`` dispatches (server-side or to the host).
+#: :data:`~kenny_server.tool_classes.TOOL_CLASSES` is wider -- it also classifies
+#: MCP-only server tools (``webfilter_set``, ``ticket_rule_set``,
+#: ``reliability_suppression_add``, ...) -- and the ``operator`` profile is
+#: *all* of it. Every allowlist built here is intersected with this set, so a
+#: ticket session is never offered, nor does the gate admit, a name the loop would
+#: forward to the host as a capability request that cannot work -- after an
+#: operator had already approved it.
+ROUTABLE_TOOLS: frozenset[str] = frozenset(SERVER_TOOLS) | frozenset(CAPABILITY_TOOLS)
 
 _RATE_WINDOW_SECS = 3600.0
 
@@ -528,7 +537,7 @@ def allowed_tools_for(
 
     names = {
         t
-        for t in _TOOL_CATALOG
+        for t in ROUTABLE_TOOLS
         if profile_allows(profile, t) and profile_allows(snapshot_profile, t)
     }
     names -= EXCLUDED_TOOLS
