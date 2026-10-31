@@ -1,9 +1,9 @@
-"""The declarative shape of one specialized agent (ADR-0071).
+"""The declarative shape of one steward (ADR-0071).
 
-An agent is a purpose-bound session kenny starts on its own: a prompt, the
+A steward is a purpose-bound session kenny starts on its own: a prompt, the
 tools it is handed, what starts it, and what bounds it. This module says what a
-well-formed agent *is*; it decides nothing about whether one may act. That is
-the gate's job (``agents.policy``), for the same reason the tier belongs to the
+well-formed steward *is*; it decides nothing about whether one may act. That is
+the gate's job (``stewards.policy``), for the same reason the tier belongs to the
 tool and the gate to the surface (ADR-0045).
 
 Two properties carry the whole safety argument, and both are checked here, at
@@ -14,14 +14,14 @@ load time, not trusted at run time:
   spec rather than being treated as the most consequential tool it could be,
   because a spec is written by a person and a typo there is a bug to surface,
   not a call to gate. Nothing is ever derived from a profile:
-  ``profile_allows(None, ...)`` allows everything, and an agent has no account.
+  ``profile_allows(None, ...)`` allows everything, and a steward has no account.
 * **Privacy-touching tools are opt-in.** A spec that names one of
   :data:`~kenny_server.tool_classes.SENSITIVE_TOOLS` must say so with
   ``sensitive_ok``; an investigation nobody asked for does not read files or
   look at a screen by accident.
 
-:attr:`AgentSpec.spec_hash` fingerprints exactly the fields that change what an
-agent *does*. Anything granted to an agent later is bound to that hash, so
+:attr:`StewardSpec.spec_hash` fingerprints exactly the fields that change what an
+steward *does*. Anything granted to a steward later is bound to that hash, so
 editing the prompt or the tool set is never a silent widening of something a
 person already agreed to.
 
@@ -43,7 +43,7 @@ __all__ = [
     "MODES",
     "TRIGGER_KINDS",
     "VERDICT_TOOLS",
-    "AgentSpec",
+    "StewardSpec",
     "ArgConstraint",
     "Budget",
     "SpecError",
@@ -52,7 +52,7 @@ __all__ = [
     "validate",
 ]
 
-#: What an agent may do with a change-tier call.
+#: What a steward may do with a change-tier call.
 #:
 #: * ``off`` — never started.
 #: * ``shadow`` — runs the whole investigation and records what it *would* do;
@@ -60,7 +60,7 @@ __all__ = [
 #: * ``act`` — a change runs when the gate allows it.
 MODES: tuple[str, ...] = ("off", "shadow", "act")
 
-#: The longest ``timeout_s`` any change-tier call of an agent run may ask for,
+#: The longest ``timeout_s`` any change-tier call of a steward run may ask for,
 #: in seconds. A spec narrows it per tool (:class:`ToolTimeout`); nothing widens
 #: it. ``timeout_s`` is the one argument no constraint binds, and unbounded it
 #: would let a run park on one call indefinitely.
@@ -76,7 +76,7 @@ EVENTS: tuple[str, ...] = ("ticket_created",)
 #: exempt from argument constraints because its own server-side handler decides
 #: its effect; a tool whose effect is decided by its arguments (a shell, an
 #: install) must never be able to claim that exemption. A literal, so this
-#: module stays stdlib-only; ``tests/test_agent_spec.py`` joins it to
+#: module stays stdlib-only; ``tests/test_steward_spec.py`` joins it to
 #: ``toolloop.TRIAGE_VERDICT_TOOL``.
 VERDICT_TOOLS: frozenset[str] = frozenset({"ticket_triage_verdict"})
 
@@ -89,7 +89,7 @@ class SpecError(ValueError):
 
 @dataclass(frozen=True)
 class Trigger:
-    """What starts a run of this agent."""
+    """What starts a run of this steward."""
 
     kind: str
     #: For ``kind="event"``: one of :data:`EVENTS`.
@@ -125,7 +125,7 @@ class ArgConstraint:
 
 @dataclass(frozen=True)
 class ToolTimeout:
-    """The longest ``timeout_s`` this agent's calls of one change-tier tool may ask for.
+    """The longest ``timeout_s`` this steward's calls of one change-tier tool may ask for.
 
     A fast tool (a DNS flush) gets seconds, a slow one (a package update)
     minutes; a tool without one is bounded by :data:`MAX_TIMEOUT_S` alone.
@@ -151,8 +151,8 @@ class Budget:
 
 
 @dataclass(frozen=True)
-class AgentSpec:
-    """One specialized agent, as declared in the catalog."""
+class StewardSpec:
+    """One steward, as declared in the catalog."""
 
     id: str
     title: str
@@ -173,15 +173,15 @@ class AgentSpec:
     #: Must be true for a spec that names any sensitive tool.
     sensitive_ok: bool = False
     #: The mode a fresh install starts in: ``shadow`` or ``off``. Never ``act``
-    #: — moving an agent to ``act`` is a superuser's decision, not a default.
+    #: — moving a steward to ``act`` is a superuser's decision, not a default.
     default_mode: str = "shadow"
     #: Bumped by hand when behaviour changes in a way the hash cannot see
-    #: (e.g. server-side code the agent's verdict tool runs).
+    #: (e.g. server-side code the steward's verdict tool runs).
     version: int = 1
 
     @property
     def spec_hash(self) -> str:
-        """Fingerprint of everything that changes what this agent does.
+        """Fingerprint of everything that changes what this steward does.
 
         Title, description and the default mode are presentation and install
         defaults; they are deliberately outside the hash, so rewording a
@@ -219,7 +219,7 @@ class AgentSpec:
         return tuple(c for c in self.constraints if c.tool == tool)
 
     def timeout_for(self, tool: str) -> int:
-        """The longest ``timeout_s`` a call of ``tool`` may carry in this agent."""
+        """The longest ``timeout_s`` a call of ``tool`` may carry in this steward."""
 
         for t in self.timeouts:
             if t.tool == tool:
@@ -247,58 +247,58 @@ class AgentSpec:
         }
 
 
-def validate(spec: AgentSpec) -> AgentSpec:
+def validate(spec: StewardSpec) -> StewardSpec:
     """Return ``spec`` unchanged, or raise :class:`SpecError` saying why not."""
 
     if not _ID_RE.match(spec.id):
-        raise SpecError(f"agent id {spec.id!r} must match {_ID_RE.pattern}")
+        raise SpecError(f"steward id {spec.id!r} must match {_ID_RE.pattern}")
     if not spec.prompt.strip():
-        raise SpecError(f"agent {spec.id}: prompt is empty")
+        raise SpecError(f"steward {spec.id}: prompt is empty")
     if not spec.tools:
-        raise SpecError(f"agent {spec.id}: tool set is empty")
+        raise SpecError(f"steward {spec.id}: tool set is empty")
     unknown = sorted(t for t in spec.tools if t not in TOOL_CLASSES)
     if unknown:
-        raise SpecError(f"agent {spec.id}: unclassified tool(s) {', '.join(unknown)}")
+        raise SpecError(f"steward {spec.id}: unclassified tool(s) {', '.join(unknown)}")
     sensitive = sorted(spec.tools & SENSITIVE_TOOLS)
     if sensitive and not spec.sensitive_ok:
         raise SpecError(
-            f"agent {spec.id}: names sensitive tool(s) {', '.join(sensitive)} "
+            f"steward {spec.id}: names sensitive tool(s) {', '.join(sensitive)} "
             "without sensitive_ok"
         )
     if spec.verdict_tool is not None and spec.verdict_tool not in VERDICT_TOOLS:
         raise SpecError(
-            f"agent {spec.id}: {spec.verdict_tool} is not a verdict tool "
+            f"steward {spec.id}: {spec.verdict_tool} is not a verdict tool "
             f"(one of {', '.join(sorted(VERDICT_TOOLS))})"
         )
     if spec.verdict_tool is not None and spec.verdict_tool not in spec.tools:
-        raise SpecError(f"agent {spec.id}: verdict tool {spec.verdict_tool} is not in its tools")
+        raise SpecError(f"steward {spec.id}: verdict tool {spec.verdict_tool} is not in its tools")
     seen: set[tuple[str, str]] = set()
     for c in spec.constraints:
         if c.tool not in spec.tools:
-            raise SpecError(f"agent {spec.id}: constraint names {c.tool}, which is not in its tools")
+            raise SpecError(f"steward {spec.id}: constraint names {c.tool}, which is not in its tools")
         if TOOL_CLASSES[c.tool] == READ_ONLY:
-            raise SpecError(f"agent {spec.id}: constraint on read-only {c.tool} would bound nothing")
+            raise SpecError(f"steward {spec.id}: constraint on read-only {c.tool} would bound nothing")
         if not c.arg or not c.allowed or any(not v for v in c.allowed):
-            raise SpecError(f"agent {spec.id}: constraint on {c.tool} needs an arg and non-empty values")
+            raise SpecError(f"steward {spec.id}: constraint on {c.tool} needs an arg and non-empty values")
         if (c.tool, c.arg) in seen:
-            raise SpecError(f"agent {spec.id}: two constraints on {c.tool}.{c.arg}")
+            raise SpecError(f"steward {spec.id}: two constraints on {c.tool}.{c.arg}")
         seen.add((c.tool, c.arg))
     timed: set[str] = set()
     for t in spec.timeouts:
         if t.tool not in spec.tools:
-            raise SpecError(f"agent {spec.id}: timeout names {t.tool}, which is not in its tools")
+            raise SpecError(f"steward {spec.id}: timeout names {t.tool}, which is not in its tools")
         if TOOL_CLASSES[t.tool] == READ_ONLY:
-            raise SpecError(f"agent {spec.id}: timeout on read-only {t.tool} would bound nothing")
+            raise SpecError(f"steward {spec.id}: timeout on read-only {t.tool} would bound nothing")
         if isinstance(t.max_s, bool) or not isinstance(t.max_s, int):
-            raise SpecError(f"agent {spec.id}: timeout on {t.tool} must be whole seconds")
+            raise SpecError(f"steward {spec.id}: timeout on {t.tool} must be whole seconds")
         if not 1 <= t.max_s <= MAX_TIMEOUT_S:
             raise SpecError(
-                f"agent {spec.id}: timeout on {t.tool} must be 1 to {MAX_TIMEOUT_S} seconds"
+                f"steward {spec.id}: timeout on {t.tool} must be 1 to {MAX_TIMEOUT_S} seconds"
             )
         if t.tool in timed:
-            raise SpecError(f"agent {spec.id}: two timeouts on {t.tool}")
+            raise SpecError(f"steward {spec.id}: two timeouts on {t.tool}")
         timed.add(t.tool)
-    # A change the agent may make with any arguments at all is the tier acting
+    # A change the steward may make with any arguments at all is the tier acting
     # as the permission, which ADR-0045 forbids. The verdict tool is exempt: its
     # effect is decided server-side by its own handler, not by its arguments.
     unbounded = sorted(
@@ -308,22 +308,22 @@ def validate(spec: AgentSpec) -> AgentSpec:
     )
     if unbounded:
         raise SpecError(
-            f"agent {spec.id}: change-tier tool(s) {', '.join(unbounded)} carry no argument constraint"
+            f"steward {spec.id}: change-tier tool(s) {', '.join(unbounded)} carry no argument constraint"
         )
     if spec.trigger.kind not in TRIGGER_KINDS:
-        raise SpecError(f"agent {spec.id}: unknown trigger kind {spec.trigger.kind!r}")
+        raise SpecError(f"steward {spec.id}: unknown trigger kind {spec.trigger.kind!r}")
     if spec.trigger.kind == "event" and spec.trigger.event not in EVENTS:
-        raise SpecError(f"agent {spec.id}: unknown event {spec.trigger.event!r}")
+        raise SpecError(f"steward {spec.id}: unknown event {spec.trigger.event!r}")
     if spec.trigger.kind != "event" and spec.trigger.event is not None:
-        raise SpecError(f"agent {spec.id}: only an event trigger names an event")
+        raise SpecError(f"steward {spec.id}: only an event trigger names an event")
     if spec.default_mode not in MODES:
-        raise SpecError(f"agent {spec.id}: unknown default mode {spec.default_mode!r}")
+        raise SpecError(f"steward {spec.id}: unknown default mode {spec.default_mode!r}")
     if spec.default_mode == "act":
-        # A spec that starts in ``act`` would put a fresh install's agent to
+        # A spec that starts in ``act`` would put a fresh install's steward to
         # work without anybody having chosen that; ``act`` is set, never shipped.
-        raise SpecError(f"agent {spec.id}: default mode act; moving to act is a superuser's choice")
+        raise SpecError(f"steward {spec.id}: default mode act; moving to act is a superuser's choice")
     if spec.budget.max_iterations < 1:
-        raise SpecError(f"agent {spec.id}: max_iterations must be at least 1")
+        raise SpecError(f"steward {spec.id}: max_iterations must be at least 1")
     if spec.version < 1:
-        raise SpecError(f"agent {spec.id}: version must be at least 1")
+        raise SpecError(f"steward {spec.id}: version must be at least 1")
     return spec

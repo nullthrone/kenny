@@ -1,4 +1,4 @@
-"""``AgentSpec`` validation and the hash that binds grants to behaviour (ADR-0071)."""
+"""``StewardSpec`` validation and the hash that binds grants to behaviour (ADR-0071)."""
 
 from __future__ import annotations
 
@@ -6,13 +6,13 @@ from dataclasses import replace
 
 import pytest
 
-from kenny_server.agents.spec import (
+from kenny_server.stewards.spec import (
     EVENTS,
     MAX_TIMEOUT_S,
     MODES,
     TRIGGER_KINDS,
     VERDICT_TOOLS,
-    AgentSpec,
+    StewardSpec,
     ArgConstraint,
     Budget,
     SpecError,
@@ -24,8 +24,8 @@ from kenny_server.tool_classes import READ_ONLY, SENSITIVE_TOOLS, TOOL_CLASSES
 from kenny_server.toolloop import TRIAGE_VERDICT_TOOL
 
 
-def make_spec(**overrides: object) -> AgentSpec:
-    base = AgentSpec(
+def make_spec(**overrides: object) -> StewardSpec:
+    base = StewardSpec(
         id="disk_watch",
         title="Disk watch",
         description="Looks at disks.",
@@ -53,7 +53,7 @@ def test_the_fixture_tools_are_classified() -> None:
 
 @pytest.mark.parametrize("bad_id", ["", "A", "a", "Triage", "1triage", "has-dash", "x" * 42, "sp ace"])
 def test_a_malformed_id_is_refused(bad_id: str) -> None:
-    with pytest.raises(SpecError, match="agent id"):
+    with pytest.raises(SpecError, match="steward id"):
         validate(make_spec(id=bad_id))
 
 
@@ -153,7 +153,7 @@ def test_off_and_shadow_are_valid_defaults(mode: str) -> None:
 
 
 def test_act_is_never_a_default_mode() -> None:
-    # Moving an agent to act is a superuser's decision; a spec that shipped in
+    # Moving a steward to act is a superuser's decision; a spec that shipped in
     # act would make it for every fresh install.
     assert "act" in MODES
     with pytest.raises(SpecError, match="default mode act"):
@@ -202,11 +202,11 @@ def test_the_hash_ignores_tool_ordering() -> None:
         {"version": 2},
         {"sensitive_ok": True},
         {"verdict_tool": None},
-        {"id": "other_agent"},
+        {"id": "other_steward"},
     ],
     ids=lambda c: next(iter(c)),
 )
-def test_the_hash_changes_with_what_the_agent_does(change: dict[str, object]) -> None:
+def test_the_hash_changes_with_what_the_steward_does(change: dict[str, object]) -> None:
     assert make_spec(**change).spec_hash != make_spec().spec_hash
 
 
@@ -242,7 +242,7 @@ def test_to_public_carries_the_hash_and_tool_classes() -> None:
 CHANGE_TOOL = "winget_update"
 
 
-def constrained(**overrides: object) -> AgentSpec:
+def constrained(**overrides: object) -> StewardSpec:
     base = make_spec(
         tools=frozenset({"diag_services", CHANGE_TOOL, "ticket_triage_verdict"}),
         constraints=(ArgConstraint(CHANGE_TOOL, "id", frozenset({"Git.Git"})),),

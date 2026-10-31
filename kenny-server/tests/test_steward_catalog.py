@@ -1,4 +1,4 @@
-"""The shipped agent catalog, and the seam between it and the code it describes.
+"""The shipped steward catalog, and the seam between it and the code it describes.
 
 ``CATALOG["triage"]`` *declares* the unprompted triage that ``triage.py`` and
 ``ticket_assistant.py`` *run*. Two places that must agree, so the last tests
@@ -13,11 +13,11 @@ from dataclasses import replace
 import pytest
 
 from kenny_server import ticket_assistant, toolloop
-from kenny_server.agents import catalog
-from kenny_server.agents.catalog import CATALOG, build, get
-from kenny_server.agents.catalog.triage import TRIAGE
-from kenny_server.agents.spec import (
-    AgentSpec,
+from kenny_server.stewards import catalog
+from kenny_server.stewards.catalog import CATALOG, build, get
+from kenny_server.stewards.catalog.triage import TRIAGE
+from kenny_server.stewards.spec import (
+    StewardSpec,
     ArgConstraint,
     Budget,
     SpecError,
@@ -54,8 +54,8 @@ def test_get_unknown_is_none() -> None:
 
 def test_every_catalog_spec_is_valid_and_keyed_by_its_id() -> None:
     assert CATALOG
-    for agent_id, spec in CATALOG.items():
-        assert spec.id == agent_id
+    for steward_id, spec in CATALOG.items():
+        assert spec.id == steward_id
         assert validate(spec) is spec
 
 
@@ -99,8 +99,8 @@ def test_triage_declares_the_documented_shape() -> None:
     assert TRIAGE.title and TRIAGE.description
 
 
-def test_the_catalog_is_a_stable_set_of_agent_specs() -> None:
-    assert all(isinstance(s, AgentSpec) for s in CATALOG.values())
+def test_the_catalog_is_a_stable_set_of_steward_specs() -> None:
+    assert all(isinstance(s, StewardSpec) for s in CATALOG.values())
     assert CATALOG["triage"].spec_hash == CATALOG["triage"].spec_hash
 
 
@@ -205,10 +205,10 @@ async def test_the_verdict_tool_is_offered_to_the_real_session(world: _World) ->
 
 
 def test_a_spec_naming_an_mcp_only_tool_is_refused() -> None:
-    from kenny_server.agents.catalog import build
-    from kenny_server.agents.spec import AgentSpec, SpecError, Trigger
+    from kenny_server.stewards.catalog import build
+    from kenny_server.stewards.spec import StewardSpec, SpecError, Trigger
 
-    spec = AgentSpec(
+    spec = StewardSpec(
         id="mcp_only",
         title="t",
         description="d",
@@ -221,10 +221,10 @@ def test_a_spec_naming_an_mcp_only_tool_is_refused() -> None:
 
 
 def test_ticket_tools_are_refused_off_a_ticket_surface() -> None:
-    from kenny_server.agents.catalog import build
-    from kenny_server.agents.spec import AgentSpec, SpecError, Trigger
+    from kenny_server.stewards.catalog import build
+    from kenny_server.stewards.spec import StewardSpec, SpecError, Trigger
 
-    spec = AgentSpec(
+    spec = StewardSpec(
         id="no_ticket",
         title="t",
         description="d",
@@ -236,8 +236,8 @@ def test_ticket_tools_are_refused_off_a_ticket_surface() -> None:
         build((spec,))
 
 
-def _changer(tool: str, *constraints: ArgConstraint) -> AgentSpec:
-    return AgentSpec(
+def _changer(tool: str, *constraints: ArgConstraint) -> StewardSpec:
+    return StewardSpec(
         id="changer",
         title="t",
         description="d",

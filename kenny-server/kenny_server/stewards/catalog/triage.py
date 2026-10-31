@@ -1,20 +1,20 @@
-"""The unprompted ticket triage (ADR-0056) as a specialized agent.
+"""The unprompted ticket triage (ADR-0056) as a steward.
 
 Describes what :mod:`kenny_server.triage` already does; it holds no behaviour of
 its own. The prompt, the tool set and the iteration cap are imported from where
 the running triage takes them, so the declaration cannot drift from the thing it
-declares (``tests/test_agent_catalog.py`` joins the two).
+declares (``tests/test_steward_catalog.py`` joins the two).
 """
 
 from __future__ import annotations
 
 from ... import ticket_assistant, toolloop
 from ...triage import DEFAULT_MAX_ITERATIONS
-from ..spec import AgentSpec, Budget, Trigger
+from ..spec import StewardSpec, Budget, Trigger
 
 __all__ = ["TRIAGE"]
 
-TRIAGE = AgentSpec(
+TRIAGE = StewardSpec(
     id="triage",
     title="Ticket triage",
     description=(

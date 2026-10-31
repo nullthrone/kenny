@@ -1,43 +1,43 @@
-"""The one place a specialized agent's run is started (ADR-0071).
+"""The one place a steward's run is started (ADR-0071).
 
 Every run passes the same doors in the same order, and each door is here rather
-than in the agent so no agent can forget one:
+than in the steward so no steward can forget one:
 
-1. **An agent's effect never starts another agent** (rule 6). A ticket whose
-   origin is :data:`~kenny_server.ticketstore.AGENT_ORIGIN` starts nothing.
-2. **The global switch** (``KENNY_AGENTS_ENABLED``) and **the agent's mode**.
+1. **A steward's effect never starts another steward** (rule 6). A ticket whose
+   origin is :data:`~kenny_server.ticketstore.STEWARD_ORIGIN` starts nothing.
+2. **The global switch** (``KENNY_STEWARDS_ENABLED``) and **the steward's mode**.
    ``off`` either way means the run never existed: nothing is recorded.
-3. **The global caps**, concurrent runs (``KENNY_AGENTS_MAX_CONCURRENT``) and
-   tokens over the last 24 hours (``KENNY_AGENTS_DAILY_TOKENS``), checked
+3. **The global caps**, concurrent runs (``KENNY_STEWARDS_MAX_CONCURRENT``) and
+   tokens over the last 24 hours (``KENNY_STEWARDS_DAILY_TOKENS``), checked
    before the model is called. A run a cap refuses *is* recorded, as
    ``skipped`` with the reason, because "kenny would have looked but was over
    budget" is something a person needs to be able to see. The concurrency cap
-   bounds :meth:`AgentRunner.run_generic` runs only, counted in memory from
+   bounds :meth:`StewardRunner.run_generic` runs only, counted in memory from
    admission to the run's ``finally`` so a run that fails, is cancelled or
    cannot close its row never keeps its slot. Triage is exempt from it: every
    new ticket is investigated, however many arrive together; the token cap
    applies to it like to every run.
-4. **The run row** (``agent_runs``): opened ``running`` before the first model
+4. **The run row** (``steward_runs``): opened ``running`` before the first model
    call, closed in a ``finally`` (retried once) with how it ended, its verdict,
    what it did and proposed, and what it cost.
 
-Two ways in. :meth:`AgentRunner.on_ticket_created` starts the ``triage`` agent,
+Two ways in. :meth:`StewardRunner.on_ticket_created` starts the ``triage`` steward,
 which keeps running on its ticket's own surface (``triage.TriageService``);
-:meth:`AgentRunner.run_generic` drives any other agent through
-:class:`~kenny_server.agents.policy.AgentPolicy` and the ordinary tool loop.
+:meth:`StewardRunner.run_generic` drives any other steward through
+:class:`~kenny_server.stewards.policy.StewardPolicy` and the ordinary tool loop.
 
 Triage's mode is not stored here. It is derived from the settings that already
 switch it (``KENNY_TRIAGE_ENABLED`` and the AI availability behind it -> ``off``;
 ``KENNY_TRIAGE_RESOLVE`` off -> ``shadow``, on -> ``act``), so there is one
-source of truth and nothing to migrate; :meth:`AgentRunner.set_mode` writes those
-settings for it. Every other agent's mode is its ``agent_settings`` row, or the
+source of truth and nothing to migrate; :meth:`StewardRunner.set_mode` writes those
+settings for it. Every other steward's mode is its ``steward_settings`` row, or the
 spec's default while nobody has chosen one.
 
 A run's mode is read when it starts and again before every change it makes:
 the runner hands each run a live predicate (the global switch on and the
-agent's mode ``act``) — the gate's ``still_acting`` for a generic run,
-``TriageService.still_acting`` for triage's verdict — so demoting an agent or
-switching every agent off reaches a run already in flight.
+steward's mode ``act``) — the gate's ``still_acting`` for a generic run,
+``TriageService.still_acting`` for triage's verdict — so demoting a steward or
+switching every steward off reaches a run already in flight.
 """
 
 from __future__ import annotations
@@ -48,14 +48,14 @@ from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
-from ..ticketstore import AGENT_ORIGIN, Ticket
+from ..ticketstore import STEWARD_ORIGIN, Ticket
 from ..tool_classes import READ_ONLY, classify
 from ..toolloop import ToolExecutor, UsageMeter, drive_events
 from ..tools import redact_audit_args
 from .catalog import CATALOG, check_dispatchable
-from .policy import AgentPolicy, AgentSession, Authorizer
-from .spec import MODES, AgentSpec, validate
-from .store import AgentRun, AgentStore
+from .policy import StewardPolicy, StewardSession, Authorizer
+from .spec import MODES, StewardSpec, validate
+from .store import StewardRun, StewardStore
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from ..triage import TriageService
@@ -66,23 +66,23 @@ __all__ = [
     "MAX_CONCURRENT_SETTING",
     "RUN_RETENTION_DAYS",
     "TICKET_CREATED_TRIGGER",
-    "TRIAGE_AGENT_ID",
-    "AgentRunner",
-    "caused_by_agent",
+    "TRIAGE_STEWARD_ID",
+    "StewardRunner",
+    "caused_by_steward",
 ]
 
-logger = logging.getLogger("kenny.agents")
+logger = logging.getLogger("kenny.stewards")
 
-#: The catalog id of the agent that runs on a newly created ticket.
-TRIAGE_AGENT_ID = "triage"
+#: The catalog id of the steward that runs on a newly created ticket.
+TRIAGE_STEWARD_ID = "triage"
 
 #: The ``trigger`` a ticket-creation run is recorded with.
 TICKET_CREATED_TRIGGER = "event:ticket_created"
 
 #: The global switch, and the two caps every run is checked against.
-ENABLED_SETTING = "KENNY_AGENTS_ENABLED"
-MAX_CONCURRENT_SETTING = "KENNY_AGENTS_MAX_CONCURRENT"
-DAILY_TOKENS_SETTING = "KENNY_AGENTS_DAILY_TOKENS"
+ENABLED_SETTING = "KENNY_STEWARDS_ENABLED"
+MAX_CONCURRENT_SETTING = "KENNY_STEWARDS_MAX_CONCURRENT"
+DAILY_TOKENS_SETTING = "KENNY_STEWARDS_DAILY_TOKENS"
 
 #: The settings triage's mode is derived from and written to.
 _TRIAGE_ENABLED = "KENNY_TRIAGE_ENABLED"
@@ -105,14 +105,14 @@ def _clip(value: Any, limit: int = _MAX_TEXT) -> str | None:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
-def caused_by_agent(ticket: Ticket) -> bool:
-    """Whether ``ticket`` was opened by an agent's own effect (ADR-0071 rule 6).
+def caused_by_steward(ticket: Ticket) -> bool:
+    """Whether ``ticket`` was opened by a steward's own effect (ADR-0071 rule 6).
 
-    Such a ticket never starts an agent: otherwise a change that breaks a
+    Such a ticket never starts a steward: otherwise a change that breaks a
     service raises an alert, opens a ticket and starts the next run.
     """
 
-    return ticket.origin == AGENT_ORIGIN
+    return ticket.origin == STEWARD_ORIGIN
 
 
 def _redacted(entries: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -144,23 +144,23 @@ def _with_outcomes(
     return out
 
 
-class AgentRunner:
-    """Starts, bounds and records every run of every specialized agent.
+class StewardRunner:
+    """Starts, bounds and records every run of every steward.
 
     ``ai_access`` is the :class:`~kenny_server.ai.AiAccess` the rest of the
     server asks whether a model may be called; ``triage`` is the service the
-    ``triage`` agent runs through (``None`` while no assistant could be built).
+    ``triage`` steward runs through (``None`` while no assistant could be built).
     ``catalog`` defaults to the shipped one; tests pass their own.
     """
 
     def __init__(
         self,
         *,
-        store: AgentStore,
+        store: StewardStore,
         settings: Any,
         ai_access: Any = None,
         triage: TriageService | None = None,
-        catalog: Mapping[str, AgentSpec] = CATALOG,
+        catalog: Mapping[str, StewardSpec] = CATALOG,
         event_store: Any = None,
         now: Callable[[], datetime] | None = None,
     ) -> None:
@@ -177,13 +177,13 @@ class AgentRunner:
         # starting together cannot both see room under the concurrency cap.
         self._admission = asyncio.Lock()
         #: Generic runs admitted and not yet past their ``finally``. In memory,
-        #: not ``agent_runs``: a row a failed close left ``running`` must not
+        #: not ``steward_runs``: a row a failed close left ``running`` must not
         #: hold a slot until the next restart.
         self._in_flight = 0
 
     @property
     def triage(self) -> TriageService | None:
-        """The service the ``triage`` agent runs through, wired to this runner's mode."""
+        """The service the ``triage`` steward runs through, wired to this runner's mode."""
 
         return self._triage
 
@@ -205,23 +205,23 @@ class AgentRunner:
 
         interrupted = await self.store.fail_interrupted()
         if interrupted:
-            logger.warning("%d agent run(s) were interrupted by a restart", interrupted)
+            logger.warning("%d steward run(s) were interrupted by a restart", interrupted)
         cutoff = self._now() - timedelta(days=RUN_RETENTION_DAYS)
         await self.store.prune(cutoff.isoformat())
 
     # -- modes ---------------------------------------------------------------
 
     def enabled(self) -> bool:
-        """The global switch: off means no agent starts."""
+        """The global switch: off means no steward starts."""
 
         return bool(self.settings.get(ENABLED_SETTING))
 
-    def spec(self, agent_id: str) -> AgentSpec:
-        """The catalog spec for ``agent_id``; :class:`KeyError` if there is none."""
+    def spec(self, steward_id: str) -> StewardSpec:
+        """The catalog spec for ``steward_id``; :class:`KeyError` if there is none."""
 
-        spec = self.catalog.get(agent_id)
+        spec = self.catalog.get(steward_id)
         if spec is None:
-            raise KeyError(agent_id)
+            raise KeyError(steward_id)
         return spec
 
     def _triage_mode(self) -> str:
@@ -233,19 +233,19 @@ class AgentRunner:
             return "off"
         return "act" if self.settings.get(_TRIAGE_RESOLVE) else "shadow"
 
-    async def _mode_for(self, spec: AgentSpec) -> str:
-        if spec.id == TRIAGE_AGENT_ID:
+    async def _mode_for(self, spec: StewardSpec) -> str:
+        if spec.id == TRIAGE_STEWARD_ID:
             return self._triage_mode()
         stored = await self.store.get_mode(spec.id)
         return stored if stored in MODES else spec.default_mode
 
-    async def mode_of(self, agent_id: str) -> str:
-        """The mode ``agent_id`` runs in now; :class:`KeyError` for an unknown id."""
+    async def mode_of(self, steward_id: str) -> str:
+        """The mode ``steward_id`` runs in now; :class:`KeyError` for an unknown id."""
 
-        return await self._mode_for(self.spec(agent_id))
+        return await self._mode_for(self.spec(steward_id))
 
-    async def set_mode(self, agent_id: str, mode: str, *, actor: str) -> str:
-        """Choose ``agent_id``'s mode; returns the mode now in force.
+    async def set_mode(self, steward_id: str, mode: str, *, actor: str) -> str:
+        """Choose ``steward_id``'s mode; returns the mode now in force.
 
         For ``triage`` this writes its settings through the same
         :meth:`~kenny_server.config.Settings.set` the dashboard's settings page
@@ -256,14 +256,14 @@ class AgentRunner:
         differ from ``mode``: triage chosen ``shadow`` stays ``off`` while no AI
         key or gateway is configured.
 
-        Raises :class:`KeyError` for an unknown agent, :class:`ValueError` for
+        Raises :class:`KeyError` for an unknown steward, :class:`ValueError` for
         an unknown mode.
         """
 
-        spec = self.spec(agent_id)
+        spec = self.spec(steward_id)
         if mode not in MODES:
-            raise ValueError(f"unknown agent mode {mode!r}; expected one of {', '.join(MODES)}")
-        if spec.id == TRIAGE_AGENT_ID:
+            raise ValueError(f"unknown steward mode {mode!r}; expected one of {', '.join(MODES)}")
+        if spec.id == TRIAGE_STEWARD_ID:
             # Off clears resolve too, so a run already in flight cannot resolve
             # at its verdict, and turning triage back on starts it in shadow.
             await self.settings.set(_TRIAGE_RESOLVE, "1" if mode == "act" else "0")
@@ -273,14 +273,14 @@ class AgentRunner:
         await self._record_mode_change(spec.id, mode, actor)
         return await self._mode_for(spec)
 
-    async def _record_mode_change(self, agent_id: str, mode: str, actor: str) -> None:
+    async def _record_mode_change(self, steward_id: str, mode: str, actor: str) -> None:
         """Put who chose which mode on the event log.
 
-        For every agent alike: triage's settings rows carry no author, and an
-        ``agent_settings`` row keeps only the latest choice.
+        For every steward alike: triage's settings rows carry no author, and an
+        ``steward_settings`` row keeps only the latest choice.
         """
 
-        message = f"agent {agent_id}: mode set to {mode} by {actor}"
+        message = f"steward {steward_id}: mode set to {mode} by {actor}"
         if self.event_store is None:
             logger.info(message)
             return
@@ -291,19 +291,19 @@ class AgentRunner:
                 level="info",
                 target=logger.name,
                 message=message,
-                fields={"agent": agent_id, "mode": mode, "actor": actor},
+                fields={"steward": steward_id, "mode": mode, "actor": actor},
             )
         except Exception:  # noqa: BLE001 - the mode is set; losing its record must not undo it
-            logger.warning("failed to record the mode change of agent %s", agent_id, exc_info=True)
+            logger.warning("failed to record the mode change of steward %s", steward_id, exc_info=True)
 
     # -- what the API shows --------------------------------------------------
 
     async def overview(self) -> list[dict[str, Any]]:
-        """Every catalog agent: its public spec, its mode and its latest run."""
+        """Every catalog steward: its public spec, its mode and its latest run."""
 
         out: list[dict[str, Any]] = []
         for spec in self.catalog.values():
-            latest = await self.store.list_runs(agent_id=spec.id, limit=1)
+            latest = await self.store.list_runs(steward_id=spec.id, limit=1)
             out.append(
                 {
                     **spec.to_public(),
@@ -325,18 +325,18 @@ class AgentRunner:
         if counted:
             limit = max(1, int(self.settings.get(MAX_CONCURRENT_SETTING)))
             if self._in_flight >= limit:
-                return f"{self._in_flight} agent run(s) already in flight; the limit is {limit}"
+                return f"{self._in_flight} steward run(s) already in flight; the limit is {limit}"
         cap = int(self.settings.get(DAILY_TOKENS_SETTING))
         if cap > 0:
             since = self._now() - timedelta(hours=24)
             spent = await self.store.tokens_since(since.isoformat())
             if spent >= cap:
-                return f"agent runs spent {spent} tokens in the last 24 hours; the cap is {cap}"
+                return f"steward runs spent {spent} tokens in the last 24 hours; the cap is {cap}"
         return None
 
     async def _admit(
         self,
-        spec: AgentSpec,
+        spec: StewardSpec,
         mode: str,
         *,
         trigger: str,
@@ -344,7 +344,7 @@ class AgentRunner:
         host_id: str | None,
         ticket_id: str | None = None,
         counted: bool,
-    ) -> tuple[AgentRun, bool]:
+    ) -> tuple[StewardRun, bool]:
         """Open the run row; ``(row, False)`` when a cap refused it (row ``skipped``).
 
         An admitted ``counted`` run holds a concurrency slot; the caller must
@@ -354,7 +354,7 @@ class AgentRunner:
         async with self._admission:
             reason = await self._cap_reason(counted=counted)
             run = await self.store.start_run(
-                agent_id=spec.id,
+                steward_id=spec.id,
                 spec_hash=spec.spec_hash,
                 trigger=trigger,
                 mode=mode,
@@ -366,7 +366,7 @@ class AgentRunner:
                 if counted:
                     self._in_flight += 1
                 return run, True
-            logger.info("agent %s run not started: %s", spec.id, reason)
+            logger.info("steward %s run not started: %s", spec.id, reason)
             return await self.store.finish_run(run.id, status="skipped", error=reason), False
 
     def _release(self) -> None:
@@ -374,7 +374,7 @@ class AgentRunner:
 
         self._in_flight = max(0, self._in_flight - 1)
 
-    async def _close(self, run_id: str, **outcome: Any) -> AgentRun | None:
+    async def _close(self, run_id: str, **outcome: Any) -> StewardRun | None:
         """Close the run row; one retry, then log and give up (``None``).
 
         Whatever happens here the run's slot is already free: the slot is held
@@ -387,15 +387,15 @@ class AgentRunner:
                 return await self.store.finish_run(run_id, **outcome)
             except Exception:  # noqa: BLE001 - the run is over either way
                 if attempt == 2:
-                    logger.exception("agent run %s could not be closed; left running", run_id)
+                    logger.exception("steward run %s could not be closed; left running", run_id)
                 else:
-                    logger.warning("agent run %s failed to close; retrying", run_id, exc_info=True)
+                    logger.warning("steward run %s failed to close; retrying", run_id, exc_info=True)
         return None
 
     # -- triage: a new ticket ------------------------------------------------
 
     async def on_ticket_created(self, ticket: Ticket) -> None:
-        """Start the ``triage`` agent on ``ticket``, best-effort.
+        """Start the ``triage`` steward on ``ticket``, best-effort.
 
         Registered with :meth:`~kenny_server.tickets.TicketService.set_triage`.
         Never raises: the ticket already exists and is the operator's to see,
@@ -406,15 +406,15 @@ class AgentRunner:
         try:
             await self._on_ticket_created(ticket)
         except Exception:  # noqa: BLE001 - a failed run must not cost the ticket
-            logger.exception("agent run for ticket %s failed to start or finish", ticket.id)
+            logger.exception("steward run for ticket %s failed to start or finish", ticket.id)
 
     async def _on_ticket_created(self, ticket: Ticket) -> None:
-        if caused_by_agent(ticket):
-            logger.debug("ticket %s was opened by an agent; no agent starts on it", ticket.id)
+        if caused_by_steward(ticket):
+            logger.debug("ticket %s was opened by a steward; no steward starts on it", ticket.id)
             return
-        if self.triage is None or TRIAGE_AGENT_ID not in self.catalog or not self.enabled():
+        if self.triage is None or TRIAGE_STEWARD_ID not in self.catalog or not self.enabled():
             return
-        spec = self.catalog[TRIAGE_AGENT_ID]
+        spec = self.catalog[TRIAGE_STEWARD_ID]
         mode = await self._mode_for(spec)
         if mode == "off":
             return
@@ -447,11 +447,11 @@ class AgentRunner:
                 run.id, status=status, verdict=verdict, usage=meter.to_dict(), error=error
             )
 
-    # -- any other agent -----------------------------------------------------
+    # -- any other steward -----------------------------------------------------
 
     async def run_generic(
         self,
-        spec: AgentSpec,
+        spec: StewardSpec,
         *,
         host_id: str | None,
         trigger: str,
@@ -460,16 +460,16 @@ class AgentRunner:
         model: str,
         executor: ToolExecutor,
         authorizer: Authorizer | None = None,
-    ) -> AgentRun | None:
-        """Run ``spec`` once on ``host_id`` through the agent gate.
+    ) -> StewardRun | None:
+        """Run ``spec`` once on ``host_id`` through the steward gate.
 
         Returns the finished run row — ``completed``, ``failed`` or a cap's
         ``skipped`` — or ``None`` when the run was never started because the
-        global switch, the AI master switch or the agent's mode is off, or when
+        global switch, the AI master switch or the steward's mode is off, or when
         its row could not be closed (logged). Never raises for a failure inside
         the run; it is recorded as ``failed``.
 
-        Raises :class:`ValueError` (or :class:`~kenny_server.agents.spec.SpecError`)
+        Raises :class:`ValueError` (or :class:`~kenny_server.stewards.spec.SpecError`)
         for a spec that must not run here: an invalid one, one that runs on a
         ticket's surface (that is :meth:`on_ticket_created`'s), one whose id is
         not in the catalog, or one that differs from its catalog entry's
@@ -479,12 +479,12 @@ class AgentRunner:
 
         check_dispatchable(validate(spec))
         if spec.trigger.kind == "event" and spec.trigger.event == "ticket_created":
-            raise ValueError(f"agent {spec.id} runs on a ticket's own surface, not run_generic")
+            raise ValueError(f"steward {spec.id} runs on a ticket's own surface, not run_generic")
         known = self.catalog.get(spec.id)
         if known is None:
-            raise ValueError(f"agent {spec.id} is not in the catalog")
+            raise ValueError(f"steward {spec.id} is not in the catalog")
         if known.spec_hash != spec.spec_hash:
-            raise ValueError(f"agent {spec.id}: spec differs from the catalog entry")
+            raise ValueError(f"steward {spec.id}: spec differs from the catalog entry")
         if not self.enabled() or not self._ai_ready():
             return None
         mode = await self._mode_for(spec)
@@ -502,19 +502,19 @@ class AgentRunner:
             return run
 
         meter = UsageMeter()
-        session: AgentSession | None = None
+        session: StewardSession | None = None
         status, error, summary, verdict = "failed", _INTERRUPTED, None, None
         change_results: list[dict[str, Any]] = []
-        finished: AgentRun | None = None
+        finished: StewardRun | None = None
 
         async def still_acting() -> bool:
             return self.enabled() and await self._mode_for(spec) == "act"
 
         try:
-            session = AgentSession(id=run.id, spec=spec, mode=mode, agent_id=host_id)
+            session = StewardSession(id=run.id, spec=spec, mode=mode, agent_id=host_id)
             session.usage = meter
             session.messages.append({"role": "user", "content": brief})
-            policy = AgentPolicy(session, authorizer=authorizer, still_acting=still_acting)
+            policy = StewardPolicy(session, authorizer=authorizer, still_acting=still_acting)
             async for event in drive_events(
                 session,
                 executor,
@@ -536,7 +536,7 @@ class AgentRunner:
                     summary = _clip(event.get("assistant_text"))
             status, error = "completed", None
         except Exception as exc:  # noqa: BLE001 - recorded on the run, never raised
-            logger.exception("agent %s run %s failed", spec.id, run.id)
+            logger.exception("steward %s run %s failed", spec.id, run.id)
             status, error = "failed", _clip(exc) or type(exc).__name__
         finally:
             self._release()

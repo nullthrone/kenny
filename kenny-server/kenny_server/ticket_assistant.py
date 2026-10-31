@@ -497,7 +497,7 @@ def _narrower_role(a: str | None, b: str | None) -> str:
 #:
 #: :data:`FLEET_WIDE_TOOLS` are out because an investigation is about its
 #: ticket's one machine and reads every other one only by escaping it — the
-#: ticket surface withholds them from its scoped session anyway, and the agent
+#: ticket surface withholds them from its scoped session anyway, and the steward
 #: gate refuses them on any run frozen to a host.
 #:
 #: :data:`~kenny_server.toolloop.TICKET_SUMMARY_TOOL` is taken out for the same
@@ -506,7 +506,7 @@ def _narrower_role(a: str | None, b: str | None) -> str:
 #: weaker way to write the same thing would be two records of one conclusion.
 #:
 #: Only names the loop can route are kept, so this set is also the honest
-#: declaration of the ``triage`` specialized agent, whose catalog refuses a tool
+#: declaration of the ``triage`` steward, whose catalog refuses a tool
 #: the loop cannot route. (The session's allowlist was already intersected with
 #: the routable tools in :func:`allowed_tools_for`; this changes no call.)
 TRIAGE_TOOLS: frozenset[str] = (
@@ -631,7 +631,7 @@ class TicketSession:
     # Audit identity of this session's forwarded calls (see
     # ``toolloop._audit_identity``): who made them, and in which autonomous run.
     audit_actor: str | None = None
-    agent_run_id: str | None = None
+    steward_run_id: str | None = None
     # Opt-in token accounting: ``drive_events`` adds each model call's usage here.
     usage: UsageMeter | None = None
 

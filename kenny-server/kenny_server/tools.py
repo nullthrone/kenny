@@ -309,7 +309,7 @@ class CallLog:
     ) -> None:
         """Record one forwarded call.
 
-        ``actor`` names who made it (operator username, or an agent identity) and
+        ``actor`` names who made it (operator username, or a steward identity) and
         ``run_id`` the autonomous run it belongs to; both, plus the redacted
         ``args``, are persisted in the event's ``fields`` JSON.
         """

@@ -15,7 +15,7 @@ The loop is deliberately duck-typed over its session object. It touches only
 ``.id``, ``.messages``, ``.agent_id``, ``.pending``, ``._queue`` and
 ``._staged_results`` — no base class, no ``isinstance`` checks (a session may
 also opt in to token accounting with a ``.usage`` :class:`UsageMeter`, and name
-the author of its forwarded calls with ``.audit_actor``/``.agent_run_id``) — and
+the author of its forwarded calls with ``.audit_actor``/``.steward_run_id``) — and
 it never imports ``chat.py``, so the dependency runs one way: ``chat`` -> ``toolloop``.
 """
 
@@ -421,14 +421,14 @@ def build_tool_schemas(
     that exposes only part of the catalog). ``None`` — the default — emits the
     full catalog exactly as before.
 
-    ``unattended`` describes the tools as an agent run sees them (ADR-0071):
+    ``unattended`` describes the tools as a steward run sees them (ADR-0071):
     nobody confirms anything there, and a run is fixed to one host, so the
     confirmation note and the per-call ``agent_id`` override would both tell
     the model something false.
     """
 
     note = (
-        " (state-changing — runs only within this agent's limits)"
+        " (state-changing — runs only within this steward's limits)"
         if unattended
         else " (state-changing — requires operator confirmation)"
     )
@@ -925,13 +925,13 @@ def _audit_identity(session: Any) -> tuple[str | None, str | None]:
     """``(actor, run_id)`` the audit trail records for a call made in ``session``.
 
     The actor is the session's ``audit_actor`` when non-empty, else its
-    principal's username, else ``None``; the run id is ``agent_run_id``.
+    principal's username, else ``None``; the run id is ``steward_run_id``.
     """
 
     actor = getattr(session, "audit_actor", None)
     if not (isinstance(actor, str) and actor):
         actor = getattr(getattr(session, "principal", None), "username", None)
-    run_id = getattr(session, "agent_run_id", None)
+    run_id = getattr(session, "steward_run_id", None)
     return (
         actor if isinstance(actor, str) and actor else None,
         run_id if isinstance(run_id, str) and run_id else None,

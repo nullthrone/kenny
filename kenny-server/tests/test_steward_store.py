@@ -1,4 +1,4 @@
-"""``AgentStore``: per-agent mode and run history (ADR-0071)."""
+"""``StewardStore``: per-steward mode and run history (ADR-0071)."""
 
 from __future__ import annotations
 
@@ -9,25 +9,25 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from kenny_server.agents.spec import MODES
-from kenny_server.agents.store import (
+from kenny_server.stewards.spec import MODES
+from kenny_server.stewards.store import (
     INTERRUPTED_ERROR,
-    AgentRun,
-    AgentStore,
+    StewardRun,
+    StewardStore,
 )
 
 
 @pytest.fixture
-async def store(tmp_path) -> AsyncIterator[AgentStore]:
-    s = AgentStore(str(tmp_path / "kenny.sqlite"))
+async def store(tmp_path) -> AsyncIterator[StewardStore]:
+    s = StewardStore(str(tmp_path / "kenny.sqlite"))
     await s.connect()
     yield s
     await s.close()
 
 
-async def start(store: AgentStore, **kw: object) -> AgentRun:
+async def start(store: StewardStore, **kw: object) -> StewardRun:
     args: dict[str, object] = {
-        "agent_id": "triage",
+        "steward_id": "triage",
         "spec_hash": "h1",
         "trigger": "ticket_created",
         "mode": "shadow",
@@ -36,11 +36,11 @@ async def start(store: AgentStore, **kw: object) -> AgentRun:
     return await store.start_run(**args)  # type: ignore[arg-type]
 
 
-async def backdate(store: AgentStore, run_id: str, when: datetime) -> None:
+async def backdate(store: StewardStore, run_id: str, when: datetime) -> None:
     """Rewrite a run's start stamp; the store itself only ever stamps ``now``."""
 
     await store._conn.execute(
-        "UPDATE agent_runs SET started_at = ? WHERE id = ?", (when.isoformat(), run_id)
+        "UPDATE steward_runs SET started_at = ? WHERE id = ?", (when.isoformat(), run_id)
     )
     await store._conn.commit()
 
@@ -49,7 +49,7 @@ async def backdate(store: AgentStore, run_id: str, when: datetime) -> None:
 
 
 async def test_connect_is_idempotent_and_close_is_safe_twice(tmp_path) -> None:
-    s = AgentStore(str(tmp_path / "kenny.sqlite"))
+    s = StewardStore(str(tmp_path / "kenny.sqlite"))
     await s.connect()
     await s.connect()
     await s.close()
@@ -57,35 +57,35 @@ async def test_connect_is_idempotent_and_close_is_safe_twice(tmp_path) -> None:
 
 
 async def test_use_before_connect_says_so(tmp_path) -> None:
-    s = AgentStore(str(tmp_path / "kenny.sqlite"))
+    s = StewardStore(str(tmp_path / "kenny.sqlite"))
     with pytest.raises(RuntimeError, match="not connected"):
         await s.get_mode("triage")
 
 
-async def test_schema_has_the_documented_columns_and_indexes(store: AgentStore) -> None:
-    async with store._conn.execute("PRAGMA table_info(agent_runs)") as cur:
+async def test_schema_has_the_documented_columns_and_indexes(store: StewardStore) -> None:
+    async with store._conn.execute("PRAGMA table_info(steward_runs)") as cur:
         cols = [r["name"] for r in await cur.fetchall()]
-    assert cols == [f.name for f in fields(AgentRun)]
-    async with store._conn.execute("PRAGMA table_info(agent_settings)") as cur:
+    assert cols == [f.name for f in fields(StewardRun)]
+    async with store._conn.execute("PRAGMA table_info(steward_settings)") as cur:
         assert [r["name"] for r in await cur.fetchall()] == [
-            "agent_id",
+            "steward_id",
             "mode",
             "updated_at",
             "updated_by",
         ]
-    async with store._conn.execute("PRAGMA index_list(agent_runs)") as cur:
+    async with store._conn.execute("PRAGMA index_list(steward_runs)") as cur:
         indexes = {r["name"] for r in await cur.fetchall()}
-    assert {"idx_agent_runs_agent", "idx_agent_runs_started"} <= indexes
+    assert {"idx_steward_runs_steward", "idx_steward_runs_started"} <= indexes
 
 
 async def test_data_survives_a_reconnect(tmp_path) -> None:
     path = str(tmp_path / "kenny.sqlite")
-    a = AgentStore(path)
+    a = StewardStore(path)
     await a.connect()
     await a.set_mode("triage", "act", actor="alice")
     run = await start(a)
     await a.close()
-    b = AgentStore(path)
+    b = StewardStore(path)
     await b.connect()
     try:
         assert await b.get_mode("triage") == "act"
@@ -97,24 +97,24 @@ async def test_data_survives_a_reconnect(tmp_path) -> None:
 # -- mode ----------------------------------------------------------------------
 
 
-async def test_get_mode_is_none_until_one_is_set(store: AgentStore) -> None:
+async def test_get_mode_is_none_until_one_is_set(store: StewardStore) -> None:
     assert await store.get_mode("triage") is None
 
 
-async def test_set_mode_round_trips_and_overwrites(store: AgentStore) -> None:
+async def test_set_mode_round_trips_and_overwrites(store: StewardStore) -> None:
     await store.set_mode("triage", "act", actor="alice")
     assert await store.get_mode("triage") == "act"
     await store.set_mode("triage", "off", actor="bob")
     assert await store.get_mode("triage") == "off"
     async with store._conn.execute(
-        "SELECT updated_by, updated_at FROM agent_settings WHERE agent_id = 'triage'"
+        "SELECT updated_by, updated_at FROM steward_settings WHERE steward_id = 'triage'"
     ) as cur:
         row = await cur.fetchone()
     assert row["updated_by"] == "bob"
     datetime.fromisoformat(row["updated_at"])
 
 
-async def test_modes_are_per_agent(store: AgentStore) -> None:
+async def test_modes_are_per_steward(store: StewardStore) -> None:
     await store.set_mode("triage", "act", actor="alice")
     await store.set_mode("other", "off", actor="alice")
     assert await store.get_mode("triage") == "act"
@@ -122,12 +122,12 @@ async def test_modes_are_per_agent(store: AgentStore) -> None:
 
 
 @pytest.mark.parametrize("mode", MODES)
-async def test_every_declared_mode_can_be_set(store: AgentStore, mode: str) -> None:
+async def test_every_declared_mode_can_be_set(store: StewardStore, mode: str) -> None:
     await store.set_mode("triage", mode, actor="alice")
     assert await store.get_mode("triage") == mode
 
 
-async def test_an_unknown_mode_is_refused_and_nothing_is_written(store: AgentStore) -> None:
+async def test_an_unknown_mode_is_refused_and_nothing_is_written(store: StewardStore) -> None:
     with pytest.raises(ValueError, match="mode"):
         await store.set_mode("triage", "yolo", actor="alice")
     assert await store.get_mode("triage") is None
@@ -139,10 +139,10 @@ async def test_an_unknown_mode_is_refused_and_nothing_is_written(store: AgentSto
 # -- start / finish ------------------------------------------------------------
 
 
-async def test_start_run_opens_a_running_row(store: AgentStore) -> None:
+async def test_start_run_opens_a_running_row(store: StewardStore) -> None:
     run = await start(store, subject="ticket 7", host_id="pc1", ticket_id="t7")
     assert run.status == "running"
-    assert (run.agent_id, run.spec_hash, run.trigger, run.mode) == (
+    assert (run.steward_id, run.spec_hash, run.trigger, run.mode) == (
         "triage",
         "h1",
         "ticket_created",
@@ -158,12 +158,12 @@ async def test_start_run_opens_a_running_row(store: AgentStore) -> None:
     assert await store.get_run(run.id) == run
 
 
-async def test_run_ids_are_unique(store: AgentStore) -> None:
+async def test_run_ids_are_unique(store: StewardStore) -> None:
     ids = {(await start(store)).id for _ in range(5)}
     assert len(ids) == 5
 
 
-async def test_finish_run_records_outcome_and_usage(store: AgentStore) -> None:
+async def test_finish_run_records_outcome_and_usage(store: StewardStore) -> None:
     run = await start(store, ticket_id="t7")
     done = await store.finish_run(
         run.id,
@@ -189,7 +189,7 @@ async def test_finish_run_records_outcome_and_usage(store: AgentStore) -> None:
     assert await store.get_run(run.id) == done
 
 
-async def test_missing_usage_keys_count_as_zero(store: AgentStore) -> None:
+async def test_missing_usage_keys_count_as_zero(store: StewardStore) -> None:
     run = await start(store)
     done = await store.finish_run(run.id, status="completed", usage={"output_tokens": 9})
     assert (done.input_tokens, done.output_tokens) == (0, 9)
@@ -198,7 +198,7 @@ async def test_missing_usage_keys_count_as_zero(store: AgentStore) -> None:
     assert none_usage.input_tokens == 0
 
 
-async def test_finish_can_attach_a_ticket_and_an_error(store: AgentStore) -> None:
+async def test_finish_can_attach_a_ticket_and_an_error(store: StewardStore) -> None:
     run = await start(store)
     done = await store.finish_run(run.id, status="failed", error="boom", ticket_id="t9")
     assert done.status == "failed"
@@ -207,13 +207,13 @@ async def test_finish_can_attach_a_ticket_and_an_error(store: AgentStore) -> Non
 
 
 @pytest.mark.parametrize("status", ["completed", "failed", "skipped"])
-async def test_each_final_status_is_accepted(store: AgentStore, status: str) -> None:
+async def test_each_final_status_is_accepted(store: StewardStore, status: str) -> None:
     run = await start(store)
     assert (await store.finish_run(run.id, status=status)).status == status
 
 
 @pytest.mark.parametrize("status", ["running", "done", "", "COMPLETED"])
-async def test_a_non_final_or_unknown_status_is_refused(store: AgentStore, status: str) -> None:
+async def test_a_non_final_or_unknown_status_is_refused(store: StewardStore, status: str) -> None:
     run = await start(store)
     with pytest.raises(ValueError, match="status"):
         await store.finish_run(run.id, status=status)
@@ -221,7 +221,7 @@ async def test_a_non_final_or_unknown_status_is_refused(store: AgentStore, statu
     assert still is not None and still.status == "running"
 
 
-async def test_finishing_twice_is_refused_and_keeps_the_first_outcome(store: AgentStore) -> None:
+async def test_finishing_twice_is_refused_and_keeps_the_first_outcome(store: StewardStore) -> None:
     run = await start(store)
     first = await store.finish_run(run.id, status="completed", usage={"input_tokens": 3})
     with pytest.raises(ValueError, match="already completed"):
@@ -229,16 +229,16 @@ async def test_finishing_twice_is_refused_and_keeps_the_first_outcome(store: Age
     assert await store.get_run(run.id) == first
 
 
-async def test_finishing_an_unknown_run_is_refused(store: AgentStore) -> None:
-    with pytest.raises(ValueError, match="no agent run"):
+async def test_finishing_an_unknown_run_is_refused(store: StewardStore) -> None:
+    with pytest.raises(ValueError, match="no steward run"):
         await store.finish_run("nope", status="completed")
 
 
-async def test_get_run_unknown_is_none(store: AgentStore) -> None:
+async def test_get_run_unknown_is_none(store: StewardStore) -> None:
     assert await store.get_run("nope") is None
 
 
-async def test_actions_and_recommendations_default_to_empty_lists(store: AgentStore) -> None:
+async def test_actions_and_recommendations_default_to_empty_lists(store: StewardStore) -> None:
     run = await start(store)
     assert run.actions == [] and run.recommendations == []
     done = await store.finish_run(run.id, status="completed")
@@ -247,7 +247,7 @@ async def test_actions_and_recommendations_default_to_empty_lists(store: AgentSt
     assert done.to_public()["recommendations"] == []
 
 
-async def test_actions_and_recommendations_round_trip_as_given(store: AgentStore) -> None:
+async def test_actions_and_recommendations_round_trip_as_given(store: StewardStore) -> None:
     action = {
         "tool": "diag_services",
         "args": {"name": "Spooler"},
@@ -279,7 +279,7 @@ async def test_actions_and_recommendations_round_trip_as_given(store: AgentStore
 
 
 async def test_unserialisable_argument_values_are_stringified_not_fatal(
-    store: AgentStore,
+    store: StewardStore,
 ) -> None:
     run = await start(store)
     done = await store.finish_run(
@@ -291,17 +291,17 @@ async def test_unserialisable_argument_values_are_stringified_not_fatal(
 # -- count_running -------------------------------------------------------------
 
 
-async def test_count_running_counts_only_in_flight_runs(store: AgentStore) -> None:
+async def test_count_running_counts_only_in_flight_runs(store: StewardStore) -> None:
     assert await store.count_running() == 0
     a = await start(store)
     await start(store)
-    await start(store, agent_id="other")
+    await start(store, steward_id="other")
     assert await store.count_running() == 3
-    assert await store.count_running(agent_id="triage") == 2
-    assert await store.count_running(agent_id="other") == 1
-    assert await store.count_running(agent_id="missing") == 0
+    assert await store.count_running(steward_id="triage") == 2
+    assert await store.count_running(steward_id="other") == 1
+    assert await store.count_running(steward_id="missing") == 0
     await store.finish_run(a.id, status="completed")
-    assert await store.count_running(agent_id="triage") == 1
+    assert await store.count_running(steward_id="triage") == 1
     await store.fail_interrupted()
     assert await store.count_running() == 0
 
@@ -309,20 +309,20 @@ async def test_count_running_counts_only_in_flight_runs(store: AgentStore) -> No
 # -- list ----------------------------------------------------------------------
 
 
-async def test_list_runs_is_newest_first_and_filterable(store: AgentStore) -> None:
+async def test_list_runs_is_newest_first_and_filterable(store: StewardStore) -> None:
     base = datetime(2026, 1, 1, tzinfo=timezone.utc)
-    a = await start(store, agent_id="triage")
-    b = await start(store, agent_id="other")
-    c = await start(store, agent_id="triage")
+    a = await start(store, steward_id="triage")
+    b = await start(store, steward_id="other")
+    c = await start(store, steward_id="triage")
     for offset, run in enumerate((a, b, c)):
         await backdate(store, run.id, base + timedelta(hours=offset))
     assert [r.id for r in await store.list_runs()] == [c.id, b.id, a.id]
-    assert [r.id for r in await store.list_runs(agent_id="triage")] == [c.id, a.id]
+    assert [r.id for r in await store.list_runs(steward_id="triage")] == [c.id, a.id]
     assert [r.id for r in await store.list_runs(limit=2)] == [c.id, b.id]
-    assert await store.list_runs(agent_id="missing") == []
+    assert await store.list_runs(steward_id="missing") == []
 
 
-async def test_list_runs_orders_same_instant_runs_by_insertion(store: AgentStore) -> None:
+async def test_list_runs_orders_same_instant_runs_by_insertion(store: StewardStore) -> None:
     when = datetime(2026, 1, 1, tzinfo=timezone.utc)
     first, second = await start(store), await start(store)
     await backdate(store, first.id, when)
@@ -333,13 +333,13 @@ async def test_list_runs_orders_same_instant_runs_by_insertion(store: AgentStore
 # -- tokens_since --------------------------------------------------------------
 
 
-async def test_tokens_since_sums_every_token_inside_the_window(store: AgentStore) -> None:
+async def test_tokens_since_sums_every_token_inside_the_window(store: StewardStore) -> None:
     # The API's input_tokens excludes the cached prompt: a run that read most
     # of its prompt from cache would otherwise barely count against the cap.
     now = datetime.now(timezone.utc)
     old = await start(store)
     recent = await start(store)
-    other = await start(store, agent_id="other")
+    other = await start(store, steward_id="other")
     usage = {
         "input_tokens": 10,
         "output_tokens": 5,
@@ -352,13 +352,13 @@ async def test_tokens_since_sums_every_token_inside_the_window(store: AgentStore
 
     since = (now - timedelta(days=1)).isoformat()
     assert await store.tokens_since(since) == 2 * 1215  # recent + other
-    assert await store.tokens_since(since, agent_id="triage") == 1215
-    assert await store.tokens_since(since, agent_id="other") == 1215
+    assert await store.tokens_since(since, steward_id="triage") == 1215
+    assert await store.tokens_since(since, steward_id="other") == 1215
     assert await store.tokens_since((now - timedelta(days=3)).isoformat()) == 3 * 1215
     assert await store.tokens_since((now + timedelta(days=1)).isoformat()) == 0
 
 
-async def test_tokens_since_is_inclusive_of_the_boundary(store: AgentStore) -> None:
+async def test_tokens_since_is_inclusive_of_the_boundary(store: StewardStore) -> None:
     when = datetime(2026, 3, 1, 12, 0, tzinfo=timezone.utc)
     run = await start(store)
     await store.finish_run(run.id, status="completed", usage={"input_tokens": 4})
@@ -367,7 +367,7 @@ async def test_tokens_since_is_inclusive_of_the_boundary(store: AgentStore) -> N
     assert await store.tokens_since((when + timedelta(microseconds=1)).isoformat()) == 0
 
 
-async def test_tokens_since_compares_instants_not_text(store: AgentStore) -> None:
+async def test_tokens_since_compares_instants_not_text(store: StewardStore) -> None:
     """A cutoff in another offset, or with ``Z``, means the same instant."""
 
     when = datetime(2026, 3, 1, 12, 0, tzinfo=timezone.utc)
@@ -380,13 +380,13 @@ async def test_tokens_since_compares_instants_not_text(store: AgentStore) -> Non
     assert await store.tokens_since("2026-03-01T12:00:00") == 4  # naive means UTC
 
 
-async def test_tokens_since_counts_a_run_still_running(store: AgentStore) -> None:
+async def test_tokens_since_counts_a_run_still_running(store: StewardStore) -> None:
     run = await start(store)
     assert run.status == "running"
     assert await store.tokens_since("2000-01-01T00:00:00+00:00") == 0
 
 
-async def test_tokens_since_rejects_garbage(store: AgentStore) -> None:
+async def test_tokens_since_rejects_garbage(store: StewardStore) -> None:
     with pytest.raises(ValueError):
         await store.tokens_since("yesterday")
 
@@ -394,9 +394,9 @@ async def test_tokens_since_rejects_garbage(store: AgentStore) -> None:
 # -- fail_interrupted ----------------------------------------------------------
 
 
-async def test_fail_interrupted_fails_only_running_runs(store: AgentStore) -> None:
+async def test_fail_interrupted_fails_only_running_runs(store: StewardStore) -> None:
     running_a = await start(store)
-    running_b = await start(store, agent_id="other")
+    running_b = await start(store, steward_id="other")
     completed = await start(store)
     await store.finish_run(completed.id, status="completed", verdict="phantom")
 
@@ -414,7 +414,7 @@ async def test_fail_interrupted_fails_only_running_runs(store: AgentStore) -> No
     assert await store.fail_interrupted() == 0
 
 
-async def test_an_interrupted_run_cannot_be_finished_again(store: AgentStore) -> None:
+async def test_an_interrupted_run_cannot_be_finished_again(store: StewardStore) -> None:
     run = await start(store)
     await store.fail_interrupted()
     with pytest.raises(ValueError, match="already failed"):
@@ -424,7 +424,7 @@ async def test_an_interrupted_run_cannot_be_finished_again(store: AgentStore) ->
 # -- prune ---------------------------------------------------------------------
 
 
-async def test_prune_deletes_old_finished_runs_and_keeps_running_ones(store: AgentStore) -> None:
+async def test_prune_deletes_old_finished_runs_and_keeps_running_ones(store: StewardStore) -> None:
     now = datetime.now(timezone.utc)
     old_done = await start(store)
     old_failed = await start(store)
@@ -445,7 +445,7 @@ async def test_prune_deletes_old_finished_runs_and_keeps_running_ones(store: Age
     assert await store.prune((now - timedelta(days=30)).isoformat()) == 0
 
 
-async def test_prune_cutoff_is_exclusive(store: AgentStore) -> None:
+async def test_prune_cutoff_is_exclusive(store: StewardStore) -> None:
     when = datetime(2026, 3, 1, 12, 0, tzinfo=timezone.utc)
     run = await start(store)
     await store.finish_run(run.id, status="completed")
@@ -454,15 +454,15 @@ async def test_prune_cutoff_is_exclusive(store: AgentStore) -> None:
     assert await store.prune((when + timedelta(seconds=1)).isoformat()) == 1
 
 
-# -- AgentRun ------------------------------------------------------------------
+# -- StewardRun ------------------------------------------------------------------
 
 
-async def test_agent_run_is_frozen_and_publishes_every_column(store: AgentStore) -> None:
+async def test_steward_run_is_frozen_and_publishes_every_column(store: StewardStore) -> None:
     run = await start(store)
     with pytest.raises(FrozenInstanceError):
         run.status = "completed"  # type: ignore[misc]
     public = run.to_public()
-    assert set(public) == {f.name for f in fields(AgentRun)}
+    assert set(public) == {f.name for f in fields(StewardRun)}
     assert public["id"] == run.id
     assert public["status"] == "running"
     assert public["finished_at"] is None
@@ -470,9 +470,9 @@ async def test_agent_run_is_frozen_and_publishes_every_column(store: AgentStore)
 
 async def test_the_table_matches_the_dataclass_on_a_fresh_db(tmp_path) -> None:
     path = str(tmp_path / "kenny.sqlite")
-    s = AgentStore(path)
+    s = StewardStore(path)
     await s.connect()
     await s.close()
     with sqlite3.connect(path) as db:
-        cols = [r[1] for r in db.execute("PRAGMA table_info(agent_runs)")]
-    assert cols == [f.name for f in fields(AgentRun)]
+        cols = [r[1] for r in db.execute("PRAGMA table_info(steward_runs)")]
+    assert cols == [f.name for f in fields(StewardRun)]

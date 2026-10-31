@@ -1,4 +1,4 @@
-"""SQLite storage for specialized agents (ADR-0071): per-agent mode and run history.
+"""SQLite storage for stewards (ADR-0071): per-steward mode and run history.
 
 Two tables on the shared DB file, one connection of its own, same shape as the
 stores in :mod:`kenny_server.store` (own
@@ -6,9 +6,9 @@ stores in :mod:`kenny_server.store` (own
 ``CREATE TABLE IF NOT EXISTS`` only, ISO-8601 UTC text timestamps, every write
 under :func:`~kenny_server.store.write_lock`).
 
-* ``agent_settings`` — the operator's chosen mode for each agent id. A missing
+* ``steward_settings`` — the operator's chosen mode for each steward id. A missing
   row means "never chosen"; the caller falls back to the spec's default mode.
-* ``agent_runs`` — one row per started run: what it was bound to (the spec
+* ``steward_runs`` — one row per started run: what it was bound to (the spec
   hash), what started it, the mode it ran in, how it ended and what it cost.
 
 Pure storage. Whether a run may start, and what it may do, is decided elsewhere.
@@ -34,8 +34,8 @@ __all__ = [
     "INTERRUPTED_ERROR",
     "RUN_STATUSES",
     "USAGE_KEYS",
-    "AgentRun",
-    "AgentStore",
+    "StewardRun",
+    "StewardStore",
 ]
 
 #: ``running`` while a run is in flight; the rest are the ways it can end.
@@ -56,16 +56,16 @@ USAGE_KEYS: tuple[str, ...] = (
 INTERRUPTED_ERROR = "interrupted by a server restart"
 
 _SCHEMA = """
-CREATE TABLE IF NOT EXISTS agent_settings (
-    agent_id   TEXT PRIMARY KEY,
+CREATE TABLE IF NOT EXISTS steward_settings (
+    steward_id   TEXT PRIMARY KEY,
     mode       TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     updated_by TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS agent_runs (
+CREATE TABLE IF NOT EXISTS steward_runs (
     id                    TEXT PRIMARY KEY,
-    agent_id              TEXT NOT NULL,
+    steward_id              TEXT NOT NULL,
     spec_hash             TEXT NOT NULL,
     trigger               TEXT NOT NULL,
     subject               TEXT,
@@ -85,12 +85,12 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     started_at            TEXT NOT NULL,
     finished_at           TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_agent_runs_agent ON agent_runs (agent_id, started_at DESC);
-CREATE INDEX IF NOT EXISTS idx_agent_runs_started ON agent_runs (started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_steward_runs_steward ON steward_runs (steward_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_steward_runs_started ON steward_runs (started_at DESC);
 """
 
 _RUN_COLUMNS = (
-    "id, agent_id, spec_hash, trigger, subject, host_id, mode, status, verdict, summary, "
+    "id, steward_id, spec_hash, trigger, subject, host_id, mode, status, verdict, summary, "
     "input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, "
     "ticket_id, error, actions, recommendations, started_at, finished_at"
 )
@@ -115,15 +115,15 @@ def _normalize_iso(value: str) -> str:
 
 def _check_mode(mode: str) -> None:
     if mode not in MODES:
-        raise ValueError(f"unknown agent mode {mode!r}; expected one of {', '.join(MODES)}")
+        raise ValueError(f"unknown steward mode {mode!r}; expected one of {', '.join(MODES)}")
 
 
 @dataclass(frozen=True)
-class AgentRun:
-    """One row of ``agent_runs``."""
+class StewardRun:
+    """One row of ``steward_runs``."""
 
     id: str
-    agent_id: str
+    steward_id: str
     spec_hash: str
     trigger: str
     subject: str | None
@@ -148,7 +148,7 @@ class AgentRun:
     finished_at: str | None
 
     @classmethod
-    def _from_row(cls, row: aiosqlite.Row) -> AgentRun:
+    def _from_row(cls, row: aiosqlite.Row) -> StewardRun:
         values = {key: row[key] for key in row.keys()}
         values["actions"] = json.loads(values["actions"])
         values["recommendations"] = json.loads(values["recommendations"])
@@ -160,8 +160,8 @@ class AgentRun:
         return asdict(self)
 
 
-class AgentStore:
-    """Async SQLite-backed store for agent modes and run history.
+class StewardStore:
+    """Async SQLite-backed store for steward modes and run history.
 
     Shares the DB file with the stores in :mod:`kenny_server.store` but owns its
     own connection. The schema is ``CREATE ... IF NOT EXISTS`` only, so
@@ -189,32 +189,32 @@ class AgentStore:
     @property
     def _conn(self) -> aiosqlite.Connection:
         if self._db is None:
-            raise RuntimeError("AgentStore is not connected; call connect() first")
+            raise RuntimeError("StewardStore is not connected; call connect() first")
         return self._db
 
     # -- mode ----------------------------------------------------------------
 
-    async def get_mode(self, agent_id: str) -> str | None:
-        """The mode an operator chose for ``agent_id``, or ``None`` if never chosen."""
+    async def get_mode(self, steward_id: str) -> str | None:
+        """The mode an operator chose for ``steward_id``, or ``None`` if never chosen."""
 
         async with self._conn.execute(
-            "SELECT mode FROM agent_settings WHERE agent_id = ?", (agent_id,)
+            "SELECT mode FROM steward_settings WHERE steward_id = ?", (steward_id,)
         ) as cur:
             row = await cur.fetchone()
         return None if row is None else str(row["mode"])
 
-    async def set_mode(self, agent_id: str, mode: str, *, actor: str) -> None:
-        """Record ``mode`` as the operator's choice for ``agent_id``."""
+    async def set_mode(self, steward_id: str, mode: str, *, actor: str) -> None:
+        """Record ``mode`` as the operator's choice for ``steward_id``."""
 
         _check_mode(mode)
         async with write_lock():
             await self._conn.execute(
-                "INSERT INTO agent_settings (agent_id, mode, updated_at, updated_by) "
+                "INSERT INTO steward_settings (steward_id, mode, updated_at, updated_by) "
                 "VALUES (?, ?, ?, ?) "
-                "ON CONFLICT(agent_id) DO UPDATE SET "
+                "ON CONFLICT(steward_id) DO UPDATE SET "
                 "mode=excluded.mode, updated_at=excluded.updated_at, "
                 "updated_by=excluded.updated_by",
-                (agent_id, mode, _now_iso(), actor),
+                (steward_id, mode, _now_iso(), actor),
             )
             await self._conn.commit()
 
@@ -223,27 +223,27 @@ class AgentStore:
     async def start_run(
         self,
         *,
-        agent_id: str,
+        steward_id: str,
         spec_hash: str,
         trigger: str,
         mode: str,
         subject: str | None = None,
         host_id: str | None = None,
         ticket_id: str | None = None,
-    ) -> AgentRun:
+    ) -> StewardRun:
         """Open a run in the ``running`` state and return it."""
 
         _check_mode(mode)
         run_id = uuid.uuid4().hex
         async with write_lock():
             await self._conn.execute(
-                "INSERT INTO agent_runs "
-                "(id, agent_id, spec_hash, trigger, subject, host_id, mode, status, "
+                "INSERT INTO steward_runs "
+                "(id, steward_id, spec_hash, trigger, subject, host_id, mode, status, "
                 "ticket_id, started_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?)",
                 (
                     run_id,
-                    agent_id,
+                    steward_id,
                     spec_hash,
                     trigger,
                     subject,
@@ -256,7 +256,7 @@ class AgentStore:
             await self._conn.commit()
         run = await self.get_run(run_id)
         if run is None:  # pragma: no cover - insert just succeeded
-            raise RuntimeError(f"agent run {run_id} vanished after insert")
+            raise RuntimeError(f"steward run {run_id} vanished after insert")
         return run
 
     async def finish_run(
@@ -271,7 +271,7 @@ class AgentStore:
         ticket_id: str | None = None,
         actions: Sequence[Mapping[str, Any]] | None = None,
         recommendations: Sequence[Mapping[str, Any]] | None = None,
-    ) -> AgentRun:
+    ) -> StewardRun:
         """Close a ``running`` run with its outcome, token usage and what it did.
 
         Raises :class:`ValueError` for an unknown or non-final ``status``, for an
@@ -291,7 +291,7 @@ class AgentStore:
         recommendations_json = json.dumps([dict(r) for r in recommendations or ()], default=str)
         async with write_lock():
             cur = await self._conn.execute(
-                "UPDATE agent_runs SET status = ?, verdict = ?, summary = ?, "
+                "UPDATE steward_runs SET status = ?, verdict = ?, summary = ?, "
                 "input_tokens = ?, output_tokens = ?, cache_read_tokens = ?, "
                 "cache_creation_tokens = ?, error = ?, actions = ?, recommendations = ?, "
                 "ticket_id = COALESCE(?, ticket_id), finished_at = ? "
@@ -316,33 +316,33 @@ class AgentStore:
             await self._conn.commit()
         run = await self.get_run(run_id)
         if run is None:
-            raise ValueError(f"no agent run {run_id}")
+            raise ValueError(f"no steward run {run_id}")
         if not changed:
-            raise ValueError(f"agent run {run_id} is already {run.status}, not running")
+            raise ValueError(f"steward run {run_id} is already {run.status}, not running")
         return run
 
-    async def get_run(self, run_id: str) -> AgentRun | None:
+    async def get_run(self, run_id: str) -> StewardRun | None:
         async with self._conn.execute(
-            f"SELECT {_RUN_COLUMNS} FROM agent_runs WHERE id = ?", (run_id,)
+            f"SELECT {_RUN_COLUMNS} FROM steward_runs WHERE id = ?", (run_id,)
         ) as cur:
             row = await cur.fetchone()
-        return None if row is None else AgentRun._from_row(row)
+        return None if row is None else StewardRun._from_row(row)
 
-    async def list_runs(self, *, agent_id: str | None = None, limit: int = 50) -> list[AgentRun]:
-        """Runs newest first, optionally for one agent."""
+    async def list_runs(self, *, steward_id: str | None = None, limit: int = 50) -> list[StewardRun]:
+        """Runs newest first, optionally for one steward."""
 
-        sql = f"SELECT {_RUN_COLUMNS} FROM agent_runs"
+        sql = f"SELECT {_RUN_COLUMNS} FROM steward_runs"
         params: list[Any] = []
-        if agent_id is not None:
-            sql += " WHERE agent_id = ?"
-            params.append(agent_id)
+        if steward_id is not None:
+            sql += " WHERE steward_id = ?"
+            params.append(steward_id)
         sql += " ORDER BY started_at DESC, rowid DESC LIMIT ?"
         params.append(max(0, int(limit)))
         async with self._conn.execute(sql, params) as cur:
             rows = await cur.fetchall()
-        return [AgentRun._from_row(row) for row in rows]
+        return [StewardRun._from_row(row) for row in rows]
 
-    async def tokens_since(self, since_iso: str, *, agent_id: str | None = None) -> int:
+    async def tokens_since(self, since_iso: str, *, steward_id: str | None = None) -> int:
         """Every token of runs started at or after ``since_iso``.
 
         Input + output + cache creation + cache read: the API's
@@ -354,24 +354,24 @@ class AgentStore:
         sql = (
             "SELECT COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens "
             "+ cache_read_tokens), 0) AS total "
-            "FROM agent_runs WHERE started_at >= ?"
+            "FROM steward_runs WHERE started_at >= ?"
         )
         params: list[Any] = [_normalize_iso(since_iso)]
-        if agent_id is not None:
-            sql += " AND agent_id = ?"
-            params.append(agent_id)
+        if steward_id is not None:
+            sql += " AND steward_id = ?"
+            params.append(steward_id)
         async with self._conn.execute(sql, params) as cur:
             row = await cur.fetchone()
         return int(row["total"]) if row is not None else 0
 
-    async def count_running(self, *, agent_id: str | None = None) -> int:
-        """How many runs are in flight, optionally for one agent."""
+    async def count_running(self, *, steward_id: str | None = None) -> int:
+        """How many runs are in flight, optionally for one steward."""
 
-        sql = "SELECT COUNT(*) AS n FROM agent_runs WHERE status = 'running'"
+        sql = "SELECT COUNT(*) AS n FROM steward_runs WHERE status = 'running'"
         params: list[Any] = []
-        if agent_id is not None:
-            sql += " AND agent_id = ?"
-            params.append(agent_id)
+        if steward_id is not None:
+            sql += " AND steward_id = ?"
+            params.append(steward_id)
         async with self._conn.execute(sql, params) as cur:
             row = await cur.fetchone()
         return int(row["n"]) if row is not None else 0
@@ -385,7 +385,7 @@ class AgentStore:
 
         async with write_lock():
             cur = await self._conn.execute(
-                "UPDATE agent_runs SET status = 'failed', error = ?, finished_at = ? "
+                "UPDATE steward_runs SET status = 'failed', error = ?, finished_at = ? "
                 "WHERE status = 'running'",
                 (INTERRUPTED_ERROR, _now_iso()),
             )
@@ -404,7 +404,7 @@ class AgentStore:
         async with write_lock():
             await _begin_immediate(self._conn)
             cur = await self._conn.execute(
-                "DELETE FROM agent_runs WHERE status != 'running' AND started_at < ?",
+                "DELETE FROM steward_runs WHERE status != 'running' AND started_at < ?",
                 (cutoff,),
             )
             deleted = cur.rowcount or 0
