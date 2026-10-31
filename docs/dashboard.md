@@ -142,13 +142,14 @@ background, rather than blanking or erroring on a slow network.
   <figcaption>Fleet: a card per PC — status dot, severity label, one-line summary, OS, 7-day availability, and last push. Click a card to open the host.</figcaption>
 </figure>
 
-A card grid, one card per PC: a **status dot**, the hostname, a **severity label** (e.g.
+A card grid, one card per PC, split into an **Online** and an **Offline** group (each
+headed with its host count; a group with no hosts is not shown): a **status dot**, the hostname, a **severity label** (e.g.
 `CRITICAL · DISK`, `WARNING · SECURITY`, or `HEALTHY`), a one-line summary (the worst
 section's reason, or "all quiet" plus a notable stat), the OS, a **7-day availability
 strip** (one cell per hour: green when the PC was reachable all hour, red when it was not,
 amber when it dropped out within the hour, grey when the server itself was down; hover for
 the percentage), and the time of its last telemetry
-push. Cards are sorted worst-first. **Click a card to open [the host
+push. Within each group, cards are sorted worst-first. **Click a card to open [the host
 page](#the-host-page)** — Fleet itself never shows a second pane or an inline detail; the
 whole page is the grid.
 
