@@ -8,7 +8,7 @@ concrete finding becomes a ticket.
 from __future__ import annotations
 
 from ...toolloop import STEWARD_VERDICT_TOOL
-from ..spec import StewardSpec, Budget, Trigger
+from ..spec import StewardSpec, Budget, Trigger, TriggerSet
 
 __all__ = ["POSTURE"]
 
@@ -50,6 +50,8 @@ POSTURE = StewardSpec(
     ),
     prompt=_PROMPT,
     trigger=Trigger(kind="schedule"),
+    # Its window, or a person's command; no event starts it yet.
+    triggers_allowed=TriggerSet(schedule=True, command=True),
     tools=frozenset({"diag_autostart", "diag_services", "agent_snapshot", STEWARD_VERDICT_TOOL}),
     verdict_tool=STEWARD_VERDICT_TOOL,
     budget=Budget(max_iterations=8),

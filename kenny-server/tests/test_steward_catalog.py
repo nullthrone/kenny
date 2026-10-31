@@ -79,7 +79,7 @@ def test_an_invalid_spec_fails_the_build() -> None:
 
 
 def test_build_validates_every_spec_not_just_the_first() -> None:
-    ok = replace(TRIAGE, id="second")
+    ok = replace(POSTURE, id="second")
     unclassified = replace(TRIAGE, id="third", tools=frozenset({"no_such_tool"}), verdict_tool=None)
     assert set(build((TRIAGE, ok))) == {"triage", "second"}
     with pytest.raises(SpecError, match="unclassified"):
@@ -216,7 +216,7 @@ def test_a_spec_naming_an_mcp_only_tool_is_refused() -> None:
         title="t",
         description="d",
         prompt="p",
-        trigger=Trigger(kind="on_demand"),
+        trigger=Trigger(kind="event", event="alert:change"),
         tools=frozenset({"webfilter_get"}),
     )
     with pytest.raises(SpecError, match="cannot run in the tool loop"):
@@ -232,7 +232,7 @@ def test_ticket_tools_are_refused_off_a_ticket_surface() -> None:
         title="t",
         description="d",
         prompt="p",
-        trigger=Trigger(kind="on_demand"),
+        trigger=Trigger(kind="event", event="alert:change"),
         tools=frozenset({"agent_health", "ticket_summary"}),
     )
     with pytest.raises(SpecError, match="need a ticket's surface"):
@@ -245,7 +245,7 @@ def _changer(tool: str, *constraints: ArgConstraint) -> StewardSpec:
         title="t",
         description="d",
         prompt="p",
-        trigger=Trigger(kind="on_demand"),
+        trigger=Trigger(kind="event", event="alert:change"),
         tools=frozenset({tool}),
         constraints=constraints,
         sensitive_ok=True,

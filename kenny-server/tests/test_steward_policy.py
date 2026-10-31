@@ -54,7 +54,7 @@ def _spec(**overrides: Any) -> StewardSpec:
         "title": "Patcher",
         "description": "Applies pending package updates.",
         "prompt": "You keep this machine's packages up to date.",
-        "trigger": Trigger(kind="on_demand"),
+        "trigger": Trigger(kind="event", event="alert:change"),
         "tools": frozenset({"winget_list", "winget_update", "winget_install", "agent_health"}),
         "constraints": (
             ArgConstraint("winget_update", "id", frozenset({FIREFOX})),

@@ -55,6 +55,7 @@ from ..tunnel import AgentTunnel, ToolError
 from ..stewards.authorizations import BUDGET_WINDOW, AuthorizationError
 from ..stewards.policy import run_target_problem
 from ..stewards.runner import HashMismatch, PreviewRefused
+from ..stewards.spec import allowed_triggers, baseline_config
 from ..webfilter import (
     BYPASS_REQUEST_CATEGORY,
     ListTooLargeError,
@@ -1779,6 +1780,61 @@ def build_api_routes(
             return JSONResponse({"error": str(exc)}, status_code=400)
         return JSONResponse({"steward_id": steward_id, **result})
 
+    async def api_steward_triggers(request: Request) -> JSONResponse:
+        """What may start one steward: its ceiling, its baseline, what is in force, and its hash."""
+
+        steward_id, refused = _steward_or_404(request)
+        if refused is not None:
+            return refused
+        spec = stewards.catalog[steward_id]
+        return JSONResponse(
+            {
+                "steward_id": steward_id,
+                "allowed": allowed_triggers(spec).to_public(),
+                "baseline": baseline_config(spec),
+                "triggers": await stewards.trigger_config(spec),
+                "effective_hash": await stewards.live_hash(steward_id),
+            }
+        )
+
+    async def api_steward_triggers_set(request: Request) -> JSONResponse:
+        """Replace one steward's triggers (``{"triggers": {...}, "effective_hash"}``).
+
+        What may start a steward is part of what a person consented to: like a
+        parameter edit, a change of the effective hash drops the steward to
+        ``shadow`` and voids its authorizations (ADR-0072 rule 6), and the
+        write names the hash the superuser was shown; a 409 when the steward
+        has changed since.
+        """
+
+        if stewards is not None and not _person_at_a_browser(request):
+            return JSONResponse(_NOT_A_PERSON, status_code=403)
+        steward_id, refused = _steward_or_404(request)
+        if refused is not None:
+            return refused
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - malformed JSON
+            return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        triggers = body.get("triggers") if isinstance(body, dict) else None
+        if not isinstance(triggers, dict):
+            return JSONResponse({"error": "triggers must be an object"}, status_code=400)
+        reviewed, refused = _reviewed_hash(body)
+        if refused is not None:
+            return refused
+        try:
+            result = await stewards.set_triggers(
+                steward_id,
+                triggers,
+                actor=_actor_of(request) or "unknown",
+                effective_hash=reviewed,
+            )
+        except HashMismatch as exc:
+            return _changed(exc)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        return JSONResponse({"steward_id": steward_id, **result})
+
     # -- DB backup/restore ---------------------------------------------------
     # Superuser-only (**su below): destructive (restore overwrites the live DB
     # and restarts the process) and secret-bearing (remote target credentials).
@@ -2544,6 +2600,12 @@ def build_api_routes(
         Route(
             "/api/stewards/{steward_id}/params",
             guard(api_steward_params_set, **su),
+            methods=["PUT"],
+        ),
+        Route("/api/stewards/{steward_id}/triggers", guard(api_steward_triggers, **op)),
+        Route(
+            "/api/stewards/{steward_id}/triggers",
+            guard(api_steward_triggers_set, **su),
             methods=["PUT"],
         ),
         Route("/api/settings", guard(api_settings_list, **su)),

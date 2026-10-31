@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from ...toolloop import STEWARD_VERDICT_TOOL
 from ..hygiene import UNUSED_AFTER_DAYS, UNUSED_SUPPRESSIONS, UNUSED_TICKET_RULES
-from ..spec import StewardSpec, ArgConstraint, Budget, Trigger
+from ..spec import StewardSpec, ArgConstraint, Budget, Trigger, TriggerSet
 
 __all__ = ["CONFIG_HYGIENE"]
 
@@ -60,6 +60,8 @@ CONFIG_HYGIENE = StewardSpec(
     prompt=_PROMPT,
     # 28 days with a weekly window: every fourth occurrence.
     trigger=Trigger(kind="schedule", min_interval_days=28),
+    # Its window, or a person's command; no event starts it yet.
+    triggers_allowed=TriggerSet(schedule=True, command=True),
     tools=frozenset(
         {
             "reliability_suppression_list",

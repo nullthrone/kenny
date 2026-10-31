@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from ... import ticket_assistant, toolloop
 from ...triage import DEFAULT_MAX_ITERATIONS
-from ..spec import StewardSpec, Budget, Trigger
+from ..spec import TICKET_CREATED, Budget, StewardSpec, Trigger, TriggerSet
 
 __all__ = ["TRIAGE"]
 
@@ -22,7 +22,10 @@ TRIAGE = StewardSpec(
         "tools and records what it found before a person sees it."
     ),
     prompt=ticket_assistant._TRIAGE_SYSTEM_PROMPT,
-    trigger=Trigger(kind="event", event="ticket_created"),
+    trigger=Trigger(kind="event", event=TICKET_CREATED),
+    # Every new ticket, and nothing else: triage's trigger is what it is for,
+    # not an install's choice.
+    triggers_allowed=TriggerSet(events=frozenset({TICKET_CREATED}), editable=False),
     tools=ticket_assistant.TRIAGE_TOOLS,
     verdict_tool=toolloop.TRIAGE_VERDICT_TOOL,
     # The hash binds the default; KENNY_TRIAGE_MAX_ITERATIONS may move the live cap per install.

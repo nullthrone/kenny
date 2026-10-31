@@ -44,29 +44,44 @@ steward's mode ``act``) — the gate's ``still_acting`` for a generic run,
 switching every steward off reaches a run already in flight.
 
 **``act`` binds to the effective hash** (ADR-0072 rule 6): the spec hash
-combined with the steward's parameters
-(:func:`~kenny_server.stewards.spec.effective_hash`). Choosing ``act`` names the
+combined with the steward's parameters and, when they differ from the spec's
+baseline, its triggers (:func:`~kenny_server.stewards.spec.effective_hash`),
+always computed from the live configuration by :meth:`StewardRunner._config`
+alone. Choosing ``act`` names the
 hash the person choosing it was shown, and is refused unless that is still the
 live hash; the stored binding is that reviewed hash, never one read at the
 moment of the write. A steward is in ``act`` only while that stored hash
-equals the live one, computed from the catalog entry and the stored parameters
-on every read. The first read that finds them apart drops the steward to
-``shadow`` for good (a code rollback does not promote it again), records who
-and why on the event log, and voids every authorization bound to another hash.
-A parameter edit (:meth:`StewardRunner.set_params`) does the same at once. A
+equals the live one, computed from the catalog entry and the stored
+configuration on every read. The first read that finds them apart drops the
+steward to ``shadow`` for good (a code rollback does not promote it again),
+records who and why on the event log, and voids every authorization bound to
+another hash. A parameter or trigger edit (:meth:`StewardRunner.set_params`,
+:meth:`StewardRunner.set_triggers`) does the same at once. A
 generic run freezes its parameters, effective hash and evidence at start, and its
 ``still_acting`` also turns false once the live hash moves away from the run's,
 and, for a scheduled run, once its maintenance window has closed
 (``act_until``).
 
-Triage is outside that binding: its mode is its settings, and it takes no
-parameters.
+Triage is outside that binding: its mode is its settings, it takes no
+parameters, and its trigger is fixed by its spec.
+
+**The circuit breaker** (:meth:`StewardRunner.maybe_trip`): after
+:data:`BREAKER_THRESHOLD` consecutive runs of one steward in ``act`` that
+stopped the canary (:func:`stops_canary`), it is moved to ``shadow`` as
+:data:`BREAKER_ACTOR`. Only runs the server started count — scheduled and
+event-started ones; a preview or a command run is a person's, and is neutral.
+
+**Preconditions** (:meth:`StewardRunner.register_precondition`): named
+server-side checks a spec declares; :meth:`StewardRunner.precondition_refusal`
+says why a run must not start on a host, before any model is called.
 """
 
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
+import re
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
@@ -82,11 +97,16 @@ from .policy import HOST_ARG, StewardPolicy, StewardSession, Authorizer, host_bo
 from .spec import (
     MODES,
     StewardSpec,
+    allowed_triggers,
+    baseline_config,
     effective_hash,
+    effective_triggers,
     evidence_names,
     param_kind,
     resolve,
+    runs_on_ticket,
     validate,
+    validate_triggers,
     with_evidence,
 )
 from .store import INTERRUPTED_ERROR, StewardRun, StewardStore
@@ -95,6 +115,11 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from ..triage import TriageService
 
 __all__ = [
+    "BENIGN_REFUSALS",
+    "BREAKER_ACTOR",
+    "BREAKER_THRESHOLD",
+    "BREAKER_TRIGGER_PREFIXES",
+    "RESULT_SUMMARY_FIELDS",
     "STEWARD_CHANGE_QUIET_PERIOD",
     "DAILY_TOKENS_SETTING",
     "ENABLED_SETTING",
@@ -106,12 +131,27 @@ __all__ = [
     "StewardRunner",
     "EvidenceProvider",
     "HashMismatch",
+    "Precondition",
     "caused_by_steward",
+    "halts",
+    "interrupted",
+    "made_change",
+    "run_failed",
+    "runs_on_ticket",
+    "stops_canary",
+    "summarize_result",
 ]
 
 #: Computes, from the server's own records, the values an evidence-fed
 #: constraint admits (ADR-0072 rule 6): ``provider() -> iterable of str``.
 EvidenceProvider = Callable[[], Awaitable[Iterable[str]]]
+
+#: A named server-side check before a run starts on a host:
+#: ``check(host_id, params) -> None`` to proceed, or a reason to skip. The
+#: reason is shown to people and compared to tell one skip from another, so it
+#: must be stable text, never a measurement that differs from pass to pass.
+#: May be a coroutine function.
+Precondition = Callable[[str | None, Mapping[str, Any]], "Awaitable[str | None] | str | None"]
 
 logger = logging.getLogger("kenny.stewards")
 
@@ -161,6 +201,57 @@ WINDOW_PARAM = "window"
 _MAX_PARAM_VALUES = 200
 _MAX_PARAM_VALUE_LEN = 200
 
+#: Bounds of a ``percent`` parameter.
+_PERCENT = (1, 99)
+
+#: Longest precondition skip reason kept.
+_MAX_REASON = 200
+
+#: The run triggers the circuit breaker reads: runs the server started on its
+#: own, in a window or on an event. A preview (``preview:``) or a command run
+#: is a person's, and neither counts toward a streak nor ends one.
+BREAKER_TRIGGER_PREFIXES: tuple[str, ...] = ("schedule:", "event:")
+
+#: Consecutive failed runs of one steward that move it back to ``shadow``.
+BREAKER_THRESHOLD = 3
+
+#: Who the circuit breaker acts as when it demotes a steward.
+BREAKER_ACTOR = "system:circuit-breaker"
+
+#: Error codes of a change that was *refused*, not one that broke: the steward's
+#: remote-control kill switch (``disabled``), its deterministic safety guard
+#: (``blocked``) and a game-scoped pause (``paused``). An outcome to read, not
+#: a failure to count.
+BENIGN_REFUSALS: frozenset[str] = frozenset({"disabled", "blocked", "paused"})
+
+#: The verdicts after which a run that changed something lets the next host go
+#: ahead: the run says it acted and checked. Any other verdict, or none, leaves
+#: the change unconfirmed.
+_CONFIRMING_VERDICTS: frozenset[str] = frozenset({"acted"})
+
+#: Per change-tier tool, the fields of its result kept on the run's action as
+#: ``result``, and what each must be: ``count`` a whole number >= 0, ``bool``,
+#: or ``enum`` an identifier. Numbers and enums from the tool's own JSON result
+#: only, never text: a person reads them, and what the model says about a
+#: change is not what the change did. A tool not named here keeps no result.
+RESULT_SUMMARY_FIELDS: Mapping[str, Mapping[str, str]] = {
+    "fs_cleanup": {
+        "target": "enum",
+        "files_removed": "count",
+        "bytes_freed": "count",
+        "complete": "bool",
+    },
+    "service_restart": {"ok": "bool", "running": "bool"},
+}
+
+_ENUM_RE = re.compile(r"^[a-z][a-z0-9_]{0,40}$")
+
+#: The largest count a summary keeps (JSON's exact-integer range).
+_MAX_COUNT = 2**53
+
+#: "Read it from the store" for :meth:`StewardRunner._config`.
+_LIVE: Any = object()
+
 
 class PreviewRefused(ValueError):
     """A preview request that must not run.
@@ -192,9 +283,11 @@ def validate_params(spec: StewardSpec, params: Any) -> dict[str, Any]:
     (:func:`~kenny_server.webfilter.parse_recurrence`) and stored normalised
     (``days`` as weekday keys, times as ``HH:MM``, the zone filled in). A
     ``bool`` parameter is a JSON ``true`` or ``false`` and nothing else — not
-    ``"false"``, not ``0``, not a list. Every other parameter is a list of
-    non-empty strings, deduplicated and sorted, so the same set always yields
-    the same effective hash. An empty list is kept: it admits nothing.
+    ``"false"``, not ``0``, not a list. A ``percent`` parameter is a whole JSON
+    number from 1 to 99 — not ``"80"``, not ``80.0``, not ``true``. Every other
+    parameter is a list of non-empty strings, deduplicated and sorted, so the
+    same set always yields the same effective hash. An empty list is kept: it
+    admits nothing.
     """
 
     if not isinstance(params, Mapping):
@@ -228,6 +321,12 @@ def validate_params(spec: StewardSpec, params: Any) -> dict[str, Any]:
                 raise ValueError(f"{name} must be true or false")
             out[name] = value
             continue
+        if param_kind(name) == "percent":
+            low, high = _PERCENT
+            if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+                raise ValueError(f"{name} must be a whole number from {low} to {high}")
+            out[name] = value
+            continue
         if not isinstance(value, (list, tuple)):
             raise ValueError(f"{name} must be a list of values")
         if len(value) > _MAX_PARAM_VALUES:
@@ -243,9 +342,7 @@ def validate_params(spec: StewardSpec, params: Any) -> dict[str, Any]:
 def surface_refusal(spec: StewardSpec) -> str | None:
     """Why ``spec`` can never be previewed (it runs on a ticket's own surface), or ``None``."""
 
-    if spec.id == TRIAGE_STEWARD_ID or (
-        spec.trigger.kind == "event" and spec.trigger.event == "ticket_created"
-    ):
+    if spec.id == TRIAGE_STEWARD_ID or runs_on_ticket(spec):
         return f"{spec.id} runs on a ticket's own surface and cannot be previewed"
     return None
 
@@ -339,7 +436,124 @@ def _with_outcomes(
         error = result.get("error")
         if isinstance(error, Mapping) and error.get("code"):
             match["code"] = str(error["code"])
+        summary = result.get("result")
+        if match["ok"] and isinstance(summary, Mapping) and summary:
+            match["result"] = dict(summary)
     return out
+
+
+def summarize_result(tool: str, result: Any) -> dict[str, Any] | None:
+    """The fields :data:`RESULT_SUMMARY_FIELDS` keeps of ``tool``'s ``result``, or ``None``.
+
+    A field that is missing or not of its kind is left out, never coerced.
+    """
+
+    fields = RESULT_SUMMARY_FIELDS.get(tool)
+    if fields is None or not isinstance(result, Mapping):
+        return None
+    out: dict[str, Any] = {}
+    for name, kind in fields.items():
+        value = result.get(name)
+        if kind == "bool" and isinstance(value, bool):
+            out[name] = value
+        elif (
+            kind == "count"
+            and isinstance(value, int)
+            and not isinstance(value, bool)
+            and 0 <= value <= _MAX_COUNT
+        ):
+            out[name] = value
+        elif kind == "enum" and isinstance(value, str) and _ENUM_RE.fullmatch(value):
+            out[name] = value
+    return out or None
+
+
+class _RecordingExecutor:
+    """A run's executor, keeping a summary of each change-tier capability result.
+
+    Everything else is the wrapped executor's. Only a call that reached the
+    executor is summarised — one the gate allowed — and only what
+    :func:`summarize_result` keeps. The summary is matched to the loop's
+    ``tool_result`` event for the same call by its arguments object.
+    """
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+        self._summaries: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    async def run_capability(
+        self, tool: str, args: dict[str, Any], **kwargs: Any
+    ) -> dict[str, Any]:
+        result = await self._inner.run_capability(tool, args, **kwargs)
+        if classify(tool) != READ_ONLY:
+            summary = summarize_result(tool, result)
+            if summary is not None:
+                self._summaries.append((tool, args, summary))
+        return result
+
+    def take(self, tool: str, args: Any) -> dict[str, Any] | None:
+        """The summary of the call ``tool`` with ``args`` made, once; ``None`` if none."""
+
+        for i, (name, called, summary) in enumerate(self._summaries):
+            if name == tool and called is args:
+                del self._summaries[i]
+                return summary
+        for i, (name, called, summary) in enumerate(self._summaries):
+            if name == tool and called == args:
+                del self._summaries[i]
+                return summary
+        return None
+
+
+# -- reading a finished run ----------------------------------------------------
+
+
+def interrupted(run: StewardRun) -> bool:
+    """Whether ``run`` was cut short by a shutdown or a restart, not by its own fault."""
+
+    return run.status == "failed" and run.error == INTERRUPTED_ERROR
+
+
+def run_failed(run: StewardRun) -> bool:
+    """Whether ``run`` counts as a failure.
+
+    ``failed`` outright, or a change it made that errored for any reason other
+    than a refusal that is an outcome (:data:`BENIGN_REFUSALS`). A run a
+    shutdown or restart interrupted is not the steward's fault and is not one.
+    """
+
+    if run.status == "failed":
+        return not interrupted(run)
+    if run.status != "completed":
+        return False
+    return any(
+        a.get("ok") is False and a.get("code") not in BENIGN_REFUSALS for a in run.actions
+    )
+
+
+def made_change(run: StewardRun) -> bool:
+    """Whether ``run`` changed something: an action the gate allowed that did not fail."""
+
+    return any(a.get("ok") is not False for a in run.actions)
+
+
+def halts(run: StewardRun) -> bool:
+    """Whether ``run`` changed something and did not confirm it (any verdict but ``acted``)."""
+
+    return made_change(run) and run.verdict not in _CONFIRMING_VERDICTS
+
+
+def stops_canary(run: StewardRun) -> bool:
+    """Whether the hosts after ``run`` must wait for a person.
+
+    Also what the circuit breaker counts, unless the run was
+    :func:`interrupted`.
+    """
+
+    return run_failed(run) or halts(run)
 
 
 class StewardRunner:
@@ -398,6 +612,8 @@ class StewardRunner:
         self._model: str | Callable[[], str] | None = None
         #: Named evidence providers (:meth:`register_evidence`).
         self._evidence: dict[str, EvidenceProvider] = {}
+        #: Named preconditions (:meth:`register_precondition`).
+        self._preconditions: dict[str, Precondition] = {}
 
     def now(self) -> datetime:
         """The runner's clock (injected in tests); what expiry and budgets are judged by."""
@@ -474,6 +690,55 @@ class StewardRunner:
                 values = []
             out[name] = values
         return out
+
+    # -- preconditions ---------------------------------------------------------
+
+    def register_precondition(self, name: str, check: Precondition) -> None:
+        """Answer every spec declaring precondition ``name`` with ``check``.
+
+        Registering a name twice is refused, as for evidence providers.
+        """
+
+        if name in self._preconditions:
+            raise ValueError(f"precondition {name!r} is already registered")
+        self._preconditions[name] = check
+
+    def preconditions(self) -> frozenset[str]:
+        """The precondition names a check is registered for."""
+
+        return frozenset(self._preconditions)
+
+    async def precondition_refusal(
+        self, spec: StewardSpec, host_id: str | None, params: Mapping[str, Any]
+    ) -> str | None:
+        """Why a run of ``spec`` must not start on ``host_id`` now, or ``None``.
+
+        Asks each precondition ``spec`` declares, in order, and returns the
+        first reason. Fails closed: a name nothing is registered for, a check
+        that raises, and an answer that is neither ``None`` nor text each skip
+        the run, with a stable reason of their own.
+        """
+
+        for name in spec.preconditions:
+            check = self._preconditions.get(name)
+            if check is None:
+                logger.warning("steward %s: no precondition %r is registered", spec.id, name)
+                return f"precondition {name} is not available on this server"
+            try:
+                answer = check(host_id, params)
+                if inspect.isawaitable(answer):
+                    answer = await answer
+            except Exception:  # noqa: BLE001 - a check that fails is a skip, not a run
+                logger.warning(
+                    "steward %s: precondition %r failed on %s", spec.id, name, host_id, exc_info=True
+                )
+                return f"precondition {name} could not be checked"
+            if answer is None:
+                continue
+            if not isinstance(answer, str) or not answer.strip():
+                return f"precondition {name} gave no usable answer"
+            return _clip(answer, _MAX_REASON)
+        return None
 
     @property
     def triage(self) -> TriageService | None:
@@ -568,7 +833,7 @@ class StewardRunner:
         return "act" if self.settings.get(_TRIAGE_RESOLVE) else "shadow"
 
     async def live_hash(self, steward_id: str) -> str | None:
-        """What ``steward_id`` is right now: its catalog spec and stored parameters.
+        """What ``steward_id`` is right now: its catalog spec and stored configuration.
 
         ``None`` for an id the catalog no longer has.
         """
@@ -576,8 +841,33 @@ class StewardRunner:
         spec = self.catalog.get(steward_id)
         if spec is None:
             return None
-        params = {} if spec.id == TRIAGE_STEWARD_ID else await self.store.get_params(spec.id)
-        return effective_hash(spec, params)
+        return await self._config_hash(spec)
+
+    async def _config(
+        self, spec: StewardSpec, *, params: Any = _LIVE, triggers: Any = _LIVE
+    ) -> tuple[dict[str, Any], Any, str]:
+        """``(params, stored triggers, effective hash)`` of ``spec``: the one place it is computed.
+
+        Each of ``params`` and ``triggers`` is read from the store unless given
+        — given, to ask what the hash *would* be with that one replaced — so no
+        caller can hash a steward without the half of its configuration it did
+        not think of. Triage takes no parameters.
+        """
+
+        if params is _LIVE:
+            params = (
+                {} if spec.id == TRIAGE_STEWARD_ID else _declared(spec, await self.store.get_params(spec.id))
+            )
+        if triggers is _LIVE:
+            triggers = await self.store.get_triggers(spec.id)
+        return params, triggers, effective_hash(spec, params, triggers)
+
+    async def _config_hash(
+        self, spec: StewardSpec, *, params: Any = _LIVE, triggers: Any = _LIVE
+    ) -> str:
+        """``spec``'s effective hash from the live configuration (:meth:`_config`)."""
+
+        return (await self._config(spec, params=params, triggers=triggers))[2]
 
     async def _mode_for(self, spec: StewardSpec) -> str:
         if spec.id == TRIAGE_STEWARD_ID:
@@ -746,8 +1036,8 @@ class StewardRunner:
 
         spec = self.spec(steward_id)
         clean = validate_params(spec, params)
-        before_hash = await self.live_hash(spec.id)
-        after_hash = effective_hash(spec, clean)
+        before_hash = await self._config_hash(spec)
+        after_hash = await self._config_hash(spec, params=clean)
         changed = before_hash != after_hash
         voided = await self._void_others(spec.id, after_hash, actor) if changed else 0
         before_mode = await self.store.set_params(spec.id, clean, actor=actor, demote=changed)
@@ -769,6 +1059,115 @@ class StewardRunner:
             "mode": await self._mode_for(spec),
             "voided": voided,
         }
+
+    # -- triggers --------------------------------------------------------------
+
+    async def trigger_config(self, spec: StewardSpec) -> dict[str, Any]:
+        """``spec``'s trigger configuration in force: the stored one within its ceiling."""
+
+        return effective_triggers(spec, await self.store.get_triggers(spec.id))
+
+    async def set_triggers(
+        self,
+        steward_id: str,
+        triggers: Any,
+        *,
+        actor: str,
+        effective_hash: str | None = None,
+    ) -> dict[str, Any]:
+        """Replace ``steward_id``'s trigger configuration; returns ``{triggers, effective_hash, mode, voided}``.
+
+        What may start a steward is part of what a person consented to, so this
+        is :meth:`set_params` for triggers: a change of the effective hash voids
+        every authorization bound to another hash first, then writes and drops
+        a steward in ``act`` to ``shadow`` in one transaction (ADR-0072 rule 6);
+        reverting later revives neither. A configuration whose effective hash
+        is the live one changes nothing and writes nothing.
+
+        ``effective_hash``, when given, is the hash the person was shown;
+        :class:`HashMismatch` when it is no longer the live one. Raises
+        :class:`KeyError` for an unknown steward and :class:`ValueError` for a
+        steward whose triggers its spec fixes or a configuration it does not
+        allow (:func:`~kenny_server.stewards.spec.validate_triggers`).
+        """
+
+        spec = self.spec(steward_id)
+        if not allowed_triggers(spec).editable:
+            raise ValueError(f"steward {spec.id}'s triggers are fixed by its spec")
+        clean = validate_triggers(spec, triggers)
+        if effective_hash is not None:
+            await self._reviewed(spec, effective_hash)
+        before_hash = await self._config_hash(spec)
+        after_hash = await self._config_hash(spec, triggers=clean)
+        if before_hash == after_hash:
+            return {
+                "triggers": await self.trigger_config(spec),
+                "effective_hash": before_hash,
+                "mode": await self._mode_for(spec),
+                "voided": 0,
+            }
+        voided = await self._void_others(spec.id, after_hash, actor)
+        before_mode = await self.store.set_config(spec.id, triggers=clean, actor=actor, demote=True)
+        await self._record_event(
+            spec.id,
+            f"steward {spec.id}: triggers changed by {actor}",
+            {"actor": actor, "triggers": clean, "effective_hash": after_hash},
+        )
+        if before_mode == "act":
+            await self._record_event(
+                spec.id,
+                f"steward {spec.id}: mode set to shadow by {actor}: its triggers changed",
+                {"mode": "shadow", "actor": actor, "effective_hash": after_hash},
+            )
+        return {
+            "triggers": effective_triggers(spec, clean),
+            "effective_hash": after_hash,
+            "mode": await self._mode_for(spec),
+            "voided": voided,
+        }
+
+    # -- the circuit breaker ---------------------------------------------------
+
+    async def breaker_history(self, steward_id: str) -> list[StewardRun]:
+        """Every run of ``steward_id`` the breaker reads, newest first (:data:`BREAKER_TRIGGER_PREFIXES`).
+
+        Selected by trigger in the store, so no number of previews or command
+        runs can push one out.
+        """
+
+        return await self.store.runs_with_trigger_prefixes(steward_id, BREAKER_TRIGGER_PREFIXES)
+
+    async def maybe_trip(self, steward_id: str, *, threshold: int = BREAKER_THRESHOLD) -> bool:
+        """Move ``steward_id`` to ``shadow`` after ``threshold`` consecutive canary stops in ``act``.
+
+        Returns whether it did. Skipped, running and interrupted runs are
+        neutral: passed over, never counted, never ending a streak.
+        """
+
+        streak = 0
+        for run in await self.breaker_history(steward_id):  # newest first
+            if run.status in ("skipped", "running") or interrupted(run):
+                continue
+            if not stops_canary(run):
+                break
+            streak += 1
+        if streak < max(1, int(threshold)):
+            return False
+        if await self.mode_of(steward_id) != "act":
+            return False
+        await self.set_mode(steward_id, "shadow", actor=BREAKER_ACTOR)
+        message = (
+            f"steward {steward_id}: {streak} runs in a row failed or left a change unconfirmed; "
+            "moved back to shadow by the circuit breaker"
+        )
+        logger.warning(message)
+        await self._record_event(
+            steward_id,
+            message,
+            {"failed_in_a_row": streak, "actor": BREAKER_ACTOR},
+            level="warning",
+        )
+        return True
 
     # -- standing authorizations ---------------------------------------------
 
@@ -823,7 +1222,7 @@ class StewardRunner:
         for spec in self.catalog.values():
             latest = await self.store.list_runs(steward_id=spec.id, limit=1)
             mode = await self._mode_for(spec)
-            live = await self.live_hash(spec.id)
+            _params, stored_triggers, live = await self._config(spec)
             if spec.id == TRIAGE_STEWARD_ID:
                 # Triage's ``act`` is its settings, not a binding to a hash.
                 bound: bool | None = None
@@ -836,6 +1235,9 @@ class StewardRunner:
                     "params": await self.get_params(spec.id),
                     "effective_hash": live,
                     "act_bound": bound,
+                    "triggers": effective_triggers(spec, stored_triggers),
+                    "triggers_baseline": baseline_config(spec),
+                    "triggers_allowed": allowed_triggers(spec).to_public(),
                     # Where each tool acts: on the run's machine, or on the
                     # server itself. A grant's scope follows it (ADR-0072: a
                     # host list for one, the ``server`` sentinel for the other).
@@ -886,6 +1288,7 @@ class StewardRunner:
         run_hash: str | None = None,
         evidence: Mapping[str, Sequence[str]] | None = None,
         record_refusal: bool = True,
+        initiated_by: str | None = None,
     ) -> tuple[StewardRun, bool]:
         """Open the run row; ``(row, False)`` when a cap refused it (row ``skipped``).
 
@@ -912,6 +1315,7 @@ class StewardRunner:
                 params=params,
                 effective_hash=run_hash,
                 evidence=evidence,
+                initiated_by=initiated_by,
             )
             if reason is None:
                 if counted:
@@ -1047,8 +1451,16 @@ class StewardRunner:
         act_until: datetime | None = None,
         preview: bool = False,
         on_admitted: Callable[[StewardRun], None] | None = None,
+        initiated_by: str | None = None,
+        shadow_only: bool = False,
     ) -> StewardRun | None:
         """Run ``spec`` once on ``host_id`` through the steward gate.
+
+        ``shadow_only`` runs it in ``shadow`` whatever mode is stored, as a
+        preview does — recorded so, no change can start in it and it spends no
+        authorization — but it is not a preview: its verdict opens a ticket
+        for a finding as any run's does. ``initiated_by`` names the person who
+        asked for the run, on its row; ``None`` for a run the server started.
 
         ``preview`` makes this an on-demand preview: the run is **always**
         ``shadow``, whatever mode is stored (a change is refused at the gate and
@@ -1097,7 +1509,7 @@ class StewardRunner:
         """
 
         check_dispatchable(validate(spec))
-        if spec.trigger.kind == "event" and spec.trigger.event == "ticket_created":
+        if runs_on_ticket(spec):
             raise ValueError(f"steward {spec.id} runs on a ticket's own surface, not run_generic")
         known = self.catalog.get(spec.id)
         if known is None:
@@ -1117,14 +1529,13 @@ class StewardRunner:
             raise RuntimeError("run_generic needs a client; call configure() first")
         if not self.enabled() or not self._ai_ready():
             return None
-        # Parameters before the mode: if they change in between, the mode read
-        # sees the newer hash and ``still_acting`` catches the difference.
-        params = _declared(spec, await self.store.get_params(spec.id))
-        run_hash = effective_hash(spec, params)
+        # The configuration before the mode: if it changes in between, the mode
+        # read sees the newer hash and ``still_acting`` catches the difference.
+        params, _triggers, run_hash = await self._config(spec)
         mode = await self._mode_for(spec)
         if mode == "off":
             return None
-        if preview:
+        if preview or shadow_only:
             # Forced, after the ``off`` check above: a preview observes what the
             # steward would do, it is never a way to make it do anything.
             mode = "shadow"
@@ -1141,6 +1552,7 @@ class StewardRunner:
             run_hash=run_hash,
             evidence=evidence,
             record_refusal=not preview,
+            initiated_by=initiated_by,
         )
         if on_admitted is not None:
             on_admitted(run)
@@ -1154,7 +1566,7 @@ class StewardRunner:
         finished: StewardRun | None = None
 
         async def still_acting() -> bool:
-            if preview:
+            if preview or shadow_only:
                 return False
             if act_until is not None and self._now() >= act_until:
                 return False
@@ -1167,7 +1579,12 @@ class StewardRunner:
             _session: StewardSession, tool: str, _args: dict[str, Any], target: str | None
         ) -> Authorization | None:
             store = self.authorizations
-            if preview or store is None or await self.live_hash(spec.id) != run_hash:
+            if (
+                preview
+                or shadow_only
+                or store is None
+                or await self.live_hash(spec.id) != run_hash
+            ):
                 return None
             return await store.consume(
                 steward_id=spec.id,
@@ -1178,6 +1595,7 @@ class StewardRunner:
                 now=self._now(),
             )
 
+        recording = _RecordingExecutor(executor)
         try:
             if client is None:
                 assert self._client_factory is not None  # checked above
@@ -1200,7 +1618,7 @@ class StewardRunner:
             )
             async for event in drive_events(
                 session,
-                executor,
+                recording,
                 client=client,
                 model=model,
                 policy=policy,
@@ -1214,7 +1632,11 @@ class StewardRunner:
                         if event.get("ok") and isinstance(said, str) and said.strip():
                             verdict = said.strip()[:200]
                     elif classify(tool) != READ_ONLY:
-                        change_results.append(event)
+                        outcome = dict(event)
+                        summary = recording.take(tool, event.get("args"))
+                        if summary is not None:
+                            outcome["result"] = summary
+                        change_results.append(outcome)
                 elif kind == "done":
                     summary = _clip(event.get("assistant_text"))
             status, error = "completed", None
@@ -1329,6 +1751,7 @@ class StewardRunner:
                         brief=_preview_brief(spec, host_id, await self.get_params(spec.id)),
                         preview=True,
                         on_admitted=on_admitted,
+                        initiated_by=requested_by.strip()[:_MAX_PREVIEWER] or None,
                     )
                 except PreviewRefused as exc:
                     if not admitted.done():

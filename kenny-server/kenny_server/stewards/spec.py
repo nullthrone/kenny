@@ -40,10 +40,14 @@ from typing import Any
 from ..tool_classes import READ_ONLY, SENSITIVE_TOOLS, TOOL_CLASSES
 
 __all__ = [
+    "ALERT_EVENT_TYPES",
+    "DEFAULT_COOLDOWN_HOURS",
     "EVENTS",
+    "EVENT_RE",
     "MAX_TIMEOUT_S",
     "MODES",
     "PARAM_KINDS",
+    "TICKET_CREATED",
     "TRIGGER_KINDS",
     "VERDICT_TOOLS",
     "StewardSpec",
@@ -52,11 +56,18 @@ __all__ = [
     "SpecError",
     "ToolTimeout",
     "Trigger",
+    "TriggerSet",
+    "allowed_triggers",
+    "baseline_config",
     "effective_hash",
+    "effective_triggers",
     "evidence_names",
+    "is_event_name",
     "param_kind",
     "resolve",
+    "runs_on_ticket",
     "validate",
+    "validate_triggers",
     "with_evidence",
 ]
 
@@ -74,11 +85,41 @@ MODES: tuple[str, ...] = ("off", "shadow", "act")
 #: would let a run park on one call indefinitely.
 MAX_TIMEOUT_S = 600
 
-#: What starts a run.
-TRIGGER_KINDS: tuple[str, ...] = ("event", "schedule", "on_demand")
+#: What starts a run of a steward by default: its *baseline* trigger
+#: (:attr:`StewardSpec.trigger`). Whether a person may also start one by
+#: command is part of its trigger configuration (:class:`TriggerSet`), not a
+#: kind of its own.
+TRIGGER_KINDS: tuple[str, ...] = ("event", "schedule")
 
-#: The server events an ``event`` trigger may name.
-EVENTS: tuple[str, ...] = ("ticket_created",)
+#: The event a newly created ticket raises. Only the steward that runs on a
+#: ticket's own surface may name it (``catalog.check_dispatchable``).
+TICKET_CREATED = "ticket_created"
+
+#: The alert types whose firing an ``alert:<type>`` event names. Health alerts
+#: are named per section instead (``alert:health:<section>``).
+#: ``tests/test_steward_triggers.py`` joins these to ``ticket_rules.EVENT_TYPES``.
+ALERT_EVENT_TYPES: tuple[str, ...] = ("offline", "disk_forecast", "hardware_forecast", "change")
+
+#: Every event name a trigger may carry, and nothing else: a closed pattern, so
+#: a typo is refused rather than waiting forever for an event nobody raises.
+EVENT_RE = re.compile(
+    r"^(" + TICKET_CREATED + r"|alert:(" + "|".join(ALERT_EVENT_TYPES) + r")"
+    r"|alert:health:[a-z][a-z0-9_]{1,40})$"
+)
+
+#: The event names :data:`EVENT_RE` admits that are not per health section.
+EVENTS: tuple[str, ...] = (TICKET_CREATED, *(f"alert:{t}" for t in ALERT_EVENT_TYPES))
+
+#: The fewest hours between two event-started runs of one steward on one host,
+#: when its configuration names none; and the bounds a configuration may set.
+DEFAULT_COOLDOWN_HOURS = 24
+_COOLDOWN_HOURS = (1, 168)
+
+#: Bounds of a schedule's ``min_interval_days``.
+_INTERVAL_DAYS = (1, 366)
+
+#: Most event entries a trigger configuration may hold.
+_MAX_EVENTS = 64
 
 #: The only tools a spec may name as its verdict tool. The verdict tool is
 #: exempt from argument constraints because its own server-side handler decides
@@ -92,7 +133,12 @@ VERDICT_TOOLS: frozenset[str] = frozenset({"ticket_triage_verdict", "steward_ver
 #: window (``{days, start, end[, tz]}``) and ``bool`` a JSON ``true``/``false``;
 #: every parameter not named here is a list of strings (an allowlist, a host
 #: list). Keyed by name so the same name means the same thing in every steward.
-PARAM_KINDS: Mapping[str, str] = {"window": "window", "require_idle": "bool"}
+#: ``percent`` is a whole number from 1 to 99 (a disk-usage threshold).
+PARAM_KINDS: Mapping[str, str] = {
+    "window": "window",
+    "require_idle": "bool",
+    "min_percent_used": "percent",
+}
 
 _PARAM_RE = re.compile(r"^[a-z][a-z0-9_]{0,40}$")
 
@@ -108,7 +154,7 @@ class Trigger:
     """What starts a run of this steward."""
 
     kind: str
-    #: For ``kind="event"``: one of :data:`EVENTS`.
+    #: For ``kind="event"``: a name :data:`EVENT_RE` admits.
     event: str | None = None
     #: For ``kind="schedule"``: the fewest days between two window occurrences
     #: this steward runs in. ``None`` runs in every occurrence of its window; 28
@@ -121,6 +167,36 @@ class Trigger:
         if self.min_interval_days is not None:
             out["min_interval_days"] = self.min_interval_days
         return out
+
+
+@dataclass(frozen=True)
+class TriggerSet:
+    """The ceiling on what may start a steward: what its configuration may switch on.
+
+    The spec declares it; a superuser's trigger configuration
+    (:func:`validate_triggers`) chooses within it, and a release that narrows it
+    narrows every configuration with it (:func:`effective_triggers`). Not part
+    of :attr:`StewardSpec.spec_hash`: what a steward *does* when it runs is the
+    same whatever started it, and what is switched on is fingerprinted by
+    :func:`effective_hash` with the rest of the install's configuration.
+    """
+
+    #: The steward may run in its maintenance window (needs a ``window`` param).
+    schedule: bool = False
+    #: The events (:data:`EVENT_RE`) that may start it.
+    events: frozenset[str] = frozenset()
+    #: A person may start a run of it by command.
+    command: bool = False
+    #: Whether its configuration may differ from the baseline at all.
+    editable: bool = True
+
+    def to_public(self) -> dict[str, Any]:
+        return {
+            "schedule": self.schedule,
+            "events": sorted(self.events),
+            "command": self.command,
+            "editable": self.editable,
+        }
 
 
 @dataclass(frozen=True)
@@ -229,6 +305,14 @@ class StewardSpec:
     #: Bumped by hand when behaviour changes in a way the hash cannot see
     #: (e.g. server-side code the steward's verdict tool runs).
     version: int = 1
+    #: What may start this steward beyond its baseline :attr:`trigger`
+    #: (:class:`TriggerSet`); ``None`` allows the baseline and nothing else.
+    #: Outside the spec hash (see :class:`TriggerSet`).
+    triggers_allowed: TriggerSet | None = None
+    #: Named server-side checks that must pass before a run starts on a host
+    #: (the runner's precondition registry); a failing one skips the run
+    #: before any model is called. In the spec hash when non-empty.
+    preconditions: tuple[str, ...] = ()
 
     @property
     def spec_hash(self) -> str:
@@ -239,27 +323,27 @@ class StewardSpec:
         description does not unbind anything.
         """
 
-        canonical = json.dumps(
-            {
-                "id": self.id,
-                "version": self.version,
-                "prompt": self.prompt,
-                "trigger": self.trigger.to_dict(),
-                "tools": sorted(self.tools),
-                # A re-tier must unbind what was granted against the old tier:
-                # a tool moved down to ``standard_change`` would otherwise run
-                # without the authorization it needed (ADR-0072).
-                "tiers": {t: TOOL_CLASSES.get(t) for t in sorted(self.tools)},
-                "verdict_tool": self.verdict_tool,
-                "budget": self.budget.to_dict(),
-                "constraints": self._sorted_constraints(),
-                "timeouts": self._sorted_timeouts(),
-                "params": sorted(self.params),
-                "sensitive_ok": self.sensitive_ok,
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        )
+        fields: dict[str, Any] = {
+            "id": self.id,
+            "version": self.version,
+            "prompt": self.prompt,
+            "trigger": self.trigger.to_dict(),
+            "tools": sorted(self.tools),
+            # A re-tier must unbind what was granted against the old tier:
+            # a tool moved down to ``standard_change`` would otherwise run
+            # without the authorization it needed (ADR-0072).
+            "tiers": {t: TOOL_CLASSES.get(t) for t in sorted(self.tools)},
+            "verdict_tool": self.verdict_tool,
+            "budget": self.budget.to_dict(),
+            "constraints": self._sorted_constraints(),
+            "timeouts": self._sorted_timeouts(),
+            "params": sorted(self.params),
+            "sensitive_ok": self.sensitive_ok,
+        }
+        # Only when declared, so every spec that declares none keeps its hash.
+        if self.preconditions:
+            fields["preconditions"] = list(self.preconditions)
+        canonical = json.dumps(fields, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
     def _sorted_constraints(self) -> list[dict[str, object]]:
@@ -398,7 +482,7 @@ def validate(spec: StewardSpec) -> StewardSpec:
         raise SpecError(f"steward {spec.id}: a schedule trigger needs a 'window' param")
     if spec.trigger.kind not in TRIGGER_KINDS:
         raise SpecError(f"steward {spec.id}: unknown trigger kind {spec.trigger.kind!r}")
-    if spec.trigger.kind == "event" and spec.trigger.event not in EVENTS:
+    if spec.trigger.kind == "event" and not is_event_name(spec.trigger.event):
         raise SpecError(f"steward {spec.id}: unknown event {spec.trigger.event!r}")
     if spec.trigger.kind != "event" and spec.trigger.event is not None:
         raise SpecError(f"steward {spec.id}: only an event trigger names an event")
@@ -418,11 +502,49 @@ def validate(spec: StewardSpec) -> StewardSpec:
         raise SpecError(f"steward {spec.id}: max_iterations must be at least 1")
     if spec.version < 1:
         raise SpecError(f"steward {spec.id}: version must be at least 1")
+    _validate_triggers_allowed(spec)
+    for name in spec.preconditions:
+        if not isinstance(name, str) or not _PARAM_RE.match(name):
+            raise SpecError(
+                f"steward {spec.id}: precondition name {name!r} must match {_PARAM_RE.pattern}"
+            )
+    if len(set(spec.preconditions)) != len(spec.preconditions):
+        raise SpecError(f"steward {spec.id}: a precondition is declared twice")
     return spec
 
 
+def _validate_triggers_allowed(spec: StewardSpec) -> None:
+    """Refuse a trigger ceiling that is malformed or does not hold the baseline."""
+
+    allowed = spec.triggers_allowed
+    if allowed is None:
+        return
+    if not isinstance(allowed, TriggerSet):
+        raise SpecError(f"steward {spec.id}: triggers_allowed must be a TriggerSet")
+    for name in ("schedule", "command", "editable"):
+        if not isinstance(getattr(allowed, name), bool):
+            raise SpecError(f"steward {spec.id}: triggers_allowed.{name} must be true or false")
+    if not isinstance(allowed.events, frozenset):
+        raise SpecError(f"steward {spec.id}: triggers_allowed.events must be a frozenset")
+    unknown = sorted(str(e) for e in allowed.events if not is_event_name(e))
+    if unknown:
+        raise SpecError(f"steward {spec.id}: triggers_allowed names unknown event(s) {', '.join(unknown)}")
+    if allowed.schedule and "window" not in spec.params:
+        raise SpecError(f"steward {spec.id}: a schedule needs a 'window' param")
+    # The baseline is what an install runs with until somebody configures
+    # otherwise; a ceiling below it would narrow it at once and move the hash
+    # of every install that never touched the configuration.
+    if spec.trigger.kind == "schedule" and not allowed.schedule:
+        raise SpecError(f"steward {spec.id}: triggers_allowed does not allow its baseline schedule")
+    if spec.trigger.kind == "event" and spec.trigger.event not in allowed.events:
+        raise SpecError(
+            f"steward {spec.id}: triggers_allowed does not allow its baseline event "
+            f"{spec.trigger.event!r}"
+        )
+
+
 def param_kind(name: str) -> str:
-    """``window``, ``bool`` or ``list``: what parameter ``name`` holds (:data:`PARAM_KINDS`)."""
+    """``window``, ``bool``, ``percent`` or ``list``: what parameter ``name`` holds (:data:`PARAM_KINDS`)."""
 
     return PARAM_KINDS.get(name, "list")
 
@@ -439,22 +561,222 @@ def _canonical_params(spec: StewardSpec, params: Mapping[str, Any]) -> dict[str,
     return out
 
 
-def effective_hash(spec: StewardSpec, params: Mapping[str, Any]) -> str:
-    """What a steward *is* on this install: its spec and its parameter values.
+def effective_hash(
+    spec: StewardSpec, params: Mapping[str, Any], triggers: Any = None
+) -> str:
+    """What a steward *is* on this install: its spec, parameters and triggers.
 
     ``act`` and every standing authorization bind to this, not to the spec hash
     alone (ADR-0072): widening a package allowlist changes what the steward may
     do exactly as editing its spec would, and must unbind what was granted.
     Undeclared keys are ignored, so stray settings cannot move the hash.
+
+    ``triggers`` is the stored trigger configuration (``None`` while none was
+    ever stored). What is hashed is its :func:`effective_triggers` — the
+    configuration within the spec's ceiling — and only when that differs from
+    :func:`baseline_config`: a steward whose triggers are at their baseline
+    hashes exactly as it did before triggers were configurable, so switching a
+    trigger on moves the hash and switching it back restores it.
     """
 
-    canonical = json.dumps(
-        {"spec": spec.spec_hash, "params": _canonical_params(spec, params)},
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-    )
+    fields: dict[str, Any] = {"spec": spec.spec_hash, "params": _canonical_params(spec, params)}
+    effective = effective_triggers(spec, triggers)
+    if effective != baseline_config(spec):
+        fields["triggers"] = effective
+    canonical = json.dumps(fields, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+# -- triggers ------------------------------------------------------------------
+
+
+def is_event_name(name: Any) -> bool:
+    """Whether ``name`` is an event a trigger may carry (:data:`EVENT_RE`)."""
+
+    # ``fullmatch``: ``$`` alone would admit a trailing newline.
+    return isinstance(name, str) and EVENT_RE.fullmatch(name) is not None
+
+
+def allowed_triggers(spec: StewardSpec) -> TriggerSet:
+    """``spec``'s trigger ceiling; for a spec that declares none, its baseline alone."""
+
+    if spec.triggers_allowed is not None:
+        return spec.triggers_allowed
+    if spec.trigger.kind == "schedule":
+        return TriggerSet(schedule=True)
+    if spec.trigger.kind == "event" and spec.trigger.event is not None:
+        return TriggerSet(events=frozenset({spec.trigger.event}))
+    return TriggerSet()
+
+
+def runs_on_ticket(spec: StewardSpec) -> bool:
+    """Whether ``spec`` runs on a ticket's own surface: a new ticket starts it.
+
+    Such a steward is started by ``StewardRunner.on_ticket_created`` alone and
+    keeps the ticket as its surface; it is never run, or previewed, elsewhere.
+    """
+
+    if spec.trigger.kind == "event" and spec.trigger.event == TICKET_CREATED:
+        return True
+    return TICKET_CREATED in allowed_triggers(spec).events
+
+
+def baseline_config(spec: StewardSpec) -> dict[str, Any]:
+    """The trigger configuration ``spec`` runs with while nobody has configured one.
+
+    The same canonical form :func:`validate_triggers` returns, so the two
+    compare equal exactly when they mean the same thing.
+    """
+
+    if spec.trigger.kind == "schedule":
+        return {
+            "schedule": {"min_interval_days": spec.trigger.min_interval_days},
+            "events": [],
+            "command": False,
+        }
+    events = (
+        [{"name": spec.trigger.event, "cooldown_hours": DEFAULT_COOLDOWN_HOURS}]
+        if spec.trigger.kind == "event" and spec.trigger.event is not None
+        else []
+    )
+    return {"schedule": None, "events": events, "command": False}
+
+
+def _nothing() -> dict[str, Any]:
+    """A configuration that switches nothing on: what an unreadable stored one stands for.
+
+    Failing closed here means fewer runs, never more.
+    """
+
+    return {"schedule": None, "events": [], "command": False}
+
+
+def _whole(value: Any, low: int, high: int) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and low <= value <= high
+
+
+def _canonical_triggers(raw: Any) -> dict[str, Any]:
+    """``raw`` read into the canonical form, structure only; else :class:`ValueError`.
+
+    Says nothing about what a steward allows; :func:`validate_triggers` does.
+    """
+
+    if not isinstance(raw, Mapping):
+        raise ValueError("triggers must be an object with schedule, events and command")
+    keys = {"schedule", "events", "command"}
+    unknown = sorted(str(k) for k in raw if k not in keys)
+    if unknown:
+        raise ValueError(f"triggers take no field(s) {', '.join(unknown)}")
+    missing = sorted(k for k in keys if k not in raw)
+    if missing:
+        raise ValueError(f"triggers need {', '.join(missing)}")
+
+    schedule_raw = raw["schedule"]
+    schedule: dict[str, Any] | None
+    if schedule_raw is None:
+        schedule = None
+    elif isinstance(schedule_raw, Mapping):
+        extra = sorted(str(k) for k in schedule_raw if k != "min_interval_days")
+        if extra:
+            raise ValueError(f"schedule takes no field(s) {', '.join(extra)}")
+        interval = schedule_raw.get("min_interval_days")
+        if interval is not None and not _whole(interval, *_INTERVAL_DAYS):
+            raise ValueError(
+                f"schedule.min_interval_days must be null or {_INTERVAL_DAYS[0]} to "
+                f"{_INTERVAL_DAYS[1]} whole days"
+            )
+        schedule = {"min_interval_days": interval}
+    else:
+        raise ValueError("schedule must be null or an object")
+
+    events_raw = raw["events"]
+    if not isinstance(events_raw, (list, tuple)):
+        raise ValueError("events must be a list")
+    if len(events_raw) > _MAX_EVENTS:
+        raise ValueError(f"events take at most {_MAX_EVENTS} entries")
+    events: dict[str, dict[str, Any]] = {}
+    for entry in events_raw:
+        if not isinstance(entry, Mapping):
+            raise ValueError("every event must be an object with a name")
+        extra = sorted(str(k) for k in entry if k not in ("name", "cooldown_hours"))
+        if extra:
+            raise ValueError(f"an event takes no field(s) {', '.join(extra)}")
+        name = entry.get("name")
+        if not is_event_name(name):
+            raise ValueError(f"unknown event {name!r}")
+        cooldown = entry.get("cooldown_hours", DEFAULT_COOLDOWN_HOURS)
+        if not _whole(cooldown, *_COOLDOWN_HOURS):
+            raise ValueError(
+                f"{name}: cooldown_hours must be {_COOLDOWN_HOURS[0]} to "
+                f"{_COOLDOWN_HOURS[1]} whole hours"
+            )
+        if name in events:
+            raise ValueError(f"event {name} is named twice")
+        events[name] = {"name": name, "cooldown_hours": cooldown}
+
+    command = raw["command"]
+    if not isinstance(command, bool):
+        raise ValueError("command must be true or false")
+    return {
+        "schedule": schedule,
+        "events": [events[name] for name in sorted(events)],
+        "command": command,
+    }
+
+
+def validate_triggers(spec: StewardSpec, raw: Any) -> dict[str, Any]:
+    """``raw`` checked against what ``spec`` allows, in canonical form; else :class:`ValueError`.
+
+    The canonical form: ``schedule`` is ``null`` or ``{min_interval_days}``
+    (``null`` or 1-366); ``events`` a list of ``{name, cooldown_hours}``
+    (1-168, default 24), sorted by name, each once; ``command`` a boolean.
+    Every field is required and no other is taken. Refused: a schedule on a
+    spec without a ``window`` parameter, anything the spec's
+    :class:`TriggerSet` does not allow, and any difference from
+    :func:`baseline_config` on a spec whose triggers are not editable.
+    """
+
+    config = _canonical_triggers(raw)
+    allowed = allowed_triggers(spec)
+    if config["schedule"] is not None:
+        if "window" not in spec.params:
+            raise ValueError(f"steward {spec.id} has no maintenance window to run on a schedule")
+        if not allowed.schedule:
+            raise ValueError(f"steward {spec.id} may not run on a schedule")
+    refused = [e["name"] for e in config["events"] if e["name"] not in allowed.events]
+    if refused:
+        raise ValueError(f"steward {spec.id} may not be started by {', '.join(refused)}")
+    if config["command"] and not allowed.command:
+        raise ValueError(f"steward {spec.id} may not be started by command")
+    if not allowed.editable and config != baseline_config(spec):
+        raise ValueError(f"steward {spec.id}'s triggers are fixed by its spec")
+    return config
+
+
+def effective_triggers(spec: StewardSpec, stored: Any) -> dict[str, Any]:
+    """The trigger configuration in force: ``stored`` within ``spec``'s ceiling.
+
+    ``None`` (nothing stored) is :func:`baseline_config`; so is anything on a
+    spec whose triggers are not editable. A stored configuration that cannot be
+    read switches nothing on. Entries the ceiling no longer allows — a release
+    narrowed it — are dropped, so the configuration in force (and the hash it
+    feeds) follows the ceiling without anyone writing it again.
+    """
+
+    allowed = allowed_triggers(spec)
+    if stored is None or not allowed.editable:
+        config = baseline_config(spec)
+    else:
+        try:
+            config = _canonical_triggers(stored)
+        except ValueError:
+            config = _nothing()
+    schedule = config["schedule"] if allowed.schedule and "window" in spec.params else None
+    return {
+        "schedule": schedule,
+        "events": [dict(e) for e in config["events"] if e["name"] in allowed.events],
+        "command": bool(config["command"] and allowed.command),
+    }
 
 
 def resolve(spec: StewardSpec, params: Mapping[str, Any]) -> StewardSpec:

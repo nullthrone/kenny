@@ -39,7 +39,7 @@ INSTALLER = StewardSpec(
     title="Installer",
     description="Installs what the household allowed.",
     prompt="You install the packages this household allowed, nothing else.",
-    trigger=Trigger(kind="on_demand"),
+    trigger=Trigger(kind="event", event="alert:change"),
     tools=frozenset({"winget_list", "winget_install"}),
     constraints=(ArgConstraint("winget_install", "id", param="packages"),),
     params=("packages",),

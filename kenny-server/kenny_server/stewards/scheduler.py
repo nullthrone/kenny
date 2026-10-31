@@ -45,10 +45,14 @@ something it did not confirm. Refusals that are an outcome rather than a fault
 — the steward's ``disabled`` kill switch, its ``blocked`` guard, a ``paused``
 game session — never count, and a run that was interrupted (a graceful
 shutdown or a restart, :data:`~kenny_server.stewards.store.INTERRUPTED_ERROR`)
-is neutral: it neither counts nor breaks a streak.
+is neutral: it neither counts nor breaks a streak. The breaker, and the run
+readers above, are the runner's (:meth:`StewardRunner.maybe_trip`): event-started
+runs count toward it as well, so it is decided in one place.
 
 **Preconditions, before any run.** A host that is offline, or whose OS cannot
-serve a tool the steward names, is skipped. A steward whose ``require_idle``
+serve a tool the steward names, is skipped. A precondition the spec declares
+(:meth:`StewardRunner.precondition_refusal`) is asked next, for a server-only
+run too. A steward whose ``require_idle``
 parameter is not ``false`` asks the host itself — ``remotehelp_status``, called
 here as ``steward:<id>``, not by the model — whether somebody is signed in, and
 skips the host unless the answer is a clear *no*: a failed check is "do not
@@ -68,9 +72,19 @@ from typing import Any
 
 from ..tools import CAPABILITY_TOOLS, supports_tool
 from ..webfilter import CATEGORY_KEYS, make_window, schedule_state
-from .runner import StewardRunner
+from .runner import (
+    BENIGN_REFUSALS,
+    BREAKER_ACTOR,
+    BREAKER_THRESHOLD,
+    StewardRunner,
+    halts,
+    interrupted,
+    made_change,
+    run_failed,
+    stops_canary,
+)
 from .spec import StewardSpec, resolve
-from .store import INTERRUPTED_ERROR, StewardRun
+from .store import StewardRun
 
 logger = logging.getLogger("kenny.stewards.scheduler")
 
@@ -101,23 +115,6 @@ MIN_INTERVAL_S = 60
 #: occurrence it belongs to (UTC, ISO-8601): one occurrence, one trigger.
 SCHEDULE_TRIGGER_PREFIX = "schedule:"
 
-#: Consecutive failed runs of one steward that move it back to ``shadow``.
-BREAKER_THRESHOLD = 3
-
-#: Who the circuit breaker acts as when it demotes a steward.
-BREAKER_ACTOR = "system:circuit-breaker"
-
-#: Error codes of a change that was *refused*, not one that broke: the steward's
-#: remote-control kill switch (``disabled``), its deterministic safety guard
-#: (``blocked``) and a game-scoped pause (``paused``). An outcome to read, not
-#: a failure to count.
-BENIGN_REFUSALS: frozenset[str] = frozenset({"disabled", "blocked", "paused"})
-
-#: The verdicts after which a run that changed something lets the next host go
-#: ahead: the run says it acted and checked. Any other verdict, or none, leaves
-#: the change unconfirmed.
-_CONFIRMING_VERDICTS: frozenset[str] = frozenset({"acted"})
-
 #: Run statuses that mean "this host has had its run for this occurrence".
 _DONE_STATUSES: frozenset[str] = frozenset({"running", "completed", "failed"})
 
@@ -143,54 +140,6 @@ class Outcome:
     kind: str
     detail: str = ""
     run: StewardRun | None = None
-
-
-# -- reading a finished run ----------------------------------------------------
-
-
-def interrupted(run: StewardRun) -> bool:
-    """Whether ``run`` was cut short by a shutdown or a restart, not by its own fault."""
-
-    return run.status == "failed" and run.error == INTERRUPTED_ERROR
-
-
-def run_failed(run: StewardRun) -> bool:
-    """Whether ``run`` counts as a failure.
-
-    ``failed`` outright, or a change it made that errored for any reason other
-    than a refusal that is an outcome (:data:`BENIGN_REFUSALS`). A run a
-    shutdown or restart interrupted is not the steward's fault and is not one.
-    """
-
-    if run.status == "failed":
-        return not interrupted(run)
-    if run.status != "completed":
-        return False
-    return any(
-        a.get("ok") is False and a.get("code") not in BENIGN_REFUSALS for a in run.actions
-    )
-
-
-def made_change(run: StewardRun) -> bool:
-    """Whether ``run`` changed something: an action the gate allowed that did not fail."""
-
-    return any(a.get("ok") is not False for a in run.actions)
-
-
-def halts(run: StewardRun) -> bool:
-    """Whether ``run`` changed something and did not confirm it (any verdict but ``acted``)."""
-
-    return made_change(run) and run.verdict not in _CONFIRMING_VERDICTS
-
-
-def stops_canary(run: StewardRun) -> bool:
-    """Whether the hosts after ``run`` must wait for a person.
-
-    Also what the circuit breaker counts, unless the run was
-    :func:`interrupted`.
-    """
-
-    return run_failed(run) or halts(run)
 
 
 # -- the host ------------------------------------------------------------------
@@ -439,16 +388,22 @@ class StewardScheduler:
     ) -> str | None:
         """Why ``host`` must not be run on now, or ``None``.
 
-        A server-only run (``host`` ``None``) has no machine to be ready.
+        A server-only run (``host`` ``None``) has no machine to be ready; the
+        spec's preconditions are still asked.
         """
 
         if host is None:
-            return None
+            return await self.runner.precondition_refusal(spec, None, params)
         agent = self.executor.registry.get(host)
         if agent is None or not agent.online:
             return "the machine is offline"
         if not host_supports(spec, getattr(agent, "os", None)):
             return f"this steward does not run on {getattr(agent, 'os', 'this')} machines"
+        # Before the idle check: a precondition is the server's own records,
+        # the idle check a call to the host.
+        refused = await self.runner.precondition_refusal(spec, host, params)
+        if refused is not None:
+            return refused
         if "require_idle" in spec.params and _idle_required(params):
             return await self._not_idle(spec, host)
         return None
@@ -515,43 +470,11 @@ class StewardScheduler:
     async def _maybe_trip(self, spec: StewardSpec) -> bool:
         """Move ``spec`` to ``shadow`` after N consecutive canary stops while in ``act``.
 
-        Skipped, running and interrupted runs are neutral: passed over, never
-        counted, never ending a streak.
+        The runner's breaker (:meth:`StewardRunner.maybe_trip`), with this
+        scheduler's threshold.
         """
 
-        streak = 0
-        # Scheduled runs only: a preview is a person's one-off look in shadow;
-        # it neither counts toward the streak nor ends it.
-        for run in await self._history(spec):  # newest first
-            if run.status in ("skipped", "running") or interrupted(run):
-                continue
-            if not stops_canary(run):
-                break
-            streak += 1
-        if streak < self._breaker_threshold:
-            return False
-        if await self.runner.mode_of(spec.id) != "act":
-            return False
-        await self.runner.set_mode(spec.id, "shadow", actor=BREAKER_ACTOR)
-        message = (
-            f"steward {spec.id}: {streak} runs in a row failed or left a change unconfirmed; "
-            "moved back to shadow by the circuit breaker"
-        )
-        logger.warning(message)
-        event_store = getattr(self.runner, "event_store", None)
-        if event_store is not None:
-            try:
-                await event_store.insert_log(
-                    source="server",
-                    at=self._now().isoformat(),
-                    level="warning",
-                    target=logger.name,
-                    message=message,
-                    fields={"steward": spec.id, "failed_in_a_row": streak, "actor": BREAKER_ACTOR},
-                )
-            except Exception:  # noqa: BLE001 - the demotion stands; losing its record must not undo it
-                logger.warning("failed to record the circuit breaker for %s", spec.id, exc_info=True)
-        return True
+        return await self.runner.maybe_trip(spec.id, threshold=self._breaker_threshold)
 
 
 def _trigger(end: datetime) -> str:

@@ -7,14 +7,16 @@ stores in :mod:`kenny_server.store` (own
 under :func:`~kenny_server.store.write_lock`).
 
 * ``steward_settings`` — per steward id: the operator's chosen mode, the effective
-  hash ``act`` was chosen at (``act_hash``, ADR-0072), and the steward's
-  parameters. A missing row, or an empty ``mode`` (a row that exists only for
-  its parameters), means "mode never chosen"; the caller falls back to the
-  spec's default mode.
+  hash ``act`` was chosen at (``act_hash``, ADR-0072), the steward's
+  parameters and its trigger configuration (``triggers``, ``NULL`` while none
+  was ever stored: the spec's baseline). A missing row, or an empty ``mode`` (a
+  row that exists only for its configuration), means "mode never chosen"; the
+  caller falls back to the spec's default mode.
 * ``steward_runs`` — one row per started run: what it was bound to (the spec
   hash, the effective hash and frozen parameters it ran with, and the evidence
-  its constraints were fed at start), what started
-  it, the mode it ran in, how it ended and what it cost.
+  its constraints were fed at start), what started it and the person who asked
+  for it, if one did (``initiated_by``), the mode it ran in, how it ended and
+  what it cost.
 
 Pure storage. Whether a run may start, and what it may do, is decided elsewhere.
 """
@@ -70,7 +72,8 @@ CREATE TABLE IF NOT EXISTS steward_settings (
     updated_at TEXT NOT NULL,
     updated_by TEXT NOT NULL,
     params     TEXT NOT NULL DEFAULT '{}',
-    act_hash   TEXT
+    act_hash   TEXT,
+    triggers   TEXT
 );
 
 CREATE TABLE IF NOT EXISTS steward_runs (
@@ -96,7 +99,8 @@ CREATE TABLE IF NOT EXISTS steward_runs (
     finished_at           TEXT,
     params                TEXT,
     effective_hash        TEXT,
-    evidence              TEXT
+    evidence              TEXT,
+    initiated_by          TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_steward_runs_steward ON steward_runs (steward_id, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_steward_runs_started ON steward_runs (started_at DESC);
@@ -106,14 +110,23 @@ _RUN_COLUMNS = (
     "id, steward_id, spec_hash, trigger, subject, host_id, mode, status, verdict, summary, "
     "input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, "
     "ticket_id, error, actions, recommendations, started_at, finished_at, "
-    "params, effective_hash, evidence"
+    "params, effective_hash, evidence, initiated_by"
 )
 
 #: Columns added after a table was first shipped, with their DDL; added by
 #: :meth:`StewardStore._migrate` to a database that predates them.
 _MIGRATED_COLUMNS: dict[str, dict[str, str]] = {
-    "steward_settings": {"params": "TEXT NOT NULL DEFAULT '{}'", "act_hash": "TEXT"},
-    "steward_runs": {"params": "TEXT", "effective_hash": "TEXT", "evidence": "TEXT"},
+    "steward_settings": {
+        "params": "TEXT NOT NULL DEFAULT '{}'",
+        "act_hash": "TEXT",
+        "triggers": "TEXT",
+    },
+    "steward_runs": {
+        "params": "TEXT",
+        "effective_hash": "TEXT",
+        "evidence": "TEXT",
+        "initiated_by": "TEXT",
+    },
 }
 
 
@@ -176,6 +189,9 @@ class StewardRun:
     #: evidence-fed constraints (ADR-0072 rule 6), by evidence name, frozen
     #: for the run; ``None`` for a run whose steward takes none.
     evidence: dict[str, list[str]] | None = None
+    #: The person who started the run (a command or a preview), as the audit
+    #: trail names them; ``None`` for a run the server started on its own.
+    initiated_by: str | None = None
 
     @classmethod
     def _from_row(cls, row: aiosqlite.Row) -> StewardRun:
@@ -316,16 +332,60 @@ class StewardStore:
     async def set_params(
         self, steward_id: str, params: Mapping[str, Any], *, actor: str, demote: bool = False
     ) -> str | None:
-        """Store ``params`` for ``steward_id``; returns the mode stored before.
+        """Store ``params`` for ``steward_id``; returns the mode stored before (:meth:`set_config`)."""
 
-        With ``demote``, a steward in ``act`` is dropped to ``shadow`` (and its
-        ``act`` binding cleared) in the same transaction as the write, so no
-        call can see the new parameters while still in ``act``. Validating the
-        values is the caller's job. A row created here carries an empty mode
-        ("never chosen").
+        return await self.set_config(steward_id, params=params, actor=actor, demote=demote)
+
+    # -- triggers ------------------------------------------------------------
+
+    async def get_triggers(self, steward_id: str) -> Any:
+        """``steward_id``'s stored trigger configuration; ``None`` while none was ever stored.
+
+        Returned as stored, unvalidated: ``spec.effective_triggers`` reads it
+        against the spec, and a value it cannot read switches nothing on. A
+        value that is not JSON is returned as ``{}``, which it cannot read.
         """
 
-        payload = json.dumps(dict(params), sort_keys=True, default=str)
+        async with self._conn.execute(
+            "SELECT triggers FROM steward_settings WHERE steward_id = ?", (steward_id,)
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None or row["triggers"] is None:
+            return None
+        try:
+            return json.loads(row["triggers"])
+        except ValueError:
+            return {}
+
+    async def set_config(
+        self,
+        steward_id: str,
+        *,
+        actor: str,
+        params: Mapping[str, Any] | None = None,
+        triggers: Mapping[str, Any] | None = None,
+        demote: bool = False,
+    ) -> str | None:
+        """Store ``params`` and/or ``triggers`` for ``steward_id``; returns the mode stored before.
+
+        Either left ``None`` is left as it is. With ``demote``, a steward in
+        ``act`` is dropped to ``shadow`` (and its ``act`` binding cleared) in
+        the same transaction as the write, so no call can see the new
+        configuration while still in ``act``. Validating the values is the
+        caller's job. A row created here carries an empty mode ("never
+        chosen").
+        """
+
+        columns: dict[str, str] = {}
+        if params is not None:
+            columns["params"] = json.dumps(dict(params), sort_keys=True, default=str)
+        if triggers is not None:
+            columns["triggers"] = json.dumps(dict(triggers), sort_keys=True, default=str)
+        if not columns:
+            raise ValueError("set_config needs params or triggers")
+        names = ", ".join(columns)
+        marks = ", ".join("?" for _ in columns)
+        updates = ", ".join(f"{name}=excluded.{name}" for name in columns)
         async with write_lock():
             await _begin_immediate(self._conn)
             try:
@@ -334,12 +394,13 @@ class StewardStore:
                 ) as cur:
                     row = await cur.fetchone()
                 before = None if row is None or not row["mode"] else str(row["mode"])
+                # Column names are the literals above, never the caller's.
                 await self._conn.execute(
-                    "INSERT INTO steward_settings (steward_id, mode, updated_at, updated_by, params) "
-                    "VALUES (?, '', ?, ?, ?) "
-                    "ON CONFLICT(steward_id) DO UPDATE SET params=excluded.params, "
+                    "INSERT INTO steward_settings (steward_id, mode, updated_at, updated_by, "
+                    f"{names}) VALUES (?, '', ?, ?, {marks}) "
+                    f"ON CONFLICT(steward_id) DO UPDATE SET {updates}, "
                     "updated_at=excluded.updated_at, updated_by=excluded.updated_by",
-                    (steward_id, _now_iso(), actor, payload),
+                    (steward_id, _now_iso(), actor, *columns.values()),
                 )
                 if demote and before == "act":
                     await self._conn.execute(
@@ -368,11 +429,13 @@ class StewardStore:
         params: Mapping[str, Any] | None = None,
         effective_hash: str | None = None,
         evidence: Mapping[str, Sequence[str]] | None = None,
+        initiated_by: str | None = None,
     ) -> StewardRun:
         """Open a run in the ``running`` state and return it.
 
         ``params``, ``effective_hash`` and ``evidence`` are what the run is
-        bound to for its whole life (ADR-0072), stored as given.
+        bound to for its whole life (ADR-0072), stored as given;
+        ``initiated_by`` is the person who asked for the run, if one did.
         """
 
         _check_mode(mode)
@@ -389,8 +452,8 @@ class StewardStore:
             await self._conn.execute(
                 "INSERT INTO steward_runs "
                 "(id, steward_id, spec_hash, trigger, subject, host_id, mode, status, "
-                "ticket_id, started_at, params, effective_hash, evidence) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?)",
+                "ticket_id, started_at, params, effective_hash, evidence, initiated_by) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?)",
                 (
                     run_id,
                     steward_id,
@@ -404,6 +467,7 @@ class StewardStore:
                     params_json,
                     effective_hash,
                     evidence_json,
+                    initiated_by,
                 ),
             )
             await self._conn.commit()
@@ -514,6 +578,60 @@ class StewardStore:
         ) as cur:
             rows = await cur.fetchall()
         return [StewardRun._from_row(row) for row in rows]
+
+    async def runs_with_trigger_prefixes(
+        self, steward_id: str, prefixes: Sequence[str]
+    ) -> list[StewardRun]:
+        """Every run of ``steward_id`` whose ``trigger`` starts with any of ``prefixes``, newest first.
+
+        Selected in SQL, like :meth:`scheduled_runs`, so no number of runs of
+        another kind can push one out. Bounded by run retention.
+        """
+
+        clean = sorted(set(prefixes))
+        if not clean or any(not p or any(ch in p for ch in "%_\\") for p in clean):
+            raise ValueError(f"not plain trigger prefixes: {prefixes!r}")
+        where = " OR ".join("substr(trigger, 1, ?) = ?" for _ in clean)
+        args: list[Any] = [steward_id]
+        for prefix in clean:
+            args += [len(prefix), prefix]
+        async with self._conn.execute(
+            f"SELECT {_RUN_COLUMNS} FROM steward_runs WHERE steward_id = ? AND ({where}) "
+            "ORDER BY started_at DESC, rowid DESC",
+            args,
+        ) as cur:
+            rows = await cur.fetchall()
+        return [StewardRun._from_row(row) for row in rows]
+
+    async def latest_run_started(
+        self,
+        steward_id: str,
+        host_id: str | None,
+        trigger: str,
+        *,
+        include_skipped: bool = False,
+    ) -> datetime | None:
+        """When the newest run of ``steward_id`` on ``host_id`` with exactly ``trigger`` started.
+
+        ``host_id`` ``None`` matches runs on no host. A ``skipped`` run never
+        ran and is left out unless ``include_skipped``. ``None`` when there is
+        no such run.
+        """
+
+        sql = "SELECT MAX(started_at) AS at FROM steward_runs WHERE steward_id = ? AND trigger = ?"
+        args: list[Any] = [steward_id, trigger]
+        if host_id is None:
+            sql += " AND host_id IS NULL"
+        else:
+            sql += " AND host_id = ?"
+            args.append(host_id)
+        if not include_skipped:
+            sql += " AND status != 'skipped'"
+        async with self._conn.execute(sql, args) as cur:
+            row = await cur.fetchone()
+        if row is None or row["at"] is None:
+            return None
+        return datetime.fromisoformat(_normalize_iso(str(row["at"])))
 
     async def count_runs_since(self, steward_id: str, *, prefix: str, since_iso: str) -> int:
         """How many runs of ``steward_id`` with a ``trigger`` starting ``prefix`` began at or after ``since_iso``."""

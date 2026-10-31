@@ -11,7 +11,7 @@ counterpart, and the scheduler does not start a run on a host that cannot serve
 from __future__ import annotations
 
 from ...toolloop import STEWARD_VERDICT_TOOL
-from ..spec import StewardSpec, ArgConstraint, Budget, ToolTimeout, Trigger
+from ..spec import StewardSpec, ArgConstraint, Budget, ToolTimeout, Trigger, TriggerSet
 
 __all__ = ["PATCH"]
 
@@ -52,6 +52,8 @@ PATCH = StewardSpec(
     ),
     prompt=_PROMPT,
     trigger=Trigger(kind="schedule"),
+    # Its window, or a person's command; no event starts it yet.
+    triggers_allowed=TriggerSet(schedule=True, command=True),
     tools=frozenset({"winget_list", "winget_update", STEWARD_VERDICT_TOOL}),
     verdict_tool=STEWARD_VERDICT_TOOL,
     # list, one update per allowed package, the check, the verdict.
