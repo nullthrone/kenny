@@ -1,14 +1,14 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router'
 import { api } from '../api/client'
-import type { FleetResponse } from '../api/types'
+import type { FleetAgent, FleetResponse } from '../api/types'
 import AvailabilityStrip from '../components/AvailabilityStrip/AvailabilityStrip'
 import BinaryBanner from '../components/BinaryBanner/BinaryBanner'
 import EmptyState from '../components/EmptyState/EmptyState'
 import SeverityChip from '../components/SeverityChip/SeverityChip'
 import { severityColor } from '../components/tone'
 import { Monitor, ICON_STROKE_WIDTH } from '../components/icons'
-import { osIcon, osLabel, relativePush } from './fleet/format'
+import { groupByReachability, osIcon, osLabel, relativePush } from './fleet/format'
 import WizardMount from './fleet/WizardMount'
 import styles from './fleet/Fleet.module.css'
 
@@ -45,33 +45,46 @@ export default function Fleet() {
       )}
 
       {data && data.agents.length > 0 && (
-        <div className={styles.grid}>
-          {data.agents.map((h) => {
-            const OsIcon = osIcon(h.os)
-            return (
-              <Link key={h.agent_id} to={`/fleet/${h.agent_id}`} className={`${styles.card} kc-stagger-row`}>
-                <div className={styles.cardTop}>
-                  <span className={styles.dot} style={{ background: severityColor(h.overall) }} />
-                  <span className={styles.hostname}>{h.agent_id}</span>
-                  <span
-                    className={styles.onlineDot}
-                    style={{ background: h.online ? 'var(--ok)' : 'var(--danger)' }}
-                    title={h.online ? 'online' : 'offline'}
-                  />
-                  <OsIcon width={14} height={14} strokeWidth={ICON_STROKE_WIDTH} color="var(--text-faint)" aria-hidden="true" />
-                </div>
-                <SeverityChip severity={h.overall} label={h.severity_label} variant="text" className={styles.sevLabel} />
-                <div className={styles.summary}>{h.summary}</div>
-                <AvailabilityStrip availability={h.availability_7d} />
-                <div className={styles.cardFoot}>
-                  <span>{osLabel(h.os)}</span>
-                  <span>push {relativePush(h.collected_at)}</span>
-                </div>
-              </Link>
-            )
-          })}
-        </div>
+        <>
+          {groupByReachability(data.agents).map((group) => (
+            <section key={group.key} className={styles.group} aria-labelledby={`fleet-group-${group.key}`}>
+              <h2 id={`fleet-group-${group.key}`} className={`kc-caps ${styles.groupHeading}`}>
+                {group.label} · {group.agents.length}
+              </h2>
+              <div className={styles.grid}>
+                {group.agents.map((h) => (
+                  <HostCard key={h.agent_id} host={h} />
+                ))}
+              </div>
+            </section>
+          ))}
+        </>
       )}
     </div>
+  )
+}
+
+function HostCard({ host: h }: { host: FleetAgent }) {
+  const OsIcon = osIcon(h.os)
+  return (
+    <Link to={`/fleet/${h.agent_id}`} className={`${styles.card} kc-stagger-row`}>
+      <div className={styles.cardTop}>
+        <span className={styles.dot} style={{ background: severityColor(h.overall) }} />
+        <span className={styles.hostname}>{h.agent_id}</span>
+        <span
+          className={styles.onlineDot}
+          style={{ background: h.online ? 'var(--ok)' : 'var(--danger)' }}
+          title={h.online ? 'online' : 'offline'}
+        />
+        <OsIcon width={14} height={14} strokeWidth={ICON_STROKE_WIDTH} color="var(--text-faint)" aria-hidden="true" />
+      </div>
+      <SeverityChip severity={h.overall} label={h.severity_label} variant="text" className={styles.sevLabel} />
+      <div className={styles.summary}>{h.summary}</div>
+      <AvailabilityStrip availability={h.availability_7d} />
+      <div className={styles.cardFoot}>
+        <span>{osLabel(h.os)}</span>
+        <span>push {relativePush(h.collected_at)}</span>
+      </div>
+    </Link>
   )
 }

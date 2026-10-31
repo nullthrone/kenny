@@ -1,3 +1,4 @@
+import type { FleetAgent } from '../../api/types'
 import type { LucideIcon } from '../../components/icons'
 import { AppWindow, Server } from '../../components/icons'
 
@@ -34,4 +35,20 @@ export function relativePush(collectedAt: string | null): string {
   if (hours < 24) return `${hours} h`
   const days = Math.round(hours / 24)
   return `${days} d`
+}
+
+export interface ReachabilityGroup {
+  key: 'online' | 'offline'
+  label: string
+  agents: FleetAgent[]
+}
+
+/** Splits the fleet into "Online" and "Offline" (empty groups omitted, online first).
+ * Order within a group is the server's worst-first order, untouched. */
+export function groupByReachability(agents: FleetAgent[]): ReachabilityGroup[] {
+  const groups: ReachabilityGroup[] = [
+    { key: 'online', label: 'Online', agents: agents.filter((a) => a.online) },
+    { key: 'offline', label: 'Offline', agents: agents.filter((a) => !a.online) },
+  ]
+  return groups.filter((g) => g.agents.length > 0)
 }
