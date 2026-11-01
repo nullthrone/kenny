@@ -66,6 +66,7 @@ from ..stewards.builder import (
 )
 from ..stewards.store import SpecConflict
 from ..stewards import commands as steward_commands
+from ..stewards.callbacks import CallbackError
 from ..stewards.policy import run_target_problem
 from ..stewards.runner import HashMismatch, PreviewRefused
 from ..stewards.spec import allowed_triggers, baseline_config
@@ -331,6 +332,7 @@ def build_api_routes(
     presence: Any = None,
     hw_history: Any = None,
     stewards: Any = None,
+    ticket_callbacks: Any = None,
 ) -> list[Route]:
     """Build the dashboard's static + JSON routes.
 
@@ -1788,6 +1790,85 @@ def build_api_routes(
             }
         )
 
+    # Ticket callbacks (ADR-0075): a command run armed on a ticket for its
+    # machine's next push. Reading is operator+; arming is a superuser at the
+    # dashboard, as a command run is; withdrawing is any superuser.
+
+    _CALLBACKS_UNAVAILABLE = {"error": "ticket callbacks not configured"}
+
+    def _trail_actor(request: Request) -> str:
+        principal = principal_of(request)
+        user_id = getattr(principal, "user_id", None)
+        return f"operator:{user_id}" if user_id is not None else "operator"
+
+    def _callback_error(exc: CallbackError) -> JSONResponse:
+        return JSONResponse({"error": str(exc), "code": exc.code}, status_code=exc.status)
+
+    async def api_ticket_callback(request: Request) -> JSONResponse:
+        """The ticket's callback (live, else the latest) and the stewards it could name."""
+
+        if ticket_callbacks is None:
+            return JSONResponse(_CALLBACKS_UNAVAILABLE, status_code=503)
+        person, role = _caller(request)
+        try:
+            view = await ticket_callbacks.view(
+                request.path_params["tid"], person=person, role=role
+            )
+        except CallbackError as exc:
+            return _callback_error(exc)
+        return JSONResponse(view)
+
+    async def api_ticket_callback_arm(request: Request) -> JSONResponse:
+        """Arm a steward on the ticket (``{"steward_id", "effective_hash"}``); 201 with the row."""
+
+        if ticket_callbacks is None:
+            return JSONResponse(_CALLBACKS_UNAVAILABLE, status_code=503)
+        person, role = _caller(request)
+        refused = steward_commands.caller_refusal(person=person, role=role)
+        if refused is not None:
+            return JSONResponse({"error": str(refused), "code": refused.code},
+                                status_code=refused.status)
+        cross_site = _browser_write_refusal(request)
+        if cross_site is not None:
+            return cross_site
+        try:
+            body = json.loads(await request.body() or b"{}")
+        except ValueError:
+            return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        if not isinstance(body, dict) or not isinstance(body.get("steward_id"), str):
+            return JSONResponse({"error": "steward_id is required"}, status_code=400)
+        try:
+            callback = await ticket_callbacks.arm(
+                request.path_params["tid"],
+                steward_id=body["steward_id"],
+                effective_hash=body.get("effective_hash"),
+                username=_actor_of(request) or "unknown",
+                actor=_trail_actor(request),
+                person=person,
+                role=role,
+            )
+        except CallbackError as exc:
+            return _callback_error(exc)
+        return JSONResponse(callback.to_public(), status_code=201)
+
+    async def api_ticket_callback_disarm(request: Request) -> JSONResponse:
+        """Withdraw the ticket's live callback; a run already started is not recalled."""
+
+        if ticket_callbacks is None:
+            return JSONResponse(_CALLBACKS_UNAVAILABLE, status_code=503)
+        cross_site = _browser_write_refusal(request, needs_json=False)
+        if cross_site is not None:
+            return cross_site
+        try:
+            callback = await ticket_callbacks.disarm(
+                request.path_params["tid"],
+                username=_actor_of(request) or "unknown",
+                actor=_trail_actor(request),
+            )
+        except CallbackError as exc:
+            return _callback_error(exc)
+        return JSONResponse(callback.to_public())
+
     def _reviewed_hash(body: Any) -> tuple[str | None, JSONResponse | None]:
         """The ``effective_hash`` a consent write names, or its 400."""
 
@@ -2965,6 +3046,17 @@ def build_api_routes(
         Route(
             "/api/reliability/suppressions/{rule_id}",
             guard(api_suppression_remove, **op),
+            methods=["DELETE"],
+        ),
+        Route("/api/tickets/{tid}/callback", guard(api_ticket_callback, **op)),
+        Route(
+            "/api/tickets/{tid}/callback",
+            guard(api_ticket_callback_arm, **su),
+            methods=["POST"],
+        ),
+        Route(
+            "/api/tickets/{tid}/callback",
+            guard(api_ticket_callback_disarm, **su),
             methods=["DELETE"],
         ),
         Route("/api/stewards", guard(api_stewards_list, **op)),

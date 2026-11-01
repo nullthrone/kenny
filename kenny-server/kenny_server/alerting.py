@@ -361,6 +361,29 @@ class AlertEngine:
                 logger.exception("re-evaluation after an operator change failed for %s", aid)
         return sent
 
+    def _agent_os(self, agent_id: str) -> str:
+        return getattr(self._registry.get(agent_id), "os", "windows")
+
+    async def section_statuses(
+        self, agent_id: str, now: datetime | None = None
+    ) -> tuple[str, dict[str, str]] | None:
+        """``(received_at, {section: status})`` of the host's latest snapshot, or ``None``.
+
+        The verdict this engine's health pass reaches, by the same evaluation,
+        for a caller that must judge a host exactly as alerting does (a ticket
+        callback deciding whether a run fixed its ticket, ADR-0075).
+        """
+
+        latest = await self._store.latest(agent_id)
+        if latest is None:
+            return None
+        evaluation = evaluate_snapshot(
+            latest["snapshot"], agent_os=self._agent_os(agent_id),
+            now=now or datetime.now(timezone.utc),
+        )
+        statuses = {name: str(sec.get("status")) for name, sec in evaluation["sections"].items()}
+        return str(latest.get("received_at") or ""), statuses
+
     async def _evaluate_agent(
         self, agent_id: str, now: datetime, *, operator_initiated: bool = False
     ) -> list[Notification]:
@@ -488,8 +511,9 @@ class AlertEngine:
         *,
         operator_initiated: bool = False,
     ) -> list[Notification]:
-        agent_os = getattr(self._registry.get(agent_id), "os", "windows")
-        evaluation = evaluate_snapshot(latest["snapshot"], agent_os=agent_os, now=now)
+        evaluation = evaluate_snapshot(
+            latest["snapshot"], agent_os=self._agent_os(agent_id), now=now
+        )
         alert_lines: list[str] = []
         recovery_lines: list[str] = []
         alert_worst = "ok"
@@ -954,12 +978,37 @@ class AlertEngine:
         since = _parse_ts(row.get("since"))
         return last is not None and (since is None or last >= since)
 
-    async def _dispatch(self, note: Notification, now: datetime) -> None:
+    async def announce(self, note: Notification, now: datetime | None = None) -> None:
+        """Record ``note`` and deliver it on the channels, as nothing else.
+
+        For a notification no alert transition raised -- a ticket callback that
+        could not fix its ticket, say. It is routed like any other (ADR-0067),
+        but it is never put to the ticket rules and never starts a steward: a
+        report about a steward's work must not open work or start the next run
+        (ADR-0071 rule 6). Best-effort, like every delivery here.
+        """
+
+        now = now or datetime.now(timezone.utc)
+        try:
+            await self._record(note, now)
+        except Exception:  # noqa: BLE001 - delivery does not wait on the record
+            logger.exception("recording %r failed", note.title)
+        for notifier in self._notifiers:
+            try:
+                await self._deliver(notifier, note, now)
+            except Exception:  # noqa: BLE001 - one dead channel must not stop the rest
+                logger.exception(
+                    "delivery via %s failed", getattr(notifier, "name", type(notifier).__name__)
+                )
+
+    async def _record(self, note: Notification, now: datetime) -> Any:
+        """Write ``note`` to the events table; returns the alert row's id."""
+
         if note.kind in ("recovery", "digest"):
             level = "info"
         else:
             level = "crit" if note.priority in ("high", "urgent") else "warn"
-        event_id = await self._event_store.insert_alert(
+        return await self._event_store.insert_alert(
             agent_id=note.agent_id,
             message=f"{note.title}\n{note.body}",
             level=level,
@@ -974,6 +1023,9 @@ class AlertEngine:
             },
             at=now.isoformat(),
         )
+
+    async def _dispatch(self, note: Notification, now: datetime) -> None:
+        event_id = await self._record(note, now)
         # Each channel is isolated: ``Notifier.send`` swallows its own transport
         # errors (ADR-0027), and this guard covers everything else a channel
         # could throw — so one misconfigured or misbehaving channel can never

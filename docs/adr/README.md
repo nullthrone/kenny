@@ -92,3 +92,4 @@ kind of record kenny keeps. What qualifies: *When (not) to write an ADR* in the 
 | [0072](0072-standing-authorizations-consent-given-ahead.md) | Standing authorizations: autonomy is consent given ahead, never a tier | accepted |
 | [0073](0073-steward-triggers-are-configuration.md) | Steward triggers are configuration; a person may start one now | accepted |
 | [0074](0074-stewards-as-data.md) | Stewards as data: the dashboard composes from what code provides | accepted |
+| [0075](0075-ticket-callbacks-a-command-given-ahead.md) | Ticket callbacks: a command given ahead, judged by the server | accepted |

@@ -25,6 +25,7 @@ import pytest
 
 import kenny_server
 from kenny_server.stewards.authorizations import AuthorizationStore
+from kenny_server.stewards.callbacks import CallbackStore
 from kenny_server.stewards.store import StewardStore
 from kenny_server.discord_identity import DiscordIdentityStore
 from kenny_server.keystore import KeyStore
@@ -76,6 +77,7 @@ ALL_STORES: list[tuple[type, dict]] = [
     (DiscordIdentityStore, {}),
     (StewardStore, {}),
     (AuthorizationStore, {}),
+    (CallbackStore, {}),
 ]
 
 

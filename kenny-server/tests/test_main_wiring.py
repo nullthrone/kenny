@@ -708,8 +708,11 @@ def test_store_annotators_are_wired_in_order(tmp_path) -> None:
         app.state.suppression.mark.__func__,
         event_categories.mark,
     ]
-    hook = app.state.tunnel.after_insert
-    assert isinstance(hook, partial) and hook.func is event_categories.schedule_classification
+    hooks = app.state.tunnel.after_insert.hooks
+    classify, callbacks = hooks
+    assert isinstance(classify, partial) and classify.func is event_categories.schedule_classification
+    # Ticket callbacks (ADR-0075) start on the same push, after classification.
+    assert callbacks == app.state.ticket_callbacks.on_telemetry
     assert app.state.classification_store is not None
 
 
