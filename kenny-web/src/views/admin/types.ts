@@ -477,6 +477,8 @@ export interface BuilderTool {
 /** `GET /api/stewards/builder/catalog`: what a built steward may be made of. */
 export interface BuilderCatalog {
   tools: BuilderTool[]
+  /** Tools left out because no constraint can bind one of their arguments (a secret, a non-string), with why. */
+  unbindable?: { name: string; reason: string }[]
   verdict_tool: string
   verdicts: string[]
   param_kinds: Record<string, StewardParamKind>

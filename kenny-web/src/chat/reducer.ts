@@ -348,6 +348,7 @@ export function applyChatEvent(state: ChatSessionState, event: ChatEvent): ChatS
         draft: event.draft,
         reason: event.reason,
         toolClasses: event.tool_classes ?? {},
+        sensitiveTools: event.sensitive_tools ?? [],
       })
     }
 

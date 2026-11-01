@@ -14,6 +14,7 @@ assumed.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -23,13 +24,16 @@ from kenny_server.stewards.authorizations import AuthorizationStore, NEVER_AUTHO
 from kenny_server.stewards.builder import (
     BUILDER_TOOLS,
     LIMITS,
+    _WIRE_TYPES,
     BuilderError,
+    arg_refusal,
     build_from_data,
     builder_catalog,
     clone_data,
     spec_from_data,
     spec_to_data,
     tool_refusal,
+    unbindable_tools,
     validate_builder,
 )
 from kenny_server.stewards.catalog import CATALOG, TICKET_SURFACE_TOOLS, StewardCatalog
@@ -40,6 +44,7 @@ from kenny_server.stewards.spec import TriggerSet
 from kenny_server.stewards.store import SpecConflict
 from kenny_server.ticket_assistant import FLEET_WIDE_TOOLS
 from kenny_server.tool_classes import NORMAL_CHANGE, SENSITIVE_TOOLS
+from kenny_server.tools import CAPABILITY_TOOLS
 from kenny_server.toolloop import COPILOT_STEWARD_TOOLS, STEWARD_ONLY_TOOLS, STEWARD_VERDICT_TOOL
 
 from test_chat import FakeAnthropic
@@ -517,3 +522,189 @@ async def test_a_built_steward_runs_through_the_real_gate(world) -> None:
     assert acted is not None and acted.mode == "act"
     assert world.sent == [{"agent_id": HOST, "tool": "winget_install", "args": {"id": SEVENZIP}}]
     assert [(a["args"], a["authorization_id"]) for a in acted.actions] == [({"id": SEVENZIP}, grant.id)]
+
+
+# -- what a constraint can never bind -------------------------------------------------
+
+
+def test_a_secret_argument_is_never_a_constraint_literal_or_parameter() -> None:
+    for how in ({"allowed": ["Hunter2!secret"]}, {"param": "passwords"}):
+        data = _data(
+            tools=["account_create"],
+            constraints=[
+                {"tool": "account_create", "arg": "name", "allowed": ["kid2"]},
+                {"tool": "account_create", "arg": "password", **how},
+            ],
+            params=["window", "hosts", "passwords"],
+        )
+        errors = _errors(data)
+        assert "Hunter2!secret" not in str(errors)
+        # Refused as a tool before its constraints are even read.
+        assert any(e["field"] == "tools[0]" and "password" in e["error"] for e in errors)
+
+
+def test_a_secret_constraint_on_an_otherwise_bindable_tool_is_refused(monkeypatch) -> None:
+    # No offered tool has an optional secret argument today; one that gains it must not be bindable.
+    monkeypatch.setitem(CAPABILITY_TOOLS, "winget_install", ["id", "api_token?"])
+    data = _data(
+        constraints=[
+            {"tool": "winget_install", "arg": "id", "param": "packages"},
+            {"tool": "winget_install", "arg": "api_token", "allowed": ["Hunter2!secret"]},
+        ]
+    )
+    errors = _errors(data)
+    assert {"field": "constraints[1].arg", "error": "api_token is a secret; a constraint would store and show it"} in errors
+    assert "Hunter2!secret" not in str(errors)
+
+
+def test_a_tool_with_a_secret_required_argument_is_not_offered() -> None:
+    assert "account_create" not in BUILDER_TOOLS
+    assert "secret" in (tool_refusal("account_create") or "")
+    shown = builder_catalog(_Registry())
+    assert "account_create" not in {t["name"] for t in shown["tools"]}
+    reasons = {u["name"]: u["reason"] for u in shown["unbindable"]}
+    assert "secret" in reasons["account_create"]
+    # What shipped stewards and the editor use today stays offered.
+    for kept in ("winget_install", "winget_uninstall", "fs_cleanup", "service_restart", "net_adapter_reset"):
+        assert kept in BUILDER_TOOLS and kept not in reasons
+
+
+def test_arguments_the_gate_can_never_satisfy_cannot_be_constrained() -> None:
+    assert arg_refusal("account_set_admin", "admin") and arg_refusal("webfilter_apply", "domains")
+    assert arg_refusal("password_policy_set", "min_length") and arg_refusal("diag_eventlog", "count")
+    assert arg_refusal("winget_install", "id") is None
+    # The booleans, integers and lists of the contract: tools that require one are not offered.
+    for tool in (
+        "account_set_admin", "account_set_enabled", "account_delete",
+        "account_set_logon_rights", "webfilter_apply", "password_policy_set",
+    ):
+        assert tool not in BUILDER_TOOLS and tool in {u["name"] for u in unbindable_tools()}
+    # A read-only tool needs no binding, so its non-string argument is no obstacle.
+    assert "diag_eventlog" in BUILDER_TOOLS
+    shown = next(t for t in builder_catalog(_Registry())["tools"] if t["name"] == "diag_eventlog")
+    assert {"name": "count", "type": "integer", "required": True, "bindable": False} in shown["args"]
+
+
+def test_the_wire_types_name_arguments_the_tools_declare() -> None:
+    for tool, args in _WIRE_TYPES.items():
+        declared = {a.rstrip("?") for a in CAPABILITY_TOOLS[tool]}
+        assert set(args) <= declared, tool
+
+
+def test_a_constraint_on_the_verdict_tool_is_refused() -> None:
+    data = _data(
+        tools=["winget_list"],
+        constraints=[{"tool": STEWARD_VERDICT_TOOL, "arg": "verdict", "allowed": ["clean"]}],
+        params=["window", "hosts"],
+    )
+    assert "constraints[0].tool" in _fields(data)
+
+
+def test_a_constraint_on_a_non_string_argument_is_refused() -> None:
+    data = _data(
+        tools=["account_session_action"],
+        constraints=[
+            {"tool": "account_session_action", "arg": "principal", "allowed": ["kid"]},
+            {"tool": "account_session_action", "arg": "action", "allowed": ["lock"]},
+            {"tool": "account_session_action", "arg": "warn_seconds", "allowed": ["30"]},
+            {"tool": "account_session_action", "arg": "timeout_s", "allowed": ["5"]},
+        ],
+        params=["window", "hosts"],
+    )
+    assert _fields(data) == {"constraints[2].arg", "constraints[3].arg"}
+    assert any("not a string" in e["error"] for e in _errors(data) if e["field"] == "constraints[2].arg")
+
+
+# -- stored rows that are not built stewards' --------------------------------------------
+
+
+@pytest.mark.parametrize("bad_id", ["patch", "not_built", "custom_", "Custom_x"])
+async def test_a_stored_row_with_a_non_built_id_never_stops_start_up(world, bad_id) -> None:
+    # Written straight to the table: the store itself refuses these ids (below).
+    await world.steward_store._conn.execute(  # noqa: SLF001 - simulate a damaged database
+        "INSERT INTO steward_specs (id, spec, version, source, created_at, created_by, updated_at, updated_by) "
+        "VALUES (?, '{}', 1, 'blank', 'x', 'a', 'x', 'a')",
+        (bad_id,),
+    )
+    await world.steward_store._conn.commit()  # noqa: SLF001
+    before = CATALOG["patch"]
+    runner = _runner(world)
+    await runner.create_built(_data(), actor="admin")
+    second = _runner(world)
+    await second.startup()
+    assert ID in second.catalog and bad_id not in second.catalog.invalid()
+    assert second.catalog["patch"] is before and "patch" not in second.catalog.invalid()
+    assert bad_id not in {s["id"] for s in await second.overview() if s.get("invalid")}
+    logs = await world.event_store.query(kind="log", limit=200)
+    assert any(bad_id in row["message"] and "not a built" in row["message"] for row in logs)
+
+
+@pytest.mark.parametrize("bad_id", ["patch", "not_built", "custom_", "custom_X"])
+async def test_the_store_refuses_an_id_that_is_not_a_built_steward_s(world, bad_id) -> None:
+    with pytest.raises(ValueError):
+        await world.steward_store.create_built_spec(
+            bad_id, {"id": bad_id}, version=1, source="blank", actor="admin"
+        )
+    assert await world.steward_store.list_built_specs() == []
+
+
+# -- the consent methods read the steward under the lock ----------------------------------
+
+
+async def _held(runner: StewardRunner, call: Any, change: Any) -> Any:
+    """Start ``call``, let it read the steward, make ``change`` while it waits for the lock, release."""
+
+    async with runner._consent:  # noqa: SLF001
+        task = asyncio.ensure_future(call())
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert not task.done()  # parked on the lock
+        change()
+    return await task
+
+
+def _params_call(runner: StewardRunner) -> Any:
+    return lambda: runner.set_params(ID, {"hosts": [HOST], "packages": [SEVENZIP]}, actor="admin")
+
+
+def _calls(runner: StewardRunner) -> dict[str, Any]:
+    live = "0" * 64
+    return {
+        "set_params": _params_call(runner),
+        "set_mode": lambda: runner.set_mode(ID, "shadow", actor="admin"),
+        "set_triggers": lambda: runner.set_triggers(
+            ID, {"schedule": {"min_interval_days": None}, "events": [], "command": True},
+            actor="admin",
+        ),
+        "grant": lambda: runner.grant(
+            ID, tool="winget_install", scope=[HOST], max_attempts_per_day=1,
+            expires_at=NOW + timedelta(days=1), actor="admin", effective_hash=live,
+        ),
+    }
+
+
+@pytest.mark.parametrize("method", ["set_params", "set_mode", "set_triggers", "grant"])
+async def test_a_consent_change_refuses_a_steward_deleted_while_it_waited(world, method) -> None:
+    runner = _runner(world)
+    await runner.create_built(_data(), actor="admin")
+    with pytest.raises(KeyError):
+        await _held(runner, _calls(runner)[method], lambda: runner.catalog.remove_built(ID))
+    assert await world.steward_store.get_params(ID) == {}
+    assert [a for a in await world.authorizations.list(ID)] == []  # type: ignore[attr-defined]
+
+
+async def test_set_params_validates_against_the_spec_in_force_when_it_holds_the_lock(world) -> None:
+    runner = _runner(world)
+    await runner.create_built(_data(), actor="admin")
+    old = runner.catalog[ID]
+    # A save in between: the new version takes no ``packages`` parameter.
+    newer = build_from_data(
+        _data(tools=["winget_list"], constraints=[], params=["window", "hosts"]),
+        _Registry(), version=2, steward_id=ID,
+    )
+    with pytest.raises(ValueError):
+        await _held(
+            runner, _params_call(runner), lambda: runner.catalog.put_built(newer, runner.catalog.built_meta(ID) or {})
+        )
+    assert runner.catalog[ID] is newer and old is not newer
+    assert await world.steward_store.get_params(ID) == {}

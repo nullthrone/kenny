@@ -10,6 +10,8 @@ export interface StewardDraftCardProps {
   reason: string
   /** The server's tier of each tool the draft names. */
   toolClasses: Record<string, string>
+  /** The server's list of the draft's tools that read private data. */
+  sensitiveTools?: string[]
 }
 
 const TIER_ORDER = ['read_only', 'standard_change', 'normal_change']
@@ -24,6 +26,12 @@ function constraintText(c: StewardDraft['constraints'][number]): string {
   return `${c.tool}.${c.arg} may only be ${bound}`
 }
 
+function startText(trigger: StewardDraft['trigger']): string {
+  if (trigger.kind === 'event') return `when ${trigger.event ?? 'an event'} is raised`
+  const every = trigger.min_interval_days
+  return every ? `on its schedule, at most every ${every} days` : 'on its schedule, in every window'
+}
+
 /**
  * A steward kenny drafted, as a card to read and, if it looks right, take to the editor.
  *
@@ -35,7 +43,7 @@ function constraintText(c: StewardDraft['constraints'][number]): string {
  * Every string on the card -- the prompt included -- came from the model, so it is
  * rendered as escaped text and nothing in it is acted on.
  */
-export default function StewardDraftCard({ draft, reason, toolClasses }: StewardDraftCardProps) {
+export default function StewardDraftCard({ draft, reason, toolClasses, sensitiveTools = [] }: StewardDraftCardProps) {
   const [error, setError] = useState<string | null>(null)
 
   const byTier = new Map<string, string[]>()
@@ -48,6 +56,7 @@ export default function StewardDraftCard({ draft, reason, toolClasses }: Steward
     const ib = TIER_ORDER.indexOf(b)
     return (ia === -1 ? TIER_ORDER.length : ia) - (ib === -1 ? TIER_ORDER.length : ib)
   })
+  const sensitive = draft.tools.filter((t) => sensitiveTools.includes(t))
   const allowed = draft.triggers_allowed
   const ceiling = [
     allowed.schedule ? 'schedule' : null,
@@ -88,7 +97,10 @@ export default function StewardDraftCard({ draft, reason, toolClasses }: Steward
             {tiers.map((tier) => (
               <li key={tier}>
                 {TIER_LABEL[tier] ?? tier}: {(byTier.get(tier) ?? []).map((t) => (
-                  <code key={t}>{t} </code>
+                  <span key={t}>
+                    <code>{t}</code>
+                    {sensitiveTools.includes(t) && <em className={draftStyles.sensitive}> (reads private data)</em>}{' '}
+                  </span>
                 ))}
               </li>
             ))}
@@ -106,8 +118,24 @@ export default function StewardDraftCard({ draft, reason, toolClasses }: Steward
             </ul>
           )}
         </dd>
+        {(sensitive.length > 0 || draft.sensitive_ok) && (
+          <>
+            <dt>PRIVATE DATA</dt>
+            <dd>
+              {sensitive.length > 0 ? `reads private data: ${sensitive.join(', ')}. ` : 'asks to read private data. '}
+              The editor leaves <code>sensitive_ok</code> unticked; the consent is yours to give there.
+            </dd>
+          </>
+        )}
+        <dt>STARTS</dt>
+        <dd>{startText(draft.trigger)}</dd>
         <dt>CAN BE STARTED BY</dt>
         <dd>{ceiling.length > 0 ? ceiling.join(' · ') : 'nothing yet — no trigger is allowed'}</dd>
+        <dt>BUDGET</dt>
+        <dd>
+          {draft.budget.max_iterations} model turns
+          {draft.timeouts.length > 0 && <>; timeouts: {draft.timeouts.map((t) => `${t.tool} ${t.max_s} s`).join(', ')}</>}
+        </dd>
         <dt>PARAMETERS</dt>
         <dd>{draft.params.length > 0 ? draft.params.join(', ') : 'none'}</dd>
         <dt>PRECONDITIONS</dt>

@@ -43,9 +43,10 @@ from ..toolloop import (
     STEWARD_ONLY_TOOLS,
     STEWARD_VERDICT_TOOL,
     STEWARD_VERDICTS,
+    _capability_schema,
     build_tool_schemas,
 )
-from ..tools import _OS_SCOPED_TOOLS, CAPABILITY_TOOLS
+from ..tools import _OS_SCOPED_TOOLS, CAPABILITY_TOOLS, _is_secret_key
 from .authorizations import MAX_EXPIRY_DAYS, NEVER_AUTHORIZED
 from .catalog import BUILT_ID_PREFIX, CATALOG, TICKET_SURFACE_TOOLS, check_dispatchable
 from .policy import HOST_ARG, host_bound
@@ -78,6 +79,8 @@ __all__ = [
     "build_from_data",
     "builder_catalog",
     "builder_events",
+    "arg_refusal",
+    "unbindable_tools",
     "clone_data",
     "spec_from_data",
     "spec_to_data",
@@ -143,6 +146,25 @@ _SERVER_FIELDS = frozenset({"verdict_tool", "default_mode", "version"})
 #: one bounded free argument and the per-call host override the gate refuses.
 _UNBINDABLE_ARGS = frozenset({"timeout_s", "agent_id"})
 
+#: The JSON type an argument travels as on the wire where the model-facing
+#: schema (:func:`~kenny_server.toolloop._capability_schema`) says string: the
+#: contract's booleans, integers and lists. ``tests/test_steward_builder.py``
+#: joins every entry to ``CAPABILITY_TOOLS``.
+_WIRE_TYPES: Mapping[str, Mapping[str, str]] = {
+    "webfilter_apply": {"domains": "array"},
+    "account_set_enabled": {"enabled": "boolean"},
+    "account_set_admin": {"admin": "boolean"},
+    "account_set_logon_rights": {"deny": "array"},
+    "account_create": {"admin": "boolean"},
+    "account_delete": {"remove_profile": "boolean"},
+    "account_session_action": {"warn_seconds": "integer"},
+    "password_policy_set": {
+        "min_length": "integer",
+        "max_age_days": "integer",
+        "lockout_threshold": "integer",
+    },
+}
+
 
 class BuilderError(ValueError):
     """A built steward that must not be saved; :attr:`errors` says where and why."""
@@ -164,11 +186,29 @@ def _err(field: str, error: str) -> FieldError:
     return {"field": field, "error": error}
 
 
+def _declared_args(tool: str) -> tuple[set[str], set[str]]:
+    """``(declared, required)`` argument names of ``tool``, the host override left out."""
+
+    if tool in CAPABILITY_TOOLS:
+        raw = CAPABILITY_TOOLS[tool]
+        declared = {a.rstrip("?") for a in raw}
+        required = {a for a in raw if not a.endswith("?")}
+        return declared, required
+    entry = SERVER_TOOLS.get(tool, {})
+    return set(entry.get("properties", {})), set(entry.get("required", []))
+
+
 # -- which tools ---------------------------------------------------------------
 
 
 def tool_refusal(tool: str) -> str | None:
     """Why a built steward may never name ``tool``, or ``None`` when it may (ADR-0074 rule 2)."""
+
+    return _structural_refusal(tool) or _binding_refusal(tool)
+
+
+def _structural_refusal(tool: str) -> str | None:
+    """The refusal that is about what the tool *is*, before its arguments are asked."""
 
     if tool not in TOOL_CLASSES:
         return "kenny has no such tool"
@@ -187,6 +227,58 @@ def tool_refusal(tool: str) -> str | None:
     return None
 
 
+def _arg_type(tool: str, arg: str) -> str:
+    """The JSON type ``arg`` of ``tool`` travels as: ``string`` unless the contract says otherwise."""
+
+    wire = _WIRE_TYPES.get(tool, {}).get(arg)
+    if wire is not None:
+        return wire
+    if tool in CAPABILITY_TOOLS:
+        props = _capability_schema(tool, CAPABILITY_TOOLS[tool])["properties"]
+    else:
+        props = SERVER_TOOLS.get(tool, {}).get("properties", {})
+    return str((props.get(arg) or {}).get("type") or "string")
+
+
+def arg_refusal(tool: str, arg: str) -> str | None:
+    """Why no constraint may bind ``tool``'s ``arg``, or ``None`` when one may.
+
+    A constraint admits a non-empty string among its values and nothing else
+    (:meth:`~kenny_server.stewards.spec.ArgConstraint.admits`), so a boolean, a
+    number or a list can never satisfy one; and a value written into a spec is
+    stored in plaintext and shown to every operator, so a secret never is.
+    """
+
+    if arg in _UNBINDABLE_ARGS:
+        return f"{tool} takes no argument {arg!r} a constraint can bind"
+    if _is_secret_key(arg):
+        return f"{arg} is a secret; a constraint would store and show it"
+    kind = _arg_type(tool, arg)
+    if kind != "string":
+        return f"{arg} is not a string ({kind}); a constraint admits string values only"
+    return None
+
+
+def _binding_refusal(tool: str) -> str | None:
+    """Why a tool that changes something can never be bound by constraints, or ``None``.
+
+    Every argument such a tool requires needs a constraint
+    (:func:`validate_builder`), and :func:`arg_refusal` bars some arguments from
+    ever having one; a tool left with nothing to bind has no safe use.
+    """
+
+    if tool == STEWARD_VERDICT_TOOL or TOOL_CLASSES.get(tool) == READ_ONLY:
+        return None
+    declared, required = _declared_args(tool)
+    stuck = sorted(a for a in required - _UNBINDABLE_ARGS if arg_refusal(tool, a) is not None)
+    if stuck:
+        why = arg_refusal(tool, stuck[0])
+        return f"requires {stuck[0]}, which no constraint can bind ({why})"
+    if not any(arg_refusal(tool, a) is None for a in declared):
+        return "takes no argument a constraint can bind"
+    return None
+
+
 #: Every tool a built steward may name, sorted.
 BUILDER_TOOLS: tuple[str, ...] = tuple(
     sorted(
@@ -197,6 +289,19 @@ BUILDER_TOOLS: tuple[str, ...] = tuple(
 )
 
 
+def unbindable_tools() -> list[dict[str, str]]:
+    """The tools left out of the builder only because no constraint can bind them, with why."""
+
+    out: list[dict[str, str]] = []
+    for name in sorted(set(TOOL_CLASSES) | set(SERVER_TOOLS) | set(CAPABILITY_TOOLS)):
+        if name in BUILDER_TOOLS:
+            continue
+        why = _binding_refusal(name)
+        if why is not None and _structural_refusal(name) is None:
+            out.append({"name": name, "reason": why})
+    return out
+
+
 def builder_events() -> list[str]:
     """Every event a built steward may be started by: alerts, never a new ticket."""
 
@@ -205,7 +310,7 @@ def builder_events() -> list[str]:
     return [e for e in alerts + health if is_event_name(e)]
 
 
-def _tool_args(schema: Mapping[str, Any]) -> list[dict[str, Any]]:
+def _tool_args(tool: str, schema: Mapping[str, Any]) -> list[dict[str, Any]]:
     """A tool's arguments as the model sees them, minus the host override."""
 
     input_schema = schema.get("input_schema") or {}
@@ -217,9 +322,9 @@ def _tool_args(schema: Mapping[str, Any]) -> list[dict[str, Any]]:
         out.append(
             {
                 "name": name,
-                "type": str((prop or {}).get("type") or "string"),
+                "type": _arg_type(tool, name),
                 "required": name in required,
-                "bindable": name not in _UNBINDABLE_ARGS,
+                "bindable": arg_refusal(tool, name) is None,
             }
         )
     return out
@@ -238,7 +343,7 @@ def builder_catalog(runner: _Runner) -> dict[str, Any]:
                 "name": name,
                 "tier": TOOL_CLASSES[name],
                 "description": str(schema.get("description") or ""),
-                "args": _tool_args(schema),
+                "args": _tool_args(name, schema),
                 "os": sorted(scope) if scope is not None else None,
                 "sensitive": name in SENSITIVE_TOOLS,
                 "target": "host" if name in CAPABILITY_TOOLS or name in HOST_ARG else "server",
@@ -247,6 +352,7 @@ def builder_catalog(runner: _Runner) -> dict[str, Any]:
         )
     return {
         "tools": tools,
+        "unbindable": unbindable_tools(),
         "verdict_tool": STEWARD_VERDICT_TOOL,
         "verdicts": list(STEWARD_VERDICTS),
         "param_kinds": dict(PARAM_KINDS),
@@ -581,18 +687,6 @@ def spec_from_data(
 # -- the builder's rules ---------------------------------------------------------
 
 
-def _declared_args(tool: str) -> tuple[set[str], set[str]]:
-    """``(declared, required)`` argument names of ``tool``, the host override left out."""
-
-    if tool in CAPABILITY_TOOLS:
-        raw = CAPABILITY_TOOLS[tool]
-        declared = {a.rstrip("?") for a in raw}
-        required = {a for a in raw if not a.endswith("?")}
-        return declared, required
-    entry = SERVER_TOOLS.get(tool, {})
-    return set(entry.get("properties", {})), set(entry.get("required", []))
-
-
 def _code_ids(runner: _Runner | None) -> set[str]:
     ids = set(CATALOG)
     catalog = getattr(runner, "catalog", None) if runner is not None else None
@@ -676,6 +770,11 @@ def validate_builder(
                 _err(f"{where}.evidence", "values the server computes need server code; use values or a parameter")
             )
             continue
+        if c.tool in (STEWARD_VERDICT_TOOL, spec.verdict_tool):
+            errors.append(
+                _err(f"{where}.tool", f"{c.tool} ends the run; the server decides its effect, not a constraint")
+            )
+            continue
         if c.tool not in spec.tools:
             errors.append(_err(f"{where}.tool", f"{c.tool} is not one of this steward's tools"))
             continue
@@ -685,8 +784,12 @@ def validate_builder(
             errors.append(_err(f"{where}.tool", f"{c.tool} is read-only; a constraint on it bounds nothing"))
             continue
         declared, _required = _declared_args(c.tool)
-        if c.arg in _UNBINDABLE_ARGS or c.arg not in declared:
+        if c.arg not in declared:
             errors.append(_err(f"{where}.arg", f"{c.tool} takes no argument {c.arg!r} a constraint can bind"))
+        else:
+            why = arg_refusal(c.tool, c.arg)
+            if why is not None:
+                errors.append(_err(f"{where}.arg", why))
         if (c.tool, c.arg) in seen:
             errors.append(_err(where, f"a second constraint on {c.tool}.{c.arg}"))
         seen.add((c.tool, c.arg))

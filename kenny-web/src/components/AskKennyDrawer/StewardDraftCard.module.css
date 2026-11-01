@@ -33,3 +33,8 @@
 .list li {
   margin: 0 0 4px;
 }
+
+.sensitive {
+  color: var(--warn, inherit);
+  font-style: normal;
+}

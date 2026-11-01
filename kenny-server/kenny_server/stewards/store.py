@@ -40,6 +40,8 @@ from typing import Any
 import aiosqlite
 
 from ..store import DEFAULT_DB_PATH, _begin_immediate, _configure_connection, write_lock
+from .builder import BUILT_ID_RE
+from .catalog import CATALOG
 from .spec import MODES
 
 __all__ = [
@@ -917,6 +919,8 @@ class StewardStore:
 
         if isinstance(version, bool) or not isinstance(version, int) or version < 1:
             raise ValueError("version must be a whole number of at least 1")
+        if not BUILT_ID_RE.fullmatch(steward_id) or steward_id in CATALOG:
+            raise ValueError(f"{steward_id!r} is not a built steward's id")
         now = _now_iso()
         text = json.dumps(dict(spec), sort_keys=True)
         async with write_lock():

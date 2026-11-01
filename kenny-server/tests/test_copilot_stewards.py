@@ -828,6 +828,20 @@ async def test_a_draft_result_becomes_one_canonical_draft_event_and_a_failure_do
     assert event["reason"] == "Weekly check."
     assert event["tool_classes"]["winget_update"] == "standard_change"
     assert set(event["tool_classes"]) == set(canonical["tools"])
+    assert event["sensitive_tools"] == []
+    private = await _drain(
+        chat._surface_events(
+            _events(
+                {
+                    "type": "tool_result",
+                    "tool": STEWARD_DRAFT_PROPOSE_TOOL,
+                    "args": {"spec": _draft(tools=["screen_capture", "winget_list"], sensitive_ok=True), "reason": "r"},
+                    "ok": True,
+                }
+            )
+        )
+    )
+    assert private[-1]["sensitive_tools"] == ["screen_capture"]
     assert "steward_draft" in chat.CHAT_EVENT_TYPES
 
     failed = await _drain(

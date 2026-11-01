@@ -923,7 +923,16 @@ server provides, never adds to it.
   private data (a screenshot, a file, web history) only with `sensitive_ok`. Every change
   tool's arguments are bound by literal values or by one of the steward's own list
   parameters — never by values the server computes, which need server code — and every
-  required argument is bound. Its preconditions come from the ones the server registers. It
+  required argument is bound. A constraint admits string values only, and a literal in it
+  is stored and shown to every operator, so a built steward **cannot constrain** a secret
+  argument (a password, a token), an argument that is not a string (a boolean, a number or
+  a list: `account_set_admin`'s `admin`, `password_policy_set`'s numbers,
+  `webfilter_apply`'s `domains`), the per-call `timeout_s` or `agent_id`, or the verdict
+  tool. A change tool that requires such an argument (`account_create`, which needs a
+  password; `account_set_admin`, `account_set_enabled`, `account_delete`,
+  `account_set_logon_rights`, `webfilter_apply`), or has no argument left to bind, can never
+  be bound, so the catalog leaves it out and lists it under `unbindable` with the reason.
+  Its preconditions come from the ones the server registers. It
   always ends with `steward_verdict`, starts in `shadow`, and is started by its schedule, an
   alert or a command, never by a new ticket. A steward that works on machines takes a
   `hosts` parameter, and one with a schedule a `window`. Limits: a prompt of at most 8000
@@ -944,14 +953,17 @@ server provides, never adds to it.
   release withdrew a tool or a precondition it names) is not run: it is listed with
   `invalid: true` and its errors, its authorizations are voided and a stored `act` dropped,
   and the server starts as usual. Saving a fixed definition makes it runnable again, in
-  `shadow`.
+  `shadow`. A stored row whose id is not a built steward's (no `custom_` id of its own shape,
+  or a shipped steward's id) is skipped with a warning on the event log, never shown and
+  never touching the shipped steward it names; a bad row never stops the server starting.
 
 The API:
 
 - `GET /api/stewards/builder/catalog` *(operator+)* — what a built steward may be made of:
   `tools` (each with `name`, `tier`, `description`, `args` — `name`, `type`, `required`,
   `bindable` — `os` (`null` for every OS), `sensitive`, `target` (`host` or `server`) and
-  `verdict`), `verdict_tool`, `verdicts`, `param_kinds` with `default_param_kind` (`list`),
+  `verdict`), `unbindable` (the tools left out because no constraint can bind them, each
+  `{"name", "reason"}`), `verdict_tool`, `verdicts`, `param_kinds` with `default_param_kind` (`list`),
   the registered `preconditions`, `trigger_kinds`, the `events` it may be started by,
   `limits`, `id_pattern`, `never_authorized` and `max_expiry_days`.
 - `GET /api/stewards/builder/clone/{steward_id}?id=` *(operator+)* — a shipped steward as
@@ -1461,14 +1473,17 @@ not navigate away from wherever you were.
   Asked for a new steward, kenny can also **draft** one (`steward_draft_propose`:
   `{spec, reason}`, the data form of a [built steward](#stewards-view)). The draft is checked
   by the rules a save applies; one they refuse goes back to kenny as field errors and no
-  card appears. An accepted one is a `steward_draft` event (`{draft, reason, tool_classes}`, the canonical
+  card appears. An accepted one is a `steward_draft` event (`{draft, reason, tool_classes, sensitive_tools}`, the canonical
   data form; live only, not replayed when a conversation is reopened) and a card showing the
-  title, id, the tools by tier, the constraints, the triggers ceiling, the parameters and
+  title, id, the tools by tier (those that read private data labelled so), the constraints, what
+  starts it and the ceiling on that, the budget and timeouts, the parameters and
   preconditions, the full prompt (collapsed, shown as text) and kenny's reason labelled as
   its suggestion. **Open in editor** hands the draft to the stewards builder
   (`#/admin/stewards/new?draft=1`, the draft in `sessionStorage` under `kenny.stewardDraft`);
   nothing is saved by the card or by kenny, only a superuser saving it in the editor makes
-  it a steward, and it starts in shadow.
+  it a steward, and it starts in shadow. The editor shows the draft's triggers as drafted but
+  never carries over its `sensitive_ok`: the consent to read private data is ticked by the
+  superuser there.
 - **Composer** — type and **send**; while a turn streams the button becomes **stop**.
   Suggestion chips ("Why is this PC flagged?", "Free up disk space", "Update all
   packages") pre-fill the box. A section modal's **Fix via Ask kenny** button opens the

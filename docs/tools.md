@@ -388,7 +388,7 @@ the builder's own rules (the call a save makes) and writes nothing. A draft thos
 (a banned tool, an evidence constraint, a bad id, an id already taken, more than 32,000
 characters of JSON) is returned to the model as an `invalid_draft` error listing the field
 errors, and no card is offered. An accepted one makes the chat stream emit one
-`steward_draft` event carrying `draft` (canonical data), `reason` and `tool_classes` (the server's tier of each tool the draft names); the card it makes only
+`steward_draft` event carrying `draft` (canonical data), `reason`, `tool_classes` (the server's tier of each tool the draft names) and `sensitive_tools` (those that read private data); the card it makes only
 opens the editor. The tool is withheld from ticket turns and no steward may name it, like the
 other three.
 

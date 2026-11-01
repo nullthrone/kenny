@@ -248,7 +248,7 @@ export default function Transcript({
 
           case 'steward_draft':
             return (
-              <StewardDraftCard key={item.id} draft={item.draft} reason={item.reason} toolClasses={item.toolClasses} />
+              <StewardDraftCard key={item.id} draft={item.draft} reason={item.reason} toolClasses={item.toolClasses} sensitiveTools={item.sensitiveTools} />
             )
 
           case 'note':

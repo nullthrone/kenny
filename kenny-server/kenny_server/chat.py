@@ -41,6 +41,7 @@ from .store import ChatHistoryStore
 from .stewards.builder import BuilderError, spec_from_data, spec_to_data
 from .tool_classes import (
     READ_ONLY,
+    SENSITIVE_TOOLS,
     classify,
     is_state_changing,  # noqa: F401 (re-export)
 )
@@ -842,6 +843,9 @@ def _steward_draft_event(args: dict[str, Any]) -> dict[str, Any] | None:
         # The tier of each tool the draft names, for the card to show; the
         # server's classification, not the model's.
         "tool_classes": {t: classify(t) for t in draft["tools"]},
+        # Which of them read private data (a screen, file contents): the card
+        # says so, because the editor makes a person consent to it.
+        "sensitive_tools": [t for t in draft["tools"] if t in SENSITIVE_TOOLS],
     }
 
 

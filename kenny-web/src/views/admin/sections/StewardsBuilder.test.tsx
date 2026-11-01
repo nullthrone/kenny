@@ -448,6 +448,39 @@ describe('the builder — a new steward', () => {
     expect(body.spec).not.toHaveProperty('mystery')
   })
 
+  it('never pre-ticks the consent to read private data for a draft, and keeps its triggers', async () => {
+    mockApi()
+    apiPostMock.mockResolvedValue({ steward_id: 'custom_eyes', version: 1, mode: 'shadow', voided: 0 })
+    sessionStorage.setItem(
+      'kenny.stewardDraft',
+      JSON.stringify({
+        ...BUILT_DATA,
+        id: 'custom_eyes',
+        title: 'Eyes',
+        prompt: 'Look.',
+        tools: ['steward_verdict', 'screen_capture'],
+        constraints: [],
+        sensitive_ok: true,
+        trigger: { kind: 'schedule', min_interval_days: 7 },
+        triggers_allowed: { schedule: true, events: ['alert:offline'], command: true },
+      }),
+    )
+    renderSection('/admin/stewards/new?draft=1', true)
+
+    await screen.findByText(/Draft from Ask kenny — review before saving/)
+    expect(screen.getByRole('checkbox', { name: 'screen_capture' })).toBeChecked()
+    const consent = screen.getByRole('checkbox', { name: /I allow this steward to read private data/ })
+    expect(consent).not.toBeChecked()
+    expect(screen.getByRole('button', { name: 'CREATE STEWARD IN SHADOW' })).toBeDisabled()
+    expect(screen.getByLabelText('EVERY N DAYS (OPTIONAL)')).toHaveValue('7')
+    fireEvent.click(consent)
+    fireEvent.click(screen.getByRole('button', { name: 'CREATE STEWARD IN SHADOW' }))
+    await waitFor(() => expect(apiPostMock).toHaveBeenCalled())
+    const body = apiPostMock.mock.calls[0][1] as { spec: BuilderData }
+    expect(body.spec.sensitive_ok).toBe(true)
+    expect(body.spec.triggers_allowed).toEqual({ schedule: true, events: ['alert:offline'], command: true })
+  })
+
   it('falls back to an empty form when the draft cannot be read', async () => {
     mockApi()
     sessionStorage.setItem('kenny.stewardDraft', '{not json')

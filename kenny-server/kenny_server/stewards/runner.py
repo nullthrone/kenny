@@ -110,11 +110,12 @@ from ..toolloop import ToolExecutor, UsageMeter, drive_events
 from ..tools import CAPABILITY_TOOLS, redact_audit_args
 from ..webfilter import DAY_KEYS, format_hhmm, parse_recurrence
 from .authorizations import Authorization, AuthorizationStore
-from .builder import BuilderError, FieldError, build_from_data, spec_to_data, valid_source
+from .builder import BUILT_ID_RE, BuilderError, FieldError, build_from_data, spec_to_data, valid_source
 from .catalog import CATALOG, StewardCatalog, check_dispatchable
 from .policy import HOST_ARG, StewardPolicy, StewardSession, Authorizer, host_bound
 from .spec import (
     MODES,
+    SpecError,
     StewardSpec,
     allowed_triggers,
     baseline_config,
@@ -1095,10 +1096,11 @@ class StewardRunner:
         an unknown mode or an ``act`` without a hash.
         """
 
-        spec = self.spec(steward_id)
+        self.spec(steward_id)
         if mode not in MODES:
             raise ValueError(f"unknown steward mode {mode!r}; expected one of {', '.join(MODES)}")
         async with self._consent:
+            spec = self.spec(steward_id)  # as it stands under the lock: a save or delete may have run
             bound = await self._reviewed(spec, effective_hash) if mode == "act" else None
             if spec.id == TRIAGE_STEWARD_ID:
                 # Off clears resolve too, so a run already in flight cannot resolve
@@ -1169,9 +1171,10 @@ class StewardRunner:
         steward and :class:`ValueError` for parameters its spec does not take.
         """
 
-        spec = self.spec(steward_id)
-        clean = validate_params(spec, params)
+        validate_params(self.spec(steward_id), params)  # refuse early; checked again under the lock
         async with self._consent:
+            spec = self.spec(steward_id)  # as it stands under the lock: a save or delete may have run
+            clean = validate_params(spec, params)
             before_hash = await self._config_hash(spec)
             after_hash = await self._config_hash(spec, params=clean)
             changed = before_hash != after_hash
@@ -1231,8 +1234,12 @@ class StewardRunner:
         spec = self.spec(steward_id)
         if not allowed_triggers(spec).editable:
             raise ValueError(f"steward {spec.id}'s triggers are fixed by its spec")
-        clean = validate_triggers(spec, triggers)
+        validate_triggers(spec, triggers)  # refuse early; checked again under the lock
         async with self._consent:
+            spec = self.spec(steward_id)  # as it stands under the lock: a save or delete may have run
+            if not allowed_triggers(spec).editable:
+                raise ValueError(f"steward {spec.id}'s triggers are fixed by its spec")
+            clean = validate_triggers(spec, triggers)
             if effective_hash is not None:
                 await self._reviewed(spec, effective_hash)
             before_hash = await self._config_hash(spec)
@@ -1340,9 +1347,10 @@ class StewardRunner:
         grant the store refuses. Who may call this is the API's to enforce.
         """
 
-        spec = self.spec(steward_id)
+        self.spec(steward_id)
         store = self._authorizations()
         async with self._consent:
+            spec = self.spec(steward_id)  # as it stands under the lock: a save or delete may have run
             # The hash is checked and the grant written with no configuration
             # write in between (``_consent``).
             reviewed = await self._reviewed(spec, effective_hash)
@@ -1421,6 +1429,19 @@ class StewardRunner:
         """
 
         for row in await self.store.list_built_specs():
+            if not self._may_be_built(row.id):
+                # Not a built steward's id (or a shipped one's): it cannot be
+                # shown beside the built ones, and must never touch the shipped
+                # steward it names. Skipped, on the log so a person can find it.
+                logger.warning("stored steward %r is not a built steward's id; skipped", row.id)
+                await self._record_event(
+                    row.id,
+                    f"steward {row.id}: a stored definition has an id that is not a built "
+                    "steward's; it is ignored",
+                    {"version": row.version},
+                    level="warning",
+                )
+                continue
             try:
                 spec = build_from_data(
                     row.spec, self, version=row.version, steward_id=row.id
@@ -1441,11 +1462,19 @@ class StewardRunner:
                 logger.exception("built steward %s could not be loaded", row.id)
                 self._keep_invalid(row, [{"field": "spec", "error": f"could not be loaded: {type(exc).__name__}"}])
 
+    def _may_be_built(self, steward_id: str) -> bool:
+        """Whether ``steward_id`` is an id a built steward may have: its own shape, no shipped steward's."""
+
+        return bool(BUILT_ID_RE.fullmatch(steward_id)) and steward_id not in self.catalog.code
+
     def _keep_invalid(self, row: BuiltSpecRow, errors: list[FieldError]) -> None:
-        self.catalog.set_invalid(
-            row.id,
-            {"row": row, "errors": [dict(e) for e in errors], "hash": _invalid_hash(row)},
-        )
+        try:
+            self.catalog.set_invalid(
+                row.id,
+                {"row": row, "errors": [dict(e) for e in errors], "hash": _invalid_hash(row)},
+            )
+        except SpecError:  # pragma: no cover - load_built screens the id first
+            logger.warning("stored steward %r could not be kept as invalid; skipped", row.id)
 
     async def _invalid_entry(self, steward_id: str, entry: Mapping[str, Any]) -> dict[str, Any]:
         """An invalid built steward as the overview shows it: enough to find and fix it."""

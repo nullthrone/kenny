@@ -180,6 +180,7 @@ export type TranscriptItem =
       draft: StewardDraft
       reason: string
       toolClasses: Record<string, string>
+      sensitiveTools: string[]
     }
   /**
    * The server's own note, replayed from a stored conversation: a run the

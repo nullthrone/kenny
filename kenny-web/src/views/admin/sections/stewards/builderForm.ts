@@ -156,7 +156,8 @@ export type DraftResult = { data: BuilderData } | { unreadable: true }
 /**
  * Take (read, then remove) the draft Ask kenny left in `sessionStorage`. `null` when there is
  * none; `{unreadable: true}` when something is there that is not a steward draft. It is removed
- * either way, so a reload never replays a draft the person already dealt with.
+ * either way, so a reload never replays a draft the person already dealt with. The draft's
+ * `sensitive_ok` is dropped (always `false`): consent to private data is the superuser's to give.
  */
 export function takeDraft(storage: Pick<Storage, 'getItem' | 'removeItem'> | null = safeSession()): DraftResult | null {
   if (!storage) return null
@@ -177,7 +178,9 @@ export function takeDraft(storage: Pick<Storage, 'getItem' | 'removeItem'> | nul
     // Tolerate the draft wrapped as `{spec: …}` (the shape a save takes).
     if (isRecord(parsed) && isRecord(parsed.spec) && !('title' in parsed)) parsed = parsed.spec
     const data = normalizeData(parsed)
-    return data ? { data } : { unreadable: true }
+    // A draft is the model's proposal, not a person's choice: the consent to read private
+    // data is never pre-ticked by it. The superuser ticks `sensitive_ok` in the editor.
+    return data ? { data: { ...data, sensitive_ok: false } } : { unreadable: true }
   } catch {
     return { unreadable: true }
   }

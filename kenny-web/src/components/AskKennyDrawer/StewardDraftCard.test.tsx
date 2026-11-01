@@ -65,6 +65,48 @@ describe('StewardDraftCard', () => {
     expect(screen.getByText(/nothing is saved until a superuser saves it/)).toBeTruthy()
   })
 
+  it('labels sensitive tools, and shows the consent flag, the trigger, the budget and the timeouts', () => {
+    const draft = {
+      ...DRAFT,
+      tools: [...DRAFT.tools, 'screen_capture'],
+      sensitive_ok: true,
+      timeouts: [{ tool: 'fs_cleanup', max_s: 120 }],
+      budget: { max_iterations: 12 },
+    }
+    render(
+      <StewardDraftCard
+        draft={draft}
+        reason=""
+        toolClasses={{ ...CLASSES, screen_capture: 'read_only' }}
+        sensitiveTools={['screen_capture']}
+      />,
+    )
+    expect(screen.getByText('(reads private data)')).toBeTruthy()
+    expect(screen.getByText('PRIVATE DATA')).toBeTruthy()
+    expect(screen.getByText(/reads private data: screen_capture\./)).toBeTruthy()
+    expect(screen.getByText(/the consent is yours to give there/)).toBeTruthy()
+    expect(screen.getByText('on its schedule, at most every 7 days')).toBeTruthy()
+    expect(screen.getByText(/12 model turns/)).toBeTruthy()
+    expect(screen.getByText(/timeouts: fs_cleanup 120 s/)).toBeTruthy()
+  })
+
+  it('shows no private-data line for a draft that needs no consent', () => {
+    render(<StewardDraftCard draft={DRAFT} reason="" toolClasses={CLASSES} />)
+    expect(screen.queryByText('PRIVATE DATA')).toBeNull()
+    expect(screen.queryByText('(reads private data)')).toBeNull()
+  })
+
+  it('shows the shipped event trigger in words', () => {
+    render(
+      <StewardDraftCard
+        draft={{ ...DRAFT, trigger: { kind: 'event', event: 'alert:disk' } }}
+        reason=""
+        toolClasses={CLASSES}
+      />,
+    )
+    expect(screen.getByText('when alert:disk is raised')).toBeTruthy()
+  })
+
   it('shows the whole prompt in a collapsed block as escaped text', () => {
     const { container } = render(<StewardDraftCard draft={DRAFT} reason="" toolClasses={CLASSES} />)
     const details = container.querySelector('details')
@@ -109,9 +151,16 @@ describe('a steward_draft event', () => {
       draft: DRAFT,
       reason: 'r',
       tool_classes: CLASSES,
+      sensitive_tools: ['fs_read'],
     })
     expect(state.items).toHaveLength(1)
-    expect(state.items[0]).toMatchObject({ kind: 'steward_draft', draft: DRAFT, reason: 'r', toolClasses: CLASSES })
+    expect(state.items[0]).toMatchObject({
+      kind: 'steward_draft',
+      draft: DRAFT,
+      reason: 'r',
+      toolClasses: CLASSES,
+      sensitiveTools: ['fs_read'],
+    })
     expect(apiPostMock).not.toHaveBeenCalled()
   })
 })

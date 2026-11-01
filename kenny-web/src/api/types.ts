@@ -545,7 +545,14 @@ export type ChatEvent =
    * `draft` is the canonical data form the server validated; `tool_classes` is the
    * server's tier of each tool it names. Live stream only, like `steward_run_proposal`.
    */
-  | { type: 'steward_draft'; draft: StewardDraft; reason: string; tool_classes: Record<string, string> }
+  | {
+      type: 'steward_draft'
+      draft: StewardDraft
+      reason: string
+      tool_classes: Record<string, string>
+      /** The tools among them that read private data (a screen, file contents); the editor asks for consent to them. */
+      sensitive_tools?: string[]
+    }
   /**
    * The server's note that a steward run the operator started from a card has
    * finished: fixed-template facts (ids, mode, status, verdict, counts, bytes
