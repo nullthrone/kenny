@@ -78,7 +78,7 @@ STEWARD_VERDICTS: tuple[str, ...] = ("clean", "acted", "actionable", "inconclusi
 TICKET_DRAFT_TOOL = "ticket_draft"
 TICKET_FIND_TOOL = "ticket_find"
 
-#: The copilot's window onto stewards (ADR-0071), READ_ONLY all three.
+#: The copilot's window onto stewards (ADR-0071), READ_ONLY all four.
 #: ``steward_run_list`` / ``steward_run_get`` read the run history; ``steward_run_propose``
 #: starts nothing -- it validates a request and hands it to the browser, which
 #: shows a card whose buttons the operator presses to start a preview or a command run
@@ -89,8 +89,18 @@ TICKET_FIND_TOOL = "ticket_find"
 STEWARD_RUN_LIST_TOOL = "steward_run_list"
 STEWARD_RUN_GET_TOOL = "steward_run_get"
 STEWARD_RUN_PROPOSE_TOOL = "steward_run_propose"
+#: ``steward_draft_propose`` (ADR-0074 rule 4) is the same pattern for a *definition*:
+#: it validates a draft steward with the builder's rules and saves nothing; the
+#: browser shows a card whose button opens the editor, and only a superuser's save
+#: there makes it a steward.
+STEWARD_DRAFT_PROPOSE_TOOL = "steward_draft_propose"
 COPILOT_STEWARD_TOOLS: frozenset[str] = frozenset(
-    {STEWARD_RUN_LIST_TOOL, STEWARD_RUN_GET_TOOL, STEWARD_RUN_PROPOSE_TOOL}
+    {
+        STEWARD_RUN_LIST_TOOL,
+        STEWARD_RUN_GET_TOOL,
+        STEWARD_RUN_PROPOSE_TOOL,
+        STEWARD_DRAFT_PROPOSE_TOOL,
+    }
 )
 
 #: The tool a ticket-bound turn ends with when it found or changed something
@@ -432,6 +442,40 @@ SERVER_TOOLS: dict[str, dict[str, Any]] = {
             },
         },
         "required": ["steward_id", "reason"],
+    },
+    STEWARD_DRAFT_PROPOSE_TOOL: {
+        "description": (
+            "Draft a NEW steward (a purpose-bound routine that runs unattended) when the "
+            "operator asks for one. It SAVES NOTHING and starts nothing: the draft is "
+            "checked against the same rules a saved steward must pass, and if it passes "
+            "the operator sees a card with an 'Open in editor' button; only a superuser "
+            "at the dashboard can save it, after reading it. Never say it was saved or "
+            "created. If the draft breaks a rule you get the field errors back as the "
+            "error message: fix them and call again. The spec is the editor's data form, "
+            "an object with: id ('custom_' and a lowercase name), title, description, "
+            "prompt (the steward's instructions, at most 8000 characters), trigger "
+            "({'kind': 'schedule', 'min_interval_days'?} or {'kind': 'event', 'event': "
+            "'alert:...'}), triggers_allowed ({'schedule': bool, 'events': [...], "
+            "'command': bool}), tools (tool names; read-only ones are the safe default; "
+            "a tool that changes something needs a constraint on each of its arguments), "
+            "constraints ([{'tool', 'arg', 'allowed': [values]} or {'tool', 'arg', "
+            "'param': name}]), timeouts ([{'tool', 'max_s'}]), params (names), "
+            "preconditions (names), budget ({'max_iterations': 1-20}), sensitive_ok "
+            "(bool). The verdict tool, the mode and the version are the server's: leave "
+            "them out. A steward may not use a shell, agent_update, fleet-wide, ticket or "
+            "copilot tools."
+        ),
+        "properties": {
+            "spec": {
+                "type": "object",
+                "description": "The draft steward in the editor's data form, described above.",
+            },
+            "reason": {
+                "type": "string",
+                "description": "One or two sentences on why this steward would help, for the operator.",
+            },
+        },
+        "required": ["spec", "reason"],
     },
 }
 

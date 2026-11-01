@@ -160,7 +160,12 @@ def test_catalog_exhaustive() -> None:
 def test_the_copilot_agent_tools_are_in_the_catalog_and_read_only() -> None:
     """They are classified (so exhaustiveness holds) and none of them changes anything."""
 
-    for name in ("steward_run_list", "steward_run_get", "steward_run_propose"):
+    for name in (
+        "steward_run_list",
+        "steward_run_get",
+        "steward_run_propose",
+        "steward_draft_propose",
+    ):
         assert name in chat.SERVER_TOOLS
         assert TOOL_CLASSES[name] == READ_ONLY
 

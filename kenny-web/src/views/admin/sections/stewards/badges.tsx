@@ -6,11 +6,13 @@ export function shortHash(hash: string | null | undefined): string {
   return hash ? hash.slice(0, 8) : '—'
 }
 
-/** `kenny_server/stewards/authorizations.py::NEVER_AUTHORIZED` — refused at grant and at match. */
-export const NEVER_AUTHORIZED: readonly string[] = ['shell_exec', 'powershell_exec', 'agent_update']
-
-/** A hard ceiling the server enforces too (`MAX_EXPIRY_DAYS`). */
-export const MAX_EXPIRY_DAYS = 180
+/**
+ * Stand-ins for the server's `NEVER_AUTHORIZED` and `MAX_EXPIRY_DAYS`, used only when
+ * `GET /api/stewards/builder/catalog` cannot be read (`useAuthorizationLimits`). The server
+ * enforces its own values at grant and at match; the view never prefers these to its answer.
+ */
+export const FALLBACK_NEVER_AUTHORIZED: readonly string[] = ['shell_exec', 'powershell_exec', 'agent_update']
+export const FALLBACK_MAX_EXPIRY_DAYS = 180
 
 const MODE_CLASS: Record<StewardMode, string> = {
   off: styles.toneMuted,

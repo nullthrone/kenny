@@ -2,12 +2,17 @@ import { Link, useParams } from 'react-router'
 import { ApiError } from '../../../api/client'
 import EmptyState from '../../../components/EmptyState/EmptyState'
 import { formatRelativeTime } from '../../host/format'
-import type { Steward } from '../types'
+import type { InvalidSteward, Steward } from '../types'
+import { NewStewardPage } from './stewards/BuilderEntry'
+import InvalidStewardDetail from './stewards/InvalidStewardDetail'
 import StewardDetail from './stewards/StewardDetail'
 import { ModeBadge, RunStatusTag, shortHash, triggerLabel } from './stewards/badges'
 import { useStewards } from './stewards/queries'
 import shared from '../shared.module.css'
 import styles from './stewards/stewards.module.css'
+
+/** `#/admin/stewards/new`: the builder form. No built steward can be called this: ids start with `custom_`. */
+const NEW_ID = 'new'
 
 export interface StewardsSectionProps {
   /**
@@ -17,6 +22,29 @@ export interface StewardsSectionProps {
    * a browser — this only decides which controls are drawn.
    */
   canManage: boolean
+}
+
+function InvalidRow({ steward }: { steward: InvalidSteward }) {
+  return (
+    <li className={styles.stewardRow}>
+      <div>
+        <Link to={`/admin/stewards/${encodeURIComponent(steward.id)}`} className={styles.stewardTitle}>
+          {steward.title}
+        </Link>
+        <p className={styles.desc}>{steward.description}</p>
+        <p className={styles.desc} style={{ color: 'var(--danger)' }}>
+          It no longer validates and does not run: {steward.errors.length} problem
+          {steward.errors.length === 1 ? '' : 's'}. {steward.errors[0] ? `${steward.errors[0].field}: ${steward.errors[0].error}` : ''}
+        </p>
+      </div>
+      <div className={styles.rowSide}>
+        <span className={styles.badgeRow}>
+          <span className={`${styles.tag} ${styles.toneDanger}`}>INVALID</span>
+          <span className={`${styles.tag} ${styles.toneMuted}`}>BUILT</span>
+        </span>
+      </div>
+    </li>
+  )
 }
 
 function StewardRow({ steward }: { steward: Steward }) {
@@ -46,7 +74,10 @@ function StewardRow({ steward }: { steward: Steward }) {
         </div>
       </div>
       <div className={styles.rowSide}>
-        <ModeBadge steward={steward} />
+        <span className={styles.badgeRow}>
+          {steward.builtin && <span className={`${styles.tag} ${styles.toneMuted}`}>BUILT</span>}
+          <ModeBadge steward={steward} />
+        </span>
         {latest && <RunStatusTag status={latest.status} />}
       </div>
     </li>
@@ -83,12 +114,23 @@ export default function StewardsSection({ canManage }: StewardsSectionProps) {
     </div>
   )
 
+  if (detail === NEW_ID) {
+    return (
+      <div>
+        {banner}
+        <NewStewardPage canManage={canManage} />
+      </div>
+    )
+  }
+
   if (detail) {
     const steward = stewards.find((a) => a.id === detail)
     return (
       <div>
         {banner}
-        {steward ? (
+        {steward && steward.invalid === true ? (
+          <InvalidStewardDetail steward={steward} canManage={canManage} />
+        ) : steward ? (
           <StewardDetail steward={steward} canManage={canManage} />
         ) : (
           <>
@@ -110,13 +152,20 @@ export default function StewardsSection({ canManage }: StewardsSectionProps) {
         steward does the whole job but every change is only recorded as a recommendation; in <strong>act</strong>{' '}
         it makes the changes its limits allow.
       </p>
+      {canManage && (
+        <div className={shared.actions} style={{ marginTop: 0, marginBottom: 16 }}>
+          <Link to={`/admin/stewards/${NEW_ID}`} className={shared.btnPrimary} style={{ textDecoration: 'none' }}>
+            NEW STEWARD
+          </Link>
+        </div>
+      )}
       {stewards.length === 0 ? (
         <EmptyState title="No stewards" message="This server ships none." />
       ) : (
         <ul className={shared.table} style={{ listStyle: 'none', margin: 0, padding: 0 }} aria-label="Stewards">
-          {stewards.map((a) => (
-            <StewardRow key={a.id} steward={a} />
-          ))}
+          {stewards.map((a) =>
+            a.invalid === true ? <InvalidRow key={a.id} steward={a} /> : <StewardRow key={a.id} steward={a} />,
+          )}
         </ul>
       )}
     </div>

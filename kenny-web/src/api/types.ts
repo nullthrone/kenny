@@ -538,6 +538,15 @@ export type ChatEvent =
    */
   | { type: 'steward_run_proposal'; steward_id: string; host_id: string; reason: string }
   /**
+   * Kenny drafted a steward. NOTHING is saved: this is an offer whose card opens
+   * the dashboard's steward editor with `draft` prefilled, and only a superuser's
+   * save there makes it a steward (ADR-0074: the model drafts, never saves).
+   *
+   * `draft` is the canonical data form the server validated; `tool_classes` is the
+   * server's tier of each tool it names. Live stream only, like `steward_run_proposal`.
+   */
+  | { type: 'steward_draft'; draft: StewardDraft; reason: string; tool_classes: Record<string, string> }
+  /**
    * The server's note that a steward run the operator started from a card has
    * finished: fixed-template facts (ids, mode, status, verdict, counts, bytes
    * freed) built from the run's recorded numbers -- never the run's own text, and
@@ -603,3 +612,31 @@ export interface ShareLinkResponse {
 export interface ThemePreference {
   theme: 'light' | 'dark'
 }
+
+/**
+ * A steward in the data form the builder reads and writes (`stewards/builder.py::spec_to_data`).
+ * What Ask kenny drafts and the card hands to the editor.
+ */
+export interface StewardDraft {
+  id: string
+  title: string
+  description: string
+  prompt: string
+  trigger: { kind: 'schedule' | 'event'; event?: string; min_interval_days?: number | null }
+  triggers_allowed: { schedule: boolean; events: string[]; command: boolean }
+  tools: string[]
+  constraints: { tool: string; arg: string; allowed?: string[]; param?: string }[]
+  timeouts: { tool: string; max_s: number }[]
+  params: string[]
+  preconditions: string[]
+  budget: { max_iterations: number }
+  sensitive_ok: boolean
+}
+
+/**
+ * The hand-off from the drawer's draft card to the steward editor: the card stores
+ * the draft here as JSON ({@link StewardDraft}) and navigates to
+ * {@link STEWARD_DRAFT_ROUTE}. The editor reads it once and removes it.
+ */
+export const STEWARD_DRAFT_STORAGE_KEY = 'kenny.stewardDraft'
+export const STEWARD_DRAFT_ROUTE = '#/admin/stewards/new?draft=1'

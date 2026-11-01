@@ -337,6 +337,21 @@ export function applyChatEvent(state: ChatSessionState, event: ChatEvent): ChatS
     }
 
     /**
+     * A draft, not a steward. The card it pushes only hands the draft to the
+     * editor; this reducer carries what it was handed and saves nothing.
+     */
+    case 'steward_draft': {
+      const [id, s1] = nextId(state)
+      return pushItem(s1, {
+        kind: 'steward_draft',
+        id,
+        draft: event.draft,
+        reason: event.reason,
+        toolClasses: event.tool_classes ?? {},
+      })
+    }
+
+    /**
      * The server's note about a finished run, replayed from history. Its own
      * kind of row -- neither the operator's bubble nor kenny's prose -- so the
      * conversation shows who said it.

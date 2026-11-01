@@ -3,8 +3,15 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../../../api/client'
 import EmptyState from '../../../../components/EmptyState/EmptyState'
 import type { StewardAuthorization, Steward } from '../../types'
-import { AuthorizationStateTag, MAX_EXPIRY_DAYS, NEVER_AUTHORIZED, shortHash } from './badges'
-import { STEWARDS_KEY, consentErrorMessage, isHashChanged, useStewardAuthorizations, useFleetHosts } from './queries'
+import { AuthorizationStateTag, shortHash } from './badges'
+import {
+  STEWARDS_KEY,
+  consentErrorMessage,
+  isHashChanged,
+  useAuthorizationLimits,
+  useStewardAuthorizations,
+  useFleetHosts,
+} from './queries'
 import shared from '../../shared.module.css'
 import styles from './stewards.module.css'
 
@@ -14,8 +21,11 @@ const DEFAULT_EXPIRY_DAYS = 30
 const DEFAULT_ATTEMPTS = 3
 
 /** The `normal_change` tools of a steward that can be authorized ahead at all (ADR-0072 rule 1). */
-export function authorizableTools(steward: Pick<Steward, 'tools' | 'tool_classes'>): string[] {
-  return steward.tools.filter((t) => steward.tool_classes[t] === 'normal_change' && !NEVER_AUTHORIZED.includes(t))
+export function authorizableTools(
+  steward: Pick<Steward, 'tools' | 'tool_classes'>,
+  neverAuthorized: readonly string[],
+): string[] {
+  return steward.tools.filter((t) => steward.tool_classes[t] === 'normal_change' && !neverAuthorized.includes(t))
 }
 
 /**
@@ -23,8 +33,8 @@ export function authorizableTools(steward: Pick<Steward, 'tools' | 'tool_classes
  * "at most 180 days out" against its own clock a moment later, so the ceiling is
  * pulled in by a minute rather than sent on the exact boundary.
  */
-export function expiryFor(days: number, now: number = Date.now()): string {
-  const ms = Math.min(days * DAY_MS, MAX_EXPIRY_DAYS * DAY_MS - 60_000)
+export function expiryFor(days: number, maxExpiryDays: number, now: number = Date.now()): string {
+  const ms = Math.min(days * DAY_MS, maxExpiryDays * DAY_MS - 60_000)
   return new Date(now + ms).toISOString()
 }
 
@@ -43,7 +53,7 @@ function formatDate(iso: string): string {
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
 }
 
-function GrantForm({ steward, tools }: { steward: Steward; tools: string[] }) {
+function GrantForm({ steward, tools, maxExpiryDays }: { steward: Steward; tools: string[]; maxExpiryDays: number }) {
   const queryClient = useQueryClient()
   const fleet = useFleetHosts()
   const [tool, setTool] = useState(tools[0] ?? '')
@@ -55,7 +65,7 @@ function GrantForm({ steward, tools }: { steward: Steward; tools: string[] }) {
   const [granted, setGranted] = useState<string | null>(null)
 
   const daysNumber = Number(days)
-  const daysValid = Number.isInteger(daysNumber) && daysNumber >= 1 && daysNumber <= MAX_EXPIRY_DAYS
+  const daysValid = Number.isInteger(daysNumber) && daysNumber >= 1 && daysNumber <= maxExpiryDays
   const attemptsNumber = Number(attempts)
   const attemptsValid = Number.isInteger(attemptsNumber) && attemptsNumber >= 1
   // Where the chosen tool runs decides which scope can mean anything: a PC tool is granted
@@ -71,7 +81,7 @@ function GrantForm({ steward, tools }: { steward: Steward; tools: string[] }) {
         tool,
         scope: kind === 'server' ? SERVER_SCOPE : hosts,
         max_attempts_per_day: attemptsNumber,
-        expires_at: expiryFor(daysNumber),
+        expires_at: expiryFor(daysNumber, maxExpiryDays),
         note: note.trim(),
         effective_hash: hash,
       }),
@@ -117,12 +127,12 @@ function GrantForm({ steward, tools }: { steward: Steward; tools: string[] }) {
           />
         </label>
         <label className={shared.field}>
-          <span className={shared.fieldLabel}>EXPIRES IN (DAYS, AT MOST {MAX_EXPIRY_DAYS})</span>
+          <span className={shared.fieldLabel}>EXPIRES IN (DAYS, AT MOST {maxExpiryDays})</span>
           <input
             type="number"
             className={shared.input}
             min={1}
-            max={MAX_EXPIRY_DAYS}
+            max={maxExpiryDays}
             step={1}
             value={days}
             onChange={(e) => setDays(e.target.value)}
@@ -133,8 +143,8 @@ function GrantForm({ steward, tools }: { steward: Steward; tools: string[] }) {
       </div>
       <p id="grant-days-help" className={daysValid ? shared.help : shared.errorBox} role={daysValid ? undefined : 'alert'} style={{ marginBottom: 0 }}>
         {daysValid
-          ? `Expires on ${formatDate(expiryFor(daysNumber))}.`
-          : `An authorization lasts 1 to ${MAX_EXPIRY_DAYS} days. Longer needs renewing, on purpose.`}
+          ? `Expires on ${formatDate(expiryFor(daysNumber, maxExpiryDays))}.`
+          : `An authorization lasts 1 to ${maxExpiryDays} days. Longer needs renewing, on purpose.`}
       </p>
 
       <fieldset className={styles.fieldset}>
@@ -231,7 +241,8 @@ export interface AuthorizationsPanelProps {
 export default function AuthorizationsPanel({ steward, canManage }: AuthorizationsPanelProps) {
   const queryClient = useQueryClient()
   const query = useStewardAuthorizations(steward.id)
-  const tools = authorizableTools(steward)
+  const limits = useAuthorizationLimits()
+  const tools = authorizableTools(steward, limits.neverAuthorized)
   const headingId = `auths-${steward.id}`
 
   const revoke = useMutation({
@@ -315,8 +326,14 @@ export default function AuthorizationsPanel({ steward, canManage }: Authorizatio
       </h3>
       <p className={shared.help} style={{ marginBottom: 12 }}>
         A <strong>normal change</strong> only runs when a live authorization covers it: one tool, named PCs, an attempt budget
-        per PC per day, an expiry. {NEVER_AUTHORIZED.join(', ')} can never be authorized.
+        per PC per day, an expiry. {limits.neverAuthorized.join(', ')} can never be authorized.
       </p>
+      {limits.source === 'fallback' && (
+        <div className={shared.warnBox} role="note">
+          Could not read the limits from the server, so the built-in defaults are shown ({limits.neverAuthorized.join(', ')} never;
+          at most {limits.maxExpiryDays} days). The server enforces its own.
+        </div>
+      )}
       {revoke.isError && (
         <div className={shared.errorBox} role="alert">
           {consentErrorMessage(revoke.error, 'Could not revoke the authorization.')}
@@ -330,7 +347,7 @@ export default function AuthorizationsPanel({ steward, canManage }: Authorizatio
           {tools.length === 0 ? (
             <p className={shared.help}>This steward names no normal-change tool that can be authorized, so there is nothing to grant.</p>
           ) : (
-            <GrantForm steward={steward} tools={tools} />
+            <GrantForm steward={steward} tools={tools} maxExpiryDays={limits.maxExpiryDays} />
           )}
         </div>
       ) : (

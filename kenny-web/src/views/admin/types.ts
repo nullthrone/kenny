@@ -416,11 +416,143 @@ export interface Steward {
   /** `null` for triage, whose `act` is its settings rather than a binding to a hash. */
   act_bound: boolean | null
   latest_run: StewardRun | null
+  /** `true` for a steward defined in the dashboard (ADR-0074); absent on a server that predates them. */
+  builtin?: boolean
+  invalid?: false
+  /** Where a built steward came from: `blank`, `copilot` or `clone:<shipped id>`. */
+  source?: string
+}
+
+/**
+ * A built steward that no longer validates (a release withdrew something it names): kept and
+ * listed with its errors, never run. It carries only what is needed to find and fix it.
+ */
+export interface InvalidSteward {
+  id: string
+  title: string
+  description: string
+  builtin: true
+  invalid: true
+  errors: BuilderFieldError[]
+  mode: StewardMode
+  effective_hash: string | null
+  latest_run: StewardRun | null
+  source?: string
+  version?: number
 }
 
 export interface StewardsResponse {
   enabled: boolean
-  stewards: Steward[]
+  stewards: Array<Steward | InvalidSteward>
+}
+
+/* ── Built stewards (ADR-0074) ─────────────────────────────────── */
+
+/** One error the editor shows beside one field: `{field, error}` (`stewards/builder.py::FieldError`). */
+export interface BuilderFieldError {
+  field: string
+  error: string
+}
+
+export interface BuilderToolArg {
+  name: string
+  type: string
+  required: boolean
+  bindable: boolean
+}
+
+export interface BuilderTool {
+  name: string
+  tier: ToolTier
+  description: string
+  args: BuilderToolArg[]
+  /** The operating systems it runs on; `null` for every OS. */
+  os: string[] | null
+  /** Reads private data: a built steward names it only with `sensitive_ok`. */
+  sensitive: boolean
+  target: 'host' | 'server'
+  verdict: boolean
+}
+
+/** `GET /api/stewards/builder/catalog`: what a built steward may be made of. */
+export interface BuilderCatalog {
+  tools: BuilderTool[]
+  verdict_tool: string
+  verdicts: string[]
+  param_kinds: Record<string, StewardParamKind>
+  default_param_kind: StewardParamKind
+  preconditions: string[]
+  trigger_kinds: string[]
+  events: string[]
+  limits: Record<string, number>
+  id_pattern: string
+  never_authorized: string[]
+  max_expiry_days: number
+}
+
+/** A constraint in the data form: exactly one of `allowed`, `param` (evidence is refused by the server). */
+export interface BuilderConstraintData {
+  tool: string
+  arg: string
+  allowed?: string[]
+  param?: string
+  evidence?: string
+}
+
+/** The data form of a built steward (`stewards/builder.py::spec_to_data`): what is stored, loaded and sent. */
+export interface BuilderData {
+  id: string
+  title: string
+  description: string
+  prompt: string
+  trigger: { kind: 'schedule' | 'event'; event?: string | null; min_interval_days?: number | string | null }
+  triggers_allowed: { schedule: boolean; events: string[]; command: boolean }
+  tools: string[]
+  constraints: BuilderConstraintData[]
+  timeouts: Array<{ tool: string; max_s: number | string }>
+  params: string[]
+  preconditions: string[]
+  budget: { max_iterations: number | string }
+  sensitive_ok: boolean
+}
+
+/** `GET /api/stewards/builder/clone/{id}`: a shipped steward as data, with what a built one may not keep. */
+export interface BuilderClonePreview {
+  data: BuilderData
+  errors: BuilderFieldError[]
+  source: string
+}
+
+/** `GET /api/stewards/custom/{id}`: one built steward as the editor loads it. */
+export interface BuiltStewardRecord {
+  id: string
+  data: BuilderData
+  version: number
+  source: string
+  created_at: string
+  created_by: string
+  updated_at: string
+  updated_by: string
+  effective_hash: string | null
+  invalid: boolean
+  errors: BuilderFieldError[]
+}
+
+/** The answer to a create (201) or a save. */
+export interface BuilderSaved {
+  steward_id: string
+  version: number
+  source?: string
+  spec_hash: string
+  effective_hash: string | null
+  mode: StewardMode
+  voided: number
+}
+
+export interface BuilderDeleted {
+  steward_id: string
+  deleted: boolean
+  voided: number
 }
 
 /** `GET /api/stewards/{id}/params` — `declared` is what the spec takes. */

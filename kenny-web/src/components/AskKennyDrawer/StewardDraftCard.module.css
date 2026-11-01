@@ -1,0 +1,35 @@
+.prompt {
+  margin: 0 0 12px;
+  font-size: var(--text-sm);
+}
+
+.prompt summary {
+  cursor: pointer;
+  font-family: var(--font-display);
+  font-size: 10px;
+  letter-spacing: var(--track-caps);
+  color: var(--text-muted);
+  min-height: 24px;
+}
+
+.promptText {
+  margin: 6px 0 0;
+  padding: 10px;
+  max-height: 280px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  border: 1px solid var(--border-mid);
+  background: var(--paper-white);
+}
+
+.list {
+  margin: 0;
+  padding-left: 16px;
+}
+
+.list li {
+  margin: 0 0 4px;
+}

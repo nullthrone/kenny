@@ -1,7 +1,7 @@
 """The dashboard copilot's window onto stewards (ADR-0071).
 
 An operator in the Ask kenny drawer asks "what has the patch steward been doing?"
-or "can you check pc-kid's posture now?". Three tools answer, all ``READ_ONLY``:
+or "can you check pc-kid's posture now?". Four tools answer, all ``READ_ONLY``:
 
 * ``steward_run_list`` and ``steward_run_get`` read the run history the dashboard's
   stewards page shows (``stewards.store``); the run's actions and recommendations
@@ -13,6 +13,19 @@ or "can you check pc-kid's posture now?". Three tools answer, all ``READ_ONLY``:
   route that starts a run on a person's request: a preview, which runs the steward
   in shadow, or (``mode: act``, a superuser at the dashboard) a command run. The
   copilot has no verb for either.
+
+* ``steward_draft_propose`` **saves nothing.** When an operator asks for a new
+  steward, the copilot hands over a draft in the editor's data form
+  (ADR-0074 rule 4). The handler reads it with the builder's own rules
+  (:func:`~kenny_server.stewards.builder.build_from_data`, the very call a save
+  makes) and writes nothing: no ``steward_specs`` row, no catalog entry. A draft
+  those rules refuse comes back to the model as a tool *error* carrying the field
+  errors, so it can correct the draft and so that no card is offered for it. A
+  draft they accept becomes a ``steward_draft`` event (the canonical data and the
+  copilot's reason), live only like the run proposal; the browser's card opens the
+  editor with it, and the steward exists only if a superuser at the dashboard
+  saves it there. A draft's prompt is text the model wrote for a person to read:
+  it is shown as data and nothing in it is ever run.
 
 * ``run_result_note`` is not a tool. When a run a person started from one of those
   cards finishes, the browser asks the chat to record it
@@ -35,21 +48,25 @@ steward spec may name them (``stewards.catalog.check_dispatchable``): their
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
 from .steward_notes import build_run_note
+from .stewards.builder import BuilderError, build_from_data, spec_to_data
 from .stewards.policy import run_target_problem
 from .stewards.runner import StewardRunner
 from .stewards.store import FINISHED_STATUSES, StewardRun
 from .registry import AgentRegistry
 from .store import TelemetryStore
 from .toolloop import (
+    STEWARD_DRAFT_PROPOSE_TOOL,
     STEWARD_RUN_GET_TOOL,
     STEWARD_RUN_LIST_TOOL,
     STEWARD_RUN_PROPOSE_TOOL,
     ToolExecutor,
 )
+from .tool_classes import TOOL_CLASSES
 from .tunnel import ToolError
 
 logger = logging.getLogger("kenny.copilot.stewards")
@@ -64,6 +81,14 @@ _MAX_ENTRIES = 50
 
 #: Ceiling on a proposal's reason: a sentence or two for the operator's card.
 MAX_REASON_CHARS = 500
+
+#: Ceiling on a draft's size, as JSON, before and after the builder reads it. The
+#: builder bounds every field, but the bounds multiply (constraint values alone
+#: could reach megabytes); a draft this large is not one a person reviews.
+MAX_DRAFT_CHARS = 32_000
+
+#: Most field errors handed back to the model in one refusal.
+_MAX_DRAFT_ERRORS = 20
 
 #: Ceiling on the text of a run echoed back to the model.
 _MAX_TEXT = 2_000
@@ -114,7 +139,7 @@ def _row(run: StewardRun) -> dict[str, Any]:
 
 
 class CopilotStewards:
-    """``steward_run_list``, ``steward_run_get`` and ``steward_run_propose``."""
+    """``steward_run_list``, ``steward_run_get``, ``steward_run_propose`` and ``steward_draft_propose``."""
 
     def __init__(
         self,
@@ -131,6 +156,7 @@ class CopilotStewards:
         executor.register_server_tool(STEWARD_RUN_LIST_TOOL, self.run_list)
         executor.register_server_tool(STEWARD_RUN_GET_TOOL, self.run_get)
         executor.register_server_tool(STEWARD_RUN_PROPOSE_TOOL, self.run_propose)
+        executor.register_server_tool(STEWARD_DRAFT_PROPOSE_TOOL, self.draft_propose)
 
     async def run_result_note(self, run_id: str, username: str | None) -> str:
         """The note recording how ``run_id`` ended, for the person who started it.
@@ -259,3 +285,82 @@ class CopilotStewards:
                 "may act within its limits). Do not say it is running."
             ),
         }
+
+    async def draft_propose(self, args: dict[str, Any], *, session: Any = None) -> dict[str, Any]:
+        """Handle ``steward_draft_propose``: check a draft steward and hand it back.
+
+        Saves nothing and touches no store. The draft is read and validated by
+        :func:`~kenny_server.stewards.builder.build_from_data` against this
+        runner's catalog and preconditions -- what a save would check -- and, as a
+        save would, refused when the id is already a steward's. Any refusal is a
+        ``ToolError`` (``invalid_draft``) whose message lists the field errors, so
+        the model can fix the draft and the chat stream offers no card.
+        """
+
+        reason = _clean(args, "reason")
+        if not reason:
+            raise ToolError("bad_args", "a draft needs a reason")
+        if len(reason) > MAX_REASON_CHARS:
+            raise ToolError("bad_args", f"reason is longer than {MAX_REASON_CHARS} characters")
+        data = args.get("spec")
+        if not isinstance(data, dict):
+            raise ToolError("bad_args", "spec must be an object in the editor's data form")
+        try:
+            size = len(json.dumps(data))
+        except (TypeError, ValueError):
+            raise ToolError("bad_args", "spec must be plain JSON") from None
+        if size > MAX_DRAFT_CHARS:
+            raise ToolError(
+                "invalid_draft",
+                f"spec: the draft is {size} characters as JSON; a draft is at most {MAX_DRAFT_CHARS}",
+            )
+        try:
+            spec = build_from_data(data, self._runner)
+        except BuilderError as exc:
+            raise ToolError("invalid_draft", _draft_errors(exc.errors)) from None
+        catalog = self._runner.catalog
+        invalid = getattr(catalog, "invalid", None)
+        if spec.id in catalog or (callable(invalid) and spec.id in invalid()):
+            raise ToolError(
+                "invalid_draft", f"id: a steward {spec.id} already exists; choose another id"
+            )
+        canonical = spec_to_data(spec)
+        if len(json.dumps(canonical)) > MAX_DRAFT_CHARS:
+            raise ToolError("invalid_draft", f"spec: the draft is larger than {MAX_DRAFT_CHARS} characters")
+        tiers: dict[str, list[str]] = {}
+        for tool in canonical["tools"]:
+            tiers.setdefault(TOOL_CLASSES.get(tool, "unknown"), []).append(tool)
+        allowed = canonical["triggers_allowed"]
+        return {
+            "proposed": True,
+            "saved": False,
+            "steward_id": spec.id,
+            "title": spec.title,
+            "reason": reason,
+            "summary": {
+                "tools_by_tier": tiers,
+                "constraints": len(canonical["constraints"]),
+                "params": canonical["params"],
+                "preconditions": canonical["preconditions"],
+                "triggers_ceiling": {
+                    "schedule": allowed["schedule"],
+                    "events": allowed["events"],
+                    "command": allowed["command"],
+                },
+            },
+            "note": (
+                "The operator now sees a card for this draft with an 'Open in editor' "
+                "button. NOTHING is saved and no steward exists: only a superuser at the "
+                "dashboard can save it, after reading it, and a saved steward starts in "
+                "shadow. Do not say it was saved, created or is running."
+            ),
+        }
+
+
+def _draft_errors(errors: list[dict[str, str]]) -> str:
+    """The field errors of a refused draft, one per line, capped, for the model."""
+
+    lines = [f"{e.get('field', 'spec')}: {e.get('error', '')}" for e in errors[:_MAX_DRAFT_ERRORS]]
+    if len(errors) > _MAX_DRAFT_ERRORS:
+        lines.append(f"... and {len(errors) - _MAX_DRAFT_ERRORS} more")
+    return "the draft was refused; fix these and call again:\n" + "\n".join(lines)

@@ -1458,6 +1458,17 @@ not navigate away from wherever you were.
   PREVIEW**, and the card then links the new run to the steward's page under
   [Stewards](#stewards-view). These tools are not offered on a
   ticket's own chat.
+  Asked for a new steward, kenny can also **draft** one (`steward_draft_propose`:
+  `{spec, reason}`, the data form of a [built steward](#stewards-view)). The draft is checked
+  by the rules a save applies; one they refuse goes back to kenny as field errors and no
+  card appears. An accepted one is a `steward_draft` event (`{draft, reason, tool_classes}`, the canonical
+  data form; live only, not replayed when a conversation is reopened) and a card showing the
+  title, id, the tools by tier, the constraints, the triggers ceiling, the parameters and
+  preconditions, the full prompt (collapsed, shown as text) and kenny's reason labelled as
+  its suggestion. **Open in editor** hands the draft to the stewards builder
+  (`#/admin/stewards/new?draft=1`, the draft in `sessionStorage` under `kenny.stewardDraft`);
+  nothing is saved by the card or by kenny, only a superuser saving it in the editor makes
+  it a steward, and it starts in shadow.
 - **Composer** — type and **send**; while a turn streams the button becomes **stop**.
   Suggestion chips ("Why is this PC flagged?", "Free up disk space", "Update all
   packages") pre-fill the box. A section modal's **Fix via Ask kenny** button opens the
