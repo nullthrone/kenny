@@ -6,6 +6,7 @@ import ModePanel from './ModePanel'
 import ParamsPanel from './ParamsPanel'
 import PreviewPanel from './PreviewPanel'
 import RunsPanel from './RunsPanel'
+import TriggersPanel from './TriggersPanel'
 import { ModeBadge, shortHash, TierBadge, triggerLabel } from './badges'
 import shared from '../../shared.module.css'
 import styles from './stewards.module.css'
@@ -127,6 +128,7 @@ export default function StewardDetail({ steward, canManage }: StewardDetailProps
 
       <ModePanel steward={steward} canManage={canManage} />
       <ParamsPanel steward={steward} canManage={canManage} />
+      <TriggersPanel steward={steward} canManage={canManage} />
       <AuthorizationsPanel steward={steward} canManage={canManage} />
       <PreviewPanel steward={steward} onStarted={setOpenRun} />
       <RunsPanel steward={steward} selected={openRun} onSelect={setOpenRun} />

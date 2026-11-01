@@ -76,6 +76,7 @@ no matter what any rule says (see ``ticket_rules.NEVER_TICKETED_KINDS``).
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import datetime, timedelta, timezone
@@ -121,6 +122,10 @@ _DAY_INDEX = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun":
 # operator change applies to the next dispatch, ADR-0054); a fixed list passed
 # as ``notifiers=`` is wrapped into one of these internally.
 NotifierSource = Callable[[], Sequence[Notifier]]
+
+# Called with each delivered ``alert``/``change`` notification
+# (``AlertEngine.set_alert_hook``); may return an awaitable, which is awaited.
+AlertHook = Callable[[Notification], Any]
 
 
 class _Prunable(Protocol):
@@ -256,6 +261,21 @@ class AlertEngine:
         # is called either way, so "no mirror wired" and "mirror with zero rules"
         # produce the identical decision.
         self._ticket_rules = ticket_rules
+        # Called for a delivered ``alert`` or ``change`` (never a recovery,
+        # digest or test) so an event can start a steward (ADR-0073); see
+        # ``set_alert_hook``.
+        self._alert_hook: AlertHook | None = None
+
+    def set_alert_hook(self, hook: AlertHook | None) -> None:
+        """Register the callback ``_dispatch`` hands each ``alert``/``change`` to.
+
+        The composition root sets it once the steward runner exists (the engine
+        is built first). The hook must return promptly -- it classifies and
+        spawns its own task; an awaitable it returns is awaited, so a slow one
+        would hold up the alert loop. Whatever it raises is logged and ignored.
+        """
+
+        self._alert_hook = hook
 
     # -- live config accessors -------------------------------------------------
 
@@ -1001,6 +1021,15 @@ class AlertEngine:
                         await self._event_store.link_alert_to_ticket(event_id, ticket_id)
             except Exception:  # noqa: BLE001 - alerting stays best-effort
                 logger.exception("the ticket decision for %r failed", note.title)
+        # An alert or a change may start a steward (ADR-0073). Last, and inside its
+        # own swallow: nothing a hook does can make a notification late or lost.
+        if self._alert_hook is not None and note.kind in ("alert", "change"):
+            try:
+                pending = self._alert_hook(note)
+                if inspect.isawaitable(pending):
+                    await pending
+            except Exception:  # noqa: BLE001 - alerting stays best-effort
+                logger.exception("the alert hook failed for %r", note.title)
         # A recovery closes what the alert opened. It is not routed through
         # ``ticket_rules`` -- those decide whether work gets *created*, and a
         # recovery is explicitly never ticketed by them. Nothing was deciding

@@ -40,7 +40,7 @@ def _spec(**overrides: Any) -> StewardSpec:
         "title": "Patcher",
         "description": "Installs one package.",
         "prompt": "You keep this machine's packages in order.",
-        "trigger": Trigger(kind="on_demand"),
+        "trigger": Trigger(kind="event", event="alert:change"),
         "tools": frozenset({"winget_list", "winget_update", "winget_install"}),
         "constraints": (
             ArgConstraint("winget_update", "id", frozenset({SEVENZIP})),

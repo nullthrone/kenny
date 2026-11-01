@@ -1,10 +1,13 @@
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError } from '../../../../api/client'
 import type { FleetResponse } from '../../../../api/types'
 import type {
   StewardAuthorizationsResponse,
   StewardParamsResponse,
   StewardRun,
+  StewardTriggerConfig,
+  StewardTriggersResponse,
+  StewardTriggersSaved,
   StewardsResponse,
 } from '../../types'
 
@@ -28,6 +31,29 @@ export function useStewardParams(stewardId: string) {
   return useQuery({
     queryKey: [...STEWARDS_KEY, 'params', stewardId] as const,
     queryFn: () => api.get<StewardParamsResponse>(`${base(stewardId)}/params`),
+  })
+}
+
+/** What may start one steward: its ceiling, its baseline, what is in force, and the hash a write must name. */
+export function useStewardTriggers(stewardId: string) {
+  return useQuery({
+    queryKey: [...STEWARDS_KEY, 'triggers', stewardId] as const,
+    queryFn: () => api.get<StewardTriggersResponse>(`${base(stewardId)}/triggers`),
+  })
+}
+
+/**
+ * Replace one steward's triggers, naming the hash the person was shown (a 409 when it moved).
+ * A change moves the effective hash, drops the steward to shadow and voids its authorizations,
+ * so on success every query of the view is refreshed (it shares the `STEWARDS_KEY` prefix
+ * with the overview, the detail and the authorizations).
+ */
+export function useSaveStewardTriggers(stewardId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (body: { triggers: StewardTriggerConfig; effective_hash: string | null }) =>
+      api.put<StewardTriggersSaved>(`${base(stewardId)}/triggers`, body),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: STEWARDS_KEY }),
   })
 }
 

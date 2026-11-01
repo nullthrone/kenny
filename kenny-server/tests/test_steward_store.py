@@ -74,6 +74,7 @@ async def test_schema_has_the_documented_columns_and_indexes(store: StewardStore
             "updated_by",
             "params",
             "act_hash",
+            "triggers",
         ]
     async with store._conn.execute("PRAGMA index_list(steward_runs)") as cur:
         indexes = {r["name"] for r in await cur.fetchall()}

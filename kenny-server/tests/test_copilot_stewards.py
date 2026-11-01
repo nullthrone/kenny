@@ -72,7 +72,7 @@ def _server_only_steward() -> StewardSpec:
         title="Config hygiene",
         description="Reviews server-side rules.",
         prompt="You review the server's rules.",
-        trigger=Trigger(kind="on_demand"),
+        trigger=Trigger(kind="event", event="alert:change"),
         tools=frozenset({"fleet_overview", STEWARD_VERDICT_TOOL}),
         verdict_tool=STEWARD_VERDICT_TOOL,
     )

@@ -339,7 +339,9 @@ tools are `read_only`: two read the run history, and the third *proposes* a run 
 nothing, the way `ticket_draft` proposes a ticket. The chat stream turns a successful
 `steward_run_propose` into a `steward_run_proposal` event carrying `steward_id`, `host_id` and
 `reason`; a run exists only when a person starts it through `POST
-/api/stewards/{steward_id}/runs`, which always runs the steward in `shadow`. A run's
+/api/stewards/{steward_id}/runs` — a preview in `shadow`, or a
+[command run](dashboard.md#command-runs) that may act, which only a superuser signed in to the
+dashboard can start. A run's
 `summary`, `error` and recorded arguments were produced while a steward read a monitored
 machine, so `steward_run_get` returns them as data beside a note saying so. The tools read runs
 across every host, so they are withheld from every ticket-bound and unprompted turn and no

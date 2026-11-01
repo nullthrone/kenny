@@ -43,13 +43,13 @@ def _installer(**overrides: Any) -> StewardSpec:
         "title": "Installer",
         "description": "Installs what the household allowed.",
         "prompt": "You install the packages this household allowed, nothing else.",
-        "trigger": Trigger(kind="on_demand"),
+        "trigger": Trigger(kind="event", event="alert:change"),
         "tools": frozenset({"winget_list", "winget_install", "winget_update"}),
         "constraints": (
             ArgConstraint("winget_install", "id", param="packages"),
             ArgConstraint("winget_update", "id", param="packages"),
         ),
-        "params": ("packages",),
+        "params": ("hosts", "packages"),
     }
     fields.update(overrides)
     return StewardSpec(**fields)
@@ -256,7 +256,7 @@ async def test_a_server_side_normal_change_names_its_authorization(world, monkey
         title="Pruner",
         description="Drops rules nothing matches.",
         prompt="You prune ticket rules nothing has matched.",
-        trigger=Trigger(kind="on_demand"),
+        trigger=Trigger(kind="event", event="alert:change"),
         tools=frozenset({"ticket_rule_remove"}),
         constraints=(ArgConstraint("ticket_rule_remove", "rule_id", param="rules"),),
         params=("rules",),

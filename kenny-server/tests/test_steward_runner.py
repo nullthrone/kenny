@@ -113,9 +113,11 @@ def _patcher(**overrides: Any) -> StewardSpec:
         "title": "Patcher",
         "description": "Applies one pending package update.",
         "prompt": "You keep this machine's packages up to date.",
-        "trigger": Trigger(kind="on_demand"),
+        "trigger": Trigger(kind="event", event="alert:change"),
         "tools": frozenset({"winget_list", "winget_update"}),
         "constraints": (ArgConstraint("winget_update", "id", frozenset({FIREFOX})),),
+        # An alert may start it on a machine, so it names the machines it may run on.
+        "params": ("hosts",),
     }
     fields.update(overrides)
     return StewardSpec(**fields)

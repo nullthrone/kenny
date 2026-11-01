@@ -118,6 +118,8 @@ READ_PER_USE = {
     "KENNY_STEWARDS_DAILY_TOKENS",
     # Read by ``StewardRunner.preview_refusal`` before every preview.
     "KENNY_STEWARDS_PREVIEWS_PER_DAY",
+    # Read by ``stewards.commands.act_refusal`` before every command run.
+    "KENNY_STEWARDS_COMMANDS_PER_DAY",
     # Read by ``stewards.scheduler.StewardScheduler.run`` through its interval getter
     # after every pass.
     "KENNY_STEWARDS_SCHEDULE_INTERVAL_SECS",

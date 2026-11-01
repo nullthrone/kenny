@@ -191,6 +191,17 @@ suppression rule re-evaluates the affected hosts immediately, which produces the
 recovery transition, which closes the ticket. Muting a pattern takes back the work it
 created instead of leaving it in the queue.
 
+## An alert can start a steward
+
+An alert, or a change notification, can start a [steward](dashboard.md#what-starts-a-steward)
+whose trigger configuration enables that event (`alert:health:<section>`, `alert:offline`,
+`alert:disk_forecast`, `alert:hardware_forecast` or `alert:change`). The steward runs on
+the alerting machine, and acts only inside its maintenance window; outside it, it
+recommends. A recovery, the daily summary, the weekly digest and a test notification never
+start one, and neither does an alert on a machine a steward changed in the last 6 hours or
+is changing now, nor any alert within 6 hours of a steward changing the server's own
+records ([the quiet period](dashboard.md#what-starts-a-steward)).
+
 ## Change notifications
 
 A diff step in the same loop compares **consecutive snapshots** (once per *new* snapshot,

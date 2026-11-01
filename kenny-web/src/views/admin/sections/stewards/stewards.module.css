@@ -246,6 +246,29 @@
   align-items: flex-end;
 }
 
+.eventList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.eventRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 18px;
+}
+.eventRow > .check {
+  min-width: 220px;
+}
+.cooldown {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.cooldown input {
+  width: 80px;
+}
+
 .textarea {
   composes: input from '../../shared.module.css';
   font-family: var(--font-mono);

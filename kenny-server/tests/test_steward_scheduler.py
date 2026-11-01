@@ -22,6 +22,7 @@ What these pin down, each a seam between two halves:
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any
@@ -43,6 +44,7 @@ from kenny_server.stewards.scheduler import (
     run_failed,
     stops_canary,
 )
+from kenny_server.stewards.spec import Trigger, TriggerSet
 from kenny_server.stewards.store import INTERRUPTED_ERROR, StewardRun, StewardStore
 from kenny_server.config import CATALOG as SETTINGS_CATALOG
 from kenny_server.config import Settings
@@ -1189,3 +1191,84 @@ async def test_the_scheduler_reads_scheduled_runs_only(w: World) -> None:
     assert [r.trigger for r in scheduled] == [w.runner.calls[0].trigger]
     with pytest.raises(ValueError):
         await w.steward_store.scheduled_runs("posture", prefix="schedule%")
+
+
+# -- the live trigger configuration (ADR-0073) -----------------------------------------
+
+
+def _schedule_config(interval: int | None) -> dict[str, Any]:
+    return {"schedule": {"min_interval_days": interval}, "events": [], "command": False}
+
+
+async def test_a_schedule_switched_off_runs_nothing_not_even_in_shadow(w: World) -> None:
+    _posture(w, WIN_A)
+    await w.runner.set_triggers(
+        "posture", {"schedule": None, "events": [], "command": False}, actor="admin"
+    )
+    assert await w.runner.mode_of("posture") == "shadow"
+    assert await w.scheduler().pass_once() == []
+    assert w.runner.calls == [] and await w.runs("posture") == []
+    # Back on: the same steward is due again, in the same window.
+    await w.runner.set_triggers("posture", _schedule_config(None), actor="admin")
+    [outcome] = await w.scheduler().pass_once()
+    assert outcome.kind == "ran"
+
+
+async def test_the_interval_override_is_honoured(w: World) -> None:
+    _posture(w, WIN_A)
+    await w.runner.set_triggers("posture", _schedule_config(14), actor="admin")
+    sched = w.scheduler()
+    assert [o.kind for o in await sched.pass_once()] == ["ran"]
+    w.now += timedelta(days=1)
+    assert await sched.pass_once() == []  # the spec's own interval is none; the config's is 14
+    w.now += timedelta(days=13)
+    assert [o.kind for o in await sched.pass_once()] == ["ran"]
+
+
+async def test_a_config_interval_of_none_overrides_a_spec_interval(w: World) -> None:
+    from types import MappingProxyType
+
+    spec = CATALOG["posture"]
+    monthly = replace(spec, trigger=Trigger(kind="schedule", min_interval_days=28))
+    cat = MappingProxyType({**CATALOG, "posture": monthly})
+    runner = ScriptedRunner(
+        store=w.steward_store, settings=w.settings, catalog=cat,
+        event_store=w.event_store, now=lambda: w.now,
+    )
+    _posture(w, WIN_A)
+    sched = StewardScheduler(runner, cat, w.params_of, w.executor, now=lambda: w.now)
+    assert [o.kind for o in await sched.pass_once()] == ["ran"]  # baseline: every 28 days
+    w.now += timedelta(days=1)
+    assert await sched.pass_once() == []
+    await runner.set_triggers("posture", _schedule_config(None), actor="admin")
+    assert [o.kind for o in await sched.pass_once()] == ["ran"]
+
+
+async def test_the_baseline_configuration_behaves_as_the_spec_did(w: World) -> None:
+    for steward_id, spec in CATALOG.items():
+        config = await w.runner.trigger_config(spec)
+        assert (config["schedule"] is not None) == (spec.trigger.kind == "schedule"), steward_id
+        if config["schedule"] is not None:
+            assert config["schedule"]["min_interval_days"] == spec.trigger.min_interval_days
+
+
+async def test_a_steward_whose_spec_is_not_scheduled_runs_when_the_install_schedules_it(
+    w: World,
+) -> None:
+    from types import MappingProxyType
+
+    spec = replace(
+        CATALOG["posture"],
+        trigger=Trigger(kind="event", event="alert:offline"),
+        triggers_allowed=TriggerSet(schedule=True, events=frozenset({"alert:offline"})),
+    )
+    cat = MappingProxyType({**CATALOG, "posture": spec})
+    runner = ScriptedRunner(
+        store=w.steward_store, settings=w.settings, catalog=cat,
+        event_store=w.event_store, now=lambda: w.now,
+    )
+    _posture(w, WIN_A)
+    sched = StewardScheduler(runner, cat, w.params_of, w.executor, now=lambda: w.now)
+    assert await sched.pass_once() == []  # its baseline has no schedule
+    await runner.set_triggers("posture", _schedule_config(None), actor="admin")
+    assert [o.kind for o in await sched.pass_once()] == ["ran"]

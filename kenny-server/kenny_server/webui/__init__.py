@@ -16,7 +16,7 @@ import signal
 import time
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from starlette.background import BackgroundTask
 from starlette.requests import Request
@@ -53,8 +53,10 @@ from ..tokenstore import AgentTokenStore
 from ..tools import CallLog, ScreenshotStore, build_health, health_for, supports_tool
 from ..tunnel import AgentTunnel, ToolError
 from ..stewards.authorizations import BUDGET_WINDOW, AuthorizationError
+from ..stewards import commands as steward_commands
 from ..stewards.policy import run_target_problem
 from ..stewards.runner import HashMismatch, PreviewRefused
+from ..stewards.spec import allowed_triggers, baseline_config
 from ..webfilter import (
     BYPASS_REQUEST_CATEGORY,
     ListTooLargeError,
@@ -153,6 +155,86 @@ _NOT_A_PERSON = {
         "API tokens, OAuth tokens and the shared operator token cannot"
     )
 }
+
+#: ``Sec-Fetch-Site`` values of a request the dashboard itself made: from its
+#: own origin, or typed by the person (``none``).
+_OWN_FETCH_SITES = frozenset({"same-origin", "none"})
+
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _origin_key(url: str) -> tuple[str, str, int] | None:
+    """``(scheme, host, port)`` of an origin or URL, default ports filled in; ``None`` if unreadable."""
+
+    try:
+        parts = urlsplit(url.strip())
+        port = parts.port
+    except ValueError:
+        return None
+    scheme = parts.scheme.lower()
+    if scheme not in _DEFAULT_PORTS or not parts.hostname:
+        return None
+    return scheme, parts.hostname.lower(), port or _DEFAULT_PORTS[scheme]
+
+
+def _own_origins(request: Request) -> set[tuple[str, str, int]]:
+    """The origins this server answers as: the request's own, and ``KENNY_PUBLIC_URL``'s."""
+
+    own = {_origin_key(f"{request.url.scheme}://{request.url.netloc}")}
+    public = os.environ.get("KENNY_PUBLIC_URL", "").strip()
+    if public:
+        own.add(_origin_key(public))
+    own.discard(None)
+    return own  # type: ignore[return-value]
+
+
+def _browser_write_refusal(request: Request, *, needs_json: bool = True) -> JSONResponse | None:
+    """Why a consent write must not be taken from this browser request, or ``None``.
+
+    A session cookie is ``SameSite=Lax``, so another site on the same domain —
+    another port, another subdomain — can still make the browser send it with a
+    form post, whose body may be shaped like JSON. A consent write is refused
+    (``403``) when the browser says it came from anywhere but this dashboard
+    (``Sec-Fetch-Site`` present and not ``same-origin``/``none``, or an
+    ``Origin`` that is not the request's own scheme and host or
+    ``KENNY_PUBLIC_URL``'s), and, when it carries a body (``needs_json``), unless
+    that body is declared ``Content-Type: application/json`` (``415``), which a
+    form cannot send and a cross-origin script cannot send without a CORS
+    preflight this server never answers.
+    """
+
+    site = request.headers.get("sec-fetch-site")
+    if site is not None and site.strip().lower() not in _OWN_FETCH_SITES:
+        return JSONResponse(
+            {"error": "this request came from another site; make it from the dashboard itself"},
+            status_code=403,
+        )
+    origin = request.headers.get("origin")
+    if origin is not None and _origin_key(origin) not in _own_origins(request):
+        return JSONResponse(
+            {"error": "this request came from another origin; make it from the dashboard itself"},
+            status_code=403,
+        )
+    if needs_json:
+        media = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        if media != "application/json":
+            return JSONResponse(
+                {"error": "send this request as Content-Type: application/json"},
+                status_code=415,
+            )
+    return None
+
+
+def _consent_refusal(request: Request, *, needs_json: bool = True) -> JSONResponse | None:
+    """Why this request may not make a consent write, or ``None``.
+
+    Only a person at a browser (:func:`_person_at_a_browser`, else ``403``),
+    and only from the dashboard itself (:func:`_browser_write_refusal`).
+    """
+
+    if not _person_at_a_browser(request):
+        return JSONResponse(_NOT_A_PERSON, status_code=403)
+    return _browser_write_refusal(request, needs_json=needs_json)
 
 
 def _actor_of(request: Request) -> str | None:
@@ -1426,8 +1508,10 @@ def build_api_routes(
         if "value" not in body:
             return JSONResponse({"error": "value is required"}, status_code=400)
         raw = "" if body["value"] is None else str(body["value"])
-        if _would_widen_autonomy(key, raw) and not _person_at_a_browser(request):
-            return JSONResponse(_NOT_A_PERSON, status_code=403)
+        if _would_widen_autonomy(key, raw):
+            refused = _consent_refusal(request)
+            if refused is not None:
+                return refused
         try:
             await settings.set(key, raw)
         except SettingNotWritable as exc:
@@ -1450,11 +1534,13 @@ def build_api_routes(
             return JSONResponse(
                 {"error": f"{key} is managed via the environment"}, status_code=403
             )
-        if key in _AUTONOMY_SETTINGS and not _person_at_a_browser(request):
+        if key in _AUTONOMY_SETTINGS:
             # Resetting falls back to the environment or the default — "on" for
             # the global steward switch — so it may widen autonomy: the same
             # consent as setting it, whatever the value it lands on.
-            return JSONResponse(_NOT_A_PERSON, status_code=403)
+            refused = _consent_refusal(request, needs_json=False)
+            if refused is not None:
+                return refused
         await settings.reset(key)
         await _after_setting_write(key)
         return JSONResponse(settings.describe_one(key))
@@ -1463,10 +1549,11 @@ def build_api_routes(
     # Reading the catalog and the run history is operator+; choosing a mode is
     # superuser-only, because moving a steward to ``act`` is a superuser's
     # decision and every other mode write moves it towards or away from that.
-    # Every write here (mode, grant, revoke, parameters) is consent, so it also
-    # needs a person at a browser (``_person_at_a_browser``), and ``act`` and a
-    # grant name the ``effective_hash`` that person was shown: a 409 when the
-    # steward has changed since, never a binding to whatever it is now.
+    # Every write here (mode, grant, revoke, parameters, triggers, a command
+    # run) is consent, so it also needs a person at a browser, on the
+    # dashboard's own origin, sending JSON (``_consent_refusal``), and ``act``
+    # and a grant name the ``effective_hash`` that person was shown: a 409 when
+    # the steward has changed since, never a binding to whatever it is now.
 
     _STEWARDS_UNAVAILABLE = {"error": "stewards not configured"}
     _MAX_RUNS_LIMIT = 500
@@ -1522,6 +1609,10 @@ def build_api_routes(
         ``run_id``. Answers 202 with the run's id as soon as the run is
         admitted; the model is never waited for (the run takes minutes). Watch
         it at ``GET /api/stewards/runs/{run_id}``.
+
+        ``{"mode": "act", "host_id", "effective_hash"}`` asks for a command run
+        instead (:func:`_steward_command_run`); ``mode`` absent or
+        ``"preview"`` is the preview described here.
         """
 
         if stewards is None:
@@ -1539,6 +1630,11 @@ def build_api_routes(
                 return JSONResponse({"error": "invalid JSON body"}, status_code=400)
         if not isinstance(body, dict):
             return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
+        run_mode = body.get("mode")
+        if run_mode is not None and run_mode not in ("preview", "act"):
+            return JSONResponse({"error": 'mode must be "preview" or "act"'}, status_code=400)
+        if run_mode == "act":
+            return await _steward_command_run(request, spec, body)
         raw_host = body.get("host_id")
         if raw_host is not None and not isinstance(raw_host, str):
             return JSONResponse({"error": "host_id must be a string"}, status_code=400)
@@ -1579,6 +1675,107 @@ def build_api_routes(
             status_code=202,
         )
 
+    # Command runs (ADR-0073 rule 3): a person starts a steward now, and it may
+    # act. Who may (a superuser at a browser) is checked first, before anything
+    # about the steward is told; the rest is ``stewards.commands.act_refusal``.
+
+    async def _steward_hosts() -> steward_commands.Hosts:
+        known = {a.agent_id for a in registry.list()} | set(await store.known_agents())
+        return steward_commands.Hosts(known=frozenset(known), registry=registry)
+
+    def _caller(request: Request) -> tuple[bool, str | None]:
+        principal = principal_of(request)
+        return _person_at_a_browser(request), principal.role if principal is not None else None
+
+    async def _steward_command_run(request: Request, spec: Any, body: dict[str, Any]) -> JSONResponse:
+        """Start a command run (``{"mode": "act", "host_id", "effective_hash"}``).
+
+        403 unless a superuser signed in to the dashboard asks; then the
+        refusals of :func:`~kenny_server.stewards.commands.act_refusal` in their
+        order (400 for a request that cannot pass, 409 for a state that may).
+        Answers 202 with the run's id once it is admitted, as a preview does.
+        """
+
+        person, role = _caller(request)
+        refused = steward_commands.caller_refusal(person=person, role=role)
+        if refused is not None:
+            return JSONResponse({"error": str(refused)}, status_code=refused.status)
+        cross_site = _browser_write_refusal(request)
+        if cross_site is not None:
+            return cross_site
+        raw_host = body.get("host_id")
+        if raw_host is not None and not isinstance(raw_host, str):
+            return JSONResponse({"error": "host_id must be a string"}, status_code=400)
+        host_id = (raw_host or "").strip() or None
+        try:
+            run = await steward_commands.start_command(
+                stewards,
+                spec,
+                host_id=host_id,
+                username=_actor_of(request) or "unknown",
+                effective_hash=body.get("effective_hash"),
+                hosts=await _steward_hosts(),
+            )
+        except steward_commands.CommandRefused as exc:
+            out: dict[str, Any] = {"error": str(exc), "code": exc.code}
+            if exc.run_id is not None:
+                out["run_id"] = exc.run_id
+            return JSONResponse(out, status_code=exc.status)
+        except RuntimeError as exc:  # no executor / model / client configured
+            return JSONResponse({"error": str(exc)}, status_code=503)
+        return JSONResponse(
+            {
+                "run_id": run.id,
+                "steward_id": run.steward_id,
+                "host_id": run.host_id,
+                "mode": run.mode,
+                "trigger": run.trigger,
+                "status": run.status,
+            },
+            status_code=202,
+        )
+
+    def _query_host(request: Request) -> str | None:
+        return (request.query_params.get("host_id") or "").strip() or None
+
+    async def api_steward_command(request: Request) -> JSONResponse:
+        """What the caller may start of one steward on ``?host_id=`` now, and with what."""
+
+        steward_id, refused = _steward_or_404(request)
+        if refused is not None:
+            return refused
+        person, role = _caller(request)
+        return JSONResponse(
+            await steward_commands.readiness(
+                stewards,
+                stewards.catalog[steward_id],
+                host_id=_query_host(request),
+                hosts=await _steward_hosts(),
+                person=person,
+                role=role,
+            )
+        )
+
+    async def api_steward_commands(request: Request) -> JSONResponse:
+        """The stewards the caller could start on ``?host_id=``: command trigger on, eligible."""
+
+        if stewards is None:
+            return JSONResponse(_STEWARDS_UNAVAILABLE, status_code=503)
+        person, role = _caller(request)
+        host_id = _query_host(request)
+        return JSONResponse(
+            {
+                "host_id": host_id,
+                "stewards": await steward_commands.command_actions(
+                    stewards,
+                    host_id=host_id,
+                    hosts=await _steward_hosts(),
+                    person=person,
+                    role=role,
+                ),
+            }
+        )
+
     def _reviewed_hash(body: Any) -> tuple[str | None, JSONResponse | None]:
         """The ``effective_hash`` a consent write names, or its 400."""
 
@@ -1604,8 +1801,9 @@ def build_api_routes(
 
         if stewards is None:
             return JSONResponse(_STEWARDS_UNAVAILABLE, status_code=503)
-        if not _person_at_a_browser(request):
-            return JSONResponse(_NOT_A_PERSON, status_code=403)
+        refused = _consent_refusal(request)
+        if refused is not None:
+            return refused
         steward_id = request.path_params["steward_id"]
         if steward_id not in stewards.catalog:
             return JSONResponse({"error": f"unknown steward {steward_id}"}, status_code=404)
@@ -1679,8 +1877,10 @@ def build_api_routes(
         shown it; a 409 when the steward has changed since.
         """
 
-        if stewards is not None and not _person_at_a_browser(request):
-            return JSONResponse(_NOT_A_PERSON, status_code=403)
+        if stewards is not None:
+            refused = _consent_refusal(request)
+            if refused is not None:
+                return refused
         steward_id, refused = _steward_or_404(request)
         if refused is not None:
             return refused
@@ -1721,8 +1921,12 @@ def build_api_routes(
     async def api_steward_authorization_revoke(request: Request) -> JSONResponse:
         """Revoke one; the next call it would have covered is refused."""
 
-        if stewards is not None and not _person_at_a_browser(request):
-            return JSONResponse(_NOT_A_PERSON, status_code=403)
+        if stewards is not None:
+            # No body: a DELETE cannot be sent from another origin without a
+            # preflight, and the dashboard sends none.
+            refused = _consent_refusal(request, needs_json=False)
+            if refused is not None:
+                return refused
         steward_id, refused = _steward_or_404(request)
         if refused is not None:
             return refused
@@ -1759,8 +1963,10 @@ def build_api_routes(
         its authorizations (ADR-0072 rule 6).
         """
 
-        if stewards is not None and not _person_at_a_browser(request):
-            return JSONResponse(_NOT_A_PERSON, status_code=403)
+        if stewards is not None:
+            refused = _consent_refusal(request)
+            if refused is not None:
+                return refused
         steward_id, refused = _steward_or_404(request)
         if refused is not None:
             return refused
@@ -1775,6 +1981,63 @@ def build_api_routes(
             result = await stewards.set_params(
                 steward_id, params, actor=_actor_of(request) or "unknown"
             )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        return JSONResponse({"steward_id": steward_id, **result})
+
+    async def api_steward_triggers(request: Request) -> JSONResponse:
+        """What may start one steward: its ceiling, its baseline, what is in force, and its hash."""
+
+        steward_id, refused = _steward_or_404(request)
+        if refused is not None:
+            return refused
+        spec = stewards.catalog[steward_id]
+        return JSONResponse(
+            {
+                "steward_id": steward_id,
+                "allowed": allowed_triggers(spec).to_public(),
+                "baseline": baseline_config(spec),
+                "triggers": await stewards.trigger_config(spec),
+                "effective_hash": await stewards.live_hash(steward_id),
+            }
+        )
+
+    async def api_steward_triggers_set(request: Request) -> JSONResponse:
+        """Replace one steward's triggers (``{"triggers": {...}, "effective_hash"}``).
+
+        What may start a steward is part of what a person consented to: like a
+        parameter edit, a change of the effective hash drops the steward to
+        ``shadow`` and voids its authorizations (ADR-0072 rule 6), and the
+        write names the hash the superuser was shown; a 409 when the steward
+        has changed since.
+        """
+
+        if stewards is not None:
+            refused = _consent_refusal(request)
+            if refused is not None:
+                return refused
+        steward_id, refused = _steward_or_404(request)
+        if refused is not None:
+            return refused
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - malformed JSON
+            return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        triggers = body.get("triggers") if isinstance(body, dict) else None
+        if not isinstance(triggers, dict):
+            return JSONResponse({"error": "triggers must be an object"}, status_code=400)
+        reviewed, refused = _reviewed_hash(body)
+        if refused is not None:
+            return refused
+        try:
+            result = await stewards.set_triggers(
+                steward_id,
+                triggers,
+                actor=_actor_of(request) or "unknown",
+                effective_hash=reviewed,
+            )
+        except HashMismatch as exc:
+            return _changed(exc)
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
         return JSONResponse({"steward_id": steward_id, **result})
@@ -2519,12 +2782,15 @@ def build_api_routes(
         ),
         Route("/api/stewards", guard(api_stewards_list, **op)),
         Route("/api/stewards/runs", guard(api_steward_runs, **op)),
+        # Static, so before every ``/api/stewards/{steward_id}`` route.
+        Route("/api/stewards/commands", guard(api_steward_commands, **op)),
         Route("/api/stewards/runs/{run_id}", guard(api_steward_run, **op)),
         Route(
             "/api/stewards/{steward_id}/runs",
             guard(api_steward_preview, **op),
             methods=["POST"],
         ),
+        Route("/api/stewards/{steward_id}/command", guard(api_steward_command, **op)),
         Route("/api/stewards/{steward_id}/mode", guard(api_steward_mode, **su), methods=["PUT"]),
         Route(
             "/api/stewards/{steward_id}/authorizations",
@@ -2544,6 +2810,12 @@ def build_api_routes(
         Route(
             "/api/stewards/{steward_id}/params",
             guard(api_steward_params_set, **su),
+            methods=["PUT"],
+        ),
+        Route("/api/stewards/{steward_id}/triggers", guard(api_steward_triggers, **op)),
+        Route(
+            "/api/stewards/{steward_id}/triggers",
+            guard(api_steward_triggers_set, **su),
             methods=["PUT"],
         ),
         Route("/api/settings", guard(api_settings_list, **su)),

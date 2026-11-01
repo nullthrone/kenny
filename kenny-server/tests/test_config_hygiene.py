@@ -761,7 +761,7 @@ def test_min_interval_is_whole_days_on_a_schedule(bad: Any) -> None:
         validate(replace(CONFIG_HYGIENE, trigger=Trigger(kind="schedule", min_interval_days=bad)))
     with pytest.raises(SpecError):
         validate(StewardSpec(id="od", title="t", description="d", prompt="p",
-                           trigger=Trigger(kind="on_demand", min_interval_days=28),
+                           trigger=Trigger(kind="event", event="alert:change", min_interval_days=28),
                            tools=frozenset({"ticket_rule_list"})))
 
 

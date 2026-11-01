@@ -1,6 +1,7 @@
 """Starts the stewards whose trigger is a schedule (ADR-0071, ADR-0072).
 
-One pass looks at every catalog steward with a ``schedule`` trigger and, for each
+One pass looks at every catalog steward whose *live* trigger configuration
+(:meth:`StewardRunner.trigger_config`) has the schedule on and, for each
 host the install named, decides whether a run is due *now*. Everything here is
 deterministic server code; the model is only ever started, never asked.
 
@@ -19,7 +20,7 @@ the store, so no number of preview runs can hide one.
 
 A steward that takes no ``hosts`` parameter touches no host: it runs once per
 occurrence with no host at all, and none of the host preconditions below
-apply. A trigger's ``min_interval_days`` skips every occurrence that ends
+apply. The configuration's ``schedule.min_interval_days`` skips every occurrence that ends
 closer than that to the last occurrence the steward ran in (read off the same
 triggers), which is how a weekly window carries a monthly steward.
 
@@ -45,10 +46,14 @@ something it did not confirm. Refusals that are an outcome rather than a fault
 — the steward's ``disabled`` kill switch, its ``blocked`` guard, a ``paused``
 game session — never count, and a run that was interrupted (a graceful
 shutdown or a restart, :data:`~kenny_server.stewards.store.INTERRUPTED_ERROR`)
-is neutral: it neither counts nor breaks a streak.
+is neutral: it neither counts nor breaks a streak. The breaker, and the run
+readers above, are the runner's (:meth:`StewardRunner.maybe_trip`): event-started
+runs count toward it as well, so it is decided in one place.
 
 **Preconditions, before any run.** A host that is offline, or whose OS cannot
-serve a tool the steward names, is skipped. A steward whose ``require_idle``
+serve a tool the steward names, is skipped. A precondition the spec declares
+(:meth:`StewardRunner.precondition_refusal`) is asked next, for a server-only
+run too. A steward whose ``require_idle``
 parameter is not ``false`` asks the host itself — ``remotehelp_status``, called
 here as ``steward:<id>``, not by the model — whether somebody is signed in, and
 skips the host unless the answer is a clear *no*: a failed check is "do not
@@ -66,11 +71,27 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from ..tools import CAPABILITY_TOOLS, supports_tool
-from ..webfilter import CATEGORY_KEYS, make_window, schedule_state
-from .runner import StewardRunner
+from ..webfilter import schedule_state
+from .runner import (
+    BENIGN_REFUSALS,
+    BREAKER_ACTOR,
+    BREAKER_THRESHOLD,
+    StewardRunner,
+    halts,
+    interrupted,
+    made_change,
+    run_failed,
+    stops_canary,
+)
 from .spec import StewardSpec, resolve
-from .store import INTERRUPTED_ERROR, StewardRun
+from .store import StewardRun
+from .windows import (
+    _TOOL_OS,  # noqa: F401 - kept importable from here; tests join it to the tool list
+    declared_hosts,
+    host_supports,
+    occurrence_end,
+    unready,
+)
 
 logger = logging.getLogger("kenny.stewards.scheduler")
 
@@ -101,36 +122,8 @@ MIN_INTERVAL_S = 60
 #: occurrence it belongs to (UTC, ISO-8601): one occurrence, one trigger.
 SCHEDULE_TRIGGER_PREFIX = "schedule:"
 
-#: Consecutive failed runs of one steward that move it back to ``shadow``.
-BREAKER_THRESHOLD = 3
-
-#: Who the circuit breaker acts as when it demotes a steward.
-BREAKER_ACTOR = "system:circuit-breaker"
-
-#: Error codes of a change that was *refused*, not one that broke: the steward's
-#: remote-control kill switch (``disabled``), its deterministic safety guard
-#: (``blocked``) and a game-scoped pause (``paused``). An outcome to read, not
-#: a failure to count.
-BENIGN_REFUSALS: frozenset[str] = frozenset({"disabled", "blocked", "paused"})
-
-#: The verdicts after which a run that changed something lets the next host go
-#: ahead: the run says it acted and checked. Any other verdict, or none, leaves
-#: the change unconfirmed.
-_CONFIRMING_VERDICTS: frozenset[str] = frozenset({"acted"})
-
 #: Run statuses that mean "this host has had its run for this occurrence".
 _DONE_STATUSES: frozenset[str] = frozenset({"running", "completed", "failed"})
-
-#: The OS that can serve a tool, where :func:`kenny_server.tools.supports_tool`
-#: does not say (it lists the tools the *agent binary* refuses by name; a
-#: ``winget_*`` call on Linux is refused by the steward at run time, which is too
-#: late for a scheduled run). Entries here are redundant once ``tools`` scopes
-#: the tool itself.
-_TOOL_OS: dict[str, frozenset[str]] = {
-    "winget_list": frozenset({"windows"}),
-    "winget_update": frozenset({"windows"}),
-}
-
 
 @dataclass(frozen=True)
 class Outcome:
@@ -143,94 +136,6 @@ class Outcome:
     kind: str
     detail: str = ""
     run: StewardRun | None = None
-
-
-# -- reading a finished run ----------------------------------------------------
-
-
-def interrupted(run: StewardRun) -> bool:
-    """Whether ``run`` was cut short by a shutdown or a restart, not by its own fault."""
-
-    return run.status == "failed" and run.error == INTERRUPTED_ERROR
-
-
-def run_failed(run: StewardRun) -> bool:
-    """Whether ``run`` counts as a failure.
-
-    ``failed`` outright, or a change it made that errored for any reason other
-    than a refusal that is an outcome (:data:`BENIGN_REFUSALS`). A run a
-    shutdown or restart interrupted is not the steward's fault and is not one.
-    """
-
-    if run.status == "failed":
-        return not interrupted(run)
-    if run.status != "completed":
-        return False
-    return any(
-        a.get("ok") is False and a.get("code") not in BENIGN_REFUSALS for a in run.actions
-    )
-
-
-def made_change(run: StewardRun) -> bool:
-    """Whether ``run`` changed something: an action the gate allowed that did not fail."""
-
-    return any(a.get("ok") is not False for a in run.actions)
-
-
-def halts(run: StewardRun) -> bool:
-    """Whether ``run`` changed something and did not confirm it (any verdict but ``acted``)."""
-
-    return made_change(run) and run.verdict not in _CONFIRMING_VERDICTS
-
-
-def stops_canary(run: StewardRun) -> bool:
-    """Whether the hosts after ``run`` must wait for a person.
-
-    Also what the circuit breaker counts, unless the run was
-    :func:`interrupted`.
-    """
-
-    return run_failed(run) or halts(run)
-
-
-# -- the host ------------------------------------------------------------------
-
-
-def host_supports(spec: StewardSpec, os_name: str | None) -> bool:
-    """Whether a host running ``os_name`` can serve every capability ``spec`` names."""
-
-    name = (os_name or "").lower()
-    for tool in spec.tools:
-        if tool not in CAPABILITY_TOOLS:
-            continue
-        if not supports_tool(tool, name):
-            return False
-        scoped = _TOOL_OS.get(tool)
-        if scoped is not None and name not in scoped:
-            return False
-    return True
-
-
-def _hosts(params: Mapping[str, Any]) -> list[str]:
-    """The hosts a steward may run on: sorted, unique, and empty unless named."""
-
-    raw = params.get("hosts")
-    if isinstance(raw, str):
-        raw = raw.split(",")
-    if not isinstance(raw, (list, tuple, set, frozenset)):
-        return []
-    return sorted({h.strip() for h in raw if isinstance(h, str) and h.strip()})
-
-
-def _idle_required(params: Mapping[str, Any]) -> bool:
-    """Whether to check the host is unattended: yes, unless the parameter is ``false``.
-
-    The parameter is a JSON boolean (``runner.validate_params``); anything else
-    — absent, a list, a string a parameter written before that rule left
-    behind — means check, the safe direction.
-    """
-
-    return params.get("require_idle") is not False
 
 
 def _packages(params: Mapping[str, Any]) -> list[str]:
@@ -312,8 +217,6 @@ class StewardScheduler:
                 return []
             outcomes: list[Outcome] = []
             for spec in sorted(self.catalog.values(), key=lambda s: s.id):
-                if spec.trigger.kind != "schedule":
-                    continue
                 try:
                     outcomes += await self._pass_steward(spec)
                 except Exception:  # noqa: BLE001 - one steward's fault must not skip the others
@@ -321,37 +224,12 @@ class StewardScheduler:
             return outcomes
 
     def _occurrence(self, spec: StewardSpec, raw: Any, at: datetime) -> datetime | None:
-        """The end of the window occurrence open at ``at``, or ``None``.
+        """The end of the window occurrence open at ``at``, or ``None``
+        (:func:`~kenny_server.stewards.windows.occurrence_end`)."""
 
-        The end identifies the occurrence for as long as it is open. ``None``
-        for no window, an unreadable one, one that is closed, or one whose end
-        cannot be told: a window nobody can interpret never means "always".
-        """
-
-        if not isinstance(raw, Mapping):
-            return None
-        try:
-            window = make_window(
-                spec.id,
-                days=raw.get("days"),
-                start=raw.get("start"),
-                end=raw.get("end"),
-                # Windows are shared with the web filter, which wants a category;
-                # none is used here, the window is only a time span.
-                categories=CATEGORY_KEYS[:1],
-                tz=raw.get("tz") or raw.get("timezone"),
-            )
-        except (ValueError, TypeError) as exc:
-            logger.warning("steward %s: its maintenance window is unreadable (%s)", spec.id, exc)
-            return None
-        state = schedule_state({}, [window], at=at)
-        if not state["active_windows"] or not state["next_change_at"]:
-            return None
-        try:
-            end = datetime.fromisoformat(str(state["next_change_at"]))
-        except ValueError:
-            return None
-        return end if end.tzinfo is not None else end.replace(tzinfo=timezone.utc)
+        # ``schedule_state`` passed from this module's namespace: the seam the
+        # scheduler's own tests patch.
+        return occurrence_end(raw, at, label=spec.id, state_of=schedule_state)
 
     async def _still_open(self, spec: StewardSpec, end: datetime) -> bool:
         """Whether the occurrence ending at ``end`` is still the one open now.
@@ -364,6 +242,12 @@ class StewardScheduler:
         return self._occurrence(spec, params.get("window"), self._now()) == end
 
     async def _pass_steward(self, spec: StewardSpec) -> list[Outcome]:
+        # The live configuration, not the spec's baseline: a schedule switched
+        # off runs nothing here, not even in shadow.
+        schedule = (await self.runner.trigger_config(spec))["schedule"]
+        if schedule is None:
+            return []
+        min_interval_days = schedule.get("min_interval_days")
         mode = await self.runner.mode_of(spec.id)
         if mode == "off":
             return []
@@ -374,11 +258,11 @@ class StewardScheduler:
         trigger = _trigger(end)
         # A steward without a ``hosts`` parameter touches no host: it runs once
         # per occurrence, on none (``None`` stands for "the server" below).
-        hosts: list[str | None] = [None] if _server_only(spec) else list(_hosts(params))
+        hosts: list[str | None] = [None] if _server_only(spec) else list(declared_hosts(params))
         if not hosts:
             return []
         history = await self._history(spec)
-        if _too_soon(spec, history, end):
+        if _too_soon(min_interval_days, history, end):
             return []
         mine = [r for r in history if r.trigger == trigger]
         if any(stops_canary(r) for r in mine):
@@ -437,36 +321,9 @@ class StewardScheduler:
     async def _unready(
         self, spec: StewardSpec, host: str | None, params: Mapping[str, Any]
     ) -> str | None:
-        """Why ``host`` must not be run on now, or ``None``.
+        """Why ``host`` must not be run on now, or ``None`` (:func:`~kenny_server.stewards.windows.unready`)."""
 
-        A server-only run (``host`` ``None``) has no machine to be ready.
-        """
-
-        if host is None:
-            return None
-        agent = self.executor.registry.get(host)
-        if agent is None or not agent.online:
-            return "the machine is offline"
-        if not host_supports(spec, getattr(agent, "os", None)):
-            return f"this steward does not run on {getattr(agent, 'os', 'this')} machines"
-        if "require_idle" in spec.params and _idle_required(params):
-            return await self._not_idle(spec, host)
-        return None
-
-    async def _not_idle(self, spec: StewardSpec, host: str) -> str | None:
-        """``None`` only when the host itself says nobody is signed in."""
-
-        try:
-            status = await self.executor.run_capability(
-                "remotehelp_status", {}, agent_id=host, actor=f"steward:{spec.id}"
-            )
-        except Exception as exc:  # noqa: BLE001 - a check that fails is "do not disturb"
-            return f"could not tell whether anyone is using the machine ({type(exc).__name__})"
-        if isinstance(status, Mapping) and status.get("interactive_session") is False:
-            return None
-        if isinstance(status, Mapping) and status.get("interactive_session") is True:
-            return "someone is signed in at the machine"
-        return "could not tell whether anyone is using the machine"
+        return await unready(self.runner, self.executor, spec, host, params)
 
     async def _record_skip(
         self, spec: StewardSpec, mode: str, trigger: str, host: str, reason: str
@@ -515,43 +372,11 @@ class StewardScheduler:
     async def _maybe_trip(self, spec: StewardSpec) -> bool:
         """Move ``spec`` to ``shadow`` after N consecutive canary stops while in ``act``.
 
-        Skipped, running and interrupted runs are neutral: passed over, never
-        counted, never ending a streak.
+        The runner's breaker (:meth:`StewardRunner.maybe_trip`), with this
+        scheduler's threshold.
         """
 
-        streak = 0
-        # Scheduled runs only: a preview is a person's one-off look in shadow;
-        # it neither counts toward the streak nor ends it.
-        for run in await self._history(spec):  # newest first
-            if run.status in ("skipped", "running") or interrupted(run):
-                continue
-            if not stops_canary(run):
-                break
-            streak += 1
-        if streak < self._breaker_threshold:
-            return False
-        if await self.runner.mode_of(spec.id) != "act":
-            return False
-        await self.runner.set_mode(spec.id, "shadow", actor=BREAKER_ACTOR)
-        message = (
-            f"steward {spec.id}: {streak} runs in a row failed or left a change unconfirmed; "
-            "moved back to shadow by the circuit breaker"
-        )
-        logger.warning(message)
-        event_store = getattr(self.runner, "event_store", None)
-        if event_store is not None:
-            try:
-                await event_store.insert_log(
-                    source="server",
-                    at=self._now().isoformat(),
-                    level="warning",
-                    target=logger.name,
-                    message=message,
-                    fields={"steward": spec.id, "failed_in_a_row": streak, "actor": BREAKER_ACTOR},
-                )
-            except Exception:  # noqa: BLE001 - the demotion stands; losing its record must not undo it
-                logger.warning("failed to record the circuit breaker for %s", spec.id, exc_info=True)
-        return True
+        return await self.runner.maybe_trip(spec.id, threshold=self._breaker_threshold)
 
 
 def _trigger(end: datetime) -> str:
@@ -582,8 +407,10 @@ def _occurrence_end(trigger: str) -> datetime | None:
     return end if end.tzinfo is not None else end.replace(tzinfo=timezone.utc)
 
 
-def _too_soon(spec: StewardSpec, history: list[StewardRun], end: datetime) -> bool:
-    """Whether the occurrence ending at ``end`` is closer than the spec's interval to the last.
+def _too_soon(days: int | None, history: list[StewardRun], end: datetime) -> bool:
+    """Whether the occurrence ending at ``end`` is closer than ``days`` to the last.
+
+    ``days`` is the live configuration's ``schedule.min_interval_days``.
 
     Measured between occurrence ends, read off the triggers of the steward's runs
     that ran (a ``skipped`` run did not), so a weekly window with a 28-day
@@ -591,7 +418,6 @@ def _too_soon(spec: StewardSpec, history: list[StewardRun], end: datetime) -> bo
     restart. An occurrence is never too soon after itself: its own hosts finish.
     """
 
-    days = spec.trigger.min_interval_days
     if days is None:
         return False
     for run in history:

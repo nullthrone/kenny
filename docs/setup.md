@@ -57,7 +57,10 @@ KENNY_DOMAIN=kenny.example.com KENNY_OPERATOR_TOKEN=... docker compose --profile
 
 Behind a reverse proxy, set `KENNY_FORWARDED_ALLOW_IPS` to the proxy's address so the
 login rate-limiter throttles by the real client IP rather than the proxy's (otherwise all
-clients share one bucket). The bundled TLS profile sets this for you.
+clients share one bucket). The bundled TLS profile sets this for you. Set `KENNY_PUBLIC_URL`
+to the address people open the dashboard at, too: a consent write (a steward's mode,
+parameters, triggers, standing authorizations, a command run) is refused unless the
+browser's `Origin` is the request's own scheme and host or that URL's.
 
 ## Environment variables
 
@@ -83,7 +86,7 @@ interval at startup.
 | `ANTHROPIC_CUSTOM_HEADERS` | server | — | Headers sent with every model call, for the [AI gateway](#ai-gateway): `Name: Value` entries separated by `;` or newlines. Also settable in Admin → AI; a value saved there is never shown back and not included in backups. |
 | `KENNY_TLS` | server | unset | Set `1` behind TLS so the login cookie gets the `Secure` flag. |
 | `KENNY_FORWARDED_ALLOW_IPS` | server | `127.0.0.1` | Upstream proxy address(es) allowed to set `X-Forwarded-For`, so the login rate-limiter sees the real client IP behind a reverse proxy (not the proxy's). Set to your proxy's address when fronting kenny with the Caddy TLS profile. |
-| `KENNY_PUBLIC_URL` | server | `http://localhost:<port>` | External base URL; used to build installer/update links, the agent `--server` `wss://…/agent/ws`, and the **OAuth** issuer / discovery-metadata / resource URLs. Set it to your public `https://…` origin so Claude Desktop's OAuth flow advertises reachable endpoints. |
+| `KENNY_PUBLIC_URL` | server | `http://localhost:<port>` | External base URL; used to build installer/update links, the agent `--server` `wss://…/agent/ws`, and the **OAuth** issuer / discovery-metadata / resource URLs. Set it to your public `https://…` origin so Claude Desktop's OAuth flow advertises reachable endpoints. Its origin is also accepted as the dashboard's own for consent writes. |
 | `KENNY_AGENT_BINARY` | server | — | Path to the prebuilt `kenny-agent.exe` the server serves for **Windows** installer download + self-update. Overrides the GitHub auto-fetch when set. |
 | `KENNY_AGENT_BINARY_LINUX` | server | — | Path to the prebuilt **Linux** `x86_64` agent binary (static musl) the server serves for the Linux install script + self-update. Overrides the GitHub auto-fetch when set. |
 | `KENNY_AGENT_BINARY_LINUX_AARCH64` | server | — | As above for **Linux `aarch64`** (Raspberry Pi / ARM NAS). |
@@ -191,6 +194,7 @@ connected, install the optional dependency first: `pip install -e ".[discord]"`.
 | `KENNY_STEWARDS_MAX_CONCURRENT` | `2` | How many steward runs may be in flight at once (minimum 1). A run over the limit is not started and is recorded as `skipped`. Triage is exempt: every new ticket is still investigated. |
 | `KENNY_STEWARDS_DAILY_TOKENS` | `0` | Tokens (input, output and cached prompt tokens alike) all steward runs together may spend in any 24 hours; `0` means no cap. Once reached, a run is not started and is recorded as `skipped`. |
 | `KENNY_STEWARDS_PREVIEWS_PER_DAY` | `20` | How many [preview runs](dashboard.md#stewards) of one steward may start in any 24 hours, whoever asks (minimum 1). A request over it is refused with `409` and leaves no run behind. One preview of a steward on a machine runs at a time. |
+| `KENNY_STEWARDS_COMMANDS_PER_DAY` | `10` | How many command runs of one steward — a run a superuser signed in to the dashboard starts now, in which the steward may act — may start in any 24 hours (minimum 1). A request over it is refused with `409`. One run of a steward on a machine that a person started, preview or command, runs at a time. |
 | `KENNY_STEWARDS_SCHEDULE_INTERVAL_SECS` | `300` | How often kenny checks whether a scheduled steward (package updates, posture review, rule hygiene) is due (minimum 60). The steward's own maintenance window decides whether it runs; this is only how finely kenny looks. |
 
 Every key in this table except the bot token and the two `KENNY_TICKET_SWEEP_*` keys

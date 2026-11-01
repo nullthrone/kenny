@@ -732,7 +732,9 @@ off is `shadow`, on is `act`.
 
 - `GET /api/stewards` *(operator+)* — the global switch (`enabled`) and every steward in the
   catalog: its declaration (tools and their tiers, argument constraints, budget,
-  `spec_hash`), its current `mode`, and its latest run.
+  `spec_hash`), its current `mode`, the `triggers` in force with their `triggers_baseline`
+  and `triggers_allowed` ceiling ([what starts a steward](#what-starts-a-steward)), and its
+  latest run.
 - `GET /api/stewards/runs?steward_id=&limit=` *(operator+)* — runs newest first, optionally
   for one steward (`limit` defaults to 50, at most 500).
 - `GET /api/stewards/runs/{run_id}` *(operator+)* — one run: what started it, the host or
@@ -740,8 +742,10 @@ off is `shadow`, on is `act`.
   `skipped`), its verdict, the changes it made and proposed (arguments redacted), the
   parameters and server-computed `evidence` its constraints were frozen to, and its token
   usage.
-- `POST /api/stewards/{steward_id}/runs` with `{"host_id"?}` *(operator+, any
-  credential)* — runs the steward once, now, as a **preview**. A preview is **always
+- `POST /api/stewards/{steward_id}/runs` with `{"mode"?: "preview", "host_id"?}`
+  *(operator+, any credential)* — runs the steward once, now, as a **preview**. A `mode`
+  other than `"preview"` or `"act"` is refused with `400`; `"act"` is a
+  [command run](#command-runs), a different request with different rules. A preview is **always
   `shadow`**, whatever mode the steward is in (a steward in `act` included): the run happens,
   but a change it attempts is kept as a recommendation and never made, it spends no
   authorization, and its verdict opens no ticket — so it changes nothing and needs no
@@ -758,6 +762,10 @@ off is `shadow`, on is `act`.
   — which hosts already ran, a stopped canary, the circuit breaker's streak, the steward's
   interval — counts a preview, however many there are. Ask kenny offers a preview only
   when this route would accept it, apart from the caps.
+- `POST /api/stewards/{steward_id}/runs` with `{"mode": "act", "host_id"?, "effective_hash"}`
+  *(superuser, signed in at the dashboard)* — a [command run](#command-runs).
+- `GET /api/stewards/{steward_id}/command?host_id=` and `GET /api/stewards/commands?host_id=`
+  *(operator+)* — what the caller may start now, for [command runs](#command-runs).
 - `PUT /api/stewards/{steward_id}/mode` with `{"mode": "off" | "shadow" | "act",
   "effective_hash"}` *(superuser, signed in at the dashboard)* — moving a steward to `act`
   is a superuser's decision, so every mode write is. `act` must carry the steward's
@@ -774,6 +782,9 @@ off is `shadow`, on is `act`.
   allowlist) is a list of non-empty strings; `require_idle` is `true` or `false` (absent
   means `true`: a host with somebody signed in is skipped); `window` is `{"days",
   "start", "end", "tz"}`, read like a web-filter schedule window.
+- `GET /api/stewards/{steward_id}/triggers` *(operator+)* and `PUT
+  /api/stewards/{steward_id}/triggers` *(superuser, signed in at the dashboard)* — what
+  starts the steward; see [what starts a steward](#what-starts-a-steward).
 - `GET /api/stewards/{steward_id}/authorizations` *(operator+)* — the steward's
   standing authorizations, revoked, voided and expired ones included, each with its status
   and the attempts spent per host in the last 24 hours.
@@ -785,13 +796,25 @@ off is `shadow`, on is `act`.
 - `DELETE /api/stewards/{steward_id}/authorizations/{auth_id}` *(superuser, signed
   in at the dashboard)* — revokes one; the next call it would have covered is refused.
 
-Choosing a mode, granting, revoking and editing parameters are a person's consent, so they
+Choosing a mode, granting, revoking, editing parameters, editing triggers and starting a
+command run are a person's consent, so they
 need a superuser signed in to their own account in a browser. The same calls made with a
 personal access token, an OAuth token (what Claude uses for `/mcp`) or the shared operator
-token are refused with `403`; reading stays open to them.
+token are refused with `403`; reading stays open to them. Switching `KENNY_TRIAGE_RESOLVE`
+or `KENNY_STEWARDS_ENABLED` on, or resetting either, takes the same.
+
+Each of these writes must also come from the dashboard itself. One whose `Sec-Fetch-Site`
+header is present and not `same-origin` or `none`, or whose `Origin` header is neither the
+request's own scheme and host nor that of `KENNY_PUBLIC_URL`, is refused with `403`; one
+that carries a body must send it as `Content-Type: application/json`, else `415`. The
+session cookie is `SameSite=Lax`, which still lets another site on the same domain (another
+port or subdomain) make the browser send it with a form; a form can send neither JSON nor
+a same-origin `Origin`.
 
 `act` is bound to the steward's **effective hash**: its spec (including the tier of every
-tool it names) together with its parameters. A parameter edit that changes the hash, or a
+tool it names) together with its parameters and its trigger configuration (a configuration
+equal to the steward's baseline leaves the hash as the spec and parameters alone make it).
+A parameter or trigger edit that changes the hash, or a
 release that changes the spec, drops the steward to `shadow` at once, a run in flight
 included, and it stays there until a superuser chooses `act` again; `GET
 /api/stewards` shows each steward's `params`, `effective_hash` and whether `act` is
@@ -847,6 +870,125 @@ runs older than 90 days, and voids every authorization bound to what a steward n
 For a steward no longer in the catalog it voids every authorization and drops a stored `act`
 to `shadow`, so a steward removed and shipped again later starts over in `shadow`.
 
+#### What starts a steward
+
+A steward's spec declares a **ceiling** on what may start it: a schedule (its maintenance
+window), events from a closed set, and a command (a person starts it now). The install
+**configures** within that ceiling
+([ADR-0073](adr/0073-steward-triggers-are-configuration.md)); a release that narrows the
+ceiling narrows every configuration with it. Triage is fixed: it runs on new tickets
+only, and its triggers cannot be edited.
+
+A configuration is `{"schedule": null | {"min_interval_days": null | 1..366}, "events":
+[{"name", "cooldown_hours"}], "command": bool}`. All three fields are required and nothing
+else is taken. `schedule` needs a steward with a `window` parameter and runs it in the
+occurrences of that window, at least `min_interval_days` apart (`null`: every occurrence);
+a switched-off schedule starts nothing, not even a `shadow` run. `events` lists each event
+once, with a `cooldown_hours` of 1 to 168 (default 24). `command` switches on
+[command runs](#command-runs).
+
+- `GET /api/stewards/{steward_id}/triggers` *(operator+)* — `{"steward_id", "allowed":
+  {"schedule", "events", "command", "editable"}, "baseline", "triggers", "effective_hash"}`:
+  the ceiling, the configuration a steward runs with while nobody has configured one, the
+  configuration in force, and the hash to quote when writing. `404` for an unknown steward.
+- `PUT /api/stewards/{steward_id}/triggers` with `{"triggers": {...}, "effective_hash"}`
+  *(superuser, signed in at the dashboard)* — replaces the configuration. The answer
+  (`200`) is `{"steward_id", "triggers", "effective_hash", "mode", "voided"}`. `403` for a
+  token or an operator, `400` without an `effective_hash`, for a configuration that is
+  malformed or outside the ceiling, and for a steward whose triggers are fixed; `409` when
+  the steward has changed since the hash was shown. Like a parameter edit, a change of the
+  effective hash drops a steward in `act` to `shadow` and voids its standing
+  authorizations for good; a configuration that leaves the hash as it was writes nothing.
+  Each change is written to the event log with who made it.
+
+**Events.** An event names an alert that starts the steward: `alert:health:<section>` (one
+per telemetry section a health alert names), `alert:disk_forecast`, `alert:offline`,
+`alert:hardware_forecast` and `alert:change`, plus `ticket_created` for the steward that
+runs on a ticket's own surface. Only alert and change notifications raise them; a recovery,
+the digest and a test notification never do
+([Alerting](alerting.md#an-alert-can-start-a-steward)). The run's `trigger` is
+`event:<name>`, and the brief it starts from carries the event, the machine and the severity
+of each section, never the alert's text. A steward that takes `hosts` runs on the alert's
+machine only if its `hosts` name it; one that takes none runs on no machine. A steward
+starts on an event only when the global switch and AI are on and its mode is not `off`.
+A steward that works on a machine but takes no `hosts` cannot be started by an event or a
+command at all; a spec like that is refused when the server starts.
+A steward never runs twice at once on one machine, whichever events start it; per steward,
+machine and event, a run is not started inside its
+**cooldown**; a run held back because somebody is signed in to the machine
+(`require_idle`) or a precondition is unmet is recorded as *skipped* with the reason.
+
+**The quiet period.** An event on a machine a steward changed in the last 6 hours, or is
+changing now, starts nothing and is recorded as a *skipped* run naming the reason: an
+alert carries no provenance, so a steward's own effect must not start another run. A run
+puts each change on its record as it is made, before the call reaches the machine, so a
+run still going counts — any run in `act` on that machine that has not finished counts,
+whether or not it has changed anything yet — and so does one a crash or restart cut short
+with a change recorded. A steward that works on no machine (it changes the server's own
+records, such as a suppression rule) and changed something in the last 6 hours, or is
+changing something now, quiets every machine's events the same way: what it changed can
+raise an alert anywhere. The quiet period is asked of the machine the alert is about,
+also for a steward that runs on no machine.
+
+**Consent in time, by trigger.**
+
+- *Schedule:* the run acts only inside the maintenance window.
+- *Event:* a steward with a `window` parameter acts only inside an open occurrence of it;
+  outside it, or with the window unset, the run still happens but every change is a
+  recommendation. A steward without a window just runs.
+- *Command:* the person who clicks is the consent in time; see below.
+
+A `normal_change` needs a standing authorization in every case. Schedule and event runs
+count toward the circuit breaker; previews and command runs do not.
+
+#### Command runs
+
+`POST /api/stewards/{steward_id}/runs` with `{"mode": "act", "host_id"?, "effective_hash"}`
+starts one run now in which the steward may act. Only a superuser signed in to the
+dashboard may: a token, an OAuth token, the shared operator token or an operator is refused
+with `403` before anything about the steward is told (an operator may start a
+[preview](#stewards) instead). The run is bound by the steward's tools, constraints,
+budget, the global caps and, for a `normal_change`, a standing authorization, exactly as
+an unattended run is. Its `trigger` is `command:<username>`, and who started it is recorded
+on the run and in the event log.
+
+It is refused, in this order, with `400` for a request that cannot pass and `409` for a
+state that may: triage or any steward that runs on a ticket's surface (`400`); its
+`command` trigger off in the configuration in force (`400`); the global switch off or no
+AI (`409`); the steward not in `act` (`409`); a missing `effective_hash` (`400`) or one that
+is no longer the steward's (`409`: review it again); then the target. A steward that works
+on a machine takes a known one that is online (`409` if not), runs an OS that serves its
+tools, and is named in the steward's `hosts` (an empty list admits none; a steward without
+`hosts` admits no machine); a steward that works on none takes none (`400` for a bad
+target); an unmet precondition is `409`, and so is a machine somebody is signed in to when
+the steward's `require_idle` is on (code `host_not_idle`: the machine itself is asked, and
+one that cannot say counts as in use). Last, `409` when a run of this steward on this target that a person started,
+preview or command, is still running, when the steward has had
+`KENNY_STEWARDS_COMMANDS_PER_DAY` command runs in the last 24 hours, or when a global cap
+skipped the run. A refusal answers `{"error", "code"}`, plus the `run_id` of the *skipped*
+run a cap left behind; `503` when no executor or model is configured. A run that is
+admitted answers `202` with `{"run_id", "steward_id", "host_id", "mode", "trigger",
+"status"}` and carries on in the background; watch it at `GET
+/api/stewards/runs/{run_id}`. The run starts only with the effective hash the request
+named: if the steward changed between these checks and the run's start, it is refused
+with `409` (`hash_stale`) and nothing is recorded. Like every consent write, the request
+must come from the dashboard's own origin as JSON (see [Stewards](#stewards)).
+
+- `GET /api/stewards/{steward_id}/command?host_id=` *(operator+)* — what the caller may
+  start of one steward on that machine (omit `host_id` for a steward that works on none),
+  asked through the same checks apart from the hash: `{"steward_id", "host_id",
+  "effective_hash", "mode", "preview": {"allowed", "reason"}, "run": {"allowed", "reason",
+  "code"}, "tools": [...]}`. `run.allowed` is false for a caller who may not start a run
+  that acts, with the reason. `effective_hash` is the one to send back. Each entry of
+  `tools` is a change-tier tool the run could use: `tool`, `tier`, `values` (per
+  argument, the values it may take, or `"computed at run start"` for values the server
+  works out then), `needs_authorization` and, for a `normal_change`, the
+  `authorization` it would run under now (`{"id", "remaining_today", "expires_at"}`, or
+  `null` for none).
+- `GET /api/stewards/commands?host_id=` *(operator+)* — `{"host_id", "stewards": [...]}`:
+  the stewards whose `command` trigger is on, that are not `off` and take this target, each
+  with `steward_id`, `title`, `summary`, `mode`, `preview_allowed` and `run_allowed`.
+
 ### Stewards view
 
 <figure markdown>
@@ -893,6 +1035,13 @@ status. A title opens the steward.
   declares appear; triage takes none. Saving a change to these values drops the steward back to
   `shadow` and voids its standing authorizations for good — the page says so above the
   save button and reports what the server did afterwards.
+- **Triggers** — what starts the steward: a switch for its schedule (with an optional
+  minimum number of days between runs), one for each event its spec allows (with a cooldown
+  in hours), and one for **run on command**; a switch the spec does not allow does not
+  appear. Operators and a triage steward, whose triggers are fixed, see what is switched
+  on but not the controls. Saving a change moves the steward back to `shadow` and voids its
+  standing authorizations for good, like a parameter edit; the page says so above the save
+  button, and a `409` is explained as for the mode.
 - **Standing authorizations** — a table of tool, scope (PCs or `the server`),
   attempts per PC per day (with the attempts spent in the last 24 hours), expiry, who
   granted it and its state: `LIVE`, `REVOKED`, `VOIDED` (the steward changed) or

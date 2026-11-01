@@ -139,7 +139,7 @@ def test_an_event_trigger_needs_a_known_event(event: str | None) -> None:
         validate(make_spec(trigger=Trigger(kind="event", event=event)))
 
 
-@pytest.mark.parametrize("kind", ["schedule", "on_demand"])
+@pytest.mark.parametrize("kind", ["schedule"])
 def test_only_an_event_trigger_names_an_event(kind: str) -> None:
     params = ("window",) if kind == "schedule" else ()
     with pytest.raises(SpecError, match="only an event trigger"):
@@ -201,7 +201,7 @@ def test_the_hash_ignores_tool_ordering() -> None:
     [
         {"prompt": "A different prompt."},
         {"tools": frozenset({"diag_services", "diag_processes", "ticket_triage_verdict"})},
-        {"trigger": Trigger(kind="on_demand")},
+        {"trigger": Trigger(kind="event", event="alert:change")},
         {"budget": Budget(max_iterations=3)},
         {"version": 2},
         {"sensitive_ok": True},

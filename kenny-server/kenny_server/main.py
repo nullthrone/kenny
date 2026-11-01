@@ -70,6 +70,7 @@ from .store import (
 )
 from .stewards.authorizations import AuthorizationStore
 from .stewards.hygiene import register as register_rule_hygiene
+from .stewards.events import EventTrigger
 from .stewards.runner import StewardRunner
 from .stewards.scheduler import INTERVAL_SETTING as STEWARD_SCHEDULE_SETTING
 from .stewards.scheduler import StewardScheduler
@@ -805,6 +806,13 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
     steward_scheduler = StewardScheduler(
         steward_runner, steward_runner.catalog, _steward_params, steward_executor
     )
+    # An alert or a change starts the stewards whose trigger configuration
+    # enables that event (ADR-0073). The engine is built before the runner, so the
+    # hook is set here; it only classifies and spawns, the alert loop never waits.
+    steward_events = EventTrigger(
+        steward_runner, steward_runner.catalog, _steward_params, steward_executor
+    )
+    alert_engine.set_alert_hook(steward_events.on_alert)
     ticket_assistant: TicketAssistant | None = None
     triage: TriageService | None = None
     if ticket_client is not None:
@@ -958,6 +966,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         await steward_authorizations.connect()
         # Nothing runs yet, so a run still open belongs to a dead process.
         await steward_runner.startup()
+        steward_events.bind()  # alerts raised on any loop start their stewards on this one
         # Telemetry retention (ADR-0051) is re-read here, after the overrides
         # loaded (settings bound through ``_bind_live_settings`` were re-applied
         # by ``settings.load()`` itself), before the
@@ -1167,6 +1176,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
                 with contextlib.suppress(asyncio.CancelledError):
                     await steward_schedule_task
             await steward_runner.cancel_previews()
+            await steward_events.cancel()
             startup_maintenance_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await startup_maintenance_task
