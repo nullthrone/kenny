@@ -1,0 +1,6 @@
+{
+  "type": "request",
+  "id": "a3c71e5b-0d42-4f68-9b1a-7c2e8d4f6a10",
+  "tool": "fs_cleanup_scan",
+  "args": { "target": "temp_system" }
+}

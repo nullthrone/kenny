@@ -142,7 +142,7 @@ pub fn set_remote_control_enabled(enabled: bool) -> std::io::Result<()> {
 
 /// Whether a tool *writes to the device* and is therefore gated by the kill switch.
 ///
-/// Read-only diagnostics (`fs_*`, `diag_*`, `net_config`, `screen_capture`,
+/// Read-only diagnostics (`fs_*` except `fs_cleanup`, `diag_*`, `net_config`, `screen_capture`,
 /// `remotehelp_status`) and `telemetry_collect` are **not** mutating and keep working
 /// while remote control is off. Keep this list in lockstep with the tool catalog in
 /// `docs/protocol.md`.
@@ -156,6 +156,8 @@ pub fn is_mutating(tool: &str) -> bool {
             | "winget_update"
             | "net_dns_flush"
             | "net_adapter_reset"
+            | "fs_cleanup"
+            | "service_restart"
             | "remotehelp_start"
             | "remotehelp_stop"
             | "agent_update"
@@ -244,6 +246,10 @@ mod tests {
         assert!(is_mutating("remotehelp_stop"));
         assert!(is_mutating("webfilter_apply"));
         assert!(is_mutating("webfilter_clear"));
+        assert!(is_mutating("fs_cleanup"));
+        assert!(is_mutating("service_restart"));
+        // The scan reports what a cleanup would remove and never deletes anything.
+        assert!(!is_mutating("fs_cleanup_scan"));
         // webfilter_status is read-only and must keep working under the kill switch.
         assert!(!is_mutating("webfilter_status"));
         assert!(!is_mutating("telemetry_collect"));

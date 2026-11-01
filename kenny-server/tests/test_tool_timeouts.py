@@ -24,13 +24,25 @@ _DIAGNOSTICS_RS = (
 _DIAG_TOOLS = ("diag_services", "diag_eventlog", "diag_autostart")
 
 
-def _agent_diag_budget_s() -> int:
-    source = _DIAGNOSTICS_RS.read_text(encoding="utf-8")
+_HANDLERS = _DIAGNOSTICS_RS.parent
+_CLEANUP_RS = _HANDLERS / "cleanup.rs"
+_SERVICES_RS = _HANDLERS / "services.rs"
+
+
+def _agent_budget_s(source_file: Path, name: str) -> int:
+    """Read ``pub const <name>: Duration = Duration::from_secs(N);`` from agent source."""
+
+    assert source_file.exists(), f"{source_file} not found; the agent budget cannot be read"
+    source = source_file.read_text(encoding="utf-8")
     match = re.search(
-        r"pub const DIAG_BUDGET: Duration = Duration::from_secs\((\d+)\);", source
+        rf"pub const {name}: Duration = Duration::from_secs\((\d+)\);", source
     )
-    assert match, f"DIAG_BUDGET not found in {_DIAGNOSTICS_RS}"
+    assert match, f"{name} not found in {source_file}"
     return int(match.group(1))
+
+
+def _agent_diag_budget_s() -> int:
+    return _agent_budget_s(_DIAGNOSTICS_RS, "DIAG_BUDGET")
 
 
 @pytest.mark.parametrize("tool", _DIAG_TOOLS)
@@ -38,6 +50,27 @@ def test_the_agent_gives_up_on_a_diagnostic_before_the_server_does(tool: str) ->
     budget = _agent_diag_budget_s()
     # Headroom for PowerShell start-up and the round trip over the tunnel.
     assert _TOOL_MIN_TIMEOUT_S[tool] >= budget + 10, (tool, budget)
+
+
+# Tool -> (agent source file, budget constant). The agent bounds each of these
+# calls itself; the server must outwait that bound, or a slow call ends in the
+# server's generic timeout instead of the agent's own, more specific error.
+_BUDGETS = {
+    "fs_cleanup": (_CLEANUP_RS, "CLEANUP_BUDGET"),
+    "fs_cleanup_scan": (_CLEANUP_RS, "SCAN_BUDGET"),
+    "service_restart": (_SERVICES_RS, "RESTART_BUDGET"),
+}
+
+
+@pytest.mark.parametrize("tool", sorted(_BUDGETS))
+def test_the_agent_gives_up_on_cleanup_and_restart_before_the_server_does(tool: str) -> None:
+    source_file, name = _BUDGETS[tool]
+    budget = _agent_budget_s(source_file, name)
+    # The agent answers `timeout` at most WORKER_GRACE after the budget when a
+    # worker is stuck in the kernel; the server must still be waiting then.
+    grace = _agent_budget_s(_CLEANUP_RS, "WORKER_GRACE")
+    assert _TOOL_MIN_TIMEOUT_S[tool] >= budget + grace + 5, (tool, name, budget, grace)
+    assert _TOOL_MIN_TIMEOUT_S[tool] >= budget + 10, (tool, name, budget)
 
 
 @pytest.mark.parametrize("tool", _DIAG_TOOLS)

@@ -76,6 +76,10 @@ SINCE_LEGACY = frozenset(
         # Ends a steward's run; its handler may open a ticket for a
         # finding (kenny_server/stewards, ADR-0071).
         "steward_verdict",
+        # Irreversible disk cleanup from the agent's fixed catalog, and a
+        # bounded service restart (contract v0.23).
+        "fs_cleanup",
+        "service_restart",
     }
 )
 
@@ -120,6 +124,8 @@ AGENT_MUTATING = (
     "account_delete",
     "account_session_action",
     "password_policy_set",
+    "fs_cleanup",
+    "service_restart",
 )
 
 
@@ -206,6 +212,7 @@ def test_agent_read_only_tools_stay_read_only() -> None:
         "webfilter_status",
         "telemetry_collect",
         "fs_list",
+        "fs_cleanup_scan",
         "diag_processes",
         "net_config",
         "screen_capture",
