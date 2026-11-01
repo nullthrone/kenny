@@ -87,3 +87,19 @@ describe('Transcript — a call that is still running', () => {
     expect(container.querySelector('[class*="spinner"]')).toBeNull()
   })
 })
+
+describe('Transcript — the server’s note', () => {
+  it('shows a finished run’s note apart from the operator’s bubble, labelled as the server’s', () => {
+    const items: TranscriptItem[] = [
+      { kind: 'user', id: 'u1', text: 'tidy up pc-kid' },
+      { kind: 'note', id: 'n1', runId: 'r1', text: 'steward: disk\nstatus: completed\nbytes freed: 4096' },
+    ]
+    const { container, getByTestId } = render(<Transcript items={items} />)
+
+    const note = getByTestId('system-note')
+    expect(note.textContent).toContain('SERVER NOTE')
+    expect(note.textContent).toContain('bytes freed: 4096')
+    expect(container.querySelectorAll('[class*="userBubble"]')).toHaveLength(1)
+    expect(container.querySelector('[class*="userBubble"]')!.textContent).not.toContain('bytes freed')
+  })
+})

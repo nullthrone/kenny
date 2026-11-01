@@ -865,6 +865,34 @@ changed, is refused. Removing a rule is a `normal_change`, so in `act` it needs 
 standing authorization with scope `"server"`; without one, and in `shadow`, the run's
 recommendations list what it would remove.
 
+The **disk-hygiene steward** (`disk_hygiene`, in `shadow` until a superuser chooses `act`)
+frees disk space on the hosts named in its `hosts`, about weekly: in the first occurrence of
+its `window` at least 7 days after the last one it ran in. A run reads the host's volumes
+(`fs_disk_usage`), scans each allowed cleanup target (`fs_cleanup_scan`), cleans one target
+per call (`fs_cleanup`) where at least 100 MiB is reclaimable, or anything reclaimable once a
+volume is 95% full, reads the volumes again, and reports `clean`, `acted`, `actionable` (a
+volume still 90% full, or a cleanup refused) or `inconclusive`. It never reports more space
+freed than the tools reported. It runs on Windows and Linux hosts only.
+
+- **Parameters.** `window`, `hosts` and `require_idle` as for the other scheduled stewards;
+  `targets`, the allowlist of cleanup targets it may scan and clean; and `min_percent_used`
+  (a whole number from 1 to 99, default 80). Each `targets` value must be a target the agent
+  knows ([cleanup targets](protocol.md#cleanup-targets)), so a typo is refused when the
+  parameters are saved. The list starts empty, and an empty list admits nothing. A sensible
+  start is `temp_system`, `temp_users`, `windows_update_cache`, `tmp`, `package_cache` and
+  `journal`; `recycle_bin` (irreversible) and `logs_old` are left for an admin to choose. The
+  run is told which allowed targets its host's OS serves.
+- **Precondition.** A host whose fullest volume, in the latest telemetry, is below
+  `min_percent_used` is skipped before any model is called, recorded once per occurrence as
+  *skipped* with the reason "no volume at or above the usage threshold". A host with no
+  telemetry, or telemetry older than 12 hours, is run on.
+- **Triggers.** Its ceiling is the schedule, a command and the events `alert:health:disk` and
+  `alert:disk_forecast`; only the weekly schedule is on until a superuser enables more
+  ([what starts a steward](#what-starts-a-steward)).
+- **Acting.** `fs_cleanup` is a `normal_change`: in `act` it runs only for an allowed target
+  and only under a standing authorization for `fs_cleanup` on that host. Without one, and in
+  `shadow`, the run's recommendations list the targets it would clean.
+
 Each server start marks a run the previous process left open as `failed`, deletes finished
 runs older than 90 days, and voids every authorization bound to what a steward no longer is.
 For a steward no longer in the catalog it voids every authorization and drops a stored `act`
@@ -988,6 +1016,31 @@ must come from the dashboard's own origin as JSON (see [Stewards](#stewards)).
 - `GET /api/stewards/commands?host_id=` *(operator+)* — `{"host_id", "stewards": [...]}`:
   the stewards whose `command` trigger is on, that are not `off` and take this target, each
   with `steward_id`, `title`, `summary`, `mode`, `preview_allowed` and `run_allowed`.
+- `POST /api/chat/steward-run-result` *(operator+, JSON from the dashboard itself)* with
+  `{"session_id", "run_id"}` records a finished run in that Ask kenny conversation. The run
+  must be finished (`409` otherwise) and started by the caller (`403` otherwise), and the
+  conversation must be able to take a message (`409 session_busy` while it waits on a
+  confirmation). The server adds one fixed-template note built only from the steward id,
+  machine id, run id, mode, status, verdict (one of the fixed outcomes), the number of actions
+  and recommendations, and the sum of the `bytes_freed` recorded on the run's actions — never
+  the run's `summary`, `error` or arguments. It runs no model turn, is idempotent per
+  conversation and run (`{"appended": false}` the second time), shows as a server note when the
+  conversation is reopened, and reaches the model on its next turn as data.
+
+**From Ask kenny.** The card Ask kenny shows for a proposed run reads
+`GET /api/stewards/{steward_id}/command` and offers **Preview** and **Run now**. Run now is
+enabled only where `run.allowed` is true and sends `{"mode": "act", "host_id"?,
+"effective_hash"}` with the hash that view returned; otherwise it is disabled and shows
+`run.reason`. The card lists each change-tier tool the run could use, with the values it may
+take and its authorization (`remaining_today` and expiry, or "needs a standing
+authorization"). A `403` reads as the consent sentence, `409 hash_stale` as "the steward
+changed" (the card reloads what it may do), anything else shows the server's reason. Once
+started, the card follows `GET /api/stewards/runs/{run_id}` every 3 seconds until the run
+finishes (or about 15 minutes), showing status, verdict, the number of actions and
+recommendations, and the bytes freed the run recorded, then records the result in the
+conversation once. On a host page an empty Ask kenny conversation lists the stewards
+`GET /api/stewards/commands?host_id=` returns for that machine; choosing one adds the same
+card and starts nothing. The model only ever proposes; a person presses the button.
 
 ### Stewards view
 

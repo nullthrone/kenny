@@ -15,6 +15,7 @@ import pytest
 from kenny_server import ticket_assistant, toolloop
 from kenny_server.stewards import catalog
 from kenny_server.stewards.catalog import CATALOG, build, get
+from kenny_server.stewards.catalog.disk import DISK_HYGIENE
 from kenny_server.stewards.catalog.hygiene import CONFIG_HYGIENE
 from kenny_server.stewards.catalog.patch import PATCH
 from kenny_server.stewards.catalog.posture import POSTURE
@@ -89,7 +90,7 @@ def test_build_validates_every_spec_not_just_the_first() -> None:
 def test_import_is_where_the_catalog_is_validated() -> None:
     # CATALOG is built by ``build`` at import, so a bad spec in the module's
     # tuple would stop the server booting. Pin that it goes through build().
-    assert catalog.CATALOG == build((TRIAGE, PATCH, POSTURE, CONFIG_HYGIENE))
+    assert catalog.CATALOG == build((TRIAGE, PATCH, POSTURE, CONFIG_HYGIENE, DISK_HYGIENE))
 
 
 def test_triage_declares_the_documented_shape() -> None:

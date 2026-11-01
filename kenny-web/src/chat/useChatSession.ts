@@ -9,6 +9,9 @@ export interface ChatSession {
   createFromDraft: typeof chatStore.createFromDraft
   dismissDraft: typeof chatStore.dismissDraft
   startStewardRun: typeof chatStore.startStewardRun
+  runStewardNow: typeof chatStore.runStewardNow
+  reportStewardRun: typeof chatStore.reportStewardRun
+  proposeStewardRun: typeof chatStore.proposeStewardRun
   dismissStewardRun: typeof chatStore.dismissStewardRun
   stop: typeof chatStore.stop
   startNew: () => void
@@ -52,6 +55,9 @@ export function useChatSession(agentId: string, ticketId = ''): ChatSession {
     createFromDraft: chatStore.createFromDraft,
     dismissDraft: chatStore.dismissDraft,
     startStewardRun: chatStore.startStewardRun,
+    runStewardNow: chatStore.runStewardNow,
+    reportStewardRun: chatStore.reportStewardRun,
+    proposeStewardRun: chatStore.proposeStewardRun,
     dismissStewardRun: chatStore.dismissStewardRun,
     stop: chatStore.stop,
     startNew: () => chatStore.reset(agentId),

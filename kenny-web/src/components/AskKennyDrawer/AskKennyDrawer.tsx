@@ -6,6 +6,7 @@ import GateCard from '../GateCard/GateCard'
 import Composer from './Composer'
 import HistoryPanel from './HistoryPanel'
 import PendingGateModal from './PendingGateModal'
+import StewardQuickActions from './StewardQuickActions'
 import Transcript from './Transcript'
 import styles from './AskKennyDrawer.module.css'
 
@@ -46,7 +47,16 @@ export default function AskKennyDrawer() {
   const chat = useChatSession(route.agentId, route.ticketId)
   const [view, setView] = useState<'transcript' | 'history'>('transcript')
 
-  const { state, createFromDraft, dismissDraft, startStewardRun, dismissStewardRun } = chat
+  const {
+    state,
+    createFromDraft,
+    dismissDraft,
+    startStewardRun,
+    runStewardNow,
+    reportStewardRun,
+    proposeStewardRun,
+    dismissStewardRun,
+  } = chat
   const gateOpen = state.pendingGate !== null
   const ticket = state.ticket
   // A ticket route whose target the ticket page has not bound yet. Never
@@ -133,7 +143,17 @@ export default function AskKennyDrawer() {
             onCreateDraft={createFromDraft}
             onDismissDraft={dismissDraft}
             onStartStewardRun={startStewardRun}
+            onRunStewardNow={runStewardNow}
+            onStewardRunFinished={reportStewardRun}
             onDismissStewardRun={dismissStewardRun}
+            // On a host page the empty conversation offers that PC's stewards.
+            // The drawer's host is the conversation's committed scope, not
+            // the URL read again: it is what the chip says.
+            emptyExtra={
+              !ticket && state.agentId ? (
+                <StewardQuickActions hostId={state.agentId} onPick={proposeStewardRun} />
+              ) : undefined
+            }
           />
           {ticketGate && (
             // Inline rather than modal: this gate is durable. It may be

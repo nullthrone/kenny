@@ -352,6 +352,12 @@ export interface StewardCall {
   authorization_id?: string
   ok?: boolean
   code?: string | null
+  /**
+   * What a change-tier tool reported, numbers and enumerations only (`runner.RESULT_SUMMARY_FIELDS`):
+   * `fs_cleanup` keeps `target`, `files_removed`, `bytes_freed` and `complete`. Absent for a
+   * tool that keeps none, and for a call that did not run.
+   */
+  result?: Record<string, unknown>
 }
 
 /** `stewards/store.py::StewardRun.to_public`. */

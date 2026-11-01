@@ -12,11 +12,14 @@
 
 export class ApiError extends Error {
   readonly status: number
+  /** The machine-readable `code` of a refusal that carries one (`{error, code}`), else undefined. */
+  readonly code?: string
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, code?: string) {
     super(message)
     this.name = 'ApiError'
     this.status = status
+    this.code = code
   }
 }
 
@@ -26,6 +29,15 @@ function hasErrorField(data: unknown): data is { error: string } {
     data !== null &&
     'error' in data &&
     typeof (data as Record<string, unknown>).error === 'string'
+  )
+}
+
+function hasCodeField(data: unknown): data is { code: string } {
+  return (
+    typeof data === 'object' &&
+    data !== null &&
+    'code' in data &&
+    typeof (data as Record<string, unknown>).code === 'string'
   )
 }
 
@@ -51,7 +63,7 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
 
   if (!res.ok) {
     const message = hasErrorField(data) ? data.error : `${path} -> ${res.status}`
-    throw new ApiError(message, res.status)
+    throw new ApiError(message, res.status, hasCodeField(data) ? data.code : undefined)
   }
 
   return data as T

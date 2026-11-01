@@ -23,7 +23,7 @@
 import { api } from '../api/client'
 import { streamChatEvents } from '../api/sse'
 import type { ChatStreamRequest } from '../api/types'
-import { applyChatEvent, startUserTurn } from './reducer'
+import { addStewardProposal, applyChatEvent, startUserTurn } from './reducer'
 import { announceTicketTurn } from './ticketTurn'
 import type {
   ChatConfirmRequest,
@@ -31,6 +31,7 @@ import type {
   ChatHistoryListResponse,
   ChatSessionState,
   ConversationSummary,
+  StewardRunResultRequest,
   TicketChatRequest,
   TicketChatTarget,
   TicketDecisionRequest,
@@ -38,6 +39,10 @@ import type {
 import { makeInitialState } from './types'
 
 type Listener = () => void
+
+/** How long, and how often, a result the conversation could not take yet is offered again. */
+export const RESULT_RETRY_MS = 4000
+const RESULT_RETRIES = 6
 
 class ChatStore {
   private state: ChatSessionState = makeInitialState('')
@@ -276,14 +281,90 @@ class ChatStore {
       `/api/stewards/${encodeURIComponent(stewardId)}/runs`,
       hostId ? { host_id: hostId } : {},
     )
+    this.markStewardRunStarted(itemId, res.run_id, 'preview')
+  }
+
+  /**
+   * Start the run the card's RUN NOW button offers: a command run, in which the
+   * steward may act within its limits.
+   *
+   * The body names the effective hash the card showed -- the server starts the
+   * run only if the steward is still exactly that, and refuses a caller who may
+   * not start one (superuser at the dashboard) with `403` before anything else.
+   * A refusal throws the `ApiError` (status and `code` intact) for the card to
+   * word; the row stays pending.
+   */
+  runStewardNow = async (
+    itemId: string,
+    stewardId: string,
+    hostId: string,
+    effectiveHash: string,
+  ): Promise<void> => {
+    const body: Record<string, unknown> = { mode: 'act', effective_hash: effectiveHash }
+    if (hostId) body.host_id = hostId
+    const res = await api.post<{ run_id: string }>(
+      `/api/stewards/${encodeURIComponent(stewardId)}/runs`,
+      body,
+    )
+    this.markStewardRunStarted(itemId, res.run_id, 'act')
+  }
+
+  private markStewardRunStarted = (itemId: string, runId: string, mode: 'preview' | 'act'): void => {
     this.update((st) => ({
       ...st,
       items: st.items.map((it) =>
         it.kind === 'steward_proposal' && it.id === itemId
-          ? { ...it, resolution: 'started' as const, runId: res.run_id }
+          ? { ...it, resolution: 'started' as const, runId, startedMode: mode }
           : it,
       ),
     }))
+  }
+
+  /**
+   * A run started from a card has finished: tell the conversation, once.
+   *
+   * The server reads the run itself and writes a fixed-template note from its
+   * recorded numbers (it never takes this request's word for what the run did),
+   * and starts no model turn. The row is marked first so a card that re-renders
+   * cannot post twice; a conversation with no server session yet has nothing to
+   * tell. A conversation that cannot take a note this moment (a confirmation is
+   * pending) is asked again a few times; anything else is dropped -- the
+   * card already shows the outcome.
+   */
+  reportStewardRun = async (itemId: string, runId: string): Promise<void> => {
+    const item = this.state.items.find((it) => it.kind === 'steward_proposal' && it.id === itemId)
+    if (!item || item.kind !== 'steward_proposal' || item.resultReported) return
+    this.update((st) => ({
+      ...st,
+      items: st.items.map((it) =>
+        it.kind === 'steward_proposal' && it.id === itemId ? { ...it, resultReported: true } : it,
+      ),
+    }))
+    const sessionId = this.state.sessionId
+    if (!sessionId) return
+    const body: StewardRunResultRequest = { session_id: sessionId, run_id: runId }
+    for (let attempt = 0; attempt <= RESULT_RETRIES; attempt++) {
+      try {
+        await api.post('/api/chat/steward-run-result', body)
+        return
+      } catch (err) {
+        const e = err as { status?: number; code?: string }
+        const busy = e.status === 409 && e.code === 'session_busy'
+        if (!busy || attempt === RESULT_RETRIES) return
+        await new Promise((resolve) => setTimeout(resolve, RESULT_RETRY_MS))
+        // The conversation moved on (new chat, another one opened): nothing to tell.
+        if (this.state.sessionId !== sessionId) return
+      }
+    }
+  }
+
+  /**
+   * Put a steward run's card into the conversation from a quick action. Client-side
+   * only, like the card kenny's `steward_run_proposal` makes: it starts nothing --
+   * the card's buttons are the only thing that can.
+   */
+  proposeStewardRun = (stewardId: string, hostId: string, reason: string): void => {
+    this.update((st) => addStewardProposal(st, { stewardId, hostId, reason }))
   }
 
   /** Put a steward-run offer away unstarted. The row stays: the offer was made and declined. */

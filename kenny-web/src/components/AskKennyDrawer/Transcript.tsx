@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { TranscriptItem } from '../../chat/types'
 import type { TicketDraftCardProps } from './TicketDraftCard'
 import { Check, X, ICON_STROKE_WIDTH } from '../icons'
@@ -59,8 +59,14 @@ export interface TranscriptProps {
   onDismissDraft?: TicketDraftCardProps['onDismiss']
   /** Starts the preview run a proposal card offers. */
   onStartStewardRun?: StewardRunProposalCardProps['onStart']
+  /** Starts the run that may act, naming the effective hash the card showed. */
+  onRunStewardNow?: StewardRunProposalCardProps['onRunNow']
+  /** A run started from a card has finished: hand the result to the conversation. */
+  onStewardRunFinished?: StewardRunProposalCardProps['onFinished']
   /** Puts a proposal away unstarted. */
   onDismissStewardRun?: StewardRunProposalCardProps['onDismiss']
+  /** Shown under the empty conversation's text (the drawer's quick actions). */
+  emptyExtra?: ReactNode
 }
 
 /**
@@ -82,7 +88,10 @@ export default function Transcript({
   onCreateDraft,
   onDismissDraft,
   onStartStewardRun,
+  onRunStewardNow,
+  onStewardRunFinished,
   onDismissStewardRun,
+  emptyExtra,
 }: TranscriptProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -95,6 +104,7 @@ export default function Transcript({
     return (
       <div className={styles.root} ref={scrollRef} data-shot="ask-kenny-transcript">
         <p className={styles.empty}>Ask kenny anything about this fleet — read-only checks run right away; anything that changes a machine waits for your confirmation.</p>
+        {emptyExtra}
       </div>
     )
   }
@@ -226,9 +236,23 @@ export default function Transcript({
                 reason={item.reason}
                 resolution={item.resolution}
                 runId={item.runId}
+                startedMode={item.startedMode}
+                resultReported={item.resultReported}
                 onStart={onStartStewardRun ?? (async () => undefined)}
+                onRunNow={onRunStewardNow ?? (async () => undefined)}
+                onFinished={onStewardRunFinished ?? (() => undefined)}
                 onDismiss={onDismissStewardRun ?? (() => undefined)}
               />
+            )
+
+          case 'note':
+            // The server's record of a finished run, replayed from a stored
+            // conversation. Its own row: not the operator's bubble, not kenny's prose.
+            return (
+              <div key={item.id} className={styles.systemNote} data-testid="system-note">
+                <span className={styles.systemNoteLabel}>SERVER NOTE · STEWARD RUN RESULT</span>
+                {item.text}
+              </div>
             )
 
           case 'denied':

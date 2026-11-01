@@ -35,6 +35,26 @@ export function startUserTurn(state: ChatSessionState, message: string): ChatSes
 }
 
 /**
+ * A steward run offered from a quick action rather than by kenny: the same
+ * pending card a `steward_run_proposal` event makes, added client-side. It
+ * starts nothing -- only the card's buttons do.
+ */
+export function addStewardProposal(
+  state: ChatSessionState,
+  proposal: { stewardId: string; hostId: string; reason: string },
+): ChatSessionState {
+  const [id, s1] = nextId(state)
+  return pushItem(s1, {
+    kind: 'steward_proposal',
+    id,
+    stewardId: proposal.stewardId,
+    hostId: proposal.hostId,
+    reason: proposal.reason,
+    resolution: 'pending',
+  })
+}
+
+/**
  * Folds one `ChatEvent` into the session state. Used identically for a live
  * stream and for replaying a stored `transcript` from `/api/chat/history/{id}`
  * — replay is just calling this in a loop, which is exactly why event
@@ -314,6 +334,20 @@ export function applyChatEvent(state: ChatSessionState, event: ChatEvent): ChatS
         reason: event.reason,
         resolution: 'pending',
       })
+    }
+
+    /**
+     * The server's note about a finished run, replayed from history. Its own
+     * kind of row -- neither the operator's bubble nor kenny's prose -- so the
+     * conversation shows who said it.
+     */
+    case 'system_note': {
+      const [id, s1] = nextId(state)
+      return {
+        ...pushItem(s1, { kind: 'note', id, text: event.text, runId: event.run_id }),
+        openAssistantId: null,
+        openThinkingId: null,
+      }
     }
 
     default: {

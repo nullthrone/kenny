@@ -71,6 +71,7 @@ from .store import (
 from .stewards.authorizations import AuthorizationStore
 from .stewards.hygiene import register as register_rule_hygiene
 from .stewards.events import EventTrigger
+from .stewards.preconditions import register as register_steward_preconditions
 from .stewards.runner import StewardRunner
 from .stewards.scheduler import INTERVAL_SETTING as STEWARD_SCHEDULE_SETTING
 from .stewards.scheduler import StewardScheduler
@@ -794,6 +795,8 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         ticket_rules=ticket_rules,
         call_log=call_log,
     )
+    # The server-side checks stewards declare (disk pressure, from the stored telemetry).
+    register_steward_preconditions(steward_runner, store)
     steward_runner.configure(
         executor=steward_executor,
         client_factory=client_factory,

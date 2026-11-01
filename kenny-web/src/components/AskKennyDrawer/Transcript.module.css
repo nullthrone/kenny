@@ -163,3 +163,56 @@
     border-color: currentColor;
   }
 }
+
+/* The server's own note (a finished run), apart from the operator's bubble and kenny's prose. */
+.systemNote {
+  align-self: stretch;
+  max-width: 100%;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  border-left: 2px solid var(--border-mid);
+  padding-left: 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.systemNoteLabel {
+  display: block;
+  font-family: var(--font-display);
+  font-size: 10px;
+  letter-spacing: var(--track-caps);
+  color: var(--text-faint);
+}
+
+.quickActions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.quickActionsLabel {
+  font-family: var(--font-display);
+  font-size: 10px;
+  letter-spacing: var(--track-caps);
+  color: var(--text-muted);
+}
+
+.quickAction {
+  text-align: left;
+  border: 1px solid var(--border-mid);
+  background: transparent;
+  padding: 10px 12px;
+  font-size: var(--text-sm);
+  min-height: 44px;
+}
+.quickAction:hover {
+  background: var(--paper-white);
+}
+
+.quickActionSummary {
+  display: block;
+  color: var(--text-muted);
+  font-size: 11px;
+}

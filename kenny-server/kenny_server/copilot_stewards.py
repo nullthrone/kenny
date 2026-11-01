@@ -9,10 +9,17 @@ or "can you check pc-kid's posture now?". Three tools answer, all ``READ_ONLY``:
 * ``steward_run_propose`` **starts nothing.** Like ``ticket_draft`` (ADR-0063) it
   validates a request and hands it back; the chat turns it into an
   ``steward_run_proposal`` event, the browser shows a card, and the run exists only
-  if the operator presses it -- through ``POST /api/stewards/{id}/runs``,
-  the one route that starts a preview, which runs the steward in shadow. So there
-  is one way to start a run on a person's request and the copilot has no verb
-  for it.
+  if the operator presses it -- through ``POST /api/stewards/{id}/runs``, the one
+  route that starts a run on a person's request: a preview, which runs the steward
+  in shadow, or (``mode: act``, a superuser at the dashboard) a command run. The
+  copilot has no verb for either.
+
+* ``run_result_note`` is not a tool. When a run a person started from one of those
+  cards finishes, the browser asks the chat to record it
+  (``POST /api/chat/steward-run-result``) and the server builds a fixed-template
+  note from the run's recorded numbers and enumerations only
+  (:mod:`~kenny_server.steward_notes`), never from the run's text; it starts no
+  model turn. Only the person who started the run may have it recorded.
 
 **A run's text is data.** A run's ``summary`` was written by a model that had just
 read a monitored machine's output (ADR-0023). It travels back to the copilot
@@ -31,9 +38,10 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from .steward_notes import build_run_note
 from .stewards.policy import run_target_problem
 from .stewards.runner import StewardRunner
-from .stewards.store import StewardRun
+from .stewards.store import FINISHED_STATUSES, StewardRun
 from .registry import AgentRegistry
 from .store import TelemetryStore
 from .toolloop import (
@@ -59,6 +67,20 @@ MAX_REASON_CHARS = 500
 
 #: Ceiling on the text of a run echoed back to the model.
 _MAX_TEXT = 2_000
+
+
+class RunResultRefused(Exception):
+    """A run's result that must not be recorded in a conversation; ``status`` is the HTTP status."""
+
+    def __init__(self, message: str, *, status: int, code: str) -> None:
+        super().__init__(message)
+        self.status = status
+        self.code = code
+
+
+#: Longest username a run keeps as ``initiated_by`` (``commands._MAX_USERNAME``,
+#: ``runner._MAX_PREVIEWER``); a longer caller is compared as the run stored it.
+_MAX_INITIATOR = 64
 
 
 def _clean(args: dict[str, Any], key: str) -> str:
@@ -109,6 +131,30 @@ class CopilotStewards:
         executor.register_server_tool(STEWARD_RUN_LIST_TOOL, self.run_list)
         executor.register_server_tool(STEWARD_RUN_GET_TOOL, self.run_get)
         executor.register_server_tool(STEWARD_RUN_PROPOSE_TOOL, self.run_propose)
+
+    async def run_result_note(self, run_id: str, username: str | None) -> str:
+        """The note recording how ``run_id`` ended, for the person who started it.
+
+        Raises :class:`RunResultRefused`: ``404`` for no such run, ``403``
+        unless ``username`` is the run's ``initiated_by`` (a run the server
+        started, or somebody else did, is not this caller's to report), ``409``
+        for a run that has not finished. The check on the initiator comes first
+        so a run that is not theirs says nothing about its state.
+        """
+
+        run = await self._runner.store.get_run(run_id) if run_id else None
+        if run is None:
+            raise RunResultRefused("no such run", status=404, code="not_found")
+        who = (username or "").strip()[:_MAX_INITIATOR]
+        if not who or run.initiated_by != who:
+            raise RunResultRefused(
+                "only the person who started a run can have its result recorded",
+                status=403,
+                code="not_initiator",
+            )
+        if run.status not in FINISHED_STATUSES:
+            raise RunResultRefused("the run has not finished", status=409, code="not_finished")
+        return build_run_note(run)
 
     async def _known_hosts(self) -> set[str]:
         ids = {a.agent_id for a in self._registry.list()}
@@ -208,7 +254,8 @@ class CopilotStewards:
             "reason": reason,
             "note": (
                 "The operator now sees a card offering this run. Nothing has started and "
-                "you cannot start it -- only they can, by pressing it. A preview is "
-                "always a shadow run: it changes nothing. Do not say it is running."
+                "you cannot start it -- only they can, by pressing PREVIEW (a shadow run: "
+                "it changes nothing) or, where they are allowed to, RUN NOW (the steward "
+                "may act within its limits). Do not say it is running."
             ),
         }

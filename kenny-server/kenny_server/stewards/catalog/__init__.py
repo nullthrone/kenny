@@ -22,6 +22,7 @@ from ..spec import (
     runs_on_ticket,
     validate,
 )
+from .disk import DISK_HYGIENE
 from .hygiene import CONFIG_HYGIENE
 from .patch import PATCH
 from .posture import POSTURE
@@ -156,7 +157,7 @@ def build(specs: Sequence[StewardSpec]) -> Mapping[str, StewardSpec]:
     return MappingProxyType(built)
 
 
-CATALOG: Mapping[str, StewardSpec] = build((TRIAGE, PATCH, POSTURE, CONFIG_HYGIENE))
+CATALOG: Mapping[str, StewardSpec] = build((TRIAGE, PATCH, POSTURE, CONFIG_HYGIENE, DISK_HYGIENE))
 
 
 def get(steward_id: str) -> StewardSpec | None:
