@@ -153,7 +153,7 @@ pub const SHELL_POLICY_FILE_ENV: &str = "KENNY_SHELL_POLICY_FILE";
 pub const SHELL_POLICY_FILE: &str = "kenny-agent.shell-policy.json";
 
 /// Resolve the persisted shell-policy path: env override, else beside the control file.
-fn shell_policy_path() -> PathBuf {
+pub(crate) fn shell_policy_path() -> PathBuf {
     if let Some(path) = std::env::var_os(SHELL_POLICY_FILE_ENV) {
         return PathBuf::from(path);
     }
@@ -415,6 +415,12 @@ pub fn check(tool: &str, args: &Value) -> Result<(), (ErrorCode, String)> {
             match_group(|g| &g.powershell, &text)?;
             match_group(|g| &g.self_protection, &text)?;
         }
+        // `service_restart` carries a service name, not a command: screen it against the
+        // self-protection group only, so the agent's own service can never be named.
+        "service_restart" => match_group(
+            |g| &g.self_protection,
+            str_arg(args, "name").unwrap_or_default(),
+        )?,
         "fs_read" | "fs_list" => check_path(str_arg(args, "path").unwrap_or_default())?,
         "fs_search" => check_path(str_arg(args, "root").unwrap_or_default())?,
         "agent_update" => check_update_url(str_arg(args, "url").unwrap_or_default())?,

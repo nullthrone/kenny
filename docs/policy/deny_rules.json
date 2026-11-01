@@ -1,5 +1,5 @@
 {
-  "catalog_version": 3,
+  "catalog_version": 4,
   "comment": "Shared deny-rule catalog for the deterministic agent-side safety guard (ADR-0019/0020). Single source of truth: the Rust agent embeds this via include_str! and the Python server loads it for its best-effort mirror. applies_to is one of powershell|posix|self_protection|path. Patterns must use the portable regex subset common to Rust `regex` and Python `re` (no backreferences/lookaround). Path rules are matched after normalising / to \\.",
   "rules": [
     {
@@ -227,8 +227,8 @@
     {
       "id": "sp_systemctl_kenny",
       "applies_to": "self_protection",
-      "pattern": "(?i)\\bsystemctl\\b\\s+(stop|disable|mask|kill)\\b.*kenny\\-agent",
-      "reason": "stop/disable the kenny agent systemd unit"
+      "pattern": "(?i)\\bsystemctl\\b(\\s+-\\S+)*\\s+(stop|disable|mask|kill|restart|try-restart|condrestart|reload-or-restart|try-reload-or-restart|reload-or-try-restart|force-reload)\\b.*kenny\\-agent",
+      "reason": "stop/disable/restart the kenny agent systemd unit"
     },
     {
       "id": "sp_kill_kenny",
@@ -245,14 +245,20 @@
     {
       "id": "sp_stop_service",
       "applies_to": "self_protection",
-      "pattern": "(?i)\\b(Stop|Disable|Remove|Suspend)-Service\\b.*kenny\\-agent",
-      "reason": "stop/disable the kenny agent service"
+      "pattern": "(?i)\\b(Stop|Disable|Remove|Suspend|Restart)-Service\\b.*kenny\\-agent",
+      "reason": "stop/disable/restart the kenny agent service"
     },
     {
       "id": "sp_sc_service",
       "applies_to": "self_protection",
       "pattern": "(?i)\\bsc(\\.exe)?\\b\\s+(stop|delete|config)\\b.*kenny\\-agent",
       "reason": "sc stop/delete the kenny agent service"
+    },
+    {
+      "id": "sp_service_restart_self",
+      "applies_to": "self_protection",
+      "pattern": "(?i)^\\s*kenny\\-agent(\\.service)?\\s*$",
+      "reason": "restart the kenny agent's own service"
     },
     {
       "id": "sp_stop_process",

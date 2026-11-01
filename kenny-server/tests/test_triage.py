@@ -222,6 +222,44 @@ def test_triage_reaches_nothing_that_changes_the_machine() -> None:
     assert "winget_install" not in TRIAGE_TOOLS
 
 
+# Triage's tool set as it stood before the disk-cleanup tools (contract v0.23)
+# joined the read-only tier. It feeds the steward's `spec_hash`, so a new
+# read-only tool must not widen it by inheritance: adding to it is a reviewed
+# edit of this literal, not a side effect of classifying a tool.
+_TRIAGE_TOOLS_PINNED = frozenset(
+    {
+        "agent_availability",
+        "agent_health",
+        "agent_snapshot",
+        "diag_autostart",
+        "diag_eventlog",
+        "diag_processes",
+        "diag_services",
+        "fs_disk_usage",
+        "fs_list",
+        "fs_search",
+        "net_config",
+        "reliability_suppression_list",
+        "remotehelp_status",
+        "select_agent",
+        "telemetry_collect",
+        "ticket_draft",
+        "ticket_find",
+        "ticket_rule_list",
+        "ticket_triage_verdict",
+        "webfilter_status",
+        "winget_list",
+    }
+)
+
+
+def test_triage_tool_set_is_pinned_and_excludes_the_cleanup_scan() -> None:
+    assert TRIAGE_TOOLS == _TRIAGE_TOOLS_PINNED
+    # A read-only tool that is nonetheless not handed to an unprompted session.
+    assert classify("fs_cleanup_scan") == READ_ONLY
+    assert "fs_cleanup_scan" not in TRIAGE_TOOLS
+
+
 def test_triage_reaches_nothing_that_would_wait_for_a_person() -> None:
     """The gate's two holds both need a human; a triage session has none.
 

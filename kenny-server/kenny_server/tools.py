@@ -74,6 +74,11 @@ _OS_SCOPED_TOOLS: dict[str, frozenset[str]] = {
     "account_delete": frozenset({"windows", "linux"}),
     "account_session_action": frozenset({"windows", "linux"}),
     "password_policy_set": frozenset({"windows", "linux"}),
+    # Cleanup and service restart are served on Windows and Linux; macOS answers
+    # `unsupported`, so it gets the same fast refusal as the account tools.
+    "fs_cleanup_scan": frozenset({"windows", "linux"}),
+    "fs_cleanup": frozenset({"windows", "linux"}),
+    "service_restart": frozenset({"windows", "linux"}),
 }
 
 # The OS-scoped mirror of a key in ``_OS_SCOPED_TOOLS``, for error messages.
@@ -113,6 +118,10 @@ _TOOL_MIN_ROLE: dict[str, str] = {
     "account_delete": "operator",
     "account_session_action": "operator",
     "password_policy_set": "operator",
+    # Irreversible deletion and a service restart interrupt what the host is
+    # doing; the read-only scan stays at the default role like ``fs_read``.
+    "fs_cleanup": "operator",
+    "service_restart": "operator",
 }
 
 # Per-tool floor on the forwarding timeout, for tools whose normal path is
@@ -126,6 +135,13 @@ _TOOL_MIN_ROLE: dict[str, str] = {
 # (``tests/test_tool_timeouts.py`` holds the two in order).
 _TOOL_MIN_TIMEOUT_S: dict[str, float] = {
     "account_session_action": 120.0,
+    # Cleanup/scan/restart are bounded by the agent's own budgets
+    # (``CLEANUP_BUDGET``, ``SCAN_BUDGET`` in ``handlers/cleanup.rs``;
+    # ``RESTART_BUDGET`` in ``handlers/services.rs``); the floors sit at least
+    # 10 s above them (``tests/test_tool_timeouts.py``).
+    "fs_cleanup": 180.0,
+    "fs_cleanup_scan": 120.0,
+    "service_restart": 120.0,
     "diag_services": 90.0,
     "diag_eventlog": 90.0,
     "diag_autostart": 90.0,
@@ -191,6 +207,11 @@ CAPABILITY_TOOLS: dict[str, list[str]] = {
     "account_delete": ["principal", "remove_profile"],
     "account_session_action": ["principal", "action", "warn_seconds?"],
     "password_policy_set": ["min_length?", "max_age_days?", "lockout_threshold?"],
+    # Disk cleanup from the agent's fixed catalog (`target` names one entry, never
+    # a path) and a bounded service restart.
+    "fs_cleanup_scan": ["target"],
+    "fs_cleanup": ["target"],
+    "service_restart": ["name"],
 }
 
 

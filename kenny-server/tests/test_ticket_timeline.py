@@ -283,6 +283,21 @@ def test_an_approved_change_does_not_claim_autonomy():
     assert "without being asked" not in removal[0].text
 
 
+@pytest.mark.parametrize(
+    ("tool", "kind", "text"),
+    [
+        ("fs_cleanup_scan", tl.ACTIVITY, "I looked at what a disk cleanup would remove."),
+        ("fs_cleanup", tl.ACTION, "I cleaned up files to free disk space."),
+        ("service_restart", tl.ACTION, "I restarted a service."),
+    ],
+)
+def test_the_cleanup_and_restart_tools_read_as_one_sentence(tool: str, kind: str, text: str):
+    # Neither the target nor the service name is lifted into the sentence: the
+    # phrase is fixed and nothing a caller supplied can steer it.
+    (entry,) = tl.project([tool_call(1, tool, args={"target": "tmp", "name": "Spooler"})])
+    assert (entry.kind, entry.text) == (kind, text)
+
+
 def test_failures_are_kept_because_they_explain_gaps():
     problems = [e for e in tl.project(full_trail()) if e.kind == tl.PROBLEM]
     texts = [p.text for p in problems]

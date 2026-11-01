@@ -87,6 +87,118 @@
       "why": "sp_shell_policy_file: the persisted mode is agent state, not an ordinary file"
     },
     {
+      "name": "builtin_self_protection_restart_service_powershell",
+      "shell": {
+        "mode": "unrestricted",
+        "allow": []
+      },
+      "operator_deny": [],
+      "tool": "powershell_exec",
+      "args": {
+        "script": "Restart-Service kenny-agent"
+      },
+      "expect": "blocked",
+      "why": "sp_stop_service covers Restart-Service of the agent's own service"
+    },
+    {
+      "name": "builtin_self_protection_systemctl_restart",
+      "shell": {
+        "mode": "unrestricted",
+        "allow": []
+      },
+      "operator_deny": [],
+      "tool": "shell_exec",
+      "args": {
+        "command": "systemctl restart kenny-agent"
+      },
+      "expect": "blocked",
+      "why": "sp_systemctl_kenny covers restart of the agent's own unit"
+    },
+    {
+      "name": "builtin_self_protection_systemctl_try_restart_with_option",
+      "shell": {
+        "mode": "unrestricted",
+        "allow": []
+      },
+      "operator_deny": [],
+      "tool": "shell_exec",
+      "args": {
+        "command": "systemctl --no-block try-restart kenny-agent.service"
+      },
+      "expect": "blocked",
+      "why": "sp_systemctl_kenny covers try-restart, also behind a leading option"
+    },
+    {
+      "name": "service_restart_self_blocked",
+      "shell": {
+        "mode": "unrestricted",
+        "allow": []
+      },
+      "operator_deny": [],
+      "tool": "service_restart",
+      "args": {
+        "name": "kenny-agent"
+      },
+      "expect": "blocked",
+      "why": "sp_service_restart_self: service_restart never names the agent's own service"
+    },
+    {
+      "name": "service_restart_self_case_and_suffix_blocked",
+      "shell": {
+        "mode": "unrestricted",
+        "allow": []
+      },
+      "operator_deny": [],
+      "tool": "service_restart",
+      "args": {
+        "name": "KENNY-AGENT.service"
+      },
+      "expect": "blocked",
+      "why": "sp_service_restart_self matches case-insensitively with an optional .service"
+    },
+    {
+      "name": "service_restart_self_leading_space_blocked",
+      "shell": {
+        "mode": "unrestricted",
+        "allow": []
+      },
+      "operator_deny": [],
+      "tool": "service_restart",
+      "args": {
+        "name": " kenny-agent"
+      },
+      "expect": "blocked",
+      "why": "sp_service_restart_self tolerates surrounding whitespace"
+    },
+    {
+      "name": "service_restart_other_service_allowed",
+      "shell": {
+        "mode": "unrestricted",
+        "allow": []
+      },
+      "operator_deny": [],
+      "tool": "service_restart",
+      "args": {
+        "name": "spooler"
+      },
+      "expect": "allow",
+      "why": "an ordinary service passes the guard (the handler validates the name)"
+    },
+    {
+      "name": "service_restart_lookalike_allowed",
+      "shell": {
+        "mode": "unrestricted",
+        "allow": []
+      },
+      "operator_deny": [],
+      "tool": "service_restart",
+      "args": {
+        "name": "kenny-agent-updater"
+      },
+      "expect": "allow",
+      "why": "sp_service_restart_self matches the agent's service name exactly, not a prefix"
+    },
+    {
       "name": "builtin_path_sam_hive",
       "shell": {
         "mode": "unrestricted",

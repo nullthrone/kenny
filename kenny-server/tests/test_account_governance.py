@@ -79,7 +79,9 @@ def test_no_other_forwarded_tool_silently_acquired_a_role_gate() -> None:
     ADR, not something that drifted in — so the set is asserted exactly.
     """
 
-    assert set(_TOOL_MIN_ROLE) == set(ACCOUNT_TOOLS)
+    # `fs_cleanup` and `service_restart` (contract v0.23) are the only other
+    # forwarded tools that need the operator role.
+    assert set(_TOOL_MIN_ROLE) == set(ACCOUNT_TOOLS) | {"fs_cleanup", "service_restart"}
 
 
 def test_session_action_gets_a_timeout_that_survives_its_warning() -> None:

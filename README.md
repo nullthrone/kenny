@@ -85,8 +85,10 @@ _The Today dashboard — see the **[dashboard reference](docs/dashboard.md)** fo
 ### Remote administration — capability tools
 - **Shell**: `powershell_exec` (Windows) · `shell_exec` (Linux/macOS)
 - **Packages**: `winget_list` · `winget_install` · `winget_uninstall` · `winget_update`
-- **Files**: `fs_list` · `fs_search` · `fs_read` · `fs_disk_usage`
+- **Files**: `fs_list` · `fs_search` · `fs_read` · `fs_disk_usage` · `fs_cleanup_scan` ·
+  `fs_cleanup`
 - **Diagnostics**: `diag_processes` · `diag_services` · `diag_eventlog` · `diag_autostart`
+- **Services**: `service_restart`
 - **Network**: `net_config` · `net_dns_flush` · `net_adapter_reset`
 - **Screen**: `screen_capture` · **Remote help**: `remotehelp_status` · `remotehelp_start` ·
   `remotehelp_stop` (Quick Assist concierge) · **Telemetry**: `telemetry_collect` ·

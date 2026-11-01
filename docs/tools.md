@@ -171,6 +171,16 @@ managed host.
 | `fs_search` | `root`, `pattern` | `read_only` (redacted output) |
 | `fs_read` | `path` | `read_only` (privacy-sensitive, redacted output) |
 | `fs_disk_usage` | — | `read_only` |
+| `fs_cleanup_scan` | `target` | `read_only` |
+| `fs_cleanup` | `target` | `normal_change` (requires `operator`; irreversible) |
+
+`fs_cleanup_scan` and `fs_cleanup` free disk space from a fixed catalog the agent owns
+(temporary files, update and package caches, the recycle bin, rotated logs, the journal).
+`target` names one catalog entry and is the only argument: the server never sends a path.
+The scan reports exactly what the cleanup would remove and deletes nothing. Both are served
+on Windows and Linux and are `unsupported` on macOS. The catalog and its age thresholds are
+in [`protocol.md`](protocol.md#cleanup-targets). The server waits up to 120 s for the scan
+and 180 s for the cleanup, which are bounded on the agent at 60 s and 90 s.
 
 ### Packages
 
@@ -194,6 +204,17 @@ On Windows, `diag_services`, `diag_eventlog` and `diag_autostart` each run one C
 event-log query that the agent stops after 50 s; the server waits 90 s for these three.
 A query that runs out of time comes back as a `timeout` error naming the query, so a
 slow, busy machine is not mistaken for one that returned nothing.
+
+### Services
+
+| Tool | Arguments | Tier |
+|------|-----------|------|
+| `service_restart` | `name` | `normal_change` (requires `operator`) |
+
+`service_restart` restarts one Windows service or systemd unit by name, waiting at most 30 s
+for it to stop and 30 s for it to start. The agent refuses to restart itself (`blocked`) and
+never force-stops dependent services. Served on Windows and Linux; the server waits up to
+120 s. For listing services see `diag_services`.
 
 ### Network
 

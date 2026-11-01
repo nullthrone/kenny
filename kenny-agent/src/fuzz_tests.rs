@@ -19,7 +19,9 @@
 //! - [`RANDOM_LOOP_TOOLS`] either deserialize `args` into something handler-specific
 //!   (`fs_*`) or are mutating and gated off before a handler ever sees `args` —
 //!   cheap either way, so these run thousands of times with fresh random args each
-//!   iteration.
+//!   iteration. `fs_cleanup_scan` is read-only, so the kill switch does not stop it;
+//!   its `target` is rewritten whenever it would name a real catalog entry, so the
+//!   loop only ever reaches its `bad_args` path and never walks a real root.
 //! - [`SMOKE_ONCE_TOOLS`] are non-mutating handlers whose top-level signature is
 //!   `_args: Value` (Windows-only diagnostics/network/remotehelp/webfilter status
 //!   reads): they ignore `args` completely, so randomizing it thousands of times adds
@@ -57,6 +59,9 @@ const RANDOM_LOOP_TOOLS: &[&str] = &[
     "fs_search",
     "fs_read",
     "fs_disk_usage",
+    "fs_cleanup_scan",
+    "fs_cleanup",
+    "service_restart",
     "winget_install",
     "winget_uninstall",
     "winget_update",
@@ -202,7 +207,7 @@ fn random_value(rng: &mut Rng, depth: u32) -> Value {
 /// covers total type confusion (e.g. args that is a bare string or array).
 fn random_args(rng: &mut Rng, tool: &str) -> Value {
     if rng.range(3) == 0 {
-        return random_value(rng, 0);
+        return defang_cleanup_target(random_value(rng, 0));
     }
     let known_keys: &[&str] = match tool {
         "fs_list" | "fs_read" => &["path"],
@@ -210,7 +215,8 @@ fn random_args(rng: &mut Rng, tool: &str) -> Value {
         "powershell_exec" => &["script"],
         "shell_exec" => &["command"],
         "winget_install" | "winget_uninstall" | "winget_update" => &["id", "package_id"],
-        "net_adapter_reset" => &["name"],
+        "net_adapter_reset" | "service_restart" => &["name"],
+        "fs_cleanup_scan" | "fs_cleanup" => &["target"],
         "webfilter_apply" => &["domains", "doh_policy", "list_hash"],
         "account_set_enabled" | "account_set_admin" | "account_delete" => {
             &["username", "enabled", "admin"]
@@ -231,7 +237,31 @@ fn random_args(rng: &mut Rng, tool: &str) -> Value {
     if rng.bool() {
         map.insert(random_string(rng), random_value(rng, 1));
     }
-    Value::Object(map)
+    defang_cleanup_target(Value::Object(map))
+}
+
+/// Every name in either cleanup catalog.
+fn cleanup_target_names() -> Vec<&'static str> {
+    use crate::handlers::cleanup::{LINUX_CATALOG, WINDOWS_CATALOG};
+    WINDOWS_CATALOG
+        .iter()
+        .chain(LINUX_CATALOG)
+        .map(|e| e.target)
+        .collect()
+}
+
+/// `fs_cleanup_scan` is read-only and so is not stopped by the kill switch: a random
+/// `target` that happened to name a catalog entry would scan a real root of this
+/// machine. Rewrite such a value so the fuzz loop only ever reaches `bad_args`.
+fn defang_cleanup_target(mut args: Value) -> Value {
+    if let Some(t) = args.get_mut("target") {
+        if t.as_str()
+            .is_some_and(|s| cleanup_target_names().contains(&s))
+        {
+            *t = Value::String(format!("fuzz-{}", t.as_str().unwrap_or_default()));
+        }
+    }
+    args
 }
 
 async fn dispatch_once(tool: &str, args: Value) -> Result<(), (String, Value)> {
@@ -362,4 +392,31 @@ fn fuzz_telemetry_section_filter_never_panics() {
         named > 0 && unfiltered > 0,
         "{named} named, {unfiltered} unfiltered — the generator no longer reaches both branches"
     );
+}
+
+/// The fuzz generator never forms a valid cleanup target, so the dispatch loop can
+/// never make `fs_cleanup_scan` walk (or, with the kill switch failing open,
+/// `fs_cleanup` delete under) a real root of the machine running the tests.
+#[test]
+fn fuzz_args_never_name_a_cleanup_target() {
+    let names = cleanup_target_names();
+    for s in NASTY_STRINGS {
+        assert!(!names.contains(s), "{s:?} is a real cleanup target");
+    }
+    let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
+    for _ in 0..20_000 {
+        for tool in ["fs_cleanup_scan", "fs_cleanup"] {
+            let args = random_args(&mut rng, tool);
+            let res = crate::handlers::cleanup::lookup(
+                crate::handlers::cleanup::CatalogOs::native(),
+                &args,
+            );
+            assert!(res.is_err(), "fuzz args {args} name a real cleanup target");
+        }
+    }
+    // The defang itself rewrites a real name.
+    for name in names {
+        let args = defang_cleanup_target(json!({ "target": name }));
+        assert_ne!(args["target"], name);
+    }
 }
