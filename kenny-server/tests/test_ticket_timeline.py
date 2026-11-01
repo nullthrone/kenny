@@ -245,6 +245,22 @@ def test_every_tool_has_a_phrase(tool: str, tier: str):
         f"{tool} has no phrase in ticket_timeline; a timeline sentence would "
         "otherwise read out a raw tool name"
     )
+    if tier != READ_ONLY:
+        assert tool in tl.ATTEMPT_PHRASES, (
+            f"{tool} has no base-form phrase; its failure sentence would "
+            "otherwise read out a raw tool name"
+        )
+
+
+def test_attempt_phrases_track_changed_phrases():
+    """The failure sentence ("I could not <base form>") covers the same tools."""
+
+    assert set(tl.ATTEMPT_PHRASES) == set(tl.CHANGED_PHRASES)
+
+
+def test_an_unknown_change_tool_falls_back_in_the_matching_tense():
+    assert tl._changed_phrase("mystery_tool") == "ran mystery_tool"
+    assert tl._attempt_phrase("mystery_tool") == "run mystery_tool"
 
 
 # -- the condensation itself -----------------------------------------------
@@ -296,6 +312,30 @@ def test_the_cleanup_and_restart_tools_read_as_one_sentence(tool: str, kind: str
     # phrase is fixed and nothing a caller supplied can steer it.
     (entry,) = tl.project([tool_call(1, tool, args={"target": "tmp", "name": "Spooler"})])
     assert (entry.kind, entry.text) == (kind, text)
+
+
+@pytest.mark.parametrize(
+    ("tool", "text"),
+    [
+        (
+            "winget_uninstall",
+            "I could not remove a package (the host returned `exec_failed`).",
+        ),
+        (
+            "fs_cleanup",
+            "I could not clean up files to free disk space (the host returned `exec_failed`).",
+        ),
+        (
+            "service_restart",
+            "I could not restart a service (the host returned `exec_failed`).",
+        ),
+    ],
+)
+def test_a_failed_change_reads_in_the_base_form(tool: str, text: str):
+    failed = tool_call(1, tool, ok=False, fields={"error": {"code": "exec_failed"}})
+    (entry,) = tl.project([failed])
+    assert entry.kind == tl.PROBLEM
+    assert entry.text == text
 
 
 def test_failures_are_kept_because_they_explain_gaps():
