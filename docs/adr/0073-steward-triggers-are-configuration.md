@@ -1,6 +1,6 @@
 # 0073. Steward triggers are configuration; a person may start one now
 
-- Status: proposed
+- Status: accepted
 - Boundary moved: **the agent/session model** — what starts an unattended session is no
   longer fixed in a steward's code but chosen per install from what the code allows, and
   the consent-in-time of ADR-0072 rule 4 now has three cases instead of one.

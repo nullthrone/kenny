@@ -90,4 +90,4 @@ kind of record kenny keeps. What qualifies: *When (not) to write an ADR* in the 
 | [0070](0070-long-lived-per-device-hardware-history.md) | Long-lived per-device hardware history | proposed |
 | [0071](0071-stewards-purpose-bound-unattended-sessions.md) | Stewards: kenny runs purpose-bound unattended sessions | accepted |
 | [0072](0072-standing-authorizations-consent-given-ahead.md) | Standing authorizations: autonomy is consent given ahead, never a tier | accepted |
-| [0073](0073-steward-triggers-are-configuration.md) | Steward triggers are configuration; a person may start one now | proposed |
+| [0073](0073-steward-triggers-are-configuration.md) | Steward triggers are configuration; a person may start one now | accepted |
