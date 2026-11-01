@@ -339,6 +339,7 @@ def test_bad_parameters_and_unknown_stewards(tmp_path) -> None:
             assert got == {
                 "steward_id": "installer",
                 "declared": ["packages"],
+                "param_kinds": {"packages": "list"},
                 "params": {},
                 "effective_hash": effective_hash(INSTALLER, {}),
             }

@@ -102,6 +102,7 @@ function steward(over: Partial<Steward> = {}): Steward {
     default_mode: 'shadow',
     version: 1,
     spec_hash: 'f'.repeat(64),
+    param_kinds: { hosts: 'list', packages: 'list', require_idle: 'bool', window: 'window' },
     mode: 'shadow',
     params: { hosts: ['study-pc'], packages: ['7zip.7zip'], require_idle: true },
     effective_hash: HASH,
@@ -131,6 +132,7 @@ const TRIAGE: Steward = steward({
 const PARAMS: StewardParamsResponse = {
   steward_id: 'patch',
   declared: ['hosts', 'packages', 'require_idle', 'window'],
+  param_kinds: { hosts: 'list', packages: 'list', require_idle: 'bool', window: 'window' },
   params: {
     hosts: ['study-pc'],
     packages: ['7zip.7zip'],
@@ -160,6 +162,14 @@ function auth(over: Partial<StewardAuthorization> = {}): StewardAuthorization {
     attempts_last_24h: { 'study-pc': 1 },
     ...over,
   }
+}
+
+const DISK_PARAMS: StewardParamsResponse = {
+  steward_id: 'disk_hygiene',
+  declared: ['hosts', 'min_percent_used', 'require_idle', 'targets', 'window'],
+  param_kinds: { hosts: 'list', min_percent_used: 'percent', require_idle: 'bool', targets: 'list', window: 'window' },
+  params: { hosts: ['study-pc'], targets: ['tmp'], require_idle: true, min_percent_used: 85 },
+  effective_hash: HASH,
 }
 
 const PATCH_TRIGGERS: StewardTriggersResponse = {
@@ -197,7 +207,8 @@ function mockApi({ stewards = [steward(), TRIAGE], enabled = true, authorization
     '/api/stewards/runs': { runs },
     '/api/stewards/runs/run-1': runs[0] ?? run(),
     '/api/stewards/patch/params': PARAMS,
-    '/api/stewards/triage/params': { steward_id: 'triage', declared: [], params: {}, effective_hash: TRIAGE.effective_hash },
+    '/api/stewards/triage/params': { steward_id: 'triage', declared: [], param_kinds: {}, params: {}, effective_hash: TRIAGE.effective_hash },
+    '/api/stewards/disk_hygiene/params': DISK_PARAMS,
     '/api/stewards/patch/triggers': PATCH_TRIGGERS,
     '/api/stewards/triage/triggers': TRIAGE_TRIGGERS,
     '/api/stewards/patch/authorizations': { steward_id: 'patch', effective_hash: HASH, authorizations },
@@ -451,6 +462,59 @@ describe('StewardsSection — the parameters editor', () => {
       }),
     )
     expect(await screen.findByText('Saved. The steward is in shadow. 2 standing authorizations voided.')).toBeInTheDocument()
+  })
+
+  describe('a percent parameter', () => {
+    const disk = () =>
+      steward({ id: 'disk_hygiene', title: 'Disk hygiene', params: DISK_PARAMS.params, param_kinds: DISK_PARAMS.param_kinds })
+    const open = async (params: StewardParamsResponse = DISK_PARAMS) => {
+      mockApi({ stewards: [disk()], routes: { '/api/stewards/disk_hygiene/params': params } })
+      apiPutMock.mockResolvedValue({ steward_id: 'disk_hygiene', params: {}, effective_hash: HASH, mode: 'shadow', voided: 0 })
+      renderSection('/admin/stewards/disk_hygiene', true)
+      return screen.findByRole('form', { name: 'Parameters of Disk hygiene' })
+    }
+    const sent = () => (apiPutMock.mock.calls[0][1] as { params: Record<string, unknown> }).params
+
+    it('shows the stored number and saves it unchanged as a number, never as a list', async () => {
+      const form = await open()
+      const input = within(form).getByLabelText('MINIMUM DISK USAGE (%)')
+      expect(input).toHaveValue(85)
+      fireEvent.click(within(form).getByRole('button', { name: 'SAVE PARAMETERS' }))
+      await waitFor(() => expect(apiPutMock).toHaveBeenCalled())
+      expect(sent().min_percent_used).toBe(85)
+      expect(sent().targets).toEqual(['tmp'])
+    })
+
+    it('sends the edited number', async () => {
+      const form = await open()
+      fireEvent.change(within(form).getByLabelText('MINIMUM DISK USAGE (%)'), { target: { value: '90' } })
+      fireEvent.click(within(form).getByRole('button', { name: 'SAVE PARAMETERS' }))
+      await waitFor(() => expect(apiPutMock).toHaveBeenCalled())
+      expect(sent().min_percent_used).toBe(90)
+    })
+
+    it('leaves the key out when empty, so the server default applies', async () => {
+      const form = await open({ ...DISK_PARAMS, params: { hosts: ['study-pc'] } })
+      const input = within(form).getByLabelText('MINIMUM DISK USAGE (%)')
+      expect(input).toHaveValue(null)
+      fireEvent.click(within(form).getByRole('button', { name: 'SAVE PARAMETERS' }))
+      await waitFor(() => expect(apiPutMock).toHaveBeenCalled())
+      expect('min_percent_used' in sent()).toBe(false)
+    })
+
+    it.each(['0', '100', '85.5', '-3'])('refuses %s before sending anything', async (value) => {
+      const form = await open()
+      fireEvent.change(within(form).getByLabelText('MINIMUM DISK USAGE (%)'), { target: { value } })
+      fireEvent.click(within(form).getByRole('button', { name: 'SAVE PARAMETERS' }))
+      expect(await within(form).findByRole('alert')).toHaveTextContent(/whole number from 1 to 99/)
+      expect(apiPutMock).not.toHaveBeenCalled()
+    })
+
+    it('is read as a number by someone who may not edit', async () => {
+      mockApi({ stewards: [disk()] })
+      renderSection('/admin/stewards/disk_hygiene', false)
+      expect(await screen.findByText('85 %')).toBeInTheDocument()
+    })
   })
 
   it('shows a 403 on save as a request to sign in as a superuser', async () => {

@@ -732,7 +732,8 @@ off is `shadow`, on is `act`.
 
 - `GET /api/stewards` *(operator+)* — the global switch (`enabled`) and every steward in the
   catalog: its declaration (tools and their tiers, argument constraints, budget,
-  `spec_hash`), its current `mode`, the `triggers` in force with their `triggers_baseline`
+  `spec_hash`), the kind of each parameter it takes (`param_kinds`: `window`, `bool`,
+  `percent` or `list`), its current `mode`, the `triggers` in force with their `triggers_baseline`
   and `triggers_allowed` ceiling ([what starts a steward](#what-starts-a-steward)), and its
   latest run.
 - `GET /api/stewards/runs?steward_id=&limit=` *(operator+)* — runs newest first, optionally
@@ -776,12 +777,16 @@ off is `shadow`, on is `act`.
   carries the mode now in force, which for triage stays `off` while no API key or gateway
   is configured. Each change is written to the event log with who made it.
 - `GET /api/stewards/{steward_id}/params` *(operator+)* — the parameters the steward's
-  spec declares, their values on this install, and the steward's `effective_hash`.
+  spec declares (`declared`, with each one's kind in `param_kinds`), their values on this
+  install, and the steward's `effective_hash`. The editor renders and submits each parameter
+  by its kind.
 - `PUT /api/stewards/{steward_id}/params` with `{"params": {...}}` *(superuser,
   signed in at the dashboard)* — replaces them. A list parameter (`hosts`, the `packages`
   allowlist) is a list of non-empty strings; `require_idle` is `true` or `false` (absent
-  means `true`: a host with somebody signed in is skipped); `window` is `{"days",
-  "start", "end", "tz"}`, read like a web-filter schedule window.
+  means `true`: a host with somebody signed in is skipped); a `percent` parameter
+  (`min_percent_used`) is a whole number from 1 to 99, and an unset one is left out of
+  `params` — never `null` or an empty list — so the steward uses its default; `window` is
+  `{"days", "start", "end", "tz"}`, read like a web-filter schedule window.
 - `GET /api/stewards/{steward_id}/triggers` *(operator+)* and `PUT
   /api/stewards/{steward_id}/triggers` *(superuser, signed in at the dashboard)* — what
   starts the steward; see [what starts a steward](#what-starts-a-steward).

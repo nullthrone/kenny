@@ -1946,15 +1946,17 @@ def build_api_routes(
         return JSONResponse(await _authorization_public(revoked))
 
     async def api_steward_params(request: Request) -> JSONResponse:
-        """One steward's parameters, the names its spec declares, and its effective hash."""
+        """One steward's parameters, the names its spec declares with their kinds, and its effective hash."""
 
         steward_id, refused = _steward_or_404(request)
         if refused is not None:
             return refused
+        spec = stewards.catalog[steward_id]
         return JSONResponse(
             {
                 "steward_id": steward_id,
-                "declared": sorted(stewards.catalog[steward_id].params),
+                "declared": sorted(spec.params),
+                "param_kinds": spec.param_kinds(),
                 "params": await stewards.get_params(steward_id),
                 "effective_hash": await stewards.live_hash(steward_id),
             }
