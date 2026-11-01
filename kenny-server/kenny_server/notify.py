@@ -58,7 +58,7 @@ class Notification:
     priority: str = "default"  # ntfy scale: "low" | "default" | "high" | "urgent"
     tags: list[str] = field(default_factory=list)
     agent_id: str | None = None
-    kind: str = "alert"  # "alert" | "recovery" | "change" | "digest" | "test"
+    kind: str = "alert"  # "alert" | "recovery" | "change" | "digest" | "test" | "steward"
     # -- structured discriminator for auto-ticket rules (ticket_rules.py) ------
     # ``kind`` says whether this is a genuine alert vs. a recovery/change/digest;
     # ``event_type``/``sections`` say *which* alert, so an operator rule can name

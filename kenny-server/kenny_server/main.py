@@ -69,6 +69,8 @@ from .store import (
     WebFilterStore,
 )
 from .stewards.authorizations import AuthorizationStore
+from .stewards.callbacks import CallbackStore, TicketCallbacks
+from .stewards.commands import Hosts as StewardHosts
 from .stewards.hygiene import register as register_rule_hygiene
 from .stewards.events import EventTrigger
 from .stewards.preconditions import register as register_steward_preconditions
@@ -464,6 +466,26 @@ def _prior_checks_reader(sessions: ChatSessions) -> Any:
     return read
 
 
+class AfterInsertHooks:
+    """The tunnel's after-insert hook, fanned out to several in order.
+
+    Each is called with ``(agent_id, snapshot)`` and isolated: one that raises
+    is logged and the next still runs. ``hooks`` is what the wiring test reads.
+    """
+
+    def __init__(self, *hooks: Any) -> None:
+        self.hooks = tuple(h for h in hooks if h is not None)
+
+    def __call__(self, agent_id: str, snapshot: dict[str, Any]) -> None:
+        for hook in self.hooks:
+            try:
+                hook(agent_id, snapshot)
+            except Exception:  # noqa: BLE001 - the next hook still runs
+                logging.getLogger("kenny.tunnel").exception(
+                    "after-insert hook %r failed for %s", hook, agent_id
+                )
+
+
 def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_client) -> Starlette:
     """Build and return the composed ASGI application.
 
@@ -816,6 +838,36 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         steward_runner, steward_runner.catalog, _steward_params, steward_executor
     )
     alert_engine.set_alert_hook(steward_events.on_alert)
+    # Ticket callbacks (ADR-0075): a command run a superuser armed on a ticket,
+    # started at the ticket's machine's next telemetry push and judged by the
+    # alert engine's verdict on fresh telemetry, never by the model.
+    callback_store = CallbackStore(db_path)
+
+    async def _callback_hosts() -> StewardHosts:
+        known = {a.agent_id for a in registry.list()} | set(await store.known_agents())
+        return StewardHosts(known=frozenset(known), registry=registry)
+
+    async def _callback_refresh(host_id: str) -> bool:
+        result = await tunnel.send_request(host_id, "telemetry_collect", {}, 60)
+        await call_log.record(host_id, "telemetry_collect", {}, ok=True, actor="system:callback")
+        if not result:
+            return False
+        await store.insert(host_id, datetime.now(timezone.utc).isoformat(), result)
+        return True
+
+    ticket_callbacks = TicketCallbacks(
+        store=callback_store,
+        runner=steward_runner,
+        tickets=ticket_service,
+        hosts=_callback_hosts,
+        refresh=_callback_refresh,
+        reevaluate=alert_engine.evaluate_agent_now,
+        latest=alert_engine.section_statuses,
+        announce=alert_engine.announce,
+    )
+    # The tunnel's one after-insert hook fans out: classification first, as
+    # before, then the callbacks. Neither may block or break the tunnel.
+    tunnel.after_insert = AfterInsertHooks(tunnel.after_insert, ticket_callbacks.on_telemetry)
     ticket_assistant: TicketAssistant | None = None
     triage: TriageService | None = None
     if ticket_client is not None:
@@ -967,6 +1019,9 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         await discord_identities.connect()
         await steward_store.connect()
         await steward_authorizations.connect()
+        await callback_store.connect()
+        # A callback left running lost its run with the previous process.
+        await callback_store.recover()
         # Nothing runs yet, so a run still open belongs to a dead process. The
         # built stewards (ADR-0074) are loaded into ``steward_runner.catalog`` —
         # the object the scheduler and the event trigger hold — before anything
@@ -1062,6 +1117,9 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
                 initial_delay_s=float(settings.get("KENNY_ALERT_INITIAL_DELAY")),
             )
         )
+        # Ticket callbacks end on their own clock even for a machine that never
+        # comes back (ADR-0075).
+        callback_task: asyncio.Task | None = asyncio.create_task(ticket_callbacks.run(3600.0))
         # Periodic DB backup loop (see backup.py). Always started: the cadence,
         # including 0 = paused, is re-read inside the loop.
         backup_delay = float(settings.get("KENNY_BACKUP_INITIAL_DELAY"))
@@ -1181,6 +1239,11 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
                 steward_schedule_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await steward_schedule_task
+            if callback_task is not None:
+                callback_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await callback_task
+            await ticket_callbacks.cancel()
             await steward_runner.cancel_previews()
             await steward_events.cancel()
             startup_maintenance_task.cancel()
@@ -1227,6 +1290,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
             await update_store.close()
             await ticket_store.close()
             await discord_identities.close()
+            await callback_store.close()
             await steward_authorizations.close()
             await steward_store.close()
             await settings_store.close()
@@ -1261,6 +1325,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         ticket_store=ticket_store,
         notifier_provider=notifier_provider,
         stewards=steward_runner,
+        ticket_callbacks=ticket_callbacks,
     )
     user_routes = build_user_routes(
         user_store=user_store, registry=registry, store=store, oauth_store=oauth_store
@@ -1407,6 +1472,8 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
     app.state.steward_store = steward_store
     app.state.steward_authorizations = steward_authorizations
     app.state.steward_scheduler = steward_scheduler
+    app.state.ticket_callbacks = ticket_callbacks
+    app.state.callback_store = callback_store
     # Replaced by the lifespan with the tasks it actually started (if any).
     app.state.ticket_task = None
     app.state.discord_task = None

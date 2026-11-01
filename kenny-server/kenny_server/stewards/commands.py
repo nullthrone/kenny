@@ -46,7 +46,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
@@ -128,9 +128,21 @@ def caller_refusal(*, person: bool, role: str | None) -> CommandRefused | None:
 
 
 async def _target_problem(
-    runner: StewardRunner, spec: StewardSpec, host_id: str | None, hosts: Hosts
+    runner: StewardRunner,
+    spec: StewardSpec,
+    host_id: str | None,
+    hosts: Hosts,
+    *,
+    deferred: bool = False,
 ) -> CommandRefused | None:
-    """Check 7: whether ``host_id`` is a machine this command run may work on now."""
+    """Check 7: whether ``host_id`` is a machine this command run may work on now.
+
+    ``deferred`` asks only what cannot change before the machine is back -- that
+    it is a machine the steward may work on at all -- for a run armed to start at
+    its next connection (:mod:`~kenny_server.stewards.callbacks`). Whether it is
+    online, serves the steward's tools, passes the spec's preconditions and is
+    idle is asked when the run actually starts.
+    """
 
     problem = run_target_problem(spec, host_id, hosts.known)
     if problem is not None:
@@ -147,14 +159,15 @@ async def _target_problem(
         )
     if host_bound(spec) and host_id is not None:
         agent = hosts.registry.get(host_id) if hosts.registry is not None else None
-        if agent is None or not getattr(agent, "online", False):
+        online = agent is not None and getattr(agent, "online", False)
+        if not online and not deferred:
             return CommandRefused(
                 f"{host_id} is offline; start the run when it is back",
                 status=409,
                 code="host_offline",
             )
         os_name = getattr(agent, "os", None)
-        if not host_supports(spec, os_name):
+        if (online or (agent is not None and os_name)) and not host_supports(spec, os_name):
             return CommandRefused(
                 f"{spec.id} does not run on {os_name or 'this'} machines",
                 status=400,
@@ -174,6 +187,8 @@ async def _target_problem(
                     status=400,
                     code="host_not_named",
                 )
+    if deferred:
+        return None
     refused = await runner.precondition_refusal(spec, host_id, params)
     if refused is not None:
         return CommandRefused(refused, status=409, code="precondition")
@@ -241,11 +256,15 @@ async def act_refusal(
     effective_hash: Any,
     hosts: Hosts,
     check_hash: bool = True,
+    deferred: bool = False,
 ) -> CommandRefused | None:
     """Why a command run of ``spec`` that may act must not start now (checks 2-8), or ``None``.
 
     ``check_hash=False`` skips check 6, for the readiness view that supplies
-    the hash itself.
+    the hash itself. ``deferred`` is the question asked when a person arms a
+    run for a machine's next connection: check 7 asks only what the machine's
+    absence cannot answer (see :func:`_target_problem`), and check 8, which is
+    about runs in flight now, is left to the moment the run starts.
     """
 
     why = surface_refusal(spec)
@@ -285,9 +304,11 @@ async def act_refusal(
                 status=409,
                 code="hash_stale",
             )
-    refused = await _target_problem(runner, spec, host_id, hosts)
+    refused = await _target_problem(runner, spec, host_id, hosts, deferred=deferred)
     if refused is not None:
         return refused
+    if deferred:
+        return None
     return await _manual_run_problem(runner, spec, host_id)
 
 
@@ -321,8 +342,15 @@ async def start_command(
     username: str,
     effective_hash: Any,
     hosts: Hosts,
+    facts: Iterable[str] = (),
+    on_finished: Callable[[str | None], Awaitable[None]] | None = None,
 ) -> StewardRun:
     """Start one command run of ``spec`` in the background; return its row once admitted.
+
+    ``facts`` are extra lines for the brief, built by server code from
+    structured records (never from text a model or a machine wrote).
+    ``on_finished`` is awaited with the run's id (``None`` when no row was
+    opened) once the run has ended and its row is closed, whatever the outcome.
 
     Checks 2-8 are asked again under the runner's manual-run admission lock,
     held until the row exists, so two requests cannot both pass the daily limit
@@ -347,6 +375,9 @@ async def start_command(
             raise refused
         trigger = f"{COMMAND_TRIGGER_PREFIX}{who}"
         brief = _brief(spec, host_id, await runner.get_params(spec.id))
+        extra = [line for line in facts if line]
+        if extra:
+            brief = "\n".join([brief, *extra])
         loop = asyncio.get_running_loop()
         admitted: asyncio.Future[StewardRun | None] = loop.create_future()
 
@@ -355,10 +386,11 @@ async def start_command(
                 admitted.set_result(run)
 
         async def go() -> None:
+            ended: StewardRun | None = None
             try:
                 # The hash the person was shown, checked again as the run
                 # starts: a run whose hash moved since is never started.
-                await runner.run_generic(
+                ended = await runner.run_generic(
                     spec,
                     host_id=host_id,
                     trigger=trigger,
@@ -375,6 +407,15 @@ async def start_command(
                 runner._preview_targets.discard(key)
                 if not admitted.done():
                     admitted.set_result(None)
+                if on_finished is not None:
+                    opened: StewardRun | None = None
+                    if not admitted.cancelled() and admitted.exception() is None:
+                        opened = admitted.result()
+                    run_id = ended.id if ended is not None else (opened.id if opened else None)
+                    try:
+                        await on_finished(run_id)
+                    except Exception:  # noqa: BLE001 - a follow-up never fails the run
+                        logger.exception("steward %s: after-run hook failed", spec.id)
 
         runner._preview_targets.add(key)
         task = asyncio.create_task(go(), name=f"steward-command-{spec.id}")

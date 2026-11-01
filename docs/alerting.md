@@ -202,6 +202,12 @@ start one, and neither does an alert on a machine a steward changed in the last 
 is changing now, nor any alert within 6 hours of a steward changing the server's own
 records ([the quiet period](dashboard.md#what-starts-a-steward)).
 
+An alert ticket can also be handed to a steward for the machine's next return
+([ticket callbacks](dashboard.md#ticket-callbacks)). Its ticket closes by the same recovery
+as any alert ticket. A callback that ends without fixing its ticket is pushed to the human
+channels as a notification of kind `steward` (event type `ticket_callback`); it opens no
+ticket and starts no steward.
+
 ## Change notifications
 
 A diff step in the same loop compares **consecutive snapshots** (once per *new* snapshot,

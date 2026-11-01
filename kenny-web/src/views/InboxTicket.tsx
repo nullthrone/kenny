@@ -10,6 +10,7 @@ import AuditTrail from './ticket/AuditTrail'
 import InlineEditField from './ticket/InlineEditField'
 import LinkedAlerts, { type TicketAlertsResponse } from './ticket/LinkedAlerts'
 import NoteComposer from './ticket/NoteComposer'
+import StewardCallback from './ticket/StewardCallback'
 import TicketActions from './ticket/TicketActions'
 import Timeline from './ticket/Timeline'
 import { formatAge } from './inbox/age'
@@ -278,6 +279,8 @@ export default function InboxTicket() {
       <TicketActions ticket={t} onMutated={refetchTicket} />
 
       {alerts.data && <LinkedAlerts data={alerts.data} />}
+
+      {isOperator && id && <StewardCallback ticketId={id} onMutated={refetchTicket} />}
 
       <div className={styles.sectionGap}>
         <div className={styles.tabs} role="tablist" aria-label="What happened on this ticket">

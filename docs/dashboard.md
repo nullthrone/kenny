@@ -464,6 +464,14 @@ from a cold load, not just from clicking through the queue. It shows:
   the trail records the rest. Where the verdict proposes muting a recurring event pattern,
   the row carries a one-click **MUTE ON THIS PC** button that creates the suppression rule
   for that host.
+- **Steward callback** *(operator+ sees it; a superuser at the dashboard arms it)*, on an
+  alert ticket about health sections of its machine: tick **Let a steward fix … when
+  &lt;machine&gt; is back**, choose a steward and press **HAND OVER**. The next time the
+  machine sends telemetry, kenny starts a [command run](#command-runs) of that steward on
+  it, as you, and then judges it on fresh telemetry: the ticket closes only when its
+  sections read healthy. A live callback shows its state, its attempts and its expiry,
+  with **WITHDRAW**; an ended one shows how it ended. See
+  [Ticket callbacks](#ticket-callbacks).
 - **What happened**, in two tabs over the same rows.
 
     **ANALYSIS** (the default) is the ticket read as a story, oldest first: findings, what
@@ -1129,6 +1137,50 @@ must come from the dashboard's own origin as JSON (see [Stewards](#stewards)).
   shown as server notes when the conversation is reopened or counted as already recorded. An
   operator's message that quotes the note header is marked "(typed by the operator)" before
   the model sees it, and is shown as the operator's own words.
+
+#### Ticket callbacks
+
+A command run needs its machine online when you click. A ticket callback is that click
+given ahead, for a machine that is rarely there
+([ADR-0075](adr/0075-ticket-callbacks-a-command-given-ahead.md)):
+
+- Only an **alert ticket about health sections of its own machine** can take one: the
+  alert engine's verdict on those sections is how kenny knows whether it was fixed. A
+  ticket a person wrote cannot.
+- **Arming** checks what a command run checks that does not need the machine present:
+  a superuser signed in to the dashboard, the steward in `act` with its `command` trigger
+  on, the effective hash you were shown, and the machine among the steward's `hosts`.
+  Whether the machine is online, idle and meets the steward's preconditions is asked when
+  the run starts.
+- It **runs on the machine's next telemetry push**, as the person who armed it
+  (`command:<username>`), under everything a command run is bound by. One live callback
+  per ticket; it lasts **14 days** and **3 runs** that reached the machine. A run a cap
+  skipped or a restart interrupted, and a refusal that waiting can lift (the machine in
+  use, the daily command limit, stewards switched off), spend nothing and wait for the
+  next push. A refusal that waiting cannot lift — the steward left `act`, its effective
+  hash moved, its command trigger went off — ends it.
+- **Fixed means healthy, not "the model says so".** After a run kenny collects telemetry
+  from the machine and re-evaluates it as alerting does; the ticket is resolved when its
+  sections read healthy on telemetry received after the run (if the machine left first,
+  its next push decides). Otherwise the attempt failed, and the next push tries again.
+- **Every step is a note on the ticket.** A callback that ends without fixing its ticket
+  (attempts spent, expired, its steward changed) is also announced on the alert channels
+  as a push (`kind: "steward"`), which opens no ticket and starts no steward. Closing the
+  ticket ends its callback quietly.
+
+- `GET /api/tickets/{tid}/callback` *(operator+)* — `{"ticket_id", "host_id", "sections",
+  "callback", "can_arm", "reason", "ttl_days", "max_attempts", "stewards": [...]}`:
+  `callback` is the live callback, else the latest, else `null` (`state` is one of
+  `armed`, `running`, `verifying`, `succeeded`, `failed`, `expired`, `cancelled`);
+  `stewards` lists those that could work on the ticket's machine, each with
+  `effective_hash`, `allowed` and, when not, `reason` and `code`.
+- `POST /api/tickets/{tid}/callback` *(superuser, signed in at the dashboard; JSON from the
+  dashboard itself)* with `{"steward_id", "effective_hash"}` — `201` with the callback.
+  `403` for any other credential, `400 not_checkable` for a ticket no server check can
+  judge, `409 ticket_closed`, `409 already_armed`, then the command-run refusals above
+  (`hash_stale`, `not_in_act`, `command_off`, `host_not_named`, …).
+- `DELETE /api/tickets/{tid}/callback` *(superuser)* — withdraws the live callback; a run
+  already started keeps running. `404 none_armed` when there is none.
 
 **From Ask kenny.** The card Ask kenny shows for a proposed run reads
 `GET /api/stewards/{steward_id}/command` and offers **Preview** and **Run now**. Run now is
