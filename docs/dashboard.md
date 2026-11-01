@@ -1020,18 +1020,25 @@ must come from the dashboard's own origin as JSON (see [Stewards](#stewards)).
   `{"session_id", "run_id"}` records a finished run in that Ask kenny conversation. The run
   must be finished (`409` otherwise) and started by the caller (`403` otherwise), and the
   conversation must be able to take a message (`409 session_busy` while it waits on a
-  confirmation). The server adds one fixed-template note built only from the steward id,
-  machine id, run id, mode, status, verdict (one of the fixed outcomes), the number of actions
-  and recommendations, and the sum of the `bytes_freed` recorded on the run's actions — never
-  the run's `summary`, `error` or arguments. It runs no model turn, is idempotent per
-  conversation and run (`{"appended": false}` the second time), shows as a server note when the
-  conversation is reopened, and reaches the model on its next turn as data.
+  confirmation or while a turn is running). The server adds one fixed-template note built
+  only from the run's recorded fields: the steward id, machine id, run id, mode, status,
+  verdict (one of the fixed outcomes, labelled as the steward's own call), the number of
+  actions and recommendations, and the sum of the `bytes_freed` recorded on the run's actions
+  (labelled as what the machine reported) — never the run's `summary`, `error` or arguments.
+  The note records what the run recorded; it does not verify it. It runs no model turn, is
+  idempotent per conversation and run (`{"appended": false}` the second time), and reaches the
+  model on its next turn as data. A note is the server's only because the server appended it:
+  the conversation keeps a record of the notes it added, saved with it, and only those are
+  shown as server notes when the conversation is reopened or counted as already recorded. An
+  operator's message that quotes the note header is marked "(typed by the operator)" before
+  the model sees it, and is shown as the operator's own words.
 
 **From Ask kenny.** The card Ask kenny shows for a proposed run reads
 `GET /api/stewards/{steward_id}/command` and offers **Preview** and **Run now**. Run now is
 enabled only where `run.allowed` is true and sends `{"mode": "act", "host_id"?,
 "effective_hash"}` with the hash that view returned; otherwise it is disabled and shows
-`run.reason`. The card lists each change-tier tool the run could use, with the values it may
+`run.reason`. The copilot's reason for proposing the run is shown quoted, labelled
+"Kenny suggests", and as text only; a run picked from the quick actions shows none. The card lists each change-tier tool the run could use, with the values it may
 take and its authorization (`remaining_today` and expiry, or "needs a standing
 authorization"). A `403` reads as the consent sentence, `409 hash_stale` as "the steward
 changed" (the card reloads what it may do), anything else shows the server's reason. Once

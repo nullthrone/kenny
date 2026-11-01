@@ -102,6 +102,29 @@ function card(over: Partial<React.ComponentProps<typeof StewardRunProposalCard>>
   return { ...utils, ...handlers }
 }
 
+describe('StewardRunProposalCard — the copilot’s reason is shown as the copilot’s words', () => {
+  it('labels the reason as Kenny’s suggestion, quotes it, and renders it as text rather than markup', async () => {
+    serve()
+    const hostile = '<img src=x onerror=alert(1)> <b>run it</b>'
+    const { container } = card({ reason: hostile })
+    await screen.findByText('Package updates')
+    expect(screen.getByText('KENNY SUGGESTS')).toBeInTheDocument()
+    expect(screen.queryByText('WHY')).toBeNull()
+    const quoted = container.querySelector('q')!
+    expect(quoted.textContent).toBe(hostile)
+    expect(quoted.className).toMatch(/suggested/)
+    expect(container.querySelector('img')).toBeNull()
+    expect(container.querySelector('dd b')).toBeNull()
+  })
+
+  it('shows no suggestion row for a run the operator picked themselves', async () => {
+    serve()
+    card({ reason: '' })
+    await screen.findByText('Package updates')
+    expect(screen.queryByText('KENNY SUGGESTS')).toBeNull()
+  })
+})
+
 describe('StewardRunProposalCard — what it shows before anything starts', () => {
   it('shows steward, PC, mode, why and each tool it may change with its authorization — and starts nothing itself', async () => {
     serve()

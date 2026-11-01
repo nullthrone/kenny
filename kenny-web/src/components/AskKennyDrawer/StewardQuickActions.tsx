@@ -55,7 +55,7 @@ export default function StewardQuickActions({ hostId, onPick }: StewardQuickActi
           key={a.steward_id}
           type="button"
           className={styles.quickAction}
-          onClick={() => onPick(a.steward_id, hostId, 'You chose this from the quick actions.')}
+          onClick={() => onPick(a.steward_id, hostId, '')}
         >
           {a.title}
           {a.summary && <span className={styles.quickActionSummary}>{a.summary}</span>}

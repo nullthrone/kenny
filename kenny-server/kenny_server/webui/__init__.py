@@ -3234,7 +3234,7 @@ def build_chat_routes(
         model turn is driven. Idempotent per (session, run): a second call answers
         ``{"appended": false}``. 404 for an unknown session or run, 403 for a run
         the caller did not start, 409 for a run still running or a conversation
-        that cannot take a note now (a confirmation pending, a tool call
+        that cannot take a note now (a turn running, a confirmation pending, a tool call
         unanswered), 503 when stewards are not configured.
         """
 
@@ -3290,7 +3290,7 @@ def build_chat_routes(
                 "title": row["title"],
                 "agent_id": row["agent_id"],
                 "updated_at": row["updated_at"],
-                "transcript": public_transcript(row["messages"]),
+                "transcript": public_transcript(row["messages"], row["notes"]),
             }
         )
 

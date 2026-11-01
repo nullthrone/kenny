@@ -3849,11 +3849,24 @@ CREATE TABLE IF NOT EXISTS chat_conversations (
     agent_id    TEXT,
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL,
-    messages    TEXT NOT NULL
+    messages    TEXT NOT NULL,
+    notes       TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_chat_conversations_updated
     ON chat_conversations (updated_at DESC);
 """
+
+
+def _chat_notes(raw: Any) -> dict[str, str]:
+    """The stored ``{run_id: note text}`` map; anything unreadable is an empty record."""
+
+    try:
+        value = json.loads(raw) if isinstance(raw, str) else None
+    except ValueError:
+        return {}
+    if not isinstance(value, dict):
+        return {}
+    return {k: v for k, v in value.items() if isinstance(k, str) and isinstance(v, str)}
 
 
 class ChatHistoryStore:
@@ -3876,6 +3889,12 @@ class ChatHistoryStore:
         self._db = await aiosqlite.connect(self.db_path)
         await _configure_connection(self._db)
         await self._db.executescript(_CHAT_HISTORY_SCHEMA)
+        async with self._db.execute("PRAGMA table_info(chat_conversations)") as cur:
+            cols = {row["name"] for row in await cur.fetchall()}
+        if "notes" not in cols:
+            await self._db.execute(
+                "ALTER TABLE chat_conversations ADD COLUMN notes TEXT NOT NULL DEFAULT '{}'"
+            )
         await self._db.commit()
 
     async def close(self) -> None:
@@ -3896,13 +3915,16 @@ class ChatHistoryStore:
         title: str,
         agent_id: str | None,
         messages: list[dict[str, Any]],
+        notes: dict[str, str] | None = None,
     ) -> None:
         """Insert-or-update one conversation.
 
         ``title`` and ``created_at`` are only honored on first insert (a
         conversation is titled once, at creation — see ``ON CONFLICT``
         below); ``agent_id``/``messages``/``updated_at`` are refreshed on
-        every call.
+        every call. ``notes`` is the record of which text the server itself
+        appended as a steward run note (``{run_id: exact text}``); ``None``
+        leaves what is stored as it is.
         """
 
         now = datetime.now(timezone.utc).isoformat()
@@ -3915,13 +3937,18 @@ class ChatHistoryStore:
             "messages=excluded.messages",
             (id, title, agent_id, now, now, json.dumps(messages, default=str)),
         )
+        if notes is not None:
+            await self._conn.execute(
+                "UPDATE chat_conversations SET notes = ? WHERE id = ?",
+                (json.dumps(notes), id),
+            )
         await self._conn.commit()
 
     async def get(self, id: str) -> dict[str, Any] | None:
         """Return one conversation with its full parsed ``messages``, or None."""
 
         async with self._conn.execute(
-            "SELECT id, title, agent_id, created_at, updated_at, messages "
+            "SELECT id, title, agent_id, created_at, updated_at, messages, notes "
             "FROM chat_conversations WHERE id = ?",
             (id,),
         ) as cur:
@@ -3935,6 +3962,7 @@ class ChatHistoryStore:
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
             "messages": json.loads(row["messages"]),
+            "notes": _chat_notes(row["notes"]),
         }
 
     async def list(self) -> list[dict[str, Any]]:

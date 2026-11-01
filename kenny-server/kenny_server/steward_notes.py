@@ -15,8 +15,12 @@ the server, **from the run's recorded numbers and enumerations only**:
 Never the run's ``summary`` or ``error`` -- written by a model that had just read
 a monitored machine's output (ADR-0023) -- and never an argument or any other
 text the run holds. A note therefore cannot carry words a model or a machine
-chose, whatever the run saw, which is what lets it sit in the transcript as a
-fact beside the operator's own messages (ADR-0073).
+chose, whatever the run saw. It is the server's *record* of those fields, not a
+verification of them: the verdict is the steward model's own call and the bytes
+freed are what the machine reported, and the template labels them so. That is
+what lets it sit in the transcript beside the operator's own messages
+(ADR-0073). Which text in a conversation is such a note is decided by the server
+having appended it (``FleetSession.notes``), never by how a message reads.
 
 :func:`build_run_note` and :func:`parse_run_note` are the two halves of one
 format; the chat's transcript replay uses the second to show the note as a
@@ -40,8 +44,9 @@ __all__ = [
 NOTE_HEADER = "[kenny system note: steward run result]"
 
 _INTRO = (
-    "Recorded by the server from the run's own numbers. "
-    "Not written by the operator and not by a model."
+    "Built by the server from the run's recorded fields. "
+    "Not written by the operator or by the copilot. "
+    "The verdict is the steward's own call; the bytes freed are as the machine reported."
 )
 
 #: The largest count a note reports (JSON's exact-integer range, as for a run's results).
@@ -60,10 +65,10 @@ _NOTE_RE = re.compile(
     + r"\nrun: (?P<run>[0-9a-f]{32})"
     + rf"\nmode: (?P<mode>{_WORD})"
     + rf"\nstatus: (?P<status>{_WORD})"
-    + rf"(?:\nverdict: (?P<verdict>{_WORD}))?"
+    + rf"(?:\nverdict \(the steward's own call\): (?P<verdict>{_WORD}))?"
     + r"\nactions: (?P<actions>\d{1,16})"
     + r"\nrecommendations: (?P<recommendations>\d{1,16})"
-    + r"(?:\nbytes freed: (?P<bytes_freed>\d{1,16}))?",
+    + r"(?:\nbytes freed \(as the machine reported\): (?P<bytes_freed>\d{1,16}))?",
     re.ASCII,
 )
 
@@ -116,12 +121,12 @@ def build_run_note(run: Any) -> str:
         f"status: {_ident(run.status, _WORD)}",
     ]
     if run.verdict in STEWARD_VERDICTS:
-        lines.append(f"verdict: {run.verdict}")
+        lines.append(f"verdict (the steward's own call): {run.verdict}")
     lines.append(f"actions: {min(len(run.actions), _MAX_COUNT)}")
     lines.append(f"recommendations: {min(len(run.recommendations), _MAX_COUNT)}")
     freed = _bytes_freed(run.actions)
     if freed is not None:
-        lines.append(f"bytes freed: {freed}")
+        lines.append(f"bytes freed (as the machine reported): {freed}")
     return "\n".join(lines)
 
 

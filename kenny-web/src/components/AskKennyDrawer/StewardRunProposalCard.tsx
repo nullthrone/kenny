@@ -32,6 +32,7 @@ export interface StewardRunProposalCardProps {
   stewardId: string
   /** '' for a steward that is not bound to a PC. */
   hostId: string
+  /** What the copilot said when it proposed this run; empty for a run the operator picked. */
   reason: string
   resolution: 'pending' | 'started' | 'dismissed'
   runId?: string
@@ -251,8 +252,16 @@ export default function StewardRunProposalCard({
             <dd>{readiness.mode}</dd>
           </>
         )}
-        <dt>WHY</dt>
-        <dd>{reason}</dd>
+        {reason && (
+          <>
+            <dt>KENNY SUGGESTS</dt>
+            <dd>
+              {/* The copilot's own words, escaped by React and set apart as a quotation: they are
+                  a suggestion, not a statement by the server about the steward. */}
+              <q className={own.suggested}>{reason}</q>
+            </dd>
+          </>
+        )}
         {readiness && (
           <>
             <dt>MAY CHANGE</dt>
