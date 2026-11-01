@@ -83,6 +83,10 @@ windows = { version = "0.62", features = [
     "Win32_Security_Authorization",
     # DeviceIoControl control codes for the raw-disk reads (NVMe health log, ATA SMART).
     "Win32_System_Ioctl",
+    # NtCreateFile with FILE_COMPLETE_IF_OPLOCKED (and OBJECT_ATTRIBUTES), so a cleanup
+    # open never blocks on another process's oplock break.
+    "Wdk_Foundation",
+    "Wdk_Storage_FileSystem",
 ] }
 # Windows service lifecycle (install/uninstall/run-service + SCM control handler).
 windows-service = "0.8"

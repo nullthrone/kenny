@@ -26,11 +26,17 @@
 //! FIFOs and devices are never removed; the agent's own log directory and state files are
 //! excluded by an explicit candidate check. Work is bounded by [`CLEANUP_BUDGET`] /
 //! [`SCAN_BUDGET`], [`MAX_EXAMINED`] and [`MAX_DELETIONS`]; one cleanup or service restart
-//! runs at a time per host ([`try_host_lock`]).
+//! runs at a time per host ([`run_exclusive`]).
+//!
+//! A worker that overruns its budget by [`WORKER_GRACE`] (a call stuck in the kernel) is
+//! abandoned: the handler answers `timeout`, cancels the call's [`Cancel`] token and frees
+//! the host lock. Every deletion runs under that token ([`Cancel::permit`]), so an
+//! abandoned worker deletes nothing once the handler has given up on it.
 
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard, TryLockError};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::time::{Duration, Instant, SystemTime};
 
 use serde_json::{json, Value};
@@ -71,6 +77,12 @@ pub const LIST_CAP: usize = MAX_EXAMINED as usize + 1;
 
 /// The message a call that finds the host busy fails with (`exec_failed`).
 pub const BUSY_MESSAGE: &str = "another cleanup or service restart is running";
+
+/// How far past its own budget a worker may run before the handler abandons it.
+pub const WORKER_GRACE: Duration = Duration::from_secs(5);
+
+/// How long an abandoning handler waits for a deletion already in flight to return.
+const CANCEL_WAIT: Duration = Duration::from_secs(2);
 
 // ---------------------------------------------------------------------------------
 // Catalog
@@ -171,23 +183,151 @@ pub fn lookup(os: CatalogOs, args: &Value) -> Result<CatalogEntry, (ErrorCode, S
 // Host lock (shared with service_restart)
 // ---------------------------------------------------------------------------------
 
-static HOST_LOCK: Mutex<()> = Mutex::new(());
+static HOST_BUSY: AtomicBool = AtomicBool::new(false);
 
-/// Take the per-host lock that serialises cleanups and service restarts, or fail with
-/// `exec_failed` when another one holds it. A poisoned lock is still a free lock: the
-/// panic that poisoned it has already ended that call.
-pub fn try_host_lock() -> Result<MutexGuard<'static, ()>, (ErrorCode, String)> {
-    match HOST_LOCK.try_lock() {
-        Ok(guard) => Ok(guard),
-        Err(TryLockError::Poisoned(p)) => Ok(p.into_inner()),
-        Err(TryLockError::WouldBlock) => Err((ErrorCode::ExecFailed, BUSY_MESSAGE.to_string())),
+/// The per-host lock that serialises cleanups and service restarts; released on drop.
+/// It is owned by the async handler, not by the worker thread, so a worker stuck in the
+/// kernel cannot keep it.
+pub struct HostLock(());
+
+impl Drop for HostLock {
+    fn drop(&mut self) {
+        HOST_BUSY.store(false, Ordering::Release);
     }
 }
 
-/// Hold the host lock for a test (blocking), so a handler under test sees a busy host.
+/// Take the per-host lock, or fail with `exec_failed` when another call holds it.
+pub fn try_host_lock() -> Result<HostLock, (ErrorCode, String)> {
+    HOST_BUSY
+        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .map(|_| HostLock(()))
+        .map_err(|_| (ErrorCode::ExecFailed, BUSY_MESSAGE.to_string()))
+}
+
+/// Hold the host lock for a test (waiting for it), so a handler under test sees a busy
+/// host.
 #[cfg(test)]
-pub(crate) fn hold_host_lock_for_test() -> MutexGuard<'static, ()> {
-    HOST_LOCK.lock().unwrap_or_else(|p| p.into_inner())
+pub(crate) fn hold_host_lock_for_test() -> HostLock {
+    loop {
+        if let Ok(lock) = try_host_lock() {
+            return lock;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// A call's cancellation token, shared by the handler and its worker thread.
+///
+/// Every irreversible action runs while holding a [`Cancel::permit`]; once the handler
+/// has cancelled, no permit is granted. The handler sets the flag first and then takes
+/// the in-flight lock once, so after [`Cancel::cancel`] reports quiescence no action can
+/// start any more.
+#[derive(Default)]
+pub struct Cancel {
+    flag: AtomicBool,
+    inflight: Mutex<bool>,
+}
+
+/// Permission to perform one irreversible action; hold it until the action returns.
+pub struct Permit<'a> {
+    _inflight: MutexGuard<'a, bool>,
+}
+
+impl Cancel {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.flag.load(Ordering::SeqCst)
+    }
+
+    /// A permit for one action, or `None` once the call has been cancelled.
+    pub fn permit(&self) -> Option<Permit<'_>> {
+        let guard = self.inflight.lock().unwrap_or_else(|p| p.into_inner());
+        if *guard || self.is_cancelled() {
+            return None;
+        }
+        Some(Permit { _inflight: guard })
+    }
+
+    /// Cancel and wait up to `wait` for an action in flight to return. `true` once no
+    /// further action can start; `false` if one is still stuck (it is the last one: the
+    /// flag refuses every later permit).
+    pub async fn cancel(&self, wait: Duration) -> bool {
+        self.flag.store(true, Ordering::SeqCst);
+        let deadline = Instant::now() + wait;
+        loop {
+            match self.inflight.try_lock() {
+                Ok(mut g) => {
+                    *g = true;
+                    return true;
+                }
+                Err(TryLockError::Poisoned(p)) => {
+                    *p.into_inner() = true;
+                    return true;
+                }
+                Err(TryLockError::WouldBlock) => {}
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+}
+
+/// Run `work` on a blocking thread under the host lock, bounded by `limit`.
+///
+/// Past `limit` the worker is abandoned: its [`Cancel`] token is cancelled (no deletion
+/// or service action starts after that), the host lock is released for later calls and
+/// the call fails with `timeout`. The lock is likewise released, and the token
+/// cancelled, if the handler's future is dropped.
+pub async fn run_exclusive<T, F>(
+    limit: Duration,
+    what: &'static str,
+    work: F,
+) -> Result<T, (ErrorCode, String)>
+where
+    T: Send + 'static,
+    F: FnOnce(Arc<Cancel>) -> Result<T, (ErrorCode, String)> + Send + 'static,
+{
+    /// Cancels the token before the lock goes, on every path out of the handler.
+    struct Exclusive {
+        cancel: Arc<Cancel>,
+        _host: HostLock,
+    }
+    impl Drop for Exclusive {
+        fn drop(&mut self) {
+            self.cancel.flag.store(true, Ordering::SeqCst);
+        }
+    }
+
+    let ex = Exclusive {
+        cancel: Cancel::new(),
+        _host: try_host_lock()?,
+    };
+    let token = ex.cancel.clone();
+    let task = tokio::task::spawn_blocking(move || work(token));
+    match tokio::time::timeout(limit, task).await {
+        Ok(joined) => {
+            drop(ex);
+            joined.map_err(|_| (ErrorCode::Internal, format!("{what} task failed")))?
+        }
+        Err(_) => {
+            if !ex.cancel.cancel(CANCEL_WAIT).await {
+                tracing::warn!(what, "an abandoned worker is still inside a system call");
+            }
+            drop(ex);
+            Err((
+                ErrorCode::Timeout,
+                format!(
+                    "{what} did not finish within {} s and was abandoned",
+                    limit.as_secs()
+                ),
+            ))
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------
@@ -215,6 +355,8 @@ pub struct Meta {
     /// `(device, inode)` / `(volume serial, file index)`: the identity a later
     /// operation re-checks so a swapped entry is never acted on.
     pub id: (u64, u64),
+    /// Owning uid where the platform has one (Linux), else `None`.
+    pub owner: Option<u32>,
 }
 
 /// Why a primitive refused or failed.
@@ -234,9 +376,12 @@ pub enum FsError {
     Changed,
     /// The object resolved outside its root.
     Escaped,
-    /// The entry lives on another filesystem (a mount point under the root).
+    /// The entry lives on another filesystem or mount (a mount point or bind mount
+    /// under the root).
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     OtherDevice,
+    /// The call was cancelled: the handler has given up on it.
+    Cancelled,
     Other,
 }
 
@@ -266,13 +411,14 @@ pub trait Ops {
     ) -> Result<Self::Dir, FsError>;
 
     /// Delete regular file `name` after re-verifying it is still `expect` and under the
-    /// root. With `dry_run` every check runs and nothing is deleted.
+    /// root, holding a [`Cancel::permit`] across the deletion itself. With `commit` `None`
+    /// (a dry run) the checks run read-only and nothing is deleted.
     fn remove_file(
         &self,
         dir: &Self::Dir,
         name: &OsStr,
         expect: &Meta,
-        dry_run: bool,
+        commit: Option<&Cancel>,
     ) -> Result<(), FsError>;
 
     /// Delete empty directory `name`, with the same checks as [`Ops::remove_file`].
@@ -281,7 +427,7 @@ pub trait Ops {
         dir: &Self::Dir,
         name: &OsStr,
         expect: &Meta,
-        dry_run: bool,
+        commit: Option<&Cancel>,
     ) -> Result<(), FsError>;
 }
 
@@ -408,6 +554,7 @@ pub struct Session<'c> {
     pub dry_run: bool,
     clock: &'c dyn Clock,
     budgets: Budgets,
+    cancel: Arc<Cancel>,
     excluded: Vec<String>,
     pub files: u64,
     pub bytes: u64,
@@ -430,6 +577,7 @@ impl<'c> Session<'c> {
             dry_run,
             clock,
             budgets,
+            cancel: Cancel::new(),
             excluded: excluded
                 .iter()
                 .map(|p| path_key(&canonical_or_self(p)))
@@ -452,6 +600,7 @@ impl<'c> Session<'c> {
             dry_run: true,
             clock: self.clock,
             budgets: self.budgets,
+            cancel: self.cancel.clone(),
             excluded: self.excluded.clone(),
             files: 0,
             bytes: 0,
@@ -463,10 +612,34 @@ impl<'c> Session<'c> {
         }
     }
 
+    /// Tie this session to the call's cancellation token.
+    pub fn with_cancel(mut self, cancel: Arc<Cancel>) -> Self {
+        self.cancel = cancel;
+        self
+    }
+
+    /// The call's cancellation token.
+    #[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
+    pub fn cancel(&self) -> &Arc<Cancel> {
+        &self.cancel
+    }
+
+    /// What the primitives delete under: the token, or `None` in a dry run.
+    fn commit(&self) -> Option<&Cancel> {
+        (!self.dry_run).then_some(&*self.cancel)
+    }
+
     /// Wall time left in this call's budget.
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    #[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
     pub fn time_left(&self) -> Duration {
         self.budgets.time.saturating_sub(self.clock.elapsed())
+    }
+
+    /// Set `reserve` aside from the end of the time budget (for work that must run after
+    /// the walk, such as restoring services).
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub fn reserve(&mut self, reserve: Duration) {
+        self.budgets.time = self.budgets.time.saturating_sub(reserve);
     }
 
     /// Account for examining one more entry; `false` once a budget is spent.
@@ -474,7 +647,7 @@ impl<'c> Session<'c> {
         if self.stopped.is_some() {
             return false;
         }
-        if self.clock.elapsed() >= self.budgets.time {
+        if self.cancel.is_cancelled() || self.clock.elapsed() >= self.budgets.time {
             self.stopped = Some(Stop::Time);
             return false;
         }
@@ -543,6 +716,9 @@ impl<'c> Session<'c> {
                 );
             }
             FsError::Changed | FsError::OtherDevice | FsError::Other => self.skipped.other += 1,
+            FsError::Cancelled => {
+                self.stopped.get_or_insert(Stop::Time);
+            }
         }
     }
 
@@ -583,6 +759,8 @@ pub struct Rules {
     pub want_file: fn(&str) -> bool,
     /// Entries never touched or descended into: `(name, depth of the listed dir, is_dir)`.
     pub skip_entry: fn(&str, usize, bool) -> bool,
+    /// Directories walked but never removed: `(meta, depth of the listed dir)`.
+    pub keep_dir: fn(&Meta, usize) -> bool,
 }
 
 pub const fn days(n: u32) -> Duration {
@@ -597,11 +775,29 @@ fn skip_nothing(_: &str, _: usize, _: bool) -> bool {
     false
 }
 
-/// Linux `tmp`: everything but the systemd/X11 sockets' homes.
+fn keep_no_dir(_: &Meta, _: usize) -> bool {
+    false
+}
+
+/// Linux `tmp`: everything but the systemd private directories, the X11/ICE/XIM/font
+/// socket directories and the X server lock files. A root-owned directory directly under
+/// the root is never removed: once gone, any user could recreate the name and squat it.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))] // Linux targets; exercised by the tests everywhere
 pub fn tmp_rules(min_age_days: u32) -> Rules {
     fn skip(name: &str, _depth: usize, _is_dir: bool) -> bool {
-        name.starts_with("systemd-private-") || name == ".X11-unix" || name == ".ICE-unix"
+        const SOCKET_DIRS: &[&str] = &[
+            ".X11-unix",
+            ".ICE-unix",
+            ".XIM-unix",
+            ".font-unix",
+            ".Test-unix",
+        ];
+        name.starts_with("systemd-private-")
+            || SOCKET_DIRS.contains(&name)
+            || (name.len() > ".X-lock".len() && name.starts_with(".X") && name.ends_with("-lock"))
+    }
+    fn keep(meta: &Meta, depth: usize) -> bool {
+        depth == 0 && meta.owner == Some(0)
     }
     Rules {
         min_age: days(min_age_days),
@@ -609,6 +805,7 @@ pub fn tmp_rules(min_age_days: u32) -> Rules {
         remove_empty_dirs: true,
         want_file: any_file,
         skip_entry: skip,
+        keep_dir: keep,
     }
 }
 
@@ -624,6 +821,7 @@ pub fn linux_logs_rules(min_age_days: u32) -> Rules {
         remove_empty_dirs: false,
         want_file: is_rotated_log,
         skip_entry: skip,
+        keep_dir: keep_no_dir,
     }
 }
 
@@ -650,6 +848,7 @@ pub fn windows_tree_rules(min_age_days: u32) -> Rules {
         remove_empty_dirs: true,
         want_file: any_file,
         skip_entry: skip_nothing,
+        keep_dir: keep_no_dir,
     }
 }
 
@@ -666,6 +865,7 @@ pub fn windows_cbs_rules(min_age_days: u32) -> Rules {
         remove_empty_dirs: false,
         want_file: want,
         skip_entry: skip_nothing,
+        keep_dir: keep_no_dir,
     }
 }
 
@@ -679,6 +879,7 @@ pub fn whole_tree_rules() -> Rules {
         remove_empty_dirs: true,
         want_file: any_file,
         skip_entry: skip_nothing,
+        keep_dir: keep_no_dir,
     }
 }
 
@@ -694,6 +895,7 @@ pub fn package_cache_rules() -> Rules {
         remove_empty_dirs: false,
         want_file: want,
         skip_entry: skip_nothing,
+        keep_dir: keep_no_dir,
     }
 }
 
@@ -710,6 +912,7 @@ pub fn journal_archive_rules(min_age_days: u32) -> Rules {
         remove_empty_dirs: false,
         want_file: want,
         skip_entry: skip_nothing,
+        keep_dir: keep_no_dir,
     }
 }
 
@@ -722,6 +925,7 @@ pub fn journal_total_rules() -> Rules {
         remove_empty_dirs: false,
         want_file: any_file,
         skip_entry: skip_nothing,
+        keep_dir: keep_no_dir,
     }
 }
 
@@ -815,7 +1019,7 @@ fn walk<O: Ops>(
                     remaining += 1;
                     break;
                 }
-                match ops.remove_file(dir, &name, &meta, s.dry_run) {
+                match ops.remove_file(dir, &name, &meta, s.commit()) {
                     Ok(()) => {
                         s.files += 1;
                         s.bytes += meta.size;
@@ -850,10 +1054,11 @@ fn walk<O: Ops>(
                 };
                 if left == 0
                     && rules.remove_empty_dirs
+                    && !(rules.keep_dir)(&meta, depth)
                     && s.old_enough(&meta, rules.min_age)
                     && s.may_delete()
                 {
-                    match ops.remove_dir(dir, &name, &meta, s.dry_run) {
+                    match ops.remove_dir(dir, &name, &meta, s.commit()) {
                         Ok(()) => s.deletions += 1,
                         Err(FsError::NotFound) => {}
                         Err(e) => {
@@ -870,7 +1075,21 @@ fn walk<O: Ops>(
     remaining
 }
 
-/// Sweep one volume's `$Recycle.Bin`: in each per-user folder, every `$I` record older
+/// Whether `name` is a per-user recycle-bin folder: a SID, `^S-1-[0-9]+(-[0-9]+)+$`.
+#[cfg_attr(not(windows), allow(dead_code))] // Windows targets; exercised by the tests everywhere
+pub fn is_sid_folder(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix("S-1-") else {
+        return false;
+    };
+    let parts: Vec<&str> = rest.split('-').collect();
+    parts.len() >= 2
+        && parts
+            .iter()
+            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// Sweep one volume's `$Recycle.Bin`: in each per-user folder (named by a SID; anything
+/// else is left alone), every `$I` record older
 /// than `min_age` (by its own timestamps) goes together with its `$R` counterpart (a file,
 /// or a folder removed through the same walker). The `$R` part goes first, so a failure
 /// leaves the entry visible in the bin rather than an orphaned payload.
@@ -905,7 +1124,7 @@ pub fn sweep_recycle_bin<O: Ops>(ops: &O, s: &mut Session, bin: &Path, min_age: 
         if !s.tick() {
             return;
         }
-        if !is_plain_name(&user) {
+        if !is_plain_name(&user) || !is_sid_folder(&user.to_string_lossy()) {
             continue;
         }
         let meta = match ops.stat(&root, &user) {
@@ -999,7 +1218,7 @@ fn sweep_recycle_user<O: Ops>(
                     if !s.may_delete() {
                         return;
                     }
-                    match ops.remove_file(dir, &payload, &m, s.dry_run) {
+                    match ops.remove_file(dir, &payload, &m, s.commit()) {
                         Ok(()) => {
                             s.files += 1;
                             s.bytes += m.size;
@@ -1028,7 +1247,7 @@ fn sweep_recycle_user<O: Ops>(
                         }
                     };
                     if left == 0 && s.may_delete() {
-                        match ops.remove_dir(dir, &payload, &m, s.dry_run) {
+                        match ops.remove_dir(dir, &payload, &m, s.commit()) {
                             Ok(()) => {
                                 s.deletions += 1;
                                 true
@@ -1051,7 +1270,7 @@ fn sweep_recycle_user<O: Ops>(
             }
             continue;
         }
-        match ops.remove_file(dir, &name, &info, s.dry_run) {
+        match ops.remove_file(dir, &name, &info, s.commit()) {
             Ok(()) => {
                 s.files += 1;
                 s.bytes += info.size;
@@ -1154,15 +1373,12 @@ pub async fn cleanup(args: Value) -> Result<Value, (ErrorCode, String)> {
 
 async fn run(args: Value, dry_run: bool) -> Result<Value, (ErrorCode, String)> {
     let entry = lookup(CatalogOs::native(), &args)?;
-    tokio::task::spawn_blocking(move || {
-        let _host = try_host_lock()?;
+    let budgets = Budgets::for_call(dry_run);
+    let what = if dry_run { "the scan" } else { "the cleanup" };
+    run_exclusive(budgets.time + WORKER_GRACE, what, move |cancel| {
         let clock = RealClock::start();
-        let mut s = Session::new(
-            dry_run,
-            &clock,
-            Budgets::for_call(dry_run),
-            &agent_excluded_paths(),
-        );
+        let mut s =
+            Session::new(dry_run, &clock, budgets, &agent_excluded_paths()).with_cancel(cancel);
         execute(&entry, &mut s)?;
         Ok(if dry_run {
             scan_result(&entry, &s)
@@ -1171,7 +1387,6 @@ async fn run(args: Value, dry_run: bool) -> Result<Value, (ErrorCode, String)> {
         })
     })
     .await
-    .map_err(|_| (ErrorCode::Internal, "cleanup task failed".to_string()))?
 }
 
 #[cfg(target_os = "linux")]

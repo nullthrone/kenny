@@ -664,8 +664,10 @@ rule: a governance call must never be able to lock everyone out of the machine.
 `fs_cleanup_scan` and `fs_cleanup` free disk space from a **fixed catalog** the agent owns.
 `target` is the only argument and names one catalog entry; the server never sends a path,
 and the agent derives every root from its own environment, never from the request.
-`fs_cleanup_scan` is **read-only** and reports exactly what `fs_cleanup` would remove at that
-moment (both run the same code path); `fs_cleanup` is **mutating** and irreversible. The
+`fs_cleanup_scan` is **read-only** and reports what `fs_cleanup` would remove at that moment
+(both run the same code path); `fs_cleanup` is **mutating** and irreversible. A scan opens no
+candidate for deletion, so on Windows a file another process holds open is counted by the scan
+and skipped by the cleanup (`skipped.in_use`). The
 catalog per OS, with each target's fixed age threshold (`min_age_days`; `0` means no age
 filter), is pinned by `docs/fixtures/vectors/fs_cleanup_targets.json` in catalog order.
 
@@ -675,32 +677,42 @@ Windows targets:
 |--------|-----------------|----------------|
 | `temp_system` | files under `%WINDIR%\Temp` | 7 |
 | `temp_users` | files under each local profile's `AppData\Local\Temp`; skips `Public`, `Default`, `All Users` and any profile that is a reparse point | 7 |
-| `windows_update_cache` | files under `%WINDIR%\SoftwareDistribution\Download`; the agent stops `wuauserv` and `bits`, deletes, and restores each service to its prior state; refused (`exec_failed`) while an update is being installed or a reboot is pending | 1 |
-| `recycle_bin` | recycle-bin entries deleted more than 30 days ago on fixed local volumes; irreversible | 30 |
+| `windows_update_cache` | files under `%WINDIR%\SoftwareDistribution\Download`; the agent stops whichever of `wuauserv` and `bits` is running, deletes, and starts those again (a stopped one stays stopped); refused (`exec_failed`) while an update is being installed, a reboot is pending, or either service is starting, stopping or paused; if a service does not stop in time nothing is deleted, the call fails with `timeout` and the services are still restored | 1 |
+| `recycle_bin` | recycle-bin entries deleted more than 30 days ago on fixed local volumes, in per-user folders named by a SID (`^S-1-[0-9]+(-[0-9]+)+$`; any other folder is left alone); irreversible | 30 |
 | `logs_old` | `%WINDIR%\Logs\CBS\*.cab` and `CbsPersist_*.log` | 30 |
 
 Linux targets:
 
 | target | what it removes | `min_age_days` |
 |--------|-----------------|----------------|
-| `tmp` | regular files and empty directories under `/tmp` (10 days) and `/var/tmp` (30 days); skips `systemd-private-*`, `.X11-unix` and `.ICE-unix` | 10 |
+| `tmp` | regular files and empty directories under `/tmp` (10 days) and `/var/tmp` (30 days); skips `systemd-private-*`, `.X11-unix`, `.ICE-unix`, `.XIM-unix`, `.font-unix`, `.Test-unix` and `.X*-lock`; never removes a root-owned directory directly under `/tmp` or `/var/tmp` (its contents are still cleaned) | 10 |
 | `package_cache` | the package manager's own clean: `apt-get clean`, `dnf clean packages` or `zypper clean` | 0 |
 | `journal` | `journalctl --vacuum-time=14d` | 14 |
 | `logs_old` | rotated files under `/var/log` up to depth 3 matching `*.gz`, `*.xz`, `*.bz2`, `*.zst`, `*.[0-9]` or `*.old`; excludes `journal/` | 30 |
 
 For `tmp` the vector's `min_age_days` is the `/tmp` threshold; `/var/tmp` uses 30 days.
 
+For `package_cache` and `journal`, `fs_cleanup` reports what the command freed as the size of
+the cache before minus after. When the size afterwards cannot be measured within the budget,
+it reports `files_removed: 0` and `bytes_freed: 0` with `complete: false`, `stopped: "time"`
+and an `errors` entry with code `measure_incomplete`.
+
 Safety rules the agent guarantees:
 
 - It never follows or deletes through a symlink, junction or other reparse point; such an
   entry is skipped and counted under `skipped.reparse`.
-- Every candidate stays under its target's root, and a root itself is never deleted.
+- Every candidate stays under its target's root, and a root itself is never deleted. On
+  Linux the walk stays on the root's mount: a mount point or bind mount below a root is
+  not entered (counted under `skipped.other`).
 - The agent's own log directory is never touched.
 - Work is bounded per call (entries examined, deletions, wall clock). A stop returns
   `complete: false`, and `fs_cleanup` adds `stopped: "time"` or `"count"`; calling again
-  continues the work.
+  continues the work. A call still running 5 s past its wall-clock bound (stuck in the
+  operating system) fails with `timeout`; it deletes nothing further and no longer holds
+  the host.
 - Files in use or not permitted are skipped and counted (`skipped.in_use`,
-  `skipped.denied`; anything else under `skipped.other`), never failed.
+  `skipped.denied`; anything else under `skipped.other`), never failed. On Windows a file
+  whose open would wait for another process's oplock to break counts as in use.
 - One cleanup or service restart runs at a time per host; a call that finds the host busy
   fails with `exec_failed`.
 
@@ -723,12 +735,19 @@ is off is `disabled`.
 a systemd unit given as a bare name or with a `.service` suffix only. It must match
 `^[A-Za-z0-9][A-Za-z0-9_.@:\-$]{0,255}$` (otherwise `bad_args`) and is never passed to a
 shell. The agent refuses to restart its own service, matched both by its built-in name and by
-the name it was installed under, with `blocked`. The wait is bounded: stopping and starting
-take at most 30 s each. Dependent services are never force-stopped; a service whose
-dependents are running fails with `exec_failed`. The result is `{ok, name, was_running,
-running, waited_ms}`: `was_running` is the state before the call, `running` the state after
-it, `waited_ms` the time spent waiting on the service. A service or unit that does not exist is
-`not_found`; the call shares the per-host lock with `fs_cleanup` (busy is `exec_failed`).
+the name it was installed under, with `blocked`. Only a running service is restarted: one that
+is not running is never started, and the call fails with `exec_failed` ("not running; restart
+does not start a stopped service"). The wait is bounded: stopping and starting take at most
+30 s each and the whole call at most 70 s; a call still running 5 s past that fails with
+`timeout` and no longer holds the host. Dependent services are never force-stopped: on
+Windows a service whose dependents are running fails with `exec_failed`; on Linux, where a
+restart would carry over to them, the call fails with `exec_failed` while any unit listed in
+the unit's `RequiredBy`, `BoundBy`, `ConsistsOf` or `UpheldBy` is active (or has a name the
+agent cannot check). The result is `{ok, name, was_running, running, waited_ms}`:
+`was_running` is the state before the call (always `true`, since a service that is not running
+is refused), `running` the state after it, `waited_ms` the time spent waiting on the service.
+A service or unit that does not exist is `not_found`; the call shares the per-host lock with
+`fs_cleanup` (busy is `exec_failed`).
 
 ### Server-only MCP tools (not forwarded to a single agent)
 
@@ -1465,7 +1484,7 @@ agent puts it on the wire in `register.protocol` to select the mutual-auth hands
 - `0.23` — three host tools, additive: `fs_cleanup_scan` (read-only) and `fs_cleanup`
   (mutating) free disk space from a fixed, agent-owned catalog of targets
   (`docs/fixtures/vectors/fs_cleanup_targets.json`), and `service_restart` (mutating)
-  restarts a named Windows service or systemd unit. `fs_cleanup` and `service_restart` join
+  restarts a named, running Windows service or systemd unit. `fs_cleanup` and `service_restart` join
   the mutating tools the kill switch refuses. No existing frame or tool changes shape; an
   agent before 0.23 answers the new tools with `unsupported`.
 

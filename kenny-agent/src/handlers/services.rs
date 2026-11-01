@@ -3,8 +3,13 @@
 //! The name is validated against the contract's pattern and never reaches a shell. On
 //! Linux it must be a bare unit name or end in `.service` (no other unit type), and it is
 //! handed to an absolute `systemctl` after `--`, with the environment cleared. On Windows
-//! the service control manager stops it (bounded wait), then starts it (bounded wait);
-//! running dependents fail the call and are never force-stopped.
+//! the service control manager stops it (bounded wait), then starts it (bounded wait).
+//!
+//! Only a running service is restarted: one that is not running is refused
+//! (`exec_failed`), never started. Dependents are never force-stopped: on Windows the SCM
+//! refuses the stop while they run; on Linux, where `systemctl restart` would restart
+//! them along, the call is refused while any unit that requires, binds to, is part of or
+//! is upheld by the unit is active. The whole call is bounded by [`RESTART_BUDGET`].
 //!
 //! Self-protection: the agent refuses (`blocked`) to restart its own service, by its
 //! built-in name ([`crate::config::SERVICE_NAME`]), by the name it was started under
@@ -16,6 +21,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
+use crate::handlers::cleanup::{run_exclusive, WORKER_GRACE};
 use crate::protocol::ErrorCode;
 
 /// Total bound of one call: stop (≤ 30 s) + start (≤ 30 s) + state queries.
@@ -54,6 +60,76 @@ const NON_SERVICE_UNIT_TYPES: &[&str] = &[
     "scope",
     "device",
 ];
+
+/// The refusal for a service or unit that is not running.
+fn not_running(name: &str) -> (ErrorCode, String) {
+    (
+        ErrorCode::ExecFailed,
+        format!("{name} is not running; restart does not start a stopped service"),
+    )
+}
+
+/// The systemd properties listing the units a restart of a unit propagates to.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub const DEPENDENT_PROPERTIES: &str = "RequiredBy,BoundBy,ConsistsOf,UpheldBy";
+
+/// The units named by `systemctl show -p <DEPENDENT_PROPERTIES> --value` output
+/// (space-separated lists, one property per line), deduplicated in order. A name that does
+/// not match the contract's pattern cannot be checked safely and fails the call.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn parse_dependents(doc: &str) -> Result<Vec<String>, (ErrorCode, String)> {
+    let mut out: Vec<String> = Vec::new();
+    for name in doc.split_whitespace() {
+        if !matches_contract_pattern(name) {
+            return Err((
+                ErrorCode::ExecFailed,
+                "a dependent unit has a name that cannot be checked; refusing to restart"
+                    .to_string(),
+            ));
+        }
+        if !out.iter().any(|n| n == name) {
+            out.push(name.to_string());
+        }
+    }
+    Ok(out)
+}
+
+/// Refuse when any of `dependents` is active, given `systemctl is-active -- <dependents>`
+/// output (one state per line, in order). Output that does not line up with the names
+/// fails the call: unverified dependents are treated as running.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn check_dependents(
+    unit: &str,
+    dependents: &[String],
+    states: &str,
+) -> Result<(), (ErrorCode, String)> {
+    let states: Vec<&str> = states.lines().map(str::trim).collect();
+    if states.len() != dependents.len() {
+        return Err((
+            ErrorCode::ExecFailed,
+            format!(
+                "cannot tell whether units depending on {unit} are running; refusing to restart"
+            ),
+        ));
+    }
+    let active: Vec<&str> = dependents
+        .iter()
+        .zip(&states)
+        .filter(|(_, st)| matches!(**st, "active" | "activating" | "reloading" | "refreshing"))
+        .map(|(n, _)| n.as_str())
+        .collect();
+    if active.is_empty() {
+        Ok(())
+    } else {
+        Err((
+            ErrorCode::ExecFailed,
+            format!(
+                "units depending on {unit} are running ({}); stop them first",
+                active.join(", ")
+            ),
+        ))
+    }
+}
 
 /// `^[A-Za-z0-9][A-Za-z0-9_.@:\-$]{0,255}$`.
 pub fn matches_contract_pattern(name: &str) -> bool {
@@ -166,25 +242,31 @@ pub async fn restart(args: Value) -> Result<Value, (ErrorCode, String)> {
     refuse_self(name)?;
     refuse_self(&target)?;
     let name = name.to_string();
-    tokio::task::spawn_blocking(move || {
-        let _host = crate::handlers::cleanup::try_host_lock()?;
-        platform::restart(&target).map(|r| {
-            json!({
-                "ok": r.ok,
-                "name": name,
-                "was_running": r.was_running,
-                "running": r.running,
-                "waited_ms": r.waited_ms,
+    run_exclusive(
+        RESTART_BUDGET + WORKER_GRACE,
+        "the service restart",
+        move |cancel| {
+            platform::restart(&target, &cancel).map(|r| {
+                json!({
+                    "ok": r.ok,
+                    "name": name,
+                    "was_running": r.was_running,
+                    "running": r.running,
+                    "waited_ms": r.waited_ms,
+                })
             })
-        })
-    })
+        },
+    )
     .await
-    .map_err(|_| {
-        (
-            ErrorCode::Internal,
-            "service restart task failed".to_string(),
-        )
-    })?
+}
+
+/// The refusal of a call the handler has already given up on.
+#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
+fn abandoned() -> (ErrorCode, String) {
+    (
+        ErrorCode::Timeout,
+        "the service restart was abandoned".to_string(),
+    )
 }
 
 /// What a restart observed.
@@ -201,8 +283,11 @@ mod platform {
     use std::path::Path;
     use std::time::{Duration, Instant};
 
-    use super::{Outcome, RESTART_BUDGET, START_WAIT, STOP_WAIT};
-    use crate::handlers::cleanup::run_fixed;
+    use super::{
+        abandoned, check_dependents, not_running, parse_dependents, Outcome, DEPENDENT_PROPERTIES,
+        RESTART_BUDGET, START_WAIT, STOP_WAIT,
+    };
+    use crate::handlers::cleanup::{run_fixed, Cancel};
     use crate::protocol::ErrorCode;
     use crate::telemetry::collectors::ProbeFailure;
 
@@ -247,7 +332,7 @@ mod platform {
         Ok(query(systemctl, &["is-active", "--", unit], deadline)? == "active")
     }
 
-    pub(super) fn restart(unit: &str) -> Result<Outcome, (ErrorCode, String)> {
+    pub(super) fn restart(unit: &str, cancel: &Cancel) -> Result<Outcome, (ErrorCode, String)> {
         let systemctl = systemctl()?;
         let deadline = Instant::now() + RESTART_BUDGET;
         let load = query(
@@ -258,11 +343,32 @@ mod platform {
         if load == "not-found" || load.is_empty() {
             return Err((ErrorCode::NotFound, format!("unit {unit} not found")));
         }
-        let was_running = is_active(systemctl, unit, deadline)?;
+        if !is_active(systemctl, unit, deadline)? {
+            return Err(not_running(unit));
+        }
+        // `systemctl restart` propagates to these: refuse while any of them is active.
+        let property = format!("--property={DEPENDENT_PROPERTIES}");
+        let listed = query(
+            systemctl,
+            &["show", &property, "--value", "--", unit],
+            deadline,
+        )?;
+        let dependents = parse_dependents(&listed)?;
+        if !dependents.is_empty() {
+            let mut args = vec!["is-active", "--"];
+            args.extend(dependents.iter().map(String::as_str));
+            let states = query(systemctl, &args, deadline)?;
+            check_dependents(unit, &dependents, &states)?;
+        }
+        let Some(permit) = cancel.permit() else {
+            return Err(abandoned());
+        };
         let started = Instant::now();
-        // Leave room for the final state query inside the total bound.
+        // Leave room for the final state query inside the total bound. `try-restart`
+        // leaves a unit that stopped in the meantime stopped.
         let restart_wait = left(deadline - QUERY_WAIT, STOP_WAIT + START_WAIT);
-        let restarted = run_fixed(systemctl, &["restart", "--", unit], restart_wait);
+        let restarted = run_fixed(systemctl, &["try-restart", "--", unit], restart_wait);
+        drop(permit);
         let waited_ms = started.elapsed().as_millis() as u64;
         match restarted {
             Ok(out) if out.success => {}
@@ -272,7 +378,7 @@ mod platform {
                     .map_or_else(|| "a signal".to_string(), |c| c.to_string());
                 return Err((
                     ErrorCode::ExecFailed,
-                    format!("systemctl restart {unit} failed (exit {code})"),
+                    format!("systemctl try-restart {unit} failed (exit {code})"),
                 ));
             }
             Err(ProbeFailure::Timeout(_)) => {
@@ -291,7 +397,7 @@ mod platform {
         let running = is_active(systemctl, unit, deadline)?;
         Ok(Outcome {
             ok: running,
-            was_running,
+            was_running: true,
             running,
             waited_ms,
         })
@@ -306,7 +412,8 @@ mod platform {
     use windows_service::service::{Service, ServiceAccess, ServiceState};
     use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 
-    use super::{Outcome, START_WAIT, STOP_WAIT};
+    use super::{abandoned, not_running, Outcome, RESTART_BUDGET, START_WAIT, STOP_WAIT};
+    use crate::handlers::cleanup::Cancel;
     use crate::protocol::ErrorCode;
 
     const POLL: Duration = Duration::from_millis(250);
@@ -327,6 +434,11 @@ mod platform {
         })
     }
 
+    /// Time left before `deadline`, capped at `cap`.
+    fn left(deadline: Instant, cap: Duration) -> Duration {
+        deadline.saturating_duration_since(Instant::now()).min(cap)
+    }
+
     /// Poll until `want` or `max` elapses; the final state either way.
     fn wait_for(
         svc: &Service,
@@ -343,7 +455,12 @@ mod platform {
         }
     }
 
-    pub(super) fn restart(name: &str) -> Result<Outcome, (ErrorCode, String)> {
+    /// Stop, then start, a running service, all within [`RESTART_BUDGET`]: each wait is
+    /// capped by its own bound and by what is left of the total. Once the service has
+    /// stopped it is always started again, even after the handler has given up on the
+    /// call; no stop is requested after that.
+    pub(super) fn restart(name: &str, cancel: &Cancel) -> Result<Outcome, (ErrorCode, String)> {
+        let deadline = Instant::now() + RESTART_BUDGET;
         let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
             .map_err(|_| {
             (
@@ -366,40 +483,41 @@ mod platform {
                 _ => (ErrorCode::ExecFailed, format!("cannot open service {name}")),
             })?;
 
-        let before = state(&svc)?;
-        let was_running = before == ServiceState::Running;
+        if state(&svc)? != ServiceState::Running {
+            return Err(not_running(name));
+        }
         let started = Instant::now();
 
-        if before != ServiceState::Stopped {
-            if before != ServiceState::StopPending {
-                match svc.stop() {
-                    Ok(_) => {}
-                    // ERROR_SERVICE_NOT_ACTIVE: already stopped.
-                    Err(e) if os_error(&e) == Some(1062) => {}
-                    // ERROR_DEPENDENT_SERVICES_RUNNING: never force dependents.
-                    Err(e) if os_error(&e) == Some(1051) => {
-                        return Err((
-                            ErrorCode::ExecFailed,
-                            format!("services depending on {name} are running; stop them first"),
-                        ))
-                    }
-                    Err(e) if os_error(&e) == Some(1052) => {
-                        return Err((
-                            ErrorCode::ExecFailed,
-                            format!("service {name} does not accept a stop request"),
-                        ))
-                    }
-                    Err(_) => {
-                        return Err((ErrorCode::ExecFailed, format!("cannot stop service {name}")))
-                    }
-                }
-            }
-            if wait_for(&svc, ServiceState::Stopped, STOP_WAIT)? != ServiceState::Stopped {
+        let Some(permit) = cancel.permit() else {
+            return Err(abandoned());
+        };
+        match svc.stop() {
+            Ok(_) => {}
+            // ERROR_SERVICE_NOT_ACTIVE: it stopped on its own; it is not started.
+            Err(e) if os_error(&e) == Some(1062) => return Err(not_running(name)),
+            // ERROR_DEPENDENT_SERVICES_RUNNING: never force dependents.
+            Err(e) if os_error(&e) == Some(1051) => {
                 return Err((
-                    ErrorCode::Timeout,
-                    format!("service {name} did not stop within 30 s"),
-                ));
+                    ErrorCode::ExecFailed,
+                    format!("services depending on {name} are running; stop them first"),
+                ))
             }
+            Err(e) if os_error(&e) == Some(1052) => {
+                return Err((
+                    ErrorCode::ExecFailed,
+                    format!("service {name} does not accept a stop request"),
+                ))
+            }
+            Err(_) => return Err((ErrorCode::ExecFailed, format!("cannot stop service {name}"))),
+        }
+        drop(permit);
+        if wait_for(&svc, ServiceState::Stopped, left(deadline, STOP_WAIT))?
+            != ServiceState::Stopped
+        {
+            return Err((
+                ErrorCode::Timeout,
+                format!("service {name} did not stop within the time limit"),
+            ));
         }
 
         match svc.start(&[] as &[&OsStr]) {
@@ -417,18 +535,18 @@ mod platform {
                 ))
             }
         }
-        let after = wait_for(&svc, ServiceState::Running, START_WAIT)?;
+        let after = wait_for(&svc, ServiceState::Running, left(deadline, START_WAIT))?;
         let waited_ms = started.elapsed().as_millis() as u64;
         if after == ServiceState::StartPending {
             return Err((
                 ErrorCode::Timeout,
-                format!("service {name} did not start within 30 s"),
+                format!("service {name} did not start within the time limit"),
             ));
         }
         let running = after == ServiceState::Running;
         Ok(Outcome {
             ok: running,
-            was_running,
+            was_running: true,
             running,
             waited_ms,
         })
@@ -438,9 +556,10 @@ mod platform {
 #[cfg(not(any(windows, target_os = "linux")))]
 mod platform {
     use super::Outcome;
+    use crate::handlers::cleanup::Cancel;
     use crate::protocol::ErrorCode;
 
-    pub(super) fn restart(_name: &str) -> Result<Outcome, (ErrorCode, String)> {
+    pub(super) fn restart(_name: &str, _cancel: &Cancel) -> Result<Outcome, (ErrorCode, String)> {
         Err((
             ErrorCode::Unsupported,
             "service_restart is not supported on this platform".to_string(),
@@ -586,7 +705,6 @@ mod tests {
     }
 
     #[cfg(any(windows, target_os = "linux"))]
-    #[allow(clippy::await_holding_lock)] // the held lock is the point: the handler must see a busy host
     #[tokio::test]
     async fn busy_host_is_exec_failed() {
         let _held = crate::handlers::cleanup::hold_host_lock_for_test();
@@ -595,6 +713,65 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.0, ErrorCode::ExecFailed);
         assert_eq!(err.1, crate::handlers::cleanup::BUSY_MESSAGE);
+    }
+
+    #[test]
+    fn dependents_are_parsed_and_validated() {
+        // One line per property, space-separated lists, empty lines for empty ones.
+        let doc = "a.service b.service\n\nc.mount a.service\nd@x.service\n";
+        assert_eq!(
+            parse_dependents(doc).unwrap(),
+            ["a.service", "b.service", "c.mount", "d@x.service"]
+        );
+        assert!(parse_dependents("").unwrap().is_empty());
+        assert!(parse_dependents("\n\n\n").unwrap().is_empty());
+        // An escaped or option-like name cannot be checked safely: refused.
+        for bad in [
+            "systemd-fsck@dev-disk-by\\x2duuid.service",
+            "-x.service",
+            "a.service --now",
+        ] {
+            assert_eq!(
+                parse_dependents(bad).unwrap_err().0,
+                ErrorCode::ExecFailed,
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_active_dependent_refuses_the_restart() {
+        let deps: Vec<String> = ["a.service", "b.service"].map(String::from).to_vec();
+        assert!(check_dependents("x.service", &deps, "inactive\nfailed\n").is_ok());
+        assert!(check_dependents("x.service", &deps, "inactive\ndeactivating\n").is_ok());
+        assert!(check_dependents("x.service", &[], "").is_ok());
+        for states in [
+            "active\ninactive\n",
+            "inactive\nactivating\n",
+            "reloading\nactive\n",
+        ] {
+            let err = check_dependents("x.service", &deps, states).unwrap_err();
+            assert_eq!(err.0, ErrorCode::ExecFailed, "{states:?}");
+            assert!(err.1.contains("stop them first"), "{}", err.1);
+        }
+        // Output that does not line up with the names is not trusted.
+        for states in ["", "inactive\n", "inactive\ninactive\ninactive\n"] {
+            assert_eq!(
+                check_dependents("x.service", &deps, states).unwrap_err().0,
+                ErrorCode::ExecFailed,
+                "{states:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn not_running_refusal_says_restart_does_not_start() {
+        let (code, msg) = not_running("nginx.service");
+        assert_eq!(code, ErrorCode::ExecFailed);
+        assert_eq!(
+            msg,
+            "nginx.service is not running; restart does not start a stopped service"
+        );
     }
 
     /// A unit that does not exist maps to `not_found`, where systemd is there to ask.

@@ -4,9 +4,12 @@
 //! relative to its parent fd, every entry is read with `fstatat(AT_SYMLINK_NOFOLLOW)`
 //! and removed with `unlinkat` on the pinned parent. Nothing below a root is ever
 //! resolved by path, so swapping a directory for a symlink between enumeration and
-//! deletion cannot redirect the walk. The walk stays on the root's filesystem, and each
-//! directory's real location (`/proc/self/fd`) is re-checked against the root before
-//! anything in it is removed.
+//! deletion cannot redirect the walk. The walk stays on the root's mount: every entry
+//! and every opened directory must carry the root's device **and** mount ID (`statx`
+//! `STATX_MNT_ID`, else `mnt_id` from `/proc/self/fdinfo`) — a bind mount shares the
+//! device, so the device alone would let the walk cross into it. Each directory's real
+//! location (`/proc/self/fd`) is re-checked against the root before anything in it is
+//! removed.
 
 use std::ffi::{CStr, CString, OsStr, OsString};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -18,7 +21,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::{
     journal_archive_rules, journal_total_rules, key_under, linux_logs_rules, package_cache_rules,
-    path_key, sweep_root, tmp_rules, CatalogEntry, FsError, Kind, Meta, Ops, Session, Stop,
+    path_key, sweep_root, tmp_rules, Cancel, CatalogEntry, FsError, Kind, Meta, Ops, Session, Stop,
     LIST_CAP, VAR_TMP_MIN_AGE_DAYS,
 };
 use crate::protocol::ErrorCode;
@@ -29,6 +32,8 @@ use crate::telemetry::collectors::ProbeFailure;
 pub struct FdDir {
     fd: OwnedFd,
     dev: u64,
+    /// The root's mount ID; every directory on the walk carries the same one.
+    mnt: u64,
     root: Arc<String>,
 }
 
@@ -113,6 +118,52 @@ fn meta_of(st: &libc::stat) -> Meta {
         size: st.st_size.max(0) as u64,
         newest,
         id: (st.st_dev as u64, st.st_ino as u64),
+        owner: Some(st.st_uid as u32),
+    }
+}
+
+/// The mount ID of `name` in `dirfd` (or of `dirfd` itself with an empty `name` and
+/// `AT_EMPTY_PATH`), never following a link or triggering an automount. `None` where the
+/// kernel does not report one (`statx` before 4.11, `STATX_MNT_ID` before 5.8). Issued as
+/// a raw syscall so the static musl build does not depend on the C library's wrapper.
+fn statx_mnt_id(dirfd: RawFd, name: &CStr, flags: libc::c_int) -> Option<u64> {
+    // SAFETY: `name` is NUL-terminated; `stx` is a valid, zeroed out-buffer.
+    let mut stx: libc::statx = unsafe { std::mem::zeroed() };
+    let rc = unsafe {
+        libc::syscall(
+            libc::SYS_statx,
+            dirfd,
+            name.as_ptr(),
+            flags | libc::AT_SYMLINK_NOFOLLOW | libc::AT_NO_AUTOMOUNT,
+            libc::STATX_MNT_ID,
+            &mut stx as *mut libc::statx,
+        )
+    };
+    (rc == 0 && stx.stx_mask & libc::STATX_MNT_ID != 0).then_some(stx.stx_mnt_id)
+}
+
+/// `mnt_id` from a `/proc/self/fdinfo/<fd>` document.
+pub(super) fn parse_fdinfo_mnt_id(doc: &str) -> Option<u64> {
+    doc.lines()
+        .find_map(|l| l.strip_prefix("mnt_id:"))
+        .and_then(|v| v.trim().parse().ok())
+}
+
+/// The mount ID of an open fd: `statx`, else `/proc/self/fdinfo`.
+fn fd_mnt_id(fd: RawFd) -> Option<u64> {
+    statx_mnt_id(fd, c"", libc::AT_EMPTY_PATH).or_else(|| {
+        std::fs::read_to_string(format!("/proc/self/fdinfo/{fd}"))
+            .ok()
+            .and_then(|d| parse_fdinfo_mnt_id(&d))
+    })
+}
+
+/// An object whose mount ID differs from the root's — or cannot be told — is on another
+/// mount (a mount point or bind mount below the root) and is not entered.
+pub(super) fn require_same_mount(root: u64, got: Option<u64>) -> Result<(), FsError> {
+    match got {
+        Some(m) if m == root => Ok(()),
+        _ => Err(FsError::OtherDevice),
     }
 }
 
@@ -172,9 +223,11 @@ impl FdOps {
         if m.id.0 != parent.dev {
             return Err(FsError::OtherDevice);
         }
+        require_same_mount(parent.mnt, fd_mnt_id(fd.as_raw_fd()))?;
         let child = FdDir {
             fd,
             dev: parent.dev,
+            mnt: parent.mnt,
             root: parent.root.clone(),
         };
         verify_under_root(&child)?;
@@ -220,9 +273,12 @@ impl Ops for FdOps {
         // SAFETY: just opened, owned by nobody else.
         let fd = unsafe { OwnedFd::from_raw_fd(raw) };
         let m = meta_of(&fstat(fd.as_raw_fd())?);
+        // Without the root's mount ID the walk could not tell a bind mount: refuse.
+        let mnt = fd_mnt_id(fd.as_raw_fd()).ok_or(FsError::Other)?;
         let mut dir = FdDir {
             fd,
             dev: m.id.0,
+            mnt,
             root: Arc::new(path_key(&canon)),
         };
         let mut path = canon;
@@ -284,6 +340,13 @@ impl Ops for FdOps {
         if m.id.0 != dir.dev {
             return Err(FsError::OtherDevice);
         }
+        // A mount point (bind mounts included) reports the mounted root's ID. Where the
+        // kernel cannot say, `open_dir` still checks the opened directory's own.
+        if m.kind != Kind::Link {
+            if let Some(mnt) = statx_mnt_id(dir.fd.as_raw_fd(), &c, 0) {
+                require_same_mount(dir.mnt, Some(mnt))?;
+            }
+        }
         Ok(m)
     }
 
@@ -296,13 +359,16 @@ impl Ops for FdOps {
         dir: &FdDir,
         name: &OsStr,
         expect: &Meta,
-        dry_run: bool,
+        commit: Option<&Cancel>,
     ) -> Result<(), FsError> {
         let c = c_name(name)?;
         self.recheck(dir, &c, expect, Kind::File)?;
-        if dry_run {
+        let Some(cancel) = commit else {
             return Ok(());
-        }
+        };
+        let Some(_permit) = cancel.permit() else {
+            return Err(FsError::Cancelled);
+        };
         // SAFETY: `c` is NUL-terminated; `dir.fd` is the pinned parent.
         if unsafe { libc::unlinkat(dir.fd.as_raw_fd(), c.as_ptr(), 0) } != 0 {
             return Err(map_errno(errno()));
@@ -315,13 +381,16 @@ impl Ops for FdOps {
         dir: &FdDir,
         name: &OsStr,
         expect: &Meta,
-        dry_run: bool,
+        commit: Option<&Cancel>,
     ) -> Result<(), FsError> {
         let c = c_name(name)?;
         self.recheck(dir, &c, expect, Kind::Dir)?;
-        if dry_run {
+        let Some(cancel) = commit else {
             return Ok(());
-        }
+        };
+        let Some(_permit) = cancel.permit() else {
+            return Err(FsError::Cancelled);
+        };
         // SAFETY: as above; AT_REMOVEDIR only removes an empty directory.
         if unsafe { libc::unlinkat(dir.fd.as_raw_fd(), c.as_ptr(), libc::AT_REMOVEDIR) } != 0 {
             return Err(map_errno(errno()));
@@ -400,13 +469,36 @@ fn command_cleanup(
     dirs: &[&str],
     rules: &super::Rules,
 ) {
-    let before = measure_into(s, dirs, rules);
-    let budget = s.time_left();
     let tool = Path::new(program)
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    match run_fixed(program, args, budget) {
+    command_cleanup_with(
+        s,
+        &tool,
+        |budget| run_fixed(program, args, budget),
+        dirs,
+        rules,
+    );
+}
+
+/// [`command_cleanup`] with the command injected (`run` gets the time left).
+pub(super) fn command_cleanup_with(
+    s: &mut Session,
+    tool: &str,
+    run: impl FnOnce(Duration) -> Result<ProcOutput, ProbeFailure>,
+    dirs: &[&str],
+    rules: &super::Rules,
+) {
+    let before = measure_into(s, dirs, rules);
+    // A cancelled call starts no command (its own budget bounds one already running).
+    let Some(permit) = s.cancel().permit() else {
+        s.stopped.get_or_insert(Stop::Time);
+        return;
+    };
+    drop(permit);
+    let budget = s.time_left();
+    match run(budget) {
         Ok(out) if out.success => {}
         Ok(out) => {
             let code = out
@@ -424,12 +516,27 @@ fn command_cleanup(
         Err(_) => s.error("command_failed", format!("{tool} could not be started")),
     }
     let after = measure_into(s, dirs, rules);
-    s.files += before.files.saturating_sub(after.files);
-    s.bytes += before.bytes.saturating_sub(after.bytes);
+    account_delta(s, before, after);
+}
+
+/// Account a command-driven cleanup as `before - after`. An incomplete `after`
+/// measurement under-counts what is left and would over-report what was freed, so the
+/// call then reports nothing freed, `complete: false` and an error entry. (An incomplete
+/// `before` only under-reports.)
+pub(super) fn account_delta(s: &mut Session, before: Session, after: Session) {
     s.examined += before.examined + after.examined;
     s.skipped = after.skipped;
     for e in after.errors {
         s.error(e.code, e.message);
+    }
+    if after.stopped.is_some() {
+        s.error(
+            "measure_incomplete",
+            "the space left after the cleanup could not be measured in time; nothing freed is reported",
+        );
+    } else {
+        s.files += before.files.saturating_sub(after.files);
+        s.bytes += before.bytes.saturating_sub(after.bytes);
     }
     if s.stopped.is_none() {
         s.stopped = before.stopped.or(after.stopped);

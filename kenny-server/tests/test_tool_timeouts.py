@@ -66,6 +66,10 @@ _BUDGETS = {
 def test_the_agent_gives_up_on_cleanup_and_restart_before_the_server_does(tool: str) -> None:
     source_file, name = _BUDGETS[tool]
     budget = _agent_budget_s(source_file, name)
+    # The agent answers `timeout` at most WORKER_GRACE after the budget when a
+    # worker is stuck in the kernel; the server must still be waiting then.
+    grace = _agent_budget_s(_CLEANUP_RS, "WORKER_GRACE")
+    assert _TOOL_MIN_TIMEOUT_S[tool] >= budget + grace + 5, (tool, name, budget, grace)
     assert _TOOL_MIN_TIMEOUT_S[tool] >= budget + 10, (tool, name, budget)
 
 

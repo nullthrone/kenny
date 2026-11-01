@@ -9,6 +9,14 @@
 //! (`GetFinalPathNameByHandleW`) must lie under the root's. A file is deleted through
 //! the very handle that passed those checks (`DELETE` access, `FileDispositionInfo`),
 //! opened with no sharing so a file another process holds open is skipped as in use.
+//!
+//! Subdirectories and deletion candidates are opened with `NtCreateFile` relative to the
+//! pinned parent handle and with `FILE_COMPLETE_IF_OPLOCKED`: an open that would have to
+//! wait for another process to acknowledge an oplock break returns at once
+//! (`STATUS_OPLOCK_BREAK_IN_PROGRESS`), and the entry is skipped as in use. A local user
+//! holding an oplock on an old file therefore cannot stall the walk. A dry run opens a
+//! candidate for its attributes only, with full sharing, so a scan has no side effect on
+//! other processes' handles.
 
 use std::ffi::{OsStr, OsString};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
@@ -17,20 +25,30 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use windows::core::PCWSTR;
-use windows::Win32::Foundation::{CloseHandle, FILETIME, HANDLE};
+use windows::core::{PCWSTR, PWSTR};
+use windows::Wdk::Foundation::OBJECT_ATTRIBUTES;
+use windows::Wdk::Storage::FileSystem::{
+    NtCreateFile, FILE_COMPLETE_IF_OPLOCKED, FILE_DIRECTORY_FILE, FILE_OPEN,
+    FILE_OPEN_FOR_BACKUP_INTENT, FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
+    NTCREATEFILE_CREATE_OPTIONS,
+};
+use windows::Win32::Foundation::{
+    CloseHandle, FILETIME, HANDLE, NTSTATUS, OBJ_CASE_INSENSITIVE, STATUS_OPLOCK_BREAK_IN_PROGRESS,
+    UNICODE_STRING,
+};
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, FileDispositionInfo, GetDriveTypeW, GetFileInformationByHandle,
     GetFinalPathNameByHandleW, GetLogicalDrives, SetFileInformationByHandle,
-    BY_HANDLE_FILE_INFORMATION, DELETE, FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS,
-    FILE_FLAG_OPEN_REPARSE_POINT, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
-    FILE_SHARE_MODE, FILE_SHARE_READ, FILE_SHARE_WRITE, GETFINALPATHNAMEBYHANDLE_FLAGS,
-    OPEN_EXISTING, SYNCHRONIZE,
+    BY_HANDLE_FILE_INFORMATION, DELETE, FILE_ACCESS_RIGHTS, FILE_DISPOSITION_INFO,
+    FILE_FLAGS_AND_ATTRIBUTES, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+    FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_MODE, FILE_SHARE_READ,
+    FILE_SHARE_WRITE, GETFINALPATHNAMEBYHANDLE_FLAGS, OPEN_EXISTING, SYNCHRONIZE,
 };
+use windows::Win32::System::IO::IO_STATUS_BLOCK;
 
 use super::{
     days, key_under, path_key, sweep_recycle_bin, sweep_root, windows_cbs_rules,
-    windows_tree_rules, CatalogEntry, FsError, Kind, Meta, Ops, Session, LIST_CAP,
+    windows_tree_rules, Cancel, CatalogEntry, FsError, Kind, Meta, Ops, Session, LIST_CAP,
 };
 use crate::protocol::ErrorCode;
 
@@ -100,6 +118,83 @@ fn map_io(e: &std::io::Error) -> FsError {
 
 const DIR_ACCESS: u32 = FILE_LIST_DIRECTORY.0 | FILE_READ_ATTRIBUTES.0 | SYNCHRONIZE.0;
 
+/// The `NTSTATUS` failures an open or delete maps to a skip bucket.
+fn map_nt(status: NTSTATUS) -> FsError {
+    match status.0 as u32 {
+        // OBJECT_NAME_NOT_FOUND, OBJECT_PATH_NOT_FOUND, DELETE_PENDING
+        0xC000_0034 | 0xC000_003A | 0xC000_0056 => FsError::NotFound,
+        // ACCESS_DENIED, CANNOT_DELETE
+        0xC000_0022 | 0xC000_0121 => FsError::Denied,
+        // SHARING_VIOLATION, FILE_LOCK_CONFLICT
+        0xC000_0043 | 0xC000_0054 => FsError::InUse,
+        // NOT_A_DIRECTORY, FILE_IS_A_DIRECTORY
+        0xC000_0103 | 0xC000_00BA => FsError::Changed,
+        // STOPPED_ON_SYMLINK
+        0x8000_002D => FsError::Reparse,
+        _ => FsError::Other,
+    }
+}
+
+/// Open entry `name` of the pinned directory `parent` itself (never a reparse target),
+/// relative to its handle, so no path is resolved again. `FILE_COMPLETE_IF_OPLOCKED`
+/// makes an open that would wait for an oplock break return at once; that entry is
+/// skipped as in use (the handle is closed unused).
+fn open_relative(
+    parent: &Handle,
+    name: &OsStr,
+    access: u32,
+    share: FILE_SHARE_MODE,
+    extra: NTCREATEFILE_CREATE_OPTIONS,
+) -> Result<Handle, FsError> {
+    if !super::is_plain_name(name) {
+        return Err(FsError::Other);
+    }
+    let mut w: Vec<u16> = name.encode_wide().collect();
+    let bytes = u16::try_from(w.len() * 2).map_err(|_| FsError::Other)?;
+    let object_name = UNICODE_STRING {
+        Length: bytes,
+        MaximumLength: bytes,
+        Buffer: PWSTR(w.as_mut_ptr()),
+    };
+    let attributes = OBJECT_ATTRIBUTES {
+        Length: std::mem::size_of::<OBJECT_ATTRIBUTES>() as u32,
+        RootDirectory: parent.0,
+        ObjectName: &object_name,
+        Attributes: OBJ_CASE_INSENSITIVE,
+        ..Default::default()
+    };
+    let mut handle = HANDLE::default();
+    let mut io = IO_STATUS_BLOCK::default();
+    // SAFETY: every pointer refers to a local that outlives the call; `w` backs the name.
+    let status = unsafe {
+        NtCreateFile(
+            &mut handle,
+            FILE_ACCESS_RIGHTS(access),
+            &attributes,
+            &mut io,
+            None,
+            FILE_FLAGS_AND_ATTRIBUTES(0),
+            share,
+            FILE_OPEN,
+            FILE_OPEN_REPARSE_POINT
+                | FILE_OPEN_FOR_BACKUP_INTENT
+                | FILE_SYNCHRONOUS_IO_NONALERT
+                | FILE_COMPLETE_IF_OPLOCKED
+                | extra,
+            None,
+            0,
+        )
+    };
+    if status == STATUS_OPLOCK_BREAK_IN_PROGRESS {
+        drop(Handle(handle));
+        return Err(FsError::InUse);
+    }
+    if status.is_err() {
+        return Err(map_nt(status));
+    }
+    Ok(Handle(handle))
+}
+
 /// Open `path` itself (never a reparse target) with `access` and `share`.
 fn open(path: &Path, access: u32, share: FILE_SHARE_MODE) -> Result<Handle, FsError> {
     let w = wide(path);
@@ -157,6 +252,7 @@ fn meta_of(i: &BY_HANDLE_FILE_INFORMATION) -> Meta {
             i.dwVolumeSerialNumber as u64,
             ((i.nFileIndexHigh as u64) << 32) | i.nFileIndexLow as u64,
         ),
+        owner: None,
     }
 }
 
@@ -192,23 +288,35 @@ fn require_under(h: &Handle, root: &str) -> Result<PathBuf, FsError> {
 }
 
 impl WinOps {
-    /// Open `name` for deletion, verify it is still `expect` of `kind` under the root,
-    /// and (unless `dry_run`) mark it for deletion through that handle.
+    /// Open `name`, verify it is still `expect` of `kind` under the root and, when
+    /// committing, mark it for deletion through that handle. Committing opens with
+    /// `DELETE` and no sharing (a file another process holds open is in use); a dry run
+    /// opens for attributes only, with full sharing.
     fn delete(
         &self,
         dir: &WinDir,
         name: &OsStr,
         expect: &Meta,
         kind: Kind,
-        dry_run: bool,
+        commit: Option<&Cancel>,
     ) -> Result<(), FsError> {
-        if !super::is_plain_name(name) {
-            return Err(FsError::Other);
-        }
-        let h = open(
-            &dir.path.join(name),
-            DELETE.0 | FILE_READ_ATTRIBUTES.0 | SYNCHRONIZE.0,
-            FILE_SHARE_MODE(0),
+        let (access, share) = if commit.is_some() {
+            (
+                DELETE.0 | FILE_READ_ATTRIBUTES.0 | SYNCHRONIZE.0,
+                FILE_SHARE_MODE(0),
+            )
+        } else {
+            (
+                FILE_READ_ATTRIBUTES.0 | SYNCHRONIZE.0,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            )
+        };
+        let h = open_relative(
+            &dir.handle,
+            name,
+            access,
+            share,
+            NTCREATEFILE_CREATE_OPTIONS(0),
         )?;
         let m = meta_of(&info(&h)?);
         if m.kind == Kind::Link {
@@ -218,12 +326,15 @@ impl WinOps {
             return Err(FsError::Changed);
         }
         require_under(&h, &dir.root)?;
-        if dry_run {
+        let Some(cancel) = commit else {
             return Ok(());
-        }
+        };
+        let Some(permit) = cancel.permit() else {
+            return Err(FsError::Cancelled);
+        };
         let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
         // SAFETY: `h` was opened with DELETE; the buffer is a FILE_DISPOSITION_INFO.
-        unsafe {
+        let marked = unsafe {
             SetFileInformationByHandle(
                 h.0,
                 FileDispositionInfo,
@@ -231,8 +342,11 @@ impl WinOps {
                 std::mem::size_of::<FILE_DISPOSITION_INFO>() as u32,
             )
         }
-        .map_err(|e| map_win(&e))
-        // The object goes away when `h` closes.
+        .map_err(|e| map_win(&e));
+        // The object goes away when `h` closes, still under the permit.
+        drop(h);
+        drop(permit);
+        marked
     }
 }
 
@@ -309,13 +423,12 @@ impl Ops for WinOps {
     }
 
     fn open_dir(&self, parent: &WinDir, name: &OsStr, expect: &Meta) -> Result<WinDir, FsError> {
-        if !super::is_plain_name(name) {
-            return Err(FsError::Other);
-        }
-        let handle = open(
-            &parent.path.join(name),
+        let handle = open_relative(
+            &parent.handle,
+            name,
             DIR_ACCESS,
             FILE_SHARE_READ | FILE_SHARE_WRITE,
+            FILE_DIRECTORY_FILE,
         )?;
         let m = meta_of(&info(&handle)?);
         if m.kind == Kind::Link {
@@ -338,9 +451,9 @@ impl Ops for WinOps {
         dir: &WinDir,
         name: &OsStr,
         expect: &Meta,
-        dry_run: bool,
+        commit: Option<&Cancel>,
     ) -> Result<(), FsError> {
-        self.delete(dir, name, expect, Kind::File, dry_run)
+        self.delete(dir, name, expect, Kind::File, commit)
     }
 
     fn remove_dir(
@@ -348,9 +461,9 @@ impl Ops for WinOps {
         dir: &WinDir,
         name: &OsStr,
         expect: &Meta,
-        dry_run: bool,
+        commit: Option<&Cancel>,
     ) -> Result<(), FsError> {
-        self.delete(dir, name, expect, Kind::Dir, dry_run)
+        self.delete(dir, name, expect, Kind::Dir, commit)
     }
 }
 
@@ -450,6 +563,10 @@ const WU_STOP_WAIT: Duration = Duration::from_secs(20);
 /// Wait for a service to come back (each).
 const WU_START_WAIT: Duration = Duration::from_secs(20);
 
+/// Time set aside at the end of the call's budget to bring every stopped service back.
+const WU_RESTORE_RESERVE: Duration =
+    Duration::from_secs(WU_START_WAIT.as_secs() * WU_SERVICES.len() as u64);
+
 const POLL: Duration = Duration::from_millis(250);
 
 fn wait_for(
@@ -471,7 +588,32 @@ fn wait_for(
     }
 }
 
-/// Restarts every service it stopped when dropped — on success, error or timeout alike.
+/// Bring a service this call stopped back to running within `max`: wait out a stop
+/// still in progress, then start it once it is stopped.
+fn restore_running(svc: &windows_service::service::Service, max: Duration) -> bool {
+    use windows_service::service::ServiceState;
+    let deadline = Instant::now() + max;
+    let mut start_accepted = false;
+    loop {
+        match svc.query_status() {
+            Ok(st) => match st.current_state {
+                ServiceState::Running => return true,
+                ServiceState::Stopped if !start_accepted => {
+                    start_accepted = svc.start(&[] as &[&OsStr]).is_ok();
+                }
+                _ => {}
+            },
+            Err(_) => return false,
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(POLL);
+    }
+}
+
+/// Restarts every service this call stopped (each was `Running` before) when dropped —
+/// on success, error, timeout or abandonment alike.
 struct RestoreServices {
     stopped: Vec<(&'static str, windows_service::service::Service)>,
     // Dropped after the services (fields drop in declaration order).
@@ -480,10 +622,8 @@ struct RestoreServices {
 
 impl Drop for RestoreServices {
     fn drop(&mut self) {
-        use windows_service::service::ServiceState;
         for (name, svc) in self.stopped.iter().rev() {
-            let _ = svc.start(&[] as &[&OsStr]);
-            if !wait_for(svc, ServiceState::Running, WU_START_WAIT) {
+            if !restore_running(svc, WU_START_WAIT) {
                 tracing::warn!(service = %name, "service did not return to running after cleanup");
             }
         }
@@ -536,12 +676,16 @@ fn reboot_pending() -> bool {
     })
 }
 
-/// Run `f` with `wuauserv` and `bits` stopped, restoring each to its prior state after.
+/// Run `f` with `wuauserv` and `bits` stopped, restoring each to its prior state after:
+/// a service that was `Running` is stopped and started again; one that was `Stopped` is
+/// left alone; one in any other state (starting, stopping, paused) refuses the call.
 /// Refused while servicing runs or a reboot is pending. A scan only checks the refusals:
-/// it never stops a service.
+/// it never stops a service. If a stop does not complete in time nothing is deleted, and
+/// the restore still runs. The walk leaves [`WU_RESTORE_RESERVE`] of the budget for the
+/// restore.
 fn with_update_services_stopped(
-    dry_run: bool,
-    f: impl FnOnce(),
+    s: &mut Session,
+    f: impl FnOnce(&mut Session),
 ) -> Result<(), (ErrorCode, String)> {
     use windows_service::service::{ServiceAccess, ServiceState};
     use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
@@ -558,10 +702,11 @@ fn with_update_services_stopped(
             "a reboot is pending; restart the host before cleaning the update cache".to_string(),
         ));
     }
-    if dry_run {
-        f();
+    if s.dry_run {
+        f(s);
         return Ok(());
     }
+    s.reserve(WU_RESTORE_RESERVE);
 
     let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
         .map_err(|_| {
@@ -595,13 +740,23 @@ fn with_update_services_stopped(
                 format!("cannot query the {name} service"),
             )
         })?;
-        if state == ServiceState::Stopped {
-            continue;
+        match state {
+            ServiceState::Stopped => continue,
+            ServiceState::Running => {}
+            _ => {
+                return Err((
+                    ErrorCode::ExecFailed,
+                    format!("the {name} service is changing state; try again later"),
+                ))
+            }
         }
+        let Some(permit) = s.cancel().permit() else {
+            return Err((ErrorCode::Timeout, "the cleanup was abandoned".to_string()));
+        };
         match svc.stop() {
             Ok(_) => {}
-            // ERROR_SERVICE_NOT_ACTIVE: stopped in the meantime.
-            Err(e) if raw_os_error(&e) == Some(1062) => {}
+            // ERROR_SERVICE_NOT_ACTIVE: it stopped on its own; not this call's to restore.
+            Err(e) if raw_os_error(&e) == Some(1062) => continue,
             // ERROR_DEPENDENT_SERVICES_RUNNING: never force dependents.
             Err(e) if raw_os_error(&e) == Some(1051) => {
                 return Err((
@@ -616,16 +771,18 @@ fn with_update_services_stopped(
                 ))
             }
         }
+        drop(permit);
         guard.stopped.push((name, svc));
         let (_, svc) = guard.stopped.last().expect("just pushed");
-        if !wait_for(svc, ServiceState::Stopped, WU_STOP_WAIT) {
+        if !wait_for(svc, ServiceState::Stopped, WU_STOP_WAIT.min(s.time_left())) {
+            // Nothing is deleted; the guard brings the service back.
             return Err((
                 ErrorCode::Timeout,
                 format!("the {name} service did not stop in time"),
             ));
         }
     }
-    f();
+    f(s);
     drop(guard);
     Ok(())
 }
@@ -657,8 +814,7 @@ pub(super) fn execute(entry: &CatalogEntry, s: &mut Session) -> Result<(), (Erro
         "windows_update_cache" => {
             let root = windir().join("SoftwareDistribution").join("Download");
             let rules = windows_tree_rules(entry.min_age_days);
-            let dry_run = s.dry_run;
-            with_update_services_stopped(dry_run, || sweep_root(&ops, s, &root, &[], &rules))?;
+            with_update_services_stopped(s, |s| sweep_root(&ops, s, &root, &[], &rules))?;
         }
         "recycle_bin" => {
             for volume in fixed_volumes() {

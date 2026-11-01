@@ -234,13 +234,35 @@ async fn handlers_reject_unknown_targets_before_any_work() {
 /// A busy host is `exec_failed`. Uses the read-only scan so a broken lock could at
 /// worst read a real root, never delete from it.
 #[cfg(any(windows, target_os = "linux"))]
-#[allow(clippy::await_holding_lock)] // the held lock is the point: the handler must see a busy host
 #[tokio::test]
 async fn busy_host_is_exec_failed() {
     let _held = hold_host_lock_for_test();
     let err = scan(json!({"target": "logs_old"})).await.unwrap_err();
     assert_eq!(err.0, ErrorCode::ExecFailed);
     assert_eq!(err.1, BUSY_MESSAGE);
+}
+
+/// The contract states the grace after which a stuck call is abandoned, and the
+/// restart bound; both must be the agent's constants.
+#[test]
+fn contract_states_the_abandon_grace_and_the_restart_bound() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs/protocol.md");
+    let doc = std::fs::read_to_string(&path)
+        .expect("read protocol.md")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let grace = WORKER_GRACE.as_secs();
+    let restart = crate::handlers::services::RESTART_BUDGET.as_secs();
+    for needle in [
+        format!("A call still running {grace} s past its wall-clock bound"),
+        format!("the whole call at most {restart} s; a call still running {grace} s past that"),
+    ] {
+        assert!(doc.contains(&needle), "protocol.md must say: {needle}");
+    }
+    // The server's forwarding floors sit at least 10 s above each budget
+    // (kenny-server/tests/test_tool_timeouts.py): an abandoned call answers first.
+    assert!(WORKER_GRACE < Duration::from_secs(10));
 }
 
 #[test]
@@ -287,7 +309,35 @@ fn tmp_skips_systemd_and_x11_entries() {
     assert!(skip("systemd-private-abc-chronyd.service-x", 0, true));
     assert!(skip(".X11-unix", 0, true));
     assert!(skip(".ICE-unix", 0, true));
+    assert!(skip(".XIM-unix", 0, true));
+    assert!(skip(".font-unix", 0, true));
+    assert!(skip(".Test-unix", 0, true));
+    assert!(skip(".X0-lock", 0, false));
+    assert!(skip(".X1024-lock", 0, false));
     assert!(!skip("foo", 0, true));
+    assert!(!skip(".Xauthority", 0, false));
+}
+
+fn meta_owned_by(uid: u32) -> Meta {
+    Meta {
+        kind: Kind::Dir,
+        size: 0,
+        newest: SystemTime::UNIX_EPOCH,
+        id: (1, 1),
+        owner: Some(uid),
+    }
+}
+
+/// `tmp` never removes a root-owned directory directly under its root (another user
+/// could squat the name), but may remove deeper or user-owned ones.
+#[test]
+fn tmp_keeps_root_owned_top_level_directories() {
+    let keep = tmp_rules(10).keep_dir;
+    assert!(keep(&meta_owned_by(0), 0));
+    assert!(!keep(&meta_owned_by(1000), 0));
+    assert!(!keep(&meta_owned_by(0), 1));
+    let never = linux_logs_rules(30).keep_dir;
+    assert!(!never(&meta_owned_by(0), 0));
 }
 
 #[test]
@@ -602,6 +652,56 @@ fn recycle_bin_removes_old_records_with_their_payload() {
     assert!(exists(&t.path(sid)) && t.0.is_dir());
 }
 
+/// Only per-user folders named by a SID are swept; anything else in the bin is left alone.
+#[test]
+fn recycle_bin_sweeps_only_sid_folders() {
+    let t = Tree::new("binsid");
+    let sid = "S-1-5-21-7-8-9-1001";
+    t.file(&format!("{sid}/$IAAA"), 10);
+    t.file(&format!("{sid}/$RAAA"), 10);
+    let mut kept = Vec::new();
+    for bad in [
+        "evil",
+        "S-1-5",
+        "S-1-5-",
+        "s-1-5-21-1",
+        "S-1-5-21-x",
+        "S-1--5-1",
+    ] {
+        kept.push(t.file(&format!("{bad}/$IAAA"), 10));
+        kept.push(t.file(&format!("{bad}/$RAAA"), 10));
+    }
+    let clock = TestClock::ahead(60);
+    let mut s = Session::new(false, &clock, unlimited(), &[]);
+    sweep_recycle_bin(&platform_ops(), &mut s, &t.0, days(30));
+    assert_eq!(s.files, 2, "only the SID folder's entry goes");
+    assert!(!exists(&t.path(&format!("{sid}/$IAAA"))));
+    for p in kept {
+        assert!(exists(&p), "{}", p.display());
+    }
+}
+
+#[test]
+fn sid_folder_names() {
+    for yes in ["S-1-5-18", "S-1-5-21-1-2-3-1001", "S-1-12-1-2"] {
+        assert!(is_sid_folder(yes), "{yes}");
+    }
+    for no in [
+        "S-1-5",
+        "S-1-",
+        "S-1-5-",
+        "s-1-5-18",
+        "S-1-5-x",
+        "S-1--5",
+        "S-2-5-18",
+        "",
+        "evil",
+        "S-1-5-18 ",
+    ] {
+        assert!(!is_sid_folder(no), "{no}");
+    }
+}
+
 // ---------------------------------------------------------------------------------
 // Links, special files and races (Linux)
 // ---------------------------------------------------------------------------------
@@ -676,6 +776,31 @@ mod linux_only {
         );
     }
 
+    /// An old, emptied directory directly under a `tmp` root is kept when root owns it
+    /// (another user could otherwise recreate the name); one level deeper it goes.
+    #[test]
+    fn tmp_keeps_an_emptied_root_owned_top_level_directory() {
+        let t = Tree::new("rootdir");
+        t.dir("top/inner");
+        t.file("top/old.txt", 1);
+        let clock = TestClock::ahead(60);
+        let s = sweep(&t.0, &tmp_rules(10), false, &clock, unlimited());
+        assert_eq!(s.files, 1);
+        assert!(
+            !exists(&t.path("top/inner")),
+            "a deeper emptied directory goes"
+        );
+        // SAFETY: no arguments.
+        if unsafe { libc::geteuid() } == 0 {
+            assert!(
+                exists(&t.path("top")),
+                "a root-owned top-level directory stays"
+            );
+        } else {
+            assert!(!exists(&t.path("top")), "a user-owned one goes as before");
+        }
+    }
+
     #[test]
     fn sockets_and_fifos_are_never_removed() {
         let t = Tree::new("special");
@@ -732,18 +857,18 @@ mod linux_only {
             dir: &Self::Dir,
             name: &OsStr,
             expect: &Meta,
-            dry_run: bool,
+            commit: Option<&Cancel>,
         ) -> Result<(), FsError> {
-            linux::FdOps.remove_file(dir, name, expect, dry_run)
+            linux::FdOps.remove_file(dir, name, expect, commit)
         }
         fn remove_dir(
             &self,
             dir: &Self::Dir,
             name: &OsStr,
             expect: &Meta,
-            dry_run: bool,
+            commit: Option<&Cancel>,
         ) -> Result<(), FsError> {
-            linux::FdOps.remove_dir(dir, name, expect, dry_run)
+            linux::FdOps.remove_dir(dir, name, expect, commit)
         }
     }
 
@@ -824,6 +949,348 @@ mod linux_only {
         sweep_recycle_bin(&platform_ops(), &mut s, &t.0, days(30));
         assert!(exists(&precious) && exists(&rec));
         assert_eq!(s.skipped.reparse, 1);
+    }
+
+    /// Undoes a bind mount on drop, before the trees it joins are removed (`remove_dir_all`
+    /// would otherwise delete through it).
+    struct Unmount(PathBuf);
+
+    impl Drop for Unmount {
+        fn drop(&mut self) {
+            let c = std::ffi::CString::new(self.0.as_os_str().as_encoded_bytes()).unwrap();
+            // SAFETY: NUL-terminated path.
+            unsafe { libc::umount2(c.as_ptr(), libc::MNT_DETACH) };
+        }
+    }
+
+    const IN_MOUNT_NS: &str = "KENNY_CLEANUP_TEST_IN_MOUNT_NS";
+    const NS_RAN: &str = "KENNY-NS-TEST-RAN";
+    const NS_SKIP: &str = "KENNY-NS-TEST-SKIP";
+
+    /// A bind mount below a root shares the root's device and `/proc/self/fd` reports
+    /// its path through the mount, so only the mount ID tells it apart: the walk must not
+    /// enter it. Mounting needs a private mount namespace, so the test re-runs itself
+    /// under `unshare` and is skipped where that is not permitted.
+    #[test]
+    fn bind_mount_below_a_root_is_not_entered() {
+        if std::env::var_os(IN_MOUNT_NS).is_none() {
+            let full = concat!(module_path!(), "::bind_mount_below_a_root_is_not_entered");
+            let name = full.split_once("::").map_or(full, |(_, rest)| rest);
+            let exe = std::env::current_exe().unwrap();
+            for flags in [&["-m"][..], &["-r", "-m"][..]] {
+                let Ok(out) = std::process::Command::new("unshare")
+                    .args(flags)
+                    .arg(&exe)
+                    .args(["--exact", name, "--nocapture", "--test-threads=1"])
+                    .env(IN_MOUNT_NS, "1")
+                    .output()
+                else {
+                    break;
+                };
+                let text = format!(
+                    "{}{}",
+                    String::from_utf8_lossy(&out.stdout),
+                    String::from_utf8_lossy(&out.stderr)
+                );
+                if text.contains(NS_RAN) {
+                    assert!(out.status.success(), "{text}");
+                    return;
+                }
+                assert!(!text.contains("panicked"), "{text}");
+            }
+            eprintln!("skipped: no private mount namespace available for a bind mount");
+            return;
+        }
+        let t = Tree::new("bind");
+        let outside = Tree::new("bind-outside");
+        let precious = outside.file("precious.txt", 10);
+        let victim = t.dir("victim");
+        let (src, dst) = (
+            std::ffi::CString::new(outside.0.as_os_str().as_encoded_bytes()).unwrap(),
+            std::ffi::CString::new(victim.as_os_str().as_encoded_bytes()).unwrap(),
+        );
+        // SAFETY: NUL-terminated paths; a bind mount takes no data.
+        let rc = unsafe {
+            libc::mount(
+                src.as_ptr(),
+                dst.as_ptr(),
+                std::ptr::null(),
+                libc::MS_BIND,
+                std::ptr::null(),
+            )
+        };
+        if rc != 0 {
+            println!("{NS_SKIP}: bind mount refused");
+            return;
+        }
+        let _unmount = Unmount(victim.clone());
+        assert!(exists(&t.path("victim/precious.txt")), "the mount is live");
+        let clock = TestClock::ahead(60);
+        let s = sweep(&t.0, &tmp_rules(10), false, &clock, unlimited());
+        assert!(
+            exists(&precious),
+            "nothing behind the bind mount is deleted"
+        );
+        assert_eq!(s.files, 0);
+        assert!(s.skipped.other >= 1, "{:?}", s.skipped);
+        println!("{NS_RAN}");
+    }
+
+    #[test]
+    fn mount_ids_must_equal_the_roots() {
+        assert_eq!(linux::require_same_mount(42, Some(42)), Ok(()));
+        assert_eq!(
+            linux::require_same_mount(42, Some(43)),
+            Err(FsError::OtherDevice)
+        );
+        // An object whose mount cannot be told is not entered.
+        assert_eq!(
+            linux::require_same_mount(42, None),
+            Err(FsError::OtherDevice)
+        );
+        let doc = "pos:\t0\nflags:\t02304000\nmnt_id:\t1234\nino:\t77\n";
+        assert_eq!(linux::parse_fdinfo_mnt_id(doc), Some(1234));
+        assert_eq!(linux::parse_fdinfo_mnt_id("pos:\t0\n"), None);
+        assert_eq!(linux::parse_fdinfo_mnt_id("mnt_id:\tx\n"), None);
+    }
+
+    fn measured(files: u64, bytes: u64, stopped: Option<Stop>, clock: &dyn Clock) -> Session<'_> {
+        let mut m = Session::new(true, clock, unlimited(), &[]);
+        m.files = files;
+        m.bytes = bytes;
+        m.stopped = stopped;
+        m
+    }
+
+    /// A command cleanup whose after-measurement ran out of budget reports nothing freed
+    /// rather than the before total.
+    #[test]
+    fn incomplete_after_measurement_reports_nothing_freed() {
+        let clock = TestClock::ahead(0);
+        let mut s = Session::new(false, &clock, unlimited(), &[]);
+        let before = measured(5, 500, None, &clock);
+        let after = measured(2, 200, Some(Stop::Time), &clock);
+        linux::account_delta(&mut s, before, after);
+        assert_eq!((s.files, s.bytes), (0, 0));
+        assert!(!s.complete());
+        assert!(s.errors.iter().any(|e| e.code == "measure_incomplete"));
+        let entry = lookup(CatalogOs::Linux, &json!({"target": "journal"})).unwrap();
+        let r = cleanup_result(&entry, &s);
+        assert_eq!(r["bytes_freed"], 0);
+        assert_eq!(r["complete"], false);
+        assert_eq!(r["stopped"], "time");
+
+        // A complete after-measurement reports the delta.
+        let mut s = Session::new(false, &clock, unlimited(), &[]);
+        let before = measured(5, 500, None, &clock);
+        let after = measured(2, 200, None, &clock);
+        linux::account_delta(&mut s, before, after);
+        assert_eq!((s.files, s.bytes), (3, 300));
+        assert!(s.complete());
+    }
+
+    /// A clock whose budget runs out once `spent` is set.
+    struct SwitchClock {
+        now: SystemTime,
+        spent: Cell<bool>,
+    }
+
+    impl Clock for SwitchClock {
+        fn now(&self) -> SystemTime {
+            self.now
+        }
+        fn elapsed(&self) -> Duration {
+            if self.spent.get() {
+                Duration::from_secs(1_000_000)
+            } else {
+                Duration::ZERO
+            }
+        }
+    }
+
+    /// The same, joined: the command frees part of a cache and the budget runs out
+    /// before the size afterwards is known.
+    #[test]
+    fn command_cleanup_out_of_budget_after_the_command_reports_nothing_freed() {
+        let t = Tree::new("cmd");
+        for i in 0..4 {
+            t.file(&format!("pkg{i}.deb"), 100);
+        }
+        let root = t.0.to_string_lossy().into_owned();
+        let clock = SwitchClock {
+            now: SystemTime::now(),
+            spent: Cell::new(false),
+        };
+        let mut s = Session::new(false, &clock, unlimited(), &[]);
+        linux::command_cleanup_with(
+            &mut s,
+            "fake-clean",
+            |_| {
+                std::fs::remove_file(t.path("pkg0.deb")).unwrap();
+                clock.spent.set(true);
+                Ok(crate::telemetry::collectors::proc::ProcOutput {
+                    success: true,
+                    code: Some(0),
+                    stdout: String::new(),
+                })
+            },
+            &[root.as_str()],
+            &package_cache_rules(),
+        );
+        assert_eq!(s.bytes, 0, "the before total is not reported as freed");
+        assert!(!s.complete());
+        assert!(s.errors.iter().any(|e| e.code == "measure_incomplete"));
+
+        // With budget left the delta is the command's work.
+        let clock = TestClock::ahead(0);
+        let mut s = Session::new(false, &clock, unlimited(), &[]);
+        linux::command_cleanup_with(
+            &mut s,
+            "fake-clean",
+            |_| {
+                std::fs::remove_file(t.path("pkg1.deb")).unwrap();
+                Ok(crate::telemetry::collectors::proc::ProcOutput {
+                    success: true,
+                    code: Some(0),
+                    stdout: String::new(),
+                })
+            },
+            &[root.as_str()],
+            &package_cache_rules(),
+        );
+        assert_eq!((s.files, s.bytes), (1, 100));
+        assert!(s.complete());
+    }
+
+    /// Delegates to the real primitives, but the first `remove_file` blocks until
+    /// released — a deletion stuck in the kernel (a Windows oplock break, a hung mount).
+    struct Stalling {
+        entered: std::sync::mpsc::Sender<()>,
+        release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+        stalled: AtomicBool,
+    }
+
+    impl Ops for Stalling {
+        type Dir = <linux::FdOps as Ops>::Dir;
+        fn open_root(&self, base: &Path, chain: &[&str]) -> Result<(Self::Dir, PathBuf), FsError> {
+            linux::FdOps.open_root(base, chain)
+        }
+        fn list(&self, dir: &Self::Dir) -> Result<Vec<OsString>, FsError> {
+            linux::FdOps.list(dir)
+        }
+        fn stat(&self, dir: &Self::Dir, name: &OsStr) -> Result<Meta, FsError> {
+            linux::FdOps.stat(dir, name)
+        }
+        fn open_dir(
+            &self,
+            parent: &Self::Dir,
+            name: &OsStr,
+            expect: &Meta,
+        ) -> Result<Self::Dir, FsError> {
+            linux::FdOps.open_dir(parent, name, expect)
+        }
+        fn remove_file(
+            &self,
+            dir: &Self::Dir,
+            name: &OsStr,
+            expect: &Meta,
+            commit: Option<&Cancel>,
+        ) -> Result<(), FsError> {
+            if !self.stalled.swap(true, Ordering::SeqCst) {
+                let _ = self.entered.send(());
+                let _ = self.release.lock().unwrap().recv();
+            }
+            linux::FdOps.remove_file(dir, name, expect, commit)
+        }
+        fn remove_dir(
+            &self,
+            dir: &Self::Dir,
+            name: &OsStr,
+            expect: &Meta,
+            commit: Option<&Cancel>,
+        ) -> Result<(), FsError> {
+            linux::FdOps.remove_dir(dir, name, expect, commit)
+        }
+    }
+
+    /// A worker stuck past its limit is abandoned: the call answers `timeout`, the host
+    /// lock is free for the next call at once, and the worker — once unstuck — deletes
+    /// nothing more.
+    #[tokio::test]
+    async fn a_stuck_worker_is_abandoned_and_deletes_nothing_after() {
+        let t = Tree::new("stuck");
+        let files: Vec<PathBuf> = (0..5).map(|i| t.file(&format!("{i}.txt"), 1)).collect();
+        // Other tests take the shared host lock briefly: retry while it is busy, with a
+        // fresh worker each time (a refused call drops its closure unrun).
+        let started = Instant::now();
+        let (result, entered_rx, release_tx, done_rx) = loop {
+            let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            let ops = Stalling {
+                entered: entered_tx,
+                release: std::sync::Mutex::new(release_rx),
+                stalled: AtomicBool::new(false),
+            };
+            let root = t.0.clone();
+            let result = run_exclusive(Duration::from_millis(300), "the cleanup", move |cancel| {
+                let clock = TestClock::ahead(60);
+                let mut s = Session::new(false, &clock, unlimited(), &[]).with_cancel(cancel);
+                sweep_root(&ops, &mut s, &root, &[], &tmp_rules(10));
+                let _ = done_tx.send(s.files);
+                Ok(())
+            })
+            .await;
+            match result {
+                Err((ErrorCode::ExecFailed, ref m)) if m == BUSY_MESSAGE => {
+                    assert!(
+                        started.elapsed() < Duration::from_secs(30),
+                        "host never free"
+                    );
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                _ => break (result, entered_rx, release_tx, done_rx),
+            }
+        };
+        let err = result.unwrap_err();
+        assert_eq!(err.0, ErrorCode::Timeout, "{err:?}");
+        entered_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the worker stalled in a deletion");
+
+        // The lock is free while the worker is still stuck.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            if let Ok(lock) = try_host_lock() {
+                drop(lock);
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the host lock was never released"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+
+        // Unstick it: it must not delete anything any more.
+        release_tx.send(()).unwrap();
+        let removed = done_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the worker finished");
+        assert_eq!(removed, 0);
+        for f in &files {
+            assert!(exists(f), "{}", f.display());
+        }
+    }
+
+    /// A cancelled token grants no permit; until then it does.
+    #[tokio::test]
+    async fn a_cancelled_token_grants_no_permit() {
+        let c = Cancel::new();
+        assert!(c.permit().is_some());
+        assert!(c.cancel(Duration::from_secs(1)).await);
+        assert!(c.is_cancelled());
+        assert!(c.permit().is_none());
     }
 
     #[test]
