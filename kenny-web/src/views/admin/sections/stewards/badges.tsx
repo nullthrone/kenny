@@ -89,6 +89,5 @@ export function AuthorizationStateTag({ status }: { status: AuthorizationStatus 
 export function triggerLabel(steward: Pick<Steward, 'trigger'>): string {
   const { kind, event } = steward.trigger
   if (kind === 'event') return event === 'ticket_created' ? 'a new ticket' : `event ${event ?? ''}`.trim()
-  if (kind === 'schedule') return 'on a schedule'
-  return 'on demand'
+  return kind === 'schedule' ? 'on a schedule' : kind
 }

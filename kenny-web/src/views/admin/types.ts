@@ -301,7 +301,7 @@ export type StewardRunStatus = 'running' | 'completed' | 'failed' | 'skipped'
 export type AuthorizationStatus = 'live' | 'revoked' | 'voided' | 'expired'
 
 export interface StewardTrigger {
-  kind: 'event' | 'schedule' | 'on_demand'
+  kind: 'event' | 'schedule'
   event: string | null
 }
 
@@ -421,6 +421,45 @@ export interface StewardParamsResponse {
   declared: string[]
   params: StewardParamValues
   effective_hash: string | null
+}
+
+/**
+ * The trigger configuration of a steward (`stewards/spec.py::validate_triggers`, canonical
+ * form). `schedule` is `null` or `{min_interval_days}` (`null` or 1-366: how often the
+ * maintenance window may start a run); `events` is sorted by name; `cooldown_hours` is 1-168.
+ */
+export interface StewardTriggerConfig {
+  schedule: { min_interval_days: number | null } | null
+  events: { name: string; cooldown_hours: number }[]
+  command: boolean
+}
+
+/** What a steward's spec allows its triggers to switch on (`stewards/spec.py::TriggerSet.to_public`). */
+export interface StewardTriggersAllowed {
+  schedule: boolean
+  events: string[]
+  command: boolean
+  /** `false` when the spec fixes the triggers (triage): nobody can change them. */
+  editable: boolean
+}
+
+/** `GET /api/stewards/{id}/triggers`. */
+export interface StewardTriggersResponse {
+  steward_id: string
+  allowed: StewardTriggersAllowed
+  /** What runs while nobody has configured anything. */
+  baseline: StewardTriggerConfig
+  triggers: StewardTriggerConfig
+  effective_hash: string | null
+}
+
+/** `PUT /api/stewards/{id}/triggers`. */
+export interface StewardTriggersSaved {
+  steward_id: string
+  triggers: StewardTriggerConfig
+  effective_hash: string
+  mode: StewardMode
+  voided: number
 }
 
 /** `PUT /api/stewards/{id}/params`. */

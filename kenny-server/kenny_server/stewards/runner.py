@@ -1376,13 +1376,8 @@ class StewardRunner:
         if ticket.agent_id is None:
             # Nowhere to look, so no investigation and no run to record.
             return
-        changed_by = await self._recent_steward_change(ticket.agent_id)
-        if changed_by is not None:
-            hours = int(STEWARD_CHANGE_QUIET_PERIOD.total_seconds() // 3600)
-            reason = (
-                f"steward {changed_by.steward_id} (run {changed_by.id}) changed this machine "
-                f"within the last {hours} hours; a steward's effect never starts another steward"
-            )
+        reason = await self.quiet_period_refusal(ticket.agent_id)
+        if reason is not None:
             logger.info("ticket %s: no triage: %s", ticket.id, reason)
             skipped = await self.store.start_run(
                 steward_id=spec.id,
@@ -1420,6 +1415,23 @@ class StewardRunner:
             await self._close(
                 run.id, status=status, verdict=verdict, usage=meter.to_dict(), error=error
             )
+
+    async def quiet_period_refusal(self, host_id: str) -> str | None:
+        """Why nothing may start on ``host_id`` now because a steward changed it, or ``None``.
+
+        ADR-0071 rule 6: an event on a machine a steward changed within
+        :data:`STEWARD_CHANGE_QUIET_PERIOD` starts nothing, whatever raised it.
+        Shared by every event that starts a steward, so they refuse alike.
+        """
+
+        changed_by = await self._recent_steward_change(host_id)
+        if changed_by is None:
+            return None
+        hours = int(STEWARD_CHANGE_QUIET_PERIOD.total_seconds() // 3600)
+        return (
+            f"steward {changed_by.steward_id} (run {changed_by.id}) changed this machine "
+            f"within the last {hours} hours; a steward's effect never starts another steward"
+        )
 
     async def _recent_steward_change(self, host_id: str) -> StewardRun | None:
         """The newest run that changed ``host_id`` within the quiet period, or ``None``.
@@ -1797,6 +1809,11 @@ class StewardRunner:
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+
+    def ai_ready(self) -> bool:
+        """Whether a model may be called now (the AI master switch and an available client)."""
+
+        return self._ai_ready()
 
     def _ai_ready(self) -> bool:
         if self.ai_access is None:

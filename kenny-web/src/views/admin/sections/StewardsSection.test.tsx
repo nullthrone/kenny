@@ -6,6 +6,7 @@ import type {
   StewardAuthorization,
   StewardParamsResponse,
   StewardRun,
+  StewardTriggersResponse,
   Steward,
   StewardsResponse,
 } from '../types'
@@ -161,6 +162,27 @@ function auth(over: Partial<StewardAuthorization> = {}): StewardAuthorization {
   }
 }
 
+const PATCH_TRIGGERS: StewardTriggersResponse = {
+  steward_id: 'patch',
+  allowed: {
+    schedule: true,
+    events: ['alert:health:disk', 'alert:offline', 'alert:disk_forecast', 'ticket_created'],
+    command: true,
+    editable: true,
+  },
+  baseline: { schedule: { min_interval_days: null }, events: [], command: false },
+  triggers: { schedule: { min_interval_days: 7 }, events: [{ name: 'alert:offline', cooldown_hours: 12 }], command: false },
+  effective_hash: HASH,
+}
+
+const TRIAGE_TRIGGERS: StewardTriggersResponse = {
+  steward_id: 'triage',
+  allowed: { schedule: false, events: ['ticket_created'], command: false, editable: false },
+  baseline: { schedule: null, events: [{ name: 'ticket_created', cooldown_hours: 24 }], command: false },
+  triggers: { schedule: null, events: [{ name: 'ticket_created', cooldown_hours: 24 }], command: false },
+  effective_hash: TRIAGE.effective_hash,
+}
+
 interface Setup {
   stewards?: Steward[]
   enabled?: boolean
@@ -176,6 +198,8 @@ function mockApi({ stewards = [steward(), TRIAGE], enabled = true, authorization
     '/api/stewards/runs/run-1': runs[0] ?? run(),
     '/api/stewards/patch/params': PARAMS,
     '/api/stewards/triage/params': { steward_id: 'triage', declared: [], params: {}, effective_hash: TRIAGE.effective_hash },
+    '/api/stewards/patch/triggers': PATCH_TRIGGERS,
+    '/api/stewards/triage/triggers': TRIAGE_TRIGGERS,
     '/api/stewards/patch/authorizations': { steward_id: 'patch', effective_hash: HASH, authorizations },
     '/api/stewards/triage/authorizations': { steward_id: 'triage', effective_hash: TRIAGE.effective_hash, authorizations: [] },
     '/api/fleet': {
@@ -445,6 +469,174 @@ describe('StewardsSection — the parameters editor', () => {
     renderSection('/admin/stewards/triage', true)
 
     expect(await screen.findByText('This steward takes no parameters.')).toBeInTheDocument()
+  })
+})
+
+describe('StewardsSection — the trigger editor', () => {
+  async function form() {
+    renderSection('/admin/stewards/patch', true)
+    return screen.findByRole('form', { name: 'Triggers of Package updates' })
+  }
+
+  it('offers only what the spec allows, with human labels, and loads the stored values', async () => {
+    mockApi()
+    const f = await form()
+
+    expect(within(f).getByRole('checkbox', { name: 'Run on a schedule' })).toBeChecked()
+    expect(within(f).getByLabelText('EVERY N DAYS (OPTIONAL)')).toHaveValue(7)
+    expect(within(f).getByRole('checkbox', { name: 'Health alert: disk' })).not.toBeChecked()
+    expect(within(f).getByRole('checkbox', { name: 'Offline alert' })).toBeChecked()
+    expect(within(f).getByLabelText('Cooldown hours for Offline alert')).toHaveValue(12)
+    expect(within(f).getByRole('checkbox', { name: 'Disk forecast alert' })).not.toBeChecked()
+    expect(within(f).getByRole('checkbox', { name: 'New ticket' })).not.toBeChecked()
+    expect(within(f).queryByRole('checkbox', { name: 'Hardware forecast alert' })).not.toBeInTheDocument()
+    expect(within(f).queryByRole('checkbox', { name: 'Change alert' })).not.toBeInTheDocument()
+    expect(within(f).getByRole('checkbox', { name: 'Run on command' })).not.toBeChecked()
+    expect(within(f).getByText(/set in the parameters above/)).toBeInTheDocument()
+    expect(within(f).getByRole('note')).toHaveTextContent(/moves this steward to shadow and voids its standing authorizations/)
+  })
+
+  it('hides the schedule and command when the spec does not allow them', async () => {
+    mockApi({
+      routes: {
+        '/api/stewards/patch/triggers': {
+          ...PATCH_TRIGGERS,
+          allowed: { schedule: false, events: ['alert:change'], command: false, editable: true },
+          triggers: { schedule: null, events: [], command: false },
+        },
+      },
+    })
+    const f = await form()
+
+    expect(within(f).queryByRole('checkbox', { name: 'Run on a schedule' })).not.toBeInTheDocument()
+    expect(within(f).queryByRole('checkbox', { name: 'Run on command' })).not.toBeInTheDocument()
+    expect(within(f).getByRole('checkbox', { name: 'Change alert' })).toBeInTheDocument()
+  })
+
+  it('shows a steward whose spec fixes its triggers read-only, with the reason', async () => {
+    mockApi()
+    renderSection('/admin/stewards/triage', true)
+
+    const list = await screen.findByRole('list', { name: 'What starts this steward' })
+    expect(within(list).getByText(/New ticket/)).toBeInTheDocument()
+    expect(screen.getByText(/fixed by its spec and cannot be changed here/)).toBeInTheDocument()
+    expect(screen.queryByRole('form', { name: /Triggers of/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'SAVE TRIGGERS' })).not.toBeInTheDocument()
+  })
+
+  it('keeps the editor away from an operator, and still lets them read', async () => {
+    mockApi()
+    renderSection('/admin/stewards/patch', false)
+
+    const list = await screen.findByRole('list', { name: 'What starts this steward' })
+    expect(within(list).getByText('On a schedule, at most every 7 days')).toBeInTheDocument()
+    expect(within(list).getByText(/Offline alert/)).toBeInTheDocument()
+    expect(screen.getByText('Editing triggers needs a superuser signed in to the dashboard.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'SAVE TRIGGERS' })).not.toBeInTheDocument()
+  })
+
+  it('saves the edited triggers with the hash that is displayed and reports the demotion', async () => {
+    mockApi()
+    apiPutMock.mockResolvedValue({
+      steward_id: 'patch',
+      triggers: {},
+      effective_hash: 'c'.repeat(64),
+      mode: 'shadow',
+      voided: 1,
+    })
+    const f = await form()
+
+    fireEvent.change(within(f).getByLabelText('EVERY N DAYS (OPTIONAL)'), { target: { value: '14' } })
+    fireEvent.click(within(f).getByRole('checkbox', { name: 'Health alert: disk' }))
+    fireEvent.change(within(f).getByLabelText('Cooldown hours for Offline alert'), { target: { value: '48' } })
+    fireEvent.click(within(f).getByRole('checkbox', { name: 'Run on command' }))
+    fireEvent.click(within(f).getByRole('button', { name: 'SAVE TRIGGERS' }))
+
+    await waitFor(() =>
+      expect(apiPutMock).toHaveBeenCalledWith('/api/stewards/patch/triggers', {
+        triggers: {
+          schedule: { min_interval_days: 14 },
+          events: [
+            { name: 'alert:health:disk', cooldown_hours: 24 },
+            { name: 'alert:offline', cooldown_hours: 48 },
+          ],
+          command: true,
+        },
+        effective_hash: HASH,
+      }),
+    )
+    expect(await screen.findByText('Saved. The steward is in shadow. 1 standing authorization voided.')).toBeInTheDocument()
+  })
+
+  it('sends a schedule without an interval and drops an unticked event', async () => {
+    mockApi()
+    apiPutMock.mockResolvedValue({ steward_id: 'patch', triggers: {}, effective_hash: HASH, mode: 'shadow', voided: 0 })
+    const f = await form()
+
+    fireEvent.change(within(f).getByLabelText('EVERY N DAYS (OPTIONAL)'), { target: { value: '' } })
+    fireEvent.click(within(f).getByRole('checkbox', { name: 'Offline alert' }))
+    fireEvent.click(within(f).getByRole('button', { name: 'SAVE TRIGGERS' }))
+
+    await waitFor(() =>
+      expect(apiPutMock).toHaveBeenCalledWith('/api/stewards/patch/triggers', {
+        triggers: { schedule: { min_interval_days: null }, events: [], command: false },
+        effective_hash: HASH,
+      }),
+    )
+  })
+
+  it('refuses an out-of-range cooldown before anything is sent', async () => {
+    mockApi()
+    const f = await form()
+
+    fireEvent.change(within(f).getByLabelText('Cooldown hours for Offline alert'), { target: { value: '500' } })
+    fireEvent.click(within(f).getByRole('button', { name: 'SAVE TRIGGERS' }))
+
+    expect(await within(f).findByRole('alert')).toHaveTextContent(/cooldown for Offline alert/)
+    expect(apiPutMock).not.toHaveBeenCalled()
+  })
+
+  it('explains a 409 as "the steward changed since you loaded it" and offers a reload', async () => {
+    mockApi()
+    apiPutMock.mockRejectedValue(new ApiError('stale', 409))
+    const f = await form()
+
+    fireEvent.click(within(f).getByRole('button', { name: 'SAVE TRIGGERS' }))
+
+    expect(await within(f).findByRole('alert')).toHaveTextContent(/changed since you loaded it/)
+    expect(within(f).getByRole('button', { name: 'RELOAD' })).toBeInTheDocument()
+  })
+
+  it('shows a 403 on save as a request to sign in as a superuser', async () => {
+    mockApi()
+    apiPutMock.mockRejectedValue(new ApiError('forbidden', 403))
+    const f = await form()
+
+    fireEvent.click(within(f).getByRole('button', { name: 'SAVE TRIGGERS' }))
+
+    expect(await within(f).findByRole('alert')).toHaveTextContent(/Sign in to the dashboard as a superuser/)
+  })
+
+  it('says when the draft differs from the default and resets it to the baseline', async () => {
+    mockApi()
+    const f = await form()
+
+    expect(within(f).getByText('DIFFERS FROM DEFAULT')).toBeInTheDocument()
+    fireEvent.click(within(f).getByRole('button', { name: 'RESET TO DEFAULT' }))
+
+    expect(within(f).getByLabelText('EVERY N DAYS (OPTIONAL)')).toHaveValue(null)
+    expect(within(f).getByRole('checkbox', { name: 'Offline alert' })).not.toBeChecked()
+    expect(within(f).queryByText('DIFFERS FROM DEFAULT')).not.toBeInTheDocument()
+    expect(within(f).getByRole('button', { name: 'RESET TO DEFAULT' })).toBeDisabled()
+
+    fireEvent.click(within(f).getByRole('button', { name: 'SAVE TRIGGERS' }))
+    apiPutMock.mockResolvedValue({ steward_id: 'patch', triggers: {}, effective_hash: HASH, mode: 'shadow', voided: 0 })
+    await waitFor(() =>
+      expect(apiPutMock).toHaveBeenCalledWith('/api/stewards/patch/triggers', {
+        triggers: { schedule: { min_interval_days: null }, events: [], command: false },
+        effective_hash: HASH,
+      }),
+    )
   })
 })
 

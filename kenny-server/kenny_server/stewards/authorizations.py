@@ -22,6 +22,9 @@ What it enforces, and where:
   attempt in one transaction under :func:`~kenny_server.store.write_lock`, so
   two runs reaching for the last attempt cannot both get it. The caller
   executes only after it returns; a call that then fails still counted.
+  :meth:`AuthorizationStore.remaining` answers the same question without
+  spending anything (what a person sees before starting a run); both read one
+  match (``_match``), so they cannot disagree.
 * **Voiding is permanent**: :meth:`void_other_hashes` stamps ``voided_at`` on
   every authorization bound to a hash other than the steward's current one.
   Nothing clears it, so rolling the code or the parameters back does not
@@ -433,49 +436,107 @@ class AuthorizationStore:
         concurrent callers cannot both spend the last attempt.
         """
 
-        if tool in NEVER_AUTHORIZED:
-            return None
         moment = now or datetime.now(timezone.utc)
-        stamp = _iso(moment)
-        since = _iso(moment - BUDGET_WINDOW)
         async with write_lock():
             await _begin_immediate(self._conn)
             try:
-                async with self._conn.execute(
-                    f"SELECT {_COLUMNS} FROM steward_authorizations "
-                    "WHERE steward_id = ? AND effective_hash = ? AND tool = ? "
-                    "AND revoked_at IS NULL AND voided_at IS NULL AND expires_at > ? "
-                    "ORDER BY granted_at, id",
-                    (steward_id, effective_hash, tool, stamp),
-                ) as cur:
-                    rows = await cur.fetchall()
-                chosen: Authorization | None = None
-                for row in rows:
-                    candidate = Authorization._from_row(row)
-                    if not candidate.covers(host_id):
-                        continue
-                    async with self._conn.execute(
-                        "SELECT COUNT(*) AS n FROM steward_authorization_uses "
-                        "WHERE authorization_id = ? AND host_id IS ? AND at > ?",
-                        (candidate.id, host_id, since),
-                    ) as cur:
-                        used = await cur.fetchone()
-                    if int(used["n"]) < candidate.max_attempts_per_day:
-                        chosen = candidate
-                        break
-                if chosen is None:
+                found = await self._match(
+                    steward_id=steward_id,
+                    effective_hash=effective_hash,
+                    tool=tool,
+                    host_id=host_id,
+                    moment=moment,
+                )
+                if found is None:
                     await self._conn.rollback()
                     return None
+                chosen, _used = found
                 await self._conn.execute(
                     "INSERT INTO steward_authorization_uses (authorization_id, host_id, at, run_id) "
                     "VALUES (?, ?, ?, ?)",
-                    (chosen.id, host_id, stamp, run_id),
+                    (chosen.id, host_id, _iso(moment), run_id),
                 )
                 await self._conn.commit()
             except BaseException:
                 await self._conn.rollback()
                 raise
         return chosen
+
+    async def remaining(
+        self,
+        steward_id: str,
+        effective_hash: str,
+        tool: str,
+        host_id: str | None,
+        now: datetime | None = None,
+    ) -> dict[str, Any] | None:
+        """What :meth:`consume` would spend for this call now, without spending it.
+
+        ``{id, remaining_today, expires_at}`` of the authorization the next
+        :meth:`consume` with the same arguments would choose — ``remaining_today``
+        being the attempts left on it for ``host_id`` in the rolling window,
+        before that call — or ``None`` exactly when :meth:`consume` would
+        return ``None``. Both ask :meth:`_match`, so they cannot disagree; a
+        concurrent :meth:`consume` may still spend the attempt first.
+        """
+
+        found = await self._match(
+            steward_id=steward_id,
+            effective_hash=effective_hash,
+            tool=tool,
+            host_id=host_id,
+            moment=now or datetime.now(timezone.utc),
+        )
+        if found is None:
+            return None
+        chosen, used = found
+        return {
+            "id": chosen.id,
+            "remaining_today": chosen.max_attempts_per_day - used,
+            "expires_at": chosen.expires_at,
+        }
+
+    async def _match(
+        self,
+        *,
+        steward_id: str,
+        effective_hash: str,
+        tool: str,
+        host_id: str | None,
+        moment: datetime,
+    ) -> tuple[Authorization, int] | None:
+        """The live authorization covering this call with budget left, and its attempts spent.
+
+        The one definition of a match, read by :meth:`consume` (inside its
+        transaction) and :meth:`remaining`: the oldest grant first.
+        """
+
+        if tool in NEVER_AUTHORIZED:
+            return None
+        stamp = _iso(moment)
+        since = _iso(moment - BUDGET_WINDOW)
+        async with self._conn.execute(
+            f"SELECT {_COLUMNS} FROM steward_authorizations "
+            "WHERE steward_id = ? AND effective_hash = ? AND tool = ? "
+            "AND revoked_at IS NULL AND voided_at IS NULL AND expires_at > ? "
+            "ORDER BY granted_at, id",
+            (steward_id, effective_hash, tool, stamp),
+        ) as cur:
+            rows = await cur.fetchall()
+        for row in rows:
+            candidate = Authorization._from_row(row)
+            if not candidate.covers(host_id):
+                continue
+            async with self._conn.execute(
+                "SELECT COUNT(*) AS n FROM steward_authorization_uses "
+                "WHERE authorization_id = ? AND host_id IS ? AND at > ?",
+                (candidate.id, host_id, since),
+            ) as cur:
+                used = await cur.fetchone()
+            spent = int(used["n"])
+            if spent < candidate.max_attempts_per_day:
+                return candidate, spent
+        return None
 
     # -- reads -------------------------------------------------------------
 

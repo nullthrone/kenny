@@ -53,6 +53,7 @@ from ..tokenstore import AgentTokenStore
 from ..tools import CallLog, ScreenshotStore, build_health, health_for, supports_tool
 from ..tunnel import AgentTunnel, ToolError
 from ..stewards.authorizations import BUDGET_WINDOW, AuthorizationError
+from ..stewards import commands as steward_commands
 from ..stewards.policy import run_target_problem
 from ..stewards.runner import HashMismatch, PreviewRefused
 from ..stewards.spec import allowed_triggers, baseline_config
@@ -1523,6 +1524,10 @@ def build_api_routes(
         ``run_id``. Answers 202 with the run's id as soon as the run is
         admitted; the model is never waited for (the run takes minutes). Watch
         it at ``GET /api/stewards/runs/{run_id}``.
+
+        ``{"mode": "act", "host_id", "effective_hash"}`` asks for a command run
+        instead (:func:`_steward_command_run`); ``mode`` absent or
+        ``"preview"`` is the preview described here.
         """
 
         if stewards is None:
@@ -1540,6 +1545,11 @@ def build_api_routes(
                 return JSONResponse({"error": "invalid JSON body"}, status_code=400)
         if not isinstance(body, dict):
             return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
+        run_mode = body.get("mode")
+        if run_mode is not None and run_mode not in ("preview", "act"):
+            return JSONResponse({"error": 'mode must be "preview" or "act"'}, status_code=400)
+        if run_mode == "act":
+            return await _steward_command_run(request, spec, body)
         raw_host = body.get("host_id")
         if raw_host is not None and not isinstance(raw_host, str):
             return JSONResponse({"error": "host_id must be a string"}, status_code=400)
@@ -1578,6 +1588,104 @@ def build_api_routes(
                 "status": run.status,
             },
             status_code=202,
+        )
+
+    # Command runs (ADR-0073 rule 3): a person starts a steward now, and it may
+    # act. Who may (a superuser at a browser) is checked first, before anything
+    # about the steward is told; the rest is ``stewards.commands.act_refusal``.
+
+    async def _steward_hosts() -> steward_commands.Hosts:
+        known = {a.agent_id for a in registry.list()} | set(await store.known_agents())
+        return steward_commands.Hosts(known=frozenset(known), registry=registry)
+
+    def _caller(request: Request) -> tuple[bool, str | None]:
+        principal = principal_of(request)
+        return _person_at_a_browser(request), principal.role if principal is not None else None
+
+    async def _steward_command_run(request: Request, spec: Any, body: dict[str, Any]) -> JSONResponse:
+        """Start a command run (``{"mode": "act", "host_id", "effective_hash"}``).
+
+        403 unless a superuser signed in to the dashboard asks; then the
+        refusals of :func:`~kenny_server.stewards.commands.act_refusal` in their
+        order (400 for a request that cannot pass, 409 for a state that may).
+        Answers 202 with the run's id once it is admitted, as a preview does.
+        """
+
+        person, role = _caller(request)
+        refused = steward_commands.caller_refusal(person=person, role=role)
+        if refused is not None:
+            return JSONResponse({"error": str(refused)}, status_code=refused.status)
+        raw_host = body.get("host_id")
+        if raw_host is not None and not isinstance(raw_host, str):
+            return JSONResponse({"error": "host_id must be a string"}, status_code=400)
+        host_id = (raw_host or "").strip() or None
+        try:
+            run = await steward_commands.start_command(
+                stewards,
+                spec,
+                host_id=host_id,
+                username=_actor_of(request) or "unknown",
+                effective_hash=body.get("effective_hash"),
+                hosts=await _steward_hosts(),
+            )
+        except steward_commands.CommandRefused as exc:
+            out: dict[str, Any] = {"error": str(exc), "code": exc.code}
+            if exc.run_id is not None:
+                out["run_id"] = exc.run_id
+            return JSONResponse(out, status_code=exc.status)
+        except RuntimeError as exc:  # no executor / model / client configured
+            return JSONResponse({"error": str(exc)}, status_code=503)
+        return JSONResponse(
+            {
+                "run_id": run.id,
+                "steward_id": run.steward_id,
+                "host_id": run.host_id,
+                "mode": run.mode,
+                "trigger": run.trigger,
+                "status": run.status,
+            },
+            status_code=202,
+        )
+
+    def _query_host(request: Request) -> str | None:
+        return (request.query_params.get("host_id") or "").strip() or None
+
+    async def api_steward_command(request: Request) -> JSONResponse:
+        """What the caller may start of one steward on ``?host_id=`` now, and with what."""
+
+        steward_id, refused = _steward_or_404(request)
+        if refused is not None:
+            return refused
+        person, role = _caller(request)
+        return JSONResponse(
+            await steward_commands.readiness(
+                stewards,
+                stewards.catalog[steward_id],
+                host_id=_query_host(request),
+                hosts=await _steward_hosts(),
+                person=person,
+                role=role,
+            )
+        )
+
+    async def api_steward_commands(request: Request) -> JSONResponse:
+        """The stewards the caller could start on ``?host_id=``: command trigger on, eligible."""
+
+        if stewards is None:
+            return JSONResponse(_STEWARDS_UNAVAILABLE, status_code=503)
+        person, role = _caller(request)
+        host_id = _query_host(request)
+        return JSONResponse(
+            {
+                "host_id": host_id,
+                "stewards": await steward_commands.command_actions(
+                    stewards,
+                    host_id=host_id,
+                    hosts=await _steward_hosts(),
+                    person=person,
+                    role=role,
+                ),
+            }
         )
 
     def _reviewed_hash(body: Any) -> tuple[str | None, JSONResponse | None]:
@@ -2575,12 +2683,15 @@ def build_api_routes(
         ),
         Route("/api/stewards", guard(api_stewards_list, **op)),
         Route("/api/stewards/runs", guard(api_steward_runs, **op)),
+        # Static, so before every ``/api/stewards/{steward_id}`` route.
+        Route("/api/stewards/commands", guard(api_steward_commands, **op)),
         Route("/api/stewards/runs/{run_id}", guard(api_steward_run, **op)),
         Route(
             "/api/stewards/{steward_id}/runs",
             guard(api_steward_preview, **op),
             methods=["POST"],
         ),
+        Route("/api/stewards/{steward_id}/command", guard(api_steward_command, **op)),
         Route("/api/stewards/{steward_id}/mode", guard(api_steward_mode, **su), methods=["PUT"]),
         Route(
             "/api/stewards/{steward_id}/authorizations",

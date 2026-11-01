@@ -191,6 +191,7 @@ connected, install the optional dependency first: `pip install -e ".[discord]"`.
 | `KENNY_STEWARDS_MAX_CONCURRENT` | `2` | How many steward runs may be in flight at once (minimum 1). A run over the limit is not started and is recorded as `skipped`. Triage is exempt: every new ticket is still investigated. |
 | `KENNY_STEWARDS_DAILY_TOKENS` | `0` | Tokens (input, output and cached prompt tokens alike) all steward runs together may spend in any 24 hours; `0` means no cap. Once reached, a run is not started and is recorded as `skipped`. |
 | `KENNY_STEWARDS_PREVIEWS_PER_DAY` | `20` | How many [preview runs](dashboard.md#stewards) of one steward may start in any 24 hours, whoever asks (minimum 1). A request over it is refused with `409` and leaves no run behind. One preview of a steward on a machine runs at a time. |
+| `KENNY_STEWARDS_COMMANDS_PER_DAY` | `10` | How many command runs of one steward — a run a superuser signed in to the dashboard starts now, in which the steward may act — may start in any 24 hours (minimum 1). A request over it is refused with `409`. One run of a steward on a machine that a person started, preview or command, runs at a time. |
 | `KENNY_STEWARDS_SCHEDULE_INTERVAL_SECS` | `300` | How often kenny checks whether a scheduled steward (package updates, posture review, rule hygiene) is due (minimum 60). The steward's own maintenance window decides whether it runs; this is only how finely kenny looks. |
 
 Every key in this table except the bot token and the two `KENNY_TICKET_SWEEP_*` keys
