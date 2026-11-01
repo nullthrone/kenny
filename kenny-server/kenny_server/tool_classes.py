@@ -56,11 +56,17 @@ TOOL_CLASSES: dict[str, str] = {
     # -- shells: arbitrary code on the host --------------------------------
     "powershell_exec": NORMAL_CHANGE,
     "shell_exec": NORMAL_CHANGE,
-    # -- filesystem (read paths only; there is no write tool) --------------
+    # -- filesystem --------------------------------------------------------
+    # Every path-taking tool is a read; the only filesystem change is the
+    # catalog-driven cleanup, which never takes a path. The scan reports exactly
+    # what the cleanup would remove and deletes nothing. The cleanup is
+    # irreversible (including the recycle bin), so it is never routine.
     "fs_list": READ_ONLY,
     "fs_search": READ_ONLY,
     "fs_read": READ_ONLY,
     "fs_disk_usage": READ_ONLY,
+    "fs_cleanup_scan": READ_ONLY,
+    "fs_cleanup": NORMAL_CHANGE,
     # -- packages ----------------------------------------------------------
     "winget_list": READ_ONLY,
     "winget_install": NORMAL_CHANGE,
@@ -73,6 +79,8 @@ TOOL_CLASSES: dict[str, str] = {
     "diag_services": READ_ONLY,
     "diag_eventlog": READ_ONLY,
     "diag_autostart": READ_ONLY,
+    # Restarting a service interrupts whatever depends on it; not routine.
+    "service_restart": NORMAL_CHANGE,
     # -- network -----------------------------------------------------------
     "net_config": READ_ONLY,
     "net_dns_flush": STANDARD_CHANGE,

@@ -6,12 +6,14 @@
 
 pub mod accounts;
 pub mod agent_update;
+pub mod cleanup;
 pub mod diagnostics;
 pub mod fs;
 pub mod network;
 pub mod powershell;
 pub mod remotehelp;
 pub mod screenshot;
+pub mod services;
 pub mod shell;
 pub mod webfilter;
 pub mod winget;

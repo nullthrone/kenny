@@ -1,0 +1,6 @@
+{
+  "type": "request",
+  "id": "c5e93a7d-2f64-418a-9d3c-9e4a0f6b8c32",
+  "tool": "service_restart",
+  "args": { "name": "Spooler" }
+}

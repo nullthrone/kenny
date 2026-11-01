@@ -1,0 +1,13 @@
+{
+  "type": "response",
+  "id": "b4d82f6c-1e53-4079-8c2b-8d3f9e5a7b21",
+  "ok": true,
+  "result": {
+    "target": "temp_system",
+    "files_removed": 1281,
+    "bytes_freed": 911802368,
+    "complete": true,
+    "skipped": { "in_use": 13, "denied": 3, "reparse": 0, "other": 0 },
+    "errors": []
+  }
+}

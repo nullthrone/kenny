@@ -115,6 +115,8 @@ fn main() {
             }
         }
         Some(Command::RunService(args)) => {
+            // `service_restart` refuses the name this service runs under (self-protection).
+            handlers::services::record_own_service_name(&args.service_name);
             if let Err(e) = service::run_service(args) {
                 error!(error = %e, "run-service failed");
                 std::process::exit(1);

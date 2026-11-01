@@ -74,6 +74,10 @@ async fn run(tool: &str, args: Value) -> Result<Value, (ErrorCode, String)> {
         "net_dns_flush" => handlers::network::dns_flush(args).await,
         "net_adapter_reset" => handlers::network::adapter_reset(args).await,
 
+        "fs_cleanup_scan" => handlers::cleanup::scan(args).await,
+        "fs_cleanup" => handlers::cleanup::cleanup(args).await,
+        "service_restart" => handlers::services::restart(args).await,
+
         "screen_capture" => handlers::screenshot::capture(args),
 
         "remotehelp_status" => handlers::remotehelp::status(args).await,
@@ -322,6 +326,62 @@ mod tests {
         .await;
         assert!(!resp.ok);
         assert_eq!(resp.error.unwrap().code, ErrorCode::Unsupported);
+    }
+
+    #[tokio::test]
+    async fn cleanup_and_service_restart_blocked_when_disabled() {
+        for (tool, args) in [
+            ("fs_cleanup", json!({"target": "tmp"})),
+            ("fs_cleanup", json!({"target": "temp_system"})),
+            ("service_restart", json!({"name": "spooler"})),
+        ] {
+            let resp =
+                with_remote_control(false, "kenny-dispatch-cleanup-off.control.json", async {
+                    handle(Request {
+                        id: "11".to_string(),
+                        tool: tool.to_string(),
+                        args,
+                    })
+                    .await
+                })
+                .await;
+            assert_eq!(resp.error.unwrap().code, ErrorCode::Disabled, "{tool}");
+        }
+    }
+
+    #[tokio::test]
+    async fn cleanup_scan_is_read_only_and_routes_while_disabled() {
+        // The scan is not gated by the kill switch; an unknown target reaches the
+        // handler and is refused as bad_args (unsupported where there is no catalog).
+        let resp = with_remote_control(false, "kenny-dispatch-scan-off.control.json", async {
+            handle(Request {
+                id: "12".to_string(),
+                tool: "fs_cleanup_scan".to_string(),
+                args: json!({"target": "no-such-target"}),
+            })
+            .await
+        })
+        .await;
+        let code = resp.error.unwrap().code;
+        if cfg!(any(windows, target_os = "linux")) {
+            assert_eq!(code, ErrorCode::BadArgs);
+        } else {
+            assert_eq!(code, ErrorCode::Unsupported);
+        }
+    }
+
+    #[tokio::test]
+    async fn service_restart_of_the_agent_is_blocked_by_the_guard() {
+        let resp = with_remote_control(true, "kenny-dispatch-restart-self.control.json", async {
+            handle(Request {
+                id: "13".to_string(),
+                tool: "service_restart".to_string(),
+                args: json!({"name": "KENNY-AGENT.service"}),
+            })
+            .await
+        })
+        .await;
+        assert_eq!(resp.error.unwrap().code, ErrorCode::Blocked);
     }
 
     #[tokio::test]

@@ -200,8 +200,9 @@ resetting your password) — see the [dashboard reference](dashboard.md).
 |--------|-------|----------------|
 | Shell | `powershell_exec` (Windows) · `shell_exec` (Linux/macOS) | ✅ |
 | Packages | `winget_list` · `winget_install` · `winget_uninstall` · `winget_update` | install/uninstall/update ✅ |
-| Files | `fs_list` · `fs_search` · `fs_read` · `fs_disk_usage` | read-only |
+| Files | `fs_list` · `fs_search` · `fs_read` · `fs_disk_usage` · `fs_cleanup_scan` · `fs_cleanup` | cleanup ✅ (the scan is read-only) |
 | Diagnostics | `diag_processes` · `diag_services` · `diag_eventlog` · `diag_autostart` | read-only |
+| Services | `service_restart` | ✅ |
 | Network | `net_config` · `net_dns_flush` · `net_adapter_reset` | dns_flush/adapter_reset ✅ |
 | Screen | `screen_capture` | read-only |
 | Telemetry | `telemetry_collect` | read-only |

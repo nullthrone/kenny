@@ -328,6 +328,12 @@ class PolicyEngine:
             blob = " ".join(_iter_strings(args))
             return self._match("powershell", blob) or self._match("self_protection", blob)
 
+        if tool == "service_restart":
+            # A service name, not a command: screened against ``self_protection`` only,
+            # mirroring the agent, so the agent's own service can never be named.
+            raw = args.get("name", "")
+            return self._match("self_protection", raw if isinstance(raw, str) else "")
+
         if tool in ("fs_read", "fs_list", "fs_search"):
             key = "root" if tool == "fs_search" else "path"
             raw = args.get(key, "")

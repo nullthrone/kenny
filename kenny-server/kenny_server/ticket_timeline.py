@@ -119,6 +119,7 @@ OBSERVED_PHRASES: dict[str, str] = {
     "fs_search": "files matching a search",
     "fs_read": "a file's contents",
     "fs_disk_usage": "disk usage",
+    "fs_cleanup_scan": "what a disk cleanup would remove",
     "winget_list": "the installed packages",
     "diag_processes": "the running processes",
     "diag_services": "the system services",
@@ -143,6 +144,8 @@ CHANGED_PHRASES: dict[str, str] = {
     "winget_install": "installed a package",
     "winget_uninstall": "removed a package",
     "winget_update": "updated an installed package",
+    "fs_cleanup": "cleaned up files to free disk space",
+    "service_restart": "restarted a service",
     "net_dns_flush": "flushed the DNS cache",
     "net_adapter_reset": "reset the network adapter",
     "remotehelp_start": "opened a remote-help session on the desktop",
@@ -164,6 +167,40 @@ CHANGED_PHRASES: dict[str, str] = {
     "account_session_action": "acted on a signed-in session",
     "password_policy_set": "changed the password policy",
     "ticket_triage_verdict": "recorded a verdict",
+}
+
+#: The same change-tier tools in the base form, completing "I could not
+#: <phrase>" when the call failed. Keys are exactly those of
+#: :data:`CHANGED_PHRASES`; a test asserts the two tables stay in step.
+ATTEMPT_PHRASES: dict[str, str] = {
+    "powershell_exec": "run a PowerShell command on the host",
+    "shell_exec": "run a shell command on the host",
+    "winget_install": "install a package",
+    "winget_uninstall": "remove a package",
+    "winget_update": "update an installed package",
+    "fs_cleanup": "clean up files to free disk space",
+    "service_restart": "restart a service",
+    "net_dns_flush": "flush the DNS cache",
+    "net_adapter_reset": "reset the network adapter",
+    "remotehelp_start": "open a remote-help session on the desktop",
+    "remotehelp_stop": "close the remote-help session",
+    "agent_update": "update the agent",
+    "webfilter_apply": "apply the web filter on the host",
+    "webfilter_clear": "clear the web filter from the host",
+    "webfilter_set": "change what the web filter blocks",
+    "webfilter_push": "push the configured block list to the host",
+    "reliability_suppression_add": "mute an event pattern",
+    "reliability_suppression_remove": "un-mute an event pattern",
+    "ticket_rule_set": "change an auto-ticket rule",
+    "ticket_rule_remove": "remove an auto-ticket rule",
+    "account_set_enabled": "enable or disable an account",
+    "account_set_admin": "change an account's administrator rights",
+    "account_set_logon_rights": "change who may sign in",
+    "account_create": "create an account",
+    "account_delete": "delete an account",
+    "account_session_action": "act on a signed-in session",
+    "password_policy_set": "change the password policy",
+    "ticket_triage_verdict": "record a verdict",
 }
 
 #: Tools whose arguments carry a discriminator worth naming, because the same
@@ -328,6 +365,10 @@ def _changed_phrase(tool: str) -> str:
     return CHANGED_PHRASES.get(tool, f"ran {tool}")
 
 
+def _attempt_phrase(tool: str) -> str:
+    return ATTEMPT_PHRASES.get(tool, f"run {tool}")
+
+
 def _error_code(event: TicketEvent) -> str:
     error = (event.fields or {}).get("error")
     if isinstance(error, dict):
@@ -488,7 +529,7 @@ def project(events: Iterable[TicketEvent]) -> list[TimelineEntry]:
                 attempt = (
                     f"read {_observed_phrase(tool, [])}"
                     if (event.tool_class or "") == READ_ONLY
-                    else _changed_phrase(tool)
+                    else _attempt_phrase(tool)
                 )
                 entries.append(
                     TimelineEntry(

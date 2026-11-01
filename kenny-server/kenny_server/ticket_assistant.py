@@ -526,12 +526,23 @@ def _narrower_role(a: str | None, b: str | None) -> str:
 #: in a verdict that carries its evidence and can resolve the ticket. A second,
 #: weaker way to write the same thing would be two records of one conclusion.
 #:
+#: ``fs_cleanup_scan`` is subtracted as well. It is read-only, but triage's tool
+#: set is a reviewed declaration (it feeds the steward's ``spec_hash``), and a
+#: disk-cleanup preview is not something an unprompted investigation was granted.
+#: A later steward that wants it names it in its own spec.
+#:
 #: Only names the loop can route are kept, so this set is also the honest
 #: declaration of the ``triage`` steward, whose catalog refuses a tool
 #: the loop cannot route. (The session's allowlist was already intersected with
 #: the routable tools in :func:`allowed_tools_for`; this changes no call.)
 TRIAGE_TOOLS: frozenset[str] = (
-    (READ_ONLY_TOOLS - SENSITIVE_TOOLS - FLEET_WIDE_TOOLS - {TICKET_SUMMARY_TOOL} - COPILOT_STEWARD_TOOLS)
+    (
+        READ_ONLY_TOOLS
+        - SENSITIVE_TOOLS
+        - FLEET_WIDE_TOOLS
+        - {TICKET_SUMMARY_TOOL, "fs_cleanup_scan"}
+        - COPILOT_STEWARD_TOOLS
+    )
     & (frozenset(SERVER_TOOLS) | frozenset(CAPABILITY_TOOLS))
 ) | {TRIAGE_VERDICT_TOOL}
 
