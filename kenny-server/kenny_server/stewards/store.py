@@ -538,6 +538,38 @@ class StewardStore:
             raise ValueError(f"steward run {run_id} is already {run.status}, not running")
         return run
 
+    async def append_action(self, run_id: str, action: Mapping[str, Any]) -> None:
+        """Add one change to a ``running`` run's ``actions`` as it is made.
+
+        Written when the gate allows the change, before the call is forwarded,
+        so a run that is still going — or that a crash or a restart cut short —
+        already shows what it changed (ADR-0071 rule 6 reads it). The run's
+        close rewrites the list with each change's outcome. Raises
+        :class:`ValueError` for a run that is unknown or no longer ``running``:
+        a change that cannot be put on the record must not be made.
+        """
+
+        async with write_lock():
+            await _begin_immediate(self._conn)
+            try:
+                async with self._conn.execute(
+                    "SELECT actions FROM steward_runs WHERE id = ? AND status = 'running'",
+                    (run_id,),
+                ) as cur:
+                    row = await cur.fetchone()
+                if row is None:
+                    raise ValueError(f"steward run {run_id} is not running")
+                actions = json.loads(row["actions"] or "[]")
+                actions.append(dict(action))
+                await self._conn.execute(
+                    "UPDATE steward_runs SET actions = ? WHERE id = ? AND status = 'running'",
+                    (json.dumps(actions, default=str), run_id),
+                )
+                await self._conn.commit()
+            except BaseException:
+                await self._conn.rollback()
+                raise
+
     async def get_run(self, run_id: str) -> StewardRun | None:
         async with self._conn.execute(
             f"SELECT {_RUN_COLUMNS} FROM steward_runs WHERE id = ?", (run_id,)
@@ -646,13 +678,22 @@ class StewardStore:
             row = await cur.fetchone()
         return int(row[0]) if row else 0
 
-    async def runs_on_host_since(self, host_id: str, since_iso: str) -> list[StewardRun]:
-        """Every run of any steward on ``host_id`` started at or after ``since_iso``, newest first."""
+    async def runs_on_host_since(self, host_id: str | None, since_iso: str) -> list[StewardRun]:
+        """Every run of any steward on ``host_id`` that may have acted at or after ``since_iso``.
 
+        Newest first: a run started or finished at or after ``since_iso``, and
+        every run still ``running`` however long ago it started. ``host_id``
+        ``None`` reads the server-only runs (on no host).
+        """
+
+        since = _normalize_iso(since_iso)
+        where = "host_id IS NULL" if host_id is None else "host_id = ?"
+        args: list[Any] = [] if host_id is None else [host_id]
         async with self._conn.execute(
-            f"SELECT {_RUN_COLUMNS} FROM steward_runs WHERE host_id = ? AND started_at >= ? "
+            f"SELECT {_RUN_COLUMNS} FROM steward_runs WHERE {where} "
+            "AND (started_at >= ? OR finished_at >= ? OR status = 'running') "
             "ORDER BY started_at DESC, rowid DESC",
-            (host_id, _normalize_iso(since_iso)),
+            (*args, since, since),
         ) as cur:
             rows = await cur.fetchall()
         return [StewardRun._from_row(row) for row in rows]

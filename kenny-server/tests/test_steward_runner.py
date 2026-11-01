@@ -116,6 +116,8 @@ def _patcher(**overrides: Any) -> StewardSpec:
         "trigger": Trigger(kind="event", event="alert:change"),
         "tools": frozenset({"winget_list", "winget_update"}),
         "constraints": (ArgConstraint("winget_update", "id", frozenset({FIREFOX})),),
+        # An alert may start it on a machine, so it names the machines it may run on.
+        "params": ("hosts",),
     }
     fields.update(overrides)
     return StewardSpec(**fields)

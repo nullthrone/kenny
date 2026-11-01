@@ -67,6 +67,13 @@ and the one host the run was frozen to.
    :data:`~kenny_server.stewards.authorizations.NEVER_AUTHORIZED` is refused
    here without asking: the authorizer is not trusted to know that list.
 
+**Every allowed change is on the record before it is forwarded.** With an
+``on_action`` hook (the runner's: it appends the change to the run's row), the
+gate hands it each change it allows, at step 7 or 8, before answering
+``Allow``; a hook that fails turns the answer into ``unrecorded`` and the change
+is not made. So a run still in flight, or one a crash cut short, already shows
+what it changed, and the quiet period of ADR-0071 rule 6 can see it.
+
 **It never holds.** A ``Hold`` waits for a human, and an unattended session has
 none to answer it (ADR-0056); :meth:`StewardPolicy.on_hold` raises so that a hold
 introduced by mistake fails the run loudly instead of parking it.
@@ -103,6 +110,7 @@ __all__ = [
     "StewardPolicy",
     "StewardSession",
     "Authorizer",
+    "OnAction",
     "StillActing",
     "host_bound",
     "run_target_problem",
@@ -140,6 +148,11 @@ Authorizer = Callable[
 #: Asked before every change whether the run may still act: ``still_acting() ->
 #: bool``. Only ``True`` keeps it acting; ``False`` or an exception does not.
 StillActing = Callable[[], Awaitable[bool]]
+
+#: Told of every change the gate allows, before it is forwarded:
+#: ``on_action(entry)`` with the entry just added to ``session.actions``. An
+#: exception refuses the change.
+OnAction = Callable[[dict[str, Any]], Awaitable[None]]
 
 
 def _dispatchable(tool: str) -> bool:
@@ -257,6 +270,7 @@ class StewardPolicy:
         session: StewardSession,
         authorizer: Authorizer | None = None,
         still_acting: StillActing | None = None,
+        on_action: OnAction | None = None,
     ) -> None:
         validate(session.spec)
         if session.mode not in _RUN_MODES:
@@ -267,6 +281,7 @@ class StewardPolicy:
         self._host = session.agent_id
         self._authorizer = authorizer
         self._still_acting = still_acting
+        self._on_action = on_action
         schemas = build_tool_schemas(allowed=frozenset(self._spec.tools), unattended=True)
         if schemas:
             schemas[-1] = {**schemas[-1], "cache_control": {"type": "ephemeral"}}
@@ -417,7 +432,7 @@ class StewardPolicy:
         agent_id: str | None,
         tier: str,
         authorization_id: str | None = None,
-    ) -> None:
+    ) -> dict[str, Any]:
         entry: dict[str, Any] = {
             "tool": tool,
             "args": dict(args),
@@ -427,6 +442,38 @@ class StewardPolicy:
         if authorization_id is not None:
             entry["authorization_id"] = authorization_id
         into.append(entry)
+        return entry
+
+    async def _allow_change(
+        self,
+        session: StewardSession,
+        tool: str,
+        args: dict[str, Any],
+        agent_id: str | None,
+        tier: str,
+        authorization_id: str | None = None,
+    ) -> Allow | Deny:
+        """Record an allowed change and put it on the run's record before it runs.
+
+        A change the ``on_action`` hook cannot record is taken back out of
+        ``session.actions`` and refused: nothing unrecorded is forwarded.
+        """
+
+        entry = self._record(session.actions, tool, args, agent_id, tier, authorization_id)
+        if self._on_action is not None:
+            try:
+                await self._on_action(dict(entry))
+            except Exception:  # noqa: BLE001 - an unrecorded change is not made
+                logger.exception(
+                    "steward run %s: %s could not be recorded; refusing it", session.id, tool
+                )
+                # The entry just appended, by identity: an equal earlier one stays.
+                session.actions[:] = [a for a in session.actions if a is not entry]
+                return Deny(
+                    "unrecorded",
+                    f"{tool} was not carried out: the change could not be put on the run's record.",
+                )
+        return Allow(authorization_id=authorization_id)
 
     async def _authorized(
         self, session: StewardSession, tool: str, args: dict[str, Any], agent_id: str | None
@@ -499,15 +546,13 @@ class StewardPolicy:
             )
 
         if tier == STANDARD_CHANGE:
-            self._record(session.actions, tool, args, agent_id, tier)
-            return Allow()
+            return await self._allow_change(session, tool, args, agent_id, tier)
 
         # NORMAL_CHANGE, and anything ``classify`` failed closed on.
         if tier == NORMAL_CHANGE:
             grant = await self._authorized(session, tool, args, agent_id)
             if grant is not None:
-                self._record(session.actions, tool, args, agent_id, tier, grant.id)
-                return Allow(authorization_id=grant.id)
+                return await self._allow_change(session, tool, args, agent_id, tier, grant.id)
         self._record(session.recommendations, tool, args, agent_id, tier)
         return Deny(
             "not_authorized",

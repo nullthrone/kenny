@@ -21,10 +21,12 @@ order, the first failure winning (the caller's credential, check 1, is
 6. the effective hash the person was shown missing (400) or no longer the
    live one (409);
 7. the target: a host-bound steward takes one known machine — among the
-   steward's ``hosts`` when its spec declares that parameter, an empty list
-   admitting none — that is online (409 if not) and runs an OS that serves its
-   tools; a server-only steward takes none; then the spec's own preconditions
-   (409);
+   steward's ``hosts``, an empty list admitting none, and a spec that names
+   host tools without declaring ``hosts`` admitting no machine at all — that
+   is online (409 if not) and runs an OS that serves its tools; a server-only
+   steward takes none; then the spec's own preconditions (409), and, for a
+   steward with ``require_idle`` on, nobody signed in to the machine (409,
+   asked of the machine itself);
 8. a manual run of this steward on this target already in flight — a preview
    or a command run, at most one of either — and
    :data:`COMMANDS_PER_DAY_SETTING` command runs of this steward in the last
@@ -52,10 +54,10 @@ from typing import Any
 from ..tool_classes import NORMAL_CHANGE, READ_ONLY, TOOL_CLASSES, classify
 from ..tools import CAPABILITY_TOOLS
 from .policy import HOST_ARG, host_bound, run_target_problem
-from .runner import StewardRunner, surface_refusal
+from .runner import HashMismatch, StewardRunner, surface_refusal
 from .spec import StewardSpec, resolve
 from .store import StewardRun
-from .windows import declared_hosts, host_supports
+from .windows import declared_hosts, host_supports, idle_required, not_idle
 
 __all__ = [
     "COMMANDS_PER_DAY_SETTING",
@@ -134,6 +136,15 @@ async def _target_problem(
     if problem is not None:
         return CommandRefused(problem, status=400, code="bad_target")
     params = await runner.get_params(spec.id)
+    if host_bound(spec) and _HOSTS_PARAM not in spec.params:
+        # Refused at load (``catalog.check_dispatchable``); refused here too, so
+        # such a spec can never be run on whichever machine a person names.
+        return CommandRefused(
+            f"{spec.id} names host tools but takes no {_HOSTS_PARAM} parameter, "
+            "so no machine is one it may work on",
+            status=400,
+            code="no_hosts_param",
+        )
     if host_bound(spec) and host_id is not None:
         agent = hosts.registry.get(host_id) if hosts.registry is not None else None
         if agent is None or not getattr(agent, "online", False):
@@ -166,7 +177,33 @@ async def _target_problem(
     refused = await runner.precondition_refusal(spec, host_id, params)
     if refused is not None:
         return CommandRefused(refused, status=409, code="precondition")
+    if host_id is not None and "require_idle" in spec.params and idle_required(params):
+        return await _idle_problem(runner, spec, host_id)
     return None
+
+
+async def _idle_problem(
+    runner: StewardRunner, spec: StewardSpec, host_id: str
+) -> CommandRefused | None:
+    """Whether ``host_id`` is in use, for a steward with ``require_idle`` on.
+
+    Asked of the machine, as the scheduler and the event trigger ask it
+    (:func:`~kenny_server.stewards.windows.not_idle`): only the machine saying
+    nobody is signed in lets the run start.
+    """
+
+    executor = runner.executor
+    if executor is None:
+        reason: str | None = "could not tell whether anyone is using the machine"
+    else:
+        reason = await not_idle(executor, spec, host_id)
+    if reason is None:
+        return None
+    if reason == "someone is signed in at the machine":
+        message = f"somebody is signed in to {host_id}; this steward runs only when it is idle"
+    else:
+        message = f"{reason} ({host_id}); this steward runs only when it is idle"
+    return CommandRefused(message, status=409, code="host_not_idle")
 
 
 async def _manual_run_problem(
@@ -294,7 +331,10 @@ async def start_command(
     the record, and named by ``run_id`` on the exception) and one that could not
     start at all (a switch went off in between); :class:`RuntimeError` when no
     executor, model or client is configured. Who may call this (check 1) is the
-    caller's to enforce.
+    caller's to enforce. The run itself is handed ``effective_hash`` and
+    refuses to start if the steward's effective hash moved after these checks
+    (:class:`~kenny_server.stewards.runner.HashMismatch`): that is a 409
+    ``hash_stale`` here too, and nothing is recorded.
     """
 
     who = username.strip()[:_MAX_USERNAME] or "unknown"
@@ -316,6 +356,8 @@ async def start_command(
 
         async def go() -> None:
             try:
+                # The hash the person was shown, checked again as the run
+                # starts: a run whose hash moved since is never started.
                 await runner.run_generic(
                     spec,
                     host_id=host_id,
@@ -323,6 +365,7 @@ async def start_command(
                     brief=brief,
                     on_admitted=on_admitted,
                     initiated_by=who,
+                    expected_hash=effective_hash,
                 )
             except Exception as exc:  # noqa: BLE001 - reported to the caller if still waiting
                 logger.exception("steward %s command run failed to start", spec.id)
@@ -337,7 +380,10 @@ async def start_command(
         task = asyncio.create_task(go(), name=f"steward-command-{spec.id}")
         runner._previews.add(task)
         task.add_done_callback(runner._previews.discard)
-        run = await admitted
+        try:
+            run = await admitted
+        except HashMismatch as exc:
+            raise CommandRefused(str(exc), status=409, code="hash_stale") from exc
     if run is None:
         raise CommandRefused(
             "the steward could not start (stewards or AI are switched off, or it left act)",

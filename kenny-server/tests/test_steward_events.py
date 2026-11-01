@@ -463,6 +463,21 @@ async def test_a_steward_taking_no_hosts_parameter_runs_on_no_host(world: World)
         await rig.close()
 
 
+async def test_a_host_steward_without_a_hosts_parameter_runs_nowhere(world: World) -> None:
+    """Refused at load (``check_dispatchable``); refused here too, never run on no host."""
+
+    rig = Rig(world, {"evented": _spec(params=("window",))})
+    world.configure("evented", window=_window(datetime.now(timezone.utc), open_=True))
+    await rig.build()
+    try:
+        await rig.enable("evented", "alert:health:disk")
+        await rig.fire(_note())
+        await rig.fire(_note(host=None))
+        assert rig.runner.calls == [] and await _rows(rig) == []
+    finally:
+        await rig.close()
+
+
 # -- the quiet period, the cooldown, the preconditions --------------------------------------
 
 
@@ -507,6 +522,98 @@ async def test_a_failed_change_does_not_make_a_quiet_period(rig: Rig) -> None:
     )
     await rig.fire(_note())
     assert len(rig.runner.calls) == 1
+
+
+async def test_an_act_run_in_flight_on_the_machine_quiets_events(rig: Rig) -> None:
+    """Rule 6 sees a run still going: its changes may be on the machine already."""
+
+    await rig.enable("evented", "alert:health:disk")
+    running = await rig.w.steward_store.start_run(
+        steward_id="other", spec_hash="x", trigger="schedule:2026", mode="act",
+        subject=f"host:{WIN_A}", host_id=WIN_A,
+    )
+    reason = await rig.runner.quiet_period_refusal(WIN_A)
+    assert reason is not None and f"run {running.id}" in reason and "changing it now" in reason
+    await rig.fire(_note())
+    assert rig.runner.calls == []
+    [skip] = [r for r in await _rows(rig) if r.steward_id == "evented"]
+    assert skip.status == "skipped" and f"run {running.id}" in skip.error
+
+
+async def test_a_shadow_run_or_triage_in_flight_does_not_quiet_events(rig: Rig) -> None:
+    """Only a run that may change the machine counts: not a shadow run, not triage's verdict."""
+
+    await rig.enable("evented", "alert:health:disk")
+    for steward_id, mode in (("other", "shadow"), ("triage", "act")):
+        await rig.w.steward_store.start_run(
+            steward_id=steward_id, spec_hash="x", trigger="t", mode=mode,
+            subject=f"host:{WIN_A}", host_id=WIN_A,
+        )
+    assert await rig.runner.quiet_period_refusal(WIN_A) is None
+    await rig.fire(_note())
+    assert len(rig.runner.calls) == 1
+
+
+async def test_an_interrupted_run_with_a_recorded_change_quiets_events(rig: Rig) -> None:
+    """A change put on the row as it was made outlives a restart that cut the run short."""
+
+    store = rig.w.steward_store
+    await rig.enable("evented", "alert:health:disk")
+    cut = await store.start_run(
+        steward_id="other", spec_hash="x", trigger="schedule:2026", mode="act",
+        subject=f"host:{WIN_A}", host_id=WIN_A,
+    )
+    await store.append_action(cut.id, {"tool": "winget_update", "args": {"id": FIREFOX}})
+    assert await store.fail_interrupted() == 1
+    [row] = [r for r in await rig.w.runs("other")]
+    assert row.status == "failed" and row.actions == [{"tool": "winget_update", "args": {"id": FIREFOX}}]
+    await rig.fire(_note())
+    assert rig.runner.calls == []
+    # A finished run's record takes no more changes.
+    with pytest.raises(ValueError, match="not running"):
+        await store.append_action(cut.id, {"tool": "x"})
+
+
+async def test_a_server_only_change_quiets_alert_events_on_every_machine(world: World) -> None:
+    """A change to the server's own records can raise an alert anywhere (F2)."""
+
+    server_spec = _spec("server", params=("window",), tools=frozenset({STEWARD_VERDICT_TOOL}),
+                        constraints=())
+    rig = Rig(world, {"evented": _spec(), "server": server_spec})
+    window = _window(datetime.now(timezone.utc), open_=True)
+    world.configure("evented", hosts=[WIN_A, WIN_B], window=window)
+    world.configure("server", window=window)
+    await rig.build()
+    try:
+        await rig.enable("evented", "alert:health:disk")
+        await rig.enable("server", "alert:health:disk")
+        hygiene = await world.steward_store.start_run(
+            steward_id="hygiene", spec_hash="h", trigger="schedule:x", mode="act",
+        )
+        await world.steward_store.finish_run(
+            hygiene.id, status="completed",
+            actions=[{"tool": "suppression_remove", "args": {}, "ok": True}],
+        )
+        for host in (WIN_A, WIN_B):
+            reason = await rig.runner.quiet_period_refusal(host, server_changes=True)
+            assert reason is not None and "changed the server" in reason
+            assert "any machine" in reason
+            # The ticket path asks about the machine alone.
+            assert await rig.runner.quiet_period_refusal(host) is None
+        await rig.fire(_note(host=WIN_B))
+        assert rig.runner.calls == []
+        rows = await world.runs("evented") + await world.runs("server")
+        skips = [r for r in rows if r.status == "skipped"]
+        assert sorted((r.steward_id, r.host_id) for r in skips) == [
+            ("evented", WIN_B), ("server", None)
+        ]
+        assert all(f"run {hygiene.id}" in r.error for r in skips)
+        # Past the quiet period, the next alert starts both.
+        world.now += timedelta(hours=7)
+        await rig.fire(_note(host=WIN_B))
+        assert sorted(c.spec.id for c in rig.runner.calls) == ["evented", "server"]
+    finally:
+        await rig.close()
 
 
 async def test_cooldown_skips_silently_then_lapses(rig: Rig) -> None:
@@ -568,10 +675,10 @@ async def test_a_declared_precondition_is_asked_and_a_refusal_is_a_recorded_skip
         await rig.close()
 
 
-async def test_one_run_per_steward_host_and_event_at_a_time(rig: Rig) -> None:
+async def test_one_run_per_steward_and_host_at_a_time_whatever_the_event(rig: Rig) -> None:
     import asyncio
 
-    await rig.enable("evented", "alert:health:disk", cooldown=1)
+    await rig.enable("evented", "alert:health:disk", "alert:offline", cooldown=1)
     gate = asyncio.Event()
     original = rig.runner.run_generic
 
@@ -582,7 +689,11 @@ async def test_one_run_per_steward_host_and_event_at_a_time(rig: Rig) -> None:
     rig.runner.run_generic = slow  # type: ignore[method-assign]
     first = asyncio.create_task(rig.trigger.handle(_note()))
     await asyncio.sleep(0.05)
-    assert await rig.trigger.handle(_note()) == []  # the same triple is in flight
+    assert await rig.trigger.handle(_note()) == []  # the same event on the same machine
+    # Another event on the same machine: the steward is still running there, so
+    # this returns at once instead of starting a second run behind the gate.
+    other = rig.trigger.handle(_note("alert", "offline", {}))
+    assert await asyncio.wait_for(other, timeout=5) == []
     gate.set()
     assert len(await first) == 1
     assert len(rig.runner.calls) == 1

@@ -749,6 +749,139 @@ async def test_a_trigger_edit_mid_run_ends_its_act_even_if_act_is_chosen_again(w
     assert [r["tool"] for r in run.recommendations] == ["winget_update"]
 
 
+# -- a change is on the record before it runs; consent writes do not interleave ---------
+
+
+async def test_each_allowed_change_is_on_the_run_row_before_it_is_forwarded(world) -> None:
+    """ADR-0071 rule 6 reads the row: a run still going already shows what it changed."""
+
+    spec = _steward()
+    runner = _runner(world, spec)
+    await _promote(runner)
+    seen: list[tuple[str, str, list[dict[str, Any]]]] = []
+
+    async def look(tool: str, _args: dict[str, Any]) -> None:
+        [row] = await world.steward_store.list_runs(steward_id="patcher", limit=1)
+        seen.append((tool, row.status, [a["tool"] for a in row.actions]))
+
+    world.on_send = look
+    run = await _run(world, runner, spec, ("winget_list", {}), ("winget_update", {"id": FIREFOX}))
+    assert seen == [
+        ("winget_list", "running", []),
+        ("winget_update", "running", ["winget_update"]),
+    ]
+    [action] = run.actions
+    assert action["tool"] == "winget_update" and action["ok"] is True
+    # The quiet period sees the run while it is still going.
+    assert await runner.quiet_period_refusal(HOST) is not None
+
+
+async def test_a_change_that_cannot_be_recorded_is_not_made(world, monkeypatch) -> None:
+    spec = _steward()
+    runner = _runner(world, spec)
+    await _promote(runner)
+
+    async def broken(_run_id: str, _action: Any) -> None:
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(world.steward_store, "append_action", broken)
+    run = await _run(world, runner, spec, ("winget_update", {"id": FIREFOX}))
+    assert run is not None and run.status == "completed"
+    assert world.sent == [] and run.actions == []
+
+
+async def test_a_run_refuses_to_start_on_a_hash_other_than_the_one_shown(world) -> None:
+    spec = _steward()
+    runner = _runner(world, spec)
+    await _promote(runner)
+    shown = await runner.live_hash("patcher")
+    await runner.set_params("patcher", {"hosts": [HOST]}, actor="root")
+    with pytest.raises(runner_module.HashMismatch, match="changed since it was shown"):
+        await _run(world, runner, spec, ("winget_update", {"id": FIREFOX}), expected_hash=shown)
+    assert await world.steward_store.list_runs(steward_id="patcher") == []
+    assert world.sent == []
+    # The hash in force starts it.
+    await _promote(runner)
+    live = await runner.live_hash("patcher")
+    run = await _run(world, runner, spec, ("winget_update", {"id": FIREFOX}), expected_hash=live)
+    assert run is not None and run.mode == "act" and run.effective_hash == live
+
+
+@pytest.mark.parametrize("edit", ["triggers", "params"])
+async def test_a_grant_racing_a_configuration_edit_cannot_outlive_the_void(world, edit: str) -> None:
+    """A grant checked against the old hash is written before the edit voids, never after."""
+
+    import asyncio
+
+    spec = _steward()
+    runner = _runner(world, spec)
+    old = await runner.live_hash("patcher")
+    store = world.authorizations  # type: ignore[attr-defined]
+    real_grant = store.grant
+    checked = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_grant(**kw: Any) -> Any:
+        checked.set()  # the hash was reviewed; the row is not written yet
+        await release.wait()
+        return await real_grant(**kw)
+
+    store.grant = slow_grant
+    granting = asyncio.create_task(_grant(runner, effective_hash=old))
+    await checked.wait()
+    if edit == "triggers":
+        editing = asyncio.create_task(runner.set_triggers("patcher", WITH_COMMAND, actor="root"))
+    else:
+        editing = asyncio.create_task(runner.set_params("patcher", {"hosts": [HOST]}, actor="root"))
+    await asyncio.sleep(0.05)
+    release.set()
+    grant = await granting
+    await editing
+    assert grant.effective_hash == old
+    assert (await store.get(grant.id)).status(NOW) == "voided"
+    # Reverting the edit brings the old hash back, and revives nothing.
+    if edit == "triggers":
+        await runner.set_triggers("patcher", BASE, actor="root")
+    else:
+        await runner.set_params("patcher", {}, actor="root")
+    assert await runner.live_hash("patcher") == old
+    assert (await store.get(grant.id)).status(NOW) == "voided"
+    assert await store.remaining("patcher", old, "winget_install", HOST, NOW) is None
+
+
+# -- a host steward a command or an alert starts must take hosts -----------------------
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        # Scheduled, a person may start it, and it reads a machine through a server tool.
+        {"triggers_allowed": TriggerSet(schedule=True, command=True),
+         "tools": frozenset({"agent_health", STEWARD_VERDICT_TOOL}), "constraints": ()},
+        # Started by an alert, and it changes the machine.
+        {"trigger": Trigger(kind="event", event="alert:offline"),
+         "triggers_allowed": TriggerSet(events=frozenset({"alert:offline"}))},
+    ],
+    ids=["command", "alert"],
+)
+def test_a_host_steward_started_by_command_or_alert_must_take_hosts(overrides: dict[str, Any]) -> None:
+    with pytest.raises(SpecError, match="takes no hosts parameter"):
+        check_dispatchable(validate(_steward(params=("window",), **overrides)))
+    # With ``hosts`` it is fine; so is a server-only steward without it.
+    check_dispatchable(validate(_steward(**overrides)))
+    server_only = {**overrides, "tools": frozenset({STEWARD_VERDICT_TOOL}), "constraints": ()}
+    check_dispatchable(validate(_steward(params=("window",), **server_only)))
+
+
+def test_every_shipped_host_steward_a_command_or_alert_may_start_takes_hosts() -> None:
+    from kenny_server.stewards.policy import host_bound
+
+    for spec in CATALOG.values():
+        allowed = allowed_triggers(spec)
+        if host_bound(spec) and (allowed.command or any(e.startswith("alert:") for e in allowed.events)):
+            assert "hosts" in spec.params, spec.id
+
+
 # -- run_generic: shadow_only, initiated_by ------------------------------------------
 
 
@@ -818,7 +951,7 @@ def test_only_whitelisted_numbers_and_enums_are_kept() -> None:
         "skipped": {"in_use": 3},
         "errors": ["C:\\Users\\kid\\secret.txt: access denied"],
     }
-    assert summarize_result("fs_cleanup", cleaned) == {
+    assert summarize_result("fs_cleanup", cleaned, {"target": "temp_system"}) == {
         "target": "temp_system",
         "files_removed": 12,
         "bytes_freed": 3_000_000,
@@ -837,6 +970,20 @@ def test_only_whitelisted_numbers_and_enums_are_kept() -> None:
     assert summarize_result("fs_cleanup", {"target": "temp_system\n"}) is None
     assert summarize_result("fs_cleanup", ["not", "a", "mapping"]) is None
     assert summarize_result("winget_update", {"ok": True}) is None
+
+
+def test_an_enum_naming_another_target_than_the_call_is_dropped() -> None:
+    """``fs_cleanup``'s ``target`` is believed only when it is the target the call asked for."""
+
+    result = {"target": "temp_system", "files_removed": 3, "complete": True}
+    kept = {"files_removed": 3, "complete": True}
+    assert summarize_result("fs_cleanup", result, {"target": "downloads_old"}) == kept
+    assert summarize_result("fs_cleanup", result, {}) == kept
+    assert summarize_result("fs_cleanup", result) == kept
+    assert summarize_result("fs_cleanup", result, {"target": "temp_system"}) == {
+        "target": "temp_system", **kept
+    }
+    assert runner_module.RESULT_ECHO_ARGS["fs_cleanup"] == {"target": "target"}
 
 
 def test_no_read_only_tool_is_summarised() -> None:

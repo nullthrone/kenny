@@ -329,7 +329,8 @@ def test_bad_parameters_and_unknown_stewards(tmp_path) -> None:
             su = BROWSER
             assert c.put(f"{BASE}/params", json={"params": {"nope": ["x"]}}, headers=su).status_code == 400
             assert c.put(f"{BASE}/params", json={"params": ["x"]}, headers=su).status_code == 400
-            assert c.put(f"{BASE}/params", content=b"{", headers=su).status_code == 400
+            malformed = {**su, "Content-Type": "application/json"}
+            assert c.put(f"{BASE}/params", content=b"{", headers=malformed).status_code == 400
             nope = "/api/stewards/nope"
             assert c.get(f"{nope}/params", headers=su).status_code == 404
             assert c.get(f"{nope}/authorizations", headers=su).status_code == 404

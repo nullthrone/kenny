@@ -493,3 +493,238 @@ def test_readiness_and_quick_actions_are_operator_reads(world_factory) -> None:
     assert w.c.get("/api/stewards/nobody/command").status_code == 404
     w.c.cookies.clear()
     assert w.c.get("/api/stewards/commands").status_code == 401
+
+
+# -- require_idle -----------------------------------------------------------------------
+
+FIREFOX = "Mozilla.Firefox"
+
+
+def _patch_ready(w: World, *, signed_in: Any, require_idle: bool | None = None) -> None:
+    """``patch`` (which declares ``require_idle``) ready to act on ``HOST``; the host answers idle as told."""
+
+    async def send_request(agent_id: str, tool: str, args: dict[str, Any], timeout_s: float = 0):
+        w.sent.append({"agent_id": agent_id, "tool": tool, "args": dict(args)})
+        if tool == "remotehelp_status":
+            if isinstance(signed_in, Exception):
+                raise signed_in
+            return {"interactive_session": signed_in}
+        return {"ok": True, "tool": tool, "packages": [], "log": "done"}
+
+    w.app.state.tunnel.send_request = send_request
+    params: dict[str, Any] = {"hosts": [HOST], "packages": [FIREFOX]}
+    if require_idle is not None:
+        params["require_idle"] = require_idle
+    w.set_params("patch", **params)
+    w.set_triggers(COMMAND_ON, steward_id="patch")
+    w.set_mode("act", steward_id="patch")
+
+
+def test_a_command_run_honours_require_idle(world_factory) -> None:
+    w = world_factory(_call("winget_list", {}), _verdict("clean"), _done())
+    _patch_ready(w, signed_in=True)
+    r = w.command("patch")
+    assert r.status_code == 409, r.text
+    body = r.json()
+    assert body["code"] == "host_not_idle"
+    assert body["error"] == (
+        f"somebody is signed in to {HOST}; this steward runs only when it is idle"
+    )
+    ready = w.readiness("patch")
+    assert ready["run"]["code"] == "host_not_idle" and HOST in ready["run"]["reason"]
+    assert w.runs("patch") == []
+    # Asked of the machine, as the server, not the model.
+    assert {s["tool"] for s in w.sent} == {"remotehelp_status"}
+    # A machine that cannot say is not idle either.
+    _patch_ready(w, signed_in=None)
+    r = w.command("patch")
+    assert r.status_code == 409 and "could not tell" in r.json()["error"]
+    # Nobody signed in: it starts.
+    _patch_ready(w, signed_in=False)
+    assert w.readiness("patch")["run"]["allowed"] is True
+    r = w.command("patch")
+    assert r.status_code == 202, r.text
+    w.wait()
+
+
+def test_require_idle_off_lets_a_command_run_start_with_somebody_signed_in(world_factory) -> None:
+    w = world_factory(_call("winget_list", {}), _verdict("clean"), _done())
+    _patch_ready(w, signed_in=True, require_idle=False)
+    r = w.command("patch")
+    assert r.status_code == 202, r.text
+    w.wait()
+    assert "remotehelp_status" not in {s["tool"] for s in w.sent}
+
+
+# -- a host steward without hosts is never run on a machine a person names -----------------
+
+
+def test_a_host_steward_without_a_hosts_parameter_is_refused(world_factory) -> None:
+    """``check_dispatchable`` refuses such a spec at load; the route refuses it too."""
+
+    from dataclasses import replace
+
+    w = world_factory(*_install_run())
+    loose = replace(
+        INSTALLER,
+        trigger=Trigger(kind="event", event="alert:offline"),
+        triggers_allowed=TriggerSet(events=frozenset({"alert:offline"}), command=True),
+        params=("packages",),
+    )
+    w.runner.catalog = MappingProxyType({**CATALOG, "installer": loose})
+    w.set_params(packages=[SEVENZIP])
+    w.set_triggers({"schedule": None, "events": [], "command": True})
+    w.set_mode("act")
+    r = w.command()
+    assert r.status_code == 400, r.text
+    assert r.json()["code"] == "no_hosts_param"
+    assert w.readiness()["run"]["code"] == "no_hosts_param"
+    assert w.runs() == [] and w.sent == []
+
+
+# -- the hash the person was shown is the hash the run starts with ------------------------------
+
+
+def test_a_command_run_whose_hash_moves_before_it_starts_is_refused(world_factory) -> None:
+    w = world_factory(*_install_run())
+    w.grant()
+    shown = w.live_hash()
+    original = w.runner.run_generic
+
+    async def edited_first(*a: Any, **k: Any) -> Any:
+        # A parameter edit lands after the route's checks, before the run starts.
+        await w.runner.set_params(
+            "installer", {"hosts": [HOST], "packages": [SEVENZIP, "Other.Pkg"]}, actor="root")
+        await w.runner.set_mode(
+            "installer", "act", actor="root", effective_hash=await w.runner.live_hash("installer"))
+        return await original(*a, **k)
+
+    w.runner.run_generic = edited_first
+    r = w.command(effective_hash=shown)
+    assert r.status_code == 409, r.text
+    assert r.json()["code"] == "hash_stale"
+    w.wait()
+    assert w.runs() == [] and w.sent == []
+
+
+# -- consent writes come from the dashboard itself, as JSON ---------------------------------
+
+
+EVIL = "http://evil.example:3000"
+
+
+def _form_shaped(payload: dict[str, Any]) -> bytes:
+    """What ``<form enctype="text/plain">`` posts when its one field is named to make JSON."""
+
+    import json
+
+    body = json.dumps({**payload, "x": "="})
+    return body.encode()
+
+
+def test_a_text_plain_cross_site_form_cannot_start_a_run_that_acts(world_factory) -> None:
+    w = world_factory(*_install_run())
+    payload = {"mode": "act", "host_id": HOST, "effective_hash": w.live_hash()}
+    for headers in (
+        {"Content-Type": "text/plain", "Origin": EVIL},
+        {"Content-Type": "text/plain"},
+        {"Content-Type": "application/json", "Origin": EVIL},
+        {"Content-Type": "application/json", "Sec-Fetch-Site": "same-site"},
+        {"Content-Type": "application/json", "Origin": "null"},
+    ):
+        r = w.c.post("/api/stewards/installer/runs", content=_form_shaped(payload), headers=headers)
+        assert r.status_code in (403, 415), (headers, r.status_code, r.text)
+    w.wait()
+    assert w.runs() == [] and w.sent == []
+    # The dashboard's own request: same origin, JSON.
+    r = w.c.post("/api/stewards/installer/runs", json=payload,
+                 headers={"Origin": "http://testserver", "Sec-Fetch-Site": "same-origin"})
+    assert r.status_code == 202, r.text
+    w.wait()
+
+
+def _consent_writes(w: World) -> list[tuple[str, str, dict[str, Any] | None]]:
+    """Every write that needs a person at a browser: ``(method, path, JSON body or None)``."""
+
+    shown = w.live_hash()
+    grant = w.grant()
+    return [
+        ("PUT", "/api/stewards/installer/mode", {"mode": "act", "effective_hash": shown}),
+        ("POST", "/api/stewards/installer/authorizations", {
+            "tool": "winget_install", "scope": [HOST], "max_attempts_per_day": 1,
+            "expires_at": (datetime.now(timezone.utc) + timedelta(days=3)).isoformat(),
+            "effective_hash": shown}),
+        ("DELETE", f"/api/stewards/installer/authorizations/{grant.id}", None),
+        ("PUT", "/api/stewards/installer/params", {"params": {"hosts": [HOST, OTHER]}}),
+        ("PUT", "/api/stewards/installer/triggers", {"triggers": COMMAND_OFF, "effective_hash": shown}),
+        ("POST", "/api/stewards/installer/runs", {"mode": "act", "host_id": HOST, "effective_hash": shown}),
+        ("PUT", "/api/settings/KENNY_STEWARDS_ENABLED", {"value": "1"}),
+        ("DELETE", "/api/settings/KENNY_STEWARDS_ENABLED", None),
+    ]
+
+
+def test_every_consent_write_refuses_another_origin_and_a_body_that_is_not_json(world_factory) -> None:
+    import json
+
+    w = world_factory()
+    before = w.call(lambda: w.runner.overview())
+    for method, path, body in _consent_writes(w):
+        raw = None if body is None else json.dumps(body).encode()
+        for headers, status in (
+            ({"Origin": EVIL}, 403),
+            ({"Origin": "https://testserver"}, 403),  # another scheme is another origin
+            ({"Sec-Fetch-Site": "same-site"}, 403),
+            ({"Sec-Fetch-Site": "cross-site"}, 403),
+        ):
+            sent = {**headers, "Content-Type": "application/json"} if raw is not None else headers
+            r = w.c.request(method, path, content=raw, headers=sent)
+            assert r.status_code == status, (method, path, headers, r.status_code, r.text)
+        if raw is not None:
+            for media in ("text/plain", "application/x-www-form-urlencoded", "multipart/form-data"):
+                r = w.c.request(method, path, content=raw, headers={"Content-Type": media})
+                assert r.status_code == 415, (method, path, media, r.status_code, r.text)
+            r = w.c.request(method, path, content=raw)
+            assert r.status_code == 415, (method, path, "no content type", r.text)
+    w.wait()
+    # Nothing moved: same configuration, same mode, the grant still live, no run.
+    after = w.call(lambda: w.runner.overview())
+    assert [(s["id"], s["mode"], s["effective_hash"]) for s in after] == [
+        (s["id"], s["mode"], s["effective_hash"]) for s in before
+    ]
+    assert w.runs() == []
+    listed = w.c.get("/api/stewards/installer/authorizations").json()["authorizations"]
+    assert [a["status"] for a in listed] == ["live"]
+
+
+def test_the_dashboards_own_requests_still_pass(world_factory) -> None:
+    """Same origin (as the request's host, or as ``KENNY_PUBLIC_URL``), JSON: accepted."""
+
+    w = world_factory()
+    own = {"Origin": "http://testserver", "Sec-Fetch-Site": "same-origin"}
+    r = w.c.put("/api/stewards/installer/params",
+                json={"params": {"hosts": [HOST], "packages": [SEVENZIP, "Other.Pkg"]}},
+                headers=own)
+    assert r.status_code == 200, r.text
+    r = w.c.put("/api/stewards/installer/mode",
+                json={"mode": "act", "effective_hash": r.json()["effective_hash"]},
+                headers={"Content-Type": "application/json; charset=utf-8", **own})
+    assert r.status_code == 200 and r.json()["mode"] == "act", r.text
+    # A request a person typed (``Sec-Fetch-Site: none``) and one without either header.
+    r = w.c.put("/api/stewards/installer/mode", json={"mode": "shadow"},
+                headers={"Sec-Fetch-Site": "none"})
+    assert r.status_code == 200, r.text
+    r = w.c.put("/api/stewards/installer/mode", json={"mode": "shadow"})
+    assert r.status_code == 200, r.text
+
+
+def test_the_public_url_is_an_own_origin(world_factory, monkeypatch) -> None:
+    """Behind a TLS proxy the request's scheme can be http while the page's is https."""
+
+    w = world_factory()
+    monkeypatch.setenv("KENNY_PUBLIC_URL", "https://kenny.example.org/")
+    r = w.c.put("/api/stewards/installer/mode", json={"mode": "shadow"},
+                headers={"Origin": "https://kenny.example.org"})
+    assert r.status_code == 200, r.text
+    r = w.c.put("/api/stewards/installer/mode", json={"mode": "shadow"},
+                headers={"Origin": "https://kenny.example.org.evil.example"})
+    assert r.status_code == 403

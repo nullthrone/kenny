@@ -249,6 +249,7 @@ def _changer(tool: str, *constraints: ArgConstraint) -> StewardSpec:
         tools=frozenset({tool}),
         constraints=constraints,
         sensitive_ok=True,
+        params=("hosts",),
     )
 
 

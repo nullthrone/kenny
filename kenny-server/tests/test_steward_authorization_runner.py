@@ -49,7 +49,7 @@ def _installer(**overrides: Any) -> StewardSpec:
             ArgConstraint("winget_install", "id", param="packages"),
             ArgConstraint("winget_update", "id", param="packages"),
         ),
-        "params": ("packages",),
+        "params": ("hosts", "packages"),
     }
     fields.update(overrides)
     return StewardSpec(**fields)

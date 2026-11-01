@@ -6,9 +6,12 @@ than in the steward so no steward can forget one:
 1. **A steward's effect never starts another steward** (rule 6). A ticket whose
    origin is :data:`~kenny_server.ticketstore.STEWARD_ORIGIN` starts nothing,
    and neither does any ticket on a host a steward changed within
-   :data:`STEWARD_CHANGE_QUIET_PERIOD` — an alert the change raised opens a
+   :data:`STEWARD_CHANGE_QUIET_PERIOD`, or is changing in a run still in
+   flight (:func:`counts_as_change`) — an alert the change raised opens a
    ticket of another origin — which is recorded as a ``skipped`` run naming
-   the steward and the run.
+   the steward and the run. Each change a generic run makes is put on its row
+   when the gate allows it, before it is forwarded
+   (``StewardStore.append_action``), so the record never lags the host.
 2. **The global switch** (``KENNY_STEWARDS_ENABLED``) and **the steward's mode**.
    ``off`` either way means the run never existed: nothing is recorded.
 3. **The global caps**, concurrent runs (``KENNY_STEWARDS_MAX_CONCURRENT``) and
@@ -119,6 +122,7 @@ __all__ = [
     "BREAKER_ACTOR",
     "BREAKER_THRESHOLD",
     "BREAKER_TRIGGER_PREFIXES",
+    "RESULT_ECHO_ARGS",
     "RESULT_SUMMARY_FIELDS",
     "STEWARD_CHANGE_QUIET_PERIOD",
     "DAILY_TOKENS_SETTING",
@@ -133,6 +137,7 @@ __all__ = [
     "HashMismatch",
     "Precondition",
     "caused_by_steward",
+    "counts_as_change",
     "halts",
     "interrupted",
     "made_change",
@@ -242,6 +247,13 @@ RESULT_SUMMARY_FIELDS: Mapping[str, Mapping[str, str]] = {
         "complete": "bool",
     },
     "service_restart": {"ok": "bool", "running": "bool"},
+}
+
+#: Per tool, the ``enum`` fields of its result that must echo an argument of
+#: the call itself (field -> argument): a result naming another target than
+#: the one asked for is not believed, and the field is dropped.
+RESULT_ECHO_ARGS: Mapping[str, Mapping[str, str]] = {
+    "fs_cleanup": {"target": "target"},
 }
 
 _ENUM_RE = re.compile(r"^[a-z][a-z0-9_]{0,40}$")
@@ -442,15 +454,21 @@ def _with_outcomes(
     return out
 
 
-def summarize_result(tool: str, result: Any) -> dict[str, Any] | None:
+def summarize_result(
+    tool: str, result: Any, args: Mapping[str, Any] | None = None
+) -> dict[str, Any] | None:
     """The fields :data:`RESULT_SUMMARY_FIELDS` keeps of ``tool``'s ``result``, or ``None``.
 
-    A field that is missing or not of its kind is left out, never coerced.
+    A field that is missing or not of its kind is left out, never coerced. A
+    field :data:`RESULT_ECHO_ARGS` ties to an argument is kept only when it
+    equals that argument of the call (``args``); without ``args`` it is left
+    out.
     """
 
     fields = RESULT_SUMMARY_FIELDS.get(tool)
     if fields is None or not isinstance(result, Mapping):
         return None
+    echoes = RESULT_ECHO_ARGS.get(tool, {})
     out: dict[str, Any] = {}
     for name, kind in fields.items():
         value = result.get(name)
@@ -464,6 +482,8 @@ def summarize_result(tool: str, result: Any) -> dict[str, Any] | None:
         ):
             out[name] = value
         elif kind == "enum" and isinstance(value, str) and _ENUM_RE.fullmatch(value):
+            if name in echoes and (args is None or args.get(echoes[name]) != value):
+                continue
             out[name] = value
     return out or None
 
@@ -489,7 +509,7 @@ class _RecordingExecutor:
     ) -> dict[str, Any]:
         result = await self._inner.run_capability(tool, args, **kwargs)
         if classify(tool) != READ_ONLY:
-            summary = summarize_result(tool, result)
+            summary = summarize_result(tool, result, args)
             if summary is not None:
                 self._summaries.append((tool, args, summary))
         return result
@@ -537,6 +557,30 @@ def run_failed(run: StewardRun) -> bool:
 def made_change(run: StewardRun) -> bool:
     """Whether ``run`` changed something: an action the gate allowed that did not fail."""
 
+    return any(a.get("ok") is not False for a in run.actions)
+
+
+def counts_as_change(run: StewardRun) -> bool:
+    """Whether ``run`` changed, or may yet change, what it ran on (ADR-0071 rule 6).
+
+    * still ``running`` in ``act`` (any steward but triage, whose verdict
+      changes a ticket, not a machine), or with a change already recorded:
+      it may change the host at any moment, and its changes are put on its row
+      as they are made (``StewardStore.append_action``);
+    * ``failed`` — interrupted or not — with any change recorded, whatever its
+      outcome: an attempt cut short may have run;
+    * otherwise, an action the gate allowed that did not fail (``ok`` not
+      ``False``).
+
+    A ``skipped`` run never ran.
+    """
+
+    if run.status == "skipped":
+        return False
+    if run.status == "running":
+        return bool(run.actions) or (run.mode == "act" and run.steward_id != TRIAGE_STEWARD_ID)
+    if run.status == "failed":
+        return bool(run.actions)
     return any(a.get("ok") is not False for a in run.actions)
 
 
@@ -614,6 +658,12 @@ class StewardRunner:
         self._evidence: dict[str, EvidenceProvider] = {}
         #: Named preconditions (:meth:`register_precondition`).
         self._preconditions: dict[str, Precondition] = {}
+        #: Held across "check the hash a person was shown" and the write that
+        #: binds to it (a grant, ``act``), and across "void what is bound to
+        #: another hash" and the configuration write that moves the hash, so
+        #: no grant at the old hash can land between a void and its write and
+        #: come back to life when the configuration is reverted.
+        self._consent = asyncio.Lock()
 
     def now(self) -> datetime:
         """The runner's clock (injected in tests); what expiry and budgets are judged by."""
@@ -640,6 +690,12 @@ class StewardRunner:
             self._client_factory = client_factory
         if model is not None:
             self._model = model
+
+    @property
+    def executor(self) -> ToolExecutor | None:
+        """The executor :meth:`configure` set: what a run calls, and what asks a host if it is idle."""
+
+        return self._executor
 
     # -- evidence ------------------------------------------------------------
 
@@ -966,15 +1022,16 @@ class StewardRunner:
         spec = self.spec(steward_id)
         if mode not in MODES:
             raise ValueError(f"unknown steward mode {mode!r}; expected one of {', '.join(MODES)}")
-        bound = await self._reviewed(spec, effective_hash) if mode == "act" else None
-        if spec.id == TRIAGE_STEWARD_ID:
-            # Off clears resolve too, so a run already in flight cannot resolve
-            # at its verdict, and turning triage back on starts it in shadow.
-            await self.settings.set(_TRIAGE_RESOLVE, "1" if mode == "act" else "0")
-            await self.settings.set(_TRIAGE_ENABLED, "0" if mode == "off" else "1")
-        else:
-            # ``act`` is chosen for what the person was shown; it binds to that.
-            await self.store.set_mode(spec.id, mode, actor=actor, act_hash=bound)
+        async with self._consent:
+            bound = await self._reviewed(spec, effective_hash) if mode == "act" else None
+            if spec.id == TRIAGE_STEWARD_ID:
+                # Off clears resolve too, so a run already in flight cannot resolve
+                # at its verdict, and turning triage back on starts it in shadow.
+                await self.settings.set(_TRIAGE_RESOLVE, "1" if mode == "act" else "0")
+                await self.settings.set(_TRIAGE_ENABLED, "0" if mode == "off" else "1")
+            else:
+                # ``act`` is chosen for what the person was shown; it binds to that.
+                await self.store.set_mode(spec.id, mode, actor=actor, act_hash=bound)
         await self._record_mode_change(spec.id, mode, actor)
         return await self._mode_for(spec)
 
@@ -1029,18 +1086,21 @@ class StewardRunner:
         A change of the effective hash drops a steward in ``act`` to ``shadow``
         (in the same write as the parameters) and voids every authorization
         bound to another hash — first, so no attempt can be spent against what
-        the steward used to be (ADR-0072 rule 6). Writing the parameters it
+        the steward used to be (ADR-0072 rule 6). The void and the write hold
+        the lock a grant holds from its hash check to its insert, so no grant at
+        the old hash can land between them. Writing the parameters it
         already has changes nothing. Raises :class:`KeyError` for an unknown
         steward and :class:`ValueError` for parameters its spec does not take.
         """
 
         spec = self.spec(steward_id)
         clean = validate_params(spec, params)
-        before_hash = await self._config_hash(spec)
-        after_hash = await self._config_hash(spec, params=clean)
-        changed = before_hash != after_hash
-        voided = await self._void_others(spec.id, after_hash, actor) if changed else 0
-        before_mode = await self.store.set_params(spec.id, clean, actor=actor, demote=changed)
+        async with self._consent:
+            before_hash = await self._config_hash(spec)
+            after_hash = await self._config_hash(spec, params=clean)
+            changed = before_hash != after_hash
+            voided = await self._void_others(spec.id, after_hash, actor) if changed else 0
+            before_mode = await self.store.set_params(spec.id, clean, actor=actor, demote=changed)
         if changed:
             await self._record_event(
                 spec.id,
@@ -1080,7 +1140,8 @@ class StewardRunner:
         What may start a steward is part of what a person consented to, so this
         is :meth:`set_params` for triggers: a change of the effective hash voids
         every authorization bound to another hash first, then writes and drops
-        a steward in ``act`` to ``shadow`` in one transaction (ADR-0072 rule 6);
+        a steward in ``act`` to ``shadow`` in one transaction (ADR-0072 rule 6),
+        all under the lock a grant holds from its hash check to its insert;
         reverting later revives neither. A configuration whose effective hash
         is the live one changes nothing and writes nothing.
 
@@ -1095,10 +1156,16 @@ class StewardRunner:
         if not allowed_triggers(spec).editable:
             raise ValueError(f"steward {spec.id}'s triggers are fixed by its spec")
         clean = validate_triggers(spec, triggers)
-        if effective_hash is not None:
-            await self._reviewed(spec, effective_hash)
-        before_hash = await self._config_hash(spec)
-        after_hash = await self._config_hash(spec, triggers=clean)
+        async with self._consent:
+            if effective_hash is not None:
+                await self._reviewed(spec, effective_hash)
+            before_hash = await self._config_hash(spec)
+            after_hash = await self._config_hash(spec, triggers=clean)
+            if before_hash != after_hash:
+                voided = await self._void_others(spec.id, after_hash, actor)
+                before_mode = await self.store.set_config(
+                    spec.id, triggers=clean, actor=actor, demote=True
+                )
         if before_hash == after_hash:
             return {
                 "triggers": await self.trigger_config(spec),
@@ -1106,8 +1173,6 @@ class StewardRunner:
                 "mode": await self._mode_for(spec),
                 "voided": 0,
             }
-        voided = await self._void_others(spec.id, after_hash, actor)
-        before_mode = await self.store.set_config(spec.id, triggers=clean, actor=actor, demote=True)
         await self._record_event(
             spec.id,
             f"steward {spec.id}: triggers changed by {actor}",
@@ -1200,18 +1265,22 @@ class StewardRunner:
         """
 
         spec = self.spec(steward_id)
-        reviewed = await self._reviewed(spec, effective_hash)
-        return await self._authorizations().grant(
-            spec=spec,
-            effective_hash=reviewed,
-            tool=tool,
-            scope=scope,
-            max_attempts_per_day=max_attempts_per_day,
-            expires_at=expires_at,
-            granted_by=actor,
-            note=note,
-            now=self._now(),
-        )
+        store = self._authorizations()
+        async with self._consent:
+            # The hash is checked and the grant written with no configuration
+            # write in between (``_consent``).
+            reviewed = await self._reviewed(spec, effective_hash)
+            return await store.grant(
+                spec=spec,
+                effective_hash=reviewed,
+                tool=tool,
+                scope=scope,
+                max_attempts_per_day=max_attempts_per_day,
+                expires_at=expires_at,
+                granted_by=actor,
+                note=note,
+                now=self._now(),
+            )
 
     # -- what the API shows --------------------------------------------------
 
@@ -1416,34 +1485,51 @@ class StewardRunner:
                 run.id, status=status, verdict=verdict, usage=meter.to_dict(), error=error
             )
 
-    async def quiet_period_refusal(self, host_id: str) -> str | None:
+    async def quiet_period_refusal(
+        self, host_id: str | None, *, server_changes: bool = False
+    ) -> str | None:
         """Why nothing may start on ``host_id`` now because a steward changed it, or ``None``.
 
         ADR-0071 rule 6: an event on a machine a steward changed within
-        :data:`STEWARD_CHANGE_QUIET_PERIOD` starts nothing, whatever raised it.
-        Shared by every event that starts a steward, so they refuse alike.
+        :data:`STEWARD_CHANGE_QUIET_PERIOD` — or is changing now, in a run
+        still in flight (:func:`counts_as_change`) — starts nothing, whatever
+        raised it. Shared by every event that starts a steward, so they refuse
+        alike. With ``server_changes`` (an alert-started run) a server-only
+        run's change counts on every machine, and on none (``host_id``
+        ``None``): a change to the server's own records, such as a dropped
+        suppression rule, can raise an alert on any machine.
         """
 
-        changed_by = await self._recent_steward_change(host_id)
-        if changed_by is None:
-            return None
         hours = int(STEWARD_CHANGE_QUIET_PERIOD.total_seconds() // 3600)
-        return (
-            f"steward {changed_by.steward_id} (run {changed_by.id}) changed this machine "
-            f"within the last {hours} hours; a steward's effect never starts another steward"
-        )
+        if host_id is not None:
+            changed_by = await self._recent_steward_change(host_id)
+            if changed_by is not None:
+                return (
+                    f"steward {changed_by.steward_id} (run {changed_by.id}) changed this "
+                    f"machine within the last {hours} hours or is changing it now; a "
+                    "steward's effect never starts another steward"
+                )
+        if server_changes:
+            changed_by = await self._recent_steward_change(None)
+            if changed_by is not None:
+                return (
+                    f"steward {changed_by.steward_id} (run {changed_by.id}) changed the "
+                    f"server within the last {hours} hours or is changing it now, which can "
+                    "raise an alert on any machine; a steward's effect never starts another "
+                    "steward"
+                )
+        return None
 
-    async def _recent_steward_change(self, host_id: str) -> StewardRun | None:
+    async def _recent_steward_change(self, host_id: str | None) -> StewardRun | None:
         """The newest run that changed ``host_id`` within the quiet period, or ``None``.
 
-        A change is an action the gate allowed that did not fail (``ok`` not
-        ``False``): one whose outcome was never paired, because the run was
-        interrupted, may have run, so it counts.
+        ``host_id`` ``None`` reads the server-only runs. Which runs count is
+        :func:`counts_as_change`.
         """
 
         since = self._now() - STEWARD_CHANGE_QUIET_PERIOD
         for run in await self.store.runs_on_host_since(host_id, since.isoformat()):
-            if any(a.get("ok") is not False for a in run.actions):
+            if counts_as_change(run):
                 return run
         return None
 
@@ -1465,8 +1551,14 @@ class StewardRunner:
         on_admitted: Callable[[StewardRun], None] | None = None,
         initiated_by: str | None = None,
         shadow_only: bool = False,
+        expected_hash: str | None = None,
     ) -> StewardRun | None:
         """Run ``spec`` once on ``host_id`` through the steward gate.
+
+        ``expected_hash`` is the effective hash a person was shown when they
+        started this run (a command run); a run whose effective hash at start
+        differs is refused before anything is recorded, with
+        :class:`HashMismatch`, so it never acts on what they did not see.
 
         ``shadow_only`` runs it in ``shadow`` whatever mode is stored, as a
         preview does — recorded so, no change can start in it and it spends no
@@ -1544,6 +1636,11 @@ class StewardRunner:
         # The configuration before the mode: if it changes in between, the mode
         # read sees the newer hash and ``still_acting`` catches the difference.
         params, _triggers, run_hash = await self._config(spec)
+        if expected_hash is not None and expected_hash != run_hash:
+            raise HashMismatch(
+                f"steward {spec.id} changed since it was shown (effective hash "
+                f"{expected_hash[:12]} is now {run_hash[:12]}); review it again"
+            )
         mode = await self._mode_for(spec)
         if mode == "off":
             return None
@@ -1607,6 +1704,10 @@ class StewardRunner:
                 now=self._now(),
             )
 
+        async def record_action(entry: dict[str, Any]) -> None:
+            # On the row before the call is forwarded (ADR-0071 rule 6).
+            await self.store.append_action(run.id, _redacted([entry])[0])
+
         recording = _RecordingExecutor(executor)
         try:
             if client is None:
@@ -1627,6 +1728,7 @@ class StewardRunner:
                 session,
                 authorizer=authorizer if authorizer is not None else consume,
                 still_acting=still_acting,
+                on_action=record_action,
             )
             async for event in drive_events(
                 session,

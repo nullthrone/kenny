@@ -13,6 +13,7 @@ from ...tool_classes import READ_ONLY, classify
 from ...toolloop import COPILOT_STEWARD_TOOLS, SERVER_TOOLS
 from ...tools import CAPABILITY_TOOLS
 from ...ticket_rules import KNOWN_SECTIONS
+from ..policy import host_bound
 from ..spec import (
     TICKET_CREATED,
     SpecError,
@@ -125,6 +126,20 @@ def check_dispatchable(spec: StewardSpec) -> StewardSpec:
         if on_host:
             raise SpecError(
                 f"steward {spec.id}: runs on no host, yet names host tool(s) {', '.join(on_host)}"
+            )
+    # A command or an alert starts a run on a machine only among the steward's
+    # ``hosts``; without that parameter there is no list to check the machine
+    # against, so a steward that works on a machine would run wherever a person
+    # pointed it or an alert came from.
+    if host_bound(spec) and "hosts" not in spec.params:
+        allowed = allowed_triggers(spec)
+        starters = sorted(e for e in allowed.events if e.startswith("alert:"))
+        if allowed.command:
+            starters.insert(0, "command")
+        if starters:
+            raise SpecError(
+                f"steward {spec.id}: names host tools and may be started by "
+                f"{', '.join(starters)}, yet takes no hosts parameter"
             )
     return spec
 

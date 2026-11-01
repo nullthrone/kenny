@@ -166,7 +166,10 @@ def test_a_malformed_request_is_a_400(tmp_path, body: Any) -> None:
     with TestClient(app) as c:
         _login(c)
         assert c.put(BASE, json=body, headers=BROWSER).status_code == 400
-        assert c.put(BASE, content=b"{", headers=BROWSER).status_code == 400
+        malformed = {**BROWSER, "Content-Type": "application/json"}
+        assert c.put(BASE, content=b"{", headers=malformed).status_code == 400
+        # Not declared JSON at all: refused before it is read.
+        assert c.put(BASE, content=b"{", headers=BROWSER).status_code == 415
         assert _stored(c, app) is None
 
 

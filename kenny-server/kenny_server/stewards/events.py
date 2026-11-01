@@ -15,10 +15,18 @@ event; the spec's baseline decides nothing here.
 **Per steward, host and event, in this order.** The global switch, the AI switch
 and the steward's mode; the host (a steward that takes ``hosts`` runs only on a
 host it names, one that names none runs on none; online, an OS that serves its
-tools); one run of the triple at a time; the quiet period after a steward's
-change (ADR-0071 rule 6: recorded as a ``skipped`` run, as on a new ticket); the
-event's cooldown; the spec's preconditions and the idle check (a ``skipped`` run
-with the reason); and the window.
+tools; a steward naming host tools without a ``hosts`` parameter runs nowhere);
+one run of a steward on a host at a time, whatever event started it; the quiet
+period after a steward's change (ADR-0071 rule 6: recorded as a ``skipped`` run,
+as on a new ticket); the event's cooldown; the spec's preconditions and the idle
+check (a ``skipped`` run with the reason); and the window.
+
+**The quiet period** is asked of the machine the alert is about, whichever
+machine the run itself is frozen to (none, for a server-only steward). It counts
+a steward run that changed that machine within the period or is still in flight
+in ``act`` on it, and any server-only run that changed something within the
+period: a change to the server's own records can raise an alert on any machine
+(:meth:`StewardRunner.quiet_period_refusal`).
 
 **The window bounds the work (ADR-0073 rule 3).** A steward with a ``window``
 parameter acts only inside an open occurrence of it (``act_until`` is its end);
@@ -46,6 +54,7 @@ from typing import Any
 
 from ..notify import Notification
 from .runner import BREAKER_THRESHOLD, StewardRunner, interrupted, stops_canary
+from .policy import host_bound
 from .spec import (
     ALERT_EVENT_TYPES,
     StewardSpec,
@@ -129,8 +138,9 @@ class EventTrigger:
         self._breaker_threshold = max(1, int(breaker_threshold))
         self._tasks: set[asyncio.Task[None]] = set()
         self._loop: asyncio.AbstractEventLoop | None = None
-        #: ``(steward id, host id, event)`` of every run from its checks to its end.
-        self._in_flight: set[tuple[str, str | None, str]] = set()
+        #: ``(steward id, host id)`` of every run from its checks to its end: one
+        #: steward never runs twice at once on a host, whichever events start it.
+        self._in_flight: set[tuple[str, str | None]] = set()
         accepted = inspect.signature(runner.run_generic).parameters
         self._takes_any = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in accepted.values())
         self._accepted = frozenset(accepted)
@@ -267,16 +277,25 @@ class EventTrigger:
             if unreachable is not None:
                 logger.debug("steward %s: no run on %s for %s: %s", spec.id, host, event, unreachable)
                 return None
+        elif host_bound(spec):
+            # A spec like this is refused at load (``catalog.check_dispatchable``);
+            # without ``hosts`` it would have no machine it may be run on.
+            logger.warning(
+                "steward %s names host tools but takes no hosts parameter; no event run", spec.id
+            )
+            return None
         else:
             host = None
 
-        key = (spec.id, host, event)
+        key = (spec.id, host)
         if key in self._in_flight:
-            logger.debug("steward %s: %s on %s is already running", spec.id, event, host)
+            logger.debug("steward %s on %s is already running; %s starts nothing", spec.id, host, event)
             return None
         self._in_flight.add(key)
         try:
-            return await self._checked_run(spec, host, event, facts, cooldown, mode, params)
+            return await self._checked_run(
+                spec, host, event, facts, cooldown, mode, params, origin=agent_id
+            )
         finally:
             self._in_flight.discard(key)
 
@@ -289,15 +308,17 @@ class EventTrigger:
         cooldown: timedelta,
         mode: str,
         params: Mapping[str, Any],
+        *,
+        origin: str | None,
     ) -> StewardRun | None:
         runner = self.runner
         trigger = f"{EVENT_TRIGGER_PREFIX}{event}"
-        if host is not None:
-            reason = await runner.quiet_period_refusal(host)
-            if reason is not None:
-                logger.info("steward %s: no run for %s on %s: %s", spec.id, event, host, reason)
-                await self._record_skip(spec, mode, trigger, host, f"{event}: {reason}")
-                return None
+        # The machine the alert is about, and every server-only change.
+        reason = await runner.quiet_period_refusal(origin, server_changes=True)
+        if reason is not None:
+            logger.info("steward %s: no run for %s on %s: %s", spec.id, event, host, reason)
+            await self._record_skip(spec, mode, trigger, host, f"{event}: {reason}")
+            return None
         last = await runner.store.latest_run_started(spec.id, host, trigger)
         if last is not None and self._now() - last < cooldown:
             logger.debug("steward %s: %s on %s is cooling down", spec.id, event, host)
