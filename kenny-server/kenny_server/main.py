@@ -967,7 +967,10 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         await discord_identities.connect()
         await steward_store.connect()
         await steward_authorizations.connect()
-        # Nothing runs yet, so a run still open belongs to a dead process.
+        # Nothing runs yet, so a run still open belongs to a dead process. The
+        # built stewards (ADR-0074) are loaded into ``steward_runner.catalog`` —
+        # the object the scheduler and the event trigger hold — before anything
+        # is unbound, so a restart keeps what was granted to them.
         await steward_runner.startup()
         steward_events.bind()  # alerts raised on any loop start their stewards on this one
         # Telemetry retention (ADR-0051) is re-read here, after the overrides

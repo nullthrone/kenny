@@ -77,12 +77,26 @@ event-started ones; a preview or a command run is a person's, and is neutral.
 **Preconditions** (:meth:`StewardRunner.register_precondition`): named
 server-side checks a spec declares; :meth:`StewardRunner.precondition_refusal`
 says why a run must not start on a host, before any model is called.
+
+**Built stewards** (ADR-0074): :attr:`StewardRunner.catalog` is a
+:class:`~kenny_server.stewards.catalog.StewardCatalog`, the shipped specs plus
+the ones a superuser built, which :meth:`StewardRunner.startup` loads from the
+store before it unbinds anything, so a built steward keeps what was granted to
+it across a restart. :meth:`StewardRunner.create_built`,
+:meth:`StewardRunner.update_built` and :meth:`StewardRunner.delete_built` change
+it in place under the consent lock: every save is a new version and so a new
+hash (``shadow``, authorizations void for good), and a delete unbinds the id
+exactly as a release that removed a steward does. A built steward that no
+longer validates when it is loaded (a release withdrew a tool it used) is kept
+and shown, never runnable, and unbound the same way; it never stops start-up.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
+import json
 import logging
 import re
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
@@ -96,7 +110,8 @@ from ..toolloop import ToolExecutor, UsageMeter, drive_events
 from ..tools import CAPABILITY_TOOLS, redact_audit_args
 from ..webfilter import DAY_KEYS, format_hhmm, parse_recurrence
 from .authorizations import Authorization, AuthorizationStore
-from .catalog import CATALOG, check_dispatchable
+from .builder import BuilderError, FieldError, build_from_data, spec_to_data, valid_source
+from .catalog import CATALOG, StewardCatalog, check_dispatchable
 from .policy import HOST_ARG, StewardPolicy, StewardSession, Authorizer, host_bound
 from .spec import (
     MODES,
@@ -113,7 +128,7 @@ from .spec import (
     validate_triggers,
     with_evidence,
 )
-from .store import INTERRUPTED_ERROR, StewardRun, StewardStore
+from .store import INTERRUPTED_ERROR, BuiltSpecRow, SpecConflict, StewardRun, StewardStore
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from ..triage import TriageService
@@ -362,6 +377,25 @@ def validate_params(spec: StewardSpec, params: Any) -> dict[str, Any]:
                 )
         out[name] = cleaned
     return out
+
+
+def _live(catalog: Mapping[str, StewardSpec]) -> StewardCatalog:
+    """``catalog`` as the live catalog the runner and every consumer hold."""
+
+    return catalog if isinstance(catalog, StewardCatalog) else StewardCatalog(catalog)
+
+
+def _invalid_hash(row: BuiltSpecRow) -> str:
+    """What a person fixing a built steward that does not validate names, as ``effective_hash``.
+
+    Nothing binds to it (the steward is not runnable); it only makes a save of
+    a fix refuse a definition that changed since it was shown, as for any other.
+    """
+
+    canonical = json.dumps(
+        {"id": row.id, "version": row.version, "spec": row.spec}, sort_keys=True, default=str
+    )
+    return "invalid:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _host_os(executor: Any, host_id: str | None) -> str | None:
@@ -627,7 +661,9 @@ class StewardRunner:
     ``ai_access`` is the :class:`~kenny_server.ai.AiAccess` the rest of the
     server asks whether a model may be called; ``triage`` is the service the
     ``triage`` steward runs through (``None`` while no assistant could be built).
-    ``catalog`` defaults to the shipped one; tests pass their own.
+    ``catalog`` defaults to the shipped one; tests pass their own. Either is
+    held as a :class:`~kenny_server.stewards.catalog.StewardCatalog` (one that
+    is not is wrapped), the object every consumer of :attr:`catalog` keeps.
     """
 
     def __init__(
@@ -647,7 +683,7 @@ class StewardRunner:
         self.ai_access = ai_access
         self._triage: TriageService | None = None
         self.triage = triage
-        self.catalog = catalog
+        self._catalog = _live(catalog)
         #: Where a mode change is recorded with who made it.
         self.event_store = event_store
         self._now = now or (lambda: datetime.now(timezone.utc))
@@ -685,6 +721,16 @@ class StewardRunner:
         #: no grant at the old hash can land between a void and its write and
         #: come back to life when the configuration is reverted.
         self._consent = asyncio.Lock()
+
+    @property
+    def catalog(self) -> StewardCatalog:
+        """The runnable stewards: shipped and built, one object for every consumer."""
+
+        return self._catalog
+
+    @catalog.setter
+    def catalog(self, catalog: Mapping[str, StewardSpec]) -> None:
+        self._catalog = _live(catalog)
 
     def now(self) -> datetime:
         """The runner's clock (injected in tests); what expiry and budgets are judged by."""
@@ -839,7 +885,8 @@ class StewardRunner:
     async def startup(self) -> None:
         """Account for runs a dead process left open; drop runs past retention.
 
-        Also unbinds, before anything runs, what was granted to a steward that is
+        Loads the built stewards first (:meth:`load_built`). Also unbinds,
+        before anything runs, what was granted to a steward that is
         no longer what it was: an authorization bound to another hash is voided
         and a stale ``act`` dropped; for a steward no longer in the catalog at
         all, every live authorization is voided and a stored ``act`` dropped,
@@ -847,6 +894,9 @@ class StewardRunner:
         neither (ADR-0072 rule 6).
         """
 
+        # The built stewards first: one missing from the catalog below would be
+        # unbound as if a release had removed it.
+        await self.load_built()
         interrupted = await self.store.fail_interrupted()
         if interrupted:
             logger.warning("%d steward run(s) were interrupted by a restart", interrupted)
@@ -862,28 +912,33 @@ class StewardRunner:
             await self._mode_for(spec)
         await self._unbind_removed()
 
-    async def _unbind_removed(self) -> None:
-        """Void the grants of, and drop ``act`` for, every steward the catalog lacks."""
+    async def _unbind_removed(self, actor: str = _SYSTEM_ACTOR) -> dict[str, int]:
+        """Void the grants of, and drop ``act`` for, every steward the catalog lacks.
+
+        Returns how many authorizations were voided, per steward id.
+        """
 
         present = sorted(self.catalog)
+        voided: dict[str, int] = {}
         if self.authorizations is not None:
-            voided = await self.authorizations.void_absent_stewards(present, _SYSTEM_ACTOR)
+            voided = await self.authorizations.void_absent_stewards(present, actor)
             for steward_id, count in sorted(voided.items()):
                 await self._record_event(
                     steward_id,
-                    f"steward {steward_id}: {count} authorization(s) voided by {_SYSTEM_ACTOR}: "
+                    f"steward {steward_id}: {count} authorization(s) voided by {actor}: "
                     "the steward is no longer in the catalog",
-                    {"voided": count, "actor": _SYSTEM_ACTOR},
+                    {"voided": count, "actor": actor},
                     level="warning",
                 )
-        for steward_id in await self.store.demote_absent(present, actor=_SYSTEM_ACTOR):
+        for steward_id in await self.store.demote_absent(present, actor=actor):
             await self._record_event(
                 steward_id,
-                f"steward {steward_id}: mode set to shadow by {_SYSTEM_ACTOR}: "
+                f"steward {steward_id}: mode set to shadow by {actor}: "
                 "the steward is no longer in the catalog",
-                {"mode": "shadow", "actor": _SYSTEM_ACTOR},
+                {"mode": "shadow", "actor": actor},
                 level="warning",
             )
+        return voided
 
     # -- modes ---------------------------------------------------------------
 
@@ -1306,7 +1361,13 @@ class StewardRunner:
     # -- what the API shows --------------------------------------------------
 
     async def overview(self) -> list[dict[str, Any]]:
-        """Every catalog steward: its public spec, its mode and its latest run."""
+        """Every catalog steward: its public spec, its mode and its latest run.
+
+        Shipped stewards carry ``builtin: false``; built ones ``builtin: true``
+        with their ``source`` and who saved them. A built steward that did not
+        validate when it was loaded follows, ``invalid: true`` with its
+        ``errors`` (:meth:`_invalid_entry`).
+        """
 
         out: list[dict[str, Any]] = []
         for spec in self.catalog.values():
@@ -1339,9 +1400,253 @@ class StewardRunner:
                         for tool in sorted(spec.tools)
                     },
                     "latest_run": latest[0].to_public() if latest else None,
+                    "builtin": self.catalog.is_built(spec.id),
+                    "invalid": False,
+                    **(self.catalog.built_meta(spec.id) or {}),
                 }
             )
+        for steward_id, entry in self.catalog.invalid().items():
+            out.append(await self._invalid_entry(steward_id, entry))
         return out
+
+    # -- built stewards (ADR-0074) -----------------------------------------------
+
+    async def load_built(self) -> None:
+        """Put every stored built steward into the catalog, or keep it as invalid.
+
+        One that no longer validates (a release withdrew a tool, a precondition
+        it names is gone) is not runnable: it is kept with its errors, shown,
+        and — being absent from the catalog — unbound by :meth:`startup` like a
+        removed steward. Never raises for a stored steward; start-up goes on.
+        """
+
+        for row in await self.store.list_built_specs():
+            try:
+                spec = build_from_data(
+                    row.spec, self, version=row.version, steward_id=row.id
+                ) if row.spec is not None else None
+                if spec is None:
+                    raise BuilderError([{"field": "spec", "error": "the stored definition cannot be read"}])
+                self.catalog.put_built(spec, row.meta())
+            except BuilderError as exc:
+                self._keep_invalid(row, exc.errors)
+                await self._record_event(
+                    row.id,
+                    f"steward {row.id}: its saved definition does not validate on this server; "
+                    "it will not run until a person fixes it",
+                    {"errors": exc.errors, "version": row.version},
+                    level="warning",
+                )
+            except Exception as exc:  # noqa: BLE001 - one stored steward must not stop start-up
+                logger.exception("built steward %s could not be loaded", row.id)
+                self._keep_invalid(row, [{"field": "spec", "error": f"could not be loaded: {type(exc).__name__}"}])
+
+    def _keep_invalid(self, row: BuiltSpecRow, errors: list[FieldError]) -> None:
+        self.catalog.set_invalid(
+            row.id,
+            {"row": row, "errors": [dict(e) for e in errors], "hash": _invalid_hash(row)},
+        )
+
+    async def _invalid_entry(self, steward_id: str, entry: Mapping[str, Any]) -> dict[str, Any]:
+        """An invalid built steward as the overview shows it: enough to find and fix it."""
+
+        row: BuiltSpecRow = entry["row"]
+        data = row.spec or {}
+        latest = await self.store.list_runs(steward_id=steward_id, limit=1)
+        title = data.get("title")
+        description = data.get("description")
+        return {
+            "id": steward_id,
+            "title": title if isinstance(title, str) and title else steward_id,
+            "description": description if isinstance(description, str) else "",
+            "builtin": True,
+            "invalid": True,
+            "errors": list(entry["errors"]),
+            # Not runnable: whatever was stored, it is off until a person fixes it.
+            "mode": "off",
+            # What a save of a fix names, as for any built steward (nothing binds to it).
+            "effective_hash": entry["hash"],
+            "latest_run": latest[0].to_public() if latest else None,
+            **row.meta(),
+        }
+
+    async def _shown_hash(self, steward_id: str) -> str | None:
+        """The hash a person editing built ``steward_id`` was shown: an invalid one's, or the live one."""
+
+        invalid = self.catalog.invalid().get(steward_id)
+        if invalid is not None:
+            return str(invalid["hash"])
+        return await self.live_hash(steward_id)
+
+    async def built_data(self, steward_id: str) -> dict[str, Any]:
+        """A built steward as the editor loads it; :class:`KeyError` for any other id.
+
+        ``{"id", "data", "version", "source", "created_at", "created_by",
+        "updated_at", "updated_by", "effective_hash", "invalid", "errors"}``.
+        """
+
+        row = await self.store.get_built_spec(steward_id)
+        if row is None:
+            raise KeyError(steward_id)
+        invalid = self.catalog.invalid().get(steward_id)
+        errors: list[FieldError] = list(invalid["errors"]) if invalid is not None else []
+        shown = await self._shown_hash(steward_id)
+        return {
+            "id": steward_id,
+            "data": row.spec,
+            **row.meta(),
+            "effective_hash": shown,
+            "invalid": invalid is not None,
+            "errors": errors,
+        }
+
+    async def create_built(
+        self, data: Any, *, actor: str, source: str = "blank"
+    ) -> dict[str, Any]:
+        """Save a new built steward from its data form; returns what it now is.
+
+        ``{"steward_id", "version", "source", "spec_hash", "effective_hash",
+        "mode"}``. Raises :class:`~kenny_server.stewards.builder.BuilderError`
+        with every field error, :class:`~kenny_server.stewards.store.SpecConflict`
+        when the id is taken, and :class:`ValueError` for an unknown ``source``.
+
+        A steward deleted earlier under the same id is not revived: the new one
+        takes the next version (so a hash it never had), every setting left for
+        the id is dropped in the same write, and anything still bound to the id
+        is voided. It starts in ``shadow``.
+        """
+
+        if not valid_source(source):
+            raise ValueError(f"unknown source {source!r}")
+        steward_id = data.get("id") if isinstance(data, Mapping) else None
+        async with self._consent:
+            if isinstance(steward_id, str) and (
+                steward_id in self.catalog or steward_id in self.catalog.invalid()
+            ):
+                raise SpecConflict(f"a steward {steward_id} already exists")
+            previous = (
+                await self.store.get_built_spec(steward_id, include_deleted=True)
+                if isinstance(steward_id, str)
+                else None
+            )
+            if previous is not None and previous.deleted_at is None:
+                raise SpecConflict(f"a steward {steward_id} already exists")
+            version = previous.version + 1 if previous is not None else 1
+            spec = build_from_data(data, self, version=version)
+            row = await self.store.create_built_spec(
+                spec.id, spec_to_data(spec), version=version, source=source, actor=actor
+            )
+            # The settings row went with the write above: this is the baseline.
+            live = await self._config_hash(spec)
+            # Nothing granted to an earlier steward of this id may match it.
+            voided = await self._void_others(spec.id, live, actor)
+            self.catalog.put_built(spec, row.meta())
+        await self._record_event(
+            spec.id,
+            f"steward {spec.id}: created by {actor} ({source}), version {version}",
+            {"actor": actor, "source": source, "version": version, "spec_hash": spec.spec_hash},
+        )
+        return {
+            "steward_id": spec.id,
+            "version": version,
+            "source": source,
+            "spec_hash": spec.spec_hash,
+            "effective_hash": await self.live_hash(spec.id),
+            "mode": await self._mode_for(spec),
+            "voided": voided,
+        }
+
+    async def update_built(
+        self, steward_id: str, data: Any, *, actor: str, effective_hash: str | None
+    ) -> dict[str, Any]:
+        """Save a new version of a built steward; returns ``{steward_id, version, spec_hash, effective_hash, mode, voided}``.
+
+        ``effective_hash`` is the steward's hash as the person saving was shown
+        it (for one that did not validate at load, the hash the overview shows
+        for it): :class:`HashMismatch` when it is no longer that. Every save is
+        a new version, so a new spec hash: every authorization is voided for
+        good and a steward in ``act`` dropped to ``shadow`` — in the same write
+        as the new definition, under the consent lock, before the new spec is
+        in the catalog. Parameters the new spec no longer declares are dropped.
+        Raises :class:`KeyError` for an id that is not a built steward and
+        :class:`~kenny_server.stewards.builder.BuilderError` with every field
+        error.
+        """
+
+        async with self._consent:
+            row = await self.store.get_built_spec(steward_id)
+            if row is None:
+                raise KeyError(steward_id)
+            if not isinstance(effective_hash, str) or not effective_hash:
+                raise ValueError(
+                    "effective_hash is required: the hash of the steward as it was shown "
+                    "to the person saving it"
+                )
+            shown = await self._shown_hash(steward_id)
+            if effective_hash != shown:
+                raise HashMismatch(
+                    f"steward {steward_id} changed since it was shown (effective hash "
+                    f"{effective_hash[:12]} is now {str(shown)[:12]}); review it again"
+                )
+            version = row.version + 1
+            spec = build_from_data(data, self, version=version, steward_id=steward_id)
+            params = _declared(spec, await self.store.get_params(steward_id))
+            after = await self._config_hash(spec, params=params)
+            voided = await self._void_others(steward_id, after, actor)
+            before_mode = await self.store.update_built_spec(
+                steward_id,
+                spec_to_data(spec),
+                version=version,
+                expected_version=row.version,
+                actor=actor,
+                params=params,
+            )
+            saved = await self.store.get_built_spec(steward_id)
+            self.catalog.put_built(spec, (saved or row).meta())
+        await self._record_event(
+            steward_id,
+            f"steward {steward_id}: saved by {actor}, version {version}",
+            {"actor": actor, "version": version, "spec_hash": spec.spec_hash, "effective_hash": after},
+        )
+        if before_mode == "act":
+            await self._record_event(
+                steward_id,
+                f"steward {steward_id}: mode set to shadow by {actor}: its definition changed",
+                {"mode": "shadow", "actor": actor, "effective_hash": after},
+            )
+        return {
+            "steward_id": steward_id,
+            "version": version,
+            "spec_hash": spec.spec_hash,
+            "effective_hash": await self.live_hash(steward_id),
+            "mode": await self._mode_for(spec),
+            "voided": voided,
+        }
+
+    async def delete_built(self, steward_id: str, *, actor: str) -> dict[str, Any]:
+        """Delete a built steward: out of the catalog, its grants void, its ``act`` dropped.
+
+        Exactly what a release that removed a steward does at start-up
+        (:meth:`_unbind_removed`), at once and as ``actor``; then its stored
+        definition becomes a tombstone (its version kept) and its settings go.
+        A run in flight stops acting at its next change: the steward is no
+        longer what it started as. Returns ``{steward_id, deleted, voided}``;
+        :class:`KeyError` for an id that is not a built steward.
+        """
+
+        async with self._consent:
+            row = await self.store.get_built_spec(steward_id)
+            if row is None or steward_id in self.catalog.code:
+                raise KeyError(steward_id)
+            self.catalog.remove_built(steward_id)
+            voided = await self._unbind_removed(actor)
+            await self.store.delete_built_spec(steward_id, actor=actor)
+        await self._record_event(
+            steward_id,
+            f"steward {steward_id}: deleted by {actor}",
+            {"actor": actor, "version": row.version},
+        )
+        return {"steward_id": steward_id, "deleted": True, "voided": voided.get(steward_id, 0)}
 
     # -- admission -----------------------------------------------------------
 

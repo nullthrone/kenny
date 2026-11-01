@@ -17,6 +17,13 @@ under :func:`~kenny_server.store.write_lock`).
   its constraints were fed at start), what started it and the person who asked
   for it, if one did (``initiated_by``), the mode it ran in, how it ended and
   what it cost.
+* ``steward_specs`` — the stewards a superuser built in the dashboard (ADR-0074):
+  per id, its data form (``spec``, as ``stewards.builder.spec_to_data`` writes
+  it), the ``version`` the server gave its latest save, where it came from
+  (``source``: ``blank``, ``clone:<catalog id>`` or ``copilot``) and who created
+  and last saved it. Deleting one keeps the row as a tombstone (``deleted_at``)
+  so the version counter never restarts: a steward re-created under the same id
+  has a version, and so a spec hash, it never had before.
 
 Pure storage. Whether a run may start, and what it may do, is decided elsewhere.
 """
@@ -41,6 +48,8 @@ __all__ = [
     "INTERRUPTED_ERROR",
     "RUN_STATUSES",
     "USAGE_KEYS",
+    "BuiltSpecRow",
+    "SpecConflict",
     "StewardRun",
     "StewardStore",
 ]
@@ -104,7 +113,25 @@ CREATE TABLE IF NOT EXISTS steward_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_steward_runs_steward ON steward_runs (steward_id, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_steward_runs_started ON steward_runs (started_at DESC);
+
+CREATE TABLE IF NOT EXISTS steward_specs (
+    id         TEXT PRIMARY KEY,
+    spec       TEXT NOT NULL,
+    version    INTEGER NOT NULL CHECK (version >= 1),
+    source     TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    updated_by TEXT NOT NULL,
+    deleted_at TEXT,
+    deleted_by TEXT
+);
 """
+
+_SPEC_COLUMNS = (
+    "id, spec, version, source, created_at, created_by, updated_at, updated_by, "
+    "deleted_at, deleted_by"
+)
 
 _RUN_COLUMNS = (
     "id, steward_id, spec_hash, trigger, subject, host_id, mode, status, verdict, summary, "
@@ -207,6 +234,51 @@ class StewardRun:
         """The run as the dashboard and the API show it."""
 
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class BuiltSpecRow:
+    """One row of ``steward_specs``: a steward a superuser built (ADR-0074)."""
+
+    id: str
+    #: The data form as stored; ``None`` when the stored text is not a JSON
+    #: object (it then cannot be loaded, and is shown as invalid).
+    spec: dict[str, Any] | None
+    version: int
+    source: str
+    created_at: str
+    created_by: str
+    updated_at: str
+    updated_by: str
+    deleted_at: str | None = None
+    deleted_by: str | None = None
+
+    @classmethod
+    def _from_row(cls, row: aiosqlite.Row) -> BuiltSpecRow:
+        values = {key: row[key] for key in row.keys()}
+        try:
+            data = json.loads(values["spec"])
+        except ValueError:
+            data = None
+        values["spec"] = data if isinstance(data, dict) else None
+        values["version"] = int(values["version"])
+        return cls(**values)
+
+    def meta(self) -> dict[str, Any]:
+        """Who made it and when, as the API shows it beside the steward."""
+
+        return {
+            "source": self.source,
+            "version": self.version,
+            "created_at": self.created_at,
+            "created_by": self.created_by,
+            "updated_at": self.updated_at,
+            "updated_by": self.updated_by,
+        }
+
+
+class SpecConflict(ValueError):
+    """A built-steward write that lost to another: the id is taken, or the row moved on."""
 
 
 class StewardStore:
@@ -796,4 +868,170 @@ class StewardStore:
             )
             deleted = cur.rowcount or 0
             await self._conn.commit()
+        return deleted
+
+    # -- built stewards (ADR-0074) -------------------------------------------
+
+    async def list_built_specs(self, *, include_deleted: bool = False) -> list[BuiltSpecRow]:
+        """Every built steward, by id; deleted ones (tombstones) only when asked."""
+
+        where = "" if include_deleted else " WHERE deleted_at IS NULL"
+        async with self._conn.execute(
+            f"SELECT {_SPEC_COLUMNS} FROM steward_specs{where} ORDER BY id"
+        ) as cur:
+            rows = await cur.fetchall()
+        return [BuiltSpecRow._from_row(row) for row in rows]
+
+    async def get_built_spec(
+        self, steward_id: str, *, include_deleted: bool = False
+    ) -> BuiltSpecRow | None:
+        """The built steward ``steward_id``, or ``None``; a tombstone only when asked."""
+
+        async with self._conn.execute(
+            f"SELECT {_SPEC_COLUMNS} FROM steward_specs WHERE id = ?", (steward_id,)
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        found = BuiltSpecRow._from_row(row)
+        if found.deleted_at is not None and not include_deleted:
+            return None
+        return found
+
+    async def create_built_spec(
+        self,
+        steward_id: str,
+        spec: Mapping[str, Any],
+        *,
+        version: int,
+        source: str,
+        actor: str,
+    ) -> BuiltSpecRow:
+        """Store a new built steward at ``version``; :class:`SpecConflict` if the id is live.
+
+        Over a tombstone of the same id, ``version`` must be above the
+        tombstone's: the counter never restarts. In the same transaction every
+        setting stored for the id (a mode, parameters, triggers left behind) is
+        dropped, so a re-created steward starts from nothing it had before.
+        """
+
+        if isinstance(version, bool) or not isinstance(version, int) or version < 1:
+            raise ValueError("version must be a whole number of at least 1")
+        now = _now_iso()
+        text = json.dumps(dict(spec), sort_keys=True)
+        async with write_lock():
+            await _begin_immediate(self._conn)
+            try:
+                async with self._conn.execute(
+                    "SELECT version, deleted_at FROM steward_specs WHERE id = ?", (steward_id,)
+                ) as cur:
+                    row = await cur.fetchone()
+                if row is not None and row["deleted_at"] is None:
+                    raise SpecConflict(f"a steward {steward_id} already exists")
+                if row is not None and version <= int(row["version"]):
+                    raise SpecConflict(
+                        f"steward {steward_id} was version {row['version']} before it was deleted; "
+                        "a new one takes a later version"
+                    )
+                await self._conn.execute(
+                    f"INSERT INTO steward_specs ({_SPEC_COLUMNS}) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL) "
+                    "ON CONFLICT(id) DO UPDATE SET spec=excluded.spec, version=excluded.version, "
+                    "source=excluded.source, created_at=excluded.created_at, "
+                    "created_by=excluded.created_by, updated_at=excluded.updated_at, "
+                    "updated_by=excluded.updated_by, deleted_at=NULL, deleted_by=NULL",
+                    (steward_id, text, version, source, now, actor, now, actor),
+                )
+                await self._conn.execute(
+                    "DELETE FROM steward_settings WHERE steward_id = ?", (steward_id,)
+                )
+                await self._conn.commit()
+            except BaseException:
+                await self._conn.rollback()
+                raise
+        created = await self.get_built_spec(steward_id)
+        if created is None:  # pragma: no cover - insert just succeeded
+            raise RuntimeError(f"built steward {steward_id} vanished after insert")
+        return created
+
+    async def update_built_spec(
+        self,
+        steward_id: str,
+        spec: Mapping[str, Any],
+        *,
+        version: int,
+        expected_version: int,
+        actor: str,
+        params: Mapping[str, Any] | None = None,
+    ) -> str | None:
+        """Save a new ``version`` of a built steward; returns the mode stored before.
+
+        Refused with :class:`SpecConflict` unless the live row is still at
+        ``expected_version``. In the same transaction a steward in ``act`` is
+        dropped to ``shadow`` (its binding cleared), so nothing sees the new
+        spec while still in ``act``; ``params``, when given, replaces the
+        stored parameters (the caller passes the ones the new spec still
+        declares).
+        """
+
+        if version <= expected_version:
+            raise ValueError("a save takes a later version")
+        text = json.dumps(dict(spec), sort_keys=True)
+        async with write_lock():
+            await _begin_immediate(self._conn)
+            try:
+                cur = await self._conn.execute(
+                    "UPDATE steward_specs SET spec = ?, version = ?, updated_at = ?, updated_by = ? "
+                    "WHERE id = ? AND deleted_at IS NULL AND version = ?",
+                    (text, version, _now_iso(), actor, steward_id, expected_version),
+                )
+                if not (cur.rowcount or 0):
+                    raise SpecConflict(f"steward {steward_id} changed or was deleted since it was read")
+                async with self._conn.execute(
+                    "SELECT mode FROM steward_settings WHERE steward_id = ?", (steward_id,)
+                ) as cur:
+                    row = await cur.fetchone()
+                before = None if row is None or not row["mode"] else str(row["mode"])
+                if before == "act":
+                    await self._conn.execute(
+                        "UPDATE steward_settings SET mode = 'shadow', act_hash = NULL, "
+                        "updated_at = ?, updated_by = ? WHERE steward_id = ?",
+                        (_now_iso(), actor, steward_id),
+                    )
+                if params is not None and row is not None:
+                    await self._conn.execute(
+                        "UPDATE steward_settings SET params = ? WHERE steward_id = ?",
+                        (json.dumps(dict(params), sort_keys=True, default=str), steward_id),
+                    )
+                await self._conn.commit()
+            except BaseException:
+                await self._conn.rollback()
+                raise
+        return before
+
+    async def delete_built_spec(self, steward_id: str, *, actor: str) -> bool:
+        """Delete a built steward: keep its row as a tombstone, drop its settings.
+
+        Returns whether a live row was deleted. The tombstone keeps the version
+        (:meth:`create_built_spec`); the settings row (mode, parameters,
+        triggers) goes in the same transaction.
+        """
+
+        async with write_lock():
+            await _begin_immediate(self._conn)
+            try:
+                cur = await self._conn.execute(
+                    "UPDATE steward_specs SET deleted_at = ?, deleted_by = ? "
+                    "WHERE id = ? AND deleted_at IS NULL",
+                    (_now_iso(), actor, steward_id),
+                )
+                deleted = bool(cur.rowcount or 0)
+                if deleted:
+                    await self._conn.execute(
+                        "DELETE FROM steward_settings WHERE steward_id = ?", (steward_id,)
+                    )
+                await self._conn.commit()
+            except BaseException:
+                await self._conn.rollback()
+                raise
         return deleted

@@ -57,6 +57,14 @@ from ..tools import CallLog, ScreenshotStore, build_health, health_for, supports
 from ..tunnel import AgentTunnel, ToolError
 from ..copilot_stewards import RunResultRefused
 from ..stewards.authorizations import BUDGET_WINDOW, AuthorizationError
+from ..stewards.builder import (
+    BUILT_ID_RE,
+    BuilderError,
+    build_from_data,
+    builder_catalog,
+    clone_data,
+)
+from ..stewards.store import SpecConflict
 from ..stewards import commands as steward_commands
 from ..stewards.policy import run_target_problem
 from ..stewards.runner import HashMismatch, PreviewRefused
@@ -2048,6 +2056,179 @@ def build_api_routes(
             return JSONResponse({"error": str(exc)}, status_code=400)
         return JSONResponse({"steward_id": steward_id, **result})
 
+    # -- built stewards (ADR-0074) -----------------------------------------
+    # What a built steward may be made of, and one built steward's data, are an
+    # operator's to read. Creating, saving and deleting one is consent like a
+    # mode or a grant: a superuser at a browser, on the dashboard's own origin,
+    # sending JSON (``_consent_refusal``). A save names the effective hash the
+    # person was shown (409 when the steward changed since); a 400 carries the
+    # field errors the editor shows beside each field.
+
+    def _builder_refused(exc: BuilderError, **extra: Any) -> JSONResponse:
+        return JSONResponse(
+            {"error": "the steward is not valid", "errors": exc.errors, **extra}, status_code=400
+        )
+
+    async def api_steward_builder_catalog(_request: Request) -> JSONResponse:
+        """What a built steward may name: tools, parameter kinds, preconditions, events, limits."""
+
+        if stewards is None:
+            return JSONResponse(_STEWARDS_UNAVAILABLE, status_code=503)
+        return JSONResponse(builder_catalog(stewards))
+
+    async def api_steward_builder_clone(request: Request) -> JSONResponse:
+        """A shipped steward as built-steward data under ``?id=`` (default ``custom_<id>``), unsaved.
+
+        ``{"data", "errors", "source"}``: ``errors`` lists what a built steward
+        may not keep of it, field by field; nothing is dropped or saved.
+        """
+
+        if stewards is None:
+            return JSONResponse(_STEWARDS_UNAVAILABLE, status_code=503)
+        steward_id = request.path_params["steward_id"]
+        spec = stewards.catalog.code.get(steward_id)
+        if spec is None:
+            return JSONResponse({"error": f"no shipped steward {steward_id}"}, status_code=404)
+        new_id = request.query_params.get("id") or f"custom_{steward_id}"
+        data = clone_data(spec, new_id)
+        errors: list[dict[str, str]] = []
+        try:
+            build_from_data(data, stewards)
+        except BuilderError as exc:
+            errors = exc.errors
+        if new_id in stewards.catalog or new_id in stewards.catalog.invalid():
+            errors.append({"field": "id", "error": f"a steward {new_id} already exists"})
+        return JSONResponse({"data": data, "errors": errors, "source": f"clone:{steward_id}"})
+
+    async def api_steward_custom_get(request: Request) -> JSONResponse:
+        """One built steward as the editor loads it, invalid ones included."""
+
+        if stewards is None:
+            return JSONResponse(_STEWARDS_UNAVAILABLE, status_code=503)
+        steward_id = request.path_params["steward_id"]
+        try:
+            return JSONResponse(await stewards.built_data(steward_id))
+        except KeyError:
+            return JSONResponse({"error": f"no built steward {steward_id}"}, status_code=404)
+
+    async def api_steward_custom_create(request: Request) -> JSONResponse:
+        """Create one: ``{"spec", "source"?}`` or ``{"clone_of", "id"?}``; 201, 400 with field errors, 409 id taken."""
+
+        if stewards is None:
+            return JSONResponse(_STEWARDS_UNAVAILABLE, status_code=503)
+        refused = _consent_refusal(request)
+        if refused is not None:
+            return refused
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - malformed JSON
+            return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
+        actor = _actor_of(request) or "unknown"
+        if "clone_of" in body:
+            extra = sorted(k for k in body if k not in ("clone_of", "id"))
+            if extra:
+                return JSONResponse(
+                    {"error": f"a clone takes no field(s) {', '.join(extra)}"}, status_code=400
+                )
+            source_id = body.get("clone_of")
+            spec = stewards.catalog.code.get(source_id) if isinstance(source_id, str) else None
+            if spec is None:
+                return JSONResponse({"error": f"no shipped steward {source_id}"}, status_code=400)
+            new_id = body.get("id", f"custom_{source_id}")
+            if not isinstance(new_id, str):
+                return JSONResponse({"error": "id must be text"}, status_code=400)
+            data: Any = clone_data(spec, new_id)
+            source = f"clone:{source_id}"
+        else:
+            extra = sorted(k for k in body if k not in ("spec", "source"))
+            if extra:
+                return JSONResponse(
+                    {"error": f"a new steward takes no field(s) {', '.join(extra)}"}, status_code=400
+                )
+            data = body.get("spec")
+            if not isinstance(data, dict):
+                return JSONResponse({"error": "spec must be an object"}, status_code=400)
+            source = body.get("source", "blank")
+            if not isinstance(source, str) or not (
+                source in ("blank", "copilot")
+                or (source.startswith("clone:") and source[len("clone:"):] in stewards.catalog.code)
+            ):
+                return JSONResponse(
+                    {"error": "source must be blank, copilot or clone:<shipped steward id>"},
+                    status_code=400,
+                )
+        try:
+            created = await stewards.create_built(data, actor=actor, source=source)
+        except BuilderError as exc:
+            return _builder_refused(exc, data=data)
+        except SpecConflict as exc:
+            return JSONResponse({"error": str(exc)}, status_code=409)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        return JSONResponse(created, status_code=201)
+
+    async def api_steward_custom_update(request: Request) -> JSONResponse:
+        """Save a new version: ``{"spec", "effective_hash"}``; 400 field errors, 404, 409 stale."""
+
+        if stewards is None:
+            return JSONResponse(_STEWARDS_UNAVAILABLE, status_code=503)
+        refused = _consent_refusal(request)
+        if refused is not None:
+            return refused
+        steward_id = request.path_params["steward_id"]
+        if not BUILT_ID_RE.fullmatch(steward_id):
+            return JSONResponse({"error": f"no built steward {steward_id}"}, status_code=404)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - malformed JSON
+            return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
+        extra = sorted(k for k in body if k not in ("spec", "effective_hash"))
+        if extra:
+            return JSONResponse({"error": f"a save takes no field(s) {', '.join(extra)}"}, status_code=400)
+        data = body.get("spec")
+        if not isinstance(data, dict):
+            return JSONResponse({"error": "spec must be an object"}, status_code=400)
+        reviewed, refused = _reviewed_hash(body)
+        if refused is not None:
+            return refused
+        try:
+            saved = await stewards.update_built(
+                steward_id, data, actor=_actor_of(request) or "unknown", effective_hash=reviewed
+            )
+        except KeyError:
+            return JSONResponse({"error": f"no built steward {steward_id}"}, status_code=404)
+        except HashMismatch as exc:
+            return _changed(exc)
+        except SpecConflict as exc:
+            return JSONResponse({"error": str(exc)}, status_code=409)
+        except BuilderError as exc:
+            return _builder_refused(exc)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        return JSONResponse(saved)
+
+    async def api_steward_custom_delete(request: Request) -> JSONResponse:
+        """Delete one: out of the catalog, its authorizations void, its ``act`` dropped."""
+
+        if stewards is None:
+            return JSONResponse(_STEWARDS_UNAVAILABLE, status_code=503)
+        # No body, as for a revoke: a DELETE cannot be sent from another origin
+        # without a preflight, and the dashboard sends none.
+        refused = _consent_refusal(request, needs_json=False)
+        if refused is not None:
+            return refused
+        steward_id = request.path_params["steward_id"]
+        try:
+            return JSONResponse(
+                await stewards.delete_built(steward_id, actor=_actor_of(request) or "unknown")
+            )
+        except KeyError:
+            return JSONResponse({"error": f"no built steward {steward_id}"}, status_code=404)
+
     # -- DB backup/restore ---------------------------------------------------
     # Superuser-only (**su below): destructive (restore overwrites the live DB
     # and restarts the process) and secret-bearing (remote target credentials).
@@ -2790,6 +2971,24 @@ def build_api_routes(
         Route("/api/stewards/runs", guard(api_steward_runs, **op)),
         # Static, so before every ``/api/stewards/{steward_id}`` route.
         Route("/api/stewards/commands", guard(api_steward_commands, **op)),
+        Route("/api/stewards/builder/catalog", guard(api_steward_builder_catalog, **op)),
+        Route(
+            "/api/stewards/builder/clone/{steward_id}", guard(api_steward_builder_clone, **op)
+        ),
+        Route(
+            "/api/stewards/custom", guard(api_steward_custom_create, **su), methods=["POST"]
+        ),
+        Route("/api/stewards/custom/{steward_id}", guard(api_steward_custom_get, **op)),
+        Route(
+            "/api/stewards/custom/{steward_id}",
+            guard(api_steward_custom_update, **su),
+            methods=["PUT"],
+        ),
+        Route(
+            "/api/stewards/custom/{steward_id}",
+            guard(api_steward_custom_delete, **su),
+            methods=["DELETE"],
+        ),
         Route("/api/stewards/runs/{run_id}", guard(api_steward_run, **op)),
         Route(
             "/api/stewards/{steward_id}/runs",

@@ -735,7 +735,10 @@ off is `shadow`, on is `act`.
   `spec_hash`), the kind of each parameter it takes (`param_kinds`: `window`, `bool`,
   `percent` or `list`), its current `mode`, the `triggers` in force with their `triggers_baseline`
   and `triggers_allowed` ceiling ([what starts a steward](#what-starts-a-steward)), and its
-  latest run.
+  latest run. `builtin` says whether a superuser [built it](#built-stewards); a built one
+  also carries `source`, `version`, `created_by`/`created_at` and `updated_by`/`updated_at`.
+  A built steward that no longer validates follows the others with `invalid: true`, its
+  `errors`, `mode` `off` and the `effective_hash` a fix must name.
 - `GET /api/stewards/runs?steward_id=&limit=` *(operator+)* — runs newest first, optionally
   for one steward (`limit` defaults to 50, at most 500).
 - `GET /api/stewards/runs/{run_id}` *(operator+)* — one run: what started it, the host or
@@ -801,8 +804,9 @@ off is `shadow`, on is `act`.
 - `DELETE /api/stewards/{steward_id}/authorizations/{auth_id}` *(superuser, signed
   in at the dashboard)* — revokes one; the next call it would have covered is refused.
 
-Choosing a mode, granting, revoking, editing parameters, editing triggers and starting a
-command run are a person's consent, so they
+Choosing a mode, granting, revoking, editing parameters, editing triggers, starting a
+command run and creating, saving or deleting a [built steward](#built-stewards) are a
+person's consent, so they
 need a superuser signed in to their own account in a browser. The same calls made with a
 personal access token, an OAuth token (what Claude uses for `/mcp`) or the shared operator
 token are refused with `403`; reading stays open to them. Switching `KENNY_TRIAGE_RESOLVE`
@@ -902,6 +906,82 @@ Each server start marks a run the previous process left open as `failed`, delete
 runs older than 90 days, and voids every authorization bound to what a steward no longer is.
 For a steward no longer in the catalog it voids every authorization and drops a stored `act`
 to `shadow`, so a steward removed and shipped again later starts over in `shadow`.
+
+#### Built stewards
+
+A superuser can define a steward in the dashboard — from an empty form, as a copy of a
+shipped steward, or from a draft Ask kenny proposed
+([ADR-0074](adr/0074-stewards-as-data.md)). A built steward runs through the same runner and
+gate as a shipped one, under every rule above; it only **chooses among and narrows** what the
+server provides, never adds to it.
+
+- **What it may be.** Its id is `custom_` followed by 2 to 33 lowercase letters, digits or
+  `_`, so it never collides with a shipped steward. It names tools from the builder catalog
+  only: never `shell_exec`, `powershell_exec` or `agent_update`, Ask kenny's steward tools,
+  a ticket tool, a fleet-wide tool (`list_agents`, `fleet_overview`, `select_agent`) or a
+  tool only a shipped steward uses (the rule tools of `config_hygiene`); a tool that reads
+  private data (a screenshot, a file, web history) only with `sensitive_ok`. Every change
+  tool's arguments are bound by literal values or by one of the steward's own list
+  parameters — never by values the server computes, which need server code — and every
+  required argument is bound. Its preconditions come from the ones the server registers. It
+  always ends with `steward_verdict`, starts in `shadow`, and is started by its schedule, an
+  alert or a command, never by a new ticket. A steward that works on machines takes a
+  `hosts` parameter, and one with a schedule a `window`. Limits: a prompt of at most 8000
+  characters, a title of 80, a description of 400, at most 24 tools, 1 to 20 model
+  round-trips, a timeout of at most 600 seconds per tool.
+- **Who.** Operators read what a built steward may be made of and each built steward.
+  Creating, saving and deleting one needs a superuser signed in at the dashboard, sending
+  JSON from its own origin, like every consent write above.
+- **Saving** gives the steward a new version, so a new spec hash: it drops to `shadow`, and
+  its standing authorizations are void for good — even a save that restores an earlier
+  definition is a later version. Parameters the new definition no longer declares are
+  dropped.
+- **Deleting** removes it from the catalog at once: its authorizations are voided, a stored
+  `act` dropped and its parameters and triggers removed, and a run in flight stops acting.
+  A steward created later under the same id gets the next version, so a hash it never had,
+  and starts with nothing it had before.
+- **After a release.** A built steward that no longer validates when the server starts (a
+  release withdrew a tool or a precondition it names) is not run: it is listed with
+  `invalid: true` and its errors, its authorizations are voided and a stored `act` dropped,
+  and the server starts as usual. Saving a fixed definition makes it runnable again, in
+  `shadow`.
+
+The API:
+
+- `GET /api/stewards/builder/catalog` *(operator+)* — what a built steward may be made of:
+  `tools` (each with `name`, `tier`, `description`, `args` — `name`, `type`, `required`,
+  `bindable` — `os` (`null` for every OS), `sensitive`, `target` (`host` or `server`) and
+  `verdict`), `verdict_tool`, `verdicts`, `param_kinds` with `default_param_kind` (`list`),
+  the registered `preconditions`, `trigger_kinds`, the `events` it may be started by,
+  `limits`, `id_pattern`, `never_authorized` and `max_expiry_days`.
+- `GET /api/stewards/builder/clone/{steward_id}?id=` *(operator+)* — a shipped steward as
+  built-steward data under `id` (default `custom_<steward_id>`), saving nothing: `{"data",
+  "errors", "source"}`. A copy keeps everything the shipped steward has; `errors` names, field
+  by field, what a built steward may not keep (a copy of `config_hygiene` names its
+  server-computed constraints and its rule tools; triage, its ticket trigger and tools).
+- `GET /api/stewards/custom/{id}` *(operator+)* — one built steward as the editor loads it:
+  `{"id", "data", "version", "source", "created_at", "created_by", "updated_at",
+  "updated_by", "effective_hash", "invalid", "errors"}`.
+- `POST /api/stewards/custom` *(superuser, signed in at the dashboard)* with `{"spec",
+  "source"?}` (`source` is `blank`, the default, `copilot` or `clone:<shipped id>`), or
+  with `{"clone_of", "id"?}` — creates one in `shadow` and answers `201` with
+  `{"steward_id", "version", "source", "spec_hash", "effective_hash", "mode", "voided"}`.
+- `PUT /api/stewards/custom/{id}` *(superuser, signed in at the dashboard)* with `{"spec",
+  "effective_hash"}` — saves a new version; `effective_hash` is the one `GET
+  /api/stewards` showed (`400` without one, `409` when the steward changed since). Answers
+  `{"steward_id", "version", "spec_hash", "effective_hash", "mode", "voided"}`.
+- `DELETE /api/stewards/custom/{id}` *(superuser, signed in at the dashboard; no body)* —
+  answers `{"steward_id", "deleted", "voided"}`; `404` for a shipped steward.
+
+`spec` is the data form: `id`, `title`, `description`, `prompt`, `trigger` (`{"kind":
+"schedule", "min_interval_days"}` or `{"kind": "event", "event"}`), `triggers_allowed`
+(`{"schedule", "events", "command"}`, the ceiling the [trigger configuration](#what-starts-a-steward)
+chooses within), `tools`, `constraints` (each `{"tool", "arg", "allowed": [...]}` or `{"tool",
+"arg", "param"}`), `timeouts` (each `{"tool", "max_s"}`), `params`, `preconditions`, `budget`
+(`{"max_iterations"}`) and `sensitive_ok`. Any other field — `verdict_tool`, `default_mode` and
+`version` included, which the server sets — is refused. A spec that does not validate is a
+`400` with `{"error", "errors"}`, each error `{"field", "error"}` naming the field it is about
+(`tools[3]`, `constraints[0].param`, `spec` for the whole); a taken id is `409`.
 
 #### What starts a steward
 
