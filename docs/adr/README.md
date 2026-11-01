@@ -91,4 +91,4 @@ kind of record kenny keeps. What qualifies: *When (not) to write an ADR* in the 
 | [0071](0071-stewards-purpose-bound-unattended-sessions.md) | Stewards: kenny runs purpose-bound unattended sessions | accepted |
 | [0072](0072-standing-authorizations-consent-given-ahead.md) | Standing authorizations: autonomy is consent given ahead, never a tier | accepted |
 | [0073](0073-steward-triggers-are-configuration.md) | Steward triggers are configuration; a person may start one now | accepted |
-| [0074](0074-stewards-as-data.md) | Stewards as data: the dashboard composes from what code provides | proposed |
+| [0074](0074-stewards-as-data.md) | Stewards as data: the dashboard composes from what code provides | accepted |

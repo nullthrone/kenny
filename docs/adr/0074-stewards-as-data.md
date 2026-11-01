@@ -1,6 +1,6 @@
 # 0074. Stewards as data: the dashboard composes from what code provides
 
-- Status: proposed
+- Status: accepted
 - Boundary moved: **the agent/session model** — a steward is no longer only code. A
   superuser can define one in the dashboard, and it runs through the same runner and gate as
   a catalog steward.
