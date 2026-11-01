@@ -339,9 +339,33 @@ tools are `read_only`: two read the run history, and the third *proposes* a run 
 nothing, the way `ticket_draft` proposes a ticket. The chat stream turns a successful
 `steward_run_propose` into a `steward_run_proposal` event carrying `steward_id`, `host_id` and
 `reason`; a run exists only when a person starts it through `POST
-/api/stewards/{steward_id}/runs` — a preview in `shadow`, or a
-[command run](dashboard.md#command-runs) that may act, which only a superuser signed in to the
-dashboard can start. A run's
+/api/stewards/{steward_id}/runs`. The card the event makes reads
+`GET /api/stewards/{steward_id}/command` and offers two buttons: **Preview**, a run in
+`shadow` that changes nothing, and **Run now**, a [command run](dashboard.md#command-runs)
+in which the steward may act within its limits. Run now is enabled only where that
+readiness view says the caller may start one (a superuser signed in to the dashboard), is
+disabled with the server's reason otherwise, and names the effective hash the card showed;
+the copilot's reason for proposing the run is shown quoted and labelled as Kenny's suggestion;
+the card lists each change-tier tool the run could use with the values it may take and its
+authorization. Once started, the card follows the run until it finishes and then posts
+`POST /api/chat/steward-run-result` (`{"session_id", "run_id"}`, operator and up, JSON from
+the dashboard itself). The server reads the run itself, requires it to be finished and to
+have been started by the caller (`403` otherwise, `409` while it runs, while a turn is
+running or while the conversation waits on a confirmation), and adds one note to the
+conversation: a fixed template of the steward id, the machine id, the run id, the mode, the
+status, the verdict when it is one of the fixed outcomes (labelled as the steward's own
+call), the number of actions and recommendations and the sum of the `bytes_freed` recorded
+on the run's actions (labelled as what the machine reported). Never the run's `summary`,
+`error`, arguments or any other text. The note is the server's record of what the run
+recorded, not a verification of it. It is idempotent per conversation and run and drives no
+model turn. It is the server's note because the server appended it: the conversation keeps
+a record of the notes it added, saved with it, and only those are shown as a system note
+when the conversation is reopened (never as the operator's words) or counted as already
+recorded. An operator's message that quotes the note header is marked "(typed by the
+operator)" before the model sees it. The note reaches the model on its next turn as data.
+The empty conversation of
+a host page also lists the stewards `GET /api/stewards/commands?host_id=` offers for that
+machine; choosing one adds the same card and starts nothing. A run's
 `summary`, `error` and recorded arguments were produced while a steward read a monitored
 machine, so `steward_run_get` returns them as data beside a note saying so. The tools read runs
 across every host, so they are withheld from every ticket-bound and unprompted turn and no

@@ -54,6 +54,12 @@ export interface TicketChatRequest {
   mirror_to_discord: boolean
 }
 
+/** `POST /api/chat/steward-run-result` body. */
+export interface StewardRunResultRequest {
+  session_id: string
+  run_id: string
+}
+
 /** One row of `GET /api/chat/history`. */
 export interface ConversationSummary {
   id: string
@@ -159,7 +165,17 @@ export type TranscriptItem =
       resolution: 'pending' | 'started' | 'dismissed'
       /** Set once `resolution` is 'started': the run the server created. */
       runId?: string
+      /** Which button started it: a shadow preview or a run that may act. */
+      startedMode?: 'preview' | 'act'
+      /** The run's result has been handed to the server for the conversation (once per run). */
+      resultReported?: boolean
     }
+  /**
+   * The server's own note, replayed from a stored conversation: a run the
+   * operator started from a card finished, said in fixed-template facts. Not the
+   * operator's words and not the copilot's; shown apart from both.
+   */
+  | { kind: 'note'; id: string; text: string; runId: string }
   | { kind: 'error'; id: string; error: string }
 
 export interface PendingGate {

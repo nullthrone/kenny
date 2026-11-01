@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { applyChatEvent, startUserTurn } from './reducer'
+import { addStewardProposal, applyChatEvent, startUserTurn } from './reducer'
 import { makeInitialState } from './types'
 
 describe('startUserTurn', () => {
@@ -268,5 +268,33 @@ describe('applyChatEvent — steward_run_proposal', () => {
       reason: 'The weekly digest is due.',
     })
     expect(s.items[0]).toMatchObject({ kind: 'steward_proposal', hostId: '' })
+  })
+})
+
+describe('applyChatEvent — system_note', () => {
+  it('is the server’s own row: neither a user bubble nor kenny’s prose, and it opens nothing', () => {
+    const s = applyChatEvent(
+      applyChatEvent(makeInitialState(''), { type: 'text_delta', text: 'Started it.' }),
+      { type: 'system_note', kind: 'steward_run_result', run_id: 'r1', text: 'steward: patch\nstatus: completed' },
+    )
+    expect(s.items.map((i) => i.kind)).toEqual(['assistant', 'note'])
+    expect(s.items[1]).toEqual({ kind: 'note', id: 'item-1', text: 'steward: patch\nstatus: completed', runId: 'r1' })
+    expect(s.pendingGate).toBeNull()
+    expect(s.streaming).toBe(false)
+    // The next words are a new assistant item, not a continuation of the one before the note.
+    const next = applyChatEvent(s, { type: 'text_delta', text: 'And?' })
+    expect(next.items.filter((i) => i.kind === 'assistant')).toHaveLength(2)
+  })
+})
+
+describe('addStewardProposal', () => {
+  it('adds a pending card and nothing else — it is an offer, not a run', () => {
+    const before = makeInitialState('study-pc')
+    const s = addStewardProposal(before, { stewardId: 'patch', hostId: 'study-pc', reason: 'why' })
+    expect(s.items).toEqual([
+      { kind: 'steward_proposal', id: 'item-0', stewardId: 'patch', hostId: 'study-pc', reason: 'why', resolution: 'pending' },
+    ])
+    expect(s.streaming).toBe(false)
+    expect(s.pendingGate).toBeNull()
   })
 })

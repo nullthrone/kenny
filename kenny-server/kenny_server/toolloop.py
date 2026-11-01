@@ -81,7 +81,8 @@ TICKET_FIND_TOOL = "ticket_find"
 #: The copilot's window onto stewards (ADR-0071), READ_ONLY all three.
 #: ``steward_run_list`` / ``steward_run_get`` read the run history; ``steward_run_propose``
 #: starts nothing -- it validates a request and hands it to the browser, which
-#: shows a card the operator presses to start a preview (ADR-0063's pattern).
+#: shows a card whose buttons the operator presses to start a preview or a command run
+#: (ADR-0063's pattern).
 #: Fleet-wide reads, so withheld from every ticket-bound turn by
 #: ``ticket_assistant.EXCLUDED_TOOLS`` and refused to every steward spec by the
 #: catalog: their ``steward_id`` names a *steward*, not a host.
@@ -406,11 +407,12 @@ SERVER_TOOLS: dict[str, dict[str, Any]] = {
     },
     STEWARD_RUN_PROPOSE_TOOL: {
         "description": (
-            "Propose a one-off preview run of a steward. It starts NOTHING: "
-            "the operator is shown a card and only they can start it. A preview is "
-            "always a shadow run -- the steward investigates and any change it would "
-            "make is recorded as a recommendation, never done. Do not say a run has "
-            "started."
+            "Offer the operator a one-off run of a steward. It starts NOTHING: "
+            "the operator is shown a card with PREVIEW and, where they are allowed to, "
+            "RUN NOW, and only they can press either. A preview is always a shadow "
+            "run -- the steward investigates and any change it would make is recorded "
+            "as a recommendation, never done; RUN NOW lets the steward act within "
+            "its limits. Do not say a run has started."
         ),
         "properties": {
             "steward_id": {

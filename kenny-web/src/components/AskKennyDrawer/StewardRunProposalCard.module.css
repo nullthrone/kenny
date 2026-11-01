@@ -19,8 +19,29 @@
   overflow-wrap: anywhere;
 }
 
+.suggested {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
 .note {
   font-size: var(--text-sm);
   color: var(--text-muted);
   margin: 0 0 12px;
+}
+
+.tools {
+  margin: 0;
+  padding-left: 16px;
+}
+
+.tools li {
+  margin: 0 0 4px;
+}
+
+.status {
+  margin-top: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
 }

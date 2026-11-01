@@ -366,6 +366,11 @@ class StewardSpec:
                 return t.max_s
         return MAX_TIMEOUT_S
 
+    def param_kinds(self) -> dict[str, str]:
+        """Each declared parameter's kind (:func:`param_kind`), by name — what a client renders and sends it as."""
+
+        return {name: param_kind(name) for name in sorted(self.params)}
+
     def to_public(self) -> dict[str, object]:
         """The catalog entry as the dashboard and the API show it."""
 
@@ -381,6 +386,7 @@ class StewardSpec:
             "constraints": self._sorted_constraints(),
             "timeouts": self._sorted_timeouts(),
             "params": sorted(self.params),
+            "param_kinds": self.param_kinds(),
             "sensitive_ok": self.sensitive_ok,
             "default_mode": self.default_mode,
             "version": self.version,

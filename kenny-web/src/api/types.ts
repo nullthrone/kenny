@@ -537,6 +537,14 @@ export type ChatEvent =
    * never re-offers it.
    */
   | { type: 'steward_run_proposal'; steward_id: string; host_id: string; reason: string }
+  /**
+   * The server's note that a steward run the operator started from a card has
+   * finished: fixed-template facts (ids, mode, status, verdict, counts, bytes
+   * freed) built from the run's recorded numbers -- never the run's own text, and
+   * never the operator's or the copilot's words. History replay only: a live
+   * client already shows the run's status on the card.
+   */
+  | { type: 'system_note'; kind: 'steward_run_result'; run_id: string; text: string }
 
 /**
  * `POST /api/chat/stream`.

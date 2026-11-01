@@ -334,14 +334,14 @@ export interface StewardWindow {
   tz: string
 }
 
-/** The parameters a steward takes, by name. A name the spec does not declare never appears. */
-export interface StewardParamValues {
-  window?: StewardWindow
-  hosts?: string[]
-  packages?: string[]
-  require_idle?: boolean
-  [name: string]: unknown
-}
+/** What a parameter holds (`stewards/spec.py::param_kind`): the server reads and validates it by this. */
+export type StewardParamKind = 'window' | 'bool' | 'percent' | 'list'
+
+/** One parameter's value: a window, a flag, a whole percent (1-99) or a list of strings. */
+export type StewardParamValue = StewardWindow | boolean | number | string[]
+
+/** The parameters a steward takes, by name. A name the spec does not declare never appears; an unset one is absent. */
+export type StewardParamValues = Record<string, StewardParamValue | undefined>
 
 /** An entry of a run's `actions` or `recommendations` — one tool call (`stewards/policy.py::_record`). */
 export interface StewardCall {
@@ -352,6 +352,12 @@ export interface StewardCall {
   authorization_id?: string
   ok?: boolean
   code?: string | null
+  /**
+   * What a change-tier tool reported, numbers and enumerations only (`runner.RESULT_SUMMARY_FIELDS`):
+   * `fs_cleanup` keeps `target`, `files_removed`, `bytes_freed` and `complete`. Absent for a
+   * tool that keeps none, and for a call that did not run.
+   */
+  result?: Record<string, unknown>
 }
 
 /** `stewards/store.py::StewardRun.to_public`. */
@@ -401,6 +407,8 @@ export interface Steward {
   default_mode: StewardMode
   version: number
   spec_hash: string
+  /** Each declared parameter's kind, by name (`params` holds the values on this install). */
+  param_kinds: Record<string, StewardParamKind>
   mode: StewardMode
   /** The values on this install (the overview replaces the spec's list of names with them). */
   params: StewardParamValues
@@ -419,6 +427,8 @@ export interface StewardsResponse {
 export interface StewardParamsResponse {
   steward_id: string
   declared: string[]
+  /** Each declared parameter's kind, by name. */
+  param_kinds: Record<string, StewardParamKind>
   params: StewardParamValues
   effective_hash: string | null
 }

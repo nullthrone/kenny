@@ -89,6 +89,7 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
+from ..cleanup_targets import ALL_TARGETS, brief_line as targets_brief_line, unknown_targets
 from ..ticketstore import STEWARD_ORIGIN, Ticket
 from ..tool_classes import READ_ONLY, classify
 from ..toolloop import ToolExecutor, UsageMeter, drive_events
@@ -201,6 +202,10 @@ _SYSTEM_ACTOR = "system"
 
 #: The parameter a ``schedule`` trigger reads its maintenance window from.
 WINDOW_PARAM = "window"
+
+#: The parameter naming the disk-cleanup targets a steward may clean; its
+#: values must be catalog target names (:mod:`kenny_server.cleanup_targets`).
+TARGETS_PARAM = "targets"
 
 #: Ceiling on one list parameter's length and on one value's length.
 _MAX_PARAM_VALUES = 200
@@ -347,8 +352,24 @@ def validate_params(spec: StewardSpec, params: Any) -> dict[str, Any]:
             raise ValueError(f"every value of {name} must be a non-empty string")
         if any(len(v) > _MAX_PARAM_VALUE_LEN for v in value):
             raise ValueError(f"a value of {name} is longer than {_MAX_PARAM_VALUE_LEN}")
-        out[name] = sorted({v.strip() for v in value})
+        cleaned = sorted({v.strip() for v in value})
+        if name == TARGETS_PARAM:
+            unknown = unknown_targets(cleaned)
+            if unknown:
+                raise ValueError(
+                    f"{name}: no such cleanup target(s) {', '.join(unknown)}; "
+                    f"known targets are {', '.join(sorted(ALL_TARGETS))}"
+                )
+        out[name] = cleaned
     return out
+
+
+def _host_os(executor: Any, host_id: str | None) -> str | None:
+    """The OS the registry knows ``host_id`` runs, or ``None`` (no host, unknown host)."""
+
+    registry = getattr(executor, "registry", None)
+    agent = registry.get(host_id) if registry is not None and host_id else None
+    return getattr(agent, "os", None)
 
 
 def surface_refusal(spec: StewardSpec) -> str | None:
@@ -1723,6 +1744,10 @@ class StewardRunner:
             session.usage = meter
             if evidence is not None:
                 brief = f"{brief}\n\n{_evidence_brief(spec, evidence)}"
+            if TARGETS_PARAM in spec.params:
+                # The frozen allowlist, narrowed to what this machine's OS serves.
+                line = targets_brief_line(params.get(TARGETS_PARAM) or (), _host_os(executor, host_id))
+                brief = f"{brief}\n{line}"
             session.messages.append({"role": "user", "content": brief})
             policy = StewardPolicy(
                 session,

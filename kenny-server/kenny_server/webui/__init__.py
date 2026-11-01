@@ -29,8 +29,11 @@ from ..config import CATALOG, SettingNotWritable, Settings
 from ..chat import (
     ChatExecutor,
     ChatSessions,
+    SessionBusy,
+    append_run_note,
     confirm_pending,
     confirm_pending_events,
+    has_run_note,
     persist_session,
     public_transcript,
     run_turn,
@@ -52,6 +55,7 @@ from ..store import (
 from ..tokenstore import AgentTokenStore
 from ..tools import CallLog, ScreenshotStore, build_health, health_for, supports_tool
 from ..tunnel import AgentTunnel, ToolError
+from ..copilot_stewards import RunResultRefused
 from ..stewards.authorizations import BUDGET_WINDOW, AuthorizationError
 from ..stewards import commands as steward_commands
 from ..stewards.policy import run_target_problem
@@ -1942,15 +1946,17 @@ def build_api_routes(
         return JSONResponse(await _authorization_public(revoked))
 
     async def api_steward_params(request: Request) -> JSONResponse:
-        """One steward's parameters, the names its spec declares, and its effective hash."""
+        """One steward's parameters, the names its spec declares with their kinds, and its effective hash."""
 
         steward_id, refused = _steward_or_404(request)
         if refused is not None:
             return refused
+        spec = stewards.catalog[steward_id]
         return JSONResponse(
             {
                 "steward_id": steward_id,
-                "declared": sorted(stewards.catalog[steward_id].params),
+                "declared": sorted(spec.params),
+                "param_kinds": spec.param_kinds(),
                 "params": await stewards.get_params(steward_id),
                 "effective_hash": await stewards.live_hash(steward_id),
             }
@@ -3028,6 +3034,8 @@ def build_chat_routes(
     * ``GET /api/chat/history/{id}`` — one conversation's full replayable
       transcript (ADR-0025).
     * ``DELETE /api/chat/history/{id}`` — delete a persisted conversation.
+    * ``POST /api/chat/steward-run-result`` — record in a conversation that a
+      steward run its operator started has finished (operator+).
 
     All inherit operator auth from ``OperatorAuthMiddleware`` (``/api/*``).
     ``client_factory`` is injected so tests pass a fake Anthropic client.
@@ -3217,6 +3225,55 @@ def build_chat_routes(
 
         return StreamingResponse(gen(), media_type="text/event-stream", headers=_STREAM_HEADERS)
 
+    async def api_chat_steward_run_result(request: Request) -> JSONResponse:
+        """Record in a conversation that a run its caller started has finished.
+
+        Body ``{session_id, run_id}`` as JSON, from the dashboard itself. The
+        server reads the run, which must be finished and must have been started
+        by the caller (``initiated_by``), and appends one fixed-template note
+        built from the run's recorded numbers and enumerations only
+        (:mod:`~kenny_server.steward_notes`) -- never from the run's text. No
+        model turn is driven. Idempotent per (session, run): a second call answers
+        ``{"appended": false}``. 404 for an unknown session or run, 403 for a run
+        the caller did not start, 409 for a run still running or a conversation
+        that cannot take a note now (a turn running, a confirmation pending, a tool call
+        unanswered), 503 when stewards are not configured.
+        """
+
+        if copilot_stewards is None:
+            return JSONResponse({"error": "stewards not configured"}, status_code=503)
+        cross_site = _browser_write_refusal(request)
+        if cross_site is not None:
+            return cross_site
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - malformed JSON
+            return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
+        session_id = body.get("session_id")
+        run_id = body.get("run_id")
+        if not isinstance(session_id, str) or not session_id.strip():
+            return JSONResponse({"error": "session_id is required"}, status_code=400)
+        if not isinstance(run_id, str) or not run_id.strip():
+            return JSONResponse({"error": "run_id is required"}, status_code=400)
+        session = await sessions.get(session_id.strip())
+        if session is None:
+            return JSONResponse({"error": "unknown session"}, status_code=404)
+        try:
+            note = await copilot_stewards.run_result_note(run_id.strip(), driver_of(request))
+        except RunResultRefused as exc:
+            return JSONResponse({"error": str(exc), "code": exc.code}, status_code=exc.status)
+        # No await between this check and the append: two requests cannot both pass it.
+        if has_run_note(session, run_id.strip()):
+            return JSONResponse({"appended": False})
+        try:
+            append_run_note(session, note)
+        except SessionBusy as exc:
+            return JSONResponse({"error": str(exc), "code": "session_busy"}, status_code=409)
+        await persist_session(history_store, session)
+        return JSONResponse({"appended": True})
+
     async def api_chat_history_list(request: Request) -> JSONResponse:
         """List persisted conversations, newest-updated first (no message bodies)."""
 
@@ -3235,7 +3292,7 @@ def build_chat_routes(
                 "title": row["title"],
                 "agent_id": row["agent_id"],
                 "updated_at": row["updated_at"],
-                "transcript": public_transcript(row["messages"]),
+                "transcript": public_transcript(row["messages"], row["notes"]),
             }
         )
 
@@ -3382,6 +3439,11 @@ def build_chat_routes(
         Route(
             "/api/chat/confirm/stream",
             _requires_ai("ask", api_chat_confirm_stream),
+            methods=["POST"],
+        ),
+        Route(
+            "/api/chat/steward-run-result",
+            guard(api_chat_steward_run_result, min_role="operator"),
             methods=["POST"],
         ),
         Route("/api/chat/history", api_chat_history_list, methods=["GET"]),
