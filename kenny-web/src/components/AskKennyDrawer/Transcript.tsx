@@ -4,6 +4,7 @@ import type { TicketDraftCardProps } from './TicketDraftCard'
 import { Check, X, ICON_STROKE_WIDTH } from '../icons'
 import Markdown from '../Markdown/Markdown'
 import TicketDraftCard from './TicketDraftCard'
+import StewardDraftCard from './StewardDraftCard'
 import StewardRunProposalCard, { type StewardRunProposalCardProps } from './StewardRunProposalCard'
 import styles from './Transcript.module.css'
 
@@ -243,6 +244,11 @@ export default function Transcript({
                 onFinished={onStewardRunFinished ?? (() => undefined)}
                 onDismiss={onDismissStewardRun ?? (() => undefined)}
               />
+            )
+
+          case 'steward_draft':
+            return (
+              <StewardDraftCard key={item.id} draft={item.draft} reason={item.reason} toolClasses={item.toolClasses} sensitiveTools={item.sensitiveTools} />
             )
 
           case 'note':

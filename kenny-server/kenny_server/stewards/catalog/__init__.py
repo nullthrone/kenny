@@ -1,13 +1,22 @@
-"""The stewards kenny ships (ADR-0071).
+"""The stewards kenny ships (ADR-0071), and the live catalog every consumer reads.
 
-Every spec is validated when this module is imported, so a malformed spec stops
-the server from starting instead of surfacing the first time it would run.
+Every shipped spec is validated when this module is imported, so a malformed
+spec stops the server from starting instead of surfacing the first time it
+would run.
+
+:class:`StewardCatalog` is what the runner, the scheduler, the event trigger and
+the API hold: the shipped specs, which never change while the server runs, plus
+the stewards a superuser built in the dashboard (ADR-0074), which the runner
+adds, replaces and removes in place. Every holder keeps the same object, so a
+built steward appears to, and disappears from, all of them at once. A built id
+starts with :data:`BUILT_ID_PREFIX`, which no shipped id may.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import ItemsView, Iterator, KeysView, Mapping, Sequence, ValuesView
 from types import MappingProxyType
+from typing import Any
 
 from ...tool_classes import READ_ONLY, classify
 from ...toolloop import COPILOT_STEWARD_TOOLS, SERVER_TOOLS
@@ -28,7 +37,19 @@ from .patch import PATCH
 from .posture import POSTURE
 from .triage import TRIAGE
 
-__all__ = ["CATALOG", "TICKET_SURFACE_TOOLS", "build", "check_dispatchable", "get"]
+__all__ = [
+    "BUILT_ID_PREFIX",
+    "CATALOG",
+    "TICKET_SURFACE_TOOLS",
+    "StewardCatalog",
+    "build",
+    "check_dispatchable",
+    "get",
+]
+
+#: The prefix of every built steward's id (ADR-0074); a shipped id never has it,
+#: so a release can never ship a steward under an id an install already built.
+BUILT_ID_PREFIX = "custom_"
 
 
 #: Tools whose handlers expect a ticket session (the ticket id as session id).
@@ -151,6 +172,8 @@ def build(specs: Sequence[StewardSpec]) -> Mapping[str, StewardSpec]:
     built: dict[str, StewardSpec] = {}
     for spec in specs:
         check_dispatchable(validate(spec))
+        if spec.id.startswith(BUILT_ID_PREFIX):
+            raise SpecError(f"steward id {spec.id!r}: {BUILT_ID_PREFIX}* is reserved for built stewards")
         if spec.id in built:
             raise SpecError(f"duplicate steward id {spec.id!r} in the catalog")
         built[spec.id] = spec
@@ -158,6 +181,113 @@ def build(specs: Sequence[StewardSpec]) -> Mapping[str, StewardSpec]:
 
 
 CATALOG: Mapping[str, StewardSpec] = build((TRIAGE, PATCH, POSTURE, CONFIG_HYGIENE, DISK_HYGIENE))
+
+
+class StewardCatalog(Mapping[str, StewardSpec]):
+    """The runnable stewards: the shipped ones, then the built ones, by id.
+
+    A read-only :class:`~collections.abc.Mapping` to every consumer; only the
+    runner changes it (:meth:`put_built`, :meth:`remove_built`), under its
+    consent lock. Iterating, ``keys()``, ``values()`` and ``items()`` read a
+    snapshot taken when they are called, so a consumer that awaits between two
+    entries never sees the mapping change size under it.
+
+    It also remembers, beside the runnable entries, the built stewards that
+    failed validation when they were loaded (:meth:`set_invalid`): kept and
+    shown, never runnable, so they are not keys of the mapping.
+    """
+
+    def __init__(self, code: Mapping[str, StewardSpec]) -> None:
+        if any(steward_id.startswith(BUILT_ID_PREFIX) for steward_id in code):
+            raise SpecError(f"{BUILT_ID_PREFIX}* ids are reserved for built stewards")
+        self._code: Mapping[str, StewardSpec] = MappingProxyType(dict(code))
+        self._built: dict[str, StewardSpec] = {}
+        self._meta: dict[str, dict[str, Any]] = {}
+        self._invalid: dict[str, dict[str, Any]] = {}
+
+    # -- the Mapping -----------------------------------------------------------
+
+    def _snapshot(self) -> dict[str, StewardSpec]:
+        return {**self._code, **{k: self._built[k] for k in sorted(self._built)}}
+
+    def __getitem__(self, steward_id: str) -> StewardSpec:
+        spec = self._code.get(steward_id)
+        if spec is not None:
+            return spec
+        return self._built[steward_id]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(list(self._snapshot()))
+
+    def __len__(self) -> int:
+        return len(self._code) + len(self._built)
+
+    def __contains__(self, steward_id: object) -> bool:
+        return steward_id in self._code or steward_id in self._built
+
+    def keys(self) -> KeysView[str]:
+        return MappingProxyType(self._snapshot()).keys()
+
+    def values(self) -> ValuesView[StewardSpec]:
+        return MappingProxyType(self._snapshot()).values()
+
+    def items(self) -> ItemsView[str, StewardSpec]:
+        return MappingProxyType(self._snapshot()).items()
+
+    # -- what is shipped, what is built ----------------------------------------
+
+    @property
+    def code(self) -> Mapping[str, StewardSpec]:
+        """The shipped stewards; never changes while the server runs."""
+
+        return self._code
+
+    def is_built(self, steward_id: str) -> bool:
+        """Whether ``steward_id`` is a runnable built steward."""
+
+        return steward_id in self._built
+
+    def built_meta(self, steward_id: str) -> dict[str, Any] | None:
+        """Where a runnable built steward came from and who saved it; ``None`` for any other id."""
+
+        meta = self._meta.get(steward_id)
+        return dict(meta) if meta is not None else None
+
+    def put_built(self, spec: StewardSpec, meta: Mapping[str, Any]) -> None:
+        """Make ``spec`` runnable (new, or replacing its previous version).
+
+        The caller has validated it; this refuses only an id that is not a
+        built id, so a shipped steward can never be replaced.
+        """
+
+        if not spec.id.startswith(BUILT_ID_PREFIX) or spec.id in self._code:
+            raise SpecError(f"steward {spec.id} is not a built steward's id")
+        self._built[spec.id] = spec
+        self._meta[spec.id] = dict(meta)
+        self._invalid.pop(spec.id, None)
+
+    def remove_built(self, steward_id: str) -> bool:
+        """Remove a built steward, runnable or invalid; returns whether there was one."""
+
+        had = steward_id in self._built or steward_id in self._invalid
+        self._built.pop(steward_id, None)
+        self._meta.pop(steward_id, None)
+        self._invalid.pop(steward_id, None)
+        return had
+
+    def set_invalid(self, steward_id: str, entry: Mapping[str, Any]) -> None:
+        """Keep a built steward that does not validate: shown, never runnable."""
+
+        if not steward_id.startswith(BUILT_ID_PREFIX) or steward_id in self._code:
+            raise SpecError(f"steward {steward_id} is not a built steward's id")
+        self._built.pop(steward_id, None)
+        self._meta.pop(steward_id, None)
+        self._invalid[steward_id] = dict(entry)
+
+    def invalid(self) -> dict[str, dict[str, Any]]:
+        """The built stewards that failed validation at load, by id (copies)."""
+
+        return {k: dict(v) for k, v in sorted(self._invalid.items())}
 
 
 def get(steward_id: str) -> StewardSpec | None:

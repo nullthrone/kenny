@@ -376,10 +376,21 @@ steward may name them; they are not registered over MCP.
 | `steward_run_list` | `steward_id?` (a steward such as `posture`), `limit?` (1–50, default 10) | `read_only` |
 | `steward_run_get` | `run_id` | `read_only` (redacted record; its text is untrusted data) |
 | `steward_run_propose` | `steward_id`, `host_id?`, `reason` | `read_only` (starts nothing) |
+| `steward_draft_propose` | `spec` (a built steward's data form), `reason` | `read_only` (saves nothing) |
 
 A proposal is refused for an unknown steward, triage, a steward whose mode is `off`, a machine
 the server does not know, a missing machine for a steward that works on one, and a machine
 given to a steward that works on none.
+
+`steward_draft_propose` drafts a new steward for the dashboard's [builder](dashboard.md#stewards-view)
+([ADR-0074](adr/0074-stewards-as-data.md)). It reads `spec` with
+the builder's own rules (the call a save makes) and writes nothing. A draft those rules refuse
+(a banned tool, an evidence constraint, a bad id, an id already taken, more than 32,000
+characters of JSON) is returned to the model as an `invalid_draft` error listing the field
+errors, and no card is offered. An accepted one makes the chat stream emit one
+`steward_draft` event carrying `draft` (canonical data), `reason`, `tool_classes` (the server's tier of each tool the draft names) and `sensitive_tools` (those that read private data); the card it makes only
+opens the editor. The tool is withheld from ticket turns and no steward may name it, like the
+other three.
 
 The server-side web-filter tools are also server-only. `webfilter_get` and
 `web_activity_query` are `read_only`; `webfilter_set` and `webfilter_push` change state,

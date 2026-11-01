@@ -5,7 +5,7 @@
  * the frozen contract only states the wire shapes, not how the drawer
  * keeps score between them.
  */
-import type { ChatEvent } from '../api/types'
+import type { ChatEvent, StewardDraft } from '../api/types'
 
 /** `POST /api/chat/confirm/stream` body. Not in the frozen contract (chat/stream's
  * sibling), documented only in notes/api-contract-actual.md §2 item 2. */
@@ -169,6 +169,18 @@ export type TranscriptItem =
       startedMode?: 'preview' | 'act'
       /** The run's result has been handed to the server for the conversation (once per run). */
       resultReported?: boolean
+    }
+  /**
+   * A steward kenny drafted. Shaped after `steward_proposal`: a card that stays
+   * in the transcript. Nothing is saved by it; its one button opens the editor.
+   */
+  | {
+      kind: 'steward_draft'
+      id: string
+      draft: StewardDraft
+      reason: string
+      toolClasses: Record<string, string>
+      sensitiveTools: string[]
     }
   /**
    * The server's own note, replayed from a stored conversation: a run the

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Link } from 'react-router'
 import type { StewardConstraint, Steward } from '../../types'
+import { BuilderActions, CloneEditor, DeleteBuiltModal, EditEditor } from './BuilderEntry'
 import AuthorizationsPanel from './AuthorizationsPanel'
 import ModePanel from './ModePanel'
 import ParamsPanel from './ParamsPanel'
@@ -54,6 +55,26 @@ function ConstraintItem({ constraint, steward }: { constraint: StewardConstraint
 /** Admin → Stewards → one steward: what it is, then everything a person can do about it. */
 export default function StewardDetail({ steward, canManage }: StewardDetailProps) {
   const [openRun, setOpenRun] = useState<string | null>(null)
+  const [editing, setEditing] = useState<'clone' | 'edit' | null>(null)
+  const [deleting, setDeleting] = useState(false)
+  const [notice, setNotice] = useState<string | null>(null)
+  const builtin = steward.builtin === true
+
+  if (editing === 'clone') return <CloneEditor steward={steward} onCancel={() => setEditing(null)} />
+  if (editing === 'edit') {
+    return (
+      <EditEditor
+        stewardId={steward.id}
+        title={steward.title}
+        onCancel={() => setEditing(null)}
+        onSaved={(message) => {
+          setNotice(message)
+          setEditing(null)
+        }}
+      />
+    )
+  }
+
   return (
     <div>
       <Link to="/admin/stewards" className={styles.back}>
@@ -66,6 +87,23 @@ export default function StewardDetail({ steward, canManage }: StewardDetailProps
       <p className={shared.help} style={{ marginBottom: 20 }}>
         {steward.description}
       </p>
+      {notice && (
+        <div className={shared.okBox} role="status">
+          {notice}
+        </div>
+      )}
+      {canManage && (
+        <BuilderActions
+          builtin={builtin}
+          onClone={() => setEditing('clone')}
+          onEdit={() => {
+            setNotice(null)
+            setEditing('edit')
+          }}
+          onDelete={() => setDeleting(true)}
+        />
+      )}
+      {deleting && <DeleteBuiltModal steward={steward} onClose={() => setDeleting(false)} />}
 
       <section className={shared.card} aria-labelledby={`spec-${steward.id}`}>
         <h3 className={styles.heading} id={`spec-${steward.id}`}>
@@ -74,6 +112,14 @@ export default function StewardDetail({ steward, canManage }: StewardDetailProps
         <dl className={styles.dl}>
           <dt>TRIGGER</dt>
           <dd>{triggerLabel(steward)}</dd>
+          {builtin && (
+            <>
+              <dt>ORIGIN</dt>
+              <dd>
+                Built in the dashboard{steward.source ? ` (${steward.source})` : ''}, version {steward.version}
+              </dd>
+            </>
+          )}
           <dt>EFFECTIVE HASH</dt>
           <dd>
             <span className={styles.hash} title={steward.effective_hash ?? undefined}>
