@@ -334,6 +334,8 @@ def first_nonzero(series: Series) -> str | None:
     return None
 
 
+# POSSIBLY DEAD: no production caller — only tests/test_hardware_trends.py
+# calls rate_per_day; the detectors in this module compute their own slopes.
 def rate_per_day(series: Series) -> float | None:
     """Mean daily growth of a lifetime counter over the series, reset-safe."""
 
