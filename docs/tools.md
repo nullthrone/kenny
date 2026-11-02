@@ -263,16 +263,18 @@ call; see [ITSM: operator approval vs. user consent](itsm.md#operator-approval-v
 
 ### Agent updates from the staged binary
 
-The dashboard copilot updates agents without being handed a URL or a checksum: the server
-resolves the binary it has staged for the agent's OS, architecture and desired channel,
-mints the download link and sends the same `agent_update` frame the Fleet button sends.
-These are server tools of Ask kenny only: withheld from every ticket-bound and unprompted
-turn, never nameable by a steward, and not registered over MCP.
+Ask kenny and MCP clients update agents without being handed a URL or a checksum: the
+server resolves the binary it has staged for the agent's OS, architecture and desired
+channel, mints the download link and sends the same `agent_update` frame the Fleet button
+sends. They are server tools, withheld from every ticket-bound and unprompted turn and
+never nameable by a steward. Over MCP `agent_update_staged` needs the `operator` role, a
+host inside the caller's scope, and an explicit `agent_id` (there is no sticky selection);
+`agent_update_status` lists only the hosts in the caller's scope.
 
 | Tool | Arguments | Tier |
 |------|-----------|------|
 | `agent_update_status` | — | `read_only` (the staged versions and the agents behind them) |
-| `agent_update_staged` | `version`, `agent_id?` | `normal_change` (one agent; confirm-gated) |
+| `agent_update_staged` | `version`, `agent_id?` (required over MCP) | `normal_change` (one agent; confirm-gated in Ask kenny) |
 
 `version` is what the operator confirms. The call is refused with `version_mismatch` unless
 the staged version for that agent is exactly it, so a release staged between the

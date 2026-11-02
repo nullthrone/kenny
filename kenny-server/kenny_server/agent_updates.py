@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable, Sequence
+from types import SimpleNamespace
 from typing import Any
 
 from starlette.requests import Request
@@ -47,7 +48,7 @@ from .webui.authz import guard, principal_of, visible_ids
 logger = logging.getLogger("kenny.agent_updates")
 
 __all__ = [
-    "CopilotUpdates",
+    "AgentUpdateTools",
     "OFFER_DELAY_S",
     "UpdateOffers",
     "UpdateRefused",
@@ -304,8 +305,12 @@ class UpdateOffers:
         return note
 
 
-class CopilotUpdates:
-    """``agent_update_status`` and ``agent_update_staged``: Ask kenny's window onto updates.
+class AgentUpdateTools:
+    """``agent_update_status`` and ``agent_update_staged``: the staged-update tools.
+
+    Registered on Ask kenny's executor and, through :func:`~kenny_server.tools.register_tools`,
+    on the MCP endpoint, so a Claude client gets the same way to update an agent as the
+    dashboard does instead of the raw ``agent_update`` it cannot fill in.
 
     The status tool is a read. The update tool is a ``normal_change`` the operator
     confirms like any other, and its ``version`` argument is what they confirm: the
@@ -333,6 +338,16 @@ class CopilotUpdates:
     def register_tools(self, executor: ToolExecutor) -> None:
         executor.register_server_tool(AGENT_UPDATE_STATUS_TOOL, self.status)
         executor.register_server_tool(AGENT_UPDATE_STAGED_TOOL, self.update)
+
+    @staticmethod
+    def mcp_session(principal: Any) -> Any:
+        """A session stand-in for a caller with no conversation: its principal, no selected agent.
+
+        MCP clients carry no reliable per-conversation identity (ADR-0038), so an update
+        over MCP always names its agent; nothing here falls back to a selection.
+        """
+
+        return SimpleNamespace(agent_id="", principal=principal)
 
     def _visible(self, session: Any, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         principal = getattr(session, "principal", None)

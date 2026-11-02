@@ -10,7 +10,7 @@ from starlette.testclient import TestClient
 
 from kenny_server import agent_updates
 from kenny_server.agent_updates import (
-    CopilotUpdates,
+    AgentUpdateTools,
     UpdateOffers,
     UpdateRefused,
     is_behind,
@@ -293,8 +293,8 @@ class RecordingCallLog:
         self.rows.append({"agent_id": agent_id, "tool": tool, "args": args, "ok": ok, "error": error})
 
 
-def _copilot(reg: AgentRegistry, tunnel: FakeTunnel, log: RecordingCallLog) -> CopilotUpdates:
-    return CopilotUpdates(
+def _copilot(reg: AgentRegistry, tunnel: FakeTunnel, log: RecordingCallLog) -> AgentUpdateTools:
+    return AgentUpdateTools(
         registry=reg,
         tunnel=tunnel,
         share_links=ShareLinks(),
@@ -550,7 +550,7 @@ async def test_chat_holds_the_update_at_the_confirm_gate_until_the_operator_appr
             call_log=RecordingCallLog(),  # type: ignore[arg-type]
             screenshots=ScreenshotStore(),
         )
-        CopilotUpdates(
+        AgentUpdateTools(
             registry=reg,
             tunnel=tunnel,  # type: ignore[arg-type]
             share_links=ShareLinks(),
@@ -583,3 +583,117 @@ async def test_chat_holds_the_update_at_the_confirm_gate_until_the_operator_appr
         assert frame["args"]["version"] == "2.7.0"
     finally:
         await store.close()
+
+
+# -- joined: the MCP endpoint, a real tunnel and a mock agent -----------------------------
+
+
+async def test_mcp_updates_an_outdated_agent_from_the_staged_binary(tmp_path, monkeypatch):
+    """The path that used to dead-end: a Claude MCP client with no URL or hash to give."""
+
+    import asyncio
+    import json
+
+    from fastmcp import Client
+    from fastmcp.client.transports import StreamableHttpTransport
+    from fastmcp.exceptions import ToolError as McpToolError
+    from test_server_e2e import SERVER_SEED_B64, MockAgent, _free_port, _Server
+
+    monkeypatch.setenv("KENNY_SERVER_PRIVATE_KEY", SERVER_SEED_B64)
+    port = _free_port()
+    app = build_app(db_path=str(tmp_path / "mcp.sqlite"))
+
+    received: list[dict[str, Any]] = []
+
+    class RecordingAgent(MockAgent):
+        async def _handle_request(self, frame: dict) -> None:
+            received.append(frame)
+            await super()._handle_request(frame)
+
+    async with _Server(app, port):
+        agent = RecordingAgent(f"ws://127.0.0.1:{port}/agent/ws", "kid-pc", os="windows")
+        await app.state.key_store.enroll("kid-pc", agent.public_key_b64)
+        await agent.start()
+        await asyncio.sleep(0.1)
+
+        transport = StreamableHttpTransport(
+            f"http://127.0.0.1:{port}/mcp",
+            headers={"Authorization": f"Bearer {app.state.operator_token}"},
+        )
+        async with Client(transport) as client:
+            names = {t.name for t in await client.list_tools()}
+            assert {"agent_update_status", "agent_update_staged"} <= names
+
+            status = json.loads((await client.call_tool("agent_update_status", {})).content[0].text)
+            assert [a["agent_id"] for a in status["outdated"]] == ["kid-pc"]
+            assert status["outdated"][0]["staged_version"] == "2.7.0"
+
+            # A version the operator did not see is refused, and nothing is sent.
+            with pytest.raises(McpToolError):
+                await client.call_tool(
+                    "agent_update_staged", {"version": "9.9.9", "agent_id": "kid-pc"}
+                )
+            assert not [f for f in received if f["tool"] == "agent_update"]
+
+            # No agent named: refused, there is no sticky selection over MCP.
+            with pytest.raises(McpToolError):
+                await client.call_tool("agent_update_staged", {"version": "2.7.0", "agent_id": ""})
+
+            done = json.loads(
+                (
+                    await client.call_tool(
+                        "agent_update_staged", {"version": "2.7.0", "agent_id": "kid-pc"}
+                    )
+                ).content[0].text
+            )
+            assert done["version"] == "2.7.0" and done["sha256"] == SHA
+
+        (frame,) = [f for f in received if f["tool"] == "agent_update"]
+        assert frame["args"]["sha256"] == SHA
+        assert frame["args"]["version"] == "2.7.0"
+        assert frame["args"]["url"].startswith("https://kenny.example.com/d/binary/")
+        await agent.stop()
+
+
+async def test_mcp_update_needs_the_operator_role_and_respects_host_scope(monkeypatch):
+    """A scoped household member cannot push a binary, nor see hosts outside their scope."""
+
+    from fastmcp import Client, FastMCP
+    from fastmcp.exceptions import ToolError as McpToolError
+
+    from kenny_server import tools as tools_module
+    from kenny_server.store import EventStore, TelemetryStore
+    from kenny_server.tools import CallLog, register_tools
+    from kenny_server.tunnel import AgentTunnel
+
+    class Member:
+        username = "kid"
+        scoped = True
+        hosts = frozenset({"own-pc"})
+
+        def at_least(self, role: str) -> bool:
+            return role == "user"
+
+        def may_see(self, agent_id: str) -> bool:
+            return agent_id in self.hosts
+
+    monkeypatch.setattr(tools_module, "_mcp_principal", lambda: Member())
+
+    reg = _registry(linus_pc={"version": "2.5.1"}, own_pc={"version": "2.5.1"})
+    fake = FakeTunnel()
+    store = TelemetryStore(db_path=":memory:")
+    mcp = FastMCP("t")
+    register_tools(
+        mcp,
+        registry=reg,
+        store=store,
+        tunnel=AgentTunnel(reg, store, EventStore(db_path=":memory:")),
+        call_log=CallLog(),
+        update_tools=_copilot(reg, fake, RecordingCallLog()),
+    )
+    async with Client(mcp) as client:
+        with pytest.raises(McpToolError):
+            await client.call_tool("agent_update_staged", {"version": "2.7.0", "agent_id": "own-pc"})
+        status = (await client.call_tool("agent_update_status", {})).data
+        assert [a["agent_id"] for a in status["outdated"]] == ["own-pc"]  # linus-pc is not theirs
+    assert fake.sent == []
