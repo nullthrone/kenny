@@ -509,6 +509,15 @@ from a cold load, not just from clicking through the queue. It shows:
   card in the drawer shows the exact tool and its frozen arguments, and deciding beside a
   bare title in a list is still refused (ADR-0059).
 
+  **The card reads as code, not as JSON.** A script or command argument is shown as the
+  exact string the interpreter receives — real line breaks, line numbers, syntax colour —
+  next to the scalar arguments as key/value rows, and the exact JSON serialisation stays
+  under **raw json**. Colour is display only: the text is never re-indented, wrapped in
+  quotes it did not have, or shortened, and code that runs inside a double-quoted string
+  (`$(…)`) is coloured as code. Invisible and direction-changing characters (zero-width,
+  bidi overrides, control characters) are drawn as labelled markers instead of being
+  skipped. The card adds no button besides the decision itself.
+
   **The ticket's gate is dismissible**; the fleet copilot's is not. Closing the drawer on a
   ticket gate is a legitimate "not yet": the gate is durable, the ticket goes on saying it
   is waiting, and a different operator may answer it. The copilot's own confirm-gate is a

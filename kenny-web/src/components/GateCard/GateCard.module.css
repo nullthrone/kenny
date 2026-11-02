@@ -13,15 +13,11 @@
   margin-bottom: 10px;
 }
 
-/* The operator's only evidence of what approving will run. overflow-wrap:
- * break-word (not `anywhere` — see src/styles/global.css) lets a long
- * value wrap without being torn apart letter-by-letter; it is NOT
- * white-space:nowrap, unlike the caps labels around it, because this text
- * must be free to wrap rather than overflow or get clipped. */
+/* Header line: which tool, on which PC. */
 .call {
   font-family: var(--font-mono);
   font-size: 12px;
-  margin-bottom: 14px;
+  margin-bottom: 12px;
   overflow-wrap: break-word;
   color: var(--text-body);
 }
@@ -30,12 +26,166 @@
   font-weight: 600;
 }
 
-.args {
+.meta {
+  color: var(--text-muted);
+}
+
+/* Scalar arguments as key / value rows. Values wrap (break-word, never
+ * nowrap/clip): they are the operator's evidence and must stay whole. */
+.argList {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 3px 14px;
+  margin: 0 0 12px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.argKey {
+  margin: 0;
+  color: var(--text-muted);
+}
+
+.argVal {
+  margin: 0;
+  min-width: 0;
+  color: var(--text-body);
+  overflow-wrap: break-word;
+  white-space: pre-wrap;
+}
+
+.literal {
+  color: var(--brass-700);
+}
+
+/* Code argument: the exact string value, line by line. Wraps with a hanging
+ * gutter; the box scrolls instead of clipping, and the caption states the
+ * line count so a long script can't be mistaken for a short one. */
+.code {
+  margin: 0 0 12px;
+  background: var(--surface-inset);
+  border: 1px solid var(--border-mid);
+}
+
+.codeHead {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border-mid);
+  font-family: var(--font-display);
+  font-size: 9px;
+  letter-spacing: var(--track-caps);
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.codeName {
   color: var(--text-body);
 }
 
-.meta {
+.codeBody {
+  margin: 0;
+  padding: 8px 10px 8px 0;
+  max-height: 50vh;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  tab-size: 4;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  color: var(--text-body);
+}
+
+.line {
+  display: block;
+  position: relative;
+  padding-left: 3.4em;
+}
+
+.line::before {
+  content: attr(data-n);
+  position: absolute;
+  left: 0;
+  width: 2.4em;
+  text-align: right;
+  color: var(--text-faint);
+  user-select: none;
+}
+
+.comment {
+  color: var(--text-faint);
+  font-style: italic;
+}
+
+.string {
+  color: var(--green-600);
+}
+
+.variable {
+  color: var(--brass-700);
+}
+
+.cmdlet {
+  font-weight: 700;
+}
+
+.keyword {
   color: var(--text-muted);
+  font-weight: 700;
+}
+
+.param {
+  color: var(--amber-600);
+}
+
+.number {
+  color: var(--red-600);
+}
+
+.op {
+  color: var(--text-muted);
+}
+
+.plain {
+  color: inherit;
+}
+
+/* Invisible / bidi-control character, labelled so it can't hide in the text. */
+.suspect {
+  background: var(--danger-bg);
+  outline: 1px solid var(--danger);
+  color: var(--danger);
+}
+
+.suspect::before {
+  content: '\27E6' attr(data-cp) '\27E7';
+  font-size: 10px;
+  user-select: none;
+}
+
+/* The exact serialisation, one disclosure away. Not a button, so a Modal's
+ * focus trap (which cycles buttons only) is unaffected. */
+.raw {
+  margin: 0 0 14px;
+}
+
+.rawSummary {
+  cursor: pointer;
+  font-family: var(--font-display);
+  font-size: 9px;
+  letter-spacing: var(--track-caps);
+  color: var(--text-muted);
+}
+
+.rawBody {
+  margin: 6px 0 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  color: var(--text-body);
 }
 
 /* MUST have flex-wrap: at 402px viewport width a third button escapes an
