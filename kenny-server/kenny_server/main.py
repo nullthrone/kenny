@@ -42,6 +42,7 @@ from .chat import ChatSessions
 from .discord_adapter import DiscordPyGateway, GatewayUnavailable
 from .discord_identity import DiscordIdentityStore
 from .discord_service import SLASH_COMMANDS, DiscordService
+from .agent_updates import AgentUpdateTools, UpdateOffers, build_update_routes
 from .distribution import ShareLinks, build_download_routes
 from .keystore import KeyStore
 from .logging_config import StoreLogHandler, configure_logging, drain_log_queue
@@ -738,6 +739,20 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
     # without a restart (ADR-0054). Building it before ``settings.load()`` is
     # deliberate and safe: nothing is read until the first notification.
     notifier_provider = NotifierProvider(settings=settings)
+    # Agents that fall behind the staged version are announced once, batched,
+    # on the same channels as alerts. An offer changes nothing: the update is
+    # the operator's click, or a confirmed Ask kenny call.
+    update_offers = UpdateOffers(
+        registry=registry, update_store=update_store, notifiers=notifier_provider
+    )
+
+    async def _on_agent_online(agent_id: str) -> None:
+        # The offer only schedules; the campaign hook sleeps before it acts.
+        await update_offers.on_agent_connect(agent_id)
+        await update_mgr.on_agent_connect(agent_id)
+
+    tunnel.on_agent_online = _on_agent_online
+    update_mgr.on_checked = update_offers.schedule
     # Cadence/cooldown/digest are read live from ``settings`` (DB > env >
     # default) on every pass; no env snapshot is baked in here.
     alert_engine = AlertEngine(
@@ -954,6 +969,15 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
     )
 
     mcp = FastMCP("kenny")
+    # The staged-update tools, one instance for both surfaces: Ask kenny's executor
+    # (via build_chat_routes) and the MCP endpoint.
+    agent_update_tools = AgentUpdateTools(
+        registry=registry,
+        tunnel=tunnel,
+        share_links=share_links,
+        update_store=update_store,
+        call_log=call_log,
+    )
     register_tools(
         mcp,
         registry=registry,
@@ -966,6 +990,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         ticket_rules=ticket_rules,
         presence=presence,
         settings=settings,
+        update_tools=agent_update_tools,
     )
     # mcp_app owns "/mcp" internally and is mounted at the app root below (not
     # re-prefixed with another "/mcp"). A Mount always requires a trailing slash
@@ -1347,6 +1372,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         client_factory=client_factory,
         copilot_tickets=copilot_tickets,
         copilot_stewards=CopilotStewards(runner=steward_runner, registry=registry, store=store),
+        copilot_updates=agent_update_tools,
         presence=presence,
         hw_history=hw_history,
         settings=settings,
@@ -1390,6 +1416,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         share_links=share_links,
         key_store=key_store,
     )
+    update_routes = build_update_routes(registry=registry, tunnel=tunnel, share_links=share_links)
     # The ticket queue (webui/inbox.py) -- deliberately its own module and
     # route builder, not folded into build_ticket_routes, so it stays out of
     # webui/tickets.py entirely. It reads the ticket store and nothing else:
@@ -1406,6 +1433,7 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         *build_auth_routes(operator_tokens, user_store=user_store, registry=registry),
         *build_oauth_routes(oauth_store=oauth_store, user_store=user_store),
         *chat_routes,
+        *update_routes,
         *download_routes,
         *user_routes,
         *ticket_routes,

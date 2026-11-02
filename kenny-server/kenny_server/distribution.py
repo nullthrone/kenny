@@ -122,6 +122,38 @@ def agent_binary_path(
     return cache if os.path.exists(cache) else None
 
 
+@dataclass(frozen=True)
+class StagedBinary:
+    """The agent binary this server would hand ``(os, arch, channel)`` right now."""
+
+    path: str
+    version: str
+    sha256: str
+    channel: str = "stable"
+
+
+def staged_binary(
+    os_name: str = "windows", arch: str = "x86_64", channel: str = "stable"
+) -> StagedBinary | None:
+    """The staged binary for ``(os_name, arch, channel)`` with its version and digest, or None.
+
+    The one resolution every update path shares — the dashboard's per-agent
+    button, the bundled "update all outdated" route and Ask kenny's
+    ``agent_update_staged`` — so the version a person is shown and the artifact
+    an agent downloads cannot come from two different lookups.
+    """
+
+    path = agent_binary_path(os_name=os_name, arch=arch, channel=channel)
+    if path is None:
+        return None
+    return StagedBinary(
+        path=path,
+        version=agent_release.resolve_agent_version(path),
+        sha256=_sha256_file(path),
+        channel=channel,
+    )
+
+
 def _expires_at(ttl_s: int) -> str:
     """Wall-clock expiry of a nonce minted now, as ISO-8601 UTC.
 
@@ -691,11 +723,10 @@ def build_download_routes(
         # app.state, so a dev-pinned agent gets the dev binary, not stable.
         update_store = getattr(request.app.state, "update_store", None)
         channel = await update_store.get_desired_channel(agent_id) if update_store is not None else "stable"
-        binary = agent_binary_path(os_name=os_name, arch=arch, channel=channel)
-        if binary is None:
+        staged = staged_binary(os_name, arch, channel)
+        if staged is None:
             return JSONResponse({"error": "agent binary not configured"}, status_code=503)
-        version = agent_release.resolve_agent_version(binary)
-        sha256 = _sha256_file(binary)
+        version, sha256 = staged.version, staged.sha256
         try:
             result = await perform_agent_update(
                 tunnel,
@@ -704,7 +735,7 @@ def build_download_routes(
                 os_name=os_name,
                 arch=arch,
                 version=version,
-                binary_path=binary,
+                binary_path=staged.path,
                 sha256=sha256,
             )
         except ToolError as exc:

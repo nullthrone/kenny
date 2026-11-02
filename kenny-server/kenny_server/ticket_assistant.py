@@ -58,6 +58,7 @@ from .toolloop import (
     STEWARD_ONLY_TOOLS,
     STEWARD_VERDICT_TOOL,
     COPILOT_STEWARD_TOOLS,
+    COPILOT_UPDATE_TOOLS,
     SERVER_TOOLS,
     TICKET_DRAFT_TOOL,
     TICKET_FIND_TOOL,
@@ -120,6 +121,7 @@ logger = logging.getLogger("kenny.tickets.assistant")
 EXCLUDED_TOOLS: frozenset[str] = (
     frozenset({"select_agent", TICKET_DRAFT_TOOL, TICKET_FIND_TOOL, STEWARD_VERDICT_TOOL})
     | COPILOT_STEWARD_TOOLS
+    | COPILOT_UPDATE_TOOLS
     | STEWARD_ONLY_TOOLS
 )
 
@@ -542,6 +544,7 @@ TRIAGE_TOOLS: frozenset[str] = (
         - FLEET_WIDE_TOOLS
         - {TICKET_SUMMARY_TOOL, "fs_cleanup_scan"}
         - COPILOT_STEWARD_TOOLS
+        - COPILOT_UPDATE_TOOLS
     )
     & (frozenset(SERVER_TOOLS) | frozenset(CAPABILITY_TOOLS))
 ) | {TRIAGE_VERDICT_TOOL}

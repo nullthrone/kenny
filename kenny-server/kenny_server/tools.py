@@ -635,8 +635,12 @@ def register_tools(
     ticket_rules: Any = None,
     presence: Any = None,
     settings: Any = None,
+    update_tools: Any = None,
 ) -> None:
     """Register all MCP tools on ``mcp``.
+
+    ``update_tools`` (``agent_updates.AgentUpdateTools``) adds ``agent_update_status`` and
+    ``agent_update_staged``; without it the MCP surface offers only the raw ``agent_update``.
 
     ``presence`` is the availability record (``store.PresenceStore``); without it
     ``agent_availability`` reconstructs presence from telemetry arrival times.
@@ -803,6 +807,37 @@ def register_tools(
         return await availability_summary(
             id, days, registry=registry, store=store, presence=presence, settings=settings
         )
+
+    if update_tools is not None:
+
+        @mcp.tool(
+            name="agent_update_status",
+            description=(
+                "The agent version the server has staged, and which agents run an older "
+                "one. Read it before updating: `outdated` is the answer to what needs "
+                "updating."
+            ),
+        )
+        async def agent_update_status() -> dict[str, Any]:
+            return await update_tools.status({}, session=update_tools.mcp_session(_mcp_principal()))
+
+        @mcp.tool(
+            name="agent_update_staged",
+            description=(
+                "Update ONE agent to the version the server has staged; the server supplies "
+                "the download and its checksum, so never ask for a URL or hash. `version` must "
+                "be the staged version from agent_update_status and the call is refused if "
+                "the staged version differs. `agent_id` names the host. Operator role. For "
+                "several agents, call it once per agent."
+            ),
+        )
+        async def agent_update_staged(version: str, agent_id: str) -> dict[str, Any]:
+            principal = _mcp_principal()
+            _require_role(principal, "operator")
+            return await update_tools.update(
+                {"version": version, "agent_id": agent_id},
+                session=update_tools.mcp_session(principal),
+            )
 
     @mcp.tool(name="agent_snapshot", description="Latest stored snapshot (or one section).")
     async def agent_snapshot(id: str, section: str | None = None) -> dict[str, Any]:

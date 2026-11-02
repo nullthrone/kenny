@@ -19,7 +19,7 @@ from types import MappingProxyType
 from typing import Any
 
 from ...tool_classes import READ_ONLY, classify
-from ...toolloop import COPILOT_STEWARD_TOOLS, SERVER_TOOLS
+from ...toolloop import COPILOT_STEWARD_TOOLS, COPILOT_UPDATE_TOOLS, SERVER_TOOLS
 from ...tools import CAPABILITY_TOOLS
 from ...ticket_rules import KNOWN_SECTIONS
 from ..policy import host_bound
@@ -62,7 +62,7 @@ TICKET_SURFACE_TOOLS: frozenset[str] = frozenset(
 
 #: Tools of the dashboard copilot alone. Their ``steward_id`` names a
 #: steward, not a machine, so no run may hold one: the gate would read it as a host.
-COPILOT_ONLY_TOOLS: frozenset[str] = COPILOT_STEWARD_TOOLS
+COPILOT_ONLY_TOOLS: frozenset[str] = COPILOT_STEWARD_TOOLS | COPILOT_UPDATE_TOOLS
 
 
 #: The steward that runs on a ticket's own surface; the only one a new ticket

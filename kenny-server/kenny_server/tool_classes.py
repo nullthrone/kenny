@@ -96,6 +96,10 @@ TOOL_CLASSES: dict[str, str] = {
     # -- telemetry / agent lifecycle ---------------------------------------
     "telemetry_collect": READ_ONLY,
     "agent_update": NORMAL_CHANGE,
+    # Ask kenny's way to the same change: the server resolves the staged binary,
+    # the operator confirms the version. Read half and change half (agent_updates.py).
+    "agent_update_status": READ_ONLY,
+    "agent_update_staged": NORMAL_CHANGE,
     # -- parental controls (ADR-0024) --------------------------------------
     "webfilter_status": READ_ONLY,
     "webfilter_apply": NORMAL_CHANGE,

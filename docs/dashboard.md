@@ -157,6 +157,17 @@ If no installer binary is available on the server yet, a banner explains why and
 **retry GitHub fetch** to any operator (see
 [Auto-fetch from GitHub](setup.md#auto-fetch-from-github-no-manual-binary-placement)).
 
+When PCs run an older agent than the binary staged for them (compared per OS,
+architecture and desired channel; an unknown version is never "behind"), an **update
+banner** lists them as `2.5.1 → 2.7.0`. An operator updates **one PC** from its row, or
+**every online PC that is behind** at once after a confirmation that names them. Each PC
+downloads the staged build; a PC with remote control off still refuses, and one failing
+does not stop the rest. Offline PCs are listed without a button. The server also announces
+newly outdated PCs once per staged version on the configured notification channels (batched,
+so PCs that reconnect together are one message). Neither the banner nor the notification
+updates anything by itself; unattended rollout is a pinned
+[campaign](#updates).
+
 ### Add a PC
 
 **Add a PC** opens a three-step modal wizard:
@@ -1506,6 +1517,12 @@ not navigate away from wherever you were.
   the [ticket-scoped gate](#ticket-detail), there is no "decide later" here, so closing the
   overlay never reads as a decision. See
   [Tool reference](tools.md#three-tiers-and-who-enforces-what).
+- **Updating agents** — "update all online agents" is answered from the staged build:
+  kenny reads which PCs are behind it and asks to update each online one, naming the
+  staged version in the confirm-gate card. It never asks you for a download URL or
+  checksum; the server supplies both from the staged binary. Each PC is its own confirmed
+  call, and the call is refused if the staged version changed after you saw the card. See
+  [Agent updates from the staged binary](tools.md#agent-updates-from-the-staged-binary).
 - **A call that is still running** — a tool can take minutes: a PowerShell script runs
   until it finishes or hits its own `timeout_s`. The moment one starts, its chip appears
   with a spinner and a seconds counter, and stays there until the result replaces it —

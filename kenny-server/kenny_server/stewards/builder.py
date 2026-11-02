@@ -39,6 +39,7 @@ from ..ticket_rules import KNOWN_SECTIONS
 from ..tool_classes import READ_ONLY, SENSITIVE_TOOLS, TOOL_CLASSES
 from ..toolloop import (
     COPILOT_STEWARD_TOOLS,
+    COPILOT_UPDATE_TOOLS,
     SERVER_TOOLS,
     STEWARD_ONLY_TOOLS,
     STEWARD_VERDICT_TOOL,
@@ -214,7 +215,7 @@ def _structural_refusal(tool: str) -> str | None:
         return "kenny has no such tool"
     if tool in NEVER_AUTHORIZED:
         return "a shell or the agent's own update; a built steward never names one"
-    if tool in COPILOT_STEWARD_TOOLS:
+    if tool in COPILOT_STEWARD_TOOLS or tool in COPILOT_UPDATE_TOOLS:
         return "a tool of Ask kenny, not of a run"
     if tool in TICKET_SURFACE_TOOLS:
         return "works on a ticket's own surface, which only triage runs on"
