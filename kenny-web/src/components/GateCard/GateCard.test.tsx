@@ -17,6 +17,9 @@ describe('GateCard', () => {
     expect(screen.getByText('winget_update')).toBeInTheDocument()
     // Exact, un-truncated, un-reformatted JSON, keys in the order they were given.
     expect(screen.getByText('{"id":"Mozilla.Firefox","silent":true}')).toBeInTheDocument()
+    // The structured view lists the same args, same order.
+    expect(Array.from(document.querySelectorAll('dt')).map((e) => e.textContent)).toEqual(['id', 'silent'])
+    expect(screen.getByText('Mozilla.Firefox')).toBeInTheDocument()
     expect(screen.getByText(/mia-desktop/)).toBeInTheDocument()
   })
 
@@ -71,5 +74,37 @@ describe('GateCard', () => {
     screen.getByText('DENY').click()
     expect(onApprove).toHaveBeenCalledTimes(1)
     expect(onDeny).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows a script as its real lines, line for line, with the exact text recoverable', () => {
+    const script = "$ts = Get-Date\nforeach ($s in $x) { Stop-Service -Name $s -Force }\n\n# done"
+    render(<GateCard tool="powershell_exec" args={{ script, timeout_s: 180 }} onApprove={vi.fn()} onDeny={vi.fn()} />)
+
+    const code = document.querySelector('code') as HTMLElement
+    // Concatenated text is the script itself — no JSON escapes, nothing added, nothing dropped.
+    expect(code.textContent).toBe(script)
+    expect(code.querySelectorAll('[data-n]')).toHaveLength(4)
+    expect(screen.getByText('4 lines · powershell')).toBeInTheDocument()
+    // Scalars sit beside it as rows; the exact serialisation is still on the card.
+    expect(screen.getByText('timeout_s')).toBeInTheDocument()
+    expect(screen.getByText(JSON.stringify({ script, timeout_s: 180 }))).toBeInTheDocument()
+  })
+
+  it('does not render markup in a script as elements', () => {
+    render(<GateCard tool="shell_exec" args={{ command: '<img src=x onerror=alert(1)>' }} onApprove={vi.fn()} onDeny={vi.fn()} />)
+    expect(document.querySelector('img')).toBeNull()
+  })
+
+  it('makes an invisible direction-override character visible without altering the text', () => {
+    const command = 'echo safe\u202E; rm -rf ~'
+    render(<GateCard tool="shell_exec" args={{ command }} onApprove={vi.fn()} onDeny={vi.fn()} />)
+    const marker = document.querySelector('[data-cp]') as HTMLElement
+    expect(marker.getAttribute('data-cp')).toBe('U+202E')
+    expect((document.querySelector('code') as HTMLElement).textContent).toBe(command)
+  })
+
+  it('adds no buttons beyond the actions (a Modal traps focus on buttons)', () => {
+    render(<GateCard tool="powershell_exec" args={{ script: 'a\nb' }} onApprove={vi.fn()} onDeny={vi.fn()} />)
+    expect(Array.from(document.querySelectorAll('button')).map((b) => b.textContent)).toEqual(['APPROVE & RUN', 'DENY'])
   })
 })

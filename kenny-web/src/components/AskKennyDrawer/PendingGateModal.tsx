@@ -66,7 +66,7 @@ export default function PendingGateModal({ gate, onApprove, onDeny, busy }: Pend
   }, [])
 
   return (
-    <Modal open onClose={noop} dismissible={false} width={440}>
+    <Modal open onClose={noop} dismissible={false} width={640}>
       <div ref={panelRef} style={{ padding: 4 }}>
         <GateCard
           tool={gate.tool}
