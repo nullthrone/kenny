@@ -300,7 +300,7 @@ def parse_days(raw: Any, default: int) -> int:
         raise ValueError("days must be an integer")
     try:
         days = int(raw)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         raise ValueError("days must be an integer") from None
     if isinstance(raw, float) and raw != days:
         raise ValueError("days must be an integer")
