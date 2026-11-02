@@ -34,6 +34,7 @@ import os
 import shutil
 import uuid
 from datetime import datetime, timedelta, timezone
+from collections.abc import Callable
 from typing import Any
 
 from . import __version__, agent_release, server_release
@@ -112,6 +113,9 @@ class UpdateManager:
         self.share_links = share_links
         self.settings = settings
         self.campaign_dir = campaign_dir or default_campaign_dir(db_path)
+        #: Called (synchronously, best-effort) after every detection pass, so
+        #: whatever announces outdated agents sees a newly staged version.
+        self.on_checked: Callable[[], None] | None = None
 
     # -- detection -----------------------------------------------------------
 
@@ -153,6 +157,12 @@ class UpdateManager:
 
         status_dev = await self._check_agent_dev()
         server_result_dev = await self._check_server_dev(image_ref)
+
+        if self.on_checked is not None:
+            try:
+                self.on_checked()
+            except Exception:  # noqa: BLE001 - an announcement must not fail a detection pass
+                logger.exception("post-check hook failed")
 
         return {
             "agent": status.to_public(),

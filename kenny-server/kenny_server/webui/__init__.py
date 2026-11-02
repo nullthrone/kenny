@@ -3222,6 +3222,7 @@ def build_chat_routes(
     settings: Settings | None = None,
     hw_history: Any = None,
     copilot_stewards: Any = None,
+    copilot_updates: Any = None,
 ) -> list[Route]:
     """Build the server-hosted Claude chat routes.
 
@@ -3259,6 +3260,8 @@ def build_chat_routes(
         copilot_tickets.register_tools(executor)
     if copilot_stewards is not None:
         copilot_stewards.register_tools(executor)
+    if copilot_updates is not None:
+        copilot_updates.register_tools(executor)
 
     def driver_of(request: Request) -> str | None:
         """The operator driving *this* request's turn, for its audit rows.

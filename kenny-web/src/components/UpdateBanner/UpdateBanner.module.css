@@ -1,0 +1,101 @@
+.banner {
+  composes: kc-box from global;
+  margin-bottom: 18px;
+  padding: 12px 14px;
+  border: 1px solid var(--accent, var(--border));
+  border-left-width: 3px;
+  border-radius: 2px;
+  background: var(--surface-2, transparent);
+  font-size: var(--text-sm);
+  color: var(--text);
+}
+
+.head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.icon {
+  flex: none;
+  margin-top: 1px;
+  color: var(--accent, var(--text));
+}
+
+.text {
+  flex: 1 1 auto;
+  line-height: 1.5;
+}
+
+.title {
+  font-weight: 600;
+}
+
+.sub {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+.list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 32px;
+}
+
+.name {
+  flex: 1 1 auto;
+  font-family: var(--font-mono, monospace);
+}
+
+.versions {
+  color: var(--text-muted);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--text-xs);
+}
+
+.offline {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+.btn {
+  flex: none;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  background: transparent;
+  font-family: var(--font-display);
+  font-size: 11px;
+  letter-spacing: var(--track-caps);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.btn:hover:not(:disabled) {
+  border-color: var(--text);
+}
+
+.btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.result {
+  margin-top: 8px;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.failed {
+  color: var(--crit, var(--warn));
+}

@@ -103,6 +103,18 @@ COPILOT_STEWARD_TOOLS: frozenset[str] = frozenset(
     }
 )
 
+#: The copilot's two tools for agent updates (``kenny_server/agent_updates.py``).
+#: ``agent_update_status`` reads the staged version and which agents are behind it;
+#: ``agent_update_staged`` sends the *staged* binary to one agent, so the model
+#: never holds a URL or a digest. Fleet policy, not a ticket's or a steward's
+#: business: withheld from every ticket-bound turn by ``ticket_assistant.EXCLUDED_TOOLS``
+#: and refused to every steward spec by the catalog.
+AGENT_UPDATE_STATUS_TOOL = "agent_update_status"
+AGENT_UPDATE_STAGED_TOOL = "agent_update_staged"
+COPILOT_UPDATE_TOOLS: frozenset[str] = frozenset(
+    {AGENT_UPDATE_STATUS_TOOL, AGENT_UPDATE_STAGED_TOOL}
+)
+
 #: The tool a ticket-bound turn ends with when it found or changed something
 #: (see :meth:`~kenny_server.ticket_assistant.TicketAssistant.record_summary`).
 #: A conversation belongs to the surface it happened on; what came of it belongs
@@ -230,6 +242,36 @@ SERVER_TOOLS: dict[str, dict[str, Any]] = {
             },
         },
         "required": ["id"],
+    },
+    AGENT_UPDATE_STATUS_TOOL: {
+        "description": (
+            "Which agent version the server has staged, and which agents run an older "
+            "one (agent, online, os, current_version, staged_version). Call it before "
+            "updating agents: the outdated list is the answer to 'what needs updating'."
+        ),
+        "properties": {},
+        "required": [],
+    },
+    AGENT_UPDATE_STAGED_TOOL: {
+        "description": (
+            "Update ONE agent to the agent version the server has staged. The server "
+            "supplies the download and its checksum; never ask the operator for a URL "
+            "or hash. `version` must be the staged version from agent_update_status — "
+            "it is what the operator confirms, and the call is refused if the staged "
+            "version has since changed. To update several agents, call it once per "
+            "agent."
+        ),
+        "properties": {
+            "version": {
+                "type": "string",
+                "description": "The staged version being installed, as agent_update_status reports it.",
+            },
+            "agent_id": {
+                "type": "string",
+                "description": "The agent to update; defaults to the selected agent.",
+            },
+        },
+        "required": ["version"],
     },
     STEWARD_VERDICT_TOOL: {
         "description": (

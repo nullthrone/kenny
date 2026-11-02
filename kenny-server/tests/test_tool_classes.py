@@ -80,6 +80,9 @@ SINCE_LEGACY = frozenset(
         # bounded service restart (contract v0.23).
         "fs_cleanup",
         "service_restart",
+        # Sends the staged agent binary to one agent, on a confirmed version
+        # (kenny_server/agent_updates.py).
+        "agent_update_staged",
     }
 )
 

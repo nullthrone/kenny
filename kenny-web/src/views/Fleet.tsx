@@ -5,6 +5,7 @@ import type { FleetAgent, FleetResponse } from '../api/types'
 import AvailabilityStrip from '../components/AvailabilityStrip/AvailabilityStrip'
 import BinaryBanner from '../components/BinaryBanner/BinaryBanner'
 import EmptyState from '../components/EmptyState/EmptyState'
+import UpdateBanner from '../components/UpdateBanner/UpdateBanner'
 import SeverityChip from '../components/SeverityChip/SeverityChip'
 import { severityColor } from '../components/tone'
 import { Monitor, ICON_STROKE_WIDTH } from '../components/icons'
@@ -29,6 +30,7 @@ export default function Fleet() {
           needs to know there is nothing to hand it before they start, not after
           the download 503s. */}
       <BinaryBanner />
+      <UpdateBanner />
 
       {isPending && <p style={{ color: 'var(--text-muted)', fontSize: 'var(--text-sm)' }}>Loading the fleet…</p>}
 

@@ -164,6 +164,27 @@ export interface AgentBinaryStatus {
 }
 
 /** `GET /api/me` — identity, role and host scope for the signed-in principal. */
+/** One agent behind the binary staged for it (`GET /api/agents/outdated`). */
+export interface OutdatedAgent {
+  agent_id: string
+  online: boolean
+  os: string
+  arch: string
+  channel: string
+  current_version: string
+  staged_version: string
+}
+
+/** Per-agent outcome of `POST /api/agents/update-outdated`. */
+export interface UpdateOutdatedResult {
+  agent_id: string
+  status: 'sent' | 'skipped' | 'failed'
+  reason?: string
+  error?: string
+  from_version?: string | null
+  version?: string
+}
+
 export interface Me {
   user_id: string
   username: string

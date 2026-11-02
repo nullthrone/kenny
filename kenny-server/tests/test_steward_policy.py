@@ -29,6 +29,7 @@ from kenny_server.store import EventStore, TelemetryStore
 from kenny_server.tool_classes import NORMAL_CHANGE, READ_ONLY, STANDARD_CHANGE, TOOL_CLASSES
 from kenny_server.toolloop import (
     COPILOT_STEWARD_TOOLS,
+    COPILOT_UPDATE_TOOLS,
     SERVER_TOOLS,
     TRIAGE_VERDICT_TOOL,
     Allow,
@@ -772,10 +773,11 @@ def test_every_host_naming_server_tool_is_pinned() -> None:
     for name, schema in SERVER_TOOLS.items():
         props = schema["properties"]
         named = [k for k in ("id", "agent_id") if k in props]
-        if name in COPILOT_STEWARD_TOOLS:
+        if name in COPILOT_STEWARD_TOOLS or name in COPILOT_UPDATE_TOOLS:
             # Their ``steward_id`` is a steward, not a machine, so it is
             # not pinned -- and no run may hold them: the catalog refuses a spec
-            # naming one (tests/test_copilot_stewards.py joins that half).
+            # naming one (tests/test_copilot_stewards.py joins that half). The
+            # copilot's update tools are refused the same way (tests/test_agent_updates.py).
             continue
         if named:
             assert name in HOST_ARG, f"{name} names a host in {named} and is not pinned"
