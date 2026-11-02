@@ -778,6 +778,8 @@ class StewardRunner:
             raise ValueError(f"evidence provider {name!r} is already registered")
         self._evidence[name] = provider
 
+    # POSSIBLY DEAD: no production caller; only tests/test_config_hygiene.py uses it
+    # as a seam check that every evidence name has a registered provider.
     def evidence_providers(self) -> frozenset[str]:
         """The evidence names a provider is registered for."""
 
