@@ -620,6 +620,9 @@ async def test_sessions_get_returns_none_when_absent_everywhere(history_store: C
     assert await sessions.get("nope") is None
     # And with no store configured at all.
     assert await ChatSessions().get("nope") is None
+    # A non-string id (any JSON value can reach here from the API) is simply unknown.
+    for bad in ([], [1], {}, 5, None):
+        assert await sessions.get(bad) is None  # type: ignore[arg-type]
 
 
 async def test_sessions_get_falls_back_to_store(history_store: ChatHistoryStore) -> None:

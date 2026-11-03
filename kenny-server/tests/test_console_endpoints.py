@@ -438,7 +438,7 @@ def test_theme_rejects_anything_outside_the_closed_vocabulary(tmp_path) -> None:
     app = _app(tmp_path)
     with TestClient(app) as c:
         _setup_admin(c)
-        for bad in ("solarized", "", None, 1):
+        for bad in ("solarized", "", None, 1, [], {}, ["dark"]):
             assert c.put("/api/me/theme", json={"theme": bad}).status_code == 400
         assert c.put("/api/me/theme", json={}).status_code == 400
         assert c.get("/api/me").json()["theme"] is None
