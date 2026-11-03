@@ -116,3 +116,15 @@ def test_chat_rejects_non_object_json_body_with_400(tmp_path, path: str) -> None
         resp = c.post(path, content=b"[]", headers={"content-type": "application/json"})
         assert resp.status_code == 400
         assert resp.json() == {"error": "body must be a JSON object"}
+
+
+@pytest.mark.parametrize("path", ["/api/chat/confirm", "/api/chat/confirm/stream"])
+def test_chat_confirm_unhashable_session_id_is_404(tmp_path, path) -> None:
+    """A JSON array/object ``session_id`` used to raise ``TypeError`` (unhashable
+    dict key) inside ``ChatSessions.get`` and surface as a 500."""
+
+    app = build_app(db_path=str(tmp_path / "api.sqlite"))
+    with TestClient(app, raise_server_exceptions=False) as c:
+        for sid in ([1], [], {"a": 1}):
+            resp = c.post(path, headers=_bearer(app), json={"session_id": sid})
+            assert resp.status_code == 404

@@ -341,6 +341,8 @@ class ChatSessions:
         an immediate confirm) hits the fast path.
         """
 
+        if not isinstance(session_id, str):
+            return None  # wire/API-supplied ids can be any JSON value; none but a string is a session
         if session_id in self._sessions:
             return self._sessions[session_id]
         if self._store is None:

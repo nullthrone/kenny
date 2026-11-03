@@ -150,7 +150,7 @@ def build_user_routes(
         principal = require_user(request)
         body = await _body(request)
         theme = body.get("theme")
-        if theme not in THEMES:
+        if not isinstance(theme, str) or theme not in THEMES:
             return _err(f"theme must be one of {', '.join(sorted(THEMES))}")
         if principal.user_id is None:
             return JSONResponse({"theme": theme, "stored": False})
