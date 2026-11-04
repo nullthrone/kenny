@@ -147,6 +147,12 @@ def test_fan_band_medians_use_all_nonzero_samples_taken_in_the_band() -> None:
     assert (key, "rpm_duty_70_90") not in got
 
 
+def test_fan_samples_near_the_float_limit_do_not_break_the_rollup() -> None:
+    got = rows([snapshot(fans=fans_section(fan(samples=[1e308, 1e308, 1e308], duty=50)))])
+    assert ("fan:nct6798.fan1", "rpm_cv_max") not in got
+    assert got[("fan:nct6798.fan1", "stall_seen")] == 0.0
+
+
 def test_a_band_needs_three_samples() -> None:
     got = rows([snapshot(fans=fans_section(fan(samples=[1500, 1500, 0, 0, 0], duty=80)))])
     assert ("fan:nct6798.fan1", "rpm_duty_70_90") not in got
