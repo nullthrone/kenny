@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from kenny_server.keystore import build_transcript
@@ -90,3 +91,22 @@ def test_policy_decision_vectors(case: dict) -> None:
         f"{case['name']}: expected {case['expect']}, got {verdict}"
         f"{' (' + hit[1] + ')' if hit else ''} — {case['why']}"
     )
+
+
+@pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity", "1e999"])
+def test_fixtures_telemetry_rejects_non_finite_numbers(literal: str) -> None:
+    raw = (
+        '{"type":"telemetry","agent_id":"a","collected_at":"t",'
+        '"snapshot":{"disk":{"status":"ok","summary":"s","volumes":[{"x":%s}]}}}' % literal
+    )
+    with pytest.raises(ValidationError):
+        parse_frame(raw)
+
+
+def test_fixtures_log_rejects_non_finite_fields() -> None:
+    raw = (
+        '{"type":"log","agent_id":"a","at":"t","level":"info","target":"x",'
+        '"message":"m","fields":{"v":NaN}}'
+    )
+    with pytest.raises(ValidationError):
+        parse_frame(raw)
