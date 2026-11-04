@@ -825,6 +825,7 @@ class StewardStore:
             row = await cur.fetchone()
         return int(row["total"]) if row is not None else 0
 
+    # POSSIBLY DEAD: no production caller; only tests/test_steward_store.py uses it.
     async def count_running(self, *, steward_id: str | None = None) -> int:
         """How many runs are in flight, optionally for one steward."""
 
