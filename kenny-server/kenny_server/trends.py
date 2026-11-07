@@ -441,6 +441,8 @@ def _pcie_regression(
     return None
 
 
+# POSSIBLY DEAD: no production caller — only tests/test_hardware_trends.py calls
+# this; _gpu_forecasts goes through _pcie_regression instead.
 def pcie_width_regression(loaded_max: Series, width_max: Series | None = None) -> bool:
     """Whether a GPU's link under load is narrower than it has been.
 
@@ -540,6 +542,8 @@ def _error_rate(counts: Series, today: date | str | None) -> tuple[float, float]
     return recent, prior / RATE_PRIOR_DAYS * 7.0
 
 
+# POSSIBLY DEAD: no production caller — only tests/test_hardware_trends.py calls
+# this; _component_forecasts goes through _error_rate instead.
 def error_rate_rising(counts: Series, today: date | str | None = None) -> bool:
     """Whether a daily event count is climbing.
 
