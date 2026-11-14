@@ -14,7 +14,7 @@ COPY kenny-web/ ./kenny-web/
 # to kenny-web/) lands this at /repo/kenny-server/kenny_server/webui/dist.
 RUN npm --prefix kenny-web run build
 
-FROM python:3.14-slim
+FROM python:3.15-slim
 
 WORKDIR /app
 COPY kenny-server/ /app/
