@@ -21,6 +21,9 @@ export function readEnterToSend(): boolean {
   return safeGetItem(ENTER_TO_SEND_KEY) === 'on'
 }
 
+// POSSIBLY DEAD: no component calls this — the console has no control that
+// changes the preference, so only a value already in storage is ever read.
+// Only preferences.test.ts writes through it.
 export function writeEnterToSend(on: boolean): void {
   safeSetItem(ENTER_TO_SEND_KEY, on ? 'on' : 'off')
 }

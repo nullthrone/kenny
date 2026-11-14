@@ -302,6 +302,9 @@ BUGCHECK_COMPONENTS: dict[str, tuple[str, str]] = {
 
 # 0x117 (VIDEO_TDR_TIMEOUT_DETECTED) is a *live* dump of a TDR the driver
 # recovered from; the machine did not go down. It carries no attribution.
+# POSSIBLY DEAD: no production caller reads this set — 0x117 attributes nothing
+# because it is absent from BUGCHECK_COMPONENTS, not because anything consults
+# this; only tests/test_hardware_catalog.py asserts membership.
 BUGCHECK_IGNORED: frozenset[str] = frozenset({"0x117"})
 
 
