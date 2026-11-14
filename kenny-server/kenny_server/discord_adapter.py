@@ -72,6 +72,8 @@ class MessageEvent:
     author_is_bot: bool
     content: str
     mentions_bot: bool
+    # POSSIBLY DEAD: populated by the gateway translation but never read by the
+    # service, the router or any handler — only tests assert on it.
     attachment_count: int
 
 
