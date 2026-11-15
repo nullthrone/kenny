@@ -21,7 +21,7 @@
 .card {
   composes: kc-box from global;
   border: 1px solid var(--border-line);
-  border-radius: 2px;
+  border-radius: var(--radius-3);
   padding: 12px 14px;
 }
 
@@ -45,7 +45,7 @@
   flex: none;
   padding: 1px 6px;
   border: 1px solid currentColor;
-  border-radius: 2px;
+  border-radius: var(--radius-1);
   font-family: var(--font-display);
   font-size: 9px;
   letter-spacing: var(--track-caps);

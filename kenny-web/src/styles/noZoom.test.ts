@@ -8,9 +8,8 @@ import { describe, expect, it } from 'vitest'
  * WebKit on iOS zooms the whole page in when a text-entry control is focused
  * whose computed font-size is below 16px, and does not zoom back out. Every
  * control this app draws is below that line — the form controls sit at
- * `--text-sm` (13px) or smaller, and even the body default `--text-md` is
- * 15px — so the floor is held by one rule in `global.css` rather than by 20
- * module stylesheets agreeing with each other.
+ * `--text-sm` (13px) or smaller — so the floor is held by one rule in
+ * `global.css` rather than by 20 module stylesheets agreeing with each other.
  *
  * What that makes checkable here is NOT "no module declares below 16px": the
  * global rule is `!important`, so it already overrides every one of them, and

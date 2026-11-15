@@ -6,6 +6,7 @@ import type { FleetResponse } from '../../../api/types'
 import type { SuppressionRule } from '../../host/types'
 import { useAddSuppression, useRemoveSuppression, useSuppressions } from '../../host/api'
 import shared from '../shared.module.css'
+import Loading from '../../../components/Loading/Loading'
 
 /**
  * Admin → Alarm rules → reliability suppressions (ADR-0041). Every rule, fleet-wide
@@ -29,7 +30,7 @@ export default function SuppressionsSection() {
     remove.mutate(rule.id)
   }
 
-  if (rules.isLoading) return <div className={shared.loading}>Loading…</div>
+  if (rules.isLoading) return <Loading className={shared.loading}>Loading…</Loading>
   if (rules.isError || !rules.data) return <EmptyState title="Could not load suppressions" message="Something went wrong. Reload to try again." />
 
   const error = [add, remove].map((m) => (m.error instanceof ApiError ? m.error.message : m.isError ? 'Something went wrong. Try again.' : null)).find((m) => m)

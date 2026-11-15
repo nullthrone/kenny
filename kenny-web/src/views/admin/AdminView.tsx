@@ -18,6 +18,7 @@ import DiscordSection from './sections/DiscordSection'
 import UsersSection from './sections/UsersSection'
 import ShellPolicySection from './sections/ShellPolicySection'
 import styles from './AdminView.module.css'
+import Loading from '../../components/Loading/Loading'
 
 /** Sections with no settings group of their own behind them. */
 const SYNTHETIC_LABELS: Record<string, string> = {
@@ -109,7 +110,7 @@ export default function AdminView() {
         <h1 className="kc-h1" style={{ fontFamily: 'var(--font-display)', fontWeight: 500, fontSize: 'var(--display-md)', margin: '0 0 24px' }}>
           Admin
         </h1>
-        <div className={styles.loading}>Loading…</div>
+        <Loading className={styles.loading}>Loading…</Loading>
       </div>
     )
   }

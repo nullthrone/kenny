@@ -14,6 +14,7 @@ import {
 } from './queries'
 import shared from '../../shared.module.css'
 import styles from './stewards.module.css'
+import Loading from '../../../../components/Loading/Loading'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 const SERVER_SCOPE = 'server'
@@ -259,7 +260,7 @@ export default function AuthorizationsPanel({ steward, canManage }: Authorizatio
   }
 
   let table
-  if (query.isLoading) table = <div className={shared.loading}>Loading…</div>
+  if (query.isLoading) table = <Loading className={shared.loading}>Loading…</Loading>
   else if (query.isError || !query.data) {
     table = <EmptyState title="Could not load the authorizations" message="Something went wrong. Reload to try again." />
   } else if (query.data.authorizations.length === 0) {

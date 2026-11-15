@@ -115,6 +115,7 @@ p.fieldErrors {
   gap: 6px 8px;
   padding: 6px 10px;
   border: 1px solid var(--border-line);
+  border-radius: var(--radius-pill);
 }
 
 .banner {

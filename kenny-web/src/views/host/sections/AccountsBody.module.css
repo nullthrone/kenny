@@ -22,6 +22,7 @@
 .card {
   composes: kc-box from global;
   border: 1px solid var(--border-line);
+  border-radius: var(--radius-3);
   padding: 14px 16px;
 }
 
@@ -49,6 +50,7 @@
   font-size: 9px;
   letter-spacing: var(--track-caps);
   border: 1px solid var(--border-mid);
+  border-radius: var(--radius-pill);
   color: var(--text-muted);
   padding: 1px 6px;
 }

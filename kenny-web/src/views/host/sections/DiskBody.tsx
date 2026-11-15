@@ -251,7 +251,7 @@ function Volumes({ disk }: { disk: DiskSection }) {
               <span className={styles.name}>{v.mount}</span>
               <span className={styles.bar}>
                 <span
-                  className={styles.fill}
+                  className={`${styles.fill} kc-fill-x`}
                   style={{ width: `${pct}%`, background: highlighted ? color : 'var(--ink-200)' }}
                 />
               </span>

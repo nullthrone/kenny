@@ -7,6 +7,7 @@ import type { AdminRow, UpdateAgentRow, UpdateCampaign, UpdatesResponse } from '
 import GenericSettingsSection from './GenericSettingsSection'
 import shared from '../shared.module.css'
 import styles from './UpdatesSection.module.css'
+import Loading from '../../../components/Loading/Loading'
 
 type Channel = 'stable' | 'dev'
 
@@ -138,7 +139,7 @@ export default function UpdatesSection({ rows = [] }: UpdatesSectionProps) {
     onSuccess: invalidate,
   })
 
-  if (query.isLoading) return <div className={shared.loading}>Loading…</div>
+  if (query.isLoading) return <Loading className={shared.loading}>Loading…</Loading>
   if (query.isError) return <EmptyState title="Could not load update status" message="Something went wrong. Reload to try again." />
   if (!query.data) return null
 
@@ -262,7 +263,7 @@ export default function UpdatesSection({ rows = [] }: UpdatesSectionProps) {
                   </span>
                   <span className={`${styles.hostMeta} ${shared.mono}`}>{a.current_version || '?'}</span>
                   <span className={styles.bar}>
-                    <span className={styles.barFill} style={{ width: `${s.pct}%`, background: s.color }} />
+                    <span className={`${styles.barFill} kc-fill-x`} style={{ width: `${s.pct}%`, background: s.color }} />
                   </span>
                   <span className={styles.channelCell}>
                     <span className={styles.builtBadge}>{a.channel || 'stable'}</span>

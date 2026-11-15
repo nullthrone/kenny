@@ -30,6 +30,7 @@
   font-size: 9px;
   letter-spacing: var(--track-caps);
   border: 1px solid var(--border-mid);
+  border-radius: var(--radius-pill);
   color: var(--text-muted);
   padding: 1px 6px;
   white-space: nowrap;

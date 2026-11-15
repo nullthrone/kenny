@@ -5,10 +5,12 @@ import type { TodayItem, TodayResponse } from '../api/types'
 import Donut from '../components/Donut/Donut'
 import Sparkline from '../components/Sparkline/Sparkline'
 import EmptyState from '../components/EmptyState/EmptyState'
+import StepRule from '../components/StepRule/StepRule'
 import { severityColor } from '../components/tone'
 import { splitVerdict, todayEyebrow, kpiColor, kpiValue } from './today/format'
 import { formatSince } from './host/format'
 import styles from './today/Today.module.css'
+import Loading from '../components/Loading/Loading'
 
 /** Today's row severity domain (`crit`/`warn`/`held`) isn't the shared `Severity`
  * union — `held` has no analogue there and needs the prototype's brass tone,
@@ -42,6 +44,7 @@ export default function Today() {
     return (
       <div className={`${styles.root} kc-content kc-view`}>
         <h1 className="kc-h1">Today</h1>
+        <Loading className={styles.pending}>Reading the fleet…</Loading>
       </div>
     )
   }
@@ -79,6 +82,8 @@ export default function Today() {
       ) : (
         <p className={styles.subtitle}>Ranked by consequence. Work top to bottom; the rest of the fleet can wait.</p>
       )}
+
+      <StepRule className={styles.rule} />
 
       {!allQuiet && (
         <div className={styles.items}>
@@ -132,7 +137,7 @@ export default function Today() {
         </div>
       </div>
 
-      <div className={`${styles.kpis} kc-kpis`}>
+      <div className={`${styles.kpis} kc-kpis kc-stagger`}>
         {data.kpis.map((kpi) => (
           <span key={kpi.key}>
             <span className={styles.kpiValue} style={{ color: kpiColor(kpi.severity) }}>

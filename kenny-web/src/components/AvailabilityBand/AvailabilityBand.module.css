@@ -1,6 +1,7 @@
 .panel {
   composes: kc-box from global;
   background: var(--surface-card);
+  border-radius: var(--radius-3);
   border: 1px solid var(--border-line);
   box-shadow: var(--shadow-1);
   padding: 20px 24px 16px;
@@ -157,8 +158,10 @@
   padding: 5px 9px;
   background: var(--kc-inv-bg);
   color: var(--kc-inv-fg);
-  /* In dark the inverse surface IS the card colour; the rule is what lifts it. */
+  /* In dark the ink panel sits close to the page ground; the rule is what lifts it. */
   border: 1px solid var(--border-mid);
+  border-radius: var(--radius-2);
+  animation: nt-fade-in var(--dur-fast) var(--ease) both;
   font-family: var(--font-mono);
   font-size: 11px;
   line-height: 1.4;
@@ -182,5 +185,8 @@
 @media (prefers-reduced-motion: reduce) {
   .plot {
     transition: none;
+  }
+  .tooltip {
+    animation: none;
   }
 }

@@ -50,7 +50,7 @@
 }
 
 .entry:hover .detail {
-  color: var(--text);
+  color: var(--text-body);
 }
 
 .chip {

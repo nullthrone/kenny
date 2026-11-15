@@ -77,7 +77,11 @@ async def run(widths: list[int], routes: list[str]) -> int:
         browser = await pw.chromium.launch(**harness.launch_kwargs())
         for width in widths:
             context = await browser.new_context(
-                viewport={"width": width, "height": 950}, ignore_https_errors=True
+                viewport={"width": width, "height": 950},
+                ignore_https_errors=True,
+                # Entrance animations scale and translate boxes; measure the
+                # settled layout, not a frame of the animation.
+                reduced_motion="reduce",
             )
             await context.add_cookies(dashboard.cookies())
             page = await context.new_page()

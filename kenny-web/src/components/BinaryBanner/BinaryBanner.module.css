@@ -7,10 +7,11 @@
   margin-bottom: 18px;
   border: 1px solid var(--warn);
   border-left-width: 3px;
-  border-radius: 2px;
-  background: var(--surface-2, transparent);
+  border-radius: var(--radius-3);
+  animation: nt-fade-up var(--dur-med) var(--ease) both;
+  background: var(--surface-card);
   font-size: var(--text-sm);
-  color: var(--text);
+  color: var(--text-body);
 }
 
 .icon {
@@ -42,21 +43,27 @@
   flex: none;
   min-height: 32px;
   padding: 0 12px;
-  border: 1px solid var(--border);
-  border-radius: 2px;
+  border: 1px solid var(--border-mid);
+  border-radius: var(--radius-2);
   background: transparent;
   font-family: var(--font-display);
   font-size: 11px;
   letter-spacing: var(--track-caps);
-  color: var(--text);
+  color: var(--text-body);
   cursor: pointer;
 }
 
 .retry:hover:not(:disabled) {
-  border-color: var(--text);
+  border-color: var(--text-body);
 }
 
 .retry:disabled {
   opacity: 0.6;
   cursor: default;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .banner {
+    animation: none;
+  }
 }

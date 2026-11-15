@@ -1,3 +1,5 @@
+import styles from './Sparkline.module.css'
+
 export interface SparklineProps {
   /**
    * Any numeric scale you like — normalized internally so the largest
@@ -70,8 +72,9 @@ export default function Sparkline({
       role="img"
       aria-label={label}
     >
-      {areaPath && <path d={areaPath} fill={fill} />}
-      <path d={linePath} fill="none" stroke={color} strokeWidth="1.5" />
+      {areaPath && <path d={areaPath} fill={fill} className={styles.area} />}
+      {/* pathLength normalises the stroke to 1 so the draw-in needs no measuring. */}
+      <path d={linePath} fill="none" stroke={color} strokeWidth="1.5" pathLength={1} className={styles.line} />
       {hasReference && (
         <line
           x1="0"

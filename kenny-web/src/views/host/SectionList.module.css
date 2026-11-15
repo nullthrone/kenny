@@ -19,6 +19,7 @@
   width: 100%;
   text-align: left;
   background: var(--surface-card);
+  border-radius: var(--radius-3);
   border: 1px solid var(--border-line);
   box-shadow: var(--shadow-1);
   padding: 18px 20px;
@@ -115,7 +116,7 @@
   font-family: var(--font-display);
   font-size: 12px;
   flex: none;
-  color: var(--text);
+  color: var(--text-body);
 }
 
 .postureReason {

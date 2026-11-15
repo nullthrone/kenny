@@ -36,7 +36,7 @@ export default function MobileTabBar({ role, navBadges }: MobileTabBarProps) {
             key={item.key}
             to={item.href}
             className={styles.tab}
-            style={{ color: isActive ? '#F4F2EC' : 'var(--ink-300)' }}
+            data-active={isActive}
           >
             <Icon width={20} height={20} strokeWidth={ICON_STROKE_WIDTH} aria-hidden="true" />
             <span className={styles.label}>{item.label}</span>

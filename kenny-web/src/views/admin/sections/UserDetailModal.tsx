@@ -8,6 +8,7 @@ import type { AvatarsResponse } from '../../profile/types'
 import type { FleetResponse, Role } from '../../../api/types'
 import type { AdminUser, ToolClassesResponse } from '../types'
 import shared from '../shared.module.css'
+import Loading from '../../../components/Loading/Loading'
 
 export interface UserDetailModalProps {
   userId: number | null
@@ -131,7 +132,7 @@ export default function UserDetailModal({ userId, onClose, ownId }: UserDetailMo
         </button>
       </div>
 
-      {detail.isLoading && <div className={shared.loading}>Loading…</div>}
+      {detail.isLoading && <Loading className={shared.loading}>Loading…</Loading>}
       {detail.isError && <EmptyState title="Could not load this user" message="Something went wrong. Reload to try again." />}
 
       {detail.data && (

@@ -32,3 +32,22 @@ export function persistTheme(theme: Theme): void {
 export function applyThemeToDocument(theme: Theme): void {
   document.documentElement.setAttribute('data-theme', theme)
 }
+
+const THEME_FADE_CLASS = 'kc-theme-fade'
+const THEME_FADE_MS = 360
+let themeFadeTimer: ReturnType<typeof setTimeout> | undefined
+
+/**
+ * Cross-fade the next theme repaint instead of snapping to it.
+ *
+ * Only for a switch the operator makes: adopting the account's stored theme on
+ * load must not animate. The class carries the transitions (global.css,
+ * `.kc-theme-fade`) and is dropped again once they have run, so it never slows
+ * ordinary hover feedback. Reduced motion is honoured in the stylesheet.
+ */
+export function fadeThemeChange(): void {
+  const root = document.documentElement
+  root.classList.add(THEME_FADE_CLASS)
+  clearTimeout(themeFadeTimer)
+  themeFadeTimer = setTimeout(() => root.classList.remove(THEME_FADE_CLASS), THEME_FADE_MS)
+}

@@ -30,6 +30,7 @@
   position: absolute;
   inset: 0 auto 0 0;
   display: block;
+  transition: width var(--dur-slow) var(--ease);
 }
 
 .used {
@@ -61,4 +62,10 @@
   color: var(--text-muted);
   line-height: 1.8;
   overflow-x: auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fill {
+    transition: none;
+  }
 }

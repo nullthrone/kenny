@@ -10,6 +10,7 @@ import { ModeBadge, RunStatusTag, shortHash, triggerLabel } from './stewards/bad
 import { useStewards } from './stewards/queries'
 import shared from '../shared.module.css'
 import styles from './stewards/stewards.module.css'
+import Loading from '../../../components/Loading/Loading'
 
 /** `#/admin/stewards/new`: the builder form. No built steward can be called this: ids start with `custom_`. */
 const NEW_ID = 'new'
@@ -94,7 +95,7 @@ export default function StewardsSection({ canManage }: StewardsSectionProps) {
   const { detail } = useParams<{ detail?: string }>()
   const query = useStewards()
 
-  if (query.isLoading) return <div className={shared.loading}>Loading…</div>
+  if (query.isLoading) return <Loading className={shared.loading}>Loading…</Loading>
   if (query.isError || !query.data) {
     const unavailable = query.error instanceof ApiError && query.error.status === 503
     return (

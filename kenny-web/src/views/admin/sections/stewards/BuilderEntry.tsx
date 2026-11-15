@@ -16,11 +16,12 @@ import {
 } from './queries'
 import shared from '../../shared.module.css'
 import styles from './stewards.module.css'
+import Loading from '../../../../components/Loading/Loading'
 
 /** Runs `children` once the builder catalog has been read; says so when it cannot be. */
 function WithCatalog({ children }: { children: (catalog: BuilderCatalog) => ReactNode }) {
   const catalog = useBuilderCatalog()
-  if (catalog.isLoading) return <div className={shared.loading}>Loading…</div>
+  if (catalog.isLoading) return <Loading className={shared.loading}>Loading…</Loading>
   if (catalog.isError || !catalog.data) {
     return (
       <EmptyState
@@ -78,7 +79,7 @@ export function NewStewardPage({ canManage }: { canManage: boolean }) {
       </p>
       <WithCatalog>
         {(catalog) => {
-          if (wantsDraft && draft === undefined) return <div className={shared.loading}>Loading…</div>
+          if (wantsDraft && draft === undefined) return <Loading className={shared.loading}>Loading…</Loading>
           const fromDraft = draft !== undefined && draft !== 'none' && 'data' in draft ? draft.data : null
           let banner = null
           if (fromDraft) {
@@ -127,7 +128,7 @@ export function CloneEditor({ steward, onCancel }: { steward: Steward; onCancel:
       </div>
       <WithCatalog>
         {(catalog) => {
-          if (preview.isLoading) return <div className={shared.loading}>Loading…</div>
+          if (preview.isLoading) return <Loading className={shared.loading}>Loading…</Loading>
           const data = normalizeData(preview.data?.data)
           if (preview.isError || !preview.data || !data) {
             return <EmptyState title="Could not copy this steward" message="Something went wrong. Reload to try again." />
@@ -182,7 +183,7 @@ export function EditEditor({
       </div>
       <WithCatalog>
         {(catalog) => {
-          if (query.isLoading) return <div className={shared.loading}>Loading…</div>
+          if (query.isLoading) return <Loading className={shared.loading}>Loading…</Loading>
           const data = normalizeData(query.data?.data)
           if (query.isError || !query.data || !data) {
             return <EmptyState title="Could not load this steward" message="Something went wrong. Reload to try again." />
