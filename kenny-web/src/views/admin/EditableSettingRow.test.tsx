@@ -44,6 +44,29 @@ function renderWire(raw: RawSettingRow) {
 }
 
 /**
+ * A setting value is free-form server text. Truncating it would hide entries of
+ * a comma list, so view mode wraps it (`kc-evidence`) and offers a break after
+ * every comma — a comma followed by a letter is no line-break opportunity of
+ * its own, so without one the list could only break mid-entry.
+ */
+describe('EditableSettingRow — long values', () => {
+  const LIST = 'local_accounts,autostart:added,scheduled_tasks:added,browser_extensions:added'
+
+  it('wraps the value instead of truncating it', () => {
+    const { container } = renderWire(wireRow({ type: 'str', value: LIST, default: '' }))
+    const value = container.querySelector('.kc-evidence')
+    expect(value).not.toBeNull()
+    expect(value!.textContent).toBe(LIST)
+    expect(container.querySelector('.kc-value')).toBeNull()
+  })
+
+  it('offers a line break after every comma', () => {
+    const { container } = renderWire(wireRow({ type: 'str', value: LIST, default: '' }))
+    expect(container.querySelectorAll('.kc-evidence wbr')).toHaveLength(3)
+  })
+})
+
+/**
  * ADR-0032 makes `lifecycle` the honesty mechanism: a stored `restart` value is
  * not the running one until the server restarts. The server says which rows are
  * in that state (`pending_restart`); this is the seam from that field to what

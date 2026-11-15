@@ -4,9 +4,14 @@
   max-width: 1080px;
 }
 
+/* `minmax(0, 1fr)`, not `1fr`: a bare `1fr` track is `minmax(auto, 1fr)`, so
+ * the content column grows to its widest descendant's min-content (a long
+ * unbreakable setting value) and pushes the view past the viewport. With a zero
+ * minimum the column takes its width from the grid, and `max-width: 100%` on
+ * what it contains has a definite width to bind against. */
 .wrap {
   display: grid;
-  grid-template-columns: 220px 1fr;
+  grid-template-columns: 220px minmax(0, 1fr);
   gap: 32px;
   align-items: start;
 }
