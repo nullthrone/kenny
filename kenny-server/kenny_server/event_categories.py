@@ -712,8 +712,9 @@ async def annotate_snapshots(
     groups: list[dict[str, Any]] = []
     for snap in snapshots:
         rel = snap.get("reliability") if isinstance(snap, dict) else None
-        if isinstance(rel, dict):
-            groups.extend(e for e in (rel.get("events") or []) if isinstance(e, dict))
+        events = rel.get("events") if isinstance(rel, dict) else None
+        if isinstance(events, list):
+            groups.extend(e for e in events if isinstance(e, dict))
     if not groups:
         return
     factory = client_factory or default_client
