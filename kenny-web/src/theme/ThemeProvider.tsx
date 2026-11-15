@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react'
 import { persistThemeForAccount } from './api'
-import { applyThemeToDocument, persistTheme, readStoredTheme, type Theme } from './theme'
+import { applyThemeToDocument, fadeThemeChange, persistTheme, readStoredTheme, type Theme } from './theme'
 
 interface ThemeContextValue {
   theme: Theme
@@ -36,6 +36,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   const setTheme = useCallback(
     (next: Theme) => {
+      fadeThemeChange()
       adoptTheme(next)
       persistThemeForAccount(next)
     },
@@ -43,6 +44,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   )
 
   const toggleTheme = useCallback(() => {
+    fadeThemeChange()
     setThemeState((prev) => {
       const next: Theme = prev === 'dark' ? 'light' : 'dark'
       applyThemeToDocument(next)

@@ -4,6 +4,7 @@
   font-size: 10px;
   letter-spacing: var(--track-caps);
   border: 1px solid var(--border-line);
+  border-radius: var(--radius-pill);
   background: transparent;
   color: var(--text-body);
   min-height: 40px;
@@ -14,10 +15,16 @@
   flex-shrink: 0;
 }
 
-.active {
+.chip:hover {
+  border-color: var(--border-mid);
+  background: var(--surface-inset);
+}
+
+.active,
+.active:hover {
   border-color: var(--border-strong);
   background: var(--surface-inverse);
-  color: var(--paper);
+  color: var(--text-inverse);
 }
 
 .count {

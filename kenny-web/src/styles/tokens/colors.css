@@ -1,18 +1,56 @@
-:root{
-/* Base — ink & paper */
---ink-950:#141317;--ink-900:#1E1C21;--ink-700:#3A3740;--ink-500:#6E6B72;--ink-400:#928F96;--ink-300:#B6B3B8;--ink-200:#D9D6D3;--ink-100:#E9E6DF;
---paper:#F4F2EC;--paper-raised:#FBFAF6;--paper-white:#FFFFFF;
-/* Brass — the single accent */
---brass-700:#7A5A1F;--brass-600:#8F6B26;--brass-500:#A87E2F;--brass-400:#C09A4B;--brass-200:#E4D5AC;--brass-100:#EFE6CD;
-/* Signals — muted, architectural */
---green-600:#2F6B4F;--green-100:#DFEAE3;
---amber-600:#A05E14;--amber-100:#F3E5D2;
---red-600:#8C2F2E;--red-100:#F0DDDC;
-/* Semantic aliases */
---text-body:var(--ink-950);--text-muted:var(--ink-500);--text-faint:var(--ink-400);--text-inverse:var(--paper);--text-accent:var(--brass-600);
---surface-page:var(--paper);--surface-card:var(--paper-raised);--surface-inset:var(--ink-100);--surface-inverse:var(--ink-950);
---border-line:var(--ink-200);--border-strong:var(--ink-950);--border-mid:var(--ink-300);
---accent:var(--brass-500);--accent-hover:var(--brass-600);--accent-active:var(--brass-700);
---focus-ring:0 0 0 2px var(--paper),0 0 0 4px var(--brass-500);
---ok:var(--green-600);--ok-bg:var(--green-100);--warn:var(--amber-600);--warn-bg:var(--amber-100);--danger:var(--red-600);--danger-bg:var(--red-100);
+/* Nullthrone colour tokens — the warm revision.
+ *
+ * Primitives are declared per theme; semantic aliases are declared on every
+ * themed element (`:root, [data-theme]`) so they resolve against the
+ * primitives of the subtree they sit in. Dark mode is the brand inverted at
+ * primitive level: ink and paper swap roles, brass lightens and reverses its
+ * state direction, signals lift via opaque washes. No stylesheet switches on
+ * `prefers-color-scheme` — theme is explicit (`data-theme`, see src/theme).
+ */
+:root,
+[data-theme='light'] {
+  /* Base — warm ink & cream paper */
+  --ink-950: #1d1a16; --ink-900: #27231e; --ink-700: #463f36; --ink-500: #6b6155;
+  --ink-400: #968b7c; --ink-300: #bdb3a2; --ink-200: #ded5c4; --ink-100: #ece4d5;
+  --paper: #f6f0e4; --paper-raised: #fcf8f0; --paper-white: #ffffff;
+  /* Brass — the single accent */
+  --brass-700: #6f501a; --brass-600: #85601f; --brass-500: #a87e2f; --brass-400: #c09a4b;
+  --brass-200: #e8d9b0; --brass-100: #f2e8ce;
+  /* Signals — muted, architectural (verdigris, amber, oxblood) */
+  --green-600: #2f6b4f; --green-100: #dfeae3;
+  --amber-600: #a05e14; --amber-100: #f3e5d2;
+  --red-600: #8c2f2e; --red-100: #f0dddc;
+  /* State fills that are not a primitive step */
+  --accent-hover: #bc9140; --accent-active: #a57b2e; --on-accent: #16130f;
+  --press-ink: #0e0c09; --danger-hover: #7a2827; --danger-active: #682221;
+  --overlay-scrim: rgba(29, 26, 22, 0.5);
+}
+
+[data-theme='dark'] {
+  --ink-950: #f1ece2; --ink-900: #e0dace; --ink-700: #b8b0a2; --ink-500: #918a7e;
+  --ink-400: #70695f; --ink-300: #4d4840; --ink-200: #36322b; --ink-100: #12100d;
+  --paper: #1a1713; --paper-raised: #221f1a; --paper-white: #2e2a24;
+  --brass-700: #b98b36; --brass-600: #dcb768; --brass-500: #c89e4a; --brass-400: #8f6b26;
+  --brass-200: #4a3a1b; --brass-100: #2a2110;
+  --green-600: #6fa98c; --green-100: #1a2a23;
+  --amber-600: #d9853c; --amber-100: #2c2117;
+  --red-600: #cb6a62; --red-100: #2c1b1b;
+  --accent-hover: #dcb768; --accent-active: #b98b36; --on-accent: #1a1713;
+  --press-ink: #8c8579; --danger-hover: #a9524e; --danger-active: #8e4341;
+  --overlay-scrim: rgba(10, 8, 6, 0.66);
+}
+
+:root,
+[data-theme] {
+  /* Semantic aliases */
+  --text-body: var(--ink-950); --text-muted: var(--ink-500); --text-faint: var(--ink-400);
+  --text-inverse: var(--paper); --text-accent: var(--brass-600);
+  --surface-page: var(--paper); --surface-card: var(--paper-raised);
+  --surface-inset: var(--ink-100); --surface-inverse: var(--ink-950);
+  --border-line: var(--ink-200); --border-strong: var(--ink-950); --border-mid: var(--ink-300);
+  --accent: var(--brass-500);
+  --focus-ring: 0 0 0 2px var(--paper), 0 0 0 4px var(--brass-500);
+  --ok: var(--green-600); --ok-bg: var(--green-100);
+  --warn: var(--amber-600); --warn-bg: var(--amber-100);
+  --danger: var(--red-600); --danger-bg: var(--red-100);
 }

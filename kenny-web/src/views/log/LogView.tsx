@@ -8,6 +8,7 @@ import { ScrollText } from '../../components/icons'
 import { formatLogTimestamp } from './format'
 import LogLine from './LogLine'
 import styles from './LogView.module.css'
+import Loading from '../../components/Loading/Loading'
 
 const FILTERS: { label: string; kind: LogKind | null }[] = [
   { label: 'ALL', kind: null },
@@ -91,7 +92,7 @@ export default function LogView() {
         />
       </div>
 
-      {isLoading && <div className={styles.loading}>Loading…</div>}
+      {isLoading && <Loading className={styles.loading}>Loading…</Loading>}
 
       {isError && (
         <EmptyState
@@ -107,7 +108,7 @@ export default function LogView() {
       {rows.length > 0 && (
         <div className={styles.list}>
           {rows.map((r, i) => (
-            <div key={`${r.ts}-${r.kind}-${i}`} className={styles.row}>
+            <div key={`${r.ts}-${r.kind}-${i}`} className={`${styles.row} kc-stagger-row`}>
               <span className={styles.time}>{formatLogTimestamp(r.ts)}</span>
               <span className={styles.tag} style={{ color: tagColor(r.tag) }}>
                 {r.tag}

@@ -18,7 +18,7 @@
   gap: 8px;
   padding: 11px 18px;
   background: var(--accent);
-  color: var(--paper-white);
+  color: var(--on-accent);
   border: none;
   font-family: var(--font-display);
   font-size: 11px;
@@ -27,6 +27,9 @@
 }
 .addButton:hover {
   background: var(--accent-hover);
+}
+.addButton:active {
+  background: var(--accent-active);
 }
 
 .group + .group {
@@ -51,14 +54,21 @@
   composes: kc-box from global;
   display: block;
   background: var(--surface-card);
+  border-radius: var(--radius-3);
   box-shadow: var(--shadow-1);
   padding: 20px;
   text-decoration: none;
   color: var(--text-body);
   border: 1px solid var(--border-line);
 }
+.card {
+  transition:
+    border-color var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease);
+}
 .card:hover {
-  background: var(--surface-inset);
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-2);
 }
 
 .cardTop {
@@ -78,7 +88,6 @@
 .onlineDot {
   width: 7px;
   height: 7px;
-  border-radius: 50%;
   display: inline-block;
   flex: none;
 }

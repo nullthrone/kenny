@@ -5,6 +5,7 @@ import EmptyState from '../../../components/EmptyState/EmptyState'
 import type { FleetResponse } from '../../../api/types'
 import type { TicketRule, TicketRuleVocabulary } from '../types'
 import shared from '../shared.module.css'
+import Loading from '../../../components/Loading/Loading'
 
 /** Admin → Alarm rules → auto-ticket rules. Which alerts open a ticket, fleet-wide or per host. */
 export default function TicketRulesSection() {
@@ -46,7 +47,7 @@ export default function TicketRulesSection() {
     remove.mutate(rule.id)
   }
 
-  if (vocab.isLoading || rules.isLoading) return <div className={shared.loading}>Loading…</div>
+  if (vocab.isLoading || rules.isLoading) return <Loading className={shared.loading}>Loading…</Loading>
   if (vocab.isError || rules.isError) return <EmptyState title="Could not load ticket rules" message="Something went wrong. Reload to try again." />
   if (!vocab.data || !rules.data) return null
 

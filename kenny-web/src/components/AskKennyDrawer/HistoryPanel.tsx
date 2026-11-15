@@ -2,6 +2,7 @@ import { useEffect, useState, type KeyboardEvent, type MouseEvent } from 'react'
 import type { ConversationSummary } from '../../chat/types'
 import { Trash2, ICON_STROKE_WIDTH } from '../icons'
 import styles from './HistoryPanel.module.css'
+import Loading from '../Loading/Loading'
 
 export interface HistoryPanelProps {
   listHistory: () => Promise<ConversationSummary[]>
@@ -36,7 +37,7 @@ export default function HistoryPanel({ listHistory, onSelect, deleteConversation
     setState((s) => ({ ...s, rows: s.rows.filter((r) => r.id !== id) }))
   }
 
-  if (state.loading) return <div className={styles.root}><p className={styles.status}>Loading conversations…</p></div>
+  if (state.loading) return <div className={styles.root}><Loading className={styles.status}>Loading conversations…</Loading></div>
   if (state.error) return <div className={styles.root}><p className={styles.status}>Could not load history: {state.error}</p></div>
   if (state.rows.length === 0) return <div className={styles.root}><p className={styles.status}>No past conversations yet.</p></div>
 

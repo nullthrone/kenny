@@ -51,6 +51,7 @@
   font-family: var(--font-mono);
   font-size: 11px;
   border: 1px solid var(--border-mid);
+  border-radius: var(--radius-pill);
   background: transparent;
   color: var(--text-body);
   padding: 4px 8px;

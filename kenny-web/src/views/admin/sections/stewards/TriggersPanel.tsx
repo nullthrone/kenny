@@ -5,6 +5,7 @@ import type { Steward, StewardTriggerConfig, StewardTriggersAllowed, StewardTrig
 import { STEWARDS_KEY, consentErrorMessage, isHashChanged, useSaveStewardTriggers, useStewardTriggers } from './queries'
 import shared from '../../shared.module.css'
 import styles from './stewards.module.css'
+import Loading from '../../../../components/Loading/Loading'
 
 const DEFAULT_COOLDOWN_HOURS = 24
 
@@ -306,7 +307,7 @@ export default function TriggersPanel({ steward, canManage }: TriggersPanelProps
   const headingId = `triggers-${steward.id}`
 
   let body
-  if (query.isLoading) body = <div className={shared.loading}>Loading…</div>
+  if (query.isLoading) body = <Loading className={shared.loading}>Loading…</Loading>
   else if (query.isError || !query.data) {
     body = <EmptyState title="Could not load the triggers" message="Something went wrong. Reload to try again." />
   } else if (!query.data.allowed.editable) {

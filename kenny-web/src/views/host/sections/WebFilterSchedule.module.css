@@ -44,6 +44,7 @@
   font-size: 9px;
   letter-spacing: var(--track-caps);
   border: 1px solid var(--brass-600);
+  border-radius: var(--radius-pill);
   color: var(--brass-600);
   padding: 1px 6px;
   white-space: nowrap;
@@ -58,6 +59,7 @@
   letter-spacing: var(--track-caps);
   color: var(--text-faint);
   border: 1px solid var(--border-mid);
+  border-radius: var(--radius-pill);
   padding: 1px 6px;
   white-space: nowrap;
   max-width: 100%;
@@ -83,6 +85,7 @@
   font-size: 9px;
   letter-spacing: var(--track-caps);
   border: 1px solid var(--border-mid);
+  border-radius: var(--radius-pill);
   color: var(--text-muted);
   padding: 1px 6px;
 }
@@ -158,6 +161,7 @@
   gap: 5px;
   font-size: var(--text-xs);
   border: 1px solid var(--border-mid);
+  border-radius: var(--radius-pill);
   padding: 5px 9px;
 }
 

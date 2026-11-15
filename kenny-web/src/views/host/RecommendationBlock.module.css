@@ -1,6 +1,7 @@
 .box {
   composes: kc-box from global;
   border: 1px solid var(--brass-400);
+  border-radius: var(--radius-3);
   background: var(--brass-100);
   padding: 16px 18px;
   margin-bottom: 22px;
@@ -27,11 +28,15 @@
 .fixButton {
   margin-top: 12px;
   padding: 9px 16px;
-  background: #141317;
-  color: #f4f2ec;
+  background: var(--kc-btn-bg);
+  color: var(--kc-btn-fg);
   border: none;
   font-family: var(--font-display);
   font-size: 10px;
   letter-spacing: var(--track-caps);
   min-height: 40px;
+}
+
+.fixButton:hover {
+  background: var(--kc-btn-hover);
 }

@@ -3,7 +3,8 @@
   font-size: 10px;
   letter-spacing: var(--track-caps);
   border: 1px solid currentColor;
-  padding: 3px 8px;
+  border-radius: var(--radius-pill);
+  padding: 3px 10px;
   display: inline-block;
   flex: none;
 }

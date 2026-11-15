@@ -24,7 +24,7 @@ export default function AvailabilityStrip({ availability, className }: Availabil
 
   return (
     <div className={`${styles.strip}${className ? ` ${className}` : ''}`} role="img" aria-label={label} title={label}>
-      <svg width="100%" height="100%" aria-hidden="true" className={styles.svg} shapeRendering="crispEdges">
+      <svg width="100%" height="100%" aria-hidden="true" className={`${styles.svg} kc-fill-x`} shapeRendering="crispEdges">
         {cells.map((value, i) => (
           <rect
             key={i}

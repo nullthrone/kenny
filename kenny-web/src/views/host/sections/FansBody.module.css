@@ -25,7 +25,7 @@
 .unused {
   margin-top: 16px;
   border: 1px solid var(--border-line);
-  border-radius: 2px;
+  border-radius: var(--radius-1);
   padding: 0 12px;
 }
 

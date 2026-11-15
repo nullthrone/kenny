@@ -1,0 +1,30 @@
+.root {
+  box-sizing: border-box;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  overflow: hidden;
+  border: 1px solid var(--border-line);
+  border-radius: var(--radius-pill) var(--radius-pill) 0 0;
+}
+
+.inset {
+  background: var(--surface-inset);
+  color: var(--text-body);
+}
+.card {
+  background: var(--surface-card);
+  color: var(--text-body);
+}
+.brass {
+  background: var(--brass-100);
+  color: var(--brass-700);
+  border-color: var(--brass-200);
+}
+.ink {
+  background: var(--surface-inverse);
+  color: var(--text-inverse);
+  border-color: var(--surface-inverse);
+}

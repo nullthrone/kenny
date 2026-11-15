@@ -14,6 +14,7 @@ import { deriveCrumb } from './crumb'
 import AskKennyDrawer from '../AskKennyDrawer/AskKennyDrawer'
 import { ticketFromHash } from '../../chat/scope'
 import AboutModal from '../AboutModal/AboutModal'
+import FetchBar from '../FetchBar/FetchBar'
 import { useAbout } from '../AboutModal/api'
 import styles from './Shell.module.css'
 
@@ -124,7 +125,7 @@ export default function Shell() {
     <div className={styles.root}>
       <aside className={`${styles.sidebar} kc-sidebar`}>
         <div className={styles.logoRow}>
-          <Monogram variant="full" width={30} height={29} color="var(--brass-400)" />
+          <Monogram variant="full" width={30} height={29} color="var(--kc-inv-accent)" animated />
           <div>
             <div className={styles.wordmark}>KENNY</div>
             <div className={styles.tagline}>FLEET CONSOLE</div>
@@ -143,11 +144,7 @@ export default function Shell() {
                 key={item.key}
                 to={item.href}
                 className={`${styles.navItem} kc-btn`}
-                style={{
-                  color: isActive ? '#F4F2EC' : 'var(--ink-300)',
-                  borderLeftColor: isActive ? 'var(--brass-400)' : 'transparent',
-                  background: isActive ? 'rgba(255,255,255,0.06)' : 'transparent',
-                }}
+                data-active={isActive}
               >
                 <Icon width={16} height={16} strokeWidth={ICON_STROKE_WIDTH} aria-hidden="true" />
                 <span className={styles.navLabel}>{item.label}</span>
@@ -211,7 +208,15 @@ export default function Shell() {
           </div>
           <div className={styles.headerRight}>
             <div className="kc-online" style={{ display: 'flex', alignItems: 'center', gap: 8, fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--text-muted)' }}>
-              <span className={styles.onlineDot} />
+              <span
+                className={`${styles.onlineDot} ${
+                  online === null || online === 0
+                    ? styles.onlineDotNone
+                    : online < (fleetTotal ?? 0)
+                      ? styles.onlineDotPartial
+                      : ''
+                } ${online ? 'kc-live' : ''}`}
+              />
               {online !== null && fleetTotal !== null ? `${online}/${fleetTotal} ONLINE` : '—/— ONLINE'}
             </div>
             <button
@@ -221,9 +226,9 @@ export default function Shell() {
               className={`${styles.themeToggle} kc-btn`}
             >
               {theme === 'dark' ? (
-                <Sun width={15} height={15} strokeWidth={ICON_STROKE_WIDTH} aria-hidden="true" />
+                <Sun key="sun" className={styles.themeIcon} width={15} height={15} strokeWidth={ICON_STROKE_WIDTH} aria-hidden="true" />
               ) : (
-                <Moon width={15} height={15} strokeWidth={ICON_STROKE_WIDTH} aria-hidden="true" />
+                <Moon key="moon" className={styles.themeIcon} width={15} height={15} strokeWidth={ICON_STROKE_WIDTH} aria-hidden="true" />
               )}
             </button>
             {canAsk && (
@@ -234,6 +239,7 @@ export default function Shell() {
               </button>
             )}
           </div>
+          <FetchBar />
         </header>
 
         <Outlet />
@@ -248,7 +254,7 @@ export default function Shell() {
           <div className={`${styles.backdrop} kc-backdrop`} onClick={() => setChatOpen(false)} />
           <div className={`${styles.chatPanel} kc-chat`}>
             <div className={styles.chatHeader}>
-              <Terminal width={16} height={16} strokeWidth={ICON_STROKE_WIDTH} color="var(--brass-400)" aria-hidden="true" />
+              <Terminal width={16} height={16} strokeWidth={ICON_STROKE_WIDTH} color="var(--kc-inv-accent)" aria-hidden="true" />
               <span className={styles.chatTitle}>ASK KENNY</span>
               <button type="button" onClick={() => setChatOpen(false)} className={`${styles.chatClose} kc-btn`}>
                 <X width={16} height={16} strokeWidth={ICON_STROKE_WIDTH} aria-hidden="true" />

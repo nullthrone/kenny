@@ -2,12 +2,13 @@
   composes: kc-box from global;
   margin-bottom: 18px;
   padding: 12px 14px;
-  border: 1px solid var(--accent, var(--border));
+  border: 1px solid var(--accent);
   border-left-width: 3px;
-  border-radius: 2px;
-  background: var(--surface-2, transparent);
+  border-radius: var(--radius-3);
+  animation: nt-fade-up var(--dur-med) var(--ease) both;
+  background: var(--surface-card);
   font-size: var(--text-sm);
-  color: var(--text);
+  color: var(--text-body);
 }
 
 .head {
@@ -19,7 +20,7 @@
 .icon {
   flex: none;
   margin-top: 1px;
-  color: var(--accent, var(--text));
+  color: var(--text-accent);
 }
 
 .text {
@@ -71,18 +72,18 @@
   flex: none;
   min-height: 32px;
   padding: 0 12px;
-  border: 1px solid var(--border);
-  border-radius: 2px;
+  border: 1px solid var(--border-mid);
+  border-radius: var(--radius-2);
   background: transparent;
   font-family: var(--font-display);
   font-size: 11px;
   letter-spacing: var(--track-caps);
-  color: var(--text);
+  color: var(--text-body);
   cursor: pointer;
 }
 
 .btn:hover:not(:disabled) {
-  border-color: var(--text);
+  border-color: var(--text-body);
 }
 
 .btn:disabled {
@@ -97,5 +98,11 @@
 }
 
 .failed {
-  color: var(--crit, var(--warn));
+  color: var(--danger);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .banner {
+    animation: none;
+  }
 }

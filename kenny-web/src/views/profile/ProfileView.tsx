@@ -12,6 +12,7 @@ import EditProfileModal from './EditProfileModal'
 import SessionsModal from './SessionsModal'
 import DiscordModal from './DiscordModal'
 import styles from './ProfileView.module.css'
+import Loading from '../../components/Loading/Loading'
 
 function scopeLabel(me: ProfileMe): string {
   return me.role === 'user' ? (me.hosts.length === 1 ? me.hosts[0] : `${me.hosts.length} hosts`) : 'full fleet'
@@ -61,7 +62,7 @@ export default function ProfileView() {
       </h1>
       <p className={styles.lead}>Your account — separate from fleet administration.</p>
 
-      {me.isLoading && <div className={styles.loading}>Loading…</div>}
+      {me.isLoading && <Loading className={styles.loading}>Loading…</Loading>}
 
       {me.isError && (
         <EmptyState title="Could not load your profile" message="Something went wrong. Reload to try again." />

@@ -70,7 +70,7 @@
 .saveBtn {
   padding: 8px 14px;
   background: var(--accent);
-  color: var(--paper-white);
+  color: var(--on-accent);
   border: none;
   font-family: var(--font-display);
   font-size: 10px;

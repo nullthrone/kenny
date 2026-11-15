@@ -95,6 +95,10 @@ async def run(only: list[str] | None, out: str) -> int:
                 viewport=harness.VIEWPORT,
                 device_scale_factor=harness.DEVICE_SCALE,
                 ignore_https_errors=True,
+                # Figures show the settled UI. The dashboard switches its
+                # entrance animations off under reduced motion, so nothing is
+                # captured mid-flight however long a sequence runs.
+                reduced_motion="reduce",
             )
             # A real "thomas" superuser session, not the legacy shared-token
             # cookie — see harness.OPERATOR_TOKEN.

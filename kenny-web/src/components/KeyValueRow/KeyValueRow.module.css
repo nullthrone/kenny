@@ -53,6 +53,7 @@
   font-size: 9px;
   letter-spacing: var(--track-caps);
   border: 1px solid currentColor;
+  border-radius: var(--radius-pill);
   padding: 2px 8px;
   flex: none;
 }

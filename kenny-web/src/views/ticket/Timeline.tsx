@@ -97,7 +97,7 @@ export default function Timeline({ entries, directory, agentId }: TimelineProps)
         const muted = entry.kind === 'lifecycle'
         const key = entry.source_event_ids.join('-')
         return (
-          <div key={key} className={styles.entry}>
+          <div key={key} className={`${styles.entry} kc-stagger-row`}>
             {!muted && (
               <span className={styles.dot} style={{ background: actorDot(entry.actor) }} />
             )}

@@ -7,7 +7,8 @@
 
 .outline {
   border: 1px solid currentColor;
-  padding: 3px 8px;
+  border-radius: var(--radius-pill);
+  padding: 3px 10px;
 }
 
 .text {

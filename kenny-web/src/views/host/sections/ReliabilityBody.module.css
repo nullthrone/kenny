@@ -22,6 +22,7 @@
 .eventCard {
   composes: kc-box from global;
   border: 1px solid var(--border-line);
+  border-radius: var(--radius-3);
   padding: 12px 14px;
 }
 
@@ -44,6 +45,7 @@
   font-size: 9px;
   letter-spacing: var(--track-caps);
   border: 1px solid currentColor;
+  border-radius: var(--radius-pill);
   padding: 1px 6px;
 }
 
@@ -126,6 +128,7 @@
   font-size: 9px;
   letter-spacing: var(--track-caps);
   border: 1px solid var(--border-mid);
+  border-radius: var(--radius-pill);
   padding: 1px 6px;
   color: var(--text-muted);
   white-space: nowrap;
@@ -198,7 +201,7 @@
   flex: none;
   padding: 1px 5px;
   border: 1px solid currentColor;
-  border-radius: 2px;
+  border-radius: var(--radius-1);
   font-family: var(--font-display);
   font-size: 9px;
   letter-spacing: var(--track-caps);
@@ -210,7 +213,7 @@
 .activityChip {
   flex: none;
   padding: 1px 5px;
-  border-radius: 2px;
+  border-radius: var(--radius-1);
   font-family: var(--font-display);
   font-size: 9px;
   letter-spacing: var(--track-caps);
@@ -219,8 +222,8 @@
 }
 
 .activityChip[data-tone='active'] {
-  color: var(--text);
-  background: color-mix(in srgb, var(--text) 12%, transparent);
+  color: var(--text-body);
+  background: color-mix(in srgb, var(--text-body) 12%, transparent);
 }
 
 /* The grid can outgrow the modal on a long window; it scrolls on its own rather
@@ -265,7 +268,7 @@
 .heatmapCell {
   width: 16px;
   height: 16px;
-  border-radius: 2px;
+  border-radius: var(--radius-1);
   background: var(--danger);
 }
 
@@ -286,7 +289,7 @@
 .group {
   composes: kc-box from global;
   border: 1px solid var(--border-line);
-  border-radius: 2px;
+  border-radius: var(--radius-1);
 }
 
 .groupHead {

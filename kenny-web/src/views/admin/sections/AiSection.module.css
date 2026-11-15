@@ -33,28 +33,30 @@
   letter-spacing: var(--track-caps);
 }
 
+/* Nullthrone switch: an ink frame at --radius-1 with a square thumb, never a
+   pill. On is an ink fill with a paper thumb; off is the field fill with an
+   ink thumb. */
 .switch {
   position: relative;
   width: 52px;
   height: 28px;
   flex-shrink: 0;
-  border: 1px solid var(--border-mid);
-  border-radius: 14px;
-  background: var(--surface-inset);
+  border: 1px solid var(--ink-950);
+  border-radius: var(--radius-1);
+  background: var(--paper-white);
   padding: 0;
-  transition: background 120ms ease;
+  transition: background var(--dur-med) var(--ease);
 }
 .switch:focus-visible {
   outline: none;
   box-shadow: var(--focus-ring);
 }
 .switch:disabled {
-  opacity: 0.5;
-  cursor: default;
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 .switch[aria-checked='true'] {
-  background: var(--accent);
-  border-color: var(--accent);
+  background: var(--ink-950);
 }
 
 .knob {
@@ -63,13 +65,15 @@
   left: 3px;
   width: 20px;
   height: 20px;
-  border-radius: 50%;
-  background: var(--paper-white);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
-  transition: transform 120ms ease;
+  border-radius: var(--radius-1);
+  background: var(--ink-950);
+  transition:
+    transform var(--dur-med) var(--ease),
+    background var(--dur-med) var(--ease);
 }
 .switch[aria-checked='true'] .knob {
   transform: translateX(24px);
+  background: var(--paper);
 }
 
 @media (prefers-reduced-motion: reduce) {

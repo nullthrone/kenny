@@ -1,0 +1,26 @@
+/* On mount the line traces left to right and the area under it fades in
+   behind it. The stroke is normalised to pathLength=1, so a dash of 1 is the
+   whole line. */
+.line {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: kc-trace 600ms var(--ease) forwards;
+}
+
+.area {
+  animation: nt-fade-in 600ms var(--ease) 200ms both;
+}
+
+@keyframes kc-trace {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .line,
+  .area {
+    animation: none;
+    stroke-dashoffset: 0;
+  }
+}

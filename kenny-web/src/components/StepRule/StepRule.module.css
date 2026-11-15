@@ -1,0 +1,37 @@
+.root {
+  display: flex;
+  align-items: flex-end;
+  width: 100%;
+}
+
+.brass {
+  color: var(--brass-500);
+}
+.ink {
+  color: var(--ink-950);
+}
+
+.line {
+  flex: 1;
+  height: 1px;
+  background: var(--border-strong);
+}
+/* Each hairline grows away from the columns. */
+.lineLeft {
+  transform-origin: right center;
+}
+.lineRight {
+  transform-origin: left center;
+}
+
+.steps {
+  display: flex;
+  align-items: flex-end;
+  margin: 0 12px;
+  flex: none;
+}
+
+.step {
+  display: block;
+  background: currentColor;
+}

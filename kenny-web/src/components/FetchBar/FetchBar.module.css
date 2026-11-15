@@ -1,0 +1,32 @@
+.track {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 2px;
+  overflow: hidden;
+  pointer-events: none;
+  animation: nt-fade-in var(--dur-med) var(--ease) 300ms both;
+}
+
+.bar {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 35%;
+  background: var(--brass-500);
+  animation: nt-indeterminate 1.4s var(--ease) infinite;
+}
+
+/* Reduced motion: a steady brass edge still says "fetching". */
+@media (prefers-reduced-motion: reduce) {
+  .track {
+    animation: none;
+  }
+  .bar {
+    animation: none;
+    left: 0;
+    width: 100%;
+    opacity: 0.5;
+  }
+}

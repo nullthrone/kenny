@@ -59,7 +59,7 @@
 .create {
   padding: 10px 20px;
   background: var(--accent);
-  color: var(--paper-white);
+  color: var(--on-accent);
   border: none;
   font-family: var(--font-display);
   font-size: 10px;

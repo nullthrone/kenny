@@ -7,6 +7,7 @@ import TicketDraftCard from './TicketDraftCard'
 import StewardDraftCard from './StewardDraftCard'
 import StewardRunProposalCard, { type StewardRunProposalCardProps } from './StewardRunProposalCard'
 import styles from './Transcript.module.css'
+import BarPulse from '../BarPulse/BarPulse'
 
 /**
  * The spinner and elapsed-seconds counter on a call that is still running.
@@ -35,7 +36,9 @@ function Running() {
 
   return (
     <>
-      <span className={styles.spinner} aria-hidden="true" />
+      {/* Bars, not a progress fill: it says "still going", never how far
+          along — a tool's progress is not something the server knows. */}
+      <BarPulse size="sm" tone="current" decorative className={styles.spinner} />
       running…{seconds > 0 ? ` ${seconds}s` : ''}
     </>
   )

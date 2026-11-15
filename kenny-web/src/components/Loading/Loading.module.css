@@ -1,0 +1,14 @@
+.root {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  animation: nt-fade-in var(--dur-med) var(--ease) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .root {
+    animation: none;
+  }
+}
