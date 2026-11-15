@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { Fragment, useState, type ReactNode } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError } from '../../api/client'
 import { AI_STATUS_KEY } from '../../api/aiStatus'
@@ -17,6 +17,26 @@ function initialEditValue(row: AdminRow): string {
   // value — start the editor blank rather than offering that as a draft.
   if (row.type === 'secret') return ''
   return row.value === null ? '' : String(row.value)
+}
+
+/**
+ * A setting's value as shown in view mode. Values are free-form — URLs, comma
+ * lists like `local_accounts,autostart:added` — and line breaking offers no
+ * opportunity after a comma followed by a letter, so a list would only ever
+ * break mid-entry. A `<wbr>` after each comma lets it wrap between entries.
+ */
+function displayValue(text: string): ReactNode {
+  const parts = text.split(',')
+  return parts.map((part, i) => (
+    <Fragment key={i}>
+      {part}
+      {i < parts.length - 1 && (
+        <>
+          ,<wbr />
+        </>
+      )}
+    </Fragment>
+  ))
 }
 
 /**
@@ -80,7 +100,8 @@ export default function EditableSettingRow({ row }: EditableSettingRowProps) {
       <KeyValueRow
         label={row.label}
         help={row.help}
-        value={row.value === null || row.value === '' ? <span style={{ color: 'var(--text-faint)' }}>not set</span> : String(row.value)}
+        value={row.value === null || row.value === '' ? <span style={{ color: 'var(--text-faint)' }}>not set</span> : displayValue(String(row.value))}
+        wrapValue
         flag={row.pendingRestart ? { label: 'RESTART PENDING', color: 'var(--warn)' } : undefined}
         sourceBadge={{ label: CONFIG_SOURCE_LABEL[row.source], color: CONFIG_SOURCE_COLOR[row.source] }}
         action={row.editable ? { label: 'EDIT', onClick: openEditor } : undefined}

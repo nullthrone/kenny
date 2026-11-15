@@ -17,6 +17,9 @@ export interface KeyValueRowProps {
   help?: string
   /** Usually a plain string; a `ReactNode` so a value can carry its own colour/formatting (e.g. `<span style={{color:'var(--ok)'}}>enabled</span>`). Rendered in mono, `white-space:nowrap` (`kc-value`) — a value like `thomas#1121` must never break mid-token. */
   value: ReactNode
+  /** Wrap the value instead of truncating it (`kc-evidence`, not `kc-value`): for free-form text whose
+   * whole length matters, such as an Admin setting holding a comma list, where an ellipsis would hide entries. */
+  wrapValue?: boolean
   /** The Profile-style trailing button ("CHANGE", "MANAGE", "ROTATE" …). */
   action?: KeyValueRowAction
   /** The Admin-style trailing source chip (default/env/custom — see `ConfigSource`). */
@@ -27,14 +30,14 @@ export interface KeyValueRowProps {
 }
 
 /** The label / help / value / action row shared by Profile and Admin. */
-export default function KeyValueRow({ label, help, value, action, sourceBadge, flag, className }: KeyValueRowProps) {
+export default function KeyValueRow({ label, help, value, wrapValue, action, sourceBadge, flag, className }: KeyValueRowProps) {
   return (
     <div className={`${styles.row}${className ? ` ${className}` : ''}`}>
       <div className={`${styles.labelWrap} kc-cell`}>
         <div className={styles.label}>{label}</div>
         {help && <div className={styles.help}>{help}</div>}
       </div>
-      <span className={`${styles.value} kc-value`}>{value}</span>
+      <span className={`${styles.value} ${wrapValue ? 'kc-evidence' : 'kc-value'}`}>{value}</span>
       {flag && (
         <span className={`${styles.sourceBadge} kc-caps`} style={{ color: flag.color }}>
           {flag.label}

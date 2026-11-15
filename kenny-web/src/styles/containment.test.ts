@@ -111,6 +111,29 @@ describe('nowrap containment', () => {
   })
 })
 
+describe('admin layout grid', () => {
+  // The desktop track (AdminView's `.wrap`) and its mobile override
+  // (`.kc-adminwrap` in global.css) must both keep a zero minimum on the
+  // content column. A bare `1fr` is `minmax(auto, 1fr)`: the column grows to
+  // its widest descendant's min-content — a long setting value — and the whole
+  // view scrolls sideways, at whichever width the bare track is in force.
+  const ZERO_MIN_CONTENT_TRACK = /grid-template-columns\s*:[^;]*minmax\(\s*0\s*,\s*1fr\s*\)/
+  const BARE_FR = /grid-template-columns\s*:[^;]*\b\d*\.?\d+fr\b/
+
+  for (const [file, selector] of [
+    ['views/admin/AdminView.module.css', '.wrap'],
+    ['styles/global.css', '.kc-adminwrap'],
+  ] as const) {
+    it(`${selector} gives its content column a zero minimum`, () => {
+      const rule = RULES.find((r) => r.file === file && r.selector.endsWith(selector))
+      expect(rule, `${file} — ${selector}`).toBeDefined()
+      expect(rule!.declarations).toMatch(ZERO_MIN_CONTENT_TRACK)
+      // Every `fr` outside a `minmax()` is a track with an `auto` minimum.
+      expect(rule!.declarations.replace(/minmax\([^)]*\)/g, '')).not.toMatch(BARE_FR)
+    })
+  }
+})
+
 describe('containment primitives', () => {
   it('kc-box clips at the border', () => {
     // `clip`, not `hidden`: `hidden` would make every card a scroll container.

@@ -489,8 +489,10 @@ a {
   .kc-modal {
     width: calc(100vw - 24px) !important;
   }
+  /* Same zero minimum as AdminView's `.wrap`: a bare `1fr` lets the stacked
+     content widen the single column past the phone viewport. */
   .kc-adminwrap {
-    grid-template-columns: 1fr !important;
+    grid-template-columns: minmax(0, 1fr) !important;
   }
   .kc-adminnav {
     display: flex;

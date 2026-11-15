@@ -72,10 +72,10 @@ def chromium_executable() -> str | None:
     """Best-effort path to the pre-installed Chromium, else let Playwright resolve."""
 
     root = Path(os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "/opt/pw-browsers"))
+    # `chrome-linux*`: Playwright's builds unpack to `chrome-linux/` or `chrome-linux64/`.
     for pat in (
-        "chromium-*/chrome-linux/chrome",
-        "chromium-*/chrome-linux64/chrome",
-        "chromium_headless_shell-*/chrome-linux/*",
+        "chromium-*/chrome-linux*/chrome",
+        "chromium_headless_shell-*/chrome-headless-shell-linux*/chrome-headless-shell",
     ):
         hits = sorted(root.glob(pat))
         if hits:
