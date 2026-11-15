@@ -5,6 +5,7 @@ import EmptyState from '../../../components/EmptyState/EmptyState'
 import type { AdminRow, DiscordClaim, DiscordIdentity, DiscordMember, DiscordStatus } from '../types'
 import GenericSettingsSection from './GenericSettingsSection'
 import shared from '../shared.module.css'
+import Loading from '../../../components/Loading/Loading'
 
 interface DirectoryUser {
   id: number
@@ -74,7 +75,7 @@ export default function DiscordSection({ rows }: DiscordSectionProps) {
     },
   })
 
-  if (status.isLoading) return <div className={shared.loading}>Loading…</div>
+  if (status.isLoading) return <Loading className={shared.loading}>Loading…</Loading>
   if (status.isError) return <EmptyState title="Could not load Discord status" message="Something went wrong. Reload to try again." />
   if (!status.data) return null
 

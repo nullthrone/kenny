@@ -5,6 +5,7 @@ import EmptyState from '../../../components/EmptyState/EmptyState'
 import GenericSettingsSection from './GenericSettingsSection'
 import type { AdminRow, PolicyRule, PolicyRulesResponse, ShellAllowResponse } from '../types'
 import shared from '../shared.module.css'
+import Loading from '../../../components/Loading/Loading'
 
 export interface ShellPolicySectionProps {
   rows: AdminRow[]
@@ -108,7 +109,7 @@ export default function ShellPolicySection({ rows }: ShellPolicySectionProps) {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['admin', 'policy-rules'] }),
   })
 
-  if (allow.isLoading || deny.isLoading) return <div className={shared.loading}>Loading…</div>
+  if (allow.isLoading || deny.isLoading) return <Loading className={shared.loading}>Loading…</Loading>
   if (allow.isError || deny.isError) {
     return <EmptyState title="Could not load the shell policy" message="Something went wrong. Reload to try again." />
   }

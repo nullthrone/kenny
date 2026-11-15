@@ -9,8 +9,8 @@
   right: 0;
   z-index: 20;
   grid-template-columns: repeat(5, 1fr);
-  background: #141317;
-  border-top: 1px solid var(--ink-700);
+  background: var(--kc-inv-bg);
+  border-top: 1px solid var(--kc-inv-line);
   padding-bottom: env(safe-area-inset-bottom);
 }
 
@@ -23,6 +23,21 @@
   min-height: 52px;
   text-decoration: none;
   position: relative;
+  color: var(--kc-inv-soft);
+}
+.tab[data-active='true'] {
+  color: var(--kc-inv-fg);
+}
+/* A brass rule draws in across the top of the active tab. */
+.tab[data-active='true']::before {
+  content: '';
+  position: absolute;
+  top: -1px;
+  left: 25%;
+  right: 25%;
+  height: 2px;
+  background: var(--kc-inv-accent);
+  animation: kc-draw var(--dur-slow) var(--ease) both;
 }
 
 .label {
@@ -37,5 +52,11 @@
   right: calc(50% - 18px);
   width: 7px;
   height: 7px;
-  background: var(--brass-400);
+  background: var(--kc-inv-accent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tab[data-active='true']::before {
+    animation: none;
+  }
 }

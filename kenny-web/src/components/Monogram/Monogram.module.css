@@ -1,0 +1,13 @@
+/* Columns grow from the mark's baseline. `fill-box` makes the origin the
+   column's own box rather than the SVG viewport. */
+.rise {
+  transform-box: fill-box;
+  transform-origin: center bottom;
+  animation: kc-rise 420ms var(--ease) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rise {
+    animation: none;
+  }
+}

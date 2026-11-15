@@ -1,6 +1,7 @@
 .card {
   composes: kc-box from global;
   background: var(--warn-bg);
+  border-radius: var(--radius-3);
   border: 1px solid var(--amber-600);
   padding: 18px 20px;
 }

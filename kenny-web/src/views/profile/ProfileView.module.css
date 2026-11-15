@@ -27,7 +27,7 @@
   height: 48px;
   flex-shrink: 0;
   background: var(--brass-500);
-  color: var(--ink-950);
+  color: var(--on-accent);
   display: grid;
   place-items: center;
   font-family: var(--font-display);

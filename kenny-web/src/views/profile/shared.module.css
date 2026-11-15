@@ -175,6 +175,7 @@
   letter-spacing: var(--track-caps);
   color: var(--text-faint);
   border: 1px solid var(--text-faint);
+  border-radius: var(--radius-pill);
   padding: 2px 8px;
 }
 

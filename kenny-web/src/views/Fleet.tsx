@@ -12,6 +12,7 @@ import { Monitor, ICON_STROKE_WIDTH } from '../components/icons'
 import { groupByReachability, osIcon, osLabel, relativePush } from './fleet/format'
 import WizardMount from './fleet/WizardMount'
 import styles from './fleet/Fleet.module.css'
+import Loading from '../components/Loading/Loading'
 
 export default function Fleet() {
   const { data, isPending, isError, error } = useQuery({
@@ -32,7 +33,7 @@ export default function Fleet() {
       <BinaryBanner />
       <UpdateBanner />
 
-      {isPending && <p style={{ color: 'var(--text-muted)', fontSize: 'var(--text-sm)' }}>Loading the fleet…</p>}
+      {isPending && <Loading>Loading the fleet…</Loading>}
 
       {isError && !data && (
         <EmptyState

@@ -6,11 +6,16 @@
   gap: 8px;
   padding: 48px 24px;
   color: var(--text-muted);
+  animation: nt-fade-up var(--dur-med) var(--ease) both;
+}
+
+.arch {
+  margin-bottom: 12px;
 }
 
 .icon {
-  color: var(--text-faint);
-  margin-bottom: 8px;
+  color: var(--text-muted);
+  margin-top: 12px;
 }
 
 .title {
@@ -30,7 +35,7 @@
   margin-top: 12px;
   padding: 10px 20px;
   background: transparent;
-  border: 1px solid var(--border-mid);
+  border: 1px solid var(--border-strong);
   color: var(--text-body);
   font-family: var(--font-display);
   font-size: 10px;
@@ -44,4 +49,10 @@
 }
 .action:hover {
   background: var(--surface-inset);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .root {
+    animation: none;
+  }
 }

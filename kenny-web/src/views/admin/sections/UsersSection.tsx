@@ -7,6 +7,7 @@ import type { ProfileMe } from '../../profile/types'
 import shared from '../shared.module.css'
 import CreateUserModal from './CreateUserModal'
 import UserDetailModal from './UserDetailModal'
+import Loading from '../../../components/Loading/Loading'
 
 /** Admin → Users. Superuser-only (the section itself is hidden otherwise by `AdminView`). */
 export default function UsersSection() {
@@ -16,7 +17,7 @@ export default function UsersSection() {
   const me = useQuery({ queryKey: ['me'], queryFn: () => api.get<ProfileMe>('/api/me') })
   const users = useQuery({ queryKey: ['admin', 'users'], queryFn: () => api.get<{ users: AdminUser[] }>('/api/users') })
 
-  if (users.isLoading) return <div className={shared.loading}>Loading…</div>
+  if (users.isLoading) return <Loading className={shared.loading}>Loading…</Loading>
   if (users.isError) return <EmptyState title="Could not load users" message="Something went wrong. Reload to try again." />
   if (!users.data) return null
 

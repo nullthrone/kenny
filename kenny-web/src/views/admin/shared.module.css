@@ -13,6 +13,7 @@
 .card {
   composes: kc-box from global;
   background: var(--surface-card);
+  border-radius: var(--radius-3);
   border: 1px solid var(--border-line);
   box-shadow: var(--shadow-1);
   padding: 20px 22px;
@@ -65,7 +66,7 @@
 .btnPrimary {
   composes: btn;
   background: var(--accent);
-  color: var(--paper-white);
+  color: var(--on-accent);
   border: none;
 }
 .btnPrimary:hover:not(:disabled) {
@@ -182,6 +183,7 @@
   font-size: 9px;
   letter-spacing: var(--track-caps);
   border: 1px solid currentColor;
+  border-radius: var(--radius-pill);
   padding: 2px 8px;
   flex-shrink: 0;
 }

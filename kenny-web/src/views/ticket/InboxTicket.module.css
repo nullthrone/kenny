@@ -30,6 +30,7 @@
   font-size: 10px;
   letter-spacing: var(--track-caps);
   border: 1px solid currentColor;
+  border-radius: var(--radius-pill);
   padding: 3px 10px;
 }
 
@@ -88,6 +89,7 @@
   letter-spacing: var(--track-caps);
   color: var(--brass-600);
   border: 1px solid var(--border-line);
+  border-radius: var(--radius-pill);
   padding: 2px 8px;
 }
 

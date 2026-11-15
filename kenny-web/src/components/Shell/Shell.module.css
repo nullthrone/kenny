@@ -19,8 +19,8 @@
 .sidebar {
   width: 232px;
   flex: none;
-  background: #141317; /* Always ink — the sidebar is a "monumental moment", not themed. */
-  color: var(--text-inverse);
+  background: var(--kc-inv-bg); /* Always ink — a "monumental moment", not themed (global.css, --kc-inv-*). */
+  color: var(--kc-inv-fg);
   display: flex;
   flex-direction: column;
   position: sticky;
@@ -34,7 +34,7 @@
   gap: 12px;
   height: var(--kc-header-h);
   padding: 24px 20px 20px;
-  border-bottom: 1px solid var(--ink-700);
+  border-bottom: 1px solid var(--kc-inv-line);
 }
 
 .wordmark {
@@ -42,14 +42,16 @@
   font-weight: 500;
   font-size: 17px;
   letter-spacing: var(--track-caps);
-  color: var(--paper);
+  color: var(--kc-inv-fg);
+  animation: nt-fade-in var(--dur-med) var(--ease) 200ms both;
 }
 
 .tagline {
   font-family: var(--font-display);
   font-size: 10px;
   letter-spacing: var(--track-caps-wide);
-  color: var(--ink-400);
+  color: var(--kc-inv-muted);
+  animation: nt-fade-in var(--dur-med) var(--ease) 280ms both;
 }
 
 .nav {
@@ -68,10 +70,31 @@
   font-size: 12px;
   letter-spacing: var(--track-caps);
   text-decoration: none;
+  color: var(--kc-inv-soft);
   border-left: 2px solid transparent;
 }
 .navItem:hover {
-  color: #f4f2ec;
+  color: var(--kc-inv-fg);
+  background: var(--kc-inv-raised);
+}
+.navItem[data-active='true'] {
+  color: var(--kc-inv-fg);
+  border-left-color: var(--kc-inv-accent);
+  background: var(--kc-inv-raised);
+}
+/* The icon steps a few pixels toward its label as the item lights up. */
+.navItem svg {
+  flex: none;
+  transition:
+    transform var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
+}
+.navItem:hover svg,
+.navItem[data-active='true'] svg {
+  transform: translateX(2px);
+}
+.navItem[data-active='true'] svg {
+  color: var(--kc-inv-accent);
 }
 
 .navLabel {
@@ -81,9 +104,11 @@
 .navBadge {
   font-family: var(--font-mono);
   font-size: 11px;
-  color: var(--ink-950);
-  background: var(--brass-400);
-  padding: 1px 6px;
+  color: var(--kc-inv-bg);
+  background: var(--kc-inv-accent);
+  border-radius: var(--radius-pill);
+  padding: 1px 7px;
+  animation: nt-fade-in var(--dur-med) var(--ease) both;
 }
 
 .spacer {
@@ -92,7 +117,7 @@
 
 .userBlock {
   padding: 14px 20px;
-  border-top: 1px solid var(--ink-700);
+  border-top: 1px solid var(--kc-inv-line);
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -120,8 +145,10 @@
   width: 28px;
   height: 28px;
   flex: none;
-  background: var(--brass-500);
-  color: var(--ink-950);
+  background: var(--kc-inv-accent);
+  color: var(--kc-inv-bg);
+  /* The arch: avatars end in the inner 0 of the mark. */
+  border-radius: var(--radius-pill) var(--radius-pill) 0 0;
   display: grid;
   place-items: center;
   font-family: var(--font-display);
@@ -136,7 +163,7 @@
 
 .username {
   font-size: 12px;
-  color: var(--paper);
+  color: var(--kc-inv-fg);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -147,23 +174,23 @@
   font-family: var(--font-display);
   font-size: 9px;
   letter-spacing: var(--track-caps-wide);
-  color: var(--ink-400);
+  color: var(--kc-inv-muted);
 }
 
 .logoutLink {
-  color: var(--ink-400);
+  color: var(--kc-inv-muted);
   flex: none;
   display: grid;
   place-items: center;
 }
 .logoutLink:hover {
-  color: #f4f2ec;
+  color: var(--kc-inv-fg);
 }
 
 .versionLine {
   font-family: var(--font-mono);
   font-size: 10px;
-  color: var(--ink-500);
+  color: var(--kc-inv-faint);
   /* Button resets — this line opens the About dialog. Deliberately NOT `kc-btn`:
      that sets white-space:nowrap, and "v2.2.0 · 6 agents · all reporting" is
      wider than the 232px sidebar's text column. It has to be free to wrap. */
@@ -176,7 +203,7 @@
   cursor: pointer;
 }
 .versionLine:hover {
-  color: var(--ink-300);
+  color: var(--kc-inv-soft);
 }
 .versionLine:focus-visible {
   outline: none;
@@ -198,7 +225,7 @@
   height: var(--kc-header-h);
   border-bottom: 1px solid var(--border-line);
   background: var(--surface-page);
-  position: sticky;
+  position: sticky; /* also the containing block for FetchBar on its bottom edge */
   top: 0;
   z-index: 5;
 }
@@ -230,6 +257,12 @@
   display: inline-block;
   flex: none;
 }
+.onlineDotPartial {
+  background: var(--warn);
+}
+.onlineDotNone {
+  background: var(--text-faint);
+}
 
 .themeToggle {
   background: none;
@@ -242,6 +275,14 @@
 }
 .themeToggle:hover {
   background: var(--surface-inset);
+  border-color: var(--border-mid);
+}
+.themeToggle:active {
+  background: var(--ink-200);
+}
+/* The new icon fades and settles in when the theme flips. */
+.themeIcon {
+  animation: nt-fade-up var(--dur-med) var(--ease) both;
 }
 
 .askButton {
@@ -258,7 +299,10 @@
   min-height: 40px;
 }
 .askButton:hover {
-  background: var(--ink-700);
+  background: var(--kc-btn-hover);
+}
+.askButton:active {
+  background: var(--press-ink);
 }
 
 .askHint {
@@ -279,6 +323,7 @@
   width: 440px;
   background: var(--surface-page);
   border-left: 1px solid var(--border-strong);
+  box-shadow: var(--shadow-3);
   z-index: 31;
   display: flex;
   flex-direction: column;
@@ -289,8 +334,8 @@
   align-items: center;
   gap: 12px;
   padding: 16px 20px;
-  background: #141317;
-  color: #f4f2ec;
+  background: var(--kc-inv-bg);
+  color: var(--kc-inv-fg);
   flex: none;
 }
 
@@ -304,22 +349,23 @@
 .chatScope {
   font-family: var(--font-mono);
   font-size: 10px;
-  color: var(--ink-400);
-  border: 1px solid var(--ink-700);
+  color: var(--kc-inv-muted);
+  border: 1px solid var(--kc-inv-line);
+  border-radius: var(--radius-pill);
   padding: 2px 8px;
 }
 
 .chatClose {
   background: none;
   border: none;
-  color: var(--ink-400);
+  color: var(--kc-inv-muted);
   min-width: 44px;
   min-height: 44px;
   display: grid;
   place-items: center;
 }
 .chatClose:hover {
-  color: #f4f2ec;
+  color: var(--kc-inv-fg);
 }
 
 .chatBody {
@@ -333,6 +379,6 @@
 .backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(20, 19, 23, 0.4);
+  background: var(--overlay-scrim);
   z-index: 30;
 }

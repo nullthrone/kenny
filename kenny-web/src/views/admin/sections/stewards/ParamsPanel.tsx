@@ -6,6 +6,7 @@ import type { Steward, StewardParamKind, StewardParamsSaved, StewardParamValues,
 import { STEWARDS_KEY, consentErrorMessage, isHashChanged, useStewardParams, useFleetHosts } from './queries'
 import shared from '../../shared.module.css'
 import styles from './stewards.module.css'
+import Loading from '../../../../components/Loading/Loading'
 
 const DAYS: { key: string; label: string }[] = [
   { key: 'mon', label: 'Mon' },
@@ -352,7 +353,7 @@ export default function ParamsPanel({ steward, canManage }: ParamsPanelProps) {
   const headingId = `params-${steward.id}`
 
   let body
-  if (query.isLoading) body = <div className={shared.loading}>Loading…</div>
+  if (query.isLoading) body = <Loading className={shared.loading}>Loading…</Loading>
   else if (query.isError || !query.data) {
     body = <EmptyState title="Could not load the parameters" message="Something went wrong. Reload to try again." />
   } else if (query.data.declared.length === 0) {

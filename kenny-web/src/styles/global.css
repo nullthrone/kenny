@@ -24,53 +24,53 @@
 }
 
 /* ── Theme polarity ──────────────────────────────────────────────────────
- * The prototype is LIGHT by default: tokens/colors.css's bare :root IS the
- * light palette (paper #F4F2EC / ink #141317), so light needs no override
- * here. [data-theme="dark"] is the prototype's `.kc-dark` block (lines
- * 62-70), transcribed exactly. There is no `prefers-color-scheme` handling:
- * theme is explicit-only (localStorage `kenny-theme`, applied as
- * `data-theme` on <html> by ThemeProvider / the inline boot script in
- * index.html), never OS-derived — see src/theme.
+ * Light is the default: tokens/colors.css's bare :root IS the light palette.
+ * Dark is the primitive inversion declared under [data-theme='dark'] in that
+ * same file — no semantic overrides live here. There is no
+ * `prefers-color-scheme` handling: theme is explicit-only (localStorage
+ * `kenny-theme`, applied as `data-theme` on <html> by ThemeProvider / the
+ * inline boot script in index.html), never OS-derived — see src/theme.
+ *
+ * Two families of console-specific tokens sit on top:
+ *
+ * --kc-btn-*  The inverted button (Ask kenny, active toggles): an ink fill in
+ *             light, a cream fill in dark. It follows the inversion, so it is
+ *             expressed through primitives.
+ * --kc-inv-*  The ink panels — sidebar, mobile tab bar, chat header, forecast
+ *             and availability bands. They stay ink in BOTH themes (a
+ *             monumental moment, not a themed surface), so their palette is
+ *             fixed literals rather than primitives that would invert. In dark
+ *             the ground sinks below the page instead of rising above it:
+ *             elevation in dark is shadow, never a lighter plane.
  */
-:root {
-  /* The "always-inverted" surfaces: the Ask Kenny button (light mode) and
-   * the sidebar/host-forecast-band ink panels. Prototype :root default. */
-  --kc-btn-bg: #141317;
-  --kc-btn-fg: #f4f2ec;
-  --kc-inv-bg: #141317;
-  --kc-inv-fg: #f4f2ec;
+:root,
+[data-theme] {
+  --kc-btn-bg: var(--ink-950);
+  --kc-btn-fg: var(--paper);
+  --kc-btn-hover: var(--ink-700);
 }
 
-:root[data-theme='dark'] {
-  --surface-page: #141317;
-  --surface-card: #1e1c21;
-  --surface-inset: #2a282e;
-  --paper-white: #1e1c21;
-  --text-body: #e9e6df;
-  --text-muted: #928f96;
-  --text-faint: #6e6b72;
-  --text-accent: #c09a4b;
-  --border-line: #3a3740;
-  --border-mid: #4a4750;
-  --border-strong: #e9e6df;
-  --ink-100: #2a282e;
-  --ink-200: #3a3740;
-  --brass-600: #c09a4b;
-  --ok: #5fa37f;
-  --warn: #d9a94b;
-  --danger: #c96a5e;
-  --green-100: #1e2a24;
-  --green-600: #5fa37f;
-  --amber-600: #d9a94b;
-  --red-600: #c96a5e;
-  --warn-bg: #2e2418;
-  --danger-bg: #2e1b1a;
-  --ok-bg: #1e2a24;
-  --kc-btn-bg: #e9e6df;
-  --kc-btn-fg: #141317;
-  --kc-inv-bg: #1e1c21;
-  --kc-inv-fg: #e9e6df;
-  background: #141317;
+:root,
+[data-theme='light'] {
+  --kc-inv-bg: #1d1a16;
+  --kc-inv-raised: #27231e;
+  --kc-inv-fg: #f6f0e4;
+  --kc-inv-soft: #bdb3a2;
+  --kc-inv-muted: #968b7c;
+  --kc-inv-faint: #7d7366;
+  --kc-inv-line: #463f36;
+  --kc-inv-accent: #c09a4b;
+}
+
+[data-theme='dark'] {
+  --kc-inv-bg: #12100d;
+  --kc-inv-raised: #221f1a;
+  --kc-inv-fg: #f1ece2;
+  --kc-inv-line: #36322b;
+}
+
+html {
+  background: var(--surface-page);
 }
 
 /* ── Base element behaviour ────────────────────────────────────────────── */
@@ -92,7 +92,21 @@ a {
   transition:
     background-color var(--dur-fast) var(--ease),
     color var(--dur-fast) var(--ease),
-    border-color var(--dur-fast) var(--ease);
+    border-color var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease);
+}
+
+/* Control corners: buttons and text-entry controls take --radius-2. Wrapped in
+ * :where() so the rule carries zero specificity — a module class that draws a
+ * structural control (a tab, a nav item, a full-width row) sets
+ * `border-radius: 0` and wins without a fight. */
+:where(
+    button,
+    input:not([type='checkbox']):not([type='radio']):not([type='range']),
+    select,
+    textarea
+  ) {
+  border-radius: var(--radius-2);
 }
 
 /* ── Nullthrone double focus ring: 2px paper gap + 2px brass ──────────── */
@@ -215,10 +229,28 @@ a {
 }
 
 /* ── Motion ─────────────────────────────────────────────────────────────
- * Durations/easing come from tokens/effects.css (--ease, --dur-*).
- * Keyframes nt-fade-up / nt-fade-in are in tokens/motion.css; kc-slide-left
- * and kc-modal-in are the two prototype-specific keyframes, transcribed
- * exactly (prototype lines 50-51).
+ * Nullthrone motion: one easing (--ease), 120ms hover / 200ms entrances /
+ * 320ms progress, fades and small translates only — nothing springs, nothing
+ * bounces, nothing glows. Keyframes live in tokens/motion.css. Every class
+ * below is switched off under `prefers-reduced-motion`.
+ *
+ * Entrances
+ *   kc-view         each top-level view's root: fade-up on mount
+ *   kc-backdrop     modal/drawer scrim: fade-in
+ *   kc-chat         Ask kenny drawer: slides in from the right
+ *   kc-modal        modal panel positioned translate(-50%,-50%): fade-up
+ *   kc-stagger-row  a list row: fade-up, 50ms later than its previous sibling
+ *   kc-stagger      a container: each direct child fades up, staggered the
+ *                   same way — for card grids and KPI strips whose children
+ *                   are not list rows
+ * Progress
+ *   kc-fill-x       a bar grows from its left edge to its value
+ *   kc-rise         a column grows from its baseline (StepRule, bar charts)
+ *   kc-draw         a hairline draws outward from its centre
+ * Activity
+ *   kc-live         a status mark breathes (opacity only) while live
+ *   kc-theme-fade   set briefly on <html> by ThemeProvider so a theme switch
+ *                   cross-fades instead of snapping
  */
 @keyframes kc-slide-left {
   from {
@@ -239,46 +271,84 @@ a {
   }
 }
 
-/* View fade-up, 200ms. Apply to each top-level view's root element. */
 .kc-view {
-  animation: nt-fade-up 200ms var(--ease) both;
+  animation: nt-fade-up var(--dur-med) var(--ease) both;
 }
 
-/* Backdrop fade, 200ms. */
 .kc-backdrop {
-  animation: nt-fade-in 200ms var(--ease) both;
+  animation: nt-fade-in var(--dur-med) var(--ease) both;
 }
 
-/* Drawer (Ask Kenny chat rail) slide, 240ms. */
 .kc-chat {
   animation: kc-slide-left 240ms var(--ease) both;
 }
 
-/* Modal scale-in, 200ms. Pair with a panel positioned
- * `position:fixed; top:50%; left:50%; transform:translate(-50%,-50%)` —
- * the keyframe's translate values assume that positioning, exactly as the
- * prototype's modal panels are positioned. */
+/* Pair with a panel positioned `position:fixed; top:50%; left:50%;
+ * transform:translate(-50%,-50%)` — the keyframe's translate values assume it. */
 .kc-modal {
-  animation: kc-modal-in 200ms var(--ease) both;
+  animation: kc-modal-in var(--dur-med) var(--ease) both;
 }
 
-/* List-row stagger: 50ms per row, 200ms fade-up. Rows 5+ repeat the last
- * computed delay rather than continuing to stack — the prototype only ever
- * staggered the first few visible rows before the eye has moved on. */
-.kc-stagger-row {
-  animation: nt-fade-up 200ms var(--ease) both;
+/* Stagger: 50ms per item, capped at the 7th so a long list never makes the
+ * operator wait for the rows they actually scrolled to. */
+.kc-stagger-row,
+.kc-stagger > * {
+  animation: nt-fade-up var(--dur-med) var(--ease) both;
 }
-.kc-stagger-row:nth-child(2) {
+.kc-stagger-row:nth-child(2),
+.kc-stagger > :nth-child(2) {
   animation-delay: 50ms;
 }
-.kc-stagger-row:nth-child(3) {
+.kc-stagger-row:nth-child(3),
+.kc-stagger > :nth-child(3) {
   animation-delay: 100ms;
 }
-.kc-stagger-row:nth-child(4) {
+.kc-stagger-row:nth-child(4),
+.kc-stagger > :nth-child(4) {
   animation-delay: 150ms;
 }
-.kc-stagger-row:nth-child(n + 5) {
+.kc-stagger-row:nth-child(5),
+.kc-stagger > :nth-child(5) {
   animation-delay: 200ms;
+}
+.kc-stagger-row:nth-child(6),
+.kc-stagger > :nth-child(6) {
+  animation-delay: 250ms;
+}
+.kc-stagger-row:nth-child(n + 7),
+.kc-stagger > :nth-child(n + 7) {
+  animation-delay: 300ms;
+}
+
+.kc-fill-x {
+  transform-origin: left center;
+  animation: kc-fill-x var(--dur-slow) var(--ease) both;
+}
+
+.kc-rise {
+  transform-origin: center bottom;
+  animation: kc-rise var(--dur-slow) var(--ease) both;
+}
+
+.kc-draw {
+  transform-origin: center;
+  animation: kc-draw var(--dur-slow) var(--ease) both;
+}
+
+.kc-live {
+  animation: kc-live 2400ms var(--ease) infinite;
+}
+
+.kc-theme-fade,
+.kc-theme-fade *,
+.kc-theme-fade *::before,
+.kc-theme-fade *::after {
+  transition:
+    background-color var(--dur-med) var(--ease),
+    border-color var(--dur-med) var(--ease),
+    color var(--dur-med) var(--ease),
+    fill var(--dur-med) var(--ease),
+    stroke var(--dur-med) var(--ease) !important;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -286,12 +356,19 @@ a {
   .kc-backdrop,
   .kc-chat,
   .kc-modal,
-  .kc-stagger-row {
+  .kc-stagger-row,
+  .kc-stagger > *,
+  .kc-fill-x,
+  .kc-rise,
+  .kc-draw,
+  .kc-live {
     animation: none;
   }
   button,
-  a {
-    transition: none;
+  a,
+  .kc-theme-fade,
+  .kc-theme-fade * {
+    transition: none !important;
   }
 }
 
@@ -299,7 +376,7 @@ a {
  * WebKit on iOS zooms the whole page in when a text-entry control is focused
  * whose computed font-size is below 16px, and does not zoom back out. Every
  * control in this app is below that line: form controls are drawn at
- * --text-sm (13px) or smaller, and even the body default --text-md is 15px.
+ * --text-sm (13px) or smaller.
  *
  * The 16px below is WebKit's threshold, not a step on the type scale, and is
  * deliberately NOT routed through a typography token — a token would let the

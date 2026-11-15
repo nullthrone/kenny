@@ -6,6 +6,7 @@ import { RunStatusTag, shortHash, TierBadge } from './badges'
 import { STEWARDS_KEY, useStewardRun, useStewardRuns } from './queries'
 import shared from '../../shared.module.css'
 import styles from './stewards.module.css'
+import Loading from '../../../../components/Loading/Loading'
 
 function totalTokens(run: StewardRun): number {
   return run.input_tokens + run.output_tokens + run.cache_read_tokens + run.cache_creation_tokens
@@ -58,7 +59,7 @@ export function RunDetail({ runId }: { runId: string }) {
   const queryClient = useQueryClient()
   const query = useStewardRun(runId)
 
-  if (query.isLoading) return <div className={shared.loading}>Loading…</div>
+  if (query.isLoading) return <Loading className={shared.loading}>Loading…</Loading>
   if (query.isError || !query.data) {
     return (
       <EmptyState
@@ -141,7 +142,7 @@ export default function RunsPanel({ steward, selected, onSelect }: RunsPanelProp
   const headingId = `runs-${steward.id}`
 
   let body
-  if (query.isLoading) body = <div className={shared.loading}>Loading…</div>
+  if (query.isLoading) body = <Loading className={shared.loading}>Loading…</Loading>
   else if (query.isError || !query.data) {
     body = <EmptyState title="Could not load the runs" message="Something went wrong. Reload to try again." />
   } else if (query.data.length === 0 && !selected) {

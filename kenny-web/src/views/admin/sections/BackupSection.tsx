@@ -9,6 +9,7 @@ import shared from '../shared.module.css'
 import styles from './BackupSection.module.css'
 import RestoreConfirmModal from './RestoreConfirmModal'
 import BackupTargetModal from './BackupTargetModal'
+import Loading from '../../../components/Loading/Loading'
 
 function formatSize(bytes: number): string {
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`
@@ -67,7 +68,7 @@ export default function BackupSection({ rows }: BackupSectionProps) {
     onSuccess: invalidate,
   })
 
-  if (query.isLoading) return <div className={shared.loading}>Loading…</div>
+  if (query.isLoading) return <Loading className={shared.loading}>Loading…</Loading>
   if (query.isError) return <EmptyState title="Could not load backups" message="Something went wrong. Reload to try again." />
   if (!query.data) return null
 

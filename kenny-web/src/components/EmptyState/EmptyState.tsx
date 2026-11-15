@@ -1,5 +1,6 @@
 import type { LucideIcon } from '../icons'
 import { ICON_STROKE_WIDTH } from '../icons'
+import Arch from '../Arch/Arch'
 import styles from './EmptyState.module.css'
 
 export interface EmptyStateAction {
@@ -24,7 +25,11 @@ export interface EmptyStateProps {
 export default function EmptyState({ icon: Icon, title, message, action, className }: EmptyStateProps) {
   return (
     <div className={`${styles.root}${className ? ` ${className}` : ''}`}>
-      {Icon && <Icon width={32} height={32} strokeWidth={ICON_STROKE_WIDTH} className={styles.icon} aria-hidden="true" />}
+      {Icon && (
+        <Arch width={72} height={84} className={styles.arch}>
+          <Icon width={28} height={28} strokeWidth={ICON_STROKE_WIDTH} className={styles.icon} aria-hidden="true" />
+        </Arch>
+      )}
       <div className={styles.title}>{title}</div>
       {message && <p className={styles.message}>{message}</p>}
       {action && (
