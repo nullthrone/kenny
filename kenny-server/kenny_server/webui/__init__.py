@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlsplit
 
+from pydantic import ValidationError
 from starlette.background import BackgroundTask
 from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, Response, StreamingResponse
@@ -40,6 +41,7 @@ from ..chat import (
     run_turn_events,
 )
 from ..policy import PolicyEngine
+from ..protocol import parse_snapshot
 from ..event_categories import annotate_snapshots
 from .. import findings, hardware_history, hardware_metrics
 from ..forecast import build_facts, deterministic_summary, forecast_events
@@ -1027,7 +1029,22 @@ def build_api_routes(
             from datetime import datetime, timezone
 
             try:
-                await store.insert(agent_id, datetime.now(timezone.utc).isoformat(), result)
+                snapshot = parse_snapshot(result)
+            except ValidationError:
+                # A result that is not a snapshot map would be rejected as a pushed
+                # `telemetry` frame; storing it here would hand every reader a shape
+                # the push path guarantees they never see.
+                logger.warning("refresh of %s returned a malformed snapshot; not stored", agent_id)
+                return JSONResponse(
+                    {
+                        "ok": True,
+                        "stored": False,
+                        "warning": "collected, but the agent returned a malformed "
+                        "snapshot; the panel shows the previous reading",
+                    }
+                )
+            try:
+                await store.insert(agent_id, datetime.now(timezone.utc).isoformat(), snapshot)
                 stored = True
             except Exception:  # noqa: BLE001 - see comment above
                 logger.exception(
@@ -1064,7 +1081,11 @@ def build_api_routes(
             await call_log.record(agent_id, "screen_capture", {}, ok=False, error=message, actor=_actor_of(request))
             return JSONResponse({"ok": False, "error": message}, status_code=502)
         if isinstance(result, dict) and "image_b64" in result:
-            screenshots.put(agent_id, result["image_b64"], result.get("format", "png"))
+            if not screenshots.put(agent_id, result["image_b64"], result.get("format", "png")):
+                return JSONResponse(
+                    {"ok": False, "error": "agent returned an invalid screenshot"},
+                    status_code=502,
+                )
         return JSONResponse({"ok": True})
 
     async def api_remotehelp(request: Request) -> JSONResponse:

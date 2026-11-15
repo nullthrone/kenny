@@ -27,6 +27,7 @@ impossible: a call either names its host or fails closed.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import logging
@@ -410,12 +411,27 @@ class ScreenshotStore:
     def __init__(self) -> None:
         self._latest: dict[str, dict[str, Any]] = {}
 
-    def put(self, agent_id: str, image_b64: str, fmt: str = "png") -> None:
+    def put(self, agent_id: str, image_b64: Any, fmt: Any = "png") -> bool:
+        """Keep ``image_b64`` as the agent's latest screenshot; ``False`` if it is not one.
+
+        The payload is whatever the agent answered ``screen_capture`` with, so it is
+        checked here, where every writer passes: only a string that decodes as base64
+        is kept, because the dashboard serves the stored value by decoding it. A
+        rejected payload leaves the previous screenshot in place.
+        """
+
+        if not isinstance(image_b64, str):
+            return False
+        try:
+            base64.b64decode(image_b64)
+        except ValueError:
+            return False
         self._latest[agent_id] = {
             "image_b64": image_b64,
-            "format": fmt,
+            "format": fmt if isinstance(fmt, str) else "png",
             "captured_at": datetime.now(timezone.utc).isoformat(),
         }
+        return True
 
     def get(self, agent_id: str) -> dict[str, Any] | None:
         return self._latest.get(agent_id)
