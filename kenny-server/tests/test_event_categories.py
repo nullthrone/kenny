@@ -528,3 +528,7 @@ def test_a_cut_off_or_declined_batch_keeps_the_defaults(stop_reason):
     verdict = '{"category": "Disk & storage", "severity": "serious", "cause": ""}'
     client = _RecordingClient("[" + verdict + "]", stop_reason)
     assert _run(ec._classify(client, _groups(1))) is None
+
+
+def test_key_maps_a_non_finite_event_id_to_the_unknown_id():
+    assert ec._key("src", float("inf")) == ("src", -1)
