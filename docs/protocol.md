@@ -399,6 +399,8 @@ without domain logic.
 
 A `telemetry_collect` **request** (see tool catalog) returns the *same* snapshot
 shape inside `response.result`, optionally restricted to `args.sections`.
+The server stores such a result only if it validates as that map; a result that does
+not is returned to the caller but never stored.
 
 ### `log` (agent → server, pushed)
 
