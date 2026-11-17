@@ -287,6 +287,11 @@ def validate_categories(values: Iterable[Any] | None) -> tuple[str, ...]:
 
     if values is None:
         return ()
+    # Raw request input reaches here; anything but a list/tuple of keys (a bare
+    # number or bool is not iterable, a string would iterate per character) is
+    # a caller error, reported as ValueError like every other bad category.
+    if not isinstance(values, (list, tuple)):
+        raise ValueError("categories must be a list of category keys")
     seen = {validate_category(v) for v in values}
     return tuple(k for k in CATEGORY_KEYS if k in seen)
 

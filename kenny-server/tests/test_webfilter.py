@@ -246,6 +246,12 @@ def test_validate_categories_normalizes_and_rejects() -> None:
     assert webfilter.validate_categories(None) == ()
     with pytest.raises(ValueError):
         webfilter.validate_categories(["not_a_category"])
+    # Raw request input: a bare scalar is not iterable (it used to raise
+    # TypeError, a 500 on the schedule route) and a string would be read one
+    # character at a time; both are refused as ValueError.
+    for bad in (1.5, -1, True, "gaming", {"gaming": 1}):
+        with pytest.raises(ValueError):
+            webfilter.validate_categories(bad)
 
 
 def test_active_categories_merges_legacy_toggles_and_extras() -> None:
@@ -1204,6 +1210,13 @@ async def test_integration_webfilter_schedule(tmp_path, monkeypatch) -> None:
                       "categories": ["social"]},
             )
             assert r.status_code == 400
+            for bad_categories in (1.5, True, "social"):
+                r = await c.post(
+                    f"{base}/api/agent/dev/webfilter/schedule",
+                    json={"days": "daily", "start": "21:00", "end": "07:00",
+                          "categories": bad_categories},
+                )
+                assert r.status_code == 400, bad_categories
 
             # An always-open window, so the assertions below don't chase a clock.
             r = await c.post(
