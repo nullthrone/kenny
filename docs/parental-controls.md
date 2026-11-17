@@ -124,7 +124,9 @@ Monday through Friday, add `social` and `gaming`"). A window names its weekdays,
 (defaulting to the server's own `TZ`, else UTC).
 The weekdays, range and timezone are read by the same parser as a
 [steward's](dashboard.md#stewards) maintenance window, so both accept
-exactly the same values.
+exactly the same values. A window whose categories are not a list of known category keys,
+or whose weekdays, range or timezone do not parse, is refused with HTTP 400 and never
+stored.
 
 A schedule can only make the filter **stricter for its duration**. A window **adds**
 categories on top of whatever the host's own toggles already have; it never removes one,
