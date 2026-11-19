@@ -44,6 +44,8 @@ logger = logging.getLogger("kenny.notify")
 _SEND_TIMEOUT_S = 15.0
 
 #: Every value ``Notification.route`` may take (ADR-0067).
+# POSSIBLY DEAD: no production caller validates a route against this tuple —
+# only tests/test_alerting.py reads it.
 ROUTES: tuple[str, ...] = ("push", "daily", "record")
 
 ClientFactory = Callable[[], httpx.AsyncClient]

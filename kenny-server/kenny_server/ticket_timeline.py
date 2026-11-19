@@ -55,6 +55,8 @@ LIFECYCLE = "lifecycle"
 #: Something that failed or was refused, and therefore explains a gap.
 PROBLEM = "problem"
 
+# POSSIBLY DEAD: no production caller reads this tuple — only
+# tests/test_ticket_timeline.py checks an entry's kind against it.
 PRESENTED_KINDS: tuple[str, ...] = (MESSAGE, FINDING, ACTIVITY, ACTION, LIFECYCLE, PROBLEM)
 
 #: How :attr:`TimelineEntry.text` must be rendered. ``markdown`` is kenny's own

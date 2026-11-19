@@ -62,6 +62,8 @@ EVENT_QUERY: dict[str, Any] = {
 
 # -- vocabulary ---------------------------------------------------------------
 
+# POSSIBLY DEAD: no production caller reads this tuple — `component_for` returns
+# the names as literals; only tests/test_hardware_catalog.py checks membership.
 COMPONENTS: tuple[str, ...] = ("cpu", "memory", "pcie", "gpu", "storage", "power", "platform")
 
 # Severity classes, as a rule consumes them:
