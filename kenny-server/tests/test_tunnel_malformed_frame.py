@@ -12,10 +12,14 @@ oversized frame.
 
 from __future__ import annotations
 
+import base64
 import json
 
 import pytest
+from starlette.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
+from kenny_server.main import build_app
 from kenny_server.registry import AgentRegistry
 from kenny_server.store import EventStore, TelemetryStore
 from kenny_server.tunnel import AgentTunnel
@@ -115,3 +119,60 @@ async def test_serve_drops_malformed_frame_and_keeps_the_tunnel_open(
 
     await store.close()
     await events.close()
+
+
+# -- binary WebSocket messages ------------------------------------------------
+#
+# Every kenny frame is a JSON text message. Starlette's ``receive_text`` raises
+# ``KeyError`` on a binary one, so these go through the real ASGI app: a fake
+# socket cannot show what Starlette does with the message.
+
+
+@pytest.fixture()
+def client(tmp_path, monkeypatch):
+    monkeypatch.setenv("KENNY_AGENT_TOKENS", "pc1=tok")
+    app = build_app(db_path=str(tmp_path / "binary.sqlite"))
+    with TestClient(app) as c:
+        yield c
+
+
+_REGISTER = {
+    "type": "register",
+    "agent_id": "pc1",
+    "token": "tok",
+    "meta": {"hostname": "h", "os": "windows", "version": "1"},
+}
+
+
+def test_binary_first_frame_closes_4400(client) -> None:
+    with client.websocket_connect("/agent/ws") as ws:
+        ws.send_bytes(b"\x00\x01")
+        with pytest.raises(WebSocketDisconnect) as closed:
+            ws.receive_text()
+    assert closed.value.code == 4400
+
+
+def test_binary_auth_reply_closes_4401(client) -> None:
+    signed = {
+        **_REGISTER,
+        "protocol": "0.8",
+        "client_nonce": base64.b64encode(bytes(32)).decode(),
+    }
+    del signed["token"]
+    with client.websocket_connect("/agent/ws") as ws:
+        ws.send_text(json.dumps(signed))
+        assert ws.receive_json()["type"] == "challenge"
+        ws.send_bytes(b"\x00")
+        with pytest.raises(WebSocketDisconnect) as closed:
+            ws.receive_text()
+    assert closed.value.code == 4401
+
+
+def test_binary_frame_from_a_connected_agent_is_dropped(client) -> None:
+    with client.websocket_connect("/agent/ws") as ws:
+        ws.send_text(json.dumps(_REGISTER))
+        ws.send_bytes(b"\x00\x01")
+        ws.send_text(json.dumps({"type": "ping"}))
+        # The policy frame(s) come first; the pong proves the tunnel survived.
+        while ws.receive_json()["type"] != "pong":
+            pass
