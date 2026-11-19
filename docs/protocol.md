@@ -397,6 +397,10 @@ without domain logic.
 }
 ```
 
+`collected_at` is an RFC 3339 timestamp with a UTC offset (`Z` or `±hh:mm`), the same
+form as `log.at`. The server drops a `telemetry` frame whose `collected_at` is anything
+else and keeps the connection open.
+
 A `telemetry_collect` **request** (see tool catalog) returns the *same* snapshot
 shape inside `response.result`, optionally restricted to `args.sections`.
 

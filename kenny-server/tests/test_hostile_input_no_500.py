@@ -10,11 +10,15 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 from starlette.testclient import TestClient
 
 from kenny_server.main import build_app
+from kenny_server.protocol import parse_frame
 
 _URIS = ["https://example.com/cb"]
 
@@ -88,3 +92,84 @@ def test_installer_download_survives_hostile_agent_id(client, agent_id, query) -
     disposition = r.headers.get("content-disposition", "")
     assert disposition.count('"') in (0, 2)
     assert "\r" not in disposition and "\n" not in disposition
+
+
+# -- a snapshot's ``collected_at`` is the agent's own string --------------------
+
+_NOT_AN_INSTANT = [
+    " ",
+    "x",
+    "0",
+    "2026-02-30T00:00:00Z",
+    "2026-06-04T18:00:00+99:99",
+    # Parses, but has no UTC equivalent inside datetime's range.
+    "0001-01-01T00:00:00+23:59",
+    "9999-12-31T23:59:59-23:59",
+    # Parses, but names no offset.
+    "2026-06-04T18:00:00",
+    "2026-06-04",
+]
+
+
+@pytest.mark.parametrize("collected_at", _NOT_AN_INSTANT)
+def test_telemetry_frame_needs_an_rfc3339_collected_at(collected_at) -> None:
+    frame = {
+        "type": "telemetry",
+        "agent_id": "pc1",
+        "collected_at": collected_at,
+        "snapshot": {},
+    }
+    with pytest.raises(ValidationError):
+        parse_frame(frame)
+
+
+@pytest.mark.parametrize(
+    "collected_at",
+    [
+        "2026-06-04T18:00:00Z",
+        "2026-06-04T18:00:00.123456789Z",
+        "2026-06-04T20:00:00+02:00",
+    ],
+)
+def test_telemetry_frame_accepts_rfc3339_collected_at(collected_at) -> None:
+    frame = {
+        "type": "telemetry",
+        "agent_id": "pc1",
+        "collected_at": collected_at,
+        "snapshot": {},
+    }
+    assert parse_frame(frame).collected_at == collected_at
+
+
+@pytest.fixture()
+def fleet(tmp_path, monkeypatch):
+    """A client plus the app, with ``pc1`` known to the registry."""
+
+    monkeypatch.setenv("KENNY_AGENT_TOKENS", "pc1=tok")
+    app = build_app(db_path=str(tmp_path / "stored.sqlite"))
+    with TestClient(app) as c:
+        c.headers["Authorization"] = f"Bearer {app.state.operator_token}"
+        yield c, app
+
+
+_SNAPSHOT = json.loads(
+    (Path(__file__).resolve().parents[2] / "docs" / "fixtures" / "telemetry_snapshot.json").read_text()
+)["snapshot"]
+
+
+@pytest.mark.parametrize("collected_at", [" ", "x", "0001-01-01T00:00:00+23:59"])
+def test_stored_unparseable_collected_at_does_not_break_availability(fleet, collected_at) -> None:
+    """A row stored before the frame was validated must not take the fleet list down."""
+
+    client, app = fleet
+    client.portal.call(app.state.store.insert, "pc1", collected_at, _SNAPSHOT)
+    assert client.get("/api/fleet").status_code == 200
+    assert client.get("/api/agent/pc1/availability").status_code == 200
+
+
+def test_stored_collected_at_without_offset_is_scored_as_utc(fleet) -> None:
+    client, app = fleet
+    naive = datetime.now(timezone.utc).replace(tzinfo=None, microsecond=0).isoformat()
+    client.portal.call(app.state.store.insert, "pc1", naive, _SNAPSHOT)
+    for path in ("/api/agent/pc1", "/api/fleet/trend", "/api/today"):
+        assert client.get(path).status_code == 200, path

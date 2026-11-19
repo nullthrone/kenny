@@ -55,6 +55,17 @@ def _parse(value: TimeLike) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
+def _parses(value: Any) -> bool:
+    """Whether a stored timestamp is usable. A snapshot's ``collected_at`` is the
+    agent's own string, so a stored row may hold one that is not an instant."""
+
+    try:
+        _parse(value)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return True
+
+
 def _dt(value: TimeLike) -> datetime:
     # Whole seconds: every boundary on one grid, so no segment is shorter than
     # the precision it is reported at.
@@ -358,7 +369,7 @@ async def load_many(
                 first_sessions.get(agent_id),
                 agent_pushes[0] if agent_pushes else None,
             )
-            if v
+            if v and _parses(v)
         ]
         out[agent_id] = compute(
             sessions=sessions.get(agent_id, []),

@@ -2021,6 +2021,10 @@ def evaluate_snapshot(
     """
 
     now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        # A stored ``collected_at`` without an offset is read as UTC; the rules
+        # subtract offset-aware instants from ``now``.
+        now = now.replace(tzinfo=timezone.utc)
     is_windows = _is_windows(agent_os)
     sections: dict[str, Any] = {}
     for name, payload in snapshot.items():
