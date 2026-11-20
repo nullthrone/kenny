@@ -106,6 +106,8 @@ def _event_id(value: Any) -> int | None:
     return None
 
 
+# POSSIBLY DEAD: no production caller — only tests/test_hardware_catalog.py uses
+# this, as the seam check between the agent query and ATTRIBUTED_EVENTS.
 def queried_events() -> frozenset[tuple[str, int]]:
     """The ``(canonical provider, event_id)`` pairs the agent queries on Windows."""
 
@@ -383,6 +385,8 @@ _LINUX_COMPONENTS: dict[str, str] = {
     "ata": "storage",
     "pcie_aer": "pcie",
 }
+# POSSIBLY DEAD: no production caller reads this set — attribution looks keys up
+# in _LINUX_COMPONENTS directly; only tests/test_hardware_catalog.py reads it.
 ATTRIBUTED_LINUX_KEYS: frozenset[str] = frozenset(_LINUX_COMPONENTS)
 
 # Severity per Linux key for a *journal* group. A journal line cannot say
