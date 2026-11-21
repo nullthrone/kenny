@@ -53,6 +53,22 @@ def _err(detail: str, status: int = 400) -> JSONResponse:
     return JSONResponse({"error": "invalid", "detail": detail}, status_code=status)
 
 
+def _wrong_type(body: dict[str, Any], **expected: type) -> str | None:
+    """Name the first present field whose value is not of its expected type.
+
+    The store strips string fields and coerces ``disabled`` by truthiness, so a
+    JSON number/array there would raise (500) or, for ``disabled``, read
+    ``"false"`` as *true* — disabling an account while skipping the guards and
+    the OAuth revocation that only match a literal ``True``.
+    """
+
+    for field, kind in expected.items():
+        value = body.get(field)
+        if value is not None and not isinstance(value, kind):
+            return f"{field} must be a {'boolean' if kind is bool else 'string'}"
+    return None
+
+
 def _path_int(request: Request, name: str) -> int | None:
     """Parse a path parameter as an int, or ``None`` when it isn't one.
 
@@ -128,6 +144,8 @@ def build_user_routes(
         avatar = body.get("avatar")
         if avatar is not None and avatar not in AVATARS:
             return _err("unknown avatar")
+        if (problem := _wrong_type(body, email=str)) is not None:
+            return _err(problem)
         user = await user_store.update_user(
             principal.user_id,
             email=body.get("email"),
@@ -362,6 +380,8 @@ def build_user_routes(
             return _err("invalid role")
         if avatar is not None and avatar not in AVATARS:
             return _err("unknown avatar")
+        if (problem := _wrong_type(body, email=str)) is not None:
+            return _err(problem)
         try:
             user = await user_store.create_user(
                 username, password, role, email=body.get("email"), avatar=avatar
@@ -389,6 +409,11 @@ def build_user_routes(
         avatar = body.get("avatar")
         if avatar is not None and avatar not in AVATARS:
             return _err("unknown avatar")
+        problem = _wrong_type(
+            body, username=str, email=str, role=str, disabled=bool
+        )
+        if problem is not None:
+            return _err(problem)
         role = body.get("role")
         disabled = body.get("disabled")
         # Guard against removing the last enabled superuser via demotion/disable.

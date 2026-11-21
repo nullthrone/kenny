@@ -430,17 +430,25 @@ def build_ticket_routes(
         if priority_error:
             return _err(priority_error)
         category = body.get("category")
+        if category is not None and not isinstance(category, str):
+            return _err("category must be a string")
         _warn_if_unknown_category(category)
         if principal.at_least("operator"):
             requester = body.get("requester_user_id")
             try:
                 requester_user_id = int(requester) if requester is not None else None
-            except (ValueError, TypeError):
+            except (ValueError, TypeError, OverflowError):
+                return _err("requester_user_id must be an integer")
+            # SQLite INTEGER is 64-bit signed; binding a larger id would raise
+            # OverflowError instead of naming no account.
+            if requester_user_id is not None and not -(2**63) <= requester_user_id < 2**63:
                 return _err("requester_user_id must be an integer")
         else:
             # A scoped `user` may only ever open a ticket on their own behalf.
             requester_user_id = principal.user_id
         agent_id = body.get("agent_id")
+        if agent_id is not None and not isinstance(agent_id, str):
+            return _err("agent_id must be a string")
         if agent_id:
             # A ticket's `agent_id` is frozen at creation as the routing target
             # every later tool call is checked against (see `TicketService.create`),
@@ -455,7 +463,7 @@ def build_ticket_routes(
             title=title,
             origin=origin,
             requester_user_id=requester_user_id,
-            agent_id=body.get("agent_id"),
+            agent_id=agent_id,
             priority=priority,
             category=category,
             summary=str(body.get("summary", "")),
@@ -509,6 +517,9 @@ def build_ticket_routes(
             priority_error = _validate_priority(str(priority))
             if priority_error:
                 return _err(priority_error)
+        for field in ("title", "summary", "resolution", "category"):
+            if body.get(field) is not None and not isinstance(body[field], str):
+                return _err(f"{field} must be a string")
         category = body.get("category")
         if category is not None:
             _warn_if_unknown_category(category)

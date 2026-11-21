@@ -88,3 +88,87 @@ def test_installer_download_survives_hostile_agent_id(client, agent_id, query) -
     disposition = r.headers.get("content-disposition", "")
     assert disposition.count('"') in (0, 2)
     assert "\r" not in disposition and "\n" not in disposition
+
+
+def _create_user(client) -> int:
+    r = client.post(
+        "/api/users",
+        json={"username": "bob", "password": "pw-123456789!Aa", "role": "user"},
+    )
+    assert r.status_code == 201
+    return r.json()["id"]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"username": 5},
+        {"username": ["x"]},
+        {"email": []},
+        {"email": 5},
+        {"role": {}},
+        {"disabled": "false"},
+        {"disabled": 1},
+    ],
+)
+def test_user_update_rejects_wrongly_typed_fields(client, body) -> None:
+    uid = _create_user(client)
+    r = client.patch(f"/api/users/{uid}", json=body)
+    assert r.status_code == 400
+    # Nothing was written: in particular a string "false" did not disable the account.
+    assert client.get(f"/api/users/{uid}").json()["disabled"] is False
+
+
+def test_user_update_still_accepts_well_typed_fields(client) -> None:
+    uid = _create_user(client)
+    r = client.patch(
+        f"/api/users/{uid}", json={"username": "bobby", "email": "b@x.test", "disabled": True}
+    )
+    assert r.status_code == 200
+    assert (r.json()["username"], r.json()["email"], r.json()["disabled"]) == (
+        "bobby",
+        "b@x.test",
+        True,
+    )
+
+
+def test_user_create_rejects_non_string_email(client) -> None:
+    r = client.post(
+        "/api/users",
+        json={"username": "z", "password": "pw-123456789!Aa", "role": "user", "email": 5},
+    )
+    assert r.status_code == 400
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"agent_id": {"a": 1}},
+        {"agent_id": ["host"]},
+        {"category": {"a": 1}},
+        {"category": ["hardware"]},
+        {"requester_user_id": 2**70},
+        {"requester_user_id": -(2**70)},
+    ],
+)
+def test_ticket_create_rejects_unbindable_fields(client, extra) -> None:
+    r = client.post("/api/tickets", json={"title": "t", **extra})
+    assert r.status_code == 400
+
+
+def test_ticket_create_rejects_infinite_requester(client) -> None:
+    r = client.post(
+        "/api/tickets",
+        content='{"title": "t", "requester_user_id": Infinity}',
+        headers={"content-type": "application/json"},
+    )
+    assert r.status_code == 400
+
+
+@pytest.mark.parametrize(
+    "body",
+    [{"title": {"a": 1}}, {"summary": [1]}, {"resolution": 5}, {"category": {"a": 1}}],
+)
+def test_ticket_patch_rejects_non_string_fields(client, body) -> None:
+    tid = client.post("/api/tickets", json={"title": "t"}).json()["id"]
+    assert client.patch(f"/api/tickets/{tid}", json=body).status_code == 400
