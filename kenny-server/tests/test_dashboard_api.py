@@ -540,6 +540,55 @@ def test_refresh_reports_stored_true_on_success(tmp_path):
     assert "warning" not in body
 
 
+def test_refresh_does_not_store_a_result_the_push_path_would_reject(tmp_path) -> None:
+    """A `telemetry_collect` result is the same snapshot map a `telemetry` frame
+    carries. A section that is not an object fails that frame's validation, so it
+    must not reach the store through a refresh either: readers such as the digest
+    index into every stored section and answered 500 on one."""
+
+    app = build_app(db_path=str(tmp_path / "refresh-bad.sqlite"))
+
+    async def _malformed(agent_id, tool, args, timeout_s=60):
+        return {"disk": {"status": "ok", "summary": ""}, "win_update": -5}
+
+    app.state.tunnel.send_request = _malformed  # type: ignore[method-assign]
+
+    with TestClient(app) as c:
+        r = c.post("/api/agent/example-pc/refresh", headers=_bearer(app))
+        assert r.status_code == 200
+        body = r.json()
+        assert body["ok"] is True
+        assert body["stored"] is False
+        assert body["warning"]
+        assert c.portal.call(app.state.store.latest, "example-pc") is None
+        assert c.get("/api/digest/preview", headers=_bearer(app)).status_code == 200
+
+
+def test_capture_rejects_a_screenshot_the_dashboard_could_not_serve(tmp_path) -> None:
+    """`GET .../screenshot` serves the stored capture by base64-decoding it, so a
+    payload that does not decode is refused when it arrives and the previous
+    capture stays; it used to be stored and turn every later GET into a 500."""
+
+    app = build_app(db_path=str(tmp_path / "capture.sqlite"))
+    answers = iter([{"image_b64": "QUJD", "format": "png"}, {"image_b64": -1}, {"image_b64": "A"}])
+
+    async def _capture(agent_id, tool, args, timeout_s=30):
+        return next(answers)
+
+    app.state.tunnel.send_request = _capture  # type: ignore[method-assign]
+
+    with TestClient(app) as c:
+        h = _bearer(app)
+        assert c.post("/api/agent/example-pc/screenshot", headers=h).json() == {"ok": True}
+        for _ in range(2):
+            r = c.post("/api/agent/example-pc/screenshot", headers=h)
+            assert r.status_code == 502
+            assert r.json()["ok"] is False
+            shot = c.get("/api/agent/example-pc/screenshot", headers=h)
+            assert shot.status_code == 200
+            assert shot.content == b"ABC"
+
+
 def test_about_reports_server_protocol_and_repo(tmp_path) -> None:
     """The identity the About dialog renders.
 

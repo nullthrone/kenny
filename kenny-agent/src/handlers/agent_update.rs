@@ -814,7 +814,12 @@ mod tests {
         if !src.exists() {
             return; // No `sleep` on this host; skip rather than fail.
         }
-        let target = std::env::temp_dir().join(format!("kenny-wait-test-{}", std::process::id()));
+        // The copy keeps the file name `sleep` inside a private directory: where
+        // `sleep` is an applet of a multi-call binary (uutils, busybox), the binary
+        // picks the applet by the name it is run as and exits at once under any other.
+        let dir = std::env::temp_dir().join(format!("kenny-wait-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create private dir");
+        let target = dir.join("sleep");
         std::fs::copy(src, &target).expect("copy sleep binary");
         // Make the copy executable for hosts that don't preserve the mode bit.
         #[cfg(unix)]
@@ -838,7 +843,7 @@ mod tests {
 
         let _ = child.kill();
         let _ = child.wait();
-        let _ = std::fs::remove_file(&target);
+        let _ = std::fs::remove_dir_all(&dir);
 
         assert!(
             !freed,

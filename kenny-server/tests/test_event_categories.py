@@ -215,6 +215,18 @@ def test_annotate_snapshots_no_events_is_noop():
     assert snap["reliability"]["events"] == []
 
 
+@pytest.mark.parametrize("events", [3.7, 5, True, "text", {"a": 1}, None])
+def test_annotate_snapshots_ignores_events_that_are_not_a_list(events):
+    """`events` is a section extra, so a `telemetry` frame carries any JSON value
+    there. One host reporting a non-list must not raise: this runs on the fleet
+    overview, where it would take the page down for every host."""
+
+    odd = {"reliability": {"status": "ok", "summary": "", "events": events}}
+    good = {"reliability": {"status": "ok", "summary": "", "events": []}}
+    _run(ec.annotate_snapshots([odd, good], client_factory=lambda: _FakeClient("[]")))
+    assert odd["reliability"]["events"] == events
+
+
 def test_annotate_snapshots_stamps_across_multiple_snapshots(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     snap_a = {"reliability": {"status": "warn", "summary": "", "events": [

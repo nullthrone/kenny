@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from functools import partial
 from typing import Any, AsyncIterator
 
+from pydantic import ValidationError
 from fastmcp import FastMCP
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
@@ -50,6 +51,7 @@ from .notify import Notification, NotifierProvider
 from .oauth import build_oauth_routes
 from .oauthstore import OAuthStore
 from .policy import PolicyEngine, load_shell_allow_defaults
+from .protocol import parse_snapshot
 from .registry import AgentRegistry
 from .reliability_suppression import SuppressionList
 from .store import (
@@ -867,7 +869,12 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
         await call_log.record(host_id, "telemetry_collect", {}, ok=True, actor="system:callback")
         if not result:
             return False
-        await store.insert(host_id, datetime.now(timezone.utc).isoformat(), result)
+        try:
+            snapshot = parse_snapshot(result)
+        except ValidationError:
+            # Not a snapshot map: the push path would reject it, so it is not stored.
+            return False
+        await store.insert(host_id, datetime.now(timezone.utc).isoformat(), snapshot)
         return True
 
     ticket_callbacks = TicketCallbacks(

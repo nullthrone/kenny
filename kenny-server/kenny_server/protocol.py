@@ -244,6 +244,20 @@ def parse_frame(data: dict[str, Any] | str | bytes) -> Frame:
     return _FRAME_ADAPTER.validate_python(data)
 
 
+_SNAPSHOT_ADAPTER: TypeAdapter[dict[str, Section]] = TypeAdapter(dict[str, Section])
+
+
+def parse_snapshot(data: Any) -> dict[str, dict[str, Any]]:
+    """Validate a snapshot map and return it as plain JSON-ready dicts.
+
+    A ``telemetry`` frame's ``snapshot`` and a ``telemetry_collect`` result are the
+    same map of section name to section, so a snapshot that reaches the store by
+    either path is held to this one shape. Raises ``pydantic.ValidationError``.
+    """
+
+    return {k: v.model_dump() for k, v in _SNAPSHOT_ADAPTER.validate_python(data).items()}
+
+
 def dump_frame(model: BaseModel) -> dict[str, Any]:
     """Serialize a frame model into a JSON-ready dict (omitting unset/None)."""
 
