@@ -363,6 +363,11 @@ def test_malformed_requester_user_id_is_400_not_500(tmp_path) -> None:
         h = _hdr(s["op_pat"])
         r = c.get("/api/tickets?requester_user_id=not-a-number", headers=h)
         assert r.status_code == 400
+        # Parses as an int but does not fit SQLite's 64-bit INTEGER: binding it
+        # used to raise OverflowError out of the store instead of a 400.
+        for huge in (str(2**63), str(-(2**63) - 1), "9" * 30):
+            r = c.get(f"/api/tickets?requester_user_id={huge}", headers=h)
+            assert r.status_code == 400, huge
 
         for bad in ("not-a-number", [1, 2], {"a": 1}):
             r = c.post(

@@ -355,6 +355,10 @@ def build_ticket_routes(
                 requester_user_id = int(requester_param) if requester_param else None
             except ValueError:
                 return _err("requester_user_id must be an integer")
+            # SQLite INTEGER is 64-bit signed; binding a larger id raises
+            # OverflowError in the driver instead of matching no ticket.
+            if requester_user_id is not None and not -(2**63) <= requester_user_id < 2**63:
+                return _err("requester_user_id must be an integer")
             rows = await store.list(
                 state=state,
                 states=states,
