@@ -1022,7 +1022,7 @@ fn walk<O: Ops>(
                 match ops.remove_file(dir, &name, &meta, s.commit()) {
                     Ok(()) => {
                         s.files += 1;
-                        s.bytes += meta.size;
+                        s.bytes = s.bytes.saturating_add(meta.size);
                         s.deletions += 1;
                     }
                     Err(FsError::NotFound) => {}
@@ -1221,7 +1221,7 @@ fn sweep_recycle_user<O: Ops>(
                     match ops.remove_file(dir, &payload, &m, s.commit()) {
                         Ok(()) => {
                             s.files += 1;
-                            s.bytes += m.size;
+                            s.bytes = s.bytes.saturating_add(m.size);
                             s.deletions += 1;
                             true
                         }
@@ -1273,7 +1273,7 @@ fn sweep_recycle_user<O: Ops>(
         match ops.remove_file(dir, &name, &info, s.commit()) {
             Ok(()) => {
                 s.files += 1;
-                s.bytes += info.size;
+                s.bytes = s.bytes.saturating_add(info.size);
                 s.deletions += 1;
             }
             Err(FsError::NotFound) => {}

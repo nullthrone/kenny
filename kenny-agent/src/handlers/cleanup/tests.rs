@@ -711,6 +711,32 @@ mod linux_only {
     use super::*;
     use std::os::unix::fs::symlink;
 
+    /// Sizes are the file system's word, and a sparse file can claim 8 EiB: three of
+    /// them exceed `u64`. Needs a file system that allows such a length (tmpfs).
+    #[test]
+    fn reclaimed_bytes_saturate_on_huge_sparse_files() {
+        let root = PathBuf::from(format!(
+            "/dev/shm/kenny-cleanup-sparse-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        if std::fs::create_dir_all(&root).is_err() {
+            return;
+        }
+        for i in 0..3 {
+            let f = std::fs::File::create(root.join(format!("f{i}"))).unwrap();
+            if f.set_len(i64::MAX as u64).is_err() {
+                let _ = std::fs::remove_dir_all(&root);
+                return;
+            }
+        }
+        let clock = TestClock::ahead(1);
+        let s = sweep(&root, &tmp_rules(0), true, &clock, unlimited());
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(s.files, 3);
+        assert_eq!(s.bytes, u64::MAX);
+    }
+
     #[test]
     fn symlinked_file_and_dir_are_never_followed() {
         let t = Tree::new("links");

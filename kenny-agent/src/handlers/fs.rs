@@ -77,19 +77,40 @@ pub fn search(args: Value) -> Result<Value, (ErrorCode, String)> {
     Ok(json!({ "matches": matches }))
 }
 
-/// `fs_read` — read a file, truncating at [`READ_CAP`] bytes.
+/// `fs_read` — read a regular file, truncating at [`READ_CAP`] bytes.
+///
+/// Reads at most one byte past the cap, so the size of the file never decides how
+/// much memory the call takes. Anything that is not a regular file is refused: a FIFO
+/// blocks until someone writes to it and a character device such as `/dev/zero` never
+/// ends.
 pub fn read(args: Value) -> Result<Value, (ErrorCode, String)> {
+    use std::io::Read as _;
+
     let args: PathArg = serde_json::from_value(args)
         .map_err(|e| (ErrorCode::BadArgs, format!("invalid fs_read args: {e}")))?;
-    let bytes = std::fs::read(&args.path).map_err(map_io)?;
-    let truncated = bytes.len() > READ_CAP;
-    let slice = if truncated {
-        &bytes[..READ_CAP]
-    } else {
-        &bytes[..]
+    let not_regular = || {
+        (
+            ErrorCode::BadArgs,
+            format!("fs_read needs a regular file: {}", args.path),
+        )
     };
+    // Checked before the open (opening a FIFO already blocks) and again on the open
+    // handle (the path may have been swapped in between).
+    if !std::fs::metadata(&args.path).map_err(map_io)?.is_file() {
+        return Err(not_regular());
+    }
+    let file = std::fs::File::open(&args.path).map_err(map_io)?;
+    if !file.metadata().map_err(map_io)?.is_file() {
+        return Err(not_regular());
+    }
+    let mut bytes = Vec::new();
+    file.take(READ_CAP as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(map_io)?;
+    let truncated = bytes.len() > READ_CAP;
+    bytes.truncate(READ_CAP);
     Ok(json!({
-        "content": String::from_utf8_lossy(slice),
+        "content": String::from_utf8_lossy(&bytes),
         "truncated": truncated,
     }))
 }
@@ -110,6 +131,41 @@ fn map_io(e: std::io::Error) -> (ErrorCode, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn read_stops_at_the_cap_whatever_the_file_size() {
+        let dir = std::env::temp_dir().join(format!("kenny-fs-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let big = dir.join("big.bin");
+        // Sparse: 8 GiB of length, no blocks. Reading it whole would need 8 GiB.
+        std::fs::File::create(&big)
+            .unwrap()
+            .set_len(8 << 30)
+            .unwrap();
+        let out = read(json!({"path": big.to_string_lossy()})).unwrap();
+        assert_eq!(out["truncated"], true);
+        assert_eq!(out["content"].as_str().unwrap().len(), READ_CAP);
+
+        let exact = dir.join("exact.bin");
+        std::fs::write(&exact, vec![b'a'; READ_CAP]).unwrap();
+        let out = read(json!({"path": exact.to_string_lossy()})).unwrap();
+        assert_eq!(out["truncated"], false);
+        assert_eq!(out["content"].as_str().unwrap().len(), READ_CAP);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn read_refuses_a_directory() {
+        let err = read(json!({"path": std::env::temp_dir().to_string_lossy()})).unwrap_err();
+        assert_eq!(err.0, ErrorCode::BadArgs);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_refuses_a_device_that_never_ends() {
+        let err = read(json!({"path": "/dev/zero"})).unwrap_err();
+        assert_eq!(err.0, ErrorCode::BadArgs);
+    }
 
     #[test]
     fn list_and_read_round_trip() {

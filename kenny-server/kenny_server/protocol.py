@@ -11,9 +11,10 @@ A discriminated union on ``type`` covers all seven frame kinds. Use
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Annotated, Any, Literal, Union
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 
 # ---------------------------------------------------------------------------
 # Shared / leaf types
@@ -147,6 +148,27 @@ class Telemetry(BaseModel):
     agent_id: str
     collected_at: str
     snapshot: dict[str, Section]
+
+    @field_validator("collected_at")
+    @classmethod
+    def _collected_at_is_an_instant(cls, value: str) -> str:
+        """Refuse a ``collected_at`` that is not an RFC 3339 instant.
+
+        The stored value orders a host's snapshots, is the "as of" instant its
+        history is scored at and feeds the availability record; one that does
+        not parse, or names no offset, breaks those reads for the whole fleet.
+        """
+
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                raise ValueError("no UTC offset")
+            parsed.astimezone(timezone.utc)
+        except (ValueError, OverflowError):
+            raise ValueError(
+                "collected_at must be an RFC 3339 timestamp with a UTC offset"
+            ) from None
+        return value
 
 
 class Log(BaseModel):

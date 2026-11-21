@@ -267,7 +267,7 @@ pub mod core {
                     if obs.last_seen > existing.last_seen {
                         existing.last_seen = obs.last_seen;
                     }
-                    existing.hits += obs.hits;
+                    existing.hits = existing.hits.saturating_add(obs.hits);
                     for s in obs.sources {
                         if !existing.sources.contains(&s) {
                             existing.sources.push(s);
@@ -558,6 +558,20 @@ pub mod core {
                 vec!["browser_history".to_string(), "dns_cache".to_string()]
             );
             assert_eq!(merged[1].domain, "b.example");
+        }
+
+        /// `visit_count` comes from a database the monitored user can write.
+        #[test]
+        fn merged_hits_saturate() {
+            let seen = |hits| Observation {
+                domain: "a.example.com".into(),
+                first_seen: "2026-06-04T18:00:00Z".into(),
+                last_seen: "2026-06-04T18:00:00Z".into(),
+                hits,
+                sources: vec!["browser_history".into()],
+            };
+            let (merged, _) = merge_observations(vec![seen(u64::MAX), seen(1)]);
+            assert_eq!(merged[0].hits, u64::MAX);
         }
 
         #[test]

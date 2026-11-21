@@ -12,6 +12,9 @@ wire shape see [`protocol.md`](protocol.md).
   default **every 15 minutes** (`KENNY_TELEMETRY_INTERVAL_SECS`, default `900`), plus an
   **immediate first push** right after it connects, so a freshly onboarded PC appears with
   real data at once. The on-demand `telemetry_collect` tool forces a "refresh now".
+- Every snapshot carries the instant it was collected (`collected_at`, an RFC 3339
+  timestamp with a UTC offset). The server **drops** a pushed snapshot without one and
+  keeps the connection open; see [`protocol.md`](protocol.md).
 - The server **persists** every snapshot in SQLite — the latest plus roughly **30 days of
   per-agent history** for the health trend and heatmaps.
 - A **daily rollup** distils the hardware-health signals (disk wear and error counters,

@@ -129,6 +129,22 @@ def _token_auth_enabled() -> bool:
     return os.environ.get("KENNY_ALLOW_TOKEN_AUTH", "1") not in ("0", "false", "")
 
 
+async def _receive_text(websocket: WebSocket) -> str | None:
+    """The next frame's text, or ``None`` for a binary frame.
+
+    Every kenny frame is a JSON text message (``docs/protocol.md`` § Transport).
+    Starlette's ``receive_text`` assumes one and raises ``KeyError`` on a binary
+    message, which anyone who can open a socket to ``/agent/ws`` can send, before
+    authenticating. Callers treat ``None`` like any other frame that is not a
+    known shape.
+    """
+
+    try:
+        return await websocket.receive_text()
+    except KeyError:
+        return None
+
+
 class ToolError(Exception):
     """Raised when a forwarded tool returns an error response or times out."""
 
@@ -441,9 +457,11 @@ class AgentTunnel:
         reconnects while the policy frame is being re-sent.
         """
 
-        raw = await websocket.receive_text()
+        raw = await _receive_text(websocket)
         try:
-            frame = parse_frame(raw)
+            # A binary first frame (``None``) fails validation like any other
+            # non-frame.
+            frame = parse_frame(raw if raw is not None else "")
         except ValidationError:
             # Malformed JSON or a frame that doesn't match any known shape
             # (pydantic wraps JSON decode errors into ValidationError too, since
@@ -559,7 +577,7 @@ class AgentTunnel:
         # A stalled handshake must not pin the socket indefinitely.
         try:
             reply_raw = await asyncio.wait_for(
-                websocket.receive_text(), timeout=HANDSHAKE_TIMEOUT_S
+                _receive_text(websocket), timeout=HANDSHAKE_TIMEOUT_S
             )
         except asyncio.TimeoutError:
             logger.warning("auth timeout for agent %s; closing 4401", frame.agent_id)
@@ -567,7 +585,7 @@ class AgentTunnel:
             return False
 
         try:
-            auth = parse_frame(reply_raw)
+            auth = parse_frame(reply_raw) if reply_raw is not None else None
         except Exception:  # noqa: BLE001 - malformed frame
             auth = None
         if not isinstance(auth, Auth):
@@ -624,7 +642,7 @@ class AgentTunnel:
         while True:
             try:
                 raw = await asyncio.wait_for(
-                    websocket.receive_text(), timeout=HEARTBEAT_TIMEOUT_SECS
+                    _receive_text(websocket), timeout=HEARTBEAT_TIMEOUT_SECS
                 )
             except asyncio.TimeoutError:
                 logger.info(
@@ -638,6 +656,10 @@ class AgentTunnel:
                 except Exception:  # noqa: BLE001 - the peer is gone; closing is best-effort
                     logger.debug("closing a timed-out socket for %s failed", agent_id)
                 return "heartbeat_timeout"
+            if raw is None:
+                # Not a kenny frame at all; drop it like an unparseable one.
+                logger.warning("dropping binary frame from %s", agent_id)
+                continue
             # Absolute ceiling: reject any frame too large to safely parse, before
             # parsing/persisting it, so a compromised agent can't exhaust server
             # memory (CWE-400/770). The strict per-kind caps for unsolicited pushes
