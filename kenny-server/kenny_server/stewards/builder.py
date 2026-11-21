@@ -317,7 +317,7 @@ def _tool_args(tool: str, schema: Mapping[str, Any]) -> list[dict[str, Any]]:
     input_schema = schema.get("input_schema") or {}
     required = set(input_schema.get("required") or ())
     out: list[dict[str, Any]] = []
-    for name, prop in (input_schema.get("properties") or {}).items():
+    for name in input_schema.get("properties") or {}:
         if name == "agent_id":
             continue
         out.append(

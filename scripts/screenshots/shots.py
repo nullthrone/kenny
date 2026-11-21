@@ -62,6 +62,8 @@ class Shot:
     theme: str = "light"  # "dark" | "light" — Nullthrone is light-by-default.
     actions: list[dict[str, Any]] = field(default_factory=list)
     # Optional per-shot note surfaced in the run report.
+    # POSSIBLY DEAD: set on several shots, but nothing in scripts/screenshots
+    # reads it back — no run report prints it today.
     note: str = ""
 
 

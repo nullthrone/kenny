@@ -2248,6 +2248,8 @@ class StewardRunner:
             # count sees it.
             return await admitted
 
+    # POSSIBLY DEAD: no production caller — shutdown goes through
+    # `cancel_previews`; only tests wait on previews through this.
     async def wait_previews(self) -> None:
         """Wait for every preview run still going (shutdown and tests).
 

@@ -141,6 +141,8 @@ class CommandSpec:
 
 # Discord's hard per-message limit is 2000 characters; kenny targets a lower
 # threshold so an off-by-a-few-characters miscount never risks the hard limit.
+# POSSIBLY DEAD: `chunk_message` only ever reads CHUNK_TARGET_LIMIT; this
+# constant is named in its docstring and asserted on by tests/test_discord_adapter.py.
 DISCORD_MESSAGE_HARD_LIMIT = 2000
 CHUNK_TARGET_LIMIT = 1900
 
