@@ -834,3 +834,19 @@ async def test_concurrent_set_state_calls_stay_exclusive(tmp_path) -> None:
         assert len(await store.list_events(b.id, kind="state")) == 1
     finally:
         await store.close()
+
+
+@pytest.mark.parametrize("limit", [-(2**70), -(2**63), 2**63, 2**70])
+async def test_out_of_range_limit_means_no_cap_not_an_overflow(tmp_path, limit: int) -> None:
+    """A ``limit`` outside SQLite's 64-bit INTEGER range (either sign) must not raise
+    ``OverflowError`` at bind time -- ``GET /api/tickets?limit=-99999999999999999999``
+    used to answer 500."""
+
+    store = await _store(tmp_path)
+    try:
+        ticket = await store.create(title="a", origin="alert", now=NOW)
+        await store.create(title="b", origin="alert", now=NOW)
+        assert len(await store.list(limit=limit)) == 2
+        assert await store.list_events(ticket.id, limit=limit) is not None
+    finally:
+        await store.close()
