@@ -22,8 +22,6 @@ from .health_rules import _dicts, _number as _num
 #   {"agent_id", "online", "meta", "snapshot" | None, "health", "collected_at"}
 Agent = dict[str, Any]
 
-_SECTION_ORDER = {"crit": 2, "warn": 1, "ok": 0, "unknown": -1}
-
 
 def _member(agent_id: str, value: Any, detail: str) -> dict[str, Any]:
     return {"agent_id": agent_id, "value": value, "detail": detail}
