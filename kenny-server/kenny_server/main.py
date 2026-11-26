@@ -44,6 +44,7 @@ from .discord_identity import DiscordIdentityStore
 from .discord_service import SLASH_COMMANDS, DiscordService
 from .agent_updates import AgentUpdateTools, UpdateOffers, build_update_routes
 from .distribution import ShareLinks, build_download_routes
+from .json_text import StorableJsonTextMiddleware
 from .keystore import KeyStore
 from .logging_config import StoreLogHandler, configure_logging, drain_log_queue
 from .notify import Notification, NotifierProvider
@@ -1453,7 +1454,9 @@ def build_app(db_path: str | None = None, *, client_factory: Any = _anthropic_cl
             token=operator_tokens,
             user_store=user_store,
             oauth_store=oauth_store,
-        )
+        ),
+        # Inside the auth gate, so only a request that may reach a route is read.
+        Middleware(StorableJsonTextMiddleware),
     ]
 
     app = Starlette(routes=routes, middleware=middleware, lifespan=lifespan)

@@ -5,6 +5,8 @@
 - A numeric path id beyond SQLite's 64-bit INTEGER range used to raise
   ``OverflowError`` at bind time; it names no row, so it is "not found".
 - ``/assets/<name with NUL>`` used to raise ``ValueError`` from ``Path.resolve``.
+- A JSON body holding a lone UTF-16 surrogate parses, but its text cannot be
+  encoded as UTF-8; it is refused before any handler binds it to SQLite.
 """
 
 from __future__ import annotations
@@ -88,3 +90,50 @@ def test_installer_download_survives_hostile_agent_id(client, agent_id, query) -
     disposition = r.headers.get("content-disposition", "")
     assert disposition.count('"') in (0, 2)
     assert "\r" not in disposition and "\n" not in disposition
+
+
+_LONE_SURROGATE_BODIES = [
+    ("POST", "/api/tickets", b'{"title": "x\\ud800", "summary": "s"}'),
+    ("POST", "/api/tickets", b'{"title": "x", "summary": "\\uDFFF tail"}'),
+    # The raw three-byte encoding of U+D800: json.loads decodes bytes leniently.
+    ("POST", "/api/tickets", b'{"title": "x\xed\xa0\x80", "summary": "s"}'),
+    ("POST", "/api/users", b'{"username": "u\\ud800", "password": "pw123456789", "role": "user"}'),
+    ("POST", "/api/chat", b'{"message": "hi \\ud800", "agent_id": "dev"}'),
+    ("PUT", "/api/me/theme", b'{"\\ud800": 1}'),
+]
+
+
+@pytest.mark.parametrize(("method", "path", "body"), _LONE_SURROGATE_BODIES)
+def test_lone_surrogate_in_a_json_body_is_400(client, method, path, body) -> None:
+    r = client.request(method, path, content=body, headers={"content-type": "application/json"})
+    assert r.status_code == 400
+    assert "surrogate" in r.json()["error"]
+
+
+def test_lone_surrogate_is_refused_before_anything_is_stored(client) -> None:
+    body = b'{"title": "fine", "summary": "s\\ud800"}'
+    assert client.post("/api/tickets", content=body).status_code == 400
+    assert client.get("/api/tickets").json()["tickets"] == []
+
+
+def test_paired_surrogates_and_plain_unicode_still_pass(client) -> None:
+    """A surrogate *pair* is an ordinary character; so is text whose UTF-8
+    happens to contain the byte the cheap pre-check looks for."""
+
+    body = b'{"title": "smile \\ud83d\\ude00", "summary": "\xed\x95\x9c\xea\xb8\x80 \xf0\x9f\x98\x80"}'
+    r = client.post("/api/tickets", content=body, headers={"content-type": "application/json"})
+    assert r.status_code == 201, r.text
+    assert r.json()["title"] == "smile \U0001f600"
+    assert r.json()["summary"] == "\ud55c\uae00 \U0001f600"
+
+
+def test_a_form_post_is_not_read_as_json(client) -> None:
+    """The login form is not JSON; the surrogate check leaves it to its route."""
+
+    r = client.post(
+        "/login",
+        content=b"username=%5Cud800&password=x",
+        headers={"content-type": "application/x-www-form-urlencoded"},
+        follow_redirects=False,
+    )
+    assert r.status_code < 500
