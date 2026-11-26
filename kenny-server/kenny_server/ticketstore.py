@@ -797,6 +797,10 @@ class TicketStore:
     async def get_by_number(self, number: int) -> Ticket | None:
         """Return one ticket by its display number, or None."""
 
+        # A number outside SQLite's 64-bit INTEGER range names no ticket, and
+        # binding it would raise OverflowError instead of finding nothing.
+        if not -_SQLITE_MAX_INT - 1 <= number <= _SQLITE_MAX_INT:
+            return None
         async with self._conn.execute(
             f"SELECT {_TICKET_COLUMNS} FROM tickets WHERE number = ?", (number,)
         ) as cur:
