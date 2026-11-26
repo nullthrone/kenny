@@ -1675,6 +1675,11 @@ async def test_close_ticket_with_a_unicode_digit_ref_is_a_plain_miss(world: Worl
     assert "could not find" in await service.close_ticket(
         discord_user_id=D_LENA, guild_id=GUILD, ticket_ref="9" * 5000
     )
+    # A number ``int()`` parses but SQLite cannot bind is a miss as well.
+    for ref in ("9" * 40, "KEN-" + "9" * 40):
+        assert "could not find" in await service.close_ticket(
+            discord_user_id=D_LENA, guild_id=GUILD, ticket_ref=ref
+        )
 
 
 async def test_close_this_resolves_the_ticket_bound_to_the_calling_thread(

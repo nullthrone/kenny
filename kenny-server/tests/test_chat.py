@@ -799,6 +799,40 @@ async def test_run_capability_fails_closed_without_a_target(
     assert excinfo.value.code == "no_agent"
 
 
+@pytest.mark.parametrize(
+    "tool", ["select_agent", "agent_health", "agent_snapshot", "agent_availability"]
+)
+@pytest.mark.parametrize("args", [{}, {"id": None}, {"id": 5}, {"id": ""}])
+async def test_server_tool_without_a_usable_id_is_a_tool_error_the_model_can_fix(
+    store: TelemetryStore, tool: str, args: dict[str, Any]
+) -> None:
+    """The arguments are whatever the model sent. A missing ``id`` used to raise
+    ``KeyError`` out of the turn; it is a ``bad_args`` tool result instead, and
+    the turn goes on."""
+
+    executor, _registry, _tunnel = _executor(store)
+    client = FakeAnthropic(
+        [
+            _Response([tool_use_block("tu1", tool, args)], "tool_use"),
+            _Response([text_block("recovered")], "end_turn"),
+        ]
+    )
+
+    result = await run_turn(FleetSession(id="s1"), "hi", executor=executor, client=client)
+
+    assert result.done is True
+    assert result.assistant_text == "recovered"
+    fed_back = [
+        b
+        for m in client.messages.calls[1]["messages"]
+        if isinstance(m.get("content"), list)
+        for b in m["content"]
+        if isinstance(b, dict) and b.get("type") == "tool_result"
+    ]
+    assert fed_back and fed_back[0]["is_error"] is True
+    assert json.loads(fed_back[0]["content"])["error"]["code"] == "bad_args"
+
+
 async def test_run_capability_rejects_non_numeric_timeout_s(
     store: TelemetryStore,
 ) -> None:

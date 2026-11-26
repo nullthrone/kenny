@@ -62,6 +62,9 @@ async def test_ticket_round_trips(tmp_path) -> None:
         fetched = await store.get(ticket.id)
         assert fetched == ticket
         assert await store.get_by_number(1) == ticket
+        # A number SQLite cannot bind names no ticket; it is a miss, not an error.
+        assert await store.get_by_number(2**63) is None
+        assert await store.get_by_number(-(2**63) - 1) is None
         assert await store.get("nope") is None
 
         patched = await store.update(

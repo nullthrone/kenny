@@ -53,6 +53,42 @@ pub mod core {
     /// Contract cap on the `extensions` list.
     pub const MAX_EXTENSIONS: usize = 200;
 
+    /// Largest manifest, locale catalogue or Firefox `extensions.json` the
+    /// collector reads. These files sit in user profiles, so any local user
+    /// chooses their size; real ones stay far below this.
+    pub const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
+
+    /// Cap on the `errors` list — one entry per unreadable file would otherwise
+    /// let a user profile grow the section without bound.
+    pub const MAX_ERRORS: usize = 50;
+
+    /// Read a profile file as text, refusing one larger than [`MAX_FILE_BYTES`].
+    ///
+    /// At most one byte past the cap is ever held, whatever the file claims
+    /// about its size.
+    pub fn read_text(path: &Path) -> std::io::Result<String> {
+        use std::io::Read as _;
+
+        let mut text = String::new();
+        std::fs::File::open(path)?
+            .take(MAX_FILE_BYTES + 1)
+            .read_to_string(&mut text)?;
+        if text.len() as u64 > MAX_FILE_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "file too large",
+            ));
+        }
+        Ok(text)
+    }
+
+    /// Record a per-file problem, up to [`MAX_ERRORS`] of them.
+    pub fn note_error(errors: &mut Vec<String>, message: String) {
+        if errors.len() < MAX_ERRORS {
+            errors.push(message);
+        }
+    }
+
     /// One installed extension, already stripped of any per-user attribution.
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct Extension {
@@ -199,11 +235,14 @@ pub mod core {
             versions.sort();
             for vdir in versions.iter().rev() {
                 let manifest_path = vdir.join("manifest.json");
-                let Ok(text) = std::fs::read_to_string(&manifest_path) else {
+                let Ok(text) = read_text(&manifest_path) else {
                     continue;
                 };
                 let Some(manifest) = parse_chromium_manifest(&text) else {
-                    errors.push(format!("{}: invalid manifest", manifest_path.display()));
+                    note_error(
+                        errors,
+                        format!("{}: invalid manifest", manifest_path.display()),
+                    );
                     continue;
                 };
                 let name = resolve_chromium_name(&manifest, vdir, &id);
@@ -241,7 +280,7 @@ pub mod core {
                 .join("_locales")
                 .join(&locale)
                 .join("messages.json");
-            if let Ok(text) = std::fs::read_to_string(&path) {
+            if let Ok(text) = read_text(&path) {
                 if let Some(name) = resolve_msg(&text, key) {
                     return name;
                 }
@@ -371,6 +410,50 @@ pub mod core {
             // Missing defaultLocale.name falls back to the id.
             assert_eq!(exts[1].name, "nameless@example.org");
             assert!(parse_firefox_extensions("garbage").is_empty());
+        }
+
+        /// A profile file is as large as its owner makes it; the scan must not
+        /// hold more than the cap, and must not report one error per planted file.
+        #[test]
+        fn scan_skips_an_oversized_manifest_and_caps_the_error_list() {
+            let dir = std::env::temp_dir().join(format!(
+                "kenny-brext-{}-{}",
+                std::process::id(),
+                line!()
+            ));
+            let ext_root = dir.join("Extensions");
+            // A sparse 1 GiB manifest: skipped like an unreadable one.
+            let huge = ext_root.join("aaaahugeid").join("1.0_0");
+            std::fs::create_dir_all(&huge).unwrap();
+            let manifest = huge.join("manifest.json");
+            std::fs::File::create(&manifest)
+                .unwrap()
+                .set_len(1 << 30)
+                .unwrap();
+            assert_eq!(
+                read_text(&manifest).unwrap_err().kind(),
+                std::io::ErrorKind::InvalidData
+            );
+            for i in 0..MAX_ERRORS + 20 {
+                let broken = ext_root.join(format!("broken{i:04}")).join("1.0_0");
+                std::fs::create_dir_all(&broken).unwrap();
+                std::fs::write(broken.join("manifest.json"), "not json").unwrap();
+            }
+            let good = ext_root.join("zzzzgoodid").join("1.0_0");
+            std::fs::create_dir_all(&good).unwrap();
+            std::fs::write(
+                good.join("manifest.json"),
+                r#"{ "name": "Good", "version": "1.0" }"#,
+            )
+            .unwrap();
+
+            let mut errors = Vec::new();
+            let exts = scan_chromium_extensions(&ext_root, "chrome", &mut errors);
+            std::fs::remove_dir_all(&dir).ok();
+
+            assert_eq!(exts.len(), 1);
+            assert_eq!(exts[0].name, "Good");
+            assert_eq!(errors.len(), MAX_ERRORS);
         }
 
         /// Fabricate a Chromium `Extensions` tree and scan it — exercises version
@@ -512,12 +595,12 @@ mod windows_impl {
                     if !file.is_file() {
                         continue;
                     }
-                    match std::fs::read_to_string(&file) {
+                    match core::read_text(&file) {
                         Ok(text) => {
                             profiles_read += 1;
                             extensions.extend(core::parse_firefox_extensions(&text));
                         }
-                        Err(e) => errors.push(format!("{}: {e}", file.display())),
+                        Err(e) => core::note_error(&mut errors, format!("{}: {e}", file.display())),
                     }
                 }
             }
