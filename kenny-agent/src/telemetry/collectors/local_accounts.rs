@@ -1088,17 +1088,31 @@ pub mod linux_impl {
         Path::new("/run/systemd/seats").exists() || Path::new("/run/systemd/sessions").exists()
     }
 
-    /// The last-login timestamp for `uid`, from the fixed-record `/var/log/lastlog`.
+    /// Size of one `/var/log/lastlog` record: `int32 time`, `char line[32]`,
+    /// `char host[256]`. Records are indexed by uid.
+    const LASTLOG_RECORD: u64 = 292;
+
+    /// The login-time field of `uid`'s record in an open `/var/log/lastlog`.
     ///
-    /// Records are 292 bytes indexed by uid: `int32 time`, `char line[32]`,
-    /// `char host[256]`. Best-effort — distros migrating to `lastlog2` have no such
-    /// file, and a never-logged-in account has a zero record. Reporting `null` in
-    /// both cases matches what Windows does for an account that never signed in.
-    fn last_logon(lastlog: &[u8], uid: u32) -> Option<String> {
-        const RECORD: usize = 292;
-        let start = (uid as usize).checked_mul(RECORD)?;
-        let secs = lastlog.get(start..start + 4)?;
-        let secs = i64::from(u32::from_ne_bytes([secs[0], secs[1], secs[2], secs[3]]));
+    /// Reads the four bytes it needs and nothing else. The file is sparse and as
+    /// long as the highest uid that ever logged in — over a gigabyte on a host
+    /// with directory-backed uids in the millions — so it is never read whole.
+    /// `None` when the record lies past the end of the file.
+    fn lastlog_secs(lastlog: &impl std::os::unix::fs::FileExt, uid: u32) -> Option<u32> {
+        let mut secs = [0u8; 4];
+        lastlog
+            .read_exact_at(&mut secs, u64::from(uid) * LASTLOG_RECORD)
+            .ok()?;
+        Some(u32::from_ne_bytes(secs))
+    }
+
+    /// The last-login timestamp from a `lastlog` login-time field.
+    ///
+    /// Best-effort — distros migrating to `lastlog2` have no such file, and a
+    /// never-logged-in account has a zero record. Reporting `null` in both cases
+    /// matches what Windows does for an account that never signed in.
+    fn last_logon(secs: Option<u32>) -> Option<String> {
+        let secs = i64::from(secs?);
         if secs == 0 {
             return None;
         }
@@ -1118,7 +1132,8 @@ pub mod linux_impl {
         pub sudoers_users: &'a [String],
         pub sudoers_groups: &'a [String],
         pub ssh_denied: &'a [String],
-        pub lastlog: &'a [u8],
+        /// The `lastlog` login-time field for a uid, `None` when there is no record.
+        pub lastlog: &'a dyn Fn(u32) -> Option<u32>,
         pub today_days: i64,
     }
 
@@ -1205,7 +1220,7 @@ pub mod linux_impl {
                     // blank-password crit on every unprivileged dev build.
                     password_required: facts.map(|f| f.password_required).unwrap_or(true),
                     password_last_set: facts.and_then(|f| f.password_last_set.clone()),
-                    last_logon: last_logon(src.lastlog, uid),
+                    last_logon: last_logon((src.lastlog)(uid)),
                     // root is the built-in, undeletable administrator — the same fact
                     // `builtin_admin` records for Windows RID 500, so the portable
                     // guard protects it with no Linux-specific rule.
@@ -1367,7 +1382,8 @@ pub mod linux_impl {
         };
         let group = std::fs::read_to_string("/etc/group").unwrap_or_default();
         let shadow = std::fs::read_to_string("/etc/shadow").ok();
-        let lastlog = std::fs::read("/var/log/lastlog").unwrap_or_default();
+        let lastlog = std::fs::File::open("/var/log/lastlog").ok();
+        let lastlog = |uid: u32| lastlog.as_ref().and_then(|file| lastlog_secs(file, uid));
         let ssh_denied = std::fs::read_to_string(SSHD_DROPIN)
             .map(|text| parse_deny_users(&text))
             .unwrap_or_default();
@@ -1441,7 +1457,7 @@ devs:x:1100:deploy
                 sudoers_users: &[],
                 sudoers_groups: &[],
                 ssh_denied: denied,
-                lastlog: &[],
+                lastlog: &|_| None,
                 today_days: 20_500,
             }
         }
@@ -1601,16 +1617,53 @@ kid:$6$a$b:20000:0:99999:7::1:
             assert!(!sshd_includes_dropin_dir("Port 22\n"));
         }
 
+        /// An empty scratch file, already unlinked so nothing is left behind.
+        fn scratch_lastlog(tag: &str) -> std::fs::File {
+            let path =
+                std::env::temp_dir().join(format!("kenny-lastlog-{tag}-{}", std::process::id()));
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&path)
+                .unwrap();
+            std::fs::remove_file(&path).unwrap();
+            file
+        }
+
         #[test]
         fn lastlog_reads_a_record_and_tolerates_a_missing_file() {
-            let mut buf = vec![0u8; 292 * 2];
-            buf[292..296].copy_from_slice(&1_700_000_000u32.to_ne_bytes());
-            assert_eq!(last_logon(&buf, 1).as_deref(), Some("2023-11-14T22:13:20Z"));
+            use std::os::unix::fs::FileExt as _;
+
+            let file = scratch_lastlog("record");
+            file.set_len(292 * 2).unwrap();
+            file.write_all_at(&1_700_000_000u32.to_ne_bytes(), 292)
+                .unwrap();
+            assert_eq!(
+                last_logon(lastlog_secs(&file, 1)).as_deref(),
+                Some("2023-11-14T22:13:20Z")
+            );
             // uid 0 has a zero record: never logged in, not "logged in at epoch".
-            assert_eq!(last_logon(&buf, 0), None);
+            assert_eq!(last_logon(lastlog_secs(&file, 0)), None);
             // Past the end of the file, or no file at all.
-            assert_eq!(last_logon(&buf, 9999), None);
-            assert_eq!(last_logon(&[], 0), None);
+            assert_eq!(lastlog_secs(&file, 9999), None);
+            assert_eq!(last_logon(None), None);
+        }
+
+        #[test]
+        fn lastlog_lookup_reads_one_record_of_a_file_sized_by_the_highest_uid() {
+            use std::os::unix::fs::FileExt as _;
+
+            // One login by uid 5,000,000 makes the sparse file 1.4 GiB long.
+            let uid = 5_000_000u32;
+            let file = scratch_lastlog("sparse");
+            file.set_len((u64::from(uid) + 1) * 292).unwrap();
+            file.write_all_at(&1_700_000_000u32.to_ne_bytes(), u64::from(uid) * 292)
+                .unwrap();
+            assert_eq!(lastlog_secs(&file, uid), Some(1_700_000_000));
+            assert_eq!(lastlog_secs(&file, uid - 1), Some(0));
+            assert_eq!(lastlog_secs(&file, u32::MAX), None);
         }
     }
 }
