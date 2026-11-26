@@ -1001,7 +1001,7 @@ class ToolExecutor:
         if tool == "list_agents":
             return await self._list_agents(session)
         if tool == "select_agent":
-            result = await self._select_agent(str(args["id"]))
+            result = await self._select_agent(_required_agent_id(args))
             if session is not None:
                 # The session's own selection is the only state this changes
                 # (ADR-0038) — no shared registry slot is written, so concurrent
@@ -1011,14 +1011,14 @@ class ToolExecutor:
         if tool == "fleet_overview":
             return await self._fleet_overview()
         if tool == "agent_health":
-            return await self._agent_health(str(args["id"]))
+            return await self._agent_health(_required_agent_id(args))
         if tool == "agent_snapshot":
             return await self._agent_snapshot(
-                str(args["id"]), args.get("section"), withhold=withheld_sections(session)
+                _required_agent_id(args), args.get("section"), withhold=withheld_sections(session)
             )
         if tool == "agent_availability":
             return await availability_summary(
-                str(args["id"]),
+                _required_agent_id(args),
                 args.get("days"),
                 registry=self.registry,
                 store=self.store,
@@ -1361,6 +1361,20 @@ async def _execute_one(
         )
     except ToolError as exc:
         return {"error": {"code": exc.code, "message": exc.message}}, True
+
+
+def _required_agent_id(args: dict[str, Any]) -> str:
+    """The ``id`` argument of a server tool that names one agent.
+
+    The arguments are whatever the model sent. A call without a usable ``id``
+    is answered with ``bad_args`` so the model can correct it; it must not end
+    the turn.
+    """
+
+    agent_id = args.get("id")
+    if not isinstance(agent_id, str) or not agent_id:
+        raise ToolError("bad_args", "id is required and must be a string")
+    return agent_id
 
 
 def _tool_started_event(
